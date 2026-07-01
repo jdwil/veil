@@ -117,14 +117,23 @@
     const children = getChildren(graph, parentId);
     const visibleIds = new Set(children.map(c => c.id));
 
-    // Create flow nodes
+    // Check if we're at the Solution level with Contexts + Sagas
+    const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
+    const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
+    const contexts = children.filter(c => c.kind === 'Context');
+    const sagas = children.filter(c => c.kind === 'Saga');
+
+    // Use group node layout for solution-level when we have contexts
+    if (isSolutionLevel && contexts.length > 0) {
+      computeSolutionView(graph, children, contexts, sagas);
+      return;
+    }
+
+    // Standard flat view for other levels
     const flowNodes: Node[] = children.map(child => {
       const childChildren = getChildren(graph, child.id);
-
-      // Find cross-reference info for this node
       const refs = getCrossRefs(graph, child.id, visibleIds);
 
-      // For parallel gateways, embed children inline (not drillable)
       let inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = [];
       let hasChildren = childChildren.length > 0;
       if (child.kind === 'ParallelGateway') {
@@ -133,7 +142,7 @@
           kind: c.kind,
           properties: c.metadata.properties,
         }));
-        hasChildren = false; // Don't make it drillable
+        hasChildren = false;
       }
 
       return {
@@ -152,7 +161,7 @@
       };
     });
 
-    // Create edges between visible nodes (non-Contains)
+    // Edges between visible nodes
     const flowEdges: Edge[] = graph.edges
       .filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))
       .filter(e => e.kind !== 'Contains')
@@ -166,13 +175,11 @@
         labelStyle: 'font-size: 10px; fill: #64748b;',
       }));
 
-    // Add ghost nodes for cross-reference targets not in current view
+    // Ghost nodes for cross-references
     const ghostNodes: Node[] = [];
     const ghostEdges: Edge[] = [];
     let ghostIdx = 0;
-
     for (const child of children) {
-      // Outgoing edges to non-visible nodes
       const outEdges = graph.edges.filter(
         e => e.from === child.id && !visibleIds.has(e.to) && e.kind !== 'Contains'
       );
@@ -181,54 +188,12 @@
         if (!targetNode) continue;
         const ghostId = `ghost-${ghostIdx++}`;
         ghostNodes.push({
-          id: ghostId,
-          type: 'veil',
-          position: { x: 0, y: 0 },
-          data: {
-            label: targetNode.name,
-            kind: targetNode.kind,
-            hasChildren: false,
-            annotations: [],
-            isGhost: true,
-          },
+          id: ghostId, type: 'veil', position: { x: 0, y: 0 },
+          data: { label: targetNode.name, kind: targetNode.kind, hasChildren: false, annotations: [], isGhost: true },
         });
         ghostEdges.push({
-          id: `ge-${child.id}-${ghostId}`,
-          source: String(child.id),
-          target: ghostId,
-          animated: false,
-          style: getEdgeStyle(e.kind),
-          label: e.kind === 'Implements' ? 'implements' : '',
-          labelStyle: 'font-size: 10px; fill: #64748b;',
-        });
-      }
-
-      // Incoming edges from non-visible nodes
-      const inEdges = graph.edges.filter(
-        e => e.to === child.id && !visibleIds.has(e.from) && e.kind !== 'Contains'
-      );
-      for (const e of inEdges) {
-        const sourceNode = graph.nodes.find(n => n.id === e.from);
-        if (!sourceNode) continue;
-        const ghostId = `ghost-${ghostIdx++}`;
-        ghostNodes.push({
-          id: ghostId,
-          type: 'veil',
-          position: { x: 0, y: 0 },
-          data: {
-            label: sourceNode.name,
-            kind: sourceNode.kind,
-            hasChildren: false,
-            annotations: [],
-            isGhost: true,
-          },
-        });
-        ghostEdges.push({
-          id: `ge-${ghostId}-${child.id}`,
-          source: ghostId,
-          target: String(child.id),
-          animated: false,
-          style: getEdgeStyle(e.kind),
+          id: `ge-${child.id}-${ghostId}`, source: String(child.id), target: ghostId,
+          animated: false, style: getEdgeStyle(e.kind),
         });
       }
     }
@@ -236,14 +201,172 @@
     const allNodes = [...flowNodes, ...ghostNodes];
     const allEdges = [...flowEdges, ...ghostEdges];
 
-    // Use LR layout for flows (horizontal swimlane feel), TB for everything else
-    const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
     const direction = parentNode?.kind === 'Flow' || parentNode?.kind === 'ParallelGateway'
-      || parentNode?.kind === 'Saga'
-      ? 'LR' : 'TB';
+      || parentNode?.kind === 'Saga' ? 'LR' : 'TB';
 
-    // Layout
     nodes = layoutNodes(allNodes, allEdges, direction);
+    edges = allEdges;
+  }
+
+  /** Solution-level view: Contexts as group containers, saga steps placed inside them */
+  function computeSolutionView(
+    graph: IrGraph,
+    children: IrNode[],
+    contexts: IrNode[],
+    sagas: IrNode[],
+  ) {
+    const allNodes: Node[] = [];
+    const allEdges: Edge[] = [];
+
+    // Layout constants
+    const CTX_WIDTH = 400;
+    const CTX_HEIGHT = 500;
+    const CTX_GAP = 80;
+    const STEP_HEIGHT = 80;
+
+    // Create context group nodes
+    contexts.forEach((ctx, i) => {
+      const x = i * (CTX_WIDTH + CTX_GAP);
+      allNodes.push({
+        id: String(ctx.id),
+        type: 'veil',
+        position: { x, y: 0 },
+        data: {
+          label: ctx.name,
+          kind: ctx.kind,
+          hasChildren: true,
+          annotations: ctx.metadata.annotations,
+          properties: [],
+          isGroup: true,
+        },
+        style: `width: ${CTX_WIDTH}px; height: ${CTX_HEIGHT}px;`,
+      });
+
+      // Add context children (aggregates, ports, services) inside the group
+      const ctxChildren = getChildren(graph, ctx.id);
+      ctxChildren.forEach((child, j) => {
+        allNodes.push({
+          id: String(child.id),
+          type: 'veil',
+          position: { x: 20, y: 60 + j * 70 },
+          parentId: String(ctx.id),
+          extent: 'parent' as const,
+          data: {
+            label: child.name,
+            kind: child.kind,
+            hasChildren: getChildren(graph, child.id).length > 0,
+            annotations: child.metadata.annotations,
+            properties: child.metadata.properties,
+          },
+        });
+      });
+    });
+
+    // Place saga steps inside their respective context groups
+    for (const saga of sagas) {
+      const sagaSteps = getChildren(graph, saga.id);
+      let prevStepId: string | null = null;
+
+      sagaSteps.forEach((step, j) => {
+        // Find which context this step belongs to
+        const ctxProp = step.metadata.properties.find(([k]) => k === 'ctx');
+        const ctxName = ctxProp ? ctxProp[1] : null;
+        const parentCtx = ctxName
+          ? contexts.find(c => c.name === ctxName)
+          : null;
+
+        const stepId = `saga-${saga.id}-step-${step.id}`;
+
+        if (parentCtx) {
+          // Place inside the context container
+          const ctxIdx = contexts.indexOf(parentCtx);
+          const ctxChildren = getChildren(graph, parentCtx.id);
+          const yOffset = 60 + ctxChildren.length * 70 + 20 + j * (STEP_HEIGHT + 10);
+
+          allNodes.push({
+            id: stepId,
+            type: 'veil',
+            position: { x: 20, y: yOffset },
+            parentId: String(parentCtx.id),
+            extent: 'parent' as const,
+            data: {
+              label: step.name,
+              kind: step.kind,
+              hasChildren: getChildren(graph, step.id).length > 0,
+              annotations: step.metadata.annotations,
+              properties: step.metadata.properties,
+              sagaName: saga.name,
+            },
+          });
+        } else {
+          // Floating step (no context)
+          allNodes.push({
+            id: stepId,
+            type: 'veil',
+            position: { x: contexts.length * (CTX_WIDTH + CTX_GAP), y: j * (STEP_HEIGHT + 20) },
+            data: {
+              label: step.name,
+              kind: step.kind,
+              hasChildren: false,
+              annotations: step.metadata.annotations,
+              properties: step.metadata.properties,
+              sagaName: saga.name,
+            },
+          });
+        }
+
+        // Sequence flow edges between saga steps
+        if (prevStepId) {
+          allEdges.push({
+            id: `saga-edge-${prevStepId}-${stepId}`,
+            source: prevStepId,
+            target: stepId,
+            animated: true,
+            style: 'stroke: #dc2626; stroke-width: 2.5; stroke-dasharray: 6 3;',
+            label: saga.name,
+            labelStyle: 'font-size: 9px; fill: #dc2626;',
+          });
+        }
+        prevStepId = stepId;
+      });
+    }
+
+    // Add non-context, non-saga items (adapters, flows)
+    const others = children.filter(c => c.kind !== 'Context' && c.kind !== 'Saga');
+    others.forEach((child, i) => {
+      allNodes.push({
+        id: String(child.id),
+        type: 'veil',
+        position: { x: i * 250, y: CTX_HEIGHT + 80 },
+        data: {
+          label: child.name,
+          kind: child.kind,
+          hasChildren: getChildren(graph, child.id).length > 0,
+          annotations: child.metadata.annotations,
+          properties: child.metadata.properties,
+        },
+      });
+    });
+
+    // Implements edges (adapter -> port)
+    const allVisibleIds = new Set(allNodes.map(n => Number(n.id) || 0));
+    for (const edge of graph.edges) {
+      if (edge.kind === 'Implements') {
+        const sourceNode = allNodes.find(n => n.id === String(edge.from));
+        const targetNode = allNodes.find(n => n.id === String(edge.to));
+        if (sourceNode && targetNode) {
+          allEdges.push({
+            id: `impl-${edge.from}-${edge.to}`,
+            source: sourceNode.id,
+            target: targetNode.id,
+            animated: false,
+            style: getEdgeStyle('Implements'),
+          });
+        }
+      }
+    }
+
+    nodes = allNodes;
     edges = allEdges;
   }
 

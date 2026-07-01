@@ -19,6 +19,8 @@
   const ctxProp = properties.find(([k]) => k === 'ctx');
   const contextName = ctxProp ? ctxProp[1] : null;
   const hasCompensate = annotations.includes('has_compensate');
+  const isGroup = data.isGroup ?? false;
+  const sagaName = data.sagaName ?? null;
 </script>
 
 <div
@@ -28,6 +30,8 @@
   class:is-flow={kind === 'Flow'}
   class:is-event={kind === 'Event'}
   class:is-error={kind === 'ErrorBoundary'}
+  class:is-group={isGroup}
+  class:is-saga-step={sagaName !== null}
   style="--node-color: {style.color}"
 >
   <Handle type="target" position={Position.Top} />
@@ -54,6 +58,13 @@
       <div class="context-badge">
         <span class="ctx-icon">📦</span>
         <span class="ctx-name">{contextName}</span>
+      </div>
+    {/if}
+
+    {#if sagaName}
+      <div class="saga-badge">
+        <span class="ctx-icon">🔄</span>
+        <span class="saga-label">{sagaName}</span>
       </div>
     {/if}
 
@@ -171,6 +182,44 @@
   .veil-node.is-error {
     border-width: 2px;
     background: linear-gradient(145deg, rgba(40, 15, 15, 0.95), rgba(30, 10, 10, 0.98));
+  }
+
+  .veil-node.is-group {
+    background: rgba(139, 92, 246, 0.04);
+    border: 2px dashed rgba(139, 92, 246, 0.4);
+    border-radius: 16px;
+    box-shadow: none;
+    transform: none;
+    min-width: unset;
+    max-width: unset;
+  }
+
+  .veil-node.is-group:hover {
+    transform: none;
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.15);
+    border-color: rgba(139, 92, 246, 0.6);
+  }
+
+  .veil-node.is-saga-step {
+    border-left: 3px solid #dc2626;
+  }
+
+  .saga-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    margin-bottom: 4px;
+    border-radius: 4px;
+    background: rgba(220, 38, 38, 0.1);
+    border: 1px solid rgba(220, 38, 38, 0.3);
+    width: fit-content;
+  }
+
+  .saga-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #fca5a5;
   }
 
   /* Glow pulse animation for events and flows */
