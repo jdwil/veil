@@ -220,11 +220,11 @@
 
     const CTX_PADDING = 40;
     const NODE_W = 230;
-    const NODE_H = 120;
+    const NODE_H = 160;
     const NODE_GAP = 30;
     const COLS = 2;
     const CTX_GAP = 150;
-    const SAGA_SECTION_GAP = 40;
+    const SAGA_SECTION_GAP = 50;
 
     let maxCtxHeight = 0;
 
@@ -248,7 +248,7 @@
       const domainHeight = domainRows * (NODE_H + NODE_GAP);
       const sagaHeight = sagaRows > 0 ? SAGA_SECTION_GAP + sagaRows * (NODE_H + NODE_GAP) : 0;
       const ctxContentW = COLS * (NODE_W + NODE_GAP) + CTX_PADDING * 2;
-      const ctxH = 80 + domainHeight + sagaHeight + CTX_PADDING;
+      const ctxH = 100 + domainHeight + sagaHeight + CTX_PADDING * 2;
 
       if (ctxH > maxCtxHeight) maxCtxHeight = ctxH;
 
