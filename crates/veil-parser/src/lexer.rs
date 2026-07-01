@@ -17,12 +17,65 @@ pub struct Token {
 /// Token kinds for the VEIL language.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
-    // Structure
+    // ─── Structure ────────────────────────────────────────────────────
     Indent,
     Dedent,
     Newline,
 
-    // Keywords — top-level
+    // ─── CORE: Type system ────────────────────────────────────────────
+    Struct,
+    Enum,
+    Fn,
+    Trait,
+    Let,
+    Mod,
+
+    // ─── CORE: Control flow ───────────────────────────────────────────
+    If,
+    Else,
+    Match,
+    Ret,
+
+    // ─── CORE: Literals ───────────────────────────────────────────────
+    StringLit,
+    IntLit,
+    FloatLit,
+    True,
+    False,
+
+    // ─── CORE: Operators ──────────────────────────────────────────────
+    Plus,       // +
+    Minus,      // -
+    Star,       // *
+    Slash,      // /
+    Percent,    // %
+    EqEq,      // ==
+    NotEq,      // !=
+    LAngle,     // < (also used for generics)
+    RAngle,     // > (also used for generics)
+    LtEq,      // <=
+    GtEq,      // >=
+    And,        // &&
+    Or,         // ||
+    Bang,       // !
+    Eq,         // =
+    Arrow,      // ->
+    FatArrow,   // =>
+    Dot,        // .
+    Colon,      // :
+    Comma,      // ,
+    LParen,
+    RParen,
+    LBrace,     // {
+    RBrace,     // }
+
+    // ─── CORE: Other ──────────────────────────────────────────────────
+    Annotation, // @something(args)
+    Comment,    // # ...
+    Ident,      // identifiers
+    Eof,
+
+    // ─── KIT: DDD / Workflow vocabulary (kept for backward compat) ────
     Sol,
     Ctx,
     Agg,
@@ -42,17 +95,13 @@ pub enum TokenKind {
     Expose,
     Node,
     Saga,
-
-    // Keywords — flow
     Step,
     Par,
     Alt,
     Loop,
     Err,
-    Match,
     Emit,
     Call,
-    Ret,
     Input,
     Fallback,
     Impl,
@@ -62,7 +111,6 @@ pub enum TokenKind {
     Desc,
     Output,
     Constraints,
-    Fn,
     State,
     Root,
     Compensate,
@@ -71,40 +119,6 @@ pub enum TokenKind {
     Invoke,
     Request,
     Guard,
-
-    // Operators
-    Arrow,      // ->
-    FatArrow,   // =>
-    Parallel,   // ||
-    Colon,      // :
-    Dot,        // .
-    Comma,      // ,
-    Eq,         // =
-    NotEq,      // !=
-    Bang,       // !
-    LParen,
-    RParen,
-    LAngle,     // <
-    RAngle,     // >
-    LBrace,     // {
-    RBrace,     // }
-
-    // Literals
-    StringLit,
-    IntLit,
-    FloatLit,
-
-    // Annotation (@something or @something(args))
-    Annotation,
-
-    // Comment (# ...)
-    Comment,
-
-    // Identifiers
-    Ident,
-
-    // End of file
-    Eof,
 }
 
 /// Lex VEIL source code into a token stream.
@@ -158,16 +172,52 @@ impl Lexer {
                     self.emit(TokenKind::FatArrow, self.pos, self.pos + 2);
                     self.pos += 2;
                 }
+                '=' if self.peek() == Some('=') => {
+                    self.emit(TokenKind::EqEq, self.pos, self.pos + 2);
+                    self.pos += 2;
+                }
                 '|' if self.peek() == Some('|') => {
-                    self.emit(TokenKind::Parallel, self.pos, self.pos + 2);
+                    self.emit(TokenKind::Or, self.pos, self.pos + 2);
+                    self.pos += 2;
+                }
+                '&' if self.peek() == Some('&') => {
+                    self.emit(TokenKind::And, self.pos, self.pos + 2);
                     self.pos += 2;
                 }
                 '!' if self.peek() == Some('=') => {
                     self.emit(TokenKind::NotEq, self.pos, self.pos + 2);
                     self.pos += 2;
                 }
+                '<' if self.peek() == Some('=') => {
+                    self.emit(TokenKind::LtEq, self.pos, self.pos + 2);
+                    self.pos += 2;
+                }
+                '>' if self.peek() == Some('=') => {
+                    self.emit(TokenKind::GtEq, self.pos, self.pos + 2);
+                    self.pos += 2;
+                }
                 '=' => {
                     self.emit(TokenKind::Eq, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                '+' => {
+                    self.emit(TokenKind::Plus, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                '-' => {
+                    self.emit(TokenKind::Minus, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                '*' => {
+                    self.emit(TokenKind::Star, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                '/' => {
+                    self.emit(TokenKind::Slash, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                '%' => {
+                    self.emit(TokenKind::Percent, self.pos, self.pos + 1);
                     self.pos += 1;
                 }
                 ':' => {
@@ -376,6 +426,21 @@ fn is_ident_continue(c: char) -> bool {
 
 fn keyword_lookup(text: &str) -> TokenKind {
     match text {
+        // Core language primitives
+        "struct" => TokenKind::Struct,
+        "enum" => TokenKind::Enum,
+        "fn" => TokenKind::Fn,
+        "trait" => TokenKind::Trait,
+        "let" => TokenKind::Let,
+        "mod" => TokenKind::Mod,
+        "if" => TokenKind::If,
+        "else" => TokenKind::Else,
+        "match" => TokenKind::Match,
+        "ret" => TokenKind::Ret,
+        "true" => TokenKind::True,
+        "false" => TokenKind::False,
+        "impl" => TokenKind::Impl,
+        // Kit vocabulary (backward compat)
         "sol" => TokenKind::Sol,
         "ctx" => TokenKind::Ctx,
         "agg" => TokenKind::Agg,
@@ -394,26 +459,22 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "use" => TokenKind::Use,
         "expose" => TokenKind::Expose,
         "node" => TokenKind::Node,
+        "saga" => TokenKind::Saga,
         "step" => TokenKind::Step,
         "par" => TokenKind::Par,
         "alt" => TokenKind::Alt,
         "loop" => TokenKind::Loop,
         "err" => TokenKind::Err,
-        "match" => TokenKind::Match,
         "emit" => TokenKind::Emit,
         "call" => TokenKind::Call,
-        "ret" => TokenKind::Ret,
         "input" => TokenKind::Input,
         "fallback" => TokenKind::Fallback,
-        "impl" => TokenKind::Impl,
         "for" => TokenKind::For,
         "boundary" => TokenKind::Boundary,
         "as" => TokenKind::As,
         "desc" => TokenKind::Desc,
         "output" => TokenKind::Output,
         "constraints" => TokenKind::Constraints,
-        "saga" => TokenKind::Saga,
-        "fn" => TokenKind::Fn,
         "state" => TokenKind::State,
         "root" => TokenKind::Root,
         "compensate" => TokenKind::Compensate,

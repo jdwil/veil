@@ -66,7 +66,7 @@ mod tests {
         assert_eq!(
             k,
             vec![
-                TokenKind::Arrow, TokenKind::FatArrow, TokenKind::Parallel,
+                TokenKind::Arrow, TokenKind::FatArrow, TokenKind::Or,
                 TokenKind::Colon, TokenKind::Dot, TokenKind::Comma,
                 TokenKind::Eq, TokenKind::NotEq, TokenKind::Bang,
                 TokenKind::LParen, TokenKind::RParen,
