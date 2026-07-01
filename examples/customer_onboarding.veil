@@ -7,7 +7,7 @@ sol CustomerOnboarding
   ctx Identity
     val Email
       addr: Str
-      @invariant valid_email(addr)
+      @invariant(valid_email(addr))
 
     val Phone
       number: Str
@@ -20,7 +20,7 @@ sol CustomerOnboarding
       status: Status
       created: DateTime
 
-      @invariant email != nil
+      @invariant(email != nil)
 
       evt CustomerCreated
         id email created
@@ -64,15 +64,18 @@ sol CustomerOnboarding
     port PaymentGateway
       create_customer(email: Str) -> Res!<ExtId>
 
+  @async(runtime="tokio")
+  @trace(method="otel")
+  @saga
   flow Onboard
-    @async @trace @saga
     input
       email: Email
       phone: Phone
       name: Str
 
     err boundary
-      @retry 3 @timeout 30000
+      @retry(3)
+      @timeout(30000)
       fallback -> emit OnboardingFailed{email, reason}
 
     step create_customer
@@ -95,11 +98,11 @@ sol CustomerOnboarding
     ret c.id
 
   adapter SmsTwilio for Notifier
-    @env TWILIO_SID TWILIO_TOKEN
+    @env(TWILIO_SID, TWILIO_TOKEN)
     impl send_sms(phone, msg)
       http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
 
   adapter StripeAdapter for PaymentGateway
-    @env STRIPE_KEY
+    @env(STRIPE_KEY)
     impl create_customer(email)
       http.post("api.stripe.com/v1/customers", {email})

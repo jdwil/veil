@@ -280,7 +280,7 @@ impl<'a> Lexer<'a> {
         {
             self.pos += 1;
         }
-        // Include parenthesized args like @retry(3) or @timeout(30000)
+        // Include parenthesized args like @retry(3) or @trace(method="xray")
         if self.pos < self.chars.len() && self.chars[self.pos] == '(' {
             self.pos += 1;
             let mut depth = 1;
@@ -291,49 +291,6 @@ impl<'a> Lexer<'a> {
                     _ => {}
                 }
                 self.pos += 1;
-            }
-        }
-        // Also support space-separated args: @retry 3, @timeout 30000, @env KEY1 KEY2
-        // We consume following space+word tokens as part of annotation text
-        // Also handles function-call args like: @invariant valid_email(addr)
-        while self.pos < self.chars.len() && self.chars[self.pos] == ' ' {
-            let space_pos = self.pos;
-            self.pos += 1; // skip space
-            // Check if next char is alphanumeric/underscore (an arg)
-            if self.pos < self.chars.len()
-                && (self.chars[self.pos].is_alphanumeric() || self.chars[self.pos] == '_')
-            {
-                // Check it's NOT a keyword that starts a new construct
-                let arg_start = self.pos;
-                while self.pos < self.chars.len()
-                    && (self.chars[self.pos].is_alphanumeric() || self.chars[self.pos] == '_')
-                {
-                    self.pos += 1;
-                }
-                let word: String = self.chars[arg_start..self.pos].iter().collect();
-                if is_construct_keyword(&word) {
-                    // It's a keyword — back up, don't consume it
-                    self.pos = space_pos;
-                    break;
-                }
-                // If followed by parens, consume them too (e.g., valid_email(addr))
-                if self.pos < self.chars.len() && self.chars[self.pos] == '(' {
-                    self.pos += 1;
-                    let mut depth = 1;
-                    while self.pos < self.chars.len() && depth > 0 {
-                        match self.chars[self.pos] {
-                            '(' => depth += 1,
-                            ')' => depth -= 1,
-                            _ => {}
-                        }
-                        self.pos += 1;
-                    }
-                }
-                // Otherwise it's an annotation arg, continue
-            } else {
-                // Not an arg, back up
-                self.pos = space_pos;
-                break;
             }
         }
         self.emit(TokenKind::Annotation, start, self.pos);

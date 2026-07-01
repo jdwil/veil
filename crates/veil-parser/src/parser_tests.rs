@@ -143,7 +143,7 @@ sol App
         let src = "\
 sol App
   adapter SmsTwilio for Notifier
-    @env TWILIO_SID TWILIO_TOKEN
+    @env(TWILIO_SID, TWILIO_TOKEN)
     impl send_sms(phone, msg)
       http.post(\"api.twilio.com/Messages\", {To: phone.number})";
         let sol = parse_src(src);

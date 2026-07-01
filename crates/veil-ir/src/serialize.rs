@@ -312,12 +312,12 @@ impl Serializer {
     // ─── Flow ─────────────────────────────────────────────────────────
 
     fn emit_flow(&mut self, flow: &Flow) {
-        self.line(&format!("flow {}", flow.name));
-        self.indent();
-
+        // Annotations above the flow (decorator style)
         for ann in &flow.annotations {
             self.line(&format!("@{}", annotation_to_veil(ann)));
         }
+        self.line(&format!("flow {}", flow.name));
+        self.indent();
 
         if !flow.inputs.is_empty() {
             self.line("input");
@@ -464,12 +464,8 @@ fn type_to_veil(ty: &TypeExpr) -> String {
 fn annotation_to_veil(ann: &Annotation) -> String {
     if ann.args.is_empty() {
         ann.name.clone()
-    } else if ann.args.len() == 1 && ann.args[0].parse::<i64>().is_ok() {
-        // Numeric arg: @retry 3
-        format!("{} {}", ann.name, ann.args[0])
     } else {
-        // Multiple args: @env KEY1 KEY2
-        format!("{} {}", ann.name, ann.args.join(" "))
+        format!("{}({})", ann.name, ann.args.join(", "))
     }
 }
 

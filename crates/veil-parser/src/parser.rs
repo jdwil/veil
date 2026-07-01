@@ -322,7 +322,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Parse annotation text like "@retry 3" or "@env TWILIO_SID TWILIO_TOKEN" or "@retry(3)"
+/// Parse annotation text like "@async", "@retry(3)", "@trace(method=\"xray\")", "@env(TWILIO_SID, TWILIO_TOKEN)"
 fn parse_annotation_text(text: &str) -> (String, Vec<String>) {
     let text = text.strip_prefix('@').unwrap_or(text);
 
@@ -337,11 +337,8 @@ fn parse_annotation_text(text: &str) -> (String, Vec<String>) {
             .collect();
         (name, args)
     } else {
-        // Space-separated args
-        let parts: Vec<&str> = text.split_whitespace().collect();
-        let name = parts[0].to_string();
-        let args = parts[1..].iter().map(|s| s.to_string()).collect();
-        (name, args)
+        // No args
+        (text.to_string(), Vec::new())
     }
 }
 
@@ -628,29 +625,48 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
+                // Collect annotations that decorate the next construct
+                let prefix_annotations = self.parse_annotations();
+
                 match self.peek_kind().clone() {
                     TokenKind::Lang => {
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
                     }
                     TokenKind::Ctx => {
-                        items.push(TopLevelItem::Context(self.parse_context()?));
+                        let mut ctx = self.parse_context()?;
+                        // TODO: attach prefix_annotations to context if needed
+                        let _ = prefix_annotations;
+                        items.push(TopLevelItem::Context(ctx));
                     }
                     TokenKind::Flow => {
-                        items.push(TopLevelItem::Flow(self.parse_flow()?));
+                        let mut flow = self.parse_flow()?;
+                        // Prepend decorator annotations to the flow
+                        let mut all = prefix_annotations;
+                        all.extend(flow.annotations);
+                        flow.annotations = all;
+                        items.push(TopLevelItem::Flow(flow));
                     }
                     TokenKind::Adapter => {
-                        items.push(TopLevelItem::Adapter(self.parse_adapter()?));
+                        let mut adapter = self.parse_adapter()?;
+                        let mut all = prefix_annotations;
+                        all.extend(adapter.annotations);
+                        adapter.annotations = all;
+                        items.push(TopLevelItem::Adapter(adapter));
                     }
                     TokenKind::Comment => {
                         self.advance();
                     }
                     _ => {
-                        let err = self.error(format!(
-                            "unexpected token {:?} in solution body",
-                            self.peek_kind()
-                        ));
-                        self.errors.push(err);
-                        self.advance();
+                        if !prefix_annotations.is_empty() {
+                            // Annotations with no following construct — skip
+                        } else {
+                            let err = self.error(format!(
+                                "unexpected token {:?} in solution body",
+                                self.peek_kind()
+                            ));
+                            self.errors.push(err);
+                            self.advance();
+                        }
                     }
                 }
             }
@@ -856,19 +872,7 @@ impl<'a> Parser<'a> {
                 self.skip_newlines();
                 if self.at_block_end() { break; }
                 if self.at(&TokenKind::Annotation) {
-                    let mut anns = self.parse_annotations();
-                    // Consume any trailing condition tokens on the same line (e.g., != nil)
-                    while !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
-                        && !self.at(&TokenKind::Dedent) && !self.at(&TokenKind::Annotation)
-                        && !self.at(&TokenKind::Indent)
-                    {
-                        let extra = self.advance().text;
-                        // Append to last annotation's args
-                        if let Some(last) = anns.last_mut() {
-                            last.args.push(extra);
-                        }
-                    }
-                    agg_annotations.extend(anns);
+                    agg_annotations.extend(self.parse_annotations());
                     continue;
                 }
                 if self.at(&TokenKind::Comment) { self.advance(); continue; }

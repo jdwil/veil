@@ -120,10 +120,10 @@ mod tests {
     }
 
     #[test]
-    fn test_annotation_with_space_args() {
-        let tokens = lex("@env TWILIO_SID TWILIO_TOKEN");
+    fn test_annotation_with_parens_args() {
+        let tokens = lex("@env(TWILIO_SID, TWILIO_TOKEN)");
         assert_eq!(tokens[0].kind, TokenKind::Annotation);
-        assert_eq!(tokens[0].text, "@env TWILIO_SID TWILIO_TOKEN");
+        assert_eq!(tokens[0].text, "@env(TWILIO_SID, TWILIO_TOKEN)");
     }
 
     #[test]
