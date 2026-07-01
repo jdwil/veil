@@ -218,13 +218,13 @@
     const allNodes: Node[] = [];
     const allEdges: Edge[] = [];
 
-    const CTX_PADDING = 30;
-    const NODE_W = 200;
-    const NODE_H = 90;
-    const NODE_GAP = 20;
-    const COLS = 3;
-    const CTX_GAP = 120;
-    const SAGA_SECTION_GAP = 30;
+    const CTX_PADDING = 40;
+    const NODE_W = 230;
+    const NODE_H = 120;
+    const NODE_GAP = 30;
+    const COLS = 2;
+    const CTX_GAP = 150;
+    const SAGA_SECTION_GAP = 40;
 
     let maxCtxHeight = 0;
 
@@ -247,10 +247,8 @@
       const sagaRows = Math.ceil(sagaStepsInCtx.length / COLS);
       const domainHeight = domainRows * (NODE_H + NODE_GAP);
       const sagaHeight = sagaRows > 0 ? SAGA_SECTION_GAP + sagaRows * (NODE_H + NODE_GAP) : 0;
-      const ctxW = Math.max(COLS, Math.max(ctxChildren.length, sagaStepsInCtx.length)) * (NODE_W + NODE_GAP) + CTX_PADDING * 2;
-      const actualCols = Math.min(COLS, Math.max(ctxChildren.length, sagaStepsInCtx.length, 1));
-      const ctxContentW = actualCols * (NODE_W + NODE_GAP) + CTX_PADDING * 2;
-      const ctxH = 70 + domainHeight + sagaHeight + CTX_PADDING;
+      const ctxContentW = COLS * (NODE_W + NODE_GAP) + CTX_PADDING * 2;
+      const ctxH = 80 + domainHeight + sagaHeight + CTX_PADDING;
 
       if (ctxH > maxCtxHeight) maxCtxHeight = ctxH;
 
@@ -281,7 +279,7 @@
           type: 'veil',
           position: {
             x: CTX_PADDING + col * (NODE_W + NODE_GAP),
-            y: 60 + row * (NODE_H + NODE_GAP),
+            y: 80 + row * (NODE_H + NODE_GAP),
           },
           parentId: String(ctx.id),
           extent: 'parent' as const,
@@ -296,7 +294,7 @@
       });
 
       // Saga steps — separate section below domain nodes
-      const sagaYStart = 60 + domainHeight + SAGA_SECTION_GAP;
+      const sagaYStart = 80 + domainHeight + SAGA_SECTION_GAP;
       sagaStepsInCtx.forEach(({ step, sagaName }, j) => {
         const col = j % COLS;
         const row = Math.floor(j / COLS);
