@@ -1,0 +1,248 @@
+- generic [ref=f12e3]:
+  - button "CustomerOnboarding" [ref=f12e6] [cursor=pointer]
+  - generic [ref=f12e7]:
+    - complementary [ref=f12e8]:
+      - generic [ref=f12e9]: Constructs
+      - generic [ref=f12e10]:
+        - generic [ref=f12e11]:
+          - generic [ref=f12e12]: Domain
+          - generic [ref=f12e14]:
+            - generic [ref=f12e15]: 📦
+            - generic [ref=f12e16]: Context
+        - generic [ref=f12e17]:
+          - generic [ref=f12e18]: Infrastructure
+          - generic [ref=f12e20]:
+            - generic [ref=f12e21]: 🔗
+            - generic [ref=f12e22]: Adapter
+        - generic [ref=f12e23]:
+          - generic [ref=f12e24]: Flow
+          - generic [ref=f12e25]:
+            - generic [ref=f12e26]:
+              - generic [ref=f12e27]: 🌊
+              - generic [ref=f12e28]: Flow
+            - generic [ref=f12e29]:
+              - generic [ref=f12e30]: 🔄
+              - generic [ref=f12e31]: Saga
+    - application [ref=f12e32]:
+      - application [ref=f12e33]:
+        - generic [ref=f12e35]:
+          - generic:
+            - generic:
+              - img
+              - img:
+                - group "Edge from saga-step-28 to saga-step-31" [ref=f12e36] [cursor=pointer]
+              - img:
+                - group "Edge from saga-step-31 to saga-step-34" [ref=f12e39] [cursor=pointer]
+              - img:
+                - group "Edge from 37 to 11" [ref=f12e42] [cursor=pointer]
+              - img:
+                - group "Edge from 38 to 24" [ref=f12e45] [cursor=pointer]
+            - generic:
+              - generic [ref=f12e48] [cursor=pointer]: Onboard
+              - generic [ref=f12e49] [cursor=pointer]: Onboard
+            - generic:
+              - group [ref=f12e50]
+              - group [ref=f12e51]:
+                - generic [ref=f12e52]:
+                  - button "Handle" [ref=f12e53]
+                  - button "Handle" [ref=f12e54]
+                  - generic [ref=f12e55]:
+                    - generic [ref=f12e56]:
+                      - generic [ref=f12e57]: 💎
+                      - generic [ref=f12e58]: Value Object
+                    - generic [ref=f12e59]: Email
+                  - button "Handle" [ref=f12e60]
+                  - button "Handle" [ref=f12e61]
+              - group [ref=f12e62]:
+                - generic [ref=f12e63]:
+                  - button "Handle" [ref=f12e64]
+                  - button "Handle" [ref=f12e65]
+                  - generic [ref=f12e66]:
+                    - generic [ref=f12e67]:
+                      - generic [ref=f12e68]: 💎
+                      - generic [ref=f12e69]: Value Object
+                    - generic [ref=f12e70]: Phone
+                  - button "Handle" [ref=f12e71]
+                  - button "Handle" [ref=f12e72]
+              - group [ref=f12e73]:
+                - generic [ref=f12e74] [cursor=pointer]:
+                  - button "Handle" [ref=f12e75]
+                  - button "Handle" [ref=f12e76]
+                  - generic [ref=f12e77]:
+                    - generic [ref=f12e78]:
+                      - generic [ref=f12e79]: 🧩
+                      - generic [ref=f12e80]: Aggregate
+                      - generic [ref=f12e81]: ⤵
+                    - generic [ref=f12e82]: Customer
+                  - button "Handle" [ref=f12e83]
+                  - button "Handle" [ref=f12e84]
+              - group [ref=f12e85]:
+                - generic [ref=f12e86] [cursor=pointer]:
+                  - button "Handle" [ref=f12e87]
+                  - button "Handle" [ref=f12e88]
+                  - generic [ref=f12e89]:
+                    - generic [ref=f12e90]:
+                      - generic [ref=f12e91]: 🔌
+                      - generic [ref=f12e92]: Port
+                      - generic [ref=f12e93]: ⤵
+                    - generic [ref=f12e94]: Notifier
+                  - button "Handle" [ref=f12e95]
+                  - button "Handle" [ref=f12e96]
+              - group [ref=f12e97]:
+                - generic [ref=f12e98] [cursor=pointer]:
+                  - button "Handle" [ref=f12e99]
+                  - button "Handle" [ref=f12e100]
+                  - generic [ref=f12e101]:
+                    - generic [ref=f12e102]:
+                      - generic [ref=f12e103]: 🔌
+                      - generic [ref=f12e104]: Port
+                      - generic [ref=f12e105]: ⤵
+                    - generic [ref=f12e106]: KYCProvider
+                  - button "Handle" [ref=f12e107]
+                  - button "Handle" [ref=f12e108]
+              - group [ref=f12e109]:
+                - generic [ref=f12e110] [cursor=pointer]:
+                  - button "Handle" [ref=f12e111]
+                  - button "Handle" [ref=f12e112]
+                  - generic [ref=f12e113]:
+                    - generic [ref=f12e114]:
+                      - generic [ref=f12e115]: 🔌
+                      - generic [ref=f12e116]: Port
+                      - generic [ref=f12e117]: ⤵
+                    - generic [ref=f12e118]: CustomerRepo
+                  - button "Handle" [ref=f12e119]
+                  - button "Handle" [ref=f12e120]
+              - group [ref=f12e121]:
+                - generic [ref=f12e122]:
+                  - button "Handle" [ref=f12e123]
+                  - button "Handle" [ref=f12e124]
+                  - generic [ref=f12e125]:
+                    - generic [ref=f12e126]:
+                      - generic [ref=f12e127]: 🖥️
+                      - generic [ref=f12e128]: Service
+                    - generic [ref=f12e129]: CreateCustomerService
+                  - button "Handle" [ref=f12e130]
+                  - button "Handle" [ref=f12e131]
+              - group [ref=f12e132]:
+                - generic [ref=f12e133] [cursor=pointer]:
+                  - button "Handle" [ref=f12e134]
+                  - button "Handle" [ref=f12e135]
+                  - generic [ref=f12e136]:
+                    - generic [ref=f12e137]:
+                      - generic [ref=f12e138]: ▶️
+                      - generic [ref=f12e139]: Step
+                      - generic "Has compensation (rollback)" [ref=f12e140]: ↩
+                      - generic [ref=f12e141]: ⤵
+                    - generic [ref=f12e142]:
+                      - generic [ref=f12e143]: 📦
+                      - generic [ref=f12e144]: Identity
+                    - generic [ref=f12e145]:
+                      - generic [ref=f12e146]: 🔄
+                      - generic [ref=f12e147]: Onboard
+                    - generic [ref=f12e148]: create_customer
+                    - generic [ref=f12e150]: has_compensate
+                  - button "Handle" [ref=f12e151]
+                  - button "Handle" [ref=f12e152]
+              - group [ref=f12e153]:
+                - generic [ref=f12e154] [cursor=pointer]:
+                  - button "Handle" [ref=f12e155]
+                  - button "Handle" [ref=f12e156]
+                  - generic [ref=f12e157]:
+                    - generic [ref=f12e158]:
+                      - generic [ref=f12e159]: ▶️
+                      - generic [ref=f12e160]: Step
+                      - generic "Has compensation (rollback)" [ref=f12e161]: ↩
+                      - generic [ref=f12e162]: ⤵
+                    - generic [ref=f12e163]:
+                      - generic [ref=f12e164]: 📦
+                      - generic [ref=f12e165]: Identity
+                    - generic [ref=f12e166]:
+                      - generic [ref=f12e167]: 🔄
+                      - generic [ref=f12e168]: Onboard
+                    - generic [ref=f12e169]: verify_identity
+                    - generic [ref=f12e171]: has_compensate
+                  - button "Handle" [ref=f12e172]
+                  - button "Handle" [ref=f12e173]
+              - group [ref=f12e174]
+              - group [ref=f12e175]:
+                - generic [ref=f12e176] [cursor=pointer]:
+                  - button "Handle" [ref=f12e177]
+                  - button "Handle" [ref=f12e178]
+                  - generic [ref=f12e179]:
+                    - generic [ref=f12e180]:
+                      - generic [ref=f12e181]: 🧩
+                      - generic [ref=f12e182]: Aggregate
+                      - generic [ref=f12e183]: ⤵
+                    - generic [ref=f12e184]: Subscription
+                  - button "Handle" [ref=f12e185]
+                  - button "Handle" [ref=f12e186]
+              - group [ref=f12e187]:
+                - generic [ref=f12e188] [cursor=pointer]:
+                  - button "Handle" [ref=f12e189]
+                  - button "Handle" [ref=f12e190]
+                  - generic [ref=f12e191]:
+                    - generic [ref=f12e192]:
+                      - generic [ref=f12e193]: 🔌
+                      - generic [ref=f12e194]: Port
+                      - generic [ref=f12e195]: ⤵
+                    - generic [ref=f12e196]: PaymentGateway
+                  - button "Handle" [ref=f12e197]
+                  - button "Handle" [ref=f12e198]
+              - group [ref=f12e199]:
+                - generic [ref=f12e200] [cursor=pointer]:
+                  - button "Handle" [ref=f12e201]
+                  - button "Handle" [ref=f12e202]
+                  - generic [ref=f12e203]:
+                    - generic [ref=f12e204]:
+                      - generic [ref=f12e205]: ▶️
+                      - generic [ref=f12e206]: Step
+                      - generic "Has compensation (rollback)" [ref=f12e207]: ↩
+                      - generic [ref=f12e208]: ⤵
+                    - generic [ref=f12e209]:
+                      - generic [ref=f12e210]: 📦
+                      - generic [ref=f12e211]: Billing
+                    - generic [ref=f12e212]:
+                      - generic [ref=f12e213]: 🔄
+                      - generic [ref=f12e214]: Onboard
+                    - generic [ref=f12e215]: setup_billing
+                    - generic [ref=f12e217]: has_compensate
+                  - button "Handle" [ref=f12e218]
+                  - button "Handle" [ref=f12e219]
+              - group [ref=f12e220]:
+                - generic [ref=f12e221]:
+                  - button "Handle" [ref=f12e222]
+                  - button "Handle" [ref=f12e223]
+                  - generic [ref=f12e224]:
+                    - generic [ref=f12e225]:
+                      - generic [ref=f12e226]: 🔗
+                      - generic [ref=f12e227]: Adapter
+                    - generic [ref=f12e228]: SmsTwilio
+                    - generic [ref=f12e230]: "@env(TWILIO_SID, TWILIO_TOKEN)"
+                  - button "Handle" [ref=f12e231]
+                  - button "Handle" [ref=f12e232]
+              - group [ref=f12e233]:
+                - generic [ref=f12e234]:
+                  - button "Handle" [ref=f12e235]
+                  - button "Handle" [ref=f12e236]
+                  - generic [ref=f12e237]:
+                    - generic [ref=f12e238]:
+                      - generic [ref=f12e239]: 🔗
+                      - generic [ref=f12e240]: Adapter
+                    - generic [ref=f12e241]: StripeAdapter
+                    - generic [ref=f12e243]: "@env(STRIPE_KEY)"
+                  - button "Handle" [ref=f12e244]
+                  - button "Handle" [ref=f12e245]
+        - link "Svelte Flow attribution" [ref=f12e247] [cursor=pointer]:
+          - /url: https://svelteflow.dev/attribution
+          - text: Svelte Flow
+        - img
+        - generic "Control Panel" [ref=f12e249]:
+          - button "Zoom In" [ref=f12e250] [cursor=pointer]:
+            - img [ref=f12e251]
+          - button "Zoom Out" [disabled]:
+            - img
+          - button "Fit View" [ref=f12e253] [cursor=pointer]:
+            - img [ref=f12e254]
+          - button "Toggle Interactivity" [ref=f12e256] [cursor=pointer]:
+            - img [ref=f12e257]
+        - img "Mini Map" [ref=f12e261]

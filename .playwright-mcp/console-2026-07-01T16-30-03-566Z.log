@@ -1,0 +1,2 @@
+[     264ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5174/favicon.ico:0
+[     409ms] [WARNING] Use $state.raw for nodes to prevent performance issues. @ http://localhost:5174/node_modules/@sveltejs/kit/src/runtime/client/client.js?v=fbadb8b0:3440

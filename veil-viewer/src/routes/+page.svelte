@@ -35,8 +35,8 @@
     veil: VeilNode as any,
   };
 
-  let nodes = $state<Node[]>([]);
-  let edges = $state<Edge[]>([]);
+  let nodes = $state.raw<Node[]>([]);
+  let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
 
   // Derive the current context kind for palette filtering
@@ -257,17 +257,12 @@
       // Context group node
       allNodes.push({
         id: String(ctx.id),
-        type: 'veil',
+        type: 'group',
         position: { x, y: 0 },
         data: {
           label: ctx.name,
-          kind: ctx.kind,
-          hasChildren: true,
-          annotations: ctx.metadata.annotations,
-          properties: [],
-          isGroup: true,
         },
-        style: `width: ${ctxContentW}px; height: ${ctxH}px;`,
+        style: `width: ${ctxContentW}px; height: ${ctxH}px; background: rgba(139, 92, 246, 0.03); border: 2px dashed rgba(139, 92, 246, 0.4); border-radius: 16px;`,
       });
 
       // Domain children (aggregates, ports, services)
@@ -378,6 +373,8 @@
 
     nodes = allNodes;
     edges = allEdges;
+    // Debug
+    if (typeof window !== 'undefined') (window as any).__veilNodes = allNodes;
   }
 
   function getEdgeStyle(kind: string): string {
