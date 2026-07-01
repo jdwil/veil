@@ -12,17 +12,11 @@
 
   // All available construct types grouped by category
   const ALL_PALETTE_ITEMS: PaletteItem[] = [
-    // Domain
-    { kind: 'Context', label: 'Context', icon: '📦', category: 'Domain' },
-    { kind: 'Aggregate', label: 'Aggregate', icon: '🧩', category: 'Domain' },
-    { kind: 'Entity', label: 'Entity', icon: '🔑', category: 'Domain' },
-    { kind: 'ValueObject', label: 'Value Object', icon: '💎', category: 'Domain' },
-    { kind: 'Event', label: 'Event', icon: '⚡', category: 'Domain' },
-    { kind: 'Command', label: 'Command', icon: '📨', category: 'Domain' },
-    // Infrastructure
-    { kind: 'Port', label: 'Port', icon: '🔌', category: 'Infrastructure' },
-    { kind: 'Adapter', label: 'Adapter', icon: '🔗', category: 'Infrastructure' },
-    { kind: 'Service', label: 'Service', icon: '🖥️', category: 'Infrastructure' },
+    // Structural
+    { kind: 'Module', label: 'Module', icon: '📦', category: 'Structure' },
+    { kind: 'TypeDef', label: 'Type', icon: '📋', category: 'Structure' },
+    { kind: 'Interface', label: 'Interface', icon: '🔌', category: 'Structure' },
+    { kind: 'Implementation', label: 'Implementation', icon: '🔗', category: 'Structure' },
     // Flow
     { kind: 'Flow', label: 'Flow', icon: '🌊', category: 'Flow' },
     { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'Flow' },
@@ -33,20 +27,15 @@
 
   // Context-aware filtering: show only what makes sense at the current level
   const ALLOWED_CHILDREN: Record<string, NodeKind[]> = {
-    Solution: ['Context', 'Flow', 'Saga', 'Adapter'],
-    Context: ['Aggregate', 'Entity', 'ValueObject', 'Port', 'Service'],
-    Aggregate: ['Event', 'Command'],
+    Solution: ['Module', 'Flow', 'Saga', 'Implementation'],
+    Module: ['TypeDef', 'Interface', 'Flow'],
+    TypeDef: [],
+    Interface: [],
     Flow: ['Step', 'ParallelGateway', 'ErrorBoundary'],
     Saga: ['Step'],
     ParallelGateway: ['Step'],
     Step: [],
-    Port: [],
-    Event: [],
-    Command: [],
-    Adapter: [],
-    Entity: [],
-    ValueObject: [],
-    Service: [],
+    Implementation: [],
     ErrorBoundary: [],
   };
 

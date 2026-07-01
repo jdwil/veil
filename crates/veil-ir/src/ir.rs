@@ -64,29 +64,26 @@ pub struct NodeMetadata {
     pub parent: Option<NodeId>,
     pub annotations: Vec<String>,
     pub properties: Vec<(String, String)>,
+    /// Package-defined subkind (e.g., "Aggregate", "ValueObject", "Context")
+    /// Allows packages to add semantic meaning beyond the primitive NodeKind.
+    pub subkind: Option<String>,
 }
 
 /// The kind/type of an IR node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NodeKind {
     Solution,
-    Context,
-    Aggregate,
-    Entity,
-    ValueObject,
-    Event,
-    Command,
-    Query,
-    Port,
-    PortMethod,
-    Adapter,
+    Module,
+    TypeDef,
+    Interface,
+    InterfaceMethod,
+    Implementation,
     Flow,
     Saga,
     Step,
     ParallelGateway,
     ErrorBoundary,
-    Service,
-    // Step body elements (drillable)
+    // Step body elements
     CallAction,
     EmitAction,
     AssignAction,

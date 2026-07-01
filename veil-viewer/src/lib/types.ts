@@ -18,26 +18,21 @@ export interface NodeMetadata {
   parent: number | null;
   annotations: string[];
   properties: [string, string][];
+  subkind: string | null;
 }
 
 export type NodeKind =
   | 'Solution'
-  | 'Context'
-  | 'Aggregate'
-  | 'Entity'
-  | 'ValueObject'
-  | 'Event'
-  | 'Command'
-  | 'Query'
-  | 'Port'
-  | 'PortMethod'
-  | 'Adapter'
+  | 'Module'
+  | 'TypeDef'
+  | 'Interface'
+  | 'InterfaceMethod'
+  | 'Implementation'
   | 'Flow'
   | 'Saga'
   | 'Step'
   | 'ParallelGateway'
   | 'ErrorBoundary'
-  | 'Service'
   | 'CallAction'
   | 'EmitAction'
   | 'AssignAction'
@@ -62,25 +57,19 @@ export type EdgeKind =
   | 'Implements'
   | 'References';
 
-// Visual config per node kind
+// Visual config per node kind (primitives)
 export const NODE_STYLES: Record<NodeKind, { color: string; icon: string; label: string }> = {
   Solution: { color: '#6366f1', icon: '🏗️', label: 'Solution' },
-  Context: { color: '#8b5cf6', icon: '📦', label: 'Context' },
-  Aggregate: { color: '#ec4899', icon: '🧩', label: 'Aggregate' },
-  Entity: { color: '#f43f5e', icon: '🔑', label: 'Entity' },
-  ValueObject: { color: '#14b8a6', icon: '💎', label: 'Value Object' },
-  Event: { color: '#f59e0b', icon: '⚡', label: 'Event' },
-  Command: { color: '#3b82f6', icon: '📨', label: 'Command' },
-  Query: { color: '#06b6d4', icon: '🔍', label: 'Query' },
-  Port: { color: '#10b981', icon: '🔌', label: 'Port' },
-  PortMethod: { color: '#34d399', icon: '⚙️', label: 'Method' },
-  Adapter: { color: '#a855f7', icon: '🔗', label: 'Adapter' },
+  Module: { color: '#8b5cf6', icon: '📦', label: 'Module' },
+  TypeDef: { color: '#14b8a6', icon: '📋', label: 'Type' },
+  Interface: { color: '#10b981', icon: '🔌', label: 'Interface' },
+  InterfaceMethod: { color: '#34d399', icon: '⚙️', label: 'Method' },
+  Implementation: { color: '#a855f7', icon: '🔗', label: 'Implementation' },
   Flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
   Saga: { color: '#dc2626', icon: '🔄', label: 'Saga' },
   Step: { color: '#64748b', icon: '▶️', label: 'Step' },
   ParallelGateway: { color: '#eab308', icon: '⑃', label: 'Parallel' },
   ErrorBoundary: { color: '#ef4444', icon: '🛡️', label: 'Error Boundary' },
-  Service: { color: '#0ea5e9', icon: '🖥️', label: 'Service' },
   CallAction: { color: '#10b981', icon: '📞', label: 'Call' },
   EmitAction: { color: '#f59e0b', icon: '⚡', label: 'Emit' },
   AssignAction: { color: '#6366f1', icon: '←', label: 'Assign' },
@@ -91,3 +80,26 @@ export const NODE_STYLES: Record<NodeKind, { color: string; icon: string; label:
   RequestAction: { color: '#10b981', icon: '🔌', label: 'Request' },
   GuardAction: { color: '#ef4444', icon: '🛡️', label: 'Guard' },
 };
+
+// DDD subkind overrides — when a node has a subkind from the DDD Kit,
+// these styles take precedence over the primitive NodeKind style.
+export const SUBKIND_STYLES: Record<string, { color: string; icon: string; label: string }> = {
+  Context: { color: '#8b5cf6', icon: '📦', label: 'Context' },
+  Aggregate: { color: '#ec4899', icon: '🧩', label: 'Aggregate' },
+  Entity: { color: '#f43f5e', icon: '🔑', label: 'Entity' },
+  ValueObject: { color: '#14b8a6', icon: '💎', label: 'Value Object' },
+  Event: { color: '#f59e0b', icon: '⚡', label: 'Event' },
+  Command: { color: '#3b82f6', icon: '📨', label: 'Command' },
+  Port: { color: '#10b981', icon: '🔌', label: 'Port' },
+  Adapter: { color: '#a855f7', icon: '🔗', label: 'Adapter' },
+  Saga: { color: '#dc2626', icon: '🔄', label: 'Saga' },
+  Service: { color: '#0ea5e9', icon: '🖥️', label: 'Service' },
+};
+
+/** Get the display style for a node, preferring subkind if available */
+export function getNodeStyle(kind: NodeKind, subkind?: string | null): { color: string; icon: string; label: string } {
+  if (subkind && SUBKIND_STYLES[subkind]) {
+    return SUBKIND_STYLES[subkind];
+  }
+  return NODE_STYLES[kind];
+}

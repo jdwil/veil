@@ -140,6 +140,7 @@
         data: {
           label: child.name,
           kind: child.kind,
+          subkind: child.metadata.subkind,
           hasChildren: childChildren.length > 0,
           annotations: child.metadata.annotations,
           properties: child.metadata.properties,
@@ -236,6 +237,7 @@
         data: {
           label: child.name,
           kind: child.kind,
+          subkind: child.metadata.subkind,
           hasChildren,
           annotations: child.metadata.annotations,
           properties: child.metadata.properties,

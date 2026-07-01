@@ -132,28 +132,31 @@ impl IrBuilder {
     }
 
     fn build_context(&mut self, ctx: &Context, parent_id: NodeId) {
-        let ctx_id = self.graph.add_node(NodeKind::Context, ctx.name.clone(), ctx.span);
+        let ctx_id = self.graph.add_node(NodeKind::Module, ctx.name.clone(), ctx.span);
         self.set_parent(ctx_id, parent_id);
+        self.set_subkind(ctx_id, "Context");
         self.graph.add_edge(parent_id, ctx_id, EdgeKind::Contains);
 
         for item in &ctx.items {
             match item {
                 ContextItem::ValueObject(vo) => {
                     let vo_id = self.graph.add_node(
-                        NodeKind::ValueObject,
+                        NodeKind::TypeDef,
                         vo.name.clone(),
                         vo.span,
                     );
                     self.set_parent(vo_id, ctx_id);
+                    self.set_subkind(vo_id, "ValueObject");
                     self.graph.add_edge(ctx_id, vo_id, EdgeKind::Contains);
                 }
                 ContextItem::Entity(ent) => {
                     let ent_id = self.graph.add_node(
-                        NodeKind::Entity,
+                        NodeKind::TypeDef,
                         ent.name.clone(),
                         ent.span,
                     );
                     self.set_parent(ent_id, ctx_id);
+                    self.set_subkind(ent_id, "Entity");
                     self.graph.add_edge(ctx_id, ent_id, EdgeKind::Contains);
                 }
                 ContextItem::Aggregate(agg) => {
@@ -164,7 +167,7 @@ impl IrBuilder {
                 }
                 ContextItem::Service(svc) => {
                     let svc_id = self.graph.add_node(
-                        NodeKind::Service,
+                        NodeKind::Flow,
                         svc.name.clone(),
                         svc.span,
                     );
@@ -176,8 +179,9 @@ impl IrBuilder {
     }
 
     fn build_aggregate(&mut self, agg: &Aggregate, parent_id: NodeId) {
-        let agg_id = self.graph.add_node(NodeKind::Aggregate, agg.name.clone(), agg.span);
+        let agg_id = self.graph.add_node(NodeKind::TypeDef, agg.name.clone(), agg.span);
         self.set_parent(agg_id, parent_id);
+        self.set_subkind(agg_id, "Aggregate");
         self.graph.add_edge(parent_id, agg_id, EdgeKind::Contains);
 
         // Add annotations as metadata
@@ -189,27 +193,30 @@ impl IrBuilder {
 
         // Events
         for evt in &agg.events {
-            let evt_id = self.graph.add_node(NodeKind::Event, evt.name.clone(), evt.span);
+            let evt_id = self.graph.add_node(NodeKind::TypeDef, evt.name.clone(), evt.span);
             self.set_parent(evt_id, agg_id);
+            self.set_subkind(evt_id, "Event");
             self.graph.add_edge(agg_id, evt_id, EdgeKind::Contains);
         }
 
         // Commands
         for cmd in &agg.commands {
-            let cmd_id = self.graph.add_node(NodeKind::Command, cmd.name.clone(), cmd.span);
+            let cmd_id = self.graph.add_node(NodeKind::TypeDef, cmd.name.clone(), cmd.span);
             self.set_parent(cmd_id, agg_id);
+            self.set_subkind(cmd_id, "Command");
             self.graph.add_edge(agg_id, cmd_id, EdgeKind::Contains);
         }
     }
 
     fn build_port(&mut self, port: &Port, parent_id: NodeId) {
-        let port_id = self.graph.add_node(NodeKind::Port, port.name.clone(), port.span);
+        let port_id = self.graph.add_node(NodeKind::Interface, port.name.clone(), port.span);
         self.set_parent(port_id, parent_id);
+        self.set_subkind(port_id, "Port");
         self.graph.add_edge(parent_id, port_id, EdgeKind::Contains);
 
         for method in &port.methods {
             let method_id = self.graph.add_node(
-                NodeKind::PortMethod,
+                NodeKind::InterfaceMethod,
                 method.name.clone(),
                 method.span,
             );
@@ -400,7 +407,7 @@ impl IrBuilder {
                         self.annotate_adapter_binding(id, &call.target);
                         // Add Calls edge to port if visible
                         if let Some(port_node) = self.graph.nodes.iter().find(|n| {
-                            n.kind == NodeKind::Port && n.name == call.target
+                            n.kind == NodeKind::Interface && n.name == call.target
                         }) {
                             let port_id = port_node.id;
                             self.graph.add_edge(id, port_id, EdgeKind::Calls);
@@ -426,11 +433,17 @@ impl IrBuilder {
         }
     }
 
+    fn set_subkind(&mut self, node_id: NodeId, subkind: &str) {
+        if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
+            node.metadata.subkind = Some(subkind.to_string());
+        }
+    }
+
     /// Find which adapter implements the given port and annotate the node.
     fn annotate_adapter_binding(&mut self, node_id: NodeId, port_name: &str) {
         // Find the port node
         let port_id = self.graph.nodes.iter()
-            .find(|n| n.kind == NodeKind::Port && n.name == port_name)
+            .find(|n| n.kind == NodeKind::Interface && n.name == port_name)
             .map(|n| n.id);
 
         if let Some(port_id) = port_id {
@@ -480,6 +493,7 @@ impl IrBuilder {
     fn build_saga(&mut self, saga: &Saga, parent_id: NodeId) {
         let saga_id = self.graph.add_node(NodeKind::Saga, saga.name.clone(), saga.span);
         self.set_parent(saga_id, parent_id);
+        self.set_subkind(saga_id, "Saga");
         self.graph.add_edge(parent_id, saga_id, EdgeKind::Contains);
 
         // Add annotations
@@ -530,7 +544,7 @@ impl IrBuilder {
 
     fn build_adapter(&mut self, adapter: &Adapter, parent_id: NodeId) {
         let adapter_id = self.graph.add_node(
-            NodeKind::Adapter,
+            NodeKind::Implementation,
             adapter.name.clone(),
             adapter.span,
         );
@@ -540,7 +554,7 @@ impl IrBuilder {
         // Find port node and add implements edge
         let port_name = &adapter.target_port;
         if let Some(port_node) = self.graph.nodes.iter().find(|n| {
-            n.kind == NodeKind::Port && n.name == *port_name
+            n.kind == NodeKind::Interface && n.name == *port_name
         }) {
             let port_id = port_node.id;
             self.graph.add_edge(adapter_id, port_id, EdgeKind::Implements);

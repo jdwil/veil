@@ -1,11 +1,12 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
-  import { NODE_STYLES, type NodeKind } from '$lib/types';
+  import { NODE_STYLES, getNodeStyle, type NodeKind } from '$lib/types';
 
   let { data } = $props();
 
   const kind: NodeKind = data.kind;
-  const style = NODE_STYLES[kind];
+  const subkind: string | null = data.subkind ?? null;
+  const style = getNodeStyle(kind, subkind);
   const hasChildren = data.hasChildren ?? false;
   const annotations: string[] = data.annotations ?? [];
   const refs: string[] = data.refs ?? [];
@@ -112,7 +113,7 @@
         <div class="inline-children">
           {#each inlineChildren as child}
             <div class="inline-child">
-              <span class="child-icon">{NODE_STYLES[child.kind as NodeKind]?.icon ?? '▶️'}</span>
+              <span class="child-icon">{getNodeStyle(child.kind as NodeKind, null)?.icon ?? '▶️'}</span>
               <span class="child-name">{child.name}</span>
             </div>
           {/each}

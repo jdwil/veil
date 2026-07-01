@@ -73,7 +73,7 @@ pub fn build_composition_ir(
     for pkg in resolved_packages {
         let display_name = pkg.alias.as_deref().unwrap_or(&pkg.name);
         let pkg_node_id = graph.add_node(
-            NodeKind::Context, // Reuse Context as "package group"
+            NodeKind::Module, // Reuse Context as "package group"
             display_name.to_string(),
             Span::new(0, 0),
         );
