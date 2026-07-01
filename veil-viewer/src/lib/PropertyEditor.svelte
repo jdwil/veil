@@ -1,5 +1,6 @@
 <script lang="ts">
   import { NODE_STYLES, type NodeKind } from '$lib/types';
+  import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
 
   let { node, onUpdate, onClose }: {
     node: { id: string; data: any };
@@ -11,9 +12,10 @@
   let kind: NodeKind = node.data.kind;
   let style = NODE_STYLES[kind];
 
-  // Annotations/tags
-  let annotations = $state<string[]>([...(node.data.annotations ?? [])]);
-  let newAnnotation = $state('');
+  // Annotations as structured data: { name, args: Record<string, string> }
+  let activeAnnotations = $state<Record<string, Record<string, string>>>(
+    parseAnnotations(node.data.annotations ?? [])
+  );
 
   // Fields (for domain types)
   let fields = $state<{ name: string; type: string }[]>(
@@ -22,84 +24,111 @@
 
   // Adapter-specific
   let targetPort = $state(node.data.targetPort ?? '');
-  let envVars = $state<string[]>([...(node.data.envVars ?? [])]);
-  let newEnvVar = $state('');
 
   // Flow-specific
   let inputs = $state<{ name: string; type: string }[]>(
     [...(node.data.inputs ?? [])]
   );
 
+  // Available annotations for this node kind
+  const availableAnnotations: AnnotationDef[] = ANNOTATION_SCHEMA[kind] ?? [];
+
   // Reset state when node changes
   $effect(() => {
     name = node.data.label ?? '';
-    annotations = [...(node.data.annotations ?? [])];
+    activeAnnotations = parseAnnotations(node.data.annotations ?? []);
     fields = [...(node.data.fields ?? [])];
     targetPort = node.data.targetPort ?? '';
-    envVars = [...(node.data.envVars ?? [])];
     inputs = [...(node.data.inputs ?? [])];
   });
+
+  function parseAnnotations(anns: string[]): Record<string, Record<string, string>> {
+    const result: Record<string, Record<string, string>> = {};
+    for (const ann of anns) {
+      const clean = ann.startsWith('@') ? ann.slice(1) : ann;
+      const parenIdx = clean.indexOf('(');
+      if (parenIdx >= 0) {
+        const annName = clean.slice(0, parenIdx);
+        const argsStr = clean.slice(parenIdx + 1, -1);
+        const args: Record<string, string> = {};
+        for (const part of argsStr.split(',')) {
+          const trimmed = part.trim();
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx >= 0) {
+            args[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim().replace(/"/g, '');
+          } else if (trimmed) {
+            // Positional arg — use first param name as key
+            const def = availableAnnotations.find(a => a.name === annName);
+            const paramName = def?.params[0]?.name ?? 'value';
+            args[paramName] = trimmed;
+          }
+        }
+        result[annName] = args;
+      } else {
+        result[clean] = {};
+      }
+    }
+    return result;
+  }
+
+  function serializeAnnotations(): string[] {
+    const result: string[] = [];
+    for (const [annName, args] of Object.entries(activeAnnotations)) {
+      const entries = Object.entries(args).filter(([_, v]) => v !== '');
+      if (entries.length === 0) {
+        result.push(`@${annName}`);
+      } else if (entries.length === 1 && !entries[0][1].includes(' ')) {
+        // Single value — check if it needs key=value or just value
+        const def = availableAnnotations.find(a => a.name === annName);
+        if (def?.params.length === 1) {
+          result.push(`@${annName}(${entries[0][1]})`);
+        } else {
+          result.push(`@${annName}(${entries[0][0]}="${entries[0][1]}")`);
+        }
+      } else {
+        const parts = entries.map(([k, v]) => `${k}="${v}"`).join(', ');
+        result.push(`@${annName}(${parts})`);
+      }
+    }
+    return result;
+  }
+
+  function toggleAnnotation(annName: string, checked: boolean) {
+    if (checked) {
+      activeAnnotations[annName] = {};
+    } else {
+      delete activeAnnotations[annName];
+    }
+    activeAnnotations = { ...activeAnnotations };
+    save();
+  }
+
+  function updateAnnotationParam(annName: string, paramName: string, value: string) {
+    if (activeAnnotations[annName]) {
+      activeAnnotations[annName][paramName] = value;
+      activeAnnotations = { ...activeAnnotations };
+      save();
+    }
+  }
 
   function save() {
     onUpdate(node.id, {
       ...node.data,
       label: name,
-      annotations,
+      annotations: serializeAnnotations(),
       fields: fields.length > 0 ? fields : undefined,
       targetPort: targetPort || undefined,
-      envVars: envVars.length > 0 ? envVars : undefined,
       inputs: inputs.length > 0 ? inputs : undefined,
     });
   }
 
-  function addAnnotation() {
-    if (newAnnotation.trim()) {
-      annotations = [...annotations, `@${newAnnotation.trim()}`];
-      newAnnotation = '';
-      save();
-    }
-  }
-
-  function removeAnnotation(index: number) {
-    annotations = annotations.filter((_, i) => i !== index);
-    save();
-  }
-
-  function addField() {
-    fields = [...fields, { name: '', type: 'Str' }];
-  }
-
-  function removeField(index: number) {
-    fields = fields.filter((_, i) => i !== index);
-    save();
-  }
-
-  function addInput() {
-    inputs = [...inputs, { name: '', type: 'Str' }];
-  }
-
-  function removeInput(index: number) {
-    inputs = inputs.filter((_, i) => i !== index);
-    save();
-  }
-
-  function addEnvVar() {
-    if (newEnvVar.trim()) {
-      envVars = [...envVars, newEnvVar.trim()];
-      newEnvVar = '';
-      save();
-    }
-  }
-
-  function removeEnvVar(index: number) {
-    envVars = envVars.filter((_, i) => i !== index);
-    save();
-  }
+  function addField() { fields = [...fields, { name: '', type: 'Str' }]; }
+  function removeField(index: number) { fields = fields.filter((_, i) => i !== index); save(); }
+  function addInput() { inputs = [...inputs, { name: '', type: 'Str' }]; }
+  function removeInput(index: number) { inputs = inputs.filter((_, i) => i !== index); save(); }
 
   const TYPE_OPTIONS = ['Str', 'Int', 'F64', 'Bool', 'UUID', 'DateTime', 'Bytes', 'Email', 'Phone', 'Customer', 'Subscription'];
-
   const showFields = ['Aggregate', 'Entity', 'ValueObject', 'Event', 'Command', 'Port'].includes(kind);
-  const showAnnotations = ['Aggregate', 'Flow', 'Step', 'Adapter', 'Context'].includes(kind);
   const showAdapter = kind === 'Adapter';
   const showFlowInputs = kind === 'Flow';
 </script>
@@ -126,21 +155,6 @@
         <span class="label-text">Implements Port</span>
         <input type="text" class="pe-input" bind:value={targetPort} oninput={save} placeholder="PortName" />
       </label>
-
-      <div class="pe-section">
-        <div class="section-header">
-          <span class="label-text">Env Vars</span>
-        </div>
-        <div class="inline-add">
-          <input type="text" class="pe-input small" bind:value={newEnvVar} placeholder="VAR_NAME" onkeydown={(e) => e.key === 'Enter' && addEnvVar()} />
-          <button class="add-btn" onclick={addEnvVar}>+</button>
-        </div>
-        <div class="tag-list">
-          {#each envVars as v, i}
-            <span class="tag">{v} <button class="tag-remove" onclick={() => removeEnvVar(i)}>✕</button></span>
-          {/each}
-        </div>
-      </div>
     {/if}
 
     <!-- Flow: inputs -->
@@ -164,19 +178,53 @@
       </div>
     {/if}
 
-    <!-- Annotations/tags -->
-    {#if showAnnotations}
+    <!-- Annotations as checkboxes -->
+    {#if availableAnnotations.length > 0}
       <div class="pe-section">
-        <div class="section-header">
-          <span class="label-text">Annotations</span>
-        </div>
-        <div class="inline-add">
-          <input type="text" class="pe-input small" bind:value={newAnnotation} placeholder="async" onkeydown={(e) => e.key === 'Enter' && addAnnotation()} />
-          <button class="add-btn" onclick={addAnnotation}>+</button>
-        </div>
-        <div class="tag-list">
-          {#each annotations as ann, i}
-            <span class="tag">{ann} <button class="tag-remove" onclick={() => removeAnnotation(i)}>✕</button></span>
+        <span class="label-text">Annotations</span>
+        <div class="annotations-list">
+          {#each availableAnnotations as annDef}
+            {@const isActive = annDef.name in activeAnnotations}
+            <div class="annotation-item">
+              <label class="annotation-checkbox">
+                <input
+                  type="checkbox"
+                  checked={isActive}
+                  onchange={(e) => toggleAnnotation(annDef.name, e.currentTarget.checked)}
+                />
+                <span class="ann-name">@{annDef.name}</span>
+                <span class="ann-desc">{annDef.description}</span>
+              </label>
+              {#if isActive && annDef.params.length > 0}
+                <div class="annotation-params">
+                  {#each annDef.params as param}
+                    <div class="param-row">
+                      <span class="param-label">{param.name}:</span>
+                      {#if param.type === 'select' && param.options}
+                        <select
+                          class="pe-select"
+                          value={activeAnnotations[annDef.name]?.[param.name] ?? ''}
+                          onchange={(e) => updateAnnotationParam(annDef.name, param.name, e.currentTarget.value)}
+                        >
+                          <option value="">—</option>
+                          {#each param.options as opt}
+                            <option value={opt}>{opt}</option>
+                          {/each}
+                        </select>
+                      {:else}
+                        <input
+                          type={param.type === 'number' ? 'number' : 'text'}
+                          class="pe-input small"
+                          value={activeAnnotations[annDef.name]?.[param.name] ?? ''}
+                          placeholder={param.placeholder ?? ''}
+                          oninput={(e) => updateAnnotationParam(annDef.name, param.name, e.currentTarget.value)}
+                        />
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           {/each}
         </div>
       </div>
@@ -284,16 +332,67 @@
   }
   .remove-btn:hover { color: #f87171; background: rgba(248,113,113,0.1); }
 
-  .tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
-  .tag {
-    display: flex; align-items: center; gap: 4px;
-    font-size: 10px; padding: 3px 8px; border-radius: 6px;
-    background: rgba(99,102,241,0.12); color: #a5b4fc;
-    border: 1px solid rgba(99,102,241,0.25);
+  .annotations-list { display: flex; flex-direction: column; gap: 2px; }
+
+  .annotation-item {
+    border-radius: 6px;
+    overflow: hidden;
   }
-  .tag-remove {
-    background: none; border: none; color: #64748b; font-size: 9px;
-    cursor: pointer; padding: 0 2px;
+
+  .annotation-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
   }
-  .tag-remove:hover { color: #f87171; }
+
+  .annotation-checkbox:hover { background: rgba(99,102,241,0.06); }
+
+  .annotation-checkbox input[type="checkbox"] {
+    accent-color: #6366f1;
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+  }
+
+  .ann-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: #a5b4fc;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .ann-desc {
+    font-size: 9px;
+    color: #475569;
+    margin-left: auto;
+  }
+
+  .annotation-params {
+    padding: 6px 8px 8px 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    animation: slideDown 0.15s ease-out;
+  }
+
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .param-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .param-label {
+    font-size: 10px;
+    color: #64748b;
+    min-width: 50px;
+  }
 </style>
