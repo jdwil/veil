@@ -218,27 +218,43 @@
     const allNodes: Node[] = [];
     const allEdges: Edge[] = [];
 
-    // Calculate context sizes based on number of children
     const CTX_PADDING = 30;
     const NODE_W = 200;
-    const NODE_H = 80;
+    const NODE_H = 90;
+    const NODE_GAP = 20;
     const COLS = 3;
-    const CTX_GAP = 100;
+    const CTX_GAP = 120;
+    const SAGA_SECTION_GAP = 30;
+
+    let maxCtxHeight = 0;
 
     contexts.forEach((ctx, i) => {
       const ctxChildren = getChildren(graph, ctx.id);
-      const sagaStepsInCtx = sagas.flatMap(saga =>
-        getChildren(graph, saga.id).filter(step => {
-          const p = step.metadata.properties.find(([k]) => k === 'ctx');
-          return p && p[1] === ctx.name;
-        })
-      );
-      const totalItems = ctxChildren.length + sagaStepsInCtx.length;
-      const rows = Math.ceil(totalItems / COLS);
-      const ctxW = COLS * (NODE_W + 20) + CTX_PADDING * 2;
-      const ctxH = rows * (NODE_H + 20) + 80; // 80 for header
 
-      const x = i * (ctxW + CTX_GAP);
+      // Find saga steps belonging to this context
+      const sagaStepsInCtx: { step: IrNode; sagaName: string }[] = [];
+      for (const saga of sagas) {
+        for (const step of getChildren(graph, saga.id)) {
+          const p = step.metadata.properties.find(([k]) => k === 'ctx');
+          if (p && p[1] === ctx.name) {
+            sagaStepsInCtx.push({ step, sagaName: saga.name });
+          }
+        }
+      }
+
+      // Calculate layout
+      const domainRows = Math.ceil(ctxChildren.length / COLS);
+      const sagaRows = Math.ceil(sagaStepsInCtx.length / COLS);
+      const domainHeight = domainRows * (NODE_H + NODE_GAP);
+      const sagaHeight = sagaRows > 0 ? SAGA_SECTION_GAP + sagaRows * (NODE_H + NODE_GAP) : 0;
+      const ctxW = Math.max(COLS, Math.max(ctxChildren.length, sagaStepsInCtx.length)) * (NODE_W + NODE_GAP) + CTX_PADDING * 2;
+      const actualCols = Math.min(COLS, Math.max(ctxChildren.length, sagaStepsInCtx.length, 1));
+      const ctxContentW = actualCols * (NODE_W + NODE_GAP) + CTX_PADDING * 2;
+      const ctxH = 70 + domainHeight + sagaHeight + CTX_PADDING;
+
+      if (ctxH > maxCtxHeight) maxCtxHeight = ctxH;
+
+      const x = i * (ctxContentW + CTX_GAP);
 
       // Context group node
       allNodes.push({
@@ -253,17 +269,20 @@
           properties: [],
           isGroup: true,
         },
-        style: `width: ${ctxW}px; height: ${ctxH}px;`,
+        style: `width: ${ctxContentW}px; height: ${ctxH}px;`,
       });
 
-      // Direct children of context (aggregates, ports, services) — NO grandchildren
+      // Domain children (aggregates, ports, services)
       ctxChildren.forEach((child, j) => {
         const col = j % COLS;
         const row = Math.floor(j / COLS);
         allNodes.push({
           id: String(child.id),
           type: 'veil',
-          position: { x: CTX_PADDING + col * (NODE_W + 20), y: 60 + row * (NODE_H + 20) },
+          position: {
+            x: CTX_PADDING + col * (NODE_W + NODE_GAP),
+            y: 60 + row * (NODE_H + NODE_GAP),
+          },
           parentId: String(ctx.id),
           extent: 'parent' as const,
           data: {
@@ -276,18 +295,20 @@
         });
       });
 
-      // Saga steps that belong to this context
-      sagaStepsInCtx.forEach((step, j) => {
-        const idx = ctxChildren.length + j;
-        const col = idx % COLS;
-        const row = Math.floor(idx / COLS);
-        const saga = sagas.find(s => getChildren(graph, s.id).some(st => st.id === step.id));
+      // Saga steps — separate section below domain nodes
+      const sagaYStart = 60 + domainHeight + SAGA_SECTION_GAP;
+      sagaStepsInCtx.forEach(({ step, sagaName }, j) => {
+        const col = j % COLS;
+        const row = Math.floor(j / COLS);
         const stepId = `saga-step-${step.id}`;
 
         allNodes.push({
           id: stepId,
           type: 'veil',
-          position: { x: CTX_PADDING + col * (NODE_W + 20), y: 60 + row * (NODE_H + 20) },
+          position: {
+            x: CTX_PADDING + col * (NODE_W + NODE_GAP),
+            y: sagaYStart + row * (NODE_H + NODE_GAP),
+          },
           parentId: String(ctx.id),
           extent: 'parent' as const,
           data: {
@@ -296,13 +317,13 @@
             hasChildren: getChildren(graph, step.id).length > 0,
             annotations: step.metadata.annotations,
             properties: step.metadata.properties,
-            sagaName: saga?.name,
+            sagaName,
           },
         });
       });
     });
 
-    // Saga sequence edges across contexts
+    // Saga sequence edges
     for (const saga of sagas) {
       const sagaSteps = getChildren(graph, saga.id);
       let prevStepId: string | null = null;
@@ -325,12 +346,11 @@
 
     // Adapters below contexts
     const others = children.filter(c => c.kind !== 'Context' && c.kind !== 'Saga');
-    const ctxTotalWidth = contexts.length * 800;
     others.forEach((child, i) => {
       allNodes.push({
         id: String(child.id),
         type: 'veil',
-        position: { x: i * 250, y: 600 },
+        position: { x: i * 250, y: maxCtxHeight + 60 },
         data: {
           label: child.name,
           kind: child.kind,
@@ -341,7 +361,7 @@
       });
     });
 
-    // Implements edges (adapter -> port)
+    // Implements edges
     for (const edge of graph.edges) {
       if (edge.kind === 'Implements') {
         const sourceNode = allNodes.find(n => n.id === String(edge.from));
