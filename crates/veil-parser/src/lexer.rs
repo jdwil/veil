@@ -112,8 +112,7 @@ pub fn lex(source: &str) -> Vec<Token> {
     Lexer::new(source).tokenize()
 }
 
-struct Lexer<'a> {
-    source: &'a str,
+struct Lexer {
     chars: Vec<char>,
     pos: usize,
     indent_stack: Vec<usize>,
@@ -121,10 +120,9 @@ struct Lexer<'a> {
     at_line_start: bool,
 }
 
-impl<'a> Lexer<'a> {
-    fn new(source: &'a str) -> Self {
+impl Lexer {
+    fn new(source: &str) -> Self {
         Self {
-            source,
             chars: source.chars().collect(),
             pos: 0,
             indent_stack: vec![0],
@@ -430,19 +428,6 @@ fn keyword_lookup(text: &str) -> TokenKind {
 
 /// Check if a word is a construct keyword (used during annotation arg parsing
 /// to avoid consuming keywords as annotation arguments).
-fn is_construct_keyword(word: &str) -> bool {
-    matches!(
-        word,
-        "sol" | "ctx" | "agg" | "ent" | "val" | "evt" | "cmd" | "qry"
-            | "port" | "adapter" | "flow" | "svc" | "pipe" | "lang"
-            | "pkg" | "use" | "expose" | "node" | "saga"
-            | "step" | "par" | "alt" | "loop" | "err" | "match"
-            | "emit" | "call" | "ret" | "input" | "fallback" | "impl"
-            | "for" | "boundary" | "as" | "desc" | "output" | "constraints"
-            | "fn" | "state" | "root" | "compensate" | "contexts"
-            | "dispatch" | "invoke" | "request" | "guard"
-    )
-}
 
 #[cfg(test)]
 #[path = "lexer_tests.rs"]

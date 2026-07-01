@@ -176,10 +176,6 @@ impl<'a> Parser<'a> {
         self.peek_kind() == kind
     }
 
-    fn at_any(&self, kinds: &[TokenKind]) -> bool {
-        kinds.contains(self.peek_kind())
-    }
-
     fn advance(&mut self) -> Token {
         let tok = self.tokens[self.pos].clone();
         if self.pos < self.tokens.len() - 1 {
@@ -633,8 +629,7 @@ impl<'a> Parser<'a> {
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
                     }
                     TokenKind::Ctx => {
-                        let mut ctx = self.parse_context()?;
-                        // TODO: attach prefix_annotations to context if needed
+                        let ctx = self.parse_context()?;
                         let _ = prefix_annotations;
                         items.push(TopLevelItem::Context(ctx));
                     }
@@ -1254,10 +1249,6 @@ impl<'a> Parser<'a> {
             steps,
             return_expr,
         })
-    }
-
-    fn parse_service(&mut self) -> Result<Service, ParseError> {
-        self.parse_domain_service()
     }
 
     fn parse_adapter(&mut self) -> Result<Adapter, ParseError> {

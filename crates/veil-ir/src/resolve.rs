@@ -1,7 +1,7 @@
 //! Package resolution — finds and parses imported packages,
 //! filters IR to only expose what packages declare.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::ast::*;
 use crate::ir::*;
