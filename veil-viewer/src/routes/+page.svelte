@@ -239,6 +239,7 @@
     // Use LR layout for flows (horizontal swimlane feel), TB for everything else
     const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
     const direction = parentNode?.kind === 'Flow' || parentNode?.kind === 'ParallelGateway'
+      || parentNode?.kind === 'Saga'
       ? 'LR' : 'TB';
 
     // Layout

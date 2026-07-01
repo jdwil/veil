@@ -25,6 +25,7 @@
     { kind: 'Service', label: 'Service', icon: '🖥️', category: 'Infrastructure' },
     // Flow
     { kind: 'Flow', label: 'Flow', icon: '🌊', category: 'Flow' },
+    { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'Flow' },
     { kind: 'Step', label: 'Step', icon: '▶️', category: 'Flow' },
     { kind: 'ParallelGateway', label: 'Parallel', icon: '⑃', category: 'Flow' },
     { kind: 'ErrorBoundary', label: 'Error Boundary', icon: '🛡️', category: 'Flow' },
@@ -32,10 +33,11 @@
 
   // Context-aware filtering: show only what makes sense at the current level
   const ALLOWED_CHILDREN: Record<string, NodeKind[]> = {
-    Solution: ['Context', 'Flow', 'Adapter'],
+    Solution: ['Context', 'Flow', 'Saga', 'Adapter'],
     Context: ['Aggregate', 'Entity', 'ValueObject', 'Port', 'Service'],
     Aggregate: ['Event', 'Command'],
     Flow: ['Step', 'ParallelGateway', 'ErrorBoundary'],
+    Saga: ['Step'],
     ParallelGateway: ['Step'],
     Step: [],
     Port: [],

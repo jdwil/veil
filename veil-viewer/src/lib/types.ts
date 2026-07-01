@@ -33,6 +33,7 @@ export type NodeKind =
   | 'PortMethod'
   | 'Adapter'
   | 'Flow'
+  | 'Saga'
   | 'Step'
   | 'ParallelGateway'
   | 'ErrorBoundary'
@@ -71,6 +72,7 @@ export const NODE_STYLES: Record<NodeKind, { color: string; icon: string; label:
   PortMethod: { color: '#34d399', icon: '⚙️', label: 'Method' },
   Adapter: { color: '#a855f7', icon: '🔗', label: 'Adapter' },
   Flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
+  Saga: { color: '#dc2626', icon: '🔄', label: 'Saga' },
   Step: { color: '#64748b', icon: '▶️', label: 'Step' },
   ParallelGateway: { color: '#eab308', icon: '⑃', label: 'Parallel' },
   ErrorBoundary: { color: '#ef4444', icon: '🛡️', label: 'Error Boundary' },

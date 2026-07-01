@@ -129,6 +129,22 @@ export const ANNOTATION_SCHEMA: Partial<Record<NodeKind, AnnotationDef[]>> = {
       ],
     },
   ],
+  Saga: [
+    {
+      name: 'trace',
+      description: 'Add distributed tracing',
+      params: [
+        { name: 'method', type: 'select', options: ['otel', 'xray', 'datadog', 'jaeger'], required: false },
+      ],
+    },
+    {
+      name: 'timeout',
+      description: 'Overall saga timeout',
+      params: [
+        { name: 'ms', type: 'number', placeholder: '60000', required: true },
+      ],
+    },
+  ],
   ErrorBoundary: [
     {
       name: 'retry',

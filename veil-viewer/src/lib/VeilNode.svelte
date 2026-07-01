@@ -14,6 +14,11 @@
   const inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = data.inlineChildren ?? [];
   let detailsOpen = $state(false);
   let childrenOpen = $state(true);
+
+  // Extract context association for saga steps
+  const ctxProp = properties.find(([k]) => k === 'ctx');
+  const contextName = ctxProp ? ctxProp[1] : null;
+  const hasCompensate = annotations.includes('has_compensate');
 </script>
 
 <div
@@ -37,10 +42,20 @@
     <div class="node-header">
       <span class="node-icon">{style.icon}</span>
       <span class="node-kind">{style.label}</span>
+      {#if hasCompensate}
+        <span class="compensate-badge" title="Has compensation (rollback)">↩</span>
+      {/if}
       {#if hasChildren && !isGhost}
         <span class="expand-indicator">⤵</span>
       {/if}
     </div>
+
+    {#if contextName}
+      <div class="context-badge">
+        <span class="ctx-icon">📦</span>
+        <span class="ctx-name">{contextName}</span>
+      </div>
+    {/if}
 
     <div class="node-name">{data.label}</div>
 
@@ -219,6 +234,35 @@
     color: #f1f5f9;
     word-break: break-word;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+
+  .context-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    margin-bottom: 4px;
+    border-radius: 4px;
+    background: rgba(139, 92, 246, 0.12);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    width: fit-content;
+  }
+
+  .ctx-icon {
+    font-size: 10px;
+  }
+
+  .ctx-name {
+    font-size: 10px;
+    font-weight: 600;
+    color: #c4b5fd;
+  }
+
+  .compensate-badge {
+    font-size: 12px;
+    color: #10b981;
+    margin-left: auto;
+    title: "Has compensation";
   }
 
   .node-badges {
