@@ -49,10 +49,15 @@
   });
 
   // Get the currently selected node for property editing
+  // Don't show property editor for code-level action nodes
+  const NON_EDITABLE_KINDS = ['CallAction', 'EmitAction', 'AssignAction', 'MatchDecision', 'MatchArm'];
+
   let selectedNode = $derived.by(() => {
     const id = $selectedNodeId;
     if (!id) return null;
-    return nodes.find(n => n.id === id) ?? null;
+    const node = nodes.find(n => n.id === id) ?? null;
+    if (node && NON_EDITABLE_KINDS.includes(node.data.kind)) return null;
+    return node;
   });
 
   function updateNodeData(id: string, data: any) {
