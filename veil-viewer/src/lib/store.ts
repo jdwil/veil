@@ -7,6 +7,7 @@ export const currentParent = writable<number | null>(null);
 export const breadcrumbs = writable<{ id: number | null; name: string }[]>([]);
 export const loading = writable(true);
 export const error = writable<string | null>(null);
+export const selectedNodeId = writable<string | null>(null);
 
 const API_URL = 'http://localhost:3001/api/ir';
 const SOURCE_URL = 'http://localhost:3001/api/source';

@@ -6,6 +6,7 @@
     Background,
     BackgroundVariant,
     MiniMap,
+    useSvelteFlow,
     type Node,
     type Edge,
     type NodeTypes,
@@ -13,6 +14,7 @@
   import '@xyflow/svelte/dist/style.css';
 
   import VeilNode from '$lib/VeilNode.svelte';
+  import Palette from '$lib/Palette.svelte';
   import { layoutNodes } from '$lib/layout';
   import {
     irGraph,
@@ -24,8 +26,9 @@
     drillDown,
     navigateTo,
     getChildren,
+    selectedNodeId,
   } from '$lib/store';
-  import { NODE_STYLES, type IrNode, type IrGraph } from '$lib/types';
+  import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
 
   const nodeTypes: NodeTypes = {
     veil: VeilNode as any,
@@ -33,6 +36,58 @@
 
   let nodes = $state<Node[]>([]);
   let edges = $state<Edge[]>([]);
+  let nextNodeId = $state(1000);
+
+  // Derive the current context kind for palette filtering
+  let currentContextKind = $derived.by(() => {
+    const graph = $irGraph;
+    const parent = $currentParent;
+    if (!graph || !parent) return 'Solution';
+    const parentNode = graph.nodes.find(n => n.id === parent);
+    return parentNode?.kind ?? 'Solution';
+  });
+
+  function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    if (!event.dataTransfer) return;
+
+    const data = event.dataTransfer.getData('application/veil-node');
+    if (!data) return;
+
+    const item = JSON.parse(data) as { kind: NodeKind; label: string; icon: string };
+
+    // Create new node at drop position
+    const id = String(nextNodeId++);
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const position = {
+      x: event.clientX - rect.left - 100,
+      y: event.clientY - rect.top - 40,
+    };
+
+    const newNode: Node = {
+      id,
+      type: 'veil',
+      position,
+      data: {
+        label: `New ${item.label}`,
+        kind: item.kind,
+        hasChildren: false,
+        annotations: [],
+        properties: [],
+        inlineChildren: [],
+        refs: [],
+      },
+    };
+
+    nodes = [...nodes, newNode];
+  }
+
+  function handleDragOver(event: DragEvent) {
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
 
   onMount(() => {
     fetchIr();
@@ -208,15 +263,46 @@
     return refs;
   }
 
-  function handleNodeClick({ node }: { node: Node; event: MouseEvent | TouchEvent }) {
+  function handleNodeClick({ node, event }: { node: Node; event: MouseEvent | TouchEvent }) {
     const graph = $irGraph;
     if (!graph) return;
     const irNode = graph.nodes.find(n => n.id === Number(node.id));
     if (!irNode) return;
-    const children = getChildren(graph, irNode.id);
-    if (children.length > 0) {
-      drillDown(irNode);
+
+    // Select the node
+    selectedNodeId.set(node.id);
+
+    // Double-click to drill down
+    if (event instanceof MouseEvent && event.detail === 2) {
+      const children = getChildren(graph, irNode.id);
+      if (children.length > 0) {
+        drillDown(irNode);
+        selectedNodeId.set(null);
+      }
     }
+  }
+
+  function handleKeyDown(event: KeyboardEvent) {
+    if ((event.key === 'Delete' || event.key === 'Backspace') && $selectedNodeId) {
+      nodes = nodes.filter(n => n.id !== $selectedNodeId);
+      edges = edges.filter(e => e.source !== $selectedNodeId && e.target !== $selectedNodeId);
+      selectedNodeId.set(null);
+    }
+  }
+
+  function handleConnect(connection: { source: string; target: string }) {
+    const newEdge: Edge = {
+      id: `e-${connection.source}-${connection.target}-${Date.now()}`,
+      source: connection.source,
+      target: connection.target,
+      animated: true,
+      style: 'stroke: #6366f1; stroke-width: 2;',
+    };
+    edges = [...edges, newEdge];
+  }
+
+  function handlePaneClick() {
+    selectedNodeId.set(null);
   }
 </script>
 
@@ -254,19 +340,24 @@
       <button class="retry-btn" onclick={() => fetchIr()}>Retry</button>
     </div>
   {:else}
-    <div class="graph-container">
-      <SvelteFlow
-        {nodes}
-        {edges}
-        {nodeTypes}
-        fitView
-        onnodeclick={handleNodeClick}
-        colorMode="dark"
-      >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-        <Controls />
-        <MiniMap />
-      </SvelteFlow>
+    <div class="main-layout">
+      <Palette contextKind={currentContextKind} />
+      <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+        <SvelteFlow
+          {nodes}
+          {edges}
+          {nodeTypes}
+          fitView
+          onnodeclick={handleNodeClick}
+          onconnect={handleConnect}
+          onpaneclick={handlePaneClick}
+          colorMode="dark"
+        >
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+          <Controls />
+          <MiniMap />
+        </SvelteFlow>
+      </div>
     </div>
   {/if}
 </div>
@@ -327,6 +418,13 @@
 
   .graph-container {
     flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .main-layout {
+    flex: 1;
+    display: flex;
     min-height: 0;
   }
 
