@@ -92,6 +92,10 @@ pub enum NodeKind {
     AssignAction,
     MatchDecision,
     MatchArm,
+    DispatchAction,
+    InvokeAction,
+    RequestAction,
+    GuardAction,
 }
 
 /// An edge in the IR graph.

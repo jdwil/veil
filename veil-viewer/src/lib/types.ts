@@ -42,7 +42,11 @@ export type NodeKind =
   | 'EmitAction'
   | 'AssignAction'
   | 'MatchDecision'
-  | 'MatchArm';
+  | 'MatchArm'
+  | 'DispatchAction'
+  | 'InvokeAction'
+  | 'RequestAction'
+  | 'GuardAction';
 
 export interface IrEdge {
   from: number;
@@ -82,4 +86,8 @@ export const NODE_STYLES: Record<NodeKind, { color: string; icon: string; label:
   AssignAction: { color: '#6366f1', icon: '←', label: 'Assign' },
   MatchDecision: { color: '#8b5cf6', icon: '◆', label: 'Match' },
   MatchArm: { color: '#64748b', icon: '→', label: 'Arm' },
+  DispatchAction: { color: '#f59e0b', icon: '📡', label: 'Dispatch' },
+  InvokeAction: { color: '#3b82f6', icon: '⚙️', label: 'Invoke' },
+  RequestAction: { color: '#10b981', icon: '🔌', label: 'Request' },
+  GuardAction: { color: '#ef4444', icon: '🛡️', label: 'Guard' },
 };

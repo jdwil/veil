@@ -56,6 +56,39 @@ fn expr_to_display(expr: &Expr) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("emit {}{{{}}}", emit.event_name, fields)
         }
+        Expr::Dispatch(d) => {
+            let fields = d.fields.iter().map(|(k, v)| {
+                let vs = expr_to_display(v);
+                if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
+            }).collect::<Vec<_>>().join(", ");
+            format!("dispatch {}{{{}}}", d.event_name, fields)
+        }
+        Expr::Invoke(inv) => {
+            let params = inv.params.iter().map(|(k, v)| {
+                format!("{}: {}", k, expr_to_display(v))
+            }).collect::<Vec<_>>().join(", ");
+            if inv.command.is_empty() {
+                format!("invoke {}{{{}}}", inv.target, params)
+            } else {
+                format!("invoke {}.{}{{{}}}", inv.target, inv.command, params)
+            }
+        }
+        Expr::Request(req) => {
+            let args = req.args.iter().map(|a| expr_to_display(a)).collect::<Vec<_>>().join(", ");
+            if req.method.is_empty() {
+                format!("request {}({})", req.port, args)
+            } else {
+                format!("request {}.{}({})", req.port, req.method, args)
+            }
+        }
+        Expr::Guard(g) => {
+            let cond = expr_to_display(&g.condition);
+            if let Some(msg) = &g.message {
+                format!("guard {}, \"{}\"", cond, msg)
+            } else {
+                format!("guard {}", cond)
+            }
+        }
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_display(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
@@ -284,17 +317,69 @@ impl IrBuilder {
                     let id = self.graph.add_node(NodeKind::EmitAction, label, emit.span);
                     self.set_parent(id, step_id);
                     self.graph.add_edge(step_id, id, EdgeKind::Contains);
-                    // Add fields as properties
                     let fields_str = emit.fields.iter().map(|(name, val)| {
                         let val_str = expr_to_display(val);
-                        if name == &val_str {
-                            name.clone()
-                        } else {
-                            format!("{}: {}", name, val_str)
-                        }
+                        if name == &val_str { name.clone() } else { format!("{}: {}", name, val_str) }
                     }).collect::<Vec<_>>().join(", ");
                     if !fields_str.is_empty() {
                         self.set_property(id, "fields", &format!("{{{}}}", fields_str));
+                    }
+                    Some(id)
+                }
+                Expr::Dispatch(d) => {
+                    let label = format!("dispatch {}", d.event_name);
+                    let id = self.graph.add_node(NodeKind::DispatchAction, label, d.span);
+                    self.set_parent(id, step_id);
+                    self.graph.add_edge(step_id, id, EdgeKind::Contains);
+                    let fields_str = d.fields.iter().map(|(name, val)| {
+                        let val_str = expr_to_display(val);
+                        if name == &val_str { name.clone() } else { format!("{}: {}", name, val_str) }
+                    }).collect::<Vec<_>>().join(", ");
+                    if !fields_str.is_empty() {
+                        self.set_property(id, "fields", &format!("{{{}}}", fields_str));
+                    }
+                    Some(id)
+                }
+                Expr::Invoke(inv) => {
+                    let label = if inv.command.is_empty() {
+                        format!("invoke {}", inv.target)
+                    } else {
+                        format!("invoke {}.{}", inv.target, inv.command)
+                    };
+                    let id = self.graph.add_node(NodeKind::InvokeAction, label, inv.span);
+                    self.set_parent(id, step_id);
+                    self.graph.add_edge(step_id, id, EdgeKind::Contains);
+                    let params_str = inv.params.iter().map(|(k, v)| {
+                        format!("{}: {}", k, expr_to_display(v))
+                    }).collect::<Vec<_>>().join(", ");
+                    if !params_str.is_empty() {
+                        self.set_property(id, "params", &format!("{{{}}}", params_str));
+                    }
+                    Some(id)
+                }
+                Expr::Request(req) => {
+                    let label = if req.method.is_empty() {
+                        format!("request {}", req.port)
+                    } else {
+                        format!("request {}.{}", req.port, req.method)
+                    };
+                    let id = self.graph.add_node(NodeKind::RequestAction, label, req.span);
+                    self.set_parent(id, step_id);
+                    self.graph.add_edge(step_id, id, EdgeKind::Contains);
+                    let args_str = req.args.iter().map(|a| expr_to_display(a)).collect::<Vec<_>>().join(", ");
+                    if !args_str.is_empty() {
+                        self.set_property(id, "args", &format!("({})", args_str));
+                    }
+                    self.annotate_adapter_binding(id, &req.port);
+                    Some(id)
+                }
+                Expr::Guard(g) => {
+                    let label = format!("guard {}", expr_to_display(&g.condition));
+                    let id = self.graph.add_node(NodeKind::GuardAction, label, g.span);
+                    self.set_parent(id, step_id);
+                    self.graph.add_edge(step_id, id, EdgeKind::Contains);
+                    if let Some(msg) = &g.message {
+                        self.set_property(id, "message", msg);
                     }
                     Some(id)
                 }

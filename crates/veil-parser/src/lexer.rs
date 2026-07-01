@@ -67,6 +67,10 @@ pub enum TokenKind {
     Root,
     Compensate,
     Contexts,
+    Dispatch,
+    Invoke,
+    Request,
+    Guard,
 
     // Operators
     Arrow,      // ->
@@ -416,6 +420,10 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "root" => TokenKind::Root,
         "compensate" => TokenKind::Compensate,
         "contexts" => TokenKind::Contexts,
+        "dispatch" => TokenKind::Dispatch,
+        "invoke" => TokenKind::Invoke,
+        "request" => TokenKind::Request,
+        "guard" => TokenKind::Guard,
         _ => TokenKind::Ident,
     }
 }
@@ -432,6 +440,7 @@ fn is_construct_keyword(word: &str) -> bool {
             | "emit" | "call" | "ret" | "input" | "fallback" | "impl"
             | "for" | "boundary" | "as" | "desc" | "output" | "constraints"
             | "fn" | "state" | "root" | "compensate" | "contexts"
+            | "dispatch" | "invoke" | "request" | "guard"
     )
 }
 

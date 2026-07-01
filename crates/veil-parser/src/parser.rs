@@ -1632,6 +1632,10 @@ impl<'a> Parser<'a> {
         match self.peek_kind().clone() {
             TokenKind::Call => self.parse_call_expr(),
             TokenKind::Emit => self.parse_emit_expr(),
+            TokenKind::Dispatch => self.parse_dispatch_expr(),
+            TokenKind::Invoke => self.parse_invoke_expr(),
+            TokenKind::Request => self.parse_request_expr(),
+            TokenKind::Guard => self.parse_guard_expr(),
             TokenKind::Match => self.parse_match_expr(),
             TokenKind::Ret => {
                 self.advance();
@@ -1795,6 +1799,135 @@ impl<'a> Parser<'a> {
         Ok(Expr::Emit(EmitExpr {
             event_name,
             fields,
+            span: start_span.merge(self.current().span),
+        }))
+    }
+
+    fn parse_dispatch_expr(&mut self) -> Result<Expr, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Dispatch)?;
+        let event_name = self.expect_ident()?;
+
+        let mut fields = Vec::new();
+        if self.at(&TokenKind::LBrace) {
+            self.advance();
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof)
+                && !self.at(&TokenKind::Newline)
+            {
+                let field_name = self.expect_ident()?;
+                let value = if self.at(&TokenKind::Dot) {
+                    let mut expr = Expr::Ident(field_name.clone());
+                    while self.at(&TokenKind::Dot) {
+                        self.advance();
+                        let f = self.expect_ident()?;
+                        expr = Expr::FieldAccess(Box::new(expr), f);
+                    }
+                    expr
+                } else {
+                    Expr::Ident(field_name.clone())
+                };
+                fields.push((field_name, value));
+                if self.at(&TokenKind::Comma) { self.advance(); }
+            }
+            if self.at(&TokenKind::RBrace) { self.advance(); }
+        }
+
+        Ok(Expr::Dispatch(DispatchExpr {
+            event_name,
+            fields,
+            span: start_span.merge(self.current().span),
+        }))
+    }
+
+    fn parse_invoke_expr(&mut self) -> Result<Expr, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Invoke)?;
+        let target = self.expect_ident()?;
+
+        let mut command = String::new();
+        if self.at(&TokenKind::Dot) {
+            self.advance();
+            command = self.expect_ident()?;
+        }
+
+        let mut params = Vec::new();
+        if self.at(&TokenKind::LBrace) {
+            self.advance();
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof)
+                && !self.at(&TokenKind::Newline)
+            {
+                let param_name = self.expect_ident()?;
+                let value = if self.at(&TokenKind::Colon) {
+                    self.advance();
+                    self.parse_expr()?
+                } else {
+                    Expr::Ident(param_name.clone())
+                };
+                params.push((param_name, value));
+                if self.at(&TokenKind::Comma) { self.advance(); }
+            }
+            if self.at(&TokenKind::RBrace) { self.advance(); }
+        } else if self.at(&TokenKind::LParen) {
+            let args = self.parse_paren_args();
+            for (i, arg) in args.into_iter().enumerate() {
+                params.push((format!("arg{}", i), arg));
+            }
+        }
+
+        Ok(Expr::Invoke(InvokeExpr {
+            target,
+            command,
+            params,
+            span: start_span.merge(self.current().span),
+        }))
+    }
+
+    fn parse_request_expr(&mut self) -> Result<Expr, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Request)?;
+        let port = self.expect_ident()?;
+
+        let mut method = String::new();
+        if self.at(&TokenKind::Dot) {
+            self.advance();
+            method = self.expect_ident()?;
+        }
+
+        let args = if self.at(&TokenKind::LParen) {
+            self.parse_paren_args()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Expr::Request(RequestExpr {
+            port,
+            method,
+            args,
+            span: start_span.merge(self.current().span),
+        }))
+    }
+
+    fn parse_guard_expr(&mut self) -> Result<Expr, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Guard)?;
+
+        let condition = self.parse_expr()?;
+
+        let message = if self.at(&TokenKind::Comma) {
+            self.advance();
+            if self.at(&TokenKind::StringLit) {
+                let text = self.advance().text;
+                Some(text[1..text.len()-1].to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(Expr::Guard(GuardExpr {
+            condition: Box::new(condition),
+            message,
             span: start_span.merge(self.current().span),
         }))
     }

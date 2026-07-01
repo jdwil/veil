@@ -543,6 +543,39 @@ fn expr_to_veil(expr: &Expr) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("emit {}{{{}}}", emit.event_name, fields)
         }
+        Expr::Dispatch(d) => {
+            let fields = d.fields.iter().map(|(k, v)| {
+                let vs = expr_to_veil(v);
+                if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
+            }).collect::<Vec<_>>().join(", ");
+            format!("dispatch {}{{{}}}", d.event_name, fields)
+        }
+        Expr::Invoke(inv) => {
+            let params = inv.params.iter().map(|(k, v)| {
+                format!("{}: {}", k, expr_to_veil(v))
+            }).collect::<Vec<_>>().join(", ");
+            if inv.command.is_empty() {
+                format!("invoke {}{{{}}}", inv.target, params)
+            } else {
+                format!("invoke {}.{}{{{}}}", inv.target, inv.command, params)
+            }
+        }
+        Expr::Request(req) => {
+            let args = req.args.iter().map(|a| expr_to_veil(a)).collect::<Vec<_>>().join(", ");
+            if req.method.is_empty() {
+                format!("request {}({})", req.port, args)
+            } else {
+                format!("request {}.{}({})", req.port, req.method, args)
+            }
+        }
+        Expr::Guard(g) => {
+            let cond = expr_to_veil(&g.condition);
+            if let Some(msg) = &g.message {
+                format!("guard {}, \"{}\"", cond, msg)
+            } else {
+                format!("guard {}", cond)
+            }
+        }
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_veil(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),

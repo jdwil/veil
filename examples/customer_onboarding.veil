@@ -72,10 +72,11 @@ sol CustomerOnboarding
         email: Email
         phone: Phone
       step validate
-        call Email.validate(email)
+        guard call Email.validate(email), "invalid email"
       step persist
-        c = call CustomerRepo.save(Customer.new(email, phone))
-        emit CustomerCreated{c.id, email, c.created}
+        c = call Customer.new(email, phone)
+        request CustomerRepo.save(c)
+        dispatch CustomerCreated{c.id, email, c.created}
       ret c.id
 
   ctx Billing
@@ -109,24 +110,25 @@ sol CustomerOnboarding
 
     step create_customer
       ctx Identity
-      c = call CustomerRepo.save(Customer.new(email, phone))
-      emit CustomerCreated{c.id, email, c.created}
+      c = call Customer.new(email, phone)
+      request CustomerRepo.save(c)
+      dispatch CustomerCreated{c.id, email, c.created}
       compensate
-        call CustomerRepo.delete(c.id)
+        request CustomerRepo.delete(c.id)
 
     step verify_identity
       ctx Identity
-      result = call KYCProvider.check(name, email)
+      result = request KYCProvider.check(name, email)
       call c.verify(result.code)
       compensate
         call c.reject("saga_rollback")
 
     step setup_billing
       ctx Billing
-      call PaymentGateway.create_customer(email.addr)
-      sub = call Billing.CreateTrial(c.id, FreeTier)
+      request PaymentGateway.create_customer(email.addr)
+      sub = invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
       compensate
-        call PaymentGateway.cancel_subscription(sub.id)
+        request PaymentGateway.cancel_subscription(sub.id)
 
   adapter SmsTwilio for Notifier
     @env(TWILIO_SID, TWILIO_TOKEN)

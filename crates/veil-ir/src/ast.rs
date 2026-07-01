@@ -363,6 +363,45 @@ pub enum Expr {
     StringLit(String),
     IntLit(i64),
     Return(Box<Expr>),
+    // New statement types
+    Dispatch(DispatchExpr),
+    Invoke(InvokeExpr),
+    Request(RequestExpr),
+    Guard(GuardExpr),
+}
+
+/// Dispatch — fire an event through the event bus (fire-and-forget).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DispatchExpr {
+    pub event_name: String,
+    pub fields: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+/// Invoke — execute a command through the command bus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvokeExpr {
+    pub target: String,
+    pub command: String,
+    pub params: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+/// Request — query through a port (adapter resolves).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestExpr {
+    pub port: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+/// Guard — precondition check (fails the step if false).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardExpr {
+    pub condition: Box<Expr>,
+    pub message: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
