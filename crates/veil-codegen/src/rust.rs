@@ -172,7 +172,7 @@ fn gen_domain_types(ctx: &Context, crate_name: &str) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types — value objects, entities, and aggregates.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\n\n");
+    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse crate::ports::ValidationError;\n\n");
 
     // Collect all defined type names
     let mut defined_types: Vec<String> = Vec::new();

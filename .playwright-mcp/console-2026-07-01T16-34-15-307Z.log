@@ -215,3 +215,159 @@
     at Module.template_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4477:2)
     at VeilNode (http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:504:4)
     at http://localhost:5174/node_modules/.vite/deps/index-client-BtLNq6aR.js?v=fbadb8b0:248:62
+[20868159ms] TypeError: Cannot read properties of undefined (reading 'color')
+
+	in <unknown>
+	in VeilNode.svelte
+	in NodeWrapper.svelte
+	in NodeRenderer.svelte
+	in Viewport.svelte
+	in Pane.svelte
+	in Zoom.svelte
+	in Wrapper.svelte
+	in SvelteFlow.svelte
+	in +page.svelte
+	in +layout.svelte
+	in root.svelte
+	in undefined
+
+    at http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:515:43
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4479:4
+    at update_reaction (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4884:16)
+    at update_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4984:18)
+    at create_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4308:4)
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4478:3
+    at flatten (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:2089:3)
+    at Module.template_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4477:2)
+    at VeilNode (http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:504:4)
+    at http://localhost:5174/node_modules/.vite/deps/index-client-BtLNq6aR.js?v=fbadb8b0:248:62
+[20869498ms] TypeError: Cannot read properties of undefined (reading 'color')
+
+	in <unknown>
+	in VeilNode.svelte
+	in NodeWrapper.svelte
+	in NodeRenderer.svelte
+	in Viewport.svelte
+	in Pane.svelte
+	in Zoom.svelte
+	in Wrapper.svelte
+	in SvelteFlow.svelte
+	in +page.svelte
+	in +layout.svelte
+	in root.svelte
+	in undefined
+
+    at http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:515:43
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4479:4
+    at update_reaction (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4884:16)
+    at update_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4984:18)
+    at create_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4308:4)
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4478:3
+    at flatten (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:2089:3)
+    at Module.template_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4477:2)
+    at VeilNode (http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:504:4)
+    at http://localhost:5174/node_modules/.vite/deps/index-client-BtLNq6aR.js?v=fbadb8b0:248:62
+[20870742ms] TypeError: Cannot read properties of undefined (reading 'color')
+
+	in <unknown>
+	in VeilNode.svelte
+	in NodeWrapper.svelte
+	in NodeRenderer.svelte
+	in Viewport.svelte
+	in Pane.svelte
+	in Zoom.svelte
+	in Wrapper.svelte
+	in SvelteFlow.svelte
+	in +page.svelte
+	in +layout.svelte
+	in root.svelte
+	in undefined
+
+    at http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:515:43
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4479:4
+    at update_reaction (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4884:16)
+    at update_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4984:18)
+    at create_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4308:4)
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4478:3
+    at flatten (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:2089:3)
+    at Module.template_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4477:2)
+    at VeilNode (http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:504:4)
+    at http://localhost:5174/node_modules/.vite/deps/index-client-BtLNq6aR.js?v=fbadb8b0:248:62
+[21030794ms] TypeError: Cannot read properties of undefined (reading 'color')
+
+	in <unknown>
+	in VeilNode.svelte
+	in NodeWrapper.svelte
+	in NodeRenderer.svelte
+	in Viewport.svelte
+	in Pane.svelte
+	in Zoom.svelte
+	in Wrapper.svelte
+	in SvelteFlow.svelte
+	in +page.svelte
+	in +layout.svelte
+	in root.svelte
+	in undefined
+
+    at http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:515:43
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4479:4
+    at update_reaction (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4884:16)
+    at update_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4984:18)
+    at create_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4308:4)
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4478:3
+    at flatten (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:2089:3)
+    at Module.template_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4477:2)
+    at VeilNode (http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:504:4)
+    at http://localhost:5174/node_modules/.vite/deps/index-client-BtLNq6aR.js?v=fbadb8b0:248:62
+[21032145ms] TypeError: Cannot read properties of undefined (reading 'color')
+
+	in <unknown>
+	in VeilNode.svelte
+	in NodeWrapper.svelte
+	in NodeRenderer.svelte
+	in Viewport.svelte
+	in Pane.svelte
+	in Zoom.svelte
+	in Wrapper.svelte
+	in SvelteFlow.svelte
+	in +page.svelte
+	in +layout.svelte
+	in root.svelte
+	in undefined
+
+    at http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:515:43
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4479:4
+    at update_reaction (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4884:16)
+    at update_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4984:18)
+    at create_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4308:4)
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4478:3
+    at flatten (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:2089:3)
+    at Module.template_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4477:2)
+    at VeilNode (http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:504:4)
+    at http://localhost:5174/node_modules/.vite/deps/index-client-BtLNq6aR.js?v=fbadb8b0:248:62
+[21033368ms] TypeError: Cannot read properties of undefined (reading 'color')
+
+	in <unknown>
+	in VeilNode.svelte
+	in NodeWrapper.svelte
+	in NodeRenderer.svelte
+	in Viewport.svelte
+	in Pane.svelte
+	in Zoom.svelte
+	in Wrapper.svelte
+	in SvelteFlow.svelte
+	in +page.svelte
+	in +layout.svelte
+	in root.svelte
+	in undefined
+
+    at http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:515:43
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4479:4
+    at update_reaction (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4884:16)
+    at update_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4984:18)
+    at create_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4308:4)
+    at http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4478:3
+    at flatten (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:2089:3)
+    at Module.template_effect (http://localhost:5174/node_modules/.vite/deps/runtime-Dhi6vjnW.js?v=fbadb8b0:4477:2)
+    at VeilNode (http://localhost:5174/src/lib/VeilNode.svelte?t=1782941544832:504:4)
+    at http://localhost:5174/node_modules/.vite/deps/index-client-BtLNq6aR.js?v=fbadb8b0:248:62
