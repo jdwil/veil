@@ -75,7 +75,7 @@ sol CustomerOnboarding
         guard call Email.validate(email), "invalid email"
       step persist
         c = call Customer.new(email, phone)
-        request CustomerRepo.save(c)
+        call CustomerRepo.save(c)
         dispatch CustomerCreated{c.id, email, c.created}
       ret c.id
 
@@ -111,10 +111,10 @@ sol CustomerOnboarding
     step create_customer
       ctx Identity
       c = call Customer.new(email, phone)
-      request CustomerRepo.save(c)
+      call CustomerRepo.save(c)
       dispatch CustomerCreated{c.id, email, c.created}
       compensate
-        request CustomerRepo.delete(c.id)
+        call CustomerRepo.delete(c.id)
 
     step verify_identity
       ctx Identity
