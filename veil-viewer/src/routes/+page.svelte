@@ -15,6 +15,7 @@
 
   import VeilNode from '$lib/VeilNode.svelte';
   import Palette from '$lib/Palette.svelte';
+  import PropertyEditor from '$lib/PropertyEditor.svelte';
   import { layoutNodes } from '$lib/layout';
   import {
     irGraph,
@@ -46,6 +47,17 @@
     const parentNode = graph.nodes.find(n => n.id === parent);
     return parentNode?.kind ?? 'Solution';
   });
+
+  // Get the currently selected node for property editing
+  let selectedNode = $derived.by(() => {
+    const id = $selectedNodeId;
+    if (!id) return null;
+    return nodes.find(n => n.id === id) ?? null;
+  });
+
+  function updateNodeData(id: string, data: any) {
+    nodes = nodes.map(n => n.id === id ? { ...n, data } : n);
+  }
 
   function handleDrop(event: DragEvent) {
     event.preventDefault();
@@ -357,6 +369,14 @@
           <Controls />
           <MiniMap />
         </SvelteFlow>
+
+        {#if selectedNode}
+          <PropertyEditor
+            node={selectedNode}
+            onUpdate={updateNodeData}
+            onClose={() => selectedNodeId.set(null)}
+          />
+        {/if}
       </div>
     </div>
   {/if}
@@ -420,6 +440,7 @@
     flex: 1;
     min-height: 0;
     min-width: 0;
+    position: relative;
   }
 
   .main-layout {
