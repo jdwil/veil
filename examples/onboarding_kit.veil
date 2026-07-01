@@ -1,0 +1,84 @@
+pkg onboarding_kit v1
+  author "JD"
+  desc "Customer onboarding building blocks"
+
+  ctx Identity
+    val Email
+      addr: Str
+
+    val Phone
+      number: Str
+      country: Str
+
+    agg Customer
+      id: UUID
+      email: Email
+      phone: Phone
+      status: Str
+      created: DateTime
+
+      evt CustomerCreated
+        id email created
+
+      cmd CreateCustomer
+        email: Email
+        phone: Phone
+        -> Res!<Customer>
+
+    port Notifier
+      send_sms(phone: Phone, msg: Str) -> Res!
+      send_email(email: Email, subj: Str, body: Str) -> Res!
+
+    port KYCProvider
+      check(name: Str, email: Email) -> Res!<Str>
+
+    port CustomerRepo
+      save(c: Customer) -> Res!
+      find(id: UUID) -> Res!<Opt<Customer>>
+
+  ctx Billing
+    agg Subscription
+      id: UUID
+      customer_id: UUID
+      plan: Str
+
+      cmd CreateTrial
+        customer_id: UUID
+        plan: Str
+        -> Res!<Subscription>
+
+    port PaymentGateway
+      create_customer(email: Str) -> Res!<Str>
+
+  expose
+    node CreateCustomer
+      desc "Register a new customer in the system"
+      input
+        email: Email
+        phone: Phone
+      output
+        customer_id: UUID
+
+    node SendWelcome
+      desc "Send welcome email to new customer"
+      input
+        email: Email
+
+    node RunKYC
+      desc "Verify customer identity via KYC provider"
+      input
+        name: Str
+        email: Email
+      output
+        passed: Bool
+
+    node CreateSubscription
+      desc "Set up a billing subscription"
+      input
+        customer_id: UUID
+        plan: Str
+      output
+        subscription_id: UUID
+
+    constraints
+      flow-only

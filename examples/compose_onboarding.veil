@@ -1,0 +1,21 @@
+use onboarding_kit as ok
+
+flow CustomOnboard
+  input
+    email: Email
+    name: Str
+    phone: Phone
+
+  step verify_identity
+    result = call ok.RunKYC(name, email)
+
+  step create_account
+    customer = call ok.CreateCustomer(email, phone)
+
+  par
+    step welcome
+      call ok.SendWelcome(email)
+    step billing
+      call ok.CreateSubscription(customer.customer_id, "free_tier")
+
+  ret customer.customer_id

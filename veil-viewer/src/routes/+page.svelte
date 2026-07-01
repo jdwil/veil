@@ -1,0 +1,448 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import {
+    SvelteFlow,
+    Controls,
+    Background,
+    BackgroundVariant,
+    MiniMap,
+    type Node,
+    type Edge,
+    type NodeTypes,
+  } from '@xyflow/svelte';
+  import '@xyflow/svelte/dist/style.css';
+
+  import VeilNode from '$lib/VeilNode.svelte';
+  import { layoutNodes } from '$lib/layout';
+  import {
+    irGraph,
+    currentParent,
+    breadcrumbs,
+    loading,
+    error,
+    fetchIr,
+    drillDown,
+    navigateTo,
+    getChildren,
+  } from '$lib/store';
+  import { NODE_STYLES, type IrNode, type IrGraph } from '$lib/types';
+
+  const nodeTypes: NodeTypes = {
+    veil: VeilNode as any,
+  };
+
+  let nodes = $state<Node[]>([]);
+  let edges = $state<Edge[]>([]);
+
+  onMount(() => {
+    fetchIr();
+  });
+
+  // Recompute nodes/edges when graph or current parent changes
+  $effect(() => {
+    const graph = $irGraph;
+    const parent = $currentParent;
+    if (!graph) return;
+    computeView(graph, parent);
+  });
+
+  function computeView(graph: IrGraph, parentId: number | null) {
+    const children = getChildren(graph, parentId);
+    const visibleIds = new Set(children.map(c => c.id));
+
+    // Create flow nodes
+    const flowNodes: Node[] = children.map(child => {
+      const childChildren = getChildren(graph, child.id);
+
+      // Find cross-reference info for this node
+      const refs = getCrossRefs(graph, child.id, visibleIds);
+
+      // For parallel gateways, embed children inline (not drillable)
+      let inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = [];
+      let hasChildren = childChildren.length > 0;
+      if (child.kind === 'ParallelGateway') {
+        inlineChildren = childChildren.map(c => ({
+          name: c.name,
+          kind: c.kind,
+          properties: c.metadata.properties,
+        }));
+        hasChildren = false; // Don't make it drillable
+      }
+
+      return {
+        id: String(child.id),
+        type: 'veil',
+        position: { x: 0, y: 0 },
+        data: {
+          label: child.name,
+          kind: child.kind,
+          hasChildren,
+          annotations: child.metadata.annotations,
+          properties: child.metadata.properties,
+          inlineChildren,
+          refs,
+        },
+      };
+    });
+
+    // Create edges between visible nodes (non-Contains)
+    const flowEdges: Edge[] = graph.edges
+      .filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))
+      .filter(e => e.kind !== 'Contains')
+      .map((e, i) => ({
+        id: `e-${e.from}-${e.to}-${i}`,
+        source: String(e.from),
+        target: String(e.to),
+        animated: e.kind === 'SequenceFlow',
+        style: getEdgeStyle(e.kind),
+        label: e.kind === 'Implements' ? 'implements' : e.kind === 'SequenceFlow' ? '' : e.kind,
+        labelStyle: 'font-size: 10px; fill: #64748b;',
+      }));
+
+    // Add ghost nodes for cross-reference targets not in current view
+    const ghostNodes: Node[] = [];
+    const ghostEdges: Edge[] = [];
+    let ghostIdx = 0;
+
+    for (const child of children) {
+      // Outgoing edges to non-visible nodes
+      const outEdges = graph.edges.filter(
+        e => e.from === child.id && !visibleIds.has(e.to) && e.kind !== 'Contains'
+      );
+      for (const e of outEdges) {
+        const targetNode = graph.nodes.find(n => n.id === e.to);
+        if (!targetNode) continue;
+        const ghostId = `ghost-${ghostIdx++}`;
+        ghostNodes.push({
+          id: ghostId,
+          type: 'veil',
+          position: { x: 0, y: 0 },
+          data: {
+            label: targetNode.name,
+            kind: targetNode.kind,
+            hasChildren: false,
+            annotations: [],
+            isGhost: true,
+          },
+        });
+        ghostEdges.push({
+          id: `ge-${child.id}-${ghostId}`,
+          source: String(child.id),
+          target: ghostId,
+          animated: false,
+          style: getEdgeStyle(e.kind),
+          label: e.kind === 'Implements' ? 'implements' : '',
+          labelStyle: 'font-size: 10px; fill: #64748b;',
+        });
+      }
+
+      // Incoming edges from non-visible nodes
+      const inEdges = graph.edges.filter(
+        e => e.to === child.id && !visibleIds.has(e.from) && e.kind !== 'Contains'
+      );
+      for (const e of inEdges) {
+        const sourceNode = graph.nodes.find(n => n.id === e.from);
+        if (!sourceNode) continue;
+        const ghostId = `ghost-${ghostIdx++}`;
+        ghostNodes.push({
+          id: ghostId,
+          type: 'veil',
+          position: { x: 0, y: 0 },
+          data: {
+            label: sourceNode.name,
+            kind: sourceNode.kind,
+            hasChildren: false,
+            annotations: [],
+            isGhost: true,
+          },
+        });
+        ghostEdges.push({
+          id: `ge-${ghostId}-${child.id}`,
+          source: ghostId,
+          target: String(child.id),
+          animated: false,
+          style: getEdgeStyle(e.kind),
+        });
+      }
+    }
+
+    const allNodes = [...flowNodes, ...ghostNodes];
+    const allEdges = [...flowEdges, ...ghostEdges];
+
+    // Use LR layout for flows (horizontal swimlane feel), TB for everything else
+    const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
+    const direction = parentNode?.kind === 'Flow' || parentNode?.kind === 'ParallelGateway'
+      ? 'LR' : 'TB';
+
+    // Layout
+    nodes = layoutNodes(allNodes, allEdges, direction);
+    edges = allEdges;
+  }
+
+  function getEdgeStyle(kind: string): string {
+    switch (kind) {
+      case 'Implements':
+        return 'stroke: #a855f7; stroke-width: 2; stroke-dasharray: 6 3;';
+      case 'SequenceFlow':
+        return 'stroke: #6366f1; stroke-width: 2;';
+      case 'Calls':
+        return 'stroke: #10b981; stroke-width: 1.5; stroke-dasharray: 4 2;';
+      case 'Emits':
+        return 'stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 3 3;';
+      default:
+        return 'stroke: #475569; stroke-width: 1.5;';
+    }
+  }
+
+  function getCrossRefs(graph: IrGraph, nodeId: number, visibleIds: Set<number>): string[] {
+    const refs: string[] = [];
+    const outEdges = graph.edges.filter(
+      e => e.from === nodeId && !visibleIds.has(e.to) && e.kind !== 'Contains'
+    );
+    for (const e of outEdges) {
+      const target = graph.nodes.find(n => n.id === e.to);
+      if (target) {
+        refs.push(`${e.kind.toLowerCase()}: ${target.name}`);
+      }
+    }
+    return refs;
+  }
+
+  function handleNodeClick({ node }: { node: Node; event: MouseEvent | TouchEvent }) {
+    const graph = $irGraph;
+    if (!graph) return;
+    const irNode = graph.nodes.find(n => n.id === Number(node.id));
+    if (!irNode) return;
+    const children = getChildren(graph, irNode.id);
+    if (children.length > 0) {
+      drillDown(irNode);
+    }
+  }
+</script>
+
+<div class="viewer-container">
+  <!-- Breadcrumb navigation -->
+  <div class="breadcrumbs">
+    {#each $breadcrumbs as crumb, i}
+      {#if i > 0}
+        <span class="breadcrumb-sep">›</span>
+      {/if}
+      <button
+        class="breadcrumb-item"
+        class:active={i === $breadcrumbs.length - 1}
+        onclick={() => navigateTo(crumb.id)}
+      >
+        {crumb.name}
+      </button>
+    {/each}
+  </div>
+
+  <!-- Loading / Error states -->
+  {#if $loading}
+    <div class="status-overlay">
+      <div class="pulse-ring"></div>
+      <p>Loading VEIL IR...</p>
+    </div>
+  {:else if $error}
+    <div class="status-overlay error">
+      <p class="error-title">⚠️ Connection Error</p>
+      <p class="error-msg">{$error}</p>
+      <p class="error-hint">
+        Run: <code>cargo run -- serve examples/customer_onboarding.veil</code>
+      </p>
+      <button class="retry-btn" onclick={() => fetchIr()}>Retry</button>
+    </div>
+  {:else}
+    <!-- Graph view -->
+    <div class="graph-container">
+      <SvelteFlow
+        {nodes}
+        {edges}
+        {nodeTypes}
+        fitView
+        onnodeclick={handleNodeClick}
+        colorMode="dark"
+      >
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+        <Controls />
+        <MiniMap />
+      </SvelteFlow>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .viewer-container {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: #0a0a0f;
+  }
+
+  .breadcrumbs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 20px;
+    background: rgba(26, 26, 46, 0.9);
+    border-bottom: 1px solid #2d2d44;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+    overflow-x: auto;
+  }
+
+  .breadcrumb-item {
+    background: none;
+    border: none;
+    color: #94a3b8;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+
+  .breadcrumb-item:hover {
+    background: rgba(99, 102, 241, 0.1);
+    color: #e2e8f0;
+  }
+
+  .breadcrumb-item.active {
+    color: #e2e8f0;
+    font-weight: 600;
+    background: rgba(99, 102, 241, 0.15);
+  }
+
+  .breadcrumb-sep {
+    color: #475569;
+    font-size: 14px;
+  }
+
+  .graph-container {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .status-overlay {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: #94a3b8;
+  }
+
+  .status-overlay.error {
+    color: #f87171;
+  }
+
+  .error-title {
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  .error-msg {
+    font-size: 14px;
+    color: #94a3b8;
+  }
+
+  .error-hint {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 8px;
+  }
+
+  .error-hint code {
+    color: #a5b4fc;
+    background: rgba(99, 102, 241, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .retry-btn {
+    margin-top: 12px;
+    padding: 8px 20px;
+    background: #6366f1;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .retry-btn:hover {
+    background: #4f46e5;
+  }
+
+  .pulse-ring {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 3px solid #6366f1;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.3); opacity: 0.5; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  :global(.svelte-flow) {
+    background: #0a0a0f !important;
+  }
+
+  :global(.svelte-flow__background) {
+    opacity: 0.4;
+  }
+
+  :global(.svelte-flow__minimap) {
+    background: rgba(26, 26, 46, 0.9) !important;
+    border: 1px solid #2d2d44 !important;
+    border-radius: 10px !important;
+    backdrop-filter: blur(8px);
+  }
+
+  :global(.svelte-flow__controls) {
+    background: rgba(26, 26, 46, 0.9) !important;
+    border: 1px solid #2d2d44 !important;
+    border-radius: 10px !important;
+    backdrop-filter: blur(8px);
+  }
+
+  :global(.svelte-flow__controls button) {
+    background: transparent !important;
+    border-color: #2d2d44 !important;
+    color: #e2e8f0 !important;
+  }
+
+  :global(.svelte-flow__controls button:hover) {
+    background: rgba(99, 102, 241, 0.15) !important;
+  }
+
+  :global(.svelte-flow__edge-path) {
+    stroke-width: 2px;
+    filter: drop-shadow(0 0 3px rgba(99, 102, 241, 0.3));
+  }
+
+  :global(.svelte-flow__edge.animated .svelte-flow__edge-path) {
+    stroke: #6366f1 !important;
+    stroke-width: 2.5px;
+    filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.5));
+  }
+
+  :global(.svelte-flow__handle) {
+    width: 8px !important;
+    height: 8px !important;
+    background: var(--node-color, #475569) !important;
+    border: 2px solid #1a1a2e !important;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  :global(.svelte-flow__node:hover .svelte-flow__handle) {
+    opacity: 1;
+  }
+</style>

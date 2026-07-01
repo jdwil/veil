@@ -1,0 +1,1642 @@
+//! VEIL Parser — consumes token stream and produces AST.
+//!
+//! This is a recursive descent parser operating on the token stream from the lexer.
+//! It uses INDENT/DEDENT tokens to determine block structure.
+
+use veil_ir::ast::*;
+use veil_ir::span::Span;
+
+use crate::lexer::{Token, TokenKind};
+
+/// Parse error with span information.
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    pub message: String,
+    pub span: Span,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "parse error at {}-{}: {}",
+            self.span.start, self.span.end, self.message
+        )
+    }
+}
+
+/// Parse a token stream into a VeilFile (Solution, Package, or Composition).
+pub fn parse(tokens: &[Token]) -> Result<Solution, Vec<ParseError>> {
+    let mut parser = Parser::new(tokens);
+    parser.skip_newlines();
+
+    // Detect file type by first keyword
+    match parser.peek_kind().clone() {
+        TokenKind::Pkg => {
+            // Parse as package, but return the inner Solution for now
+            match parser.parse_package() {
+                Ok(pkg) => {
+                    let sol = Solution {
+                        name: pkg.name,
+                        span: pkg.span,
+                        items: pkg.items,
+                    };
+                    if parser.errors.is_empty() {
+                        Ok(sol)
+                    } else {
+                        Err(parser.errors)
+                    }
+                }
+                Err(e) => {
+                    parser.errors.push(e);
+                    Err(parser.errors)
+                }
+            }
+        }
+        TokenKind::Use => {
+            // Parse as composition, convert flows to Solution
+            match parser.parse_composition() {
+                Ok(comp) => {
+                    let sol = Solution {
+                        name: "composition".to_string(),
+                        span: comp.span,
+                        items: comp.flows.into_iter().map(TopLevelItem::Flow).collect(),
+                    };
+                    if parser.errors.is_empty() {
+                        Ok(sol)
+                    } else {
+                        Err(parser.errors)
+                    }
+                }
+                Err(e) => {
+                    parser.errors.push(e);
+                    Err(parser.errors)
+                }
+            }
+        }
+        _ => {
+            // Parse as solution (existing behavior)
+            match parser.parse_solution() {
+                Ok(sol) => {
+                    if parser.errors.is_empty() {
+                        Ok(sol)
+                    } else {
+                        Err(parser.errors)
+                    }
+                }
+                Err(e) => {
+                    parser.errors.push(e);
+                    Err(parser.errors)
+                }
+            }
+        }
+    }
+}
+
+/// Parse a token stream into a full VeilFile with package support.
+pub fn parse_file(tokens: &[Token]) -> Result<VeilFile, Vec<ParseError>> {
+    let mut parser = Parser::new(tokens);
+    parser.skip_newlines();
+
+    match parser.peek_kind().clone() {
+        TokenKind::Pkg => {
+            match parser.parse_package() {
+                Ok(pkg) => {
+                    if parser.errors.is_empty() {
+                        Ok(VeilFile::Package(pkg))
+                    } else {
+                        Err(parser.errors)
+                    }
+                }
+                Err(e) => {
+                    parser.errors.push(e);
+                    Err(parser.errors)
+                }
+            }
+        }
+        TokenKind::Use => {
+            match parser.parse_composition() {
+                Ok(comp) => {
+                    if parser.errors.is_empty() {
+                        Ok(VeilFile::Composition(comp))
+                    } else {
+                        Err(parser.errors)
+                    }
+                }
+                Err(e) => {
+                    parser.errors.push(e);
+                    Err(parser.errors)
+                }
+            }
+        }
+        _ => {
+            match parser.parse_solution() {
+                Ok(sol) => {
+                    if parser.errors.is_empty() {
+                        Ok(VeilFile::Solution(sol))
+                    } else {
+                        Err(parser.errors)
+                    }
+                }
+                Err(e) => {
+                    parser.errors.push(e);
+                    Err(parser.errors)
+                }
+            }
+        }
+    }
+}
+
+struct Parser<'a> {
+    tokens: &'a [Token],
+    pos: usize,
+    errors: Vec<ParseError>,
+}
+
+impl<'a> Parser<'a> {
+    fn new(tokens: &'a [Token]) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+        }
+    }
+
+    // ─── Navigation helpers ───────────────────────────────────────────
+
+    fn current(&self) -> &Token {
+        self.tokens.get(self.pos).unwrap_or(&self.tokens[self.tokens.len() - 1])
+    }
+
+    fn peek_kind(&self) -> &TokenKind {
+        &self.current().kind
+    }
+
+    fn at(&self, kind: &TokenKind) -> bool {
+        self.peek_kind() == kind
+    }
+
+    fn at_any(&self, kinds: &[TokenKind]) -> bool {
+        kinds.contains(self.peek_kind())
+    }
+
+    fn advance(&mut self) -> Token {
+        let tok = self.tokens[self.pos].clone();
+        if self.pos < self.tokens.len() - 1 {
+            self.pos += 1;
+        }
+        tok
+    }
+
+    fn expect(&mut self, kind: &TokenKind) -> Result<Token, ParseError> {
+        if self.at(kind) {
+            Ok(self.advance())
+        } else {
+            Err(self.error(format!("expected {:?}, got {:?}", kind, self.peek_kind())))
+        }
+    }
+
+    fn expect_ident(&mut self) -> Result<String, ParseError> {
+        if self.at(&TokenKind::Ident) {
+            Ok(self.advance().text)
+        } else {
+            Err(self.error(format!("expected identifier, got {:?}", self.peek_kind())))
+        }
+    }
+
+    fn skip_newlines(&mut self) {
+        while self.at(&TokenKind::Newline) || self.at(&TokenKind::Comment) {
+            self.advance();
+        }
+    }
+
+    fn error(&self, message: String) -> ParseError {
+        ParseError {
+            message,
+            span: self.current().span,
+        }
+    }
+
+    /// Check if we're at the start of a block (INDENT follows).
+    fn at_block_start(&self) -> bool {
+        // Look ahead past newlines for an INDENT
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match self.tokens[i].kind {
+                TokenKind::Newline | TokenKind::Comment => i += 1,
+                TokenKind::Indent => return true,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Enter a block: skip newlines and consume INDENT.
+    fn enter_block(&mut self) -> Result<(), ParseError> {
+        self.skip_newlines();
+        self.expect(&TokenKind::Indent)?;
+        Ok(())
+    }
+
+    /// Check if current position is at block end (DEDENT or EOF).
+    fn at_block_end(&self) -> bool {
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match self.tokens[i].kind {
+                TokenKind::Newline | TokenKind::Comment => i += 1,
+                TokenKind::Dedent | TokenKind::Eof => return true,
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Exit a block: skip newlines and consume DEDENT.
+    fn exit_block(&mut self) {
+        self.skip_newlines();
+        if self.at(&TokenKind::Dedent) {
+            self.advance();
+        }
+    }
+
+    // ─── Type parsing ─────────────────────────────────────────────────
+
+    fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
+        let name = self.expect_ident()?;
+
+        // Check for Res! syntax
+        if self.at(&TokenKind::Bang) {
+            self.advance(); // consume !
+            if self.at(&TokenKind::LAngle) {
+                self.advance(); // consume <
+                let inner = self.parse_type()?;
+                self.expect(&TokenKind::RAngle)?;
+                return Ok(TypeExpr::Result(Some(Box::new(inner))));
+            }
+            return Ok(TypeExpr::Result(None));
+        }
+
+        // Check for generic: Name<T> or Name<T, U>
+        if self.at(&TokenKind::LAngle) {
+            self.advance(); // consume <
+            let mut args = vec![self.parse_type()?];
+            while self.at(&TokenKind::Comma) {
+                self.advance();
+                args.push(self.parse_type()?);
+            }
+            self.expect(&TokenKind::RAngle)?;
+
+            // Map known generic names to specific variants
+            return match name.as_str() {
+                "Opt" => Ok(TypeExpr::Optional(Box::new(args.into_iter().next().unwrap()))),
+                "List" => Ok(TypeExpr::List(Box::new(args.into_iter().next().unwrap()))),
+                "Set" => Ok(TypeExpr::Set(Box::new(args.into_iter().next().unwrap()))),
+                "Map" if args.len() == 2 => {
+                    let mut it = args.into_iter();
+                    Ok(TypeExpr::Map(Box::new(it.next().unwrap()), Box::new(it.next().unwrap())))
+                }
+                _ => Ok(TypeExpr::Generic(name, args)),
+            };
+        }
+
+        Ok(TypeExpr::Named(name))
+    }
+
+    // ─── Annotation parsing ───────────────────────────────────────────
+
+    fn parse_annotations(&mut self) -> Vec<Annotation> {
+        let mut annotations = Vec::new();
+        while self.at(&TokenKind::Annotation) {
+            let tok = self.advance().clone();
+            let text = tok.text.clone();
+            // Parse @name or @name(args) or @name arg1 arg2
+            let (name, args) = parse_annotation_text(&text);
+            annotations.push(Annotation {
+                name,
+                args,
+                span: tok.span,
+            });
+            self.skip_newlines();
+        }
+        annotations
+    }
+}
+
+/// Parse annotation text like "@retry 3" or "@env TWILIO_SID TWILIO_TOKEN" or "@retry(3)"
+fn parse_annotation_text(text: &str) -> (String, Vec<String>) {
+    let text = text.strip_prefix('@').unwrap_or(text);
+
+    // Check for parenthesized args
+    if let Some(paren_idx) = text.find('(') {
+        let name = text[..paren_idx].to_string();
+        let args_str = &text[paren_idx + 1..text.len() - 1]; // strip parens
+        let args: Vec<String> = args_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        (name, args)
+    } else {
+        // Space-separated args
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        let name = parts[0].to_string();
+        let args = parts[1..].iter().map(|s| s.to_string()).collect();
+        (name, args)
+    }
+}
+
+// ─── Top-level parsing ────────────────────────────────────────────────────
+
+impl<'a> Parser<'a> {
+    fn parse_package(&mut self) -> Result<Package, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Pkg)?;
+        let name = self.expect_ident()?;
+
+        // Optional version (e.g., "v1.0" as an identifier)
+        let version = if self.at(&TokenKind::Ident) {
+            Some(self.advance().text)
+        } else {
+            None
+        };
+
+        let mut metadata = Vec::new();
+        let mut items = Vec::new();
+        let mut expose = None;
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                match self.peek_kind().clone() {
+                    // Metadata: author "...", desc "..."
+                    TokenKind::Ident if self.is_metadata_key() => {
+                        let key_span = self.current().span;
+                        let key = self.advance().text;
+                        let value = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            text[1..text.len()-1].to_string()
+                        } else if self.at(&TokenKind::Ident) {
+                            self.advance().text
+                        } else {
+                            String::new()
+                        };
+                        metadata.push(PackageMeta { key, value, span: key_span });
+                    }
+                    TokenKind::Desc => {
+                        let key_span = self.current().span;
+                        self.advance();
+                        let value = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            text[1..text.len()-1].to_string()
+                        } else {
+                            String::new()
+                        };
+                        metadata.push(PackageMeta { key: "desc".to_string(), value, span: key_span });
+                    }
+                    TokenKind::Lang => {
+                        items.push(TopLevelItem::Lang(self.parse_lang_block()?));
+                    }
+                    TokenKind::Ctx => {
+                        items.push(TopLevelItem::Context(self.parse_context()?));
+                    }
+                    TokenKind::Flow => {
+                        items.push(TopLevelItem::Flow(self.parse_flow()?));
+                    }
+                    TokenKind::Adapter => {
+                        items.push(TopLevelItem::Adapter(self.parse_adapter()?));
+                    }
+                    TokenKind::Expose => {
+                        expose = Some(self.parse_expose_block()?);
+                    }
+                    TokenKind::Comment => { self.advance(); }
+                    _ => {
+                        let err = self.error(format!(
+                            "unexpected token {:?} in package body", self.peek_kind()
+                        ));
+                        self.errors.push(err);
+                        self.advance();
+                    }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Package {
+            name,
+            version,
+            span: start_span.merge(self.current().span),
+            metadata,
+            items,
+            expose,
+        })
+    }
+
+    fn is_metadata_key(&self) -> bool {
+        let text = &self.current().text;
+        matches!(text.as_str(), "author" | "license" | "repo")
+    }
+
+    fn parse_expose_block(&mut self) -> Result<ExposeBlock, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Expose)?;
+
+        let mut nodes = Vec::new();
+        let mut constraints = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                match self.peek_kind().clone() {
+                    TokenKind::Node => {
+                        nodes.push(self.parse_exposed_node()?);
+                    }
+                    TokenKind::Constraints => {
+                        constraints = self.parse_constraints()?;
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(ExposeBlock {
+            span: start_span.merge(self.current().span),
+            nodes,
+            constraints,
+        })
+    }
+
+    fn parse_exposed_node(&mut self) -> Result<ExposedNode, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Node)?;
+        let name = self.expect_ident()?;
+
+        let mut description = None;
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                match self.peek_kind().clone() {
+                    TokenKind::Desc => {
+                        self.advance();
+                        if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            description = Some(text[1..text.len()-1].to_string());
+                        }
+                    }
+                    TokenKind::Input => {
+                        self.advance();
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                if self.at(&TokenKind::Ident) {
+                                    inputs.push(self.parse_field()?);
+                                } else {
+                                    self.advance();
+                                }
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    TokenKind::Output => {
+                        self.advance();
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                if self.at(&TokenKind::Ident) {
+                                    outputs.push(self.parse_field()?);
+                                } else {
+                                    self.advance();
+                                }
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(ExposedNode {
+            name,
+            description,
+            inputs,
+            outputs,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    fn parse_constraints(&mut self) -> Result<Vec<String>, ParseError> {
+        self.expect(&TokenKind::Constraints)?;
+        let mut constraints = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                // Collect each line as a constraint string
+                let mut parts = Vec::new();
+                while !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
+                    && !self.at(&TokenKind::Dedent)
+                {
+                    parts.push(self.advance().text);
+                }
+                if !parts.is_empty() {
+                    constraints.push(parts.join(" "));
+                }
+            }
+            self.exit_block();
+        }
+        Ok(constraints)
+    }
+
+    fn parse_composition(&mut self) -> Result<Composition, ParseError> {
+        let start_span = self.current().span;
+        let mut imports = Vec::new();
+        let mut flows = Vec::new();
+
+        // Parse use statements
+        while self.at(&TokenKind::Use) {
+            imports.push(self.parse_use_import()?);
+            self.skip_newlines();
+        }
+
+        // Parse flows
+        while !self.at(&TokenKind::Eof) {
+            self.skip_newlines();
+            if self.at(&TokenKind::Eof) { break; }
+            if self.at(&TokenKind::Comment) { self.advance(); continue; }
+            if self.at(&TokenKind::Flow) {
+                flows.push(self.parse_flow()?);
+            } else {
+                self.advance();
+            }
+        }
+
+        Ok(Composition {
+            imports,
+            flows,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    fn parse_use_import(&mut self) -> Result<UseImport, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Use)?;
+        let package_name = self.expect_ident()?;
+
+        let alias = if self.at(&TokenKind::As) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
+        Ok(UseImport {
+            package_name,
+            alias,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    fn parse_solution(&mut self) -> Result<Solution, ParseError> {
+        self.skip_newlines();
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Sol)?;
+        let name = self.expect_ident()?;
+
+        let mut items = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                match self.peek_kind().clone() {
+                    TokenKind::Lang => {
+                        items.push(TopLevelItem::Lang(self.parse_lang_block()?));
+                    }
+                    TokenKind::Ctx => {
+                        items.push(TopLevelItem::Context(self.parse_context()?));
+                    }
+                    TokenKind::Flow => {
+                        items.push(TopLevelItem::Flow(self.parse_flow()?));
+                    }
+                    TokenKind::Adapter => {
+                        items.push(TopLevelItem::Adapter(self.parse_adapter()?));
+                    }
+                    TokenKind::Comment => {
+                        self.advance();
+                    }
+                    _ => {
+                        let err = self.error(format!(
+                            "unexpected token {:?} in solution body",
+                            self.peek_kind()
+                        ));
+                        self.errors.push(err);
+                        self.advance();
+                    }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Solution {
+            name,
+            span: start_span.merge(self.current().span),
+            items,
+        })
+    }
+
+    fn parse_lang_block(&mut self) -> Result<LangBlock, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Lang)?;
+
+        let mut entries = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                if self.at(&TokenKind::Comment) {
+                    self.advance();
+                    continue;
+                }
+                // Parse "Term: definition text..."
+                let entry_span = self.current().span;
+                let term = self.expect_ident()?;
+                self.expect(&TokenKind::Colon)?;
+                // Collect all remaining tokens on this line as the definition
+                let mut def_parts = Vec::new();
+                while !self.at(&TokenKind::Newline)
+                    && !self.at(&TokenKind::Eof)
+                    && !self.at(&TokenKind::Dedent)
+                {
+                    def_parts.push(self.advance().text.clone());
+                }
+                entries.push(LangEntry {
+                    term,
+                    definition: def_parts.join(" "),
+                    span: entry_span.merge(self.current().span),
+                });
+            }
+            self.exit_block();
+        }
+
+        Ok(LangBlock {
+            span: start_span.merge(self.current().span),
+            entries,
+        })
+    }
+
+    fn parse_context(&mut self) -> Result<Context, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Ctx)?;
+        let name = self.expect_ident()?;
+
+        let mut items = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                let annotations = self.parse_annotations();
+                match self.peek_kind().clone() {
+                    TokenKind::Val => {
+                        items.push(ContextItem::ValueObject(
+                            self.parse_value_object(annotations)?,
+                        ));
+                    }
+                    TokenKind::Ent => {
+                        items.push(ContextItem::Entity(self.parse_entity(annotations)?));
+                    }
+                    TokenKind::Agg => {
+                        items.push(ContextItem::Aggregate(self.parse_aggregate(annotations)?));
+                    }
+                    TokenKind::Port => {
+                        items.push(ContextItem::Port(self.parse_port()?));
+                    }
+                    TokenKind::Svc => {
+                        items.push(ContextItem::Service(self.parse_service()?));
+                    }
+                    TokenKind::Comment => {
+                        self.advance();
+                    }
+                    _ => {
+                        let err = self.error(format!(
+                            "unexpected token {:?} in context body",
+                            self.peek_kind()
+                        ));
+                        self.errors.push(err);
+                        self.advance();
+                    }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Context {
+            name,
+            span: start_span.merge(self.current().span),
+            items,
+        })
+    }
+}
+
+// ─── Domain construct parsing ─────────────────────────────────────────────
+
+impl<'a> Parser<'a> {
+    fn parse_value_object(&mut self, annotations: Vec<Annotation>) -> Result<ValueObject, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Val)?;
+        let name = self.expect_ident()?;
+
+        let mut fields = Vec::new();
+        let mut field_annotations = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    field_annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Ident) {
+                    fields.push(self.parse_field()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        let mut all_annotations = annotations;
+        all_annotations.extend(field_annotations);
+
+        Ok(ValueObject {
+            name,
+            span: start_span.merge(self.current().span),
+            fields,
+            annotations: all_annotations,
+        })
+    }
+
+    fn parse_entity(&mut self, annotations: Vec<Annotation>) -> Result<Entity, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Ent)?;
+        let name = self.expect_ident()?;
+
+        let mut fields = Vec::new();
+        let mut field_annotations = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    field_annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Ident) {
+                    fields.push(self.parse_field()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        let mut all_annotations = annotations;
+        all_annotations.extend(field_annotations);
+
+        Ok(Entity {
+            name,
+            span: start_span.merge(self.current().span),
+            fields,
+            annotations: all_annotations,
+        })
+    }
+
+    fn parse_aggregate(&mut self, annotations: Vec<Annotation>) -> Result<Aggregate, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Agg)?;
+        let name = self.expect_ident()?;
+
+        let mut fields = Vec::new();
+        let mut events = Vec::new();
+        let mut commands = Vec::new();
+        let mut agg_annotations = annotations;
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    let mut anns = self.parse_annotations();
+                    // Consume any trailing condition tokens on the same line (e.g., != nil)
+                    while !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
+                        && !self.at(&TokenKind::Dedent) && !self.at(&TokenKind::Annotation)
+                        && !self.at(&TokenKind::Indent)
+                    {
+                        let extra = self.advance().text;
+                        // Append to last annotation's args
+                        if let Some(last) = anns.last_mut() {
+                            last.args.push(extra);
+                        }
+                    }
+                    agg_annotations.extend(anns);
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                match self.peek_kind().clone() {
+                    TokenKind::Evt => events.push(self.parse_event()?),
+                    TokenKind::Cmd => commands.push(self.parse_command()?),
+                    TokenKind::Ident => fields.push(self.parse_field()?),
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Aggregate {
+            name,
+            span: start_span.merge(self.current().span),
+            fields,
+            annotations: agg_annotations,
+            events,
+            commands,
+        })
+    }
+
+    fn parse_event(&mut self) -> Result<Event, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Evt)?;
+        let name = self.expect_ident()?;
+
+        let mut fields = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Ident) {
+                    fields.push(self.parse_field_or_shorthand()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Event {
+            name,
+            span: start_span.merge(self.current().span),
+            fields,
+        })
+    }
+
+    fn parse_command(&mut self) -> Result<Command, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Cmd)?;
+        let name = self.expect_ident()?;
+
+        let mut fields = Vec::new();
+        let mut return_type = None;
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Arrow) {
+                    self.advance(); // consume ->
+                    return_type = Some(self.parse_type()?);
+                } else if self.at(&TokenKind::Ident) {
+                    fields.push(self.parse_field()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Command {
+            name,
+            span: start_span.merge(self.current().span),
+            fields,
+            return_type,
+        })
+    }
+
+    /// Parse a field like "name: Type"
+    fn parse_field(&mut self) -> Result<Field, ParseError> {
+        let start_span = self.current().span;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        let type_expr = self.parse_type()?;
+        Ok(Field {
+            name,
+            type_expr,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse a field that might be shorthand (just name, no type) or full "name: Type".
+    /// Used in event fields like "id email created" (shorthand) or "verified_at: DateTime".
+    fn parse_field_or_shorthand(&mut self) -> Result<Field, ParseError> {
+        let start_span = self.current().span;
+        let name = self.expect_ident()?;
+        if self.at(&TokenKind::Colon) {
+            self.advance();
+            let type_expr = self.parse_type()?;
+            Ok(Field {
+                name,
+                type_expr,
+                span: start_span.merge(self.current().span),
+            })
+        } else {
+            // Shorthand: infer type from name (will be resolved later)
+            Ok(Field {
+                name: name.clone(),
+                type_expr: TypeExpr::Named(name),
+                span: start_span,
+            })
+        }
+    }
+}
+
+// ─── Port, service, adapter, and flow parsing ────────────────────────────
+
+impl<'a> Parser<'a> {
+    fn parse_port(&mut self) -> Result<Port, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Port)?;
+        let name = self.expect_ident()?;
+
+        let mut methods = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Ident) {
+                    methods.push(self.parse_port_method()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Port {
+            name,
+            span: start_span.merge(self.current().span),
+            methods,
+        })
+    }
+
+    fn parse_port_method(&mut self) -> Result<PortMethod, ParseError> {
+        let start_span = self.current().span;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+
+        let mut params = Vec::new();
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+            let param_span = self.current().span;
+            let param_name = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let param_type = self.parse_type()?;
+            params.push(Param {
+                name: param_name,
+                type_expr: param_type,
+                span: param_span.merge(self.current().span),
+            });
+            if self.at(&TokenKind::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+
+        let mut return_type = None;
+        if self.at(&TokenKind::Arrow) {
+            self.advance();
+            return_type = Some(self.parse_type()?);
+        }
+
+        Ok(PortMethod {
+            name,
+            span: start_span.merge(self.current().span),
+            params,
+            return_type,
+        })
+    }
+
+    fn parse_service(&mut self) -> Result<Service, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Svc)?;
+        let name = self.expect_ident()?;
+
+        let mut methods = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Ident) {
+                    methods.push(self.parse_port_method()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Service {
+            name,
+            span: start_span.merge(self.current().span),
+            methods,
+        })
+    }
+
+    fn parse_adapter(&mut self) -> Result<Adapter, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Adapter)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::For)?;
+        let target_port = self.expect_ident()?;
+
+        let mut annotations = Vec::new();
+        let mut impls = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Impl) {
+                    impls.push(self.parse_adapter_impl()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Adapter {
+            name,
+            target_port,
+            span: start_span.merge(self.current().span),
+            annotations,
+            impls,
+        })
+    }
+
+    fn parse_adapter_impl(&mut self) -> Result<AdapterImpl, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Impl)?;
+        let method_name = self.expect_ident()?;
+
+        // Parse parameter names (no types, just names)
+        let mut params = Vec::new();
+        if self.at(&TokenKind::LParen) {
+            self.advance();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                params.push(self.expect_ident()?);
+                if self.at(&TokenKind::Comma) {
+                    self.advance();
+                }
+            }
+            self.expect(&TokenKind::RParen)?;
+        }
+
+        // Parse body (skip for now — just consume the block)
+        let mut body = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                // For now, consume body as expressions (simplified)
+                if let Ok(expr) = self.parse_expr() {
+                    body.push(expr);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(AdapterImpl {
+            method_name,
+            params,
+            span: start_span.merge(self.current().span),
+            body,
+        })
+    }
+
+    /// Parse a flow (stub — full implementation in Task 4)
+    fn parse_flow(&mut self) -> Result<Flow, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Flow)?;
+        let name = self.expect_ident()?;
+
+        let mut annotations = Vec::new();
+        let mut inputs = Vec::new();
+        let mut steps = Vec::new();
+        let mut error_boundary = None;
+        let mut return_expr = None;
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                match self.peek_kind().clone() {
+                    TokenKind::Input => {
+                        inputs = self.parse_flow_inputs()?;
+                    }
+                    TokenKind::Err => {
+                        error_boundary = Some(self.parse_error_boundary()?);
+                    }
+                    TokenKind::Step => {
+                        steps.push(FlowStep::Step(self.parse_step_def()?));
+                    }
+                    TokenKind::Par => {
+                        steps.push(FlowStep::Parallel(self.parse_par_block()?));
+                    }
+                    TokenKind::Ret => {
+                        self.advance(); // consume ret
+                        if !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Dedent) {
+                            return_expr = Some(self.parse_expr()?);
+                        }
+                    }
+                    _ => {
+                        self.advance();
+                    }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Flow {
+            name,
+            span: start_span.merge(self.current().span),
+            annotations,
+            inputs,
+            steps,
+            error_boundary,
+            return_expr,
+        })
+    }
+
+    fn parse_flow_inputs(&mut self) -> Result<Vec<Field>, ParseError> {
+        self.expect(&TokenKind::Input)?;
+        let mut fields = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Ident) {
+                    fields.push(self.parse_field()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+        Ok(fields)
+    }
+
+    fn parse_error_boundary(&mut self) -> Result<ErrorBoundary, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Err)?;
+        // expect "boundary"
+        if self.at(&TokenKind::Boundary) {
+            self.advance();
+        }
+
+        let mut annotations = Vec::new();
+        let mut fallback = None;
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Fallback) {
+                    self.advance();
+                    if self.at(&TokenKind::Arrow) {
+                        self.advance();
+                    }
+                    fallback = self.parse_expr().ok();
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(ErrorBoundary {
+            span: start_span.merge(self.current().span),
+            annotations,
+            fallback,
+        })
+    }
+
+    fn parse_step_def(&mut self) -> Result<StepDef, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Step)?;
+        let name = self.expect_ident()?;
+
+        let mut body = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                match self.parse_expr() {
+                    Ok(expr) => body.push(expr),
+                    Err(_) => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(StepDef {
+            name,
+            span: start_span.merge(self.current().span),
+            body,
+        })
+    }
+
+    fn parse_par_block(&mut self) -> Result<ParBlock, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Par)?;
+
+        let mut steps = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Step) {
+                    steps.push(self.parse_step_def()?);
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(ParBlock {
+            span: start_span.merge(self.current().span),
+            steps,
+        })
+    }
+
+    /// Parse an expression (simplified for MVP).
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        match self.peek_kind().clone() {
+            TokenKind::Call => self.parse_call_expr(),
+            TokenKind::Emit => self.parse_emit_expr(),
+            TokenKind::Match => self.parse_match_expr(),
+            TokenKind::Ret => {
+                self.advance();
+                let inner = self.parse_expr()?;
+                Ok(Expr::Return(Box::new(inner)))
+            }
+            TokenKind::Ident => {
+                let start_span = self.current().span;
+                let name = self.advance().text.clone();
+                // Check for assignment: name = expr
+                if self.at(&TokenKind::Eq) {
+                    self.advance();
+                    let rhs = self.parse_expr()?;
+                    Ok(Expr::Assign(name, Box::new(rhs)))
+                }
+                // Check for field access / method call
+                else if self.at(&TokenKind::Dot) {
+                    let mut parts = vec![name.clone()];
+                    while self.at(&TokenKind::Dot) {
+                        self.advance();
+                        parts.push(self.expect_ident()?);
+                    }
+                    // If followed by parens, it's a method call
+                    if self.at(&TokenKind::LParen) {
+                        let method = parts.pop().unwrap_or_default();
+                        let target = parts.join(".");
+                        let args = self.parse_paren_args();
+                        Ok(Expr::Call(CallExpr {
+                            target,
+                            method,
+                            args,
+                            span: start_span.merge(self.current().span),
+                        }))
+                    } else {
+                        // Plain field access chain
+                        let mut expr = Expr::Ident(parts[0].clone());
+                        for part in &parts[1..] {
+                            expr = Expr::FieldAccess(Box::new(expr), part.clone());
+                        }
+                        Ok(expr)
+                    }
+                }
+                // Direct function call: name(args)
+                else if self.at(&TokenKind::LParen) {
+                    let args = self.parse_paren_args();
+                    Ok(Expr::Call(CallExpr {
+                        target: name,
+                        method: String::new(),
+                        args,
+                        span: start_span.merge(self.current().span),
+                    }))
+                } else {
+                    Ok(Expr::Ident(name))
+                }
+            }
+            TokenKind::StringLit => {
+                let text = self.advance().text.clone();
+                // Strip quotes
+                let inner = text[1..text.len() - 1].to_string();
+                Ok(Expr::StringLit(inner))
+            }
+            TokenKind::IntLit => {
+                let text = self.advance().text.clone();
+                let val = text.parse::<i64>().unwrap_or(0);
+                Ok(Expr::IntLit(val))
+            }
+            _ => Err(self.error(format!("expected expression, got {:?}", self.peek_kind()))),
+        }
+    }
+
+    fn parse_call_expr(&mut self) -> Result<Expr, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Call)?;
+
+        let target = self.expect_ident()?;
+        let mut method = String::new();
+
+        if self.at(&TokenKind::Dot) {
+            self.advance();
+            method = self.expect_ident()?;
+        }
+
+        // Parse args if there are parens or braces
+        let mut args = Vec::new();
+        if self.at(&TokenKind::LParen) {
+            self.advance();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof)
+                && !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Dedent)
+            {
+                if let Ok(arg) = self.parse_expr() {
+                    args.push(arg);
+                }
+                if self.at(&TokenKind::Comma) {
+                    self.advance();
+                }
+                // Skip nested parens/tokens we can't parse
+                if self.at(&TokenKind::LParen) {
+                    self.skip_balanced_parens();
+                }
+            }
+            if self.at(&TokenKind::RParen) {
+                self.advance();
+            }
+        } else if self.at(&TokenKind::LBrace) {
+            // Struct-like call: Billing.CreateTrial{field: val, ...}
+            self.advance();
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof)
+                && !self.at(&TokenKind::Newline)
+            {
+                if let Ok(arg) = self.parse_expr() {
+                    args.push(arg);
+                }
+                if self.at(&TokenKind::Comma) { self.advance(); }
+                if self.at(&TokenKind::Colon) {
+                    self.advance();
+                    if let Ok(val) = self.parse_expr() {
+                        args.push(val);
+                    }
+                }
+            }
+            if self.at(&TokenKind::RBrace) { self.advance(); }
+        }
+
+        Ok(Expr::Call(CallExpr {
+            target,
+            method,
+            args,
+            span: start_span.merge(self.current().span),
+        }))
+    }
+
+    fn parse_emit_expr(&mut self) -> Result<Expr, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Emit)?;
+        let event_name = self.expect_ident()?;
+
+        let mut fields = Vec::new();
+        if self.at(&TokenKind::LBrace) {
+            self.advance();
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof)
+                && !self.at(&TokenKind::Newline)
+            {
+                let field_name = self.expect_ident()?;
+                let value = if self.at(&TokenKind::Dot) {
+                    let mut expr = Expr::Ident(field_name.clone());
+                    while self.at(&TokenKind::Dot) {
+                        self.advance();
+                        let f = self.expect_ident()?;
+                        expr = Expr::FieldAccess(Box::new(expr), f);
+                    }
+                    expr
+                } else {
+                    Expr::Ident(field_name.clone())
+                };
+                fields.push((field_name, value));
+                if self.at(&TokenKind::Comma) { self.advance(); }
+            }
+            if self.at(&TokenKind::RBrace) { self.advance(); }
+        }
+
+        Ok(Expr::Emit(EmitExpr {
+            event_name,
+            fields,
+            span: start_span.merge(self.current().span),
+        }))
+    }
+
+    fn parse_match_expr(&mut self) -> Result<Expr, ParseError> {
+        // For now, just skip match blocks (consume them as tokens)
+        // Full implementation in Task 4
+        self.advance(); // consume 'match'
+        // Skip remaining tokens on this line
+        while !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
+            && !self.at(&TokenKind::Dedent)
+        {
+            self.advance();
+        }
+        // Skip the match body block if present
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                self.advance();
+            }
+            self.exit_block();
+        }
+        Ok(Expr::Ident("__match_placeholder".to_string()))
+    }
+
+    fn skip_balanced_parens(&mut self) {
+        let mut depth = 0;
+        if self.at(&TokenKind::LParen) {
+            depth = 1;
+            self.advance();
+        }
+        while depth > 0 && !self.at(&TokenKind::Eof) {
+            match self.peek_kind() {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => depth -= 1,
+                _ => {}
+            }
+            if depth > 0 {
+                self.advance();
+            }
+        }
+    }
+
+    /// Safely parse parenthesized argument list.
+    /// Handles nested parens without recursion into parse_expr to avoid infinite loops.
+    fn parse_paren_args(&mut self) -> Vec<Expr> {
+        if !self.at(&TokenKind::LParen) {
+            return Vec::new();
+        }
+        self.advance(); // consume (
+
+        let mut args = Vec::new();
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof)
+            && !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Dedent)
+        {
+            let before = self.pos;
+            // Try to parse a simple expression (ident, field access, string, int)
+            match self.peek_kind().clone() {
+                TokenKind::Ident => {
+                    let name = self.advance().text.clone();
+                    if self.at(&TokenKind::Dot) {
+                        let mut parts = vec![name];
+                        while self.at(&TokenKind::Dot) {
+                            self.advance();
+                            if self.at(&TokenKind::Ident) {
+                                parts.push(self.advance().text.clone());
+                            } else {
+                                break;
+                            }
+                        }
+                        // Check for nested call: obj.method(...)
+                        if self.at(&TokenKind::LParen) {
+                            let method = parts.pop().unwrap_or_default();
+                            let target = parts.join(".");
+                            let nested_args = self.parse_paren_args();
+                            args.push(Expr::Call(CallExpr {
+                                target,
+                                method,
+                                args: nested_args,
+                                span: Span::new(0, 0),
+                            }));
+                        } else {
+                            let mut expr = Expr::Ident(parts[0].clone());
+                            for p in &parts[1..] {
+                                expr = Expr::FieldAccess(Box::new(expr), p.clone());
+                            }
+                            args.push(expr);
+                        }
+                    } else if self.at(&TokenKind::LParen) {
+                        // Direct call: func(...)
+                        let nested_args = self.parse_paren_args();
+                        args.push(Expr::Call(CallExpr {
+                            target: name,
+                            method: String::new(),
+                            args: nested_args,
+                            span: Span::new(0, 0),
+                        }));
+                    } else {
+                        args.push(Expr::Ident(name));
+                    }
+                }
+                TokenKind::StringLit => {
+                    let text = self.advance().text.clone();
+                    let inner = if text.len() >= 2 { text[1..text.len()-1].to_string() } else { text };
+                    args.push(Expr::StringLit(inner));
+                }
+                TokenKind::IntLit => {
+                    let text = self.advance().text.clone();
+                    args.push(Expr::IntLit(text.parse().unwrap_or(0)));
+                }
+                _ => {
+                    // Skip unknown token to prevent infinite loop
+                    self.advance();
+                }
+            }
+            if self.at(&TokenKind::Comma) { self.advance(); }
+            // Safety: if we didn't advance, break to prevent infinite loop
+            if self.pos == before {
+                self.advance();
+            }
+        }
+        if self.at(&TokenKind::RParen) { self.advance(); }
+        args
+    }
+}
+
+#[cfg(test)]
+#[path = "parser_tests.rs"]
+mod tests;

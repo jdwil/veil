@@ -1,0 +1,220 @@
+//! VEIL CLI — parse, validate, generate, and serve VEIL files.
+
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "veil", version, about = "VEIL — Visual Engineering Intermediate Language")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Lex a VEIL file and print tokens
+    Lex {
+        /// Path to the .veil file
+        file: PathBuf,
+    },
+    /// Parse a VEIL file and print AST
+    Parse {
+        /// Path to the .veil file
+        file: PathBuf,
+    },
+    /// Validate a VEIL file
+    Check {
+        /// Path to the .veil file
+        file: PathBuf,
+    },
+    /// Generate Rust code from a VEIL file
+    Gen {
+        /// Path to the .veil file
+        file: PathBuf,
+        /// Output directory
+        #[arg(short, long, default_value = "./output")]
+        output: PathBuf,
+    },
+    /// Start the visualization server
+    Serve {
+        /// Path to the .veil file
+        file: PathBuf,
+        /// Port to serve on
+        #[arg(short, long, default_value = "3001")]
+        port: u16,
+    },
+}
+
+fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("veil=info".parse().unwrap()),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Lex { file } => {
+            let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let tokens = veil_parser::lex(&source);
+            for token in &tokens {
+                println!("{:?}", token);
+            }
+        }
+        Commands::Parse { file } => {
+            let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let tokens = veil_parser::lex(&source);
+            match veil_parser::parse(&tokens) {
+                Ok(sol) => {
+                    println!("{}", serde_json::to_string_pretty(&sol).unwrap());
+                }
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors {
+                        eprintln!("  {}", err);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Check { file } => {
+            let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let tokens = veil_parser::lex(&source);
+            match veil_parser::parse(&tokens) {
+                Ok(sol) => {
+                    let graph = veil_ir::build_ir(&sol);
+                    println!("✓ Parsed: {}", sol.name);
+                    println!("  Nodes: {}", graph.nodes.len());
+                    println!("  Edges: {}", graph.edges.len());
+                    // Output IR JSON to stdout for viewer consumption
+                    println!("\n{}", serde_json::to_string_pretty(&graph).unwrap());
+                }
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors {
+                        eprintln!("  {}", err);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Gen { file, output } => {
+            let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let tokens = veil_parser::lex(&source);
+            let sol = match veil_parser::parse(&tokens) {
+                Ok(sol) => sol,
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors {
+                        eprintln!("  {}", err);
+                    }
+                    std::process::exit(1);
+                }
+            };
+
+            let project = veil_codegen::generate(&sol);
+            for file in &project.files {
+                let path = output.join(&file.path);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).expect("Failed to create directory");
+                }
+                std::fs::write(&path, &file.content).expect("Failed to write file");
+            }
+            println!(
+                "✓ Generated {} files in {}",
+                project.files.len(),
+                output.display()
+            );
+        }
+        Commands::Serve { file, port } => {
+            let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let tokens = veil_parser::lex(&source);
+
+            // Use parse_file to detect type
+            let veil_file = match veil_parser::parse_file(&tokens) {
+                Ok(f) => f,
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors {
+                        eprintln!("  {}", err);
+                    }
+                    std::process::exit(1);
+                }
+            };
+
+            // Build IR based on file type
+            let graph = match &veil_file {
+                veil_ir::VeilFile::Solution(sol) => veil_ir::build_ir(sol),
+                veil_ir::VeilFile::Package(pkg) => {
+                    // For packages, build IR from internal items
+                    let sol = veil_ir::Solution {
+                        name: pkg.name.clone(),
+                        span: pkg.span,
+                        items: pkg.items.clone(),
+                    };
+                    veil_ir::build_ir(&sol)
+                }
+                veil_ir::VeilFile::Composition(comp) => {
+                    // For compositions, resolve packages and build filtered IR
+                    let search_dir = file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+                    let search_paths = vec![search_dir];
+
+                    let mut resolved = Vec::new();
+                    let found = veil_ir::find_package_files(&comp.imports, &search_paths);
+                    for result in found {
+                        match result {
+                            Ok((imp, path)) => {
+                                let pkg_source = std::fs::read_to_string(&path)
+                                    .expect("Failed to read package");
+                                let pkg_tokens = veil_parser::lex(&pkg_source);
+                                if let Ok(veil_ir::VeilFile::Package(pkg)) =
+                                    veil_parser::parse_file(&pkg_tokens)
+                                {
+                                    resolved.push(veil_ir::resolve_package(&pkg, imp.alias));
+                                }
+                            }
+                            Err(e) => eprintln!("Warning: {}", e),
+                        }
+                    }
+
+                    veil_ir::build_composition_ir(comp, &resolved)
+                }
+            };
+
+            let graph_json = serde_json::to_string(&graph).unwrap();
+            let node_count = graph.nodes.len();
+            let edge_count = graph.edges.len();
+
+            println!("✓ Serving VEIL IR ({} nodes, {} edges)", node_count, edge_count);
+            println!("  API: http://localhost:{}/api/ir", port);
+
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let app = axum::Router::new()
+                    .route("/api/ir", axum::routing::get({
+                        let json = graph_json.clone();
+                        move || async move {
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                                json.clone(),
+                            )
+                        }
+                    }))
+                    .layer(
+                        tower_http::cors::CorsLayer::new()
+                            .allow_origin(tower_http::cors::Any)
+                            .allow_methods(tower_http::cors::Any)
+                            .allow_headers(tower_http::cors::Any),
+                    );
+
+                let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+                    .await
+                    .unwrap();
+                println!("  Listening on port {}", port);
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+    }
+}

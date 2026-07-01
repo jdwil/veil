@@ -1,0 +1,105 @@
+sol CustomerOnboarding
+  lang
+    Customer: person signing up for the platform
+    KYC: Know Your Customer verification
+    Onboarding: process from signup to active customer
+
+  ctx Identity
+    val Email
+      addr: Str
+      @invariant valid_email(addr)
+
+    val Phone
+      number: Str
+      country: Str
+
+    agg Customer
+      id: UUID
+      email: Email
+      phone: Phone
+      status: Status
+      created: DateTime
+
+      @invariant email != nil
+
+      evt CustomerCreated
+        id email created
+
+      evt CustomerVerified
+        id verified_at: DateTime
+
+      cmd CreateCustomer
+        email: Email
+        phone: Phone
+        -> Res!<Customer>
+
+      cmd VerifyCustomer
+        id: UUID
+        code: Str
+        -> Res!<Customer>
+
+    port Notifier
+      send_sms(phone: Phone, msg: Str) -> Res!
+      send_email(email: Email, subj: Str, body: Str) -> Res!
+
+    port KYCProvider
+      check(name: Str, email: Email) -> Res!<KYCResult>
+
+    port CustomerRepo
+      save(c: Customer) -> Res!
+      find(id: UUID) -> Res!<Opt<Customer>>
+
+  ctx Billing
+    agg Subscription
+      id: UUID
+      customer_id: UUID
+      plan: Plan
+      status: SubStatus
+
+      cmd CreateTrial
+        customer_id: UUID
+        plan: Plan
+        -> Res!<Subscription>
+
+    port PaymentGateway
+      create_customer(email: Str) -> Res!<ExtId>
+
+  flow Onboard
+    @async @trace @saga
+    input
+      email: Email
+      phone: Phone
+      name: Str
+
+    err boundary
+      @retry 3 @timeout 30000
+      fallback -> emit OnboardingFailed{email, reason}
+
+    step create_customer
+      c = call CustomerRepo.save(Customer.new(email, phone))
+      emit CustomerCreated{c.id, email, c.created}
+
+    par
+      step send_welcome
+        call Notifier.send_email(email, "Welcome", template("welcome"))
+      step kyc_check
+        result = call KYCProvider.check(name, email)
+        match result.status
+          Pass -> emit CustomerVerified{c.id, now()}
+          Fail -> emit KYCFailed{c.id, result.reason}
+
+    step setup_billing
+      call PaymentGateway.create_customer(email.addr)
+      call Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
+
+    ret c.id
+
+  adapter SmsTwilio for Notifier
+    @env TWILIO_SID TWILIO_TOKEN
+    impl send_sms(phone, msg)
+      http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
+
+  adapter StripeAdapter for PaymentGateway
+    @env STRIPE_KEY
+    impl create_customer(email)
+      http.post("api.stripe.com/v1/customers", {email})

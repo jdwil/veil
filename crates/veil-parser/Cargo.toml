@@ -1,0 +1,14 @@
+[package]
+name = "veil-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "VEIL language lexer and parser"
+
+[dependencies]
+winnow.workspace = true
+thiserror.workspace = true
+miette.workspace = true
+serde.workspace = true
+veil-ir.workspace = true
