@@ -223,8 +223,8 @@
 
   .node-badges {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+    flex-direction: column;
+    gap: 3px;
     margin-top: 8px;
   }
 
@@ -315,6 +315,7 @@
     color: #a5b4fc;
     border: 1px solid rgba(99, 102, 241, 0.25);
     font-weight: 500;
+    width: fit-content;
   }
 
   .ref-badge {
