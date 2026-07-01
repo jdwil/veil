@@ -279,13 +279,12 @@
     const graph = $irGraph;
     if (!graph) return;
     const irNode = graph.nodes.find(n => n.id === Number(node.id));
-    if (!irNode) return;
 
-    // Select the node
+    // Always update selection
     selectedNodeId.set(node.id);
 
     // Double-click to drill down
-    if (event instanceof MouseEvent && event.detail === 2) {
+    if (irNode && event instanceof MouseEvent && event.detail === 2) {
       const children = getChildren(graph, irNode.id);
       if (children.length > 0) {
         drillDown(irNode);
@@ -314,7 +313,10 @@
   }
 
   function handlePaneClick() {
-    selectedNodeId.set(null);
+    // Only deselect, don't interfere with anything else
+    if ($selectedNodeId) {
+      selectedNodeId.set(null);
+    }
   }
 </script>
 
