@@ -43,6 +43,11 @@ enum Commands {
         #[arg(short, long, default_value = "3001")]
         port: u16,
     },
+    /// Serialize: parse then re-emit VEIL source (round-trip test)
+    Emit {
+        /// Path to the .veil file
+        file: PathBuf,
+    },
 }
 
 fn main() {
@@ -128,6 +133,22 @@ fn main() {
                 output.display()
             );
         }
+        Commands::Emit { file } => {
+            let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let tokens = veil_parser::lex(&source);
+            let sol = match veil_parser::parse(&tokens) {
+                Ok(sol) => sol,
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors {
+                        eprintln!("  {}", err);
+                    }
+                    std::process::exit(1);
+                }
+            };
+            let output = veil_ir::serialize_solution(&sol);
+            print!("{}", output);
+        }
         Commands::Serve { file, port } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
@@ -187,8 +208,12 @@ fn main() {
             let node_count = graph.nodes.len();
             let edge_count = graph.edges.len();
 
+            // Also serve the VEIL source for the code panel
+            let veil_source = source.clone();
+
             println!("✓ Serving VEIL IR ({} nodes, {} edges)", node_count, edge_count);
             println!("  API: http://localhost:{}/api/ir", port);
+            println!("  Source: http://localhost:{}/api/source", port);
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
@@ -199,6 +224,15 @@ fn main() {
                             (
                                 [(axum::http::header::CONTENT_TYPE, "application/json")],
                                 json.clone(),
+                            )
+                        }
+                    }))
+                    .route("/api/source", axum::routing::get({
+                        let src = veil_source.clone();
+                        move || async move {
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                                src.clone(),
                             )
                         }
                     }))

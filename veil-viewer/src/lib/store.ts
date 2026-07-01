@@ -2,37 +2,42 @@ import { writable } from 'svelte/store';
 import type { IrGraph, IrNode } from './types';
 
 export const irGraph = writable<IrGraph | null>(null);
+export const veilSource = writable<string>('');
 export const currentParent = writable<number | null>(null);
 export const breadcrumbs = writable<{ id: number | null; name: string }[]>([]);
 export const loading = writable(true);
 export const error = writable<string | null>(null);
 
 const API_URL = 'http://localhost:3001/api/ir';
+const SOURCE_URL = 'http://localhost:3001/api/source';
 
 export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const res = await fetch(API_URL);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data: IrGraph = await res.json();
+    const [irRes, srcRes] = await Promise.all([
+      fetch(API_URL),
+      fetch(SOURCE_URL),
+    ]);
+    if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
+    const data: IrGraph = await irRes.json();
     irGraph.set(data);
+
+    if (srcRes.ok) {
+      veilSource.set(await srcRes.text());
+    }
 
     // Find root and determine entry point
     const root = data.nodes.find(n => n.kind === 'Solution');
     if (root) {
-      // Check if this is a composition (root children include a Flow but no user-visible structure)
       const rootChildren = data.nodes.filter(n => n.metadata.parent === root.id);
       const flows = rootChildren.filter(n => n.kind === 'Flow');
       const nonFlows = rootChildren.filter(n => n.kind !== 'Flow');
 
-      // If there's exactly one flow and only package groups, auto-drill into the flow
       if (flows.length === 1 && nonFlows.every(n => n.metadata.annotations.includes('📦 package'))) {
-        // Composer mode: enter directly into the flow
         currentParent.set(flows[0].id);
         breadcrumbs.set([{ id: flows[0].id, name: flows[0].name }]);
       } else {
-        // Builder mode: start at root
         currentParent.set(root.id);
         breadcrumbs.set([{ id: root.id, name: root.name }]);
       }

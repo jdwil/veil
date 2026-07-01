@@ -221,27 +221,28 @@
 </script>
 
 <div class="viewer-container">
-  <!-- Breadcrumb navigation -->
-  <div class="breadcrumbs">
-    {#each $breadcrumbs as crumb, i}
-      {#if i > 0}
-        <span class="breadcrumb-sep">›</span>
-      {/if}
-      <button
-        class="breadcrumb-item"
-        class:active={i === $breadcrumbs.length - 1}
-        onclick={() => navigateTo(crumb.id)}
-      >
-        {crumb.name}
-      </button>
-    {/each}
+  <!-- Top bar -->
+  <div class="top-bar">
+    <div class="breadcrumbs">
+      {#each $breadcrumbs as crumb, i}
+        {#if i > 0}
+          <span class="breadcrumb-sep">›</span>
+        {/if}
+        <button
+          class="breadcrumb-item"
+          class:active={i === $breadcrumbs.length - 1}
+          onclick={() => navigateTo(crumb.id)}
+        >
+          {crumb.name}
+        </button>
+      {/each}
+    </div>
   </div>
 
-  <!-- Loading / Error states -->
   {#if $loading}
     <div class="status-overlay">
       <div class="pulse-ring"></div>
-      <p>Loading VEIL IR...</p>
+      <p>Loading...</p>
     </div>
   {:else if $error}
     <div class="status-overlay error">
@@ -253,7 +254,6 @@
       <button class="retry-btn" onclick={() => fetchIr()}>Retry</button>
     </div>
   {:else}
-    <!-- Graph view -->
     <div class="graph-container">
       <SvelteFlow
         {nodes}
@@ -280,15 +280,21 @@
     background: #0a0a0f;
   }
 
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    background: rgba(26, 26, 46, 0.95);
+    border-bottom: 1px solid #2d2d44;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+  }
+
   .breadcrumbs {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 12px 20px;
-    background: rgba(26, 26, 46, 0.9);
-    border-bottom: 1px solid #2d2d44;
-    backdrop-filter: blur(12px);
-    z-index: 10;
     overflow-x: auto;
   }
 
@@ -334,115 +340,24 @@
     color: #94a3b8;
   }
 
-  .status-overlay.error {
-    color: #f87171;
-  }
+  .status-overlay.error { color: #f87171; }
+  .error-title { font-size: 18px; font-weight: 600; }
+  .error-msg { font-size: 14px; color: #94a3b8; }
+  .error-hint { font-size: 12px; color: #64748b; margin-top: 8px; }
+  .error-hint code { color: #a5b4fc; background: rgba(99, 102, 241, 0.1); padding: 2px 6px; border-radius: 4px; }
+  .retry-btn { margin-top: 12px; padding: 8px 20px; background: #6366f1; color: white; border: none; border-radius: 8px; cursor: pointer; }
+  .retry-btn:hover { background: #4f46e5; }
+  .pulse-ring { width: 40px; height: 40px; border-radius: 50%; border: 3px solid #6366f1; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.5; } 100% { transform: scale(1); opacity: 1; } }
 
-  .error-title {
-    font-size: 18px;
-    font-weight: 600;
-  }
-
-  .error-msg {
-    font-size: 14px;
-    color: #94a3b8;
-  }
-
-  .error-hint {
-    font-size: 12px;
-    color: #64748b;
-    margin-top: 8px;
-  }
-
-  .error-hint code {
-    color: #a5b4fc;
-    background: rgba(99, 102, 241, 0.1);
-    padding: 2px 6px;
-    border-radius: 4px;
-  }
-
-  .retry-btn {
-    margin-top: 12px;
-    padding: 8px 20px;
-    background: #6366f1;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 13px;
-  }
-
-  .retry-btn:hover {
-    background: #4f46e5;
-  }
-
-  .pulse-ring {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    border: 3px solid #6366f1;
-    animation: pulse 1.5s infinite;
-  }
-
-  @keyframes pulse {
-    0% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.3); opacity: 0.5; }
-    100% { transform: scale(1); opacity: 1; }
-  }
-
-  :global(.svelte-flow) {
-    background: #0a0a0f !important;
-  }
-
-  :global(.svelte-flow__background) {
-    opacity: 0.4;
-  }
-
-  :global(.svelte-flow__minimap) {
-    background: rgba(26, 26, 46, 0.9) !important;
-    border: 1px solid #2d2d44 !important;
-    border-radius: 10px !important;
-    backdrop-filter: blur(8px);
-  }
-
-  :global(.svelte-flow__controls) {
-    background: rgba(26, 26, 46, 0.9) !important;
-    border: 1px solid #2d2d44 !important;
-    border-radius: 10px !important;
-    backdrop-filter: blur(8px);
-  }
-
-  :global(.svelte-flow__controls button) {
-    background: transparent !important;
-    border-color: #2d2d44 !important;
-    color: #e2e8f0 !important;
-  }
-
-  :global(.svelte-flow__controls button:hover) {
-    background: rgba(99, 102, 241, 0.15) !important;
-  }
-
-  :global(.svelte-flow__edge-path) {
-    stroke-width: 2px;
-    filter: drop-shadow(0 0 3px rgba(99, 102, 241, 0.3));
-  }
-
-  :global(.svelte-flow__edge.animated .svelte-flow__edge-path) {
-    stroke: #6366f1 !important;
-    stroke-width: 2.5px;
-    filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.5));
-  }
-
-  :global(.svelte-flow__handle) {
-    width: 8px !important;
-    height: 8px !important;
-    background: var(--node-color, #475569) !important;
-    border: 2px solid #1a1a2e !important;
-    opacity: 0;
-    transition: opacity 0.2s;
-  }
-
-  :global(.svelte-flow__node:hover .svelte-flow__handle) {
-    opacity: 1;
-  }
+  :global(.svelte-flow) { background: #0a0a0f !important; }
+  :global(.svelte-flow__background) { opacity: 0.4; }
+  :global(.svelte-flow__minimap) { background: rgba(26, 26, 46, 0.9) !important; border: 1px solid #2d2d44 !important; border-radius: 10px !important; }
+  :global(.svelte-flow__controls) { background: rgba(26, 26, 46, 0.9) !important; border: 1px solid #2d2d44 !important; border-radius: 10px !important; }
+  :global(.svelte-flow__controls button) { background: transparent !important; border-color: #2d2d44 !important; color: #e2e8f0 !important; }
+  :global(.svelte-flow__controls button:hover) { background: rgba(99, 102, 241, 0.15) !important; }
+  :global(.svelte-flow__edge-path) { stroke-width: 2px; filter: drop-shadow(0 0 3px rgba(99, 102, 241, 0.3)); }
+  :global(.svelte-flow__edge.animated .svelte-flow__edge-path) { stroke: #6366f1 !important; stroke-width: 2.5px; filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.5)); }
+  :global(.svelte-flow__handle) { width: 8px !important; height: 8px !important; background: var(--node-color, #475569) !important; border: 2px solid #1a1a2e !important; opacity: 0; transition: opacity 0.2s; }
+  :global(.svelte-flow__node:hover .svelte-flow__handle) { opacity: 1; }
 </style>
