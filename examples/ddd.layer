@@ -1,5 +1,5 @@
-pkg ddd_kit v1
-  desc "Domain-Driven Design Kit — bounded contexts, aggregates, hexagonal architecture"
+pkg ddd v1
+  desc "Domain-Driven Design abstraction layer"
   author "VEIL"
 
   # DDD constructs built on VEIL core primitives

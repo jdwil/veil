@@ -1,5 +1,5 @@
 sol CustomerOnboarding
-  use ddd_kit
+  use ddd
 
   lang
     Customer: person signing up for the platform
