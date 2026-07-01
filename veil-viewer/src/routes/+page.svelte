@@ -208,7 +208,7 @@
     edges = allEdges;
   }
 
-  /** Solution-level view: Contexts as group containers, saga steps placed inside them */
+  /** Solution-level view: Contexts as group containers with direct children only */
   function computeSolutionView(
     graph: IrGraph,
     children: IrNode[],
@@ -218,15 +218,29 @@
     const allNodes: Node[] = [];
     const allEdges: Edge[] = [];
 
-    // Layout constants
-    const CTX_WIDTH = 400;
-    const CTX_HEIGHT = 500;
-    const CTX_GAP = 80;
-    const STEP_HEIGHT = 80;
+    // Calculate context sizes based on number of children
+    const CTX_PADDING = 30;
+    const NODE_W = 200;
+    const NODE_H = 80;
+    const COLS = 3;
+    const CTX_GAP = 100;
 
-    // Create context group nodes
     contexts.forEach((ctx, i) => {
-      const x = i * (CTX_WIDTH + CTX_GAP);
+      const ctxChildren = getChildren(graph, ctx.id);
+      const sagaStepsInCtx = sagas.flatMap(saga =>
+        getChildren(graph, saga.id).filter(step => {
+          const p = step.metadata.properties.find(([k]) => k === 'ctx');
+          return p && p[1] === ctx.name;
+        })
+      );
+      const totalItems = ctxChildren.length + sagaStepsInCtx.length;
+      const rows = Math.ceil(totalItems / COLS);
+      const ctxW = COLS * (NODE_W + 20) + CTX_PADDING * 2;
+      const ctxH = rows * (NODE_H + 20) + 80; // 80 for header
+
+      const x = i * (ctxW + CTX_GAP);
+
+      // Context group node
       allNodes.push({
         id: String(ctx.id),
         type: 'veil',
@@ -239,16 +253,17 @@
           properties: [],
           isGroup: true,
         },
-        style: `width: ${CTX_WIDTH}px; height: ${CTX_HEIGHT}px;`,
+        style: `width: ${ctxW}px; height: ${ctxH}px;`,
       });
 
-      // Add context children (aggregates, ports, services) inside the group
-      const ctxChildren = getChildren(graph, ctx.id);
+      // Direct children of context (aggregates, ports, services) — NO grandchildren
       ctxChildren.forEach((child, j) => {
+        const col = j % COLS;
+        const row = Math.floor(j / COLS);
         allNodes.push({
           id: String(child.id),
           type: 'veil',
-          position: { x: 20, y: 60 + j * 70 },
+          position: { x: CTX_PADDING + col * (NODE_W + 20), y: 60 + row * (NODE_H + 20) },
           parentId: String(ctx.id),
           extent: 'parent' as const,
           data: {
@@ -260,62 +275,39 @@
           },
         });
       });
+
+      // Saga steps that belong to this context
+      sagaStepsInCtx.forEach((step, j) => {
+        const idx = ctxChildren.length + j;
+        const col = idx % COLS;
+        const row = Math.floor(idx / COLS);
+        const saga = sagas.find(s => getChildren(graph, s.id).some(st => st.id === step.id));
+        const stepId = `saga-step-${step.id}`;
+
+        allNodes.push({
+          id: stepId,
+          type: 'veil',
+          position: { x: CTX_PADDING + col * (NODE_W + 20), y: 60 + row * (NODE_H + 20) },
+          parentId: String(ctx.id),
+          extent: 'parent' as const,
+          data: {
+            label: step.name,
+            kind: step.kind,
+            hasChildren: getChildren(graph, step.id).length > 0,
+            annotations: step.metadata.annotations,
+            properties: step.metadata.properties,
+            sagaName: saga?.name,
+          },
+        });
+      });
     });
 
-    // Place saga steps inside their respective context groups
+    // Saga sequence edges across contexts
     for (const saga of sagas) {
       const sagaSteps = getChildren(graph, saga.id);
       let prevStepId: string | null = null;
-
-      sagaSteps.forEach((step, j) => {
-        // Find which context this step belongs to
-        const ctxProp = step.metadata.properties.find(([k]) => k === 'ctx');
-        const ctxName = ctxProp ? ctxProp[1] : null;
-        const parentCtx = ctxName
-          ? contexts.find(c => c.name === ctxName)
-          : null;
-
-        const stepId = `saga-${saga.id}-step-${step.id}`;
-
-        if (parentCtx) {
-          // Place inside the context container
-          const ctxIdx = contexts.indexOf(parentCtx);
-          const ctxChildren = getChildren(graph, parentCtx.id);
-          const yOffset = 60 + ctxChildren.length * 70 + 20 + j * (STEP_HEIGHT + 10);
-
-          allNodes.push({
-            id: stepId,
-            type: 'veil',
-            position: { x: 20, y: yOffset },
-            parentId: String(parentCtx.id),
-            extent: 'parent' as const,
-            data: {
-              label: step.name,
-              kind: step.kind,
-              hasChildren: getChildren(graph, step.id).length > 0,
-              annotations: step.metadata.annotations,
-              properties: step.metadata.properties,
-              sagaName: saga.name,
-            },
-          });
-        } else {
-          // Floating step (no context)
-          allNodes.push({
-            id: stepId,
-            type: 'veil',
-            position: { x: contexts.length * (CTX_WIDTH + CTX_GAP), y: j * (STEP_HEIGHT + 20) },
-            data: {
-              label: step.name,
-              kind: step.kind,
-              hasChildren: false,
-              annotations: step.metadata.annotations,
-              properties: step.metadata.properties,
-              sagaName: saga.name,
-            },
-          });
-        }
-
-        // Sequence flow edges between saga steps
+      for (const step of sagaSteps) {
+        const stepId = `saga-step-${step.id}`;
         if (prevStepId) {
           allEdges.push({
             id: `saga-edge-${prevStepId}-${stepId}`,
@@ -328,16 +320,17 @@
           });
         }
         prevStepId = stepId;
-      });
+      }
     }
 
-    // Add non-context, non-saga items (adapters, flows)
+    // Adapters below contexts
     const others = children.filter(c => c.kind !== 'Context' && c.kind !== 'Saga');
+    const ctxTotalWidth = contexts.length * 800;
     others.forEach((child, i) => {
       allNodes.push({
         id: String(child.id),
         type: 'veil',
-        position: { x: i * 250, y: CTX_HEIGHT + 80 },
+        position: { x: i * 250, y: 600 },
         data: {
           label: child.name,
           kind: child.kind,
@@ -349,7 +342,6 @@
     });
 
     // Implements edges (adapter -> port)
-    const allVisibleIds = new Set(allNodes.map(n => Number(n.id) || 0));
     for (const edge of graph.edges) {
       if (edge.kind === 'Implements') {
         const sourceNode = allNodes.find(n => n.id === String(edge.from));
