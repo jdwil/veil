@@ -12,6 +12,15 @@ pub fn build_ir(solution: &Solution) -> IrGraph {
 }
 
 /// Extract the port name from a call label like "call PaymentGateway.create_customer"
+/// Format an annotation for IR metadata, preserving args.
+fn annotation_to_ir_string(ann: &Annotation) -> String {
+    if ann.args.is_empty() {
+        format!("@{}", ann.name)
+    } else {
+        format!("@{}({})", ann.name, ann.args.join(", "))
+    }
+}
+
 /// or "c = CustomerRepo.save(...)".
 fn extract_port_from_label(label: &str) -> String {
     let s = label.strip_prefix("call ").unwrap_or(label);
@@ -138,7 +147,7 @@ impl IrBuilder {
         // Add annotations as metadata
         for ann in &agg.annotations {
             if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == agg_id) {
-                node.metadata.annotations.push(format!("@{}", ann.name));
+                node.metadata.annotations.push(annotation_to_ir_string(ann));
             }
         }
 
@@ -181,7 +190,7 @@ impl IrBuilder {
         // Add annotations
         for ann in &flow.annotations {
             if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == flow_id) {
-                node.metadata.annotations.push(format!("@{}", ann.name));
+                node.metadata.annotations.push(annotation_to_ir_string(ann));
             }
         }
 
@@ -401,7 +410,7 @@ impl IrBuilder {
         // Add annotations
         for ann in &adapter.annotations {
             if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == adapter_id) {
-                node.metadata.annotations.push(format!("@{}", ann.name));
+                node.metadata.annotations.push(annotation_to_ir_string(ann));
             }
         }
     }
