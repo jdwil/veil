@@ -118,17 +118,17 @@ sol CustomerOnboarding
 
     step verify_identity
       ctx Identity
-      result = request KYCProvider.check(name, email)
+      result = call KYCProvider.check(name, email)
       call c.verify(result.code)
       compensate
         call c.reject("saga_rollback")
 
     step setup_billing
       ctx Billing
-      request PaymentGateway.create_customer(email.addr)
-      sub = invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
+      call PaymentGateway.create_customer(email.addr)
+      invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
       compensate
-        request PaymentGateway.cancel_subscription(sub.id)
+        invoke Billing.CancelTrial{customer_id: c.id}
 
   adapter SmsTwilio for Notifier
     @env(TWILIO_SID, TWILIO_TOKEN)
