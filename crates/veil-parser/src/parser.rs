@@ -625,6 +625,11 @@ impl<'a> Parser<'a> {
                 let prefix_annotations = self.parse_annotations();
 
                 match self.peek_kind().clone() {
+                    TokenKind::Use => {
+                        // Kit declaration — consume and store for later resolution
+                        let _import = self.parse_use_import()?;
+                        // TODO: resolve kit and apply constraints/metadata
+                    }
                     TokenKind::Lang => {
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
                     }

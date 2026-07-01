@@ -1,4 +1,6 @@
 sol CustomerOnboarding
+  use ddd_kit
+
   lang
     Customer: person signing up for the platform
     KYC: Know Your Customer verification

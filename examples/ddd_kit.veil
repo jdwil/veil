@@ -1,0 +1,69 @@
+pkg ddd_kit v1
+  desc "Domain-Driven Design Kit — bounded contexts, aggregates, hexagonal architecture"
+  author "VEIL"
+
+  # DDD constructs built on VEIL core primitives
+  # Each construct maps a domain keyword to a core primitive + constraints
+
+  expose
+    node Context
+      desc "A bounded context — autonomous domain boundary"
+      input
+        name: Str
+
+    node Aggregate
+      desc "Aggregate root — consistency boundary with state, events, and commands"
+      input
+        name: Str
+
+    node Entity
+      desc "Entity — domain object with identity"
+      input
+        name: Str
+
+    node ValueObject
+      desc "Value Object — immutable, identity-less domain concept"
+      input
+        name: Str
+
+    node DomainEvent
+      desc "Domain Event — something that happened in the domain"
+      input
+        name: Str
+
+    node Command
+      desc "Command — intent to change domain state"
+      input
+        name: Str
+
+    node Port
+      desc "Port — interface contract for external dependencies"
+      input
+        name: Str
+
+    node Adapter
+      desc "Adapter — implementation of a port for a specific technology"
+      input
+        name: Str
+        target_port: Str
+
+    node Repository
+      desc "Repository — persistence interface for an aggregate"
+      input
+        name: Str
+
+    node DomainService
+      desc "Domain Service — orchestrates operations within a bounded context"
+      input
+        name: Str
+
+    node Saga
+      desc "Saga — cross-context orchestration with compensation semantics"
+      input
+        name: Str
+
+    constraints
+      context-contains aggregate entity value-object port repository domain-service
+      aggregate-contains event command state fn
+      saga-requires compensation
+      adapter-implements port
