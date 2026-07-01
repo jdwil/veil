@@ -14,19 +14,35 @@ sol CustomerOnboarding
       country: Str
 
     agg Customer
-      id: UUID
-      email: Email
-      phone: Phone
-      status: Status
-      created: DateTime
+      root
+        id: UUID
+        email: Email
+        phone: Phone
+        status: CustomerStatus
+        created: DateTime
 
-      @invariant(email != nil)
+      state CustomerStatus
+        Pending -> Verified -> Active
+        Pending -> Rejected
+
+      fn verify(code: Str) -> Res!
+        @invariant(status == Pending)
+        status = Verified
+        emit CustomerVerified{id, now()}
+
+      fn reject(reason: Str) -> Res!
+        @invariant(status == Pending)
+        status = Rejected
+        emit CustomerRejected{id, reason}
 
       evt CustomerCreated
         id email created
 
       evt CustomerVerified
         id verified_at: DateTime
+
+      evt CustomerRejected
+        id reason: Str
 
       cmd CreateCustomer
         email: Email
@@ -48,13 +64,30 @@ sol CustomerOnboarding
     port CustomerRepo
       save(c: Customer) -> Res!
       find(id: UUID) -> Res!<Opt<Customer>>
+      delete(id: UUID) -> Res!
+
+    # Domain service — orchestrates within this context
+    svc CreateCustomerService
+      input
+        email: Email
+        phone: Phone
+      step validate
+        call Email.validate(email)
+      step persist
+        c = call CustomerRepo.save(Customer.new(email, phone))
+        emit CustomerCreated{c.id, email, c.created}
+      ret c.id
 
   ctx Billing
     agg Subscription
-      id: UUID
-      customer_id: UUID
-      plan: Plan
-      status: SubStatus
+      root
+        id: UUID
+        customer_id: UUID
+        plan: Plan
+        status: SubStatus
+
+      state SubStatus
+        Trial -> Active -> Cancelled
 
       cmd CreateTrial
         customer_id: UUID
@@ -63,39 +96,37 @@ sol CustomerOnboarding
 
     port PaymentGateway
       create_customer(email: Str) -> Res!<ExtId>
+      cancel_subscription(sub_id: UUID) -> Res!
 
-  @async(runtime="tokio")
-  @trace(method="otel")
-  @saga
-  flow Onboard
+  # Cross-context orchestration with compensation
+  saga Onboard
+    contexts Identity, Billing
+
     input
       email: Email
       phone: Phone
       name: Str
 
-    err boundary
-      @retry(3)
-      @timeout(30000)
-      fallback -> emit OnboardingFailed{email, reason}
-
     step create_customer
+      ctx Identity
       c = call CustomerRepo.save(Customer.new(email, phone))
       emit CustomerCreated{c.id, email, c.created}
+      compensate
+        call CustomerRepo.delete(c.id)
 
-    par
-      step send_welcome
-        call Notifier.send_email(email, "Welcome", template("welcome"))
-      step kyc_check
-        result = call KYCProvider.check(name, email)
-        match result.status
-          Pass -> emit CustomerVerified{c.id, now()}
-          Fail -> emit KYCFailed{c.id, result.reason}
+    step verify_identity
+      ctx Identity
+      result = call KYCProvider.check(name, email)
+      call c.verify(result.code)
+      compensate
+        call c.reject("saga_rollback")
 
     step setup_billing
+      ctx Billing
       call PaymentGateway.create_customer(email.addr)
-      call Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
-
-    ret c.id
+      sub = call Billing.CreateTrial(c.id, FreeTier)
+      compensate
+        call PaymentGateway.cancel_subscription(sub.id)
 
   adapter SmsTwilio for Notifier
     @env(TWILIO_SID, TWILIO_TOKEN)

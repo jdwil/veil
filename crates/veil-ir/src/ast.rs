@@ -80,6 +80,28 @@ pub enum TopLevelItem {
     Context(Context),
     Flow(Flow),
     Adapter(Adapter),
+    Saga(Saga),
+}
+
+/// A saga — cross-context orchestration with compensation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Saga {
+    pub name: String,
+    pub span: Span,
+    pub annotations: Vec<Annotation>,
+    pub context_refs: Vec<String>,
+    pub inputs: Vec<Field>,
+    pub steps: Vec<SagaStep>,
+}
+
+/// A step within a saga, associated with a specific context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SagaStep {
+    pub name: String,
+    pub context: Option<String>,
+    pub span: Span,
+    pub body: Vec<Expr>,
+    pub compensate: Vec<Expr>,
 }
 
 /// Ubiquitous language definitions.
@@ -141,6 +163,35 @@ pub struct Aggregate {
     pub annotations: Vec<Annotation>,
     pub events: Vec<Event>,
     pub commands: Vec<Command>,
+    pub state_machines: Vec<StateMachine>,
+    pub methods: Vec<AggregateFn>,
+}
+
+/// A state machine definition within an aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateMachine {
+    pub name: String,
+    pub span: Span,
+    pub transitions: Vec<StateTransition>,
+}
+
+/// A state transition: From -> To
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateTransition {
+    pub from: String,
+    pub to: String,
+    pub span: Span,
+}
+
+/// A method/function on an aggregate (business logic).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateFn {
+    pub name: String,
+    pub span: Span,
+    pub params: Vec<Param>,
+    pub return_type: Option<TypeExpr>,
+    pub annotations: Vec<Annotation>,
+    pub body: Vec<Expr>,
 }
 
 /// A domain event.
@@ -177,12 +228,15 @@ pub struct PortMethod {
     pub return_type: Option<TypeExpr>,
 }
 
-/// A service.
+/// A service (domain service — orchestrates within a context, flow-like).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Service {
     pub name: String,
     pub span: Span,
-    pub methods: Vec<PortMethod>,
+    pub annotations: Vec<Annotation>,
+    pub inputs: Vec<Field>,
+    pub steps: Vec<FlowStep>,
+    pub return_expr: Option<Expr>,
 }
 
 /// An adapter (implementation of a port).

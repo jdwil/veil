@@ -646,6 +646,13 @@ impl<'a> Parser<'a> {
                         flow.annotations = all;
                         items.push(TopLevelItem::Flow(flow));
                     }
+                    TokenKind::Saga => {
+                        let mut saga = self.parse_saga()?;
+                        let mut all = prefix_annotations;
+                        all.extend(saga.annotations);
+                        saga.annotations = all;
+                        items.push(TopLevelItem::Saga(saga));
+                    }
                     TokenKind::Adapter => {
                         let mut adapter = self.parse_adapter()?;
                         let mut all = prefix_annotations;
@@ -753,7 +760,9 @@ impl<'a> Parser<'a> {
                         items.push(ContextItem::Port(self.parse_port()?));
                     }
                     TokenKind::Svc => {
-                        items.push(ContextItem::Service(self.parse_service()?));
+                        // Domain service — parsed like a flow but lives in context
+                        let svc_flow = self.parse_domain_service()?;
+                        items.push(ContextItem::Service(svc_flow));
                     }
                     TokenKind::Comment => {
                         self.advance();
@@ -864,6 +873,8 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut events = Vec::new();
         let mut commands = Vec::new();
+        let mut state_machines = Vec::new();
+        let mut methods = Vec::new();
         let mut agg_annotations = annotations;
 
         if self.at_block_start() {
@@ -879,6 +890,28 @@ impl<'a> Parser<'a> {
                 match self.peek_kind().clone() {
                     TokenKind::Evt => events.push(self.parse_event()?),
                     TokenKind::Cmd => commands.push(self.parse_command()?),
+                    TokenKind::Root => {
+                        // root block is just fields
+                        self.advance(); // consume 'root'
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                                if self.at(&TokenKind::Ident) {
+                                    fields.push(self.parse_field()?);
+                                } else { self.advance(); }
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    TokenKind::State => {
+                        state_machines.push(self.parse_state_machine()?);
+                    }
+                    TokenKind::Fn => {
+                        methods.push(self.parse_aggregate_fn()?);
+                    }
                     TokenKind::Ident => fields.push(self.parse_field()?),
                     _ => { self.advance(); }
                 }
@@ -893,6 +926,8 @@ impl<'a> Parser<'a> {
             annotations: agg_annotations,
             events,
             commands,
+            state_machines,
+            methods,
         })
     }
 
@@ -955,6 +990,113 @@ impl<'a> Parser<'a> {
             span: start_span.merge(self.current().span),
             fields,
             return_type,
+        })
+    }
+
+    fn parse_state_machine(&mut self) -> Result<StateMachine, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::State)?;
+        let name = self.expect_ident()?;
+
+        let mut transitions = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                // Parse transition chains: Pending -> Verified -> Active
+                if self.at(&TokenKind::Ident) {
+                    let trans_span = self.current().span;
+                    let mut states = vec![self.advance().text.clone()];
+                    while self.at(&TokenKind::Arrow) {
+                        self.advance();
+                        if self.at(&TokenKind::Ident) {
+                            states.push(self.advance().text.clone());
+                        }
+                    }
+                    // Create pairwise transitions
+                    for i in 0..states.len().saturating_sub(1) {
+                        transitions.push(StateTransition {
+                            from: states[i].clone(),
+                            to: states[i + 1].clone(),
+                            span: trans_span,
+                        });
+                    }
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(StateMachine {
+            name,
+            span: start_span.merge(self.current().span),
+            transitions,
+        })
+    }
+
+    fn parse_aggregate_fn(&mut self) -> Result<AggregateFn, ParseError> {
+        let start_span = self.current().span;
+        let annotations = self.parse_annotations();
+        self.expect(&TokenKind::Fn)?;
+        let name = self.expect_ident()?;
+
+        // Parse params
+        let mut params = Vec::new();
+        if self.at(&TokenKind::LParen) {
+            self.advance();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                let param_span = self.current().span;
+                let param_name = self.expect_ident()?;
+                self.expect(&TokenKind::Colon)?;
+                let param_type = self.parse_type()?;
+                params.push(Param {
+                    name: param_name,
+                    type_expr: param_type,
+                    span: param_span.merge(self.current().span),
+                });
+                if self.at(&TokenKind::Comma) { self.advance(); }
+            }
+            if self.at(&TokenKind::RParen) { self.advance(); }
+        }
+
+        // Optional return type
+        let mut return_type = None;
+        if self.at(&TokenKind::Arrow) {
+            self.advance();
+            return_type = Some(self.parse_type()?);
+        }
+
+        // Body
+        let mut body = Vec::new();
+        let mut fn_annotations = annotations;
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    fn_annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                match self.parse_expr() {
+                    Ok(expr) => body.push(expr),
+                    Err(_) => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(AggregateFn {
+            name,
+            span: start_span.merge(self.current().span),
+            params,
+            return_type,
+            annotations: fn_annotations,
+            body,
         })
     }
 
@@ -1062,22 +1204,43 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_service(&mut self) -> Result<Service, ParseError> {
+    fn parse_domain_service(&mut self) -> Result<Service, ParseError> {
         let start_span = self.current().span;
         self.expect(&TokenKind::Svc)?;
         let name = self.expect_ident()?;
 
-        let mut methods = Vec::new();
+        let mut annotations = Vec::new();
+        let mut inputs = Vec::new();
+        let mut steps = Vec::new();
+        let mut return_expr = None;
+
         if self.at_block_start() {
             self.enter_block()?;
             while !self.at_block_end() {
                 self.skip_newlines();
                 if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    annotations.extend(self.parse_annotations());
+                    continue;
+                }
                 if self.at(&TokenKind::Comment) { self.advance(); continue; }
-                if self.at(&TokenKind::Ident) {
-                    methods.push(self.parse_port_method()?);
-                } else {
-                    self.advance();
+                match self.peek_kind().clone() {
+                    TokenKind::Input => {
+                        inputs = self.parse_flow_inputs()?;
+                    }
+                    TokenKind::Step => {
+                        steps.push(FlowStep::Step(self.parse_step_def()?));
+                    }
+                    TokenKind::Par => {
+                        steps.push(FlowStep::Parallel(self.parse_par_block()?));
+                    }
+                    TokenKind::Ret => {
+                        self.advance();
+                        if !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Dedent) {
+                            return_expr = Some(self.parse_expr()?);
+                        }
+                    }
+                    _ => { self.advance(); }
                 }
             }
             self.exit_block();
@@ -1086,8 +1249,15 @@ impl<'a> Parser<'a> {
         Ok(Service {
             name,
             span: start_span.merge(self.current().span),
-            methods,
+            annotations,
+            inputs,
+            steps,
+            return_expr,
         })
+    }
+
+    fn parse_service(&mut self) -> Result<Service, ParseError> {
+        self.parse_domain_service()
     }
 
     fn parse_adapter(&mut self) -> Result<Adapter, ParseError> {
@@ -1172,6 +1342,118 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a flow (stub — full implementation in Task 4)
+    fn parse_saga(&mut self) -> Result<Saga, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Saga)?;
+        let name = self.expect_ident()?;
+
+        let mut annotations = Vec::new();
+        let mut context_refs = Vec::new();
+        let mut inputs = Vec::new();
+        let mut steps = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Annotation) {
+                    annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                match self.peek_kind().clone() {
+                    TokenKind::Contexts => {
+                        self.advance();
+                        // Parse comma-separated context names
+                        while !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
+                            && !self.at(&TokenKind::Dedent)
+                        {
+                            if self.at(&TokenKind::Ident) {
+                                context_refs.push(self.advance().text.clone());
+                            } else if self.at(&TokenKind::Comma) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    TokenKind::Input => {
+                        inputs = self.parse_flow_inputs()?;
+                    }
+                    TokenKind::Step => {
+                        steps.push(self.parse_saga_step()?);
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Saga {
+            name,
+            span: start_span.merge(self.current().span),
+            annotations,
+            context_refs,
+            inputs,
+            steps,
+        })
+    }
+
+    fn parse_saga_step(&mut self) -> Result<SagaStep, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Step)?;
+        let name = self.expect_ident()?;
+
+        let mut context = None;
+        let mut body = Vec::new();
+        let mut compensate = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                if self.at(&TokenKind::Ctx) {
+                    self.advance();
+                    if self.at(&TokenKind::Ident) {
+                        context = Some(self.advance().text.clone());
+                    }
+                } else if self.at(&TokenKind::Compensate) {
+                    self.advance();
+                    if self.at_block_start() {
+                        self.enter_block()?;
+                        while !self.at_block_end() {
+                            self.skip_newlines();
+                            if self.at_block_end() { break; }
+                            if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                            match self.parse_expr() {
+                                Ok(expr) => compensate.push(expr),
+                                Err(_) => { self.advance(); }
+                            }
+                        }
+                        self.exit_block();
+                    }
+                } else {
+                    match self.parse_expr() {
+                        Ok(expr) => body.push(expr),
+                        Err(_) => { self.advance(); }
+                    }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(SagaStep {
+            name,
+            context,
+            span: start_span.merge(self.current().span),
+            body,
+            compensate,
+        })
+    }
+
     fn parse_flow(&mut self) -> Result<Flow, ParseError> {
         let start_span = self.current().span;
         self.expect(&TokenKind::Flow)?;

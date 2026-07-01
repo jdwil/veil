@@ -79,6 +79,7 @@ impl Serializer {
             TopLevelItem::Context(ctx) => self.emit_context(ctx),
             TopLevelItem::Flow(flow) => self.emit_flow(flow),
             TopLevelItem::Adapter(adapter) => self.emit_adapter(adapter),
+            TopLevelItem::Saga(saga) => self.emit_saga(saga),
         }
     }
 
@@ -273,18 +274,24 @@ impl Serializer {
     }
 
     fn emit_service(&mut self, svc: &Service) {
+        for ann in &svc.annotations {
+            self.line(&format!("@{}", annotation_to_veil(ann)));
+        }
         self.line(&format!("svc {}", svc.name));
         self.indent();
-        for method in &svc.methods {
-            let params = method.params.iter()
-                .map(|p| format!("{}: {}", p.name, type_to_veil(&p.type_expr)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let ret = match &method.return_type {
-                Some(t) => format!(" -> {}", type_to_veil(t)),
-                None => String::new(),
-            };
-            self.line(&format!("{}({}){}", method.name, params, ret));
+        if !svc.inputs.is_empty() {
+            self.line("input");
+            self.indent();
+            for field in &svc.inputs {
+                self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
+            }
+            self.dedent();
+        }
+        for step in &svc.steps {
+            self.emit_flow_step(step);
+        }
+        if let Some(ret) = &svc.return_expr {
+            self.line(&format!("ret {}", expr_to_veil(ret)));
         }
         self.dedent();
     }
@@ -395,6 +402,54 @@ impl Serializer {
                 self.dedent();
             }
         }
+    }
+
+    // ─── Saga ──────────────────────────────────────────────────────────
+
+    fn emit_saga(&mut self, saga: &Saga) {
+        for ann in &saga.annotations {
+            self.line(&format!("@{}", annotation_to_veil(ann)));
+        }
+        self.line(&format!("saga {}", saga.name));
+        self.indent();
+
+        if !saga.context_refs.is_empty() {
+            self.line(&format!("contexts {}", saga.context_refs.join(", ")));
+            self.blank();
+        }
+
+        if !saga.inputs.is_empty() {
+            self.line("input");
+            self.indent();
+            for field in &saga.inputs {
+                self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
+            }
+            self.dedent();
+            self.blank();
+        }
+
+        for step in &saga.steps {
+            self.line(&format!("step {}", step.name));
+            self.indent();
+            if let Some(ctx) = &step.context {
+                self.line(&format!("ctx {}", ctx));
+            }
+            for expr in &step.body {
+                self.line(&expr_to_veil(expr));
+            }
+            if !step.compensate.is_empty() {
+                self.line("compensate");
+                self.indent();
+                for expr in &step.compensate {
+                    self.line(&expr_to_veil(expr));
+                }
+                self.dedent();
+            }
+            self.dedent();
+            self.blank();
+        }
+
+        self.dedent();
     }
 
     // ─── Expose ───────────────────────────────────────────────────────

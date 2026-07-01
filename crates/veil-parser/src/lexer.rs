@@ -41,6 +41,7 @@ pub enum TokenKind {
     Use,
     Expose,
     Node,
+    Saga,
 
     // Keywords — flow
     Step,
@@ -61,6 +62,11 @@ pub enum TokenKind {
     Desc,
     Output,
     Constraints,
+    Fn,
+    State,
+    Root,
+    Compensate,
+    Contexts,
 
     // Operators
     Arrow,      // ->
@@ -345,8 +351,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn emit(&mut self, kind: TokenKind, start: usize, end: usize) {
-        let text = if start < self.source.len() && end <= self.source.len() {
-            self.source[start..end].to_string()
+        let text: String = if start < self.chars.len() && end <= self.chars.len() {
+            self.chars[start..end].iter().collect()
         } else {
             String::new()
         };
@@ -404,6 +410,12 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "desc" => TokenKind::Desc,
         "output" => TokenKind::Output,
         "constraints" => TokenKind::Constraints,
+        "saga" => TokenKind::Saga,
+        "fn" => TokenKind::Fn,
+        "state" => TokenKind::State,
+        "root" => TokenKind::Root,
+        "compensate" => TokenKind::Compensate,
+        "contexts" => TokenKind::Contexts,
         _ => TokenKind::Ident,
     }
 }
@@ -415,10 +427,11 @@ fn is_construct_keyword(word: &str) -> bool {
         word,
         "sol" | "ctx" | "agg" | "ent" | "val" | "evt" | "cmd" | "qry"
             | "port" | "adapter" | "flow" | "svc" | "pipe" | "lang"
-            | "pkg" | "use" | "expose" | "node"
+            | "pkg" | "use" | "expose" | "node" | "saga"
             | "step" | "par" | "alt" | "loop" | "err" | "match"
             | "emit" | "call" | "ret" | "input" | "fallback" | "impl"
             | "for" | "boundary" | "as" | "desc" | "output" | "constraints"
+            | "fn" | "state" | "root" | "compensate" | "contexts"
     )
 }
 

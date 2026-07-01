@@ -91,6 +91,9 @@ impl IrBuilder {
                 TopLevelItem::Adapter(adapter) => {
                     self.build_adapter(adapter, sol_id);
                 }
+                TopLevelItem::Saga(saga) => {
+                    self.build_saga(saga, sol_id);
+                }
             }
         }
     }
@@ -386,6 +389,57 @@ impl IrBuilder {
                     node.metadata.properties.push(("via".to_string(), adapter.clone()));
                 }
             }
+        }
+    }
+
+    fn build_saga(&mut self, saga: &Saga, parent_id: NodeId) {
+        let saga_id = self.graph.add_node(NodeKind::Saga, saga.name.clone(), saga.span);
+        self.set_parent(saga_id, parent_id);
+        self.graph.add_edge(parent_id, saga_id, EdgeKind::Contains);
+
+        // Add annotations
+        for ann in &saga.annotations {
+            if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == saga_id) {
+                node.metadata.annotations.push(annotation_to_ir_string(ann));
+            }
+        }
+
+        // Add context references as properties
+        if !saga.context_refs.is_empty() {
+            if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == saga_id) {
+                node.metadata.properties.push((
+                    "contexts".to_string(),
+                    saga.context_refs.join(", "),
+                ));
+            }
+        }
+
+        // Add steps with context associations
+        let mut prev_step_id: Option<NodeId> = None;
+        for step in &saga.steps {
+            let step_id = self.graph.add_node(NodeKind::Step, step.name.clone(), step.span);
+            self.set_parent(step_id, saga_id);
+            self.graph.add_edge(saga_id, step_id, EdgeKind::Contains);
+
+            // Mark which context this step belongs to
+            if let Some(ctx_name) = &step.context {
+                if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == step_id) {
+                    node.metadata.properties.push(("ctx".to_string(), ctx_name.clone()));
+                }
+            }
+
+            // Mark if it has compensation
+            if !step.compensate.is_empty() {
+                if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == step_id) {
+                    node.metadata.annotations.push("has_compensate".to_string());
+                }
+            }
+
+            if let Some(prev) = prev_step_id {
+                self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
+            }
+            self.build_step_body(&step.body, step_id);
+            prev_step_id = Some(step_id);
         }
     }
 

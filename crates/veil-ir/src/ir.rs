@@ -81,6 +81,7 @@ pub enum NodeKind {
     PortMethod,
     Adapter,
     Flow,
+    Saga,
     Step,
     ParallelGateway,
     ErrorBoundary,
