@@ -148,10 +148,8 @@
       };
     });
 
-    // Edges: saga → contexts it spans, adapter → port it implements (ghost)
+    // Edges: saga → contexts it spans
     const solEdges: Edge[] = [];
-    const solGhosts: Node[] = [];
-    let ghostIdx = 0;
 
     for (const saga of sagas) {
       // Draw edges from saga to each context it references
@@ -175,40 +173,7 @@
       }
     }
 
-    // Implements edges (adapter -> port as ghost)
-    for (const edge of graph.edges) {
-      if (edge.kind === 'Implements') {
-        const sourceNode = children.find(c => c.id === edge.from);
-        const targetNode = graph.nodes.find(n => n.id === edge.to);
-        if (sourceNode && targetNode && !visibleIds.has(edge.to)) {
-          const ghostId = `ghost-${ghostIdx++}`;
-          solGhosts.push({
-            id: ghostId,
-            type: 'veil',
-            position: { x: 0, y: 0 },
-            data: {
-              label: targetNode.name,
-              kind: targetNode.kind,
-              hasChildren: false,
-              annotations: [],
-              isGhost: true,
-            },
-          });
-          solEdges.push({
-            id: `impl-${edge.from}-${ghostId}`,
-            source: String(edge.from),
-            target: ghostId,
-            animated: false,
-            style: getEdgeStyle('Implements'),
-            label: 'implements',
-            labelStyle: 'font-size: 9px; fill: #64748b;',
-          });
-        }
-      }
-    }
-
-    const allNodes = [...solNodes, ...solGhosts];
-    nodes = layoutNodes(allNodes, solEdges);
+    nodes = layoutNodes(solNodes, solEdges);
     edges = solEdges;
     return;
     }
