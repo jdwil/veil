@@ -2,68 +2,147 @@ pkg ddd v1
   desc "Domain-Driven Design abstraction layer"
   author "VEIL"
 
-  # DDD constructs built on VEIL core primitives
-  # Each construct maps a domain keyword to a core primitive + constraints
+  construct Context
+    maps_to mod
+    contains
+      Aggregate[]
+      Entity[]
+      ValueObject[]
+      Port[]
+      Repository[]
+      DomainService[]
+    visual
+      icon "📦"
+      color "#8b5cf6"
+      label "Bounded Context"
 
-  expose
-    node Context
-      desc "A bounded context — autonomous domain boundary"
-      input
-        name: Str
-
-    node Aggregate
-      desc "Aggregate root — consistency boundary with state, events, and commands"
-      input
-        name: Str
-
-    node Entity
-      desc "Entity — domain object with identity"
-      input
-        name: Str
-
-    node ValueObject
-      desc "Value Object — immutable, identity-less domain concept"
-      input
-        name: Str
-
-    node DomainEvent
-      desc "Domain Event — something that happened in the domain"
-      input
-        name: Str
-
-    node Command
-      desc "Command — intent to change domain state"
-      input
-        name: Str
-
-    node Port
-      desc "Port — interface contract for external dependencies"
-      input
-        name: Str
-
-    node Adapter
-      desc "Adapter — implementation of a port for a specific technology"
-      input
-        name: Str
-        target_port: Str
-
-    node Repository
-      desc "Repository — persistence interface for an aggregate"
-      input
-        name: Str
-
-    node DomainService
-      desc "Domain Service — orchestrates operations within a bounded context"
-      input
-        name: Str
-
-    node Saga
-      desc "Saga — cross-context orchestration with compensation semantics"
-      input
-        name: Str
-
+  construct Aggregate
+    maps_to struct
+    contains
+      root: struct
+      state: enum
+      fn[]
+      Event[]
+      Command[]
     constraints
-      context-contains aggregate entity value-object port repository domain-service
-      aggregate-contains event command state fn
-      saga-requires compensation
-      adapter-implements port
+      must_have_root
+      mutations_through_methods
+    visual
+      icon "🧩"
+      color "#ec4899"
+      label "Aggregate"
+
+  construct Entity
+    maps_to struct
+    constraints
+      has_identity
+    visual
+      icon "🔑"
+      color "#f43f5e"
+      label "Entity"
+
+  construct ValueObject
+    maps_to struct
+    constraints
+      no_identity
+      equality_by_value
+    visual
+      icon "💎"
+      color "#14b8a6"
+      label "Value Object"
+
+  construct Event
+    maps_to struct
+    constraints
+      immutable
+    visual
+      icon "⚡"
+      color "#f59e0b"
+      label "Domain Event"
+
+  construct Command
+    maps_to struct
+    visual
+      icon "📨"
+      color "#3b82f6"
+      label "Command"
+
+  construct Port
+    maps_to trait
+    visual
+      icon "🔌"
+      color "#10b981"
+      label "Port"
+
+  construct Adapter
+    maps_to impl
+    constraints
+      must_implement_port
+    visual
+      icon "🔗"
+      color "#a855f7"
+      label "Adapter"
+
+  construct Repository
+    maps_to trait
+    constraints
+      crud_for_aggregate
+    visual
+      icon "🗄️"
+      color "#10b981"
+      label "Repository"
+
+  construct DomainService
+    maps_to fn
+    contains
+      step[]
+      par[]
+    visual
+      icon "🖥️"
+      color "#0ea5e9"
+      label "Domain Service"
+
+  construct Saga
+    maps_to fn
+    contains
+      step[]
+    constraints
+      steps_have_compensation
+      spans_contexts
+    visual
+      icon "🔄"
+      color "#dc2626"
+      label "Saga"
+
+  # Statement extensions (bus actions built on top of core 'call')
+  statement dispatch
+    maps_to call
+    semantics event_bus_fire_and_forget
+    visual
+      icon "📡"
+      color "#f59e0b"
+      label "Dispatch"
+
+  statement invoke
+    maps_to call
+    semantics command_bus_handler
+    visual
+      icon "⚙️"
+      color "#3b82f6"
+      label "Invoke"
+
+  statement request
+    maps_to call
+    semantics inter_context_query
+    visual
+      icon "🔌"
+      color "#10b981"
+      label "Request"
+
+  statement guard
+    maps_to if
+    semantics precondition_fail_step
+    visual
+      icon "🛡️"
+      color "#ef4444"
+      label "Guard"
