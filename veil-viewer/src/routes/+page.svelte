@@ -38,6 +38,8 @@
   let nodes = $state.raw<Node[]>([]);
   let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
+  let tabs = $state<string[]>([]);
+  let activeTab = $state<string | null>(null);
 
   // Derive the current context kind for palette filtering
   let currentContextKind = $derived.by(() => {
@@ -111,6 +113,7 @@
   $effect(() => {
     const graph = $irGraph;
     const parent = $currentParent;
+    const _tab = activeTab; // Track tab changes
     if (!graph) return;
     computeView(graph, parent);
   });
@@ -179,6 +182,61 @@
     }
 
     // Standard flat view for other levels
+    // Check if children contain groups — if so, use tabs
+    const groupNodes = children.filter(c => c.kind === 'Group');
+    if (groupNodes.length > 0) {
+      tabs = groupNodes.map(g => g.name);
+      if (!activeTab || !tabs.includes(activeTab)) {
+        activeTab = tabs[0];
+      }
+      // Get children of the active group
+      const activeGroup = groupNodes.find(g => g.name === activeTab);
+      if (activeGroup) {
+        const groupChildren = getChildren(graph, activeGroup.id);
+        // Also include non-group items at this level
+        const nonGroupItems = children.filter(c => c.kind !== 'Group');
+        const allItems = [...groupChildren, ...nonGroupItems];
+        const itemIds = new Set(allItems.map(c => c.id));
+
+        const tabNodes: Node[] = allItems.map(child => {
+          const childChildren = getChildren(graph, child.id);
+          const refs = getCrossRefs(graph, child.id, itemIds);
+          return {
+            id: String(child.id),
+            type: 'veil',
+            position: { x: 0, y: 0 },
+            data: {
+              label: child.name,
+              kind: child.kind,
+              subkind: child.metadata.subkind,
+              hasChildren: childChildren.length > 0,
+              annotations: child.metadata.annotations,
+              properties: child.metadata.properties,
+              refs,
+            },
+          };
+        });
+
+        const tabEdges: Edge[] = graph.edges
+          .filter(e => itemIds.has(e.from) && itemIds.has(e.to))
+          .filter(e => e.kind !== 'Contains')
+          .map((e, i) => ({
+            id: `e-${e.from}-${e.to}-${i}`,
+            source: String(e.from),
+            target: String(e.to),
+            animated: e.kind === 'SequenceFlow',
+            style: getEdgeStyle(e.kind),
+          }));
+
+        nodes = layoutNodes(tabNodes, tabEdges);
+        edges = tabEdges;
+        return;
+      }
+    } else {
+      tabs = [];
+      activeTab = null;
+    }
+
     const flowNodes: Node[] = children.map(child => {
       const childChildren = getChildren(graph, child.id);
       const refs = getCrossRefs(graph, child.id, visibleIds);
@@ -368,7 +426,21 @@
   {:else}
     <div class="main-layout">
       <Palette contextKind={currentContextKind} />
-      <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+      <div class="graph-wrapper">
+        {#if tabs.length > 0}
+          <div class="tab-bar">
+            {#each tabs as tab}
+              <button
+                class="tab-btn"
+                class:active={activeTab === tab}
+                onclick={() => { activeTab = tab; }}
+              >
+                {tab}
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
         <SvelteFlow
           {nodes}
           {edges}
@@ -391,6 +463,7 @@
             onClose={() => selectedNodeId.set(null)}
           />
         {/if}
+      </div>
       </div>
     </div>
   {/if}
@@ -455,6 +528,46 @@
     min-height: 0;
     min-width: 0;
     position: relative;
+  }
+
+  .graph-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 2px;
+    padding: 8px 12px;
+    background: rgba(26, 26, 46, 0.9);
+    border-bottom: 1px solid #2d2d44;
+  }
+
+  .tab-btn {
+    padding: 6px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: capitalize;
+    border: 1px solid #2d2d44;
+    border-radius: 6px;
+    background: transparent;
+    color: #64748b;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .tab-btn:hover {
+    background: rgba(99, 102, 241, 0.08);
+    color: #94a3b8;
+  }
+
+  .tab-btn.active {
+    background: rgba(99, 102, 241, 0.15);
+    color: #a5b4fc;
+    border-color: rgba(99, 102, 241, 0.4);
   }
 
   .main-layout {
