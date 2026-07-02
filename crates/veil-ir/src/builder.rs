@@ -12,6 +12,22 @@ pub fn build_ir(solution: &Solution) -> IrGraph {
 }
 
 /// Extract the port name from a call label like "call PaymentGateway.create_customer"
+fn type_to_display(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named(n) => n.clone(),
+        TypeExpr::Generic(name, args) => {
+            let a = args.iter().map(|t| type_to_display(t)).collect::<Vec<_>>().join(", ");
+            format!("{}<{}>", name, a)
+        }
+        TypeExpr::Result(Some(inner)) => format!("Res!<{}>", type_to_display(inner)),
+        TypeExpr::Result(None) => "Res!".to_string(),
+        TypeExpr::Optional(inner) => format!("Opt<{}>", type_to_display(inner)),
+        TypeExpr::List(inner) => format!("List<{}>", type_to_display(inner)),
+        TypeExpr::Map(k, v) => format!("Map<{}, {}>", type_to_display(k), type_to_display(v)),
+        TypeExpr::Set(inner) => format!("Set<{}>", type_to_display(inner)),
+    }
+}
+
 fn binop_to_str(op: &BinOp) -> &'static str {
     match op {
         BinOp::Add => "+",
@@ -253,6 +269,18 @@ impl IrBuilder {
             );
             self.set_parent(method_id, port_id);
             self.graph.add_edge(port_id, method_id, EdgeKind::Contains);
+
+            // Store method signature as properties
+            let params_str = method.params.iter()
+                .map(|p| format!("{}: {}", p.name, type_to_display(&p.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !params_str.is_empty() {
+                self.set_property(method_id, "params", &format!("({})", params_str));
+            }
+            if let Some(rt) = &method.return_type {
+                self.set_property(method_id, "returns", &type_to_display(rt));
+            }
         }
     }
 

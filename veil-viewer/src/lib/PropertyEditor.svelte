@@ -141,8 +141,16 @@
           {#each children as child}
             <div class="child-item">
               <span class="child-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
-              <span class="child-kind">{child.metadata.subkind ?? child.kind}</span>
-              <span class="child-name">{child.name}</span>
+              <div class="child-info">
+                <span class="child-name">{child.name}</span>
+                {#if child.metadata.properties.length > 0}
+                  <span class="child-sig">
+                    {#each child.metadata.properties as [key, value]}
+                      <span class="sig-part">{value}</span>
+                    {/each}
+                  </span>
+                {/if}
+              </div>
             </div>
           {/each}
         </div>
@@ -285,8 +293,10 @@
     font-size: 11px;
   }
   .child-icon { font-size: 12px; }
-  .child-kind { color: #64748b; font-size: 9px; text-transform: uppercase; min-width: 50px; }
+  .child-info { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
   .child-name { color: #e2e8f0; font-weight: 500; }
+  .child-sig { display: flex; flex-direction: column; gap: 1px; }
+  .sig-part { color: #64748b; font-size: 10px; font-family: monospace; word-break: break-all; }
 
   .props-list { display: flex; flex-direction: column; gap: 3px; }
   .prop-item {
