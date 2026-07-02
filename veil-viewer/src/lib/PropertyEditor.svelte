@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { NODE_STYLES, getNodeStyle, type NodeKind } from '$lib/types';
+  import { NODE_STYLES, getNodeStyle, type NodeKind, type IrGraph, type IrNode } from '$lib/types';
   import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
 
-  let { node, onUpdate, onClose }: {
+  let { node, graph, onUpdate, onClose }: {
     node: { id: string; data: any };
+    graph: IrGraph | null;
     onUpdate: (id: string, data: any) => void;
     onClose: () => void;
   } = $props();
@@ -12,36 +13,31 @@
   let kind = $derived<NodeKind>(node.data.kind);
   let subkind = $derived<string | null>(node.data.subkind ?? null);
   let style = $derived(getNodeStyle(kind, subkind));
+  let displayKind = $derived(subkind ?? kind);
 
-  // Annotations as structured data: { name, args: Record<string, string> }
+  // Get children of this node from the graph
+  let children = $derived<IrNode[]>(() => {
+    if (!graph) return [];
+    const nodeId = Number(node.id);
+    if (isNaN(nodeId)) return [];
+    return graph.nodes.filter(n => n.metadata.parent === nodeId);
+  });
+
+  // Annotations
   let activeAnnotations = $state<Record<string, Record<string, string>>>(
     parseAnnotations(node.data.annotations ?? [])
   );
-
-  // Fields (for domain types)
-  let fields = $state<{ name: string; type: string }[]>(
-    [...(node.data.fields ?? [])]
-  );
-
-  // Adapter-specific
-  let targetPort = $state(node.data.targetPort ?? '');
-
-  // Flow-specific
-  let inputs = $state<{ name: string; type: string }[]>(
-    [...(node.data.inputs ?? [])]
-  );
-
-  // Available annotations for this node kind
-  let availableAnnotations = $derived<AnnotationDef[]>(ANNOTATION_SCHEMA[subkind ?? kind] ?? ANNOTATION_SCHEMA[kind] ?? []);
 
   // Reset state when node changes
   $effect(() => {
     name = node.data.label ?? '';
     activeAnnotations = parseAnnotations(node.data.annotations ?? []);
-    fields = [...(node.data.fields ?? [])];
-    targetPort = node.data.targetPort ?? '';
-    inputs = [...(node.data.inputs ?? [])];
   });
+
+  // Available annotations for this node kind
+  let availableAnnotations = $derived<AnnotationDef[]>(
+    ANNOTATION_SCHEMA[subkind ?? kind] ?? ANNOTATION_SCHEMA[kind] ?? []
+  );
 
   function parseAnnotations(anns: string[]): Record<string, Record<string, string>> {
     const result: Record<string, Record<string, string>> = {};
@@ -58,7 +54,6 @@
           if (eqIdx >= 0) {
             args[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim().replace(/"/g, '');
           } else if (trimmed) {
-            // Positional arg — use first param name as key
             const def = availableAnnotations.find(a => a.name === annName);
             const paramName = def?.params[0]?.name ?? 'value';
             args[paramName] = trimmed;
@@ -78,8 +73,7 @@
       const entries = Object.entries(args).filter(([_, v]) => v !== '');
       if (entries.length === 0) {
         result.push(`@${annName}`);
-      } else if (entries.length === 1 && !entries[0][1].includes(' ')) {
-        // Single value — check if it needs key=value or just value
+      } else if (entries.length === 1) {
         const def = availableAnnotations.find(a => a.name === annName);
         if (def?.params.length === 1) {
           result.push(`@${annName}(${entries[0][1]})`);
@@ -117,21 +111,8 @@
       ...node.data,
       label: name,
       annotations: serializeAnnotations(),
-      fields: fields.length > 0 ? fields : undefined,
-      targetPort: targetPort || undefined,
-      inputs: inputs.length > 0 ? inputs : undefined,
     });
   }
-
-  function addField() { fields = [...fields, { name: '', type: 'Str' }]; }
-  function removeField(index: number) { fields = fields.filter((_, i) => i !== index); save(); }
-  function addInput() { inputs = [...inputs, { name: '', type: 'Str' }]; }
-  function removeInput(index: number) { inputs = inputs.filter((_, i) => i !== index); save(); }
-
-  const TYPE_OPTIONS = ['Str', 'Int', 'F64', 'Bool', 'UUID', 'DateTime', 'Bytes', 'Email', 'Phone', 'Customer', 'Subscription'];
-  let showFields = $derived(['Aggregate', 'Entity', 'ValueObject', 'Event', 'Command', 'Port'].includes(subkind ?? kind));
-  let showAdapter = $derived((subkind ?? kind) === 'Adapter' || kind === 'Implementation');
-  let showFlowInputs = $derived(kind === 'Flow' || kind === 'Saga');
 </script>
 
 <div class="property-editor" onclick={(e) => e.stopPropagation()} onpointerdown={(e) => e.stopPropagation()}>
@@ -150,29 +131,31 @@
       <input type="text" class="pe-input" bind:value={name} oninput={save} placeholder="Enter name..." />
     </label>
 
-    <!-- Adapter: target port -->
-    {#if showAdapter}
-      <label class="pe-label">
-        <span class="label-text">Implements Port</span>
-        <input type="text" class="pe-input" bind:value={targetPort} oninput={save} placeholder="PortName" />
-      </label>
+    <!-- Children: show methods, fields, events, etc. based on what this node contains -->
+    {#if children.length > 0}
+      <div class="pe-section">
+        <span class="label-text">Contains</span>
+        <div class="children-list">
+          {#each children as child}
+            <div class="child-item">
+              <span class="child-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
+              <span class="child-kind">{child.metadata.subkind ?? child.kind}</span>
+              <span class="child-name">{child.name}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
     {/if}
 
-    <!-- Flow: inputs -->
-    {#if showFlowInputs}
+    <!-- Properties from IR -->
+    {#if node.data.properties && node.data.properties.length > 0}
       <div class="pe-section">
-        <div class="section-header">
-          <span class="label-text">Inputs</span>
-          <button class="add-btn" onclick={addInput}>+ Add</button>
-        </div>
-        <div class="fields-list">
-          {#each inputs as field, i}
-            <div class="field-row">
-              <input type="text" class="pe-input field-name" bind:value={field.name} oninput={save} placeholder="param" />
-              <select class="pe-select" bind:value={field.type} onchange={save}>
-                {#each TYPE_OPTIONS as t}<option value={t}>{t}</option>{/each}
-              </select>
-              <button class="remove-btn" onclick={() => removeInput(i)}>✕</button>
+        <span class="label-text">Details</span>
+        <div class="props-list">
+          {#each node.data.properties as [key, value]}
+            <div class="prop-item">
+              <span class="prop-key">{key}:</span>
+              <span class="prop-value">{value}</span>
             </div>
           {/each}
         </div>
@@ -230,27 +213,6 @@
         </div>
       </div>
     {/if}
-
-    <!-- Fields -->
-    {#if showFields}
-      <div class="pe-section">
-        <div class="section-header">
-          <span class="label-text">Fields</span>
-          <button class="add-btn" onclick={addField}>+ Add</button>
-        </div>
-        <div class="fields-list">
-          {#each fields as field, i}
-            <div class="field-row">
-              <input type="text" class="pe-input field-name" bind:value={field.name} oninput={save} placeholder="field_name" />
-              <select class="pe-select" bind:value={field.type} onchange={save}>
-                {#each TYPE_OPTIONS as t}<option value={t}>{t}</option>{/each}
-              </select>
-              <button class="remove-btn" onclick={() => removeField(i)}>✕</button>
-            </div>
-          {/each}
-        </div>
-      </div>
-    {/if}
   </div>
 </div>
 
@@ -259,7 +221,7 @@
     position: absolute;
     top: 12px;
     right: 12px;
-    width: 290px;
+    width: 300px;
     max-height: calc(100vh - 100px);
     overflow-y: auto;
     background: rgba(20, 20, 35, 0.98);
@@ -312,88 +274,43 @@
   .pe-select:focus { border-color: #6366f1; }
 
   .pe-section { display: flex; flex-direction: column; gap: 6px; }
-  .section-header { display: flex; align-items: center; justify-content: space-between; }
 
-  .add-btn {
-    font-size: 10px; padding: 3px 8px; border-radius: 4px;
-    background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.3);
-    color: #a5b4fc; cursor: pointer;
+  .children-list { display: flex; flex-direction: column; gap: 3px; }
+  .child-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px; border-radius: 6px;
+    background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05);
+    font-size: 11px;
   }
-  .add-btn:hover { background: rgba(99,102,241,0.2); }
+  .child-icon { font-size: 12px; }
+  .child-kind { color: #64748b; font-size: 9px; text-transform: uppercase; min-width: 50px; }
+  .child-name { color: #e2e8f0; font-weight: 500; }
 
-  .inline-add { display: flex; gap: 4px; align-items: center; }
-
-  .fields-list { display: flex; flex-direction: column; gap: 4px; }
-  .field-row { display: flex; gap: 4px; align-items: center; }
-  .field-name { flex: 1; font-size: 11px; padding: 6px 8px; }
-
-  .remove-btn {
-    background: none; border: none; color: #64748b; font-size: 11px;
-    cursor: pointer; padding: 4px; border-radius: 4px;
+  .props-list { display: flex; flex-direction: column; gap: 3px; }
+  .prop-item {
+    display: flex; gap: 6px; align-items: baseline;
+    padding: 4px 8px; border-radius: 4px;
+    background: rgba(0,0,0,0.15);
+    font-size: 11px;
   }
-  .remove-btn:hover { color: #f87171; background: rgba(248,113,113,0.1); }
+  .prop-key { color: #64748b; font-family: monospace; }
+  .prop-value { color: #cbd5e1; font-family: monospace; word-break: break-all; }
 
   .annotations-list { display: flex; flex-direction: column; gap: 2px; }
-
-  .annotation-item {
-    border-radius: 6px;
-    overflow: hidden;
-  }
-
+  .annotation-item { border-radius: 6px; overflow: hidden; }
   .annotation-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.15s;
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background 0.15s;
   }
-
   .annotation-checkbox:hover { background: rgba(99,102,241,0.06); }
-
-  .annotation-checkbox input[type="checkbox"] {
-    accent-color: #6366f1;
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
-  }
-
-  .ann-name {
-    font-size: 11px;
-    font-weight: 600;
-    color: #a5b4fc;
-    font-family: 'JetBrains Mono', monospace;
-  }
-
-  .ann-desc {
-    font-size: 9px;
-    color: #475569;
-    margin-left: auto;
-  }
-
+  .annotation-checkbox input[type="checkbox"] { accent-color: #6366f1; width: 14px; height: 14px; cursor: pointer; }
+  .ann-name { font-size: 11px; font-weight: 600; color: #a5b4fc; font-family: monospace; }
+  .ann-desc { font-size: 9px; color: #475569; margin-left: auto; }
   .annotation-params {
-    padding: 6px 8px 8px 30px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
+    padding: 6px 8px 8px 30px; display: flex; flex-direction: column; gap: 5px;
     animation: slideDown 0.15s ease-out;
   }
-
-  @keyframes slideDown {
-    from { opacity: 0; transform: translateY(-4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  .param-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .param-label {
-    font-size: 10px;
-    color: #64748b;
-    min-width: 50px;
-  }
+  @keyframes slideDown { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .param-row { display: flex; align-items: center; gap: 6px; }
+  .param-label { font-size: 10px; color: #64748b; min-width: 50px; }
 </style>
