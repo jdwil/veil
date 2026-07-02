@@ -134,6 +134,7 @@ pub enum ContextItem {
     Aggregate(Aggregate),
     Port(Port),
     Service(Service),
+    Adapter(Adapter),
 }
 
 /// A value object (no identity).

@@ -71,6 +71,11 @@ sol CustomerOnboarding
       find(id: UUID) -> Res!<Opt<Customer>>
       delete(id: UUID) -> Res!
 
+    adapter SmsTwilio for Notifier
+      @env(TWILIO_SID, TWILIO_TOKEN)
+      impl send_sms(phone, msg)
+        http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
+
     # Domain service — orchestrates within this context
     svc CreateCustomerService
       input
@@ -104,6 +109,11 @@ sol CustomerOnboarding
       create_customer(email: Str) -> Res!<ExtId>
       cancel_subscription(sub_id: UUID) -> Res!
 
+    adapter StripeAdapter for PaymentGateway
+      @env(STRIPE_KEY)
+      impl create_customer(email)
+        http.post("api.stripe.com/v1/customers", {email})
+
   # Cross-context orchestration with compensation
   saga Onboard
     contexts Identity, Billing
@@ -134,13 +144,3 @@ sol CustomerOnboarding
       invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
       compensate
         invoke Billing.CancelTrial{customer_id: c.id}
-
-  adapter SmsTwilio for Notifier
-    @env(TWILIO_SID, TWILIO_TOKEN)
-    impl send_sms(phone, msg)
-      http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
-
-  adapter StripeAdapter for PaymentGateway
-    @env(STRIPE_KEY)
-    impl create_customer(email)
-      http.post("api.stripe.com/v1/customers", {email})

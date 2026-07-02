@@ -163,6 +163,7 @@ impl Serializer {
                 ContextItem::Aggregate(agg) => self.emit_aggregate(agg),
                 ContextItem::Port(port) => self.emit_port(port),
                 ContextItem::Service(svc) => self.emit_service(svc),
+                ContextItem::Adapter(adapter) => self.emit_adapter(adapter),
             }
         }
         self.dedent();

@@ -792,6 +792,9 @@ impl<'a> Parser<'a> {
                         let svc_flow = self.parse_domain_service()?;
                         items.push(ContextItem::Service(svc_flow));
                     }
+                    TokenKind::Adapter => {
+                        items.push(ContextItem::Adapter(self.parse_adapter()?));
+                    }
                     TokenKind::Comment => {
                         self.advance();
                     }

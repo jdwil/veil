@@ -235,6 +235,9 @@ impl IrBuilder {
                     self.set_subkind(svc_id, "DomainService");
                     self.graph.add_edge(ctx_id, svc_id, EdgeKind::Contains);
                 }
+                ContextItem::Adapter(adapter) => {
+                    self.build_adapter(adapter, ctx_id);
+                }
             }
         }
     }
