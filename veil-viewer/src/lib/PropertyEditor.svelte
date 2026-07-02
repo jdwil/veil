@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { NODE_STYLES, type NodeKind } from '$lib/types';
+  import { NODE_STYLES, getNodeStyle, type NodeKind } from '$lib/types';
   import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
 
   let { node, onUpdate, onClose }: {
@@ -9,8 +9,9 @@
   } = $props();
 
   let name = $state(node.data.label ?? '');
-  let kind: NodeKind = node.data.kind;
-  let style = NODE_STYLES[kind];
+  let kind = $derived<NodeKind>(node.data.kind);
+  let subkind = $derived<string | null>(node.data.subkind ?? null);
+  let style = $derived(getNodeStyle(kind, subkind));
 
   // Annotations as structured data: { name, args: Record<string, string> }
   let activeAnnotations = $state<Record<string, Record<string, string>>>(
@@ -31,7 +32,7 @@
   );
 
   // Available annotations for this node kind
-  const availableAnnotations: AnnotationDef[] = ANNOTATION_SCHEMA[kind] ?? [];
+  let availableAnnotations = $derived<AnnotationDef[]>(ANNOTATION_SCHEMA[subkind ?? kind] ?? ANNOTATION_SCHEMA[kind] ?? []);
 
   // Reset state when node changes
   $effect(() => {
@@ -128,9 +129,9 @@
   function removeInput(index: number) { inputs = inputs.filter((_, i) => i !== index); save(); }
 
   const TYPE_OPTIONS = ['Str', 'Int', 'F64', 'Bool', 'UUID', 'DateTime', 'Bytes', 'Email', 'Phone', 'Customer', 'Subscription'];
-  const showFields = ['Aggregate', 'Entity', 'ValueObject', 'Event', 'Command', 'Port'].includes(kind);
-  const showAdapter = kind === 'Adapter';
-  const showFlowInputs = kind === 'Flow';
+  let showFields = $derived(['Aggregate', 'Entity', 'ValueObject', 'Event', 'Command', 'Port'].includes(subkind ?? kind));
+  let showAdapter = $derived((subkind ?? kind) === 'Adapter' || kind === 'Implementation');
+  let showFlowInputs = $derived(kind === 'Flow' || kind === 'Saga');
 </script>
 
 <div class="property-editor" onclick={(e) => e.stopPropagation()} onpointerdown={(e) => e.stopPropagation()}>
