@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import {
     SvelteFlow,
     Controls,
@@ -114,7 +114,7 @@
     const graph = $irGraph;
     const parent = $currentParent;
     if (!graph) return;
-    computeView(graph, parent);
+    untrack(() => computeView(graph, parent));
   });
 
   function switchTab(tab: string) {
