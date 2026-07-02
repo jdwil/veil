@@ -2,6 +2,9 @@
   import { NODE_STYLES, getNodeStyle, type NodeKind, type IrGraph, type IrNode } from '$lib/types';
   import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
   import { irGraph } from '$lib/store';
+  import { formatType } from '$lib/typeDisplay';
+  import MethodEditor from '$lib/MethodEditor.svelte';
+  import FieldsEditor from '$lib/FieldsEditor.svelte';
 
   let { node, onUpdate, onClose }: {
     node: { id: string; data: any };
@@ -24,6 +27,50 @@
     if (isNaN(nodeId)) { children = []; return; }
     children = g.nodes.filter((n: IrNode) => n.metadata.parent === nodeId);
   });
+
+  // Determine what kind of editor to show
+  let editorType = $derived.by(() => {
+    const sk = subkind ?? kind;
+    if (sk === 'Port' || kind === 'Interface') return 'methods';
+    if (['Aggregate', 'ValueObject', 'Entity', 'Event', 'Command'].includes(sk)) return 'fields';
+    if (sk === 'Adapter' || kind === 'Implementation') return 'adapter';
+    if (kind === 'Flow' || kind === 'Saga' || sk === 'DomainService') return 'flow';
+    return 'generic';
+  });
+
+  // Parse children into editable method structures (for Port/Interface)
+  let methods = $derived.by(() => {
+    return children
+      .filter(c => c.kind === 'InterfaceMethod')
+      .map(c => {
+        const paramsRaw = c.metadata.properties.find(([k]) => k === 'params')?.[1] ?? '';
+        const returnsRaw = c.metadata.properties.find(([k]) => k === 'returns')?.[1] ?? '';
+        // Parse "(name: Type, name: Type)" into array
+        const paramStr = paramsRaw.replace(/^\(|\)$/g, '');
+        const params = paramStr ? paramStr.split(', ').map(p => {
+          const [name, type] = p.split(': ');
+          return { name: name?.trim() ?? '', type: type?.trim() ?? 'Str' };
+        }) : [];
+        return { name: c.name, params, returnType: returnsRaw };
+      });
+  });
+
+  // Parse children into editable field structures (for types)
+  let fields = $derived.by(() => {
+    return children
+      .filter(c => c.metadata.subkind === 'Event' || c.metadata.subkind === 'Command' || c.kind === 'TypeDef')
+      .map(c => ({ name: c.name, type: c.metadata.subkind ?? c.kind }));
+  });
+
+  function handleMethodsChange(newMethods: any[]) {
+    // TODO: update IR with new methods
+    console.log('Methods changed:', newMethods);
+  }
+
+  function handleFieldsChange(newFields: any[]) {
+    // TODO: update IR with new fields
+    console.log('Fields changed:', newFields);
+  }
 
   // Annotations
   let activeAnnotations = $state<Record<string, Record<string, string>>>(
@@ -133,8 +180,31 @@
       <input type="text" class="pe-input" bind:value={name} oninput={save} placeholder="Enter name..." />
     </label>
 
-    <!-- Children: show methods, fields, events, etc. based on what this node contains -->
-    {#if children.length > 0}
+    <!-- Type-specific editor -->
+    {#if editorType === 'methods'}
+      <MethodEditor methods={methods} onChange={handleMethodsChange} />
+    {:else if editorType === 'fields' && children.length > 0}
+      <div class="pe-section">
+        <span class="label-text">Contains</span>
+        <div class="children-list">
+          {#each children as child}
+            <div class="child-item">
+              <span class="child-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
+              <div class="child-info">
+                <span class="child-name">{child.name}</span>
+                {#if child.metadata.properties.length > 0}
+                  <span class="child-sig">
+                    {#each child.metadata.properties as [key, value]}
+                      <span class="sig-part">{key}: {formatType(value)}</span>
+                    {/each}
+                  </span>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {:else if children.length > 0}
       <div class="pe-section">
         <span class="label-text">Contains</span>
         <div class="children-list">
