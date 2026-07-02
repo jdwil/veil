@@ -135,6 +135,15 @@ pub enum ContextItem {
     Port(Port),
     Service(Service),
     Adapter(Adapter),
+    Group(Group),
+}
+
+/// A visual group — purely organizational, no codegen impact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Group {
+    pub name: String,
+    pub span: Span,
+    pub items: Vec<ContextItem>,
 }
 
 /// A value object (no identity).

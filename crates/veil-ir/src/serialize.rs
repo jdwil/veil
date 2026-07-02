@@ -164,6 +164,22 @@ impl Serializer {
                 ContextItem::Port(port) => self.emit_port(port),
                 ContextItem::Service(svc) => self.emit_service(svc),
                 ContextItem::Adapter(adapter) => self.emit_adapter(adapter),
+                ContextItem::Group(group) => {
+                    self.line(&format!("group {}", group.name));
+                    self.indent();
+                    for item in &group.items {
+                        match item {
+                            ContextItem::ValueObject(vo) => self.emit_value_object(vo),
+                            ContextItem::Entity(ent) => self.emit_entity(ent),
+                            ContextItem::Aggregate(agg) => self.emit_aggregate(agg),
+                            ContextItem::Port(port) => self.emit_port(port),
+                            ContextItem::Service(svc) => self.emit_service(svc),
+                            ContextItem::Adapter(adapter) => self.emit_adapter(adapter),
+                            ContextItem::Group(_) => {} // nested not supported
+                        }
+                    }
+                    self.dedent();
+                }
             }
         }
         self.dedent();

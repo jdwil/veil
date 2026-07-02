@@ -75,6 +75,7 @@ pub struct NodeMetadata {
 pub enum NodeKind {
     Solution,
     Module,
+    Group,
     TypeDef,
     Interface,
     InterfaceMethod,

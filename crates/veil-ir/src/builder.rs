@@ -238,6 +238,50 @@ impl IrBuilder {
                 ContextItem::Adapter(adapter) => {
                     self.build_adapter(adapter, ctx_id);
                 }
+                ContextItem::Group(group) => {
+                    let group_id = self.graph.add_node(NodeKind::Group, group.name.clone(), group.span);
+                    self.set_parent(group_id, ctx_id);
+                    self.graph.add_edge(ctx_id, group_id, EdgeKind::Contains);
+                    // Build group children under the group node
+                    for item in &group.items {
+                        match item {
+                            ContextItem::ValueObject(vo) => {
+                                let id = self.graph.add_node(NodeKind::TypeDef, vo.name.clone(), vo.span);
+                                self.set_parent(id, group_id);
+                                self.set_subkind(id, "ValueObject");
+                                let fields_str = vo.fields.iter().map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr))).collect::<Vec<_>>().join(", ");
+                                if !fields_str.is_empty() { self.set_property(id, "fields", &fields_str); }
+                                self.graph.add_edge(group_id, id, EdgeKind::Contains);
+                            }
+                            ContextItem::Entity(ent) => {
+                                let id = self.graph.add_node(NodeKind::TypeDef, ent.name.clone(), ent.span);
+                                self.set_parent(id, group_id);
+                                self.set_subkind(id, "Entity");
+                                let fields_str = ent.fields.iter().map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr))).collect::<Vec<_>>().join(", ");
+                                if !fields_str.is_empty() { self.set_property(id, "fields", &fields_str); }
+                                self.graph.add_edge(group_id, id, EdgeKind::Contains);
+                            }
+                            ContextItem::Aggregate(agg) => {
+                                self.build_aggregate(agg, group_id);
+                            }
+                            ContextItem::Port(port) => {
+                                self.build_port(port, group_id);
+                            }
+                            ContextItem::Service(svc) => {
+                                let id = self.graph.add_node(NodeKind::Flow, svc.name.clone(), svc.span);
+                                self.set_parent(id, group_id);
+                                self.set_subkind(id, "DomainService");
+                                self.graph.add_edge(group_id, id, EdgeKind::Contains);
+                            }
+                            ContextItem::Adapter(adapter) => {
+                                self.build_adapter(adapter, group_id);
+                            }
+                            ContextItem::Group(_) => {
+                                // Nested groups not supported for now
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -10,109 +10,113 @@ sol CustomerOnboarding
   # Identity context manages customer registration, verification, and profile.
   # This is the core bounded context for user identity concerns.
   ctx Identity
-    val Email
-      addr: Str
-      @invariant(valid_email(addr))
+    group domain
+      val Email
+        addr: Str
+        @invariant(valid_email(addr))
 
-    val Phone
-      number: Str
-      country: Str
+      val Phone
+        number: Str
+        country: Str
 
-    agg Customer
-      root
-        id: UUID
-        email: Email
-        phone: Phone
-        status: CustomerStatus
-        created: DateTime
+      agg Customer
+        root
+          id: UUID
+          email: Email
+          phone: Phone
+          status: CustomerStatus
+          created: DateTime
 
-      state CustomerStatus
-        Pending -> Verified -> Active
-        Pending -> Rejected
+        state CustomerStatus
+          Pending -> Verified -> Active
+          Pending -> Rejected
 
-      fn verify(code: Str) -> Res!
-        @invariant(status == Pending)
-        status = Verified
-        emit CustomerVerified{id, now()}
+        fn verify(code: Str) -> Res!
+          @invariant(status == Pending)
+          status = Verified
+          emit CustomerVerified{id, now()}
 
-      fn reject(reason: Str) -> Res!
-        @invariant(status == Pending)
-        status = Rejected
-        emit CustomerRejected{id, reason}
+        fn reject(reason: Str) -> Res!
+          @invariant(status == Pending)
+          status = Rejected
+          emit CustomerRejected{id, reason}
 
-      evt CustomerCreated
-        id email created
+        evt CustomerCreated
+          id email created
 
-      evt CustomerVerified
-        id verified_at: DateTime
+        evt CustomerVerified
+          id verified_at: DateTime
 
-      evt CustomerRejected
-        id reason: Str
+        evt CustomerRejected
+          id reason: Str
 
-      cmd CreateCustomer
-        email: Email
-        phone: Phone
-        -> Res!<Customer>
+        cmd CreateCustomer
+          email: Email
+          phone: Phone
+          -> Res!<Customer>
 
-      cmd VerifyCustomer
-        id: UUID
-        code: Str
-        -> Res!<Customer>
+        cmd VerifyCustomer
+          id: UUID
+          code: Str
+          -> Res!<Customer>
 
-    port Notifier
-      send_sms(phone: Phone, msg: Str) -> Res!
-      send_email(email: Email, subj: Str, body: Str) -> Res!
+      port Notifier
+        send_sms(phone: Phone, msg: Str) -> Res!
+        send_email(email: Email, subj: Str, body: Str) -> Res!
 
-    port KYCProvider
-      check(name: Str, email: Email) -> Res!<KYCResult>
+      port KYCProvider
+        check(name: Str, email: Email) -> Res!<KYCResult>
 
-    port CustomerRepo
-      save(c: Customer) -> Res!
-      find(id: UUID) -> Res!<Opt<Customer>>
-      delete(id: UUID) -> Res!
+      port CustomerRepo
+        save(c: Customer) -> Res!
+        find(id: UUID) -> Res!<Opt<Customer>>
+        delete(id: UUID) -> Res!
 
-    adapter SmsTwilio for Notifier
-      @env(TWILIO_SID, TWILIO_TOKEN)
-      impl send_sms(phone, msg)
-        http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
+    group infrastructure
+      adapter SmsTwilio for Notifier
+        @env(TWILIO_SID, TWILIO_TOKEN)
+        impl send_sms(phone, msg)
+          http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
 
-    # Domain service — orchestrates within this context
-    svc CreateCustomerService
-      input
-        email: Email
-        phone: Phone
-      step validate
-        guard call Email.validate(email), "invalid email"
-      step persist
-        c = call Customer.new(email, phone)
-        call CustomerRepo.save(c)
-        dispatch CustomerCreated{c.id, email, c.created}
-      ret c.id
+    group application
+      svc CreateCustomerService
+        input
+          email: Email
+          phone: Phone
+        step validate
+          guard call Email.validate(email), "invalid email"
+        step persist
+          c = call Customer.new(email, phone)
+          call CustomerRepo.save(c)
+          dispatch CustomerCreated{c.id, email, c.created}
+        ret c.id
 
   ctx Billing
-    agg Subscription
-      root
-        id: UUID
-        customer_id: UUID
-        plan: Plan
-        status: SubStatus
+    group domain
+      agg Subscription
+        root
+          id: UUID
+          customer_id: UUID
+          plan: Plan
+          status: SubStatus
 
-      state SubStatus
-        Trial -> Active -> Cancelled
+        state SubStatus
+          Trial -> Active -> Cancelled
 
-      cmd CreateTrial
-        customer_id: UUID
-        plan: Plan
-        -> Res!<Subscription>
+        cmd CreateTrial
+          customer_id: UUID
+          plan: Plan
+          -> Res!<Subscription>
 
-    port PaymentGateway
-      create_customer(email: Str) -> Res!<ExtId>
-      cancel_subscription(sub_id: UUID) -> Res!
+      port PaymentGateway
+        create_customer(email: Str) -> Res!<ExtId>
+        cancel_subscription(sub_id: UUID) -> Res!
 
-    adapter StripeAdapter for PaymentGateway
-      @env(STRIPE_KEY)
-      impl create_customer(email)
-        http.post("api.stripe.com/v1/customers", {email})
+    group infrastructure
+      adapter StripeAdapter for PaymentGateway
+        @env(STRIPE_KEY)
+        impl create_customer(email)
+          http.post("api.stripe.com/v1/customers", {email})
 
   # Cross-context orchestration with compensation
   saga Onboard

@@ -795,6 +795,9 @@ impl<'a> Parser<'a> {
                     TokenKind::Adapter => {
                         items.push(ContextItem::Adapter(self.parse_adapter()?));
                     }
+                    TokenKind::Group => {
+                        items.push(ContextItem::Group(self.parse_group()?));
+                    }
                     TokenKind::Comment => {
                         self.advance();
                     }
@@ -822,6 +825,54 @@ impl<'a> Parser<'a> {
 // ─── Domain construct parsing ─────────────────────────────────────────────
 
 impl<'a> Parser<'a> {
+    fn parse_group(&mut self) -> Result<Group, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Group)?;
+        let name = self.expect_ident()?;
+
+        let mut items = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                let annotations = self.parse_annotations();
+                match self.peek_kind().clone() {
+                    TokenKind::Val => {
+                        items.push(ContextItem::ValueObject(
+                            self.parse_value_object(annotations)?,
+                        ));
+                    }
+                    TokenKind::Ent => {
+                        items.push(ContextItem::Entity(self.parse_entity(annotations)?));
+                    }
+                    TokenKind::Agg => {
+                        items.push(ContextItem::Aggregate(self.parse_aggregate(annotations)?));
+                    }
+                    TokenKind::Port => {
+                        items.push(ContextItem::Port(self.parse_port()?));
+                    }
+                    TokenKind::Svc => {
+                        let svc_flow = self.parse_domain_service()?;
+                        items.push(ContextItem::Service(svc_flow));
+                    }
+                    TokenKind::Adapter => {
+                        items.push(ContextItem::Adapter(self.parse_adapter()?));
+                    }
+                    TokenKind::Comment => { self.advance(); }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Group {
+            name,
+            span: start_span.merge(self.current().span),
+            items,
+        })
+    }
+
     fn parse_value_object(&mut self, annotations: Vec<Annotation>) -> Result<ValueObject, ParseError> {
         let start_span = self.current().span;
         self.expect(&TokenKind::Val)?;

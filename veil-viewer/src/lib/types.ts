@@ -24,6 +24,7 @@ export interface NodeMetadata {
 export type NodeKind =
   | 'Solution'
   | 'Module'
+  | 'Group'
   | 'TypeDef'
   | 'Interface'
   | 'InterfaceMethod'
@@ -61,6 +62,7 @@ export type EdgeKind =
 export const NODE_STYLES: Record<NodeKind, { color: string; icon: string; label: string }> = {
   Solution: { color: '#6366f1', icon: '🏗️', label: 'Solution' },
   Module: { color: '#8b5cf6', icon: '📦', label: 'Module' },
+  Group: { color: '#475569', icon: '📂', label: 'Group' },
   TypeDef: { color: '#14b8a6', icon: '📋', label: 'Type' },
   Interface: { color: '#10b981', icon: '🔌', label: 'Interface' },
   InterfaceMethod: { color: '#34d399', icon: '⚙️', label: 'Method' },
