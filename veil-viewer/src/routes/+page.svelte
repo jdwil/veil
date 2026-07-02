@@ -113,10 +113,16 @@
   $effect(() => {
     const graph = $irGraph;
     const parent = $currentParent;
-    const _tab = activeTab; // Track tab changes
     if (!graph) return;
     computeView(graph, parent);
   });
+
+  function switchTab(tab: string) {
+    activeTab = tab;
+    const graph = $irGraph;
+    const parent = $currentParent;
+    if (graph) computeView(graph, parent);
+  }
 
   function computeView(graph: IrGraph, parentId: number | null) {
     const children = getChildren(graph, parentId);
@@ -186,11 +192,10 @@
     const groupNodes = children.filter(c => c.kind === 'Group');
     if (groupNodes.length > 0) {
       tabs = groupNodes.map(g => g.name);
-      if (!activeTab || !tabs.includes(activeTab)) {
-        activeTab = tabs[0];
-      }
-      // Get children of the active group
-      const activeGroup = groupNodes.find(g => g.name === activeTab);
+      // Use activeTab if valid, otherwise default to first
+      const currentTab = (activeTab && tabs.includes(activeTab)) ? activeTab : tabs[0];
+
+      const activeGroup = groupNodes.find(g => g.name === currentTab);
       if (activeGroup) {
         const groupChildren = getChildren(graph, activeGroup.id);
         // Also include non-group items at this level
@@ -433,7 +438,7 @@
               <button
                 class="tab-btn"
                 class:active={activeTab === tab}
-                onclick={() => { activeTab = tab; }}
+                onclick={() => switchTab(tab)}
               >
                 {tab}
               </button>
