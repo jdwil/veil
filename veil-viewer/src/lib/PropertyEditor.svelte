@@ -16,10 +16,10 @@
   let displayKind = $derived(subkind ?? kind);
 
   // Get children of this node from the graph
-  let children = $derived<IrNode[]>(() => {
-    if (!graph) return [];
+  let children = $derived.by(() => {
+    if (!graph) return [] as IrNode[];
     const nodeId = Number(node.id);
-    if (isNaN(nodeId)) return [];
+    if (isNaN(nodeId)) return [] as IrNode[];
     return graph.nodes.filter(n => n.metadata.parent === nodeId);
   });
 
