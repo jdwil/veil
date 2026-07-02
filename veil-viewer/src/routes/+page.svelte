@@ -422,7 +422,6 @@
         {#if selectedNode}
           <PropertyEditor
             node={selectedNode}
-            graph={$irGraph}
             onUpdate={updateNodeData}
             onClose={() => selectedNodeId.set(null)}
           />

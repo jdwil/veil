@@ -1,10 +1,10 @@
 <script lang="ts">
   import { NODE_STYLES, getNodeStyle, type NodeKind, type IrGraph, type IrNode } from '$lib/types';
   import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
+  import { irGraph } from '$lib/store';
 
-  let { node, graph, onUpdate, onClose }: {
+  let { node, onUpdate, onClose }: {
     node: { id: string; data: any };
-    graph: IrGraph | null;
     onUpdate: (id: string, data: any) => void;
     onClose: () => void;
   } = $props();
@@ -18,10 +18,11 @@
   // Get children of this node from the graph
   let children = $state<IrNode[]>([]);
   $effect(() => {
-    if (!graph) { children = []; return; }
+    const g = $irGraph;
+    if (!g) { children = []; return; }
     const nodeId = Number(node.id);
     if (isNaN(nodeId)) { children = []; return; }
-    children = graph.nodes.filter((n: IrNode) => n.metadata.parent === nodeId);
+    children = g.nodes.filter((n: IrNode) => n.metadata.parent === nodeId);
   });
 
   // Annotations
