@@ -50,7 +50,6 @@
 
   // Get the currently selected node for property editing
   // Action-level nodes get specialized editors (Task 6 of this refactor)
-  const STATEMENT_KINDS = ['CallAction', 'EmitAction', 'AssignAction', 'DispatchAction', 'InvokeAction', 'RequestAction', 'GuardAction', 'MatchDecision', 'MatchArm'];
 
   let selectedNode = $derived.by(() => {
     const id = $selectedNodeId;
@@ -123,8 +122,8 @@
     // Check if we're at the Solution level with Contexts + Sagas
     const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
     const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
-    const contexts = children.filter(c => c.kind === 'Context');
-    const sagas = children.filter(c => c.kind === 'Saga');
+    const contexts = children.filter(c => c.metadata.subkind === 'Context');
+    const sagas = children.filter(c => c.kind === 'Saga' || c.metadata.subkind === 'Saga');
 
     // Simple flat view — contexts, sagas, adapters as regular nodes
     if (isSolutionLevel && contexts.length > 0) {
