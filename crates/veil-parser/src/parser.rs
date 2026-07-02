@@ -206,6 +206,29 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Collect consecutive comment tokens as doc comments (strips # prefix).
+    fn collect_doc_comments(&mut self) -> Option<String> {
+        let mut lines: Vec<String> = Vec::new();
+        while self.at(&TokenKind::Comment) {
+            let text = self.advance().text;
+            // Strip "# " prefix
+            let line = text.strip_prefix("# ")
+                .or_else(|| text.strip_prefix("#"))
+                .unwrap_or(&text)
+                .to_string();
+            lines.push(line);
+            // Skip newline after comment
+            if self.at(&TokenKind::Newline) {
+                self.advance();
+            }
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    }
+
     fn error(&self, message: String) -> ParseError {
         ParseError {
             message,
@@ -621,6 +644,8 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
+                // Collect doc comments that precede the next construct
+                let doc = self.collect_doc_comments();
                 // Collect annotations that decorate the next construct
                 let prefix_annotations = self.parse_annotations();
 
@@ -628,12 +653,15 @@ impl<'a> Parser<'a> {
                     TokenKind::Use => {
                         // Kit declaration — consume and store for later resolution
                         let _import = self.parse_use_import()?;
+                        let _ = doc;
                         // TODO: resolve kit and apply constraints/metadata
                     }
                     TokenKind::Lang => {
+                        let _ = doc;
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
                     }
                     TokenKind::Ctx => {
+                        let _ = doc; // TODO: attach to context
                         let ctx = self.parse_context()?;
                         let _ = prefix_annotations;
                         items.push(TopLevelItem::Context(ctx));
@@ -664,8 +692,8 @@ impl<'a> Parser<'a> {
                         self.advance();
                     }
                     _ => {
-                        if !prefix_annotations.is_empty() {
-                            // Annotations with no following construct — skip
+                        if !prefix_annotations.is_empty() || doc.is_some() {
+                            // Annotations/comments with no following construct — skip
                         } else {
                             let err = self.error(format!(
                                 "unexpected token {:?} in solution body",

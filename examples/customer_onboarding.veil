@@ -6,6 +6,9 @@ sol CustomerOnboarding
     KYC: Know Your Customer verification
     Onboarding: process from signup to active customer
 
+
+  # Identity context manages customer registration, verification, and profile.
+  # This is the core bounded context for user identity concerns.
   ctx Identity
     val Email
       addr: Str

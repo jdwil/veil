@@ -65,8 +65,9 @@ pub struct NodeMetadata {
     pub annotations: Vec<String>,
     pub properties: Vec<(String, String)>,
     /// Package-defined subkind (e.g., "Aggregate", "ValueObject", "Context")
-    /// Allows packages to add semantic meaning beyond the primitive NodeKind.
     pub subkind: Option<String>,
+    /// Doc comments attached to this node (preserved from source).
+    pub doc: Option<String>,
 }
 
 /// The kind/type of an IR node.

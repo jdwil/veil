@@ -439,6 +439,12 @@ impl IrBuilder {
         }
     }
 
+    fn set_doc(&mut self, node_id: NodeId, doc: &str) {
+        if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
+            node.metadata.doc = Some(doc.to_string());
+        }
+    }
+
     /// Find which adapter implements the given port and annotate the node.
     fn annotate_adapter_binding(&mut self, node_id: NodeId, port_name: &str) {
         // Find the port node
