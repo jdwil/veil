@@ -202,6 +202,7 @@ impl IrBuilder {
                         svc.span,
                     );
                     self.set_parent(svc_id, ctx_id);
+                    self.set_subkind(svc_id, "DomainService");
                     self.graph.add_edge(ctx_id, svc_id, EdgeKind::Contains);
                 }
             }
@@ -586,6 +587,7 @@ impl IrBuilder {
             adapter.span,
         );
         self.set_parent(adapter_id, parent_id);
+        self.set_subkind(adapter_id, "Adapter");
         self.graph.add_edge(parent_id, adapter_id, EdgeKind::Contains);
 
         // Find port node and add implements edge
