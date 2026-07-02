@@ -193,6 +193,13 @@ impl IrBuilder {
                     );
                     self.set_parent(vo_id, ctx_id);
                     self.set_subkind(vo_id, "ValueObject");
+                    // Store fields as property
+                    let fields_str = vo.fields.iter()
+                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                        .collect::<Vec<_>>().join(", ");
+                    if !fields_str.is_empty() {
+                        self.set_property(vo_id, "fields", &fields_str);
+                    }
                     self.graph.add_edge(ctx_id, vo_id, EdgeKind::Contains);
                 }
                 ContextItem::Entity(ent) => {
@@ -203,6 +210,13 @@ impl IrBuilder {
                     );
                     self.set_parent(ent_id, ctx_id);
                     self.set_subkind(ent_id, "Entity");
+                    // Store fields as property
+                    let fields_str = ent.fields.iter()
+                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                        .collect::<Vec<_>>().join(", ");
+                    if !fields_str.is_empty() {
+                        self.set_property(ent_id, "fields", &fields_str);
+                    }
                     self.graph.add_edge(ctx_id, ent_id, EdgeKind::Contains);
                 }
                 ContextItem::Aggregate(agg) => {
@@ -231,6 +245,22 @@ impl IrBuilder {
         self.set_subkind(agg_id, "Aggregate");
         self.graph.add_edge(parent_id, agg_id, EdgeKind::Contains);
 
+        // Store root fields
+        let fields_str = agg.fields.iter()
+            .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+            .collect::<Vec<_>>().join(", ");
+        if !fields_str.is_empty() {
+            self.set_property(agg_id, "fields", &fields_str);
+        }
+
+        // Store state machines
+        for sm in &agg.state_machines {
+            let transitions = sm.transitions.iter()
+                .map(|t| format!("{} → {}", t.from, t.to))
+                .collect::<Vec<_>>().join(", ");
+            self.set_property(agg_id, &format!("state:{}", sm.name), &transitions);
+        }
+
         // Add annotations as metadata
         for ann in &agg.annotations {
             if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == agg_id) {
@@ -243,6 +273,13 @@ impl IrBuilder {
             let evt_id = self.graph.add_node(NodeKind::TypeDef, evt.name.clone(), evt.span);
             self.set_parent(evt_id, agg_id);
             self.set_subkind(evt_id, "Event");
+            // Store event fields
+            let evt_fields = evt.fields.iter()
+                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                .collect::<Vec<_>>().join(", ");
+            if !evt_fields.is_empty() {
+                self.set_property(evt_id, "fields", &evt_fields);
+            }
             self.graph.add_edge(agg_id, evt_id, EdgeKind::Contains);
         }
 
@@ -251,6 +288,16 @@ impl IrBuilder {
             let cmd_id = self.graph.add_node(NodeKind::TypeDef, cmd.name.clone(), cmd.span);
             self.set_parent(cmd_id, agg_id);
             self.set_subkind(cmd_id, "Command");
+            // Store command fields
+            let cmd_fields = cmd.fields.iter()
+                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                .collect::<Vec<_>>().join(", ");
+            if !cmd_fields.is_empty() {
+                self.set_property(cmd_id, "fields", &cmd_fields);
+            }
+            if let Some(rt) = &cmd.return_type {
+                self.set_property(cmd_id, "returns", &type_to_display(rt));
+            }
             self.graph.add_edge(agg_id, cmd_id, EdgeKind::Contains);
         }
     }

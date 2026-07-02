@@ -183,27 +183,38 @@
     <!-- Type-specific editor -->
     {#if editorType === 'methods'}
       <MethodEditor methods={methods} onChange={handleMethodsChange} />
-    {:else if editorType === 'fields' && children.length > 0}
-      <div class="pe-section">
-        <span class="label-text">Contains</span>
-        <div class="children-list">
-          {#each children as child}
-            <div class="child-item">
-              <span class="child-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
-              <div class="child-info">
-                <span class="child-name">{child.name}</span>
-                {#if child.metadata.properties.length > 0}
-                  <span class="child-sig">
-                    {#each child.metadata.properties as [key, value]}
-                      <span class="sig-part">{key}: {formatType(value)}</span>
-                    {/each}
-                  </span>
-                {/if}
+    {:else if editorType === 'fields'}
+      <!-- Fields from properties -->
+      {@const fieldsRaw = node.data.properties?.find(([k]: [string, string]) => k === 'fields')?.[1] ?? ''}
+      {@const parsedFields = fieldsRaw ? fieldsRaw.split(', ').map((f: string) => {
+        const [name, type] = f.split(': ');
+        return { name: name?.trim() ?? '', type: type?.trim() ?? 'Str' };
+      }) : []}
+      <FieldsEditor fields={parsedFields} label="Fields" onChange={handleFieldsChange} />
+
+      <!-- Show children (events, commands) if any -->
+      {#if children.length > 0}
+        <div class="pe-section">
+          <span class="label-text">Contains</span>
+          <div class="children-list">
+            {#each children as child}
+              <div class="child-item">
+                <span class="child-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
+                <div class="child-info">
+                  <span class="child-name">{child.name}</span>
+                  {#if child.metadata.properties.length > 0}
+                    <span class="child-sig">
+                      {#each child.metadata.properties as [key, value]}
+                        <span class="sig-part">{key}: {formatType(value)}</span>
+                      {/each}
+                    </span>
+                  {/if}
+                </div>
               </div>
-            </div>
-          {/each}
+            {/each}
+          </div>
         </div>
-      </div>
+      {/if}
     {:else if children.length > 0}
       <div class="pe-section">
         <span class="label-text">Contains</span>
