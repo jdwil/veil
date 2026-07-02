@@ -579,6 +579,29 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_veil(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
+        Expr::FloatLit(f) => f.to_string(),
+        Expr::BoolLit(b) => b.to_string(),
         Expr::Return(inner) => format!("ret {}", expr_to_veil(inner)),
+        Expr::BinaryOp(op) => {
+            let left = expr_to_veil(&op.left);
+            let right = expr_to_veil(&op.right);
+            let op_str = match &op.op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::Mod => "%", BinOp::Eq => "==",
+                BinOp::NotEq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
+                BinOp::LtEq => "<=", BinOp::GtEq => ">=",
+                BinOp::And => "&&", BinOp::Or => "||",
+            };
+            format!("{} {} {}", left, op_str, right)
+        }
+        Expr::UnaryOp(op) => {
+            let op_str = match &op.op {
+                UnaryOp::Not => "!", UnaryOp::Neg => "-",
+            };
+            format!("{}{}", op_str, expr_to_veil(&op.expr))
+        }
+        Expr::IfExpr(ie) => {
+            format!("if {}", expr_to_veil(&ie.condition))
+        }
     }
 }

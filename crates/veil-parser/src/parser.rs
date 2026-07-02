@@ -1651,38 +1651,55 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse an expression (simplified for MVP).
+    /// Parse an expression with operator precedence.
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        // Handle special statement-level keywords first
         match self.peek_kind().clone() {
-            TokenKind::Call => self.parse_call_expr(),
-            TokenKind::Emit => self.parse_emit_expr(),
-            TokenKind::Dispatch => self.parse_dispatch_expr(),
-            TokenKind::Invoke => self.parse_invoke_expr(),
-            TokenKind::Request => self.parse_request_expr(),
-            TokenKind::Guard => self.parse_guard_expr(),
-            TokenKind::Match => self.parse_match_expr(),
+            TokenKind::Call => return self.parse_call_expr(),
+            TokenKind::Emit => return self.parse_emit_expr(),
+            TokenKind::Dispatch => return self.parse_dispatch_expr(),
+            TokenKind::Invoke => return self.parse_invoke_expr(),
+            TokenKind::Request => return self.parse_request_expr(),
+            TokenKind::Guard => return self.parse_guard_expr(),
+            TokenKind::Match => return self.parse_match_expr(),
             TokenKind::Ret => {
                 self.advance();
                 let inner = self.parse_expr()?;
-                Ok(Expr::Return(Box::new(inner)))
+                return Ok(Expr::Return(Box::new(inner)));
             }
+            _ => {}
+        }
+
+        // Parse with precedence climbing
+        let lhs = self.parse_primary()?;
+
+        // Check for assignment: name = expr (only if LHS is a simple ident)
+        if self.at(&TokenKind::Eq) {
+            if let Expr::Ident(name) = &lhs {
+                let name = name.clone();
+                self.advance();
+                let rhs = self.parse_expr()?;
+                return Ok(Expr::Assign(name, Box::new(rhs)));
+            }
+        }
+
+        // Parse binary operators with precedence
+        self.parse_binary_rhs(lhs, 0)
+    }
+
+    /// Parse a primary (atomic) expression.
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+        match self.peek_kind().clone() {
             TokenKind::Ident => {
                 let start_span = self.current().span;
                 let name = self.advance().text.clone();
-                // Check for assignment: name = expr
-                if self.at(&TokenKind::Eq) {
-                    self.advance();
-                    let rhs = self.parse_expr()?;
-                    Ok(Expr::Assign(name, Box::new(rhs)))
-                }
-                // Check for field access / method call
-                else if self.at(&TokenKind::Dot) {
+                // Field access / method call
+                if self.at(&TokenKind::Dot) {
                     let mut parts = vec![name.clone()];
                     while self.at(&TokenKind::Dot) {
                         self.advance();
                         parts.push(self.expect_ident()?);
                     }
-                    // If followed by parens, it's a method call
                     if self.at(&TokenKind::LParen) {
                         let method = parts.pop().unwrap_or_default();
                         let target = parts.join(".");
@@ -1694,7 +1711,6 @@ impl<'a> Parser<'a> {
                             span: start_span.merge(self.current().span),
                         }))
                     } else {
-                        // Plain field access chain
                         let mut expr = Expr::Ident(parts[0].clone());
                         for part in &parts[1..] {
                             expr = Expr::FieldAccess(Box::new(expr), part.clone());
@@ -1702,7 +1718,7 @@ impl<'a> Parser<'a> {
                         Ok(expr)
                     }
                 }
-                // Direct function call: name(args)
+                // Direct function call
                 else if self.at(&TokenKind::LParen) {
                     let args = self.parse_paren_args();
                     Ok(Expr::Call(CallExpr {
@@ -1717,7 +1733,6 @@ impl<'a> Parser<'a> {
             }
             TokenKind::StringLit => {
                 let text = self.advance().text.clone();
-                // Strip quotes
                 let inner = text[1..text.len() - 1].to_string();
                 Ok(Expr::StringLit(inner))
             }
@@ -1726,8 +1741,104 @@ impl<'a> Parser<'a> {
                 let val = text.parse::<i64>().unwrap_or(0);
                 Ok(Expr::IntLit(val))
             }
+            TokenKind::FloatLit => {
+                let text = self.advance().text.clone();
+                let val = text.parse::<f64>().unwrap_or(0.0);
+                Ok(Expr::FloatLit(val))
+            }
+            TokenKind::True => {
+                self.advance();
+                Ok(Expr::BoolLit(true))
+            }
+            TokenKind::False => {
+                self.advance();
+                Ok(Expr::BoolLit(false))
+            }
+            TokenKind::Bang => {
+                self.advance();
+                let expr = self.parse_primary()?;
+                Ok(Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Not,
+                    expr: Box::new(expr),
+                }))
+            }
+            TokenKind::Minus => {
+                self.advance();
+                let expr = self.parse_primary()?;
+                Ok(Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(expr),
+                }))
+            }
+            TokenKind::LParen => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                if self.at(&TokenKind::RParen) { self.advance(); }
+                Ok(expr)
+            }
             _ => Err(self.error(format!("expected expression, got {:?}", self.peek_kind()))),
         }
+    }
+
+    /// Parse binary operators with precedence climbing.
+    fn parse_binary_rhs(&mut self, mut lhs: Expr, min_prec: u8) -> Result<Expr, ParseError> {
+        loop {
+            let prec = self.current_binop_precedence();
+            if prec == 0 || prec < min_prec {
+                break;
+            }
+
+            let op = self.consume_binop().unwrap();
+            let mut rhs = self.parse_primary()?;
+
+            // Look ahead for higher-precedence operator
+            let next_prec = self.current_binop_precedence();
+            if next_prec > prec {
+                rhs = self.parse_binary_rhs(rhs, prec + 1)?;
+            }
+
+            lhs = Expr::BinaryOp(BinaryOpExpr {
+                left: Box::new(lhs),
+                op,
+                right: Box::new(rhs),
+            });
+        }
+        Ok(lhs)
+    }
+
+    /// Get the precedence of the current token if it's a binary operator.
+    fn current_binop_precedence(&self) -> u8 {
+        match self.peek_kind() {
+            TokenKind::Or => 1,
+            TokenKind::And => 2,
+            TokenKind::EqEq | TokenKind::NotEq => 3,
+            TokenKind::LAngle | TokenKind::RAngle | TokenKind::LtEq | TokenKind::GtEq => 4,
+            TokenKind::Plus | TokenKind::Minus => 5,
+            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => 6,
+            _ => 0, // Not a binary operator
+        }
+    }
+
+    /// Consume the current token as a binary operator, returning the BinOp.
+    fn consume_binop(&mut self) -> Option<BinOp> {
+        let op = match self.peek_kind() {
+            TokenKind::Plus => BinOp::Add,
+            TokenKind::Minus => BinOp::Sub,
+            TokenKind::Star => BinOp::Mul,
+            TokenKind::Slash => BinOp::Div,
+            TokenKind::Percent => BinOp::Mod,
+            TokenKind::EqEq => BinOp::Eq,
+            TokenKind::NotEq => BinOp::NotEq,
+            TokenKind::LAngle => BinOp::Lt,
+            TokenKind::RAngle => BinOp::Gt,
+            TokenKind::LtEq => BinOp::LtEq,
+            TokenKind::GtEq => BinOp::GtEq,
+            TokenKind::And => BinOp::And,
+            TokenKind::Or => BinOp::Or,
+            _ => return None,
+        };
+        self.advance();
+        Some(op)
     }
 
     fn parse_call_expr(&mut self) -> Result<Expr, ParseError> {

@@ -12,6 +12,31 @@ pub fn build_ir(solution: &Solution) -> IrGraph {
 }
 
 /// Extract the port name from a call label like "call PaymentGateway.create_customer"
+fn binop_to_str(op: &BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Eq => "==",
+        BinOp::NotEq => "!=",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::LtEq => "<=",
+        BinOp::GtEq => ">=",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
+    }
+}
+
+fn unaryop_to_str(op: &UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Not => "!",
+        UnaryOp::Neg => "-",
+    }
+}
+
 /// Format an annotation for IR metadata, preserving args.
 fn annotation_to_ir_string(ann: &Annotation) -> String {
     if ann.args.is_empty() {
@@ -92,7 +117,12 @@ fn expr_to_display(expr: &Expr) -> String {
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_display(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
+        Expr::FloatLit(f) => f.to_string(),
+        Expr::BoolLit(b) => b.to_string(),
         Expr::Return(inner) => format!("ret {}", expr_to_display(inner)),
+        Expr::BinaryOp(op) => format!("{} {} {}", expr_to_display(&op.left), binop_to_str(&op.op), expr_to_display(&op.right)),
+        Expr::UnaryOp(op) => format!("{}{}", unaryop_to_str(&op.op), expr_to_display(&op.expr)),
+        Expr::IfExpr(ie) => format!("if {}", expr_to_display(&ie.condition)),
     }
 }
 
@@ -439,6 +469,7 @@ impl IrBuilder {
         }
     }
 
+    #[allow(dead_code)]
     fn set_doc(&mut self, node_id: NodeId, doc: &str) {
         if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
             node.metadata.doc = Some(doc.to_string());

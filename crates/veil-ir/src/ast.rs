@@ -352,22 +352,94 @@ pub struct Annotation {
     pub span: Span,
 }
 
-/// An expression (simplified for MVP).
+/// An expression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
+    // ─── Core expressions ─────────────────────────────────────────────
+    /// Identifier reference
     Ident(String),
+    /// Field access: expr.field
     FieldAccess(Box<Expr>, String),
+    /// Function/method call (the only core invocation primitive)
     Call(CallExpr),
-    Emit(EmitExpr),
+    /// Binary operation: left op right
+    BinaryOp(BinaryOpExpr),
+    /// Unary operation: op expr
+    UnaryOp(UnaryOpExpr),
+    /// If/else expression
+    IfExpr(IfExprData),
+    /// Variable assignment: name = expr
     Assign(String, Box<Expr>),
+    /// String literal
     StringLit(String),
+    /// Integer literal
     IntLit(i64),
+    /// Float literal
+    FloatLit(f64),
+    /// Boolean literal
+    BoolLit(bool),
+    /// Return expression
     Return(Box<Expr>),
-    // New statement types
+
+    // ─── Kit-level expressions (backward compat) ──────────────────────
+    /// Event dispatch (DDD layer)
+    Emit(EmitExpr),
+    /// Event dispatch via bus (DDD layer)
     Dispatch(DispatchExpr),
+    /// Command invocation via bus (DDD layer)
     Invoke(InvokeExpr),
+    /// Port request (DDD layer)
     Request(RequestExpr),
+    /// Precondition guard (DDD layer)
     Guard(GuardExpr),
+}
+
+/// Binary operator kinds
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BinOp {
+    Add,    // +
+    Sub,    // -
+    Mul,    // *
+    Div,    // /
+    Mod,    // %
+    Eq,     // ==
+    NotEq,  // !=
+    Lt,     // <
+    Gt,     // >
+    LtEq,   // <=
+    GtEq,   // >=
+    And,    // &&
+    Or,     // ||
+}
+
+/// Unary operator kinds
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,    // !
+    Neg,    // - (negation)
+}
+
+/// Binary operation expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryOpExpr {
+    pub left: Box<Expr>,
+    pub op: BinOp,
+    pub right: Box<Expr>,
+}
+
+/// Unary operation expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnaryOpExpr {
+    pub op: UnaryOp,
+    pub expr: Box<Expr>,
+}
+
+/// If/else expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IfExprData {
+    pub condition: Box<Expr>,
+    pub then_body: Vec<Expr>,
+    pub else_body: Option<Vec<Expr>>,
 }
 
 /// Dispatch — fire an event through the event bus (fire-and-forget).
