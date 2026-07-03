@@ -8,15 +8,26 @@
     category: string;
   }
 
-  let { contextKind = 'Solution' }: { contextKind?: NodeKind | null } = $props();
+  let { contextKind = 'Solution', activeGroup = null }: { contextKind?: NodeKind | null; activeGroup?: string | null } = $props();
 
   // All available construct types grouped by category
   const ALL_PALETTE_ITEMS: PaletteItem[] = [
-    // Structural
+    // Core structural
     { kind: 'Module', label: 'Module', icon: '📦', category: 'Structure' },
     { kind: 'TypeDef', label: 'Type', icon: '📋', category: 'Structure' },
     { kind: 'Interface', label: 'Interface', icon: '🔌', category: 'Structure' },
     { kind: 'Implementation', label: 'Implementation', icon: '🔗', category: 'Structure' },
+    // DDD Domain
+    { kind: 'TypeDef', label: 'Value Object', icon: '💎', category: 'Domain' },
+    { kind: 'TypeDef', label: 'Entity', icon: '🔑', category: 'Domain' },
+    { kind: 'TypeDef', label: 'Aggregate', icon: '🧩', category: 'Domain' },
+    { kind: 'Interface', label: 'Port', icon: '🔌', category: 'Domain' },
+    { kind: 'Flow', label: 'Domain Service', icon: '🖥️', category: 'Domain' },
+    // DDD Infrastructure
+    { kind: 'Implementation', label: 'Adapter', icon: '🔗', category: 'Infrastructure' },
+    // DDD Aggregate children
+    { kind: 'TypeDef', label: 'Event', icon: '⚡', category: 'Aggregate' },
+    { kind: 'TypeDef', label: 'Command', icon: '📨', category: 'Aggregate' },
     // Flow
     { kind: 'Flow', label: 'Flow', icon: '🌊', category: 'Flow' },
     { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'Flow' },
@@ -25,28 +36,31 @@
     { kind: 'ErrorBoundary', label: 'Error Boundary', icon: '🛡️', category: 'Flow' },
   ];
 
-  // Context-aware filtering: show only what makes sense at the current level
-  const ALLOWED_CHILDREN: Record<string, NodeKind[]> = {
-    Solution: ['Module', 'Flow', 'Saga', 'Implementation'],
-    Module: ['TypeDef', 'Interface', 'Flow'],
-    TypeDef: [],
-    Interface: [],
-    Flow: ['Step', 'ParallelGateway', 'ErrorBoundary'],
-    Saga: ['Step'],
-    ParallelGateway: ['Step'],
-    Step: [],
-    Implementation: [],
-    ErrorBoundary: [],
+  // Context-aware filtering based on parent kind AND active group
+  const ALLOWED_ITEMS: Record<string, string[]> = {
+    // Top level
+    'Solution': ['Structure', 'Flow'],
+    // Inside a module/context with domain group active
+    'Module:domain': ['Domain'],
+    // Inside a module/context with infrastructure group active
+    'Module:infrastructure': ['Infrastructure'],
+    // Inside a module with no group
+    'Module': ['Domain', 'Infrastructure'],
+    // Inside an aggregate
+    'TypeDef': ['Aggregate'],
+    // Inside a flow
+    'Flow': ['Flow'],
+    'Saga': ['Flow'],
   };
 
-  $effect(() => {
-    // Reactively update items when contextKind changes
-  });
-
   let items = $derived.by(() => {
-    const allowed = ALLOWED_CHILDREN[contextKind ?? 'Solution'] ?? [];
-    if (allowed.length === 0) return [];
-    return ALL_PALETTE_ITEMS.filter(item => allowed.includes(item.kind));
+    // Try specific key first (kind:group), then just kind
+    const specificKey = activeGroup ? `${contextKind}:${activeGroup}` : null;
+    const allowedCategories = (specificKey && ALLOWED_ITEMS[specificKey])
+      ?? ALLOWED_ITEMS[contextKind ?? 'Solution']
+      ?? [];
+    if (allowedCategories.length === 0) return [];
+    return ALL_PALETTE_ITEMS.filter(item => allowedCategories.includes(item.category));
   });
 
   let categories = $derived([...new Set(items.map(i => i.category))]);

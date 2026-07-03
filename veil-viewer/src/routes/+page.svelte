@@ -484,7 +484,7 @@
     </div>
   {:else}
     <div class="main-layout">
-      <Palette contextKind={currentContextKind} />
+      <Palette contextKind={currentContextKind} activeGroup={activeTab} />
       <div class="graph-wrapper">
         {#if tabs.length > 0}
           <div class="tab-bar">
