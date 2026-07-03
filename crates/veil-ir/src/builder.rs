@@ -294,10 +294,34 @@ impl IrBuilder {
                                 self.build_port(port, group_id);
                             }
                             ContextItem::Service(svc) => {
-                                let id = self.graph.add_node(NodeKind::Flow, svc.name.clone(), svc.span);
-                                self.set_parent(id, group_id);
-                                self.set_subkind(id, "DomainService");
-                                self.graph.add_edge(group_id, id, EdgeKind::Contains);
+                                let svc_id = self.graph.add_node(NodeKind::Flow, svc.name.clone(), svc.span);
+                                self.set_parent(svc_id, group_id);
+                                self.set_subkind(svc_id, "DomainService");
+                                self.graph.add_edge(group_id, svc_id, EdgeKind::Contains);
+                                // Build inputs node
+                                if !svc.inputs.is_empty() {
+                                    let inputs_str = svc.inputs.iter()
+                                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                                        .collect::<Vec<_>>().join(", ");
+                                    let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), svc.span);
+                                    self.set_parent(inputs_id, svc_id);
+                                    self.set_property(inputs_id, "params", &inputs_str);
+                                    self.graph.add_edge(svc_id, inputs_id, EdgeKind::Contains);
+                                }
+                                // Build steps
+                                let mut prev_step_id: Option<NodeId> = None;
+                                for step in &svc.steps {
+                                    if let FlowStep::Step(s) = step {
+                                        let step_id = self.graph.add_node(NodeKind::Step, s.name.clone(), s.span);
+                                        self.set_parent(step_id, svc_id);
+                                        self.graph.add_edge(svc_id, step_id, EdgeKind::Contains);
+                                        if let Some(prev) = prev_step_id {
+                                            self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
+                                        }
+                                        self.build_step_body(&s.body, step_id);
+                                        prev_step_id = Some(step_id);
+                                    }
+                                }
                             }
                             ContextItem::Adapter(adapter) => {
                                 self.build_adapter(adapter, group_id);
@@ -698,6 +722,17 @@ impl IrBuilder {
             if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == saga_id) {
                 node.metadata.annotations.push(annotation_to_ir_string(ann));
             }
+        }
+
+        // Build inputs node for the saga
+        if !saga.inputs.is_empty() {
+            let inputs_str = saga.inputs.iter()
+                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                .collect::<Vec<_>>().join(", ");
+            let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), saga.span);
+            self.set_parent(inputs_id, saga_id);
+            self.set_property(inputs_id, "params", &inputs_str);
+            self.graph.add_edge(saga_id, inputs_id, EdgeKind::Contains);
         }
 
         // Add context references as properties
