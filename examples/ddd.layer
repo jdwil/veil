@@ -154,7 +154,7 @@ pkg ddd v1
       icon "🔄"
       color "#dc2626"
       label "Saga"
-    allowed_in top
+    allowed_in Module
 
   # Statement extensions (bus actions built on top of core 'call')
   statement dispatch
