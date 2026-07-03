@@ -328,9 +328,9 @@
   /** Layout nodes in vertical columns grouped by subkind/kind */
   function layoutByType(flowNodes: Node[]): Node[] {
     const NODE_W = 240;
-    const NODE_H = 90;
-    const V_GAP = 15;     // vertical gap between same-type nodes
-    const COL_GAP = 60;   // horizontal gap between type columns
+    const NODE_H = 140;    // account for badges, details button
+    const V_GAP = 30;      // vertical gap between same-type nodes
+    const COL_GAP = 80;    // horizontal gap between type columns
     const MAX_PER_COL = 6; // wrap to new column after this many
 
     // Group nodes by their display type (subkind or kind)
