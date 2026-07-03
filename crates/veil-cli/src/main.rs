@@ -1,5 +1,4 @@
 //! VEIL CLI — parse, validate, generate, and serve VEIL files.
-use serde::Serialize;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
