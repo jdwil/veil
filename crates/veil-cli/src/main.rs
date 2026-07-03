@@ -68,7 +68,7 @@ fn build_palette_config() -> Vec<PaletteConstruct> {
     vec![
         // Solution level
         PaletteConstruct { name: "Context".into(), kind: "Module".into(), icon: "📦".into(), color: "#8b5cf6".into(), label: "Bounded Context".into(), group: "".into(), allowed_in: "top".into() },
-        PaletteConstruct { name: "Saga".into(), kind: "Saga".into(), icon: "🔄".into(), color: "#dc2626".into(), label: "Saga".into(), group: "".into(), allowed_in: "top".into() },
+        PaletteConstruct { name: "Orchestrator".into(), kind: "Module".into(), icon: "🎯".into(), color: "#dc2626".into(), label: "Orchestrator".into(), group: "".into(), allowed_in: "top".into() },
         // Domain group
         PaletteConstruct { name: "Aggregate".into(), kind: "TypeDef".into(), icon: "🧩".into(), color: "#ec4899".into(), label: "Aggregate".into(), group: "domain".into(), allowed_in: "Module".into() },
         PaletteConstruct { name: "Entity".into(), kind: "TypeDef".into(), icon: "🔑".into(), color: "#f43f5e".into(), label: "Entity".into(), group: "domain".into(), allowed_in: "Module".into() },
