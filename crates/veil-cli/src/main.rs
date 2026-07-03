@@ -62,26 +62,28 @@ struct PaletteConstruct {
     allowed_in: String,
 }
 
-/// Build the palette configuration by reading .layer files from the examples directory.
+/// Build the palette configuration by reading only .layer files referenced by the .veil file.
 fn build_palette_config(file_path: &std::path::Path) -> Vec<PaletteConstruct> {
     let mut constructs = Vec::new();
-
-    // Find layer files referenced by the .veil file (look in same directory)
     let dir = file_path.parent().unwrap_or(std::path::Path::new("."));
 
-    // Read all .layer files in the directory
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("layer") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    constructs.extend(parse_layer_constructs(&content));
-                }
-            }
+    // Read the .veil file to find 'use' declarations
+    let veil_content = std::fs::read_to_string(file_path).unwrap_or_default();
+    let used_layers: Vec<String> = veil_content.lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with("use "))
+        .map(|l| l.strip_prefix("use ").unwrap_or("").trim().to_string())
+        .collect();
+
+    // Load only the referenced .layer files
+    for layer_name in &used_layers {
+        let layer_path = dir.join(format!("{}.layer", layer_name));
+        if let Ok(content) = std::fs::read_to_string(&layer_path) {
+            constructs.extend(parse_layer_constructs(&content));
         }
     }
 
-    // If no layer files found, return empty
+    // If no layers referenced, return empty (base primitives could be implicit later)
     constructs
 }
 
