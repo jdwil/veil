@@ -62,27 +62,129 @@ struct PaletteConstruct {
     allowed_in: String,
 }
 
-/// Build the palette configuration from loaded layers.
-/// For now this is hardcoded from the DDD layer — will be dynamic later.
-fn build_palette_config() -> Vec<PaletteConstruct> {
-    vec![
-        // Solution level
-        PaletteConstruct { name: "Context".into(), kind: "Module".into(), icon: "📦".into(), color: "#8b5cf6".into(), label: "Bounded Context".into(), group: "".into(), allowed_in: "top".into() },
-        PaletteConstruct { name: "Orchestrator".into(), kind: "Module".into(), icon: "🎯".into(), color: "#dc2626".into(), label: "Orchestrator".into(), group: "".into(), allowed_in: "top".into() },
-        // Domain group
-        PaletteConstruct { name: "Aggregate".into(), kind: "TypeDef".into(), icon: "🧩".into(), color: "#ec4899".into(), label: "Aggregate".into(), group: "domain".into(), allowed_in: "Module".into() },
-        PaletteConstruct { name: "Entity".into(), kind: "TypeDef".into(), icon: "🔑".into(), color: "#f43f5e".into(), label: "Entity".into(), group: "domain".into(), allowed_in: "Module".into() },
-        PaletteConstruct { name: "ValueObject".into(), kind: "TypeDef".into(), icon: "💎".into(), color: "#14b8a6".into(), label: "Value Object".into(), group: "domain".into(), allowed_in: "Module".into() },
-        PaletteConstruct { name: "Port".into(), kind: "Interface".into(), icon: "🔌".into(), color: "#10b981".into(), label: "Port".into(), group: "domain".into(), allowed_in: "Module".into() },
-        PaletteConstruct { name: "DomainService".into(), kind: "Flow".into(), icon: "🖥️".into(), color: "#0ea5e9".into(), label: "Domain Service".into(), group: "domain".into(), allowed_in: "Module".into() },
-        // Infrastructure group
-        PaletteConstruct { name: "Adapter".into(), kind: "Implementation".into(), icon: "🔗".into(), color: "#a855f7".into(), label: "Adapter".into(), group: "infrastructure".into(), allowed_in: "Module".into() },
-        // Aggregate children
-        PaletteConstruct { name: "Event".into(), kind: "TypeDef".into(), icon: "⚡".into(), color: "#f59e0b".into(), label: "Domain Event".into(), group: "".into(), allowed_in: "TypeDef".into() },
-        PaletteConstruct { name: "Command".into(), kind: "TypeDef".into(), icon: "📨".into(), color: "#3b82f6".into(), label: "Command".into(), group: "".into(), allowed_in: "TypeDef".into() },
-        // Flow children
-        PaletteConstruct { name: "Step".into(), kind: "Step".into(), icon: "▶️".into(), color: "#64748b".into(), label: "Step".into(), group: "".into(), allowed_in: "Flow".into() },
-    ]
+/// Build the palette configuration by reading .layer files from the examples directory.
+fn build_palette_config(file_path: &std::path::Path) -> Vec<PaletteConstruct> {
+    let mut constructs = Vec::new();
+
+    // Find layer files referenced by the .veil file (look in same directory)
+    let dir = file_path.parent().unwrap_or(std::path::Path::new("."));
+
+    // Read all .layer files in the directory
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("layer") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    constructs.extend(parse_layer_constructs(&content));
+                }
+            }
+        }
+    }
+
+    // If no layer files found, return empty
+    constructs
+}
+
+/// Parse construct definitions from a .layer file content.
+fn parse_layer_constructs(content: &str) -> Vec<PaletteConstruct> {
+    let mut constructs = Vec::new();
+    let mut current: Option<PaletteConstruct> = None;
+    let mut in_visual = false;
+    let mut in_skip_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+
+        if trimmed.starts_with("construct ") {
+            if let Some(c) = current.take() { constructs.push(c); }
+            let name = trimmed.strip_prefix("construct ").unwrap().trim().to_string();
+            current = Some(PaletteConstruct {
+                name: name.clone(), kind: String::new(), icon: String::new(),
+                color: String::new(), label: name, group: String::new(), allowed_in: String::new(),
+            });
+            in_visual = false;
+            in_skip_block = false;
+        } else if trimmed.starts_with("statement ") {
+            if let Some(c) = current.take() { constructs.push(c); }
+            current = None;
+            in_visual = false;
+            in_skip_block = false;
+        } else if let Some(ref mut c) = current {
+            if (trimmed == "contains" || trimmed == "constraints") && !in_visual {
+                in_skip_block = true;
+            } else if trimmed == "visual" {
+                in_visual = true;
+                in_skip_block = false;
+            } else if in_skip_block {
+                if indent <= 4 && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    in_skip_block = false;
+                    if trimmed == "visual" {
+                        in_visual = true;
+                    } else if trimmed == "contains" || trimmed == "constraints" {
+                        in_skip_block = true;
+                    } else {
+                        parse_construct_field(c, trimmed);
+                    }
+                }
+            } else if in_visual {
+                if trimmed.starts_with("icon ") {
+                    c.icon = extract_quoted(trimmed.strip_prefix("icon ").unwrap_or(""));
+                } else if trimmed.starts_with("color ") {
+                    c.color = extract_quoted(trimmed.strip_prefix("color ").unwrap_or(""));
+                } else if trimmed.starts_with("label ") {
+                    c.label = extract_quoted(trimmed.strip_prefix("label ").unwrap_or(""));
+                } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    in_visual = false;
+                    parse_construct_field(c, trimmed);
+                }
+            } else if !trimmed.is_empty() {
+                parse_construct_field(c, trimmed);
+            }
+        }
+    }
+    if let Some(c) = current.take() { constructs.push(c); }
+
+    for c in &mut constructs {
+        if c.kind.is_empty() {
+            c.kind = match c.name.as_str() {
+                "Context" | "Orchestrator" => "Module".to_string(),
+                "Aggregate" | "Entity" | "ValueObject" | "Event" | "Command" => "TypeDef".to_string(),
+                "Port" | "Repository" => "Interface".to_string(),
+                "Adapter" => "Implementation".to_string(),
+                "DomainService" | "Saga" => "Flow".to_string(),
+                _ => "TypeDef".to_string(),
+            };
+        }
+    }
+    constructs
+}
+
+fn parse_construct_field(c: &mut PaletteConstruct, line: &str) {
+    if line.starts_with("maps_to ") {
+        let val = line.strip_prefix("maps_to ").unwrap_or("").trim();
+        c.kind = match val {
+            "mod" => "Module".to_string(),
+            "struct" => "TypeDef".to_string(),
+            "trait" => "Interface".to_string(),
+            "impl" => "Implementation".to_string(),
+            "fn" => "Flow".to_string(),
+            _ => val.to_string(),
+        };
+    } else if line.starts_with("group ") {
+        c.group = line.strip_prefix("group ").unwrap_or("").trim().to_string();
+    } else if line.starts_with("allowed_in ") {
+        c.allowed_in = line.strip_prefix("allowed_in ").unwrap_or("").trim().to_string();
+    }
+}
+
+fn extract_quoted(s: &str) -> String {
+    let s = s.trim();
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 fn main() {
@@ -253,7 +355,7 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
                 // Build palette config from loaded layers
-                let palette_json = serde_json::to_string(&build_palette_config()).unwrap();
+                let palette_json = serde_json::to_string(&build_palette_config(&file)).unwrap();
 
                 let app = axum::Router::new()
                     .route("/api/ir", axum::routing::get({

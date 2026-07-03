@@ -15,8 +15,23 @@ pkg ddd v1
       label "Bounded Context"
     allowed_in top
 
+  construct Orchestrator
+    maps_to mod
+    desc "Orchestrator — dedicated container for cross-context sagas"
+    contains
+      Saga[]
+    constraints
+      sagas_only
+      no_domain_constructs
+    visual
+      icon "🎯"
+      color "#dc2626"
+      label "Orchestrator"
+    allowed_in top
+
   construct Aggregate
     maps_to struct
+    allowed_in Module
     desc "Aggregate root — consistency boundary with state, events, and commands"
     contains
       root: struct
@@ -35,6 +50,7 @@ pkg ddd v1
 
   construct Entity
     maps_to struct
+    allowed_in Module
     desc "Entity — domain object with identity"
     constraints
       has_identity
@@ -46,6 +62,7 @@ pkg ddd v1
 
   construct ValueObject
     maps_to struct
+    allowed_in Module
     desc "Value Object — immutable, identity-less domain concept"
     constraints
       no_identity
@@ -66,7 +83,7 @@ pkg ddd v1
       color "#f59e0b"
       label "Domain Event"
     group domain
-    allowed_in Aggregate
+    allowed_in TypeDef
 
   construct Command
     maps_to struct
@@ -76,10 +93,11 @@ pkg ddd v1
       color "#3b82f6"
       label "Command"
     group domain
-    allowed_in Aggregate
+    allowed_in TypeDef
 
   construct Port
     maps_to trait
+    allowed_in Module
     desc "Port — interface contract for external dependencies"
     visual
       icon "🔌"
@@ -89,6 +107,7 @@ pkg ddd v1
 
   construct Adapter
     maps_to impl
+    allowed_in Module
     desc "Adapter — implementation of a port for a specific technology"
     constraints
       must_implement_port
@@ -100,6 +119,7 @@ pkg ddd v1
 
   construct Repository
     maps_to trait
+    allowed_in Module
     desc "Repository — persistence interface for an aggregate"
     constraints
       crud_for_aggregate
@@ -111,6 +131,7 @@ pkg ddd v1
 
   construct DomainService
     maps_to fn
+    allowed_in Module
     desc "Domain Service — orchestrates operations across aggregates within a context"
     contains
       step[]
