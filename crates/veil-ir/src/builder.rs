@@ -294,9 +294,20 @@ impl IrBuilder {
                                 self.build_port(port, group_id);
                             }
                             ContextItem::Service(svc) => {
+                                let is_saga = svc.annotations.iter().any(|a| a.name == "__saga");
                                 let svc_id = self.graph.add_node(NodeKind::Flow, svc.name.clone(), svc.span);
                                 self.set_parent(svc_id, group_id);
-                                self.set_subkind(svc_id, "DomainService");
+                                if is_saga {
+                                    self.set_subkind(svc_id, "Saga");
+                                    // Store context refs from the __saga annotation
+                                    if let Some(saga_ann) = svc.annotations.iter().find(|a| a.name == "__saga") {
+                                        if !saga_ann.args.is_empty() {
+                                            self.set_property(svc_id, "contexts", &saga_ann.args.join(", "));
+                                        }
+                                    }
+                                } else {
+                                    self.set_subkind(svc_id, "DomainService");
+                                }
                                 self.graph.add_edge(group_id, svc_id, EdgeKind::Contains);
                                 // Build inputs node
                                 if !svc.inputs.is_empty() {

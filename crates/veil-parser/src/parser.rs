@@ -881,15 +881,18 @@ impl<'a> Parser<'a> {
                             self.advance(); // consume 'export'
                         }
                         if self.at(&TokenKind::Saga) {
-                            // Parse saga as a top-level item but store in the group
-                            // We'll wrap it — for now, just consume it
                             let saga = self.parse_saga()?;
-                            // Store saga in a special way — use Service as container for now
-                            // TODO: proper ContextItem::Saga variant
+                            // Store saga as Service with @__saga marker for builder to detect
+                            let mut annotations = saga.annotations;
+                            annotations.push(Annotation {
+                                name: "__saga".to_string(),
+                                args: saga.context_refs.clone(),
+                                span: saga.span,
+                            });
                             items.push(ContextItem::Service(Service {
                                 name: saga.name,
                                 span: saga.span,
-                                annotations: saga.annotations,
+                                annotations,
                                 inputs: saga.inputs,
                                 steps: saga.steps.iter().map(|s| FlowStep::Step(StepDef {
                                     name: s.name.clone(),
