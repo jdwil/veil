@@ -181,9 +181,15 @@ impl IrBuilder {
         let ctx_id = self.graph.add_node(NodeKind::Module, ctx.name.clone(), ctx.span);
         self.set_parent(ctx_id, parent_id);
 
-        // Detect orchestrator: all items are saga-marked services (no groups, no domain constructs)
+        // Detect orchestrator: all items are saga-marked services or groups containing only sagas
         let is_orchestrator = !ctx.items.is_empty() && ctx.items.iter().all(|item| {
-            matches!(item, ContextItem::Service(svc) if svc.annotations.iter().any(|a| a.name == "__saga"))
+            match item {
+                ContextItem::Service(svc) => svc.annotations.iter().any(|a| a.name == "__saga"),
+                ContextItem::Group(g) => g.items.iter().all(|gi| {
+                    matches!(gi, ContextItem::Service(svc) if svc.annotations.iter().any(|a| a.name == "__saga"))
+                }),
+                _ => false,
+            }
         });
 
         if is_orchestrator {
