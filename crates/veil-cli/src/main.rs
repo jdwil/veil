@@ -189,6 +189,82 @@ fn extract_quoted(s: &str) -> String {
     }
 }
 
+/// Extract validation structure from the parsed solution AST.
+fn extract_validation_items(sol: &veil_ir::Solution) -> Vec<(&str, &str, Vec<(&str, &str)>)> {
+    use veil_ir::ast::*;
+
+    let mut items = Vec::new();
+
+    for item in &sol.items {
+        match item {
+            TopLevelItem::Context(ctx) => {
+                let mut children: Vec<(&str, &str)> = Vec::new();
+                for ci in &ctx.items {
+                    match ci {
+                        ContextItem::Aggregate(a) => children.push(("Aggregate", &a.name)),
+                        ContextItem::Entity(e) => children.push(("Entity", &e.name)),
+                        ContextItem::ValueObject(v) => children.push(("ValueObject", &v.name)),
+                        ContextItem::Port(p) => children.push(("Port", &p.name)),
+                        ContextItem::Service(s) => {
+                            // Check if it's a saga (has __saga annotation)
+                            if s.annotations.iter().any(|a| a.name == "__saga") {
+                                children.push(("Saga", &s.name));
+                            } else {
+                                children.push(("DomainService", &s.name));
+                            }
+                        }
+                        ContextItem::Adapter(a) => children.push(("Adapter", &a.name)),
+                        ContextItem::Group(g) => {
+                            children.push(("Group", &g.name));
+                            // Also validate contents of the group
+                            let mut group_children: Vec<(&str, &str)> = Vec::new();
+                            for gi in &g.items {
+                                match gi {
+                                    ContextItem::Aggregate(a) => group_children.push(("Aggregate", &a.name)),
+                                    ContextItem::Entity(e) => group_children.push(("Entity", &e.name)),
+                                    ContextItem::ValueObject(v) => group_children.push(("ValueObject", &v.name)),
+                                    ContextItem::Port(p) => group_children.push(("Port", &p.name)),
+                                    ContextItem::Service(s) => {
+                                        if s.annotations.iter().any(|a| a.name == "__saga") {
+                                            group_children.push(("Saga", &s.name));
+                                        } else {
+                                            group_children.push(("DomainService", &s.name));
+                                        }
+                                    }
+                                    ContextItem::Adapter(a) => group_children.push(("Adapter", &a.name)),
+                                    ContextItem::Group(_) => {}
+                                }
+                            }
+                            // Validate group contents against parent construct type
+                            // (handled in the main validation pass)
+                        }
+                    }
+                }
+
+                // Determine if this is a Context or Orchestrator
+                let is_orchestrator = ctx.items.iter().all(|ci| matches!(ci,
+                    ContextItem::Service(s) if s.annotations.iter().any(|a| a.name == "__saga")
+                ));
+
+                if is_orchestrator {
+                    items.push(("Orchestrator", ctx.name.as_str(), children));
+                } else {
+                    items.push(("Context", ctx.name.as_str(), children));
+                }
+            }
+            TopLevelItem::Saga(saga) => {
+                items.push(("Saga", saga.name.as_str(), Vec::new()));
+            }
+            TopLevelItem::Flow(flow) => {
+                items.push(("Flow", flow.name.as_str(), Vec::new()));
+            }
+            _ => {}
+        }
+    }
+
+    items
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -232,7 +308,27 @@ fn main() {
                     println!("✓ Parsed: {}", sol.name);
                     println!("  Nodes: {}", graph.nodes.len());
                     println!("  Edges: {}", graph.edges.len());
-                    // Output IR JSON to stdout for viewer consumption
+
+                    // Run layer validation
+                    let schemas = veil_ir::validate::load_referenced_schemas(&file);
+                    if !schemas.is_empty() {
+                        let mut all_errors = Vec::new();
+                        for schema in &schemas {
+                            // Extract structure from AST for validation
+                            let items = extract_validation_items(&sol);
+                            let errors = veil_ir::validate::validate_solution(&items, schema);
+                            all_errors.extend(errors);
+                        }
+                        if all_errors.is_empty() {
+                            println!("  Validation: ✓ all constraints pass");
+                        } else {
+                            println!("  Validation: ✗ {} error(s):", all_errors.len());
+                            for err in &all_errors {
+                                println!("    ✗ {}", err);
+                            }
+                        }
+                    }
+
                     println!("\n{}", serde_json::to_string_pretty(&graph).unwrap());
                 }
                 Err(errors) => {

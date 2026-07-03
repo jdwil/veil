@@ -794,6 +794,9 @@ impl<'a> Parser<'a> {
                 if self.at(&TokenKind::Comment) { self.advance(); continue; }
                 let _annotations = self.parse_annotations();
                 match self.peek_kind().clone() {
+                    TokenKind::Group => {
+                        items.push(ContextItem::Group(self.parse_group()?));
+                    }
                     TokenKind::Export | TokenKind::Saga => {
                         if self.at(&TokenKind::Export) {
                             self.advance();

@@ -6,6 +6,7 @@ pub mod ir;
 pub mod resolve;
 pub mod serialize;
 pub mod span;
+pub mod validate;
 
 pub use ast::*;
 pub use builder::build_ir;

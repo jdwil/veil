@@ -9,6 +9,8 @@ pkg ddd v1
       group domain
       group infrastructure
       group application
+    constraints
+      requires_groups
     visual
       icon "📦"
       color "#8b5cf6"
@@ -23,6 +25,7 @@ pkg ddd v1
     constraints
       sagas_only
       no_domain_constructs
+      requires_groups
     visual
       icon "🎯"
       color "#dc2626"

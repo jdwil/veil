@@ -121,8 +121,9 @@ sol CustomerOnboarding
   # Cross-context orchestration with compensation
 
   orchestrator Onboarding
-    export saga Onboard
-      contexts Identity, Billing
+    group application
+      export saga Onboard
+        contexts Identity, Billing
 
       input
         email: Email
