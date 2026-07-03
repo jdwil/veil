@@ -237,7 +237,7 @@
             style: getEdgeStyle(e.kind),
           }));
 
-        nodes = layoutNodes(tabNodes, tabEdges);
+        nodes = layoutByType(tabNodes);
         edges = tabEdges;
         return;
       }
@@ -323,6 +323,56 @@
 
     nodes = layoutNodes(allNodes, allEdges, direction);
     edges = allEdges;
+  }
+
+  /** Layout nodes in vertical columns grouped by subkind/kind */
+  function layoutByType(flowNodes: Node[]): Node[] {
+    const NODE_W = 240;
+    const NODE_H = 90;
+    const V_GAP = 15;     // vertical gap between same-type nodes
+    const COL_GAP = 60;   // horizontal gap between type columns
+    const MAX_PER_COL = 6; // wrap to new column after this many
+
+    // Group nodes by their display type (subkind or kind)
+    const groups: Record<string, Node[]> = {};
+    for (const node of flowNodes) {
+      const type = node.data.subkind ?? node.data.kind ?? 'Other';
+      if (!groups[type]) groups[type] = [];
+      groups[type].push(node);
+    }
+
+    // Layout each group as a vertical column
+    let colX = 0;
+    const result: Node[] = [];
+
+    for (const [_, groupNodes] of Object.entries(groups)) {
+      let x = colX;
+      let y = 0;
+      let colCount = 0;
+
+      for (const node of groupNodes) {
+        if (colCount >= MAX_PER_COL) {
+          // Wrap to a new sub-column
+          x += NODE_W + V_GAP;
+          y = 0;
+          colCount = 0;
+        }
+
+        result.push({
+          ...node,
+          position: { x, y },
+        });
+
+        y += NODE_H + V_GAP;
+        colCount++;
+      }
+
+      // Move to next type column
+      const colsUsed = Math.ceil(groupNodes.length / MAX_PER_COL);
+      colX += colsUsed * (NODE_W + V_GAP) + COL_GAP;
+    }
+
+    return result;
   }
 
   function getEdgeStyle(kind: string): string {
