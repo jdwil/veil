@@ -875,6 +875,34 @@ impl<'a> Parser<'a> {
                     TokenKind::Adapter => {
                         items.push(ContextItem::Adapter(self.parse_adapter()?));
                     }
+                    TokenKind::Saga | TokenKind::Export => {
+                        // Export is a modifier — skip it, parse the next construct
+                        if self.at(&TokenKind::Export) {
+                            self.advance(); // consume 'export'
+                        }
+                        if self.at(&TokenKind::Saga) {
+                            // Parse saga as a top-level item but store in the group
+                            // We'll wrap it — for now, just consume it
+                            let saga = self.parse_saga()?;
+                            // Store saga in a special way — use Service as container for now
+                            // TODO: proper ContextItem::Saga variant
+                            items.push(ContextItem::Service(Service {
+                                name: saga.name,
+                                span: saga.span,
+                                annotations: saga.annotations,
+                                inputs: saga.inputs,
+                                steps: saga.steps.iter().map(|s| FlowStep::Step(StepDef {
+                                    name: s.name.clone(),
+                                    span: s.span,
+                                    body: s.body.clone(),
+                                })).collect(),
+                                return_expr: None,
+                            }));
+                        } else if self.at(&TokenKind::Svc) || self.at(&TokenKind::Flow) {
+                            let svc_flow = self.parse_domain_service()?;
+                            items.push(ContextItem::Service(svc_flow));
+                        }
+                    }
                     TokenKind::Comment => { self.advance(); }
                     _ => { self.advance(); }
                 }
