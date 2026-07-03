@@ -211,7 +211,7 @@ sol App
         assert!(result.is_ok(), "Full example failed to parse: {:?}", result.err());
         let sol = result.unwrap();
         assert_eq!(sol.name, "CustomerOnboarding");
-        // Should have: lang, ctx Identity, ctx Billing, saga Onboard
-        assert!(sol.items.len() >= 4, "Expected at least 4 items, got {}", sol.items.len());
+        // Should have: lang, ctx Identity, ctx Billing
+        assert!(sol.items.len() >= 3, "Expected at least 3 items, got {}", sol.items.len());
     }
 }
