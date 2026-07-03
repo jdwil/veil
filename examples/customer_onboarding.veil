@@ -72,13 +72,6 @@ sol CustomerOnboarding
         find(id: UUID) -> Res!<Opt<Customer>>
         delete(id: UUID) -> Res!
 
-    group infrastructure
-      adapter SmsTwilio for Notifier
-        @env(TWILIO_SID, TWILIO_TOKEN)
-        impl send_sms(phone, msg)
-          http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
-
-    group application
       svc CreateCustomerService
         input
           email: Email
@@ -90,6 +83,12 @@ sol CustomerOnboarding
           call CustomerRepo.save(c)
           dispatch CustomerCreated{c.id, email, c.created}
         ret c.id
+
+    group infrastructure
+      adapter SmsTwilio for Notifier
+        @env(TWILIO_SID, TWILIO_TOKEN)
+        impl send_sms(phone, msg)
+          http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
 
   ctx Billing
     group domain

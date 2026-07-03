@@ -193,7 +193,11 @@
     if (groupNodes.length > 0) {
       tabs = groupNodes.map(g => g.name);
       // Use activeTab if valid, otherwise default to first
-      const currentTab = (activeTab && tabs.includes(activeTab)) ? activeTab : tabs[0];
+      let currentTab = activeTab;
+      if (!currentTab || !tabs.includes(currentTab)) {
+        currentTab = tabs[0];
+        activeTab = currentTab;
+      }
 
       const activeGroup = groupNodes.find(g => g.name === currentTab);
       if (activeGroup) {
