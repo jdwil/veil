@@ -38,8 +38,8 @@
 
   // Context-aware filtering based on parent kind AND active group
   const ALLOWED_ITEMS: Record<string, string[]> = {
-    // Top level
-    'Solution': ['Structure', 'Flow'],
+    // Top level — show context-level constructs
+    'Solution': ['Solution'],
     // Inside a module/context with domain group active
     'Module:domain': ['Domain'],
     // Inside a module/context with infrastructure group active
@@ -53,6 +53,12 @@
     'Saga': ['Flow'],
   };
 
+  // Additional top-level palette items
+  const SOLUTION_ITEMS: PaletteItem[] = [
+    { kind: 'Module', label: 'Context', icon: '📦', category: 'Solution' },
+    { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'Solution' },
+  ];
+
   let items = $derived.by(() => {
     // Try specific key first (kind:group), then just kind
     const specificKey = activeGroup ? `${contextKind}:${activeGroup}` : null;
@@ -60,7 +66,8 @@
       ?? ALLOWED_ITEMS[contextKind ?? 'Solution']
       ?? [];
     if (allowedCategories.length === 0) return [];
-    return ALL_PALETTE_ITEMS.filter(item => allowedCategories.includes(item.category));
+    const allItems = [...ALL_PALETTE_ITEMS, ...SOLUTION_ITEMS];
+    return allItems.filter(item => allowedCategories.includes(item.category));
   });
 
   let categories = $derived([...new Set(items.map(i => i.category))]);

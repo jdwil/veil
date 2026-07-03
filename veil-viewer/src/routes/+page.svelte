@@ -184,6 +184,8 @@
 
     nodes = layoutNodes(solNodes, solEdges);
     edges = solEdges;
+    tabs = [];
+    activeTab = null;
     return;
     }
 
