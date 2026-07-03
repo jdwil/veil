@@ -3,7 +3,7 @@
 //! Reads construct definitions from .layer files and validates that
 //! .veil source files conform to the layer's rules.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// A construct definition from a .layer file.
