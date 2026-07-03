@@ -656,6 +656,22 @@ impl<'a> Parser<'a> {
                         let _ = doc;
                         // TODO: resolve kit and apply constraints/metadata
                     }
+                    TokenKind::Allow | TokenKind::Deny => {
+                        // Allow/deny construct lists — consume the block
+                        let _ = doc;
+                        self.advance(); // consume allow/deny keyword
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                                if self.at(&TokenKind::Ident) { self.advance(); }
+                                else { self.advance(); }
+                            }
+                            self.exit_block();
+                        }
+                    }
                     TokenKind::Lang => {
                         let _ = doc;
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));

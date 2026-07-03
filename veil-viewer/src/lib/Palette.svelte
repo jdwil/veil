@@ -1,74 +1,65 @@
 <script lang="ts">
   import { NODE_STYLES, type NodeKind } from '$lib/types';
+  import { paletteConfig } from '$lib/store';
 
   interface PaletteItem {
     kind: NodeKind;
     label: string;
     icon: string;
     category: string;
+    name?: string;
   }
 
   let { contextKind = 'Solution', activeGroup = null }: { contextKind?: NodeKind | null; activeGroup?: string | null } = $props();
 
-  // All available construct types grouped by category
-  const ALL_PALETTE_ITEMS: PaletteItem[] = [
-    // Core structural
-    { kind: 'Module', label: 'Module', icon: '📦', category: 'Structure' },
-    { kind: 'TypeDef', label: 'Type', icon: '📋', category: 'Structure' },
-    { kind: 'Interface', label: 'Interface', icon: '🔌', category: 'Structure' },
-    { kind: 'Implementation', label: 'Implementation', icon: '🔗', category: 'Structure' },
-    // DDD Domain
-    { kind: 'TypeDef', label: 'Value Object', icon: '💎', category: 'Domain' },
-    { kind: 'TypeDef', label: 'Entity', icon: '🔑', category: 'Domain' },
-    { kind: 'TypeDef', label: 'Aggregate', icon: '🧩', category: 'Domain' },
-    { kind: 'Interface', label: 'Port', icon: '🔌', category: 'Domain' },
-    { kind: 'Flow', label: 'Domain Service', icon: '🖥️', category: 'Domain' },
-    // DDD Infrastructure
-    { kind: 'Implementation', label: 'Adapter', icon: '🔗', category: 'Infrastructure' },
-    // DDD Aggregate children
-    { kind: 'TypeDef', label: 'Event', icon: '⚡', category: 'Aggregate' },
-    { kind: 'TypeDef', label: 'Command', icon: '📨', category: 'Aggregate' },
-    // Flow
-    { kind: 'Flow', label: 'Flow', icon: '🌊', category: 'Flow' },
-    { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'Flow' },
-    { kind: 'Step', label: 'Step', icon: '▶️', category: 'Flow' },
-    { kind: 'ParallelGateway', label: 'Parallel', icon: '⑃', category: 'Flow' },
-    { kind: 'ErrorBoundary', label: 'Error Boundary', icon: '🛡️', category: 'Flow' },
-  ];
-
-  // Context-aware filtering based on parent kind AND active group
-  const ALLOWED_ITEMS: Record<string, string[]> = {
-    // Top level — show context-level constructs
-    'Solution': ['Solution'],
-    // Inside a module/context with domain group active
-    'Module:domain': ['Domain'],
-    // Inside a module/context with infrastructure group active
-    'Module:infrastructure': ['Infrastructure'],
-    // Inside a module with no group
-    'Module': ['Domain', 'Infrastructure'],
-    // Inside an aggregate
-    'TypeDef': ['Aggregate'],
-    // Inside a flow
-    'Flow': ['Flow'],
-    'Saga': ['Flow'],
-  };
-
-  // Additional top-level palette items
-  const SOLUTION_ITEMS: PaletteItem[] = [
-    { kind: 'Module', label: 'Context', icon: '📦', category: 'Solution' },
-    { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'Solution' },
-  ];
-
+  // Build palette items from API config, falling back to hardcoded if not loaded
   let items = $derived.by(() => {
-    // Try specific key first (kind:group), then just kind
-    const specificKey = activeGroup ? `${contextKind}:${activeGroup}` : null;
-    const allowedCategories = (specificKey && ALLOWED_ITEMS[specificKey])
-      ?? ALLOWED_ITEMS[contextKind ?? 'Solution']
-      ?? [];
-    if (allowedCategories.length === 0) return [];
-    const allItems = [...ALL_PALETTE_ITEMS, ...SOLUTION_ITEMS];
-    return allItems.filter(item => allowedCategories.includes(item.category));
+    const config = $paletteConfig;
+    if (!config || config.length === 0) return fallbackItems();
+
+    const ck = contextKind ?? 'Solution';
+    const results: PaletteItem[] = [];
+
+    for (const c of config) {
+      // Check if this construct is allowed in the current context
+      let show = false;
+      if (ck === 'Solution' && c.allowed_in === 'top') show = true;
+      else if (c.allowed_in === ck) {
+        // Check group match
+        if (c.group && activeGroup) {
+          show = c.group === activeGroup;
+        } else if (!c.group) {
+          show = true;
+        } else if (!activeGroup) {
+          show = true;
+        }
+      }
+      else if (c.allowed_in === 'any') show = true;
+
+      if (show) {
+        results.push({
+          kind: c.kind as NodeKind,
+          label: c.label,
+          icon: c.icon,
+          category: c.group || 'General',
+          name: c.name,
+        });
+      }
+    }
+
+    return results;
   });
+
+  function fallbackItems(): PaletteItem[] {
+    // Hardcoded fallback when API isn't available
+    if (contextKind === 'Solution') {
+      return [
+        { kind: 'Module', label: 'Context', icon: '📦', category: 'General' },
+        { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'General' },
+      ];
+    }
+    return [];
+  }
 
   let categories = $derived([...new Set(items.map(i => i.category))]);
 

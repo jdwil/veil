@@ -8,17 +8,20 @@ export const breadcrumbs = writable<{ id: number | null; name: string }[]>([]);
 export const loading = writable(true);
 export const error = writable<string | null>(null);
 export const selectedNodeId = writable<string | null>(null);
+export const paletteConfig = writable<any[]>([]);
 
 const API_URL = 'http://localhost:3001/api/ir';
 const SOURCE_URL = 'http://localhost:3001/api/source';
+const PALETTE_URL = 'http://localhost:3001/api/palette';
 
 export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes] = await Promise.all([
+    const [irRes, srcRes, palRes] = await Promise.all([
       fetch(API_URL),
       fetch(SOURCE_URL),
+      fetch(PALETTE_URL),
     ]);
     if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
     const data: IrGraph = await irRes.json();
@@ -26,6 +29,10 @@ export async function fetchIr() {
 
     if (srcRes.ok) {
       veilSource.set(await srcRes.text());
+    }
+
+    if (palRes.ok) {
+      paletteConfig.set(await palRes.json());
     }
 
     // Find root and determine entry point

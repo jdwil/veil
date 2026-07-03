@@ -1,4 +1,5 @@
 //! VEIL CLI — parse, validate, generate, and serve VEIL files.
+use serde::Serialize;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -48,6 +49,41 @@ enum Commands {
         /// Path to the .veil file
         file: PathBuf,
     },
+}
+
+/// Palette construct definition for the viewer
+#[derive(serde::Serialize)]
+struct PaletteConstruct {
+    name: String,
+    kind: String,
+    icon: String,
+    color: String,
+    label: String,
+    group: String,
+    allowed_in: String,
+}
+
+/// Build the palette configuration from loaded layers.
+/// For now this is hardcoded from the DDD layer — will be dynamic later.
+fn build_palette_config() -> Vec<PaletteConstruct> {
+    vec![
+        // Solution level
+        PaletteConstruct { name: "Context".into(), kind: "Module".into(), icon: "📦".into(), color: "#8b5cf6".into(), label: "Bounded Context".into(), group: "".into(), allowed_in: "top".into() },
+        PaletteConstruct { name: "Saga".into(), kind: "Saga".into(), icon: "🔄".into(), color: "#dc2626".into(), label: "Saga".into(), group: "".into(), allowed_in: "top".into() },
+        // Domain group
+        PaletteConstruct { name: "Aggregate".into(), kind: "TypeDef".into(), icon: "🧩".into(), color: "#ec4899".into(), label: "Aggregate".into(), group: "domain".into(), allowed_in: "Module".into() },
+        PaletteConstruct { name: "Entity".into(), kind: "TypeDef".into(), icon: "🔑".into(), color: "#f43f5e".into(), label: "Entity".into(), group: "domain".into(), allowed_in: "Module".into() },
+        PaletteConstruct { name: "ValueObject".into(), kind: "TypeDef".into(), icon: "💎".into(), color: "#14b8a6".into(), label: "Value Object".into(), group: "domain".into(), allowed_in: "Module".into() },
+        PaletteConstruct { name: "Port".into(), kind: "Interface".into(), icon: "🔌".into(), color: "#10b981".into(), label: "Port".into(), group: "domain".into(), allowed_in: "Module".into() },
+        PaletteConstruct { name: "DomainService".into(), kind: "Flow".into(), icon: "🖥️".into(), color: "#0ea5e9".into(), label: "Domain Service".into(), group: "domain".into(), allowed_in: "Module".into() },
+        // Infrastructure group
+        PaletteConstruct { name: "Adapter".into(), kind: "Implementation".into(), icon: "🔗".into(), color: "#a855f7".into(), label: "Adapter".into(), group: "infrastructure".into(), allowed_in: "Module".into() },
+        // Aggregate children
+        PaletteConstruct { name: "Event".into(), kind: "TypeDef".into(), icon: "⚡".into(), color: "#f59e0b".into(), label: "Domain Event".into(), group: "".into(), allowed_in: "TypeDef".into() },
+        PaletteConstruct { name: "Command".into(), kind: "TypeDef".into(), icon: "📨".into(), color: "#3b82f6".into(), label: "Command".into(), group: "".into(), allowed_in: "TypeDef".into() },
+        // Flow children
+        PaletteConstruct { name: "Step".into(), kind: "Step".into(), icon: "▶️".into(), color: "#64748b".into(), label: "Step".into(), group: "".into(), allowed_in: "Flow".into() },
+    ]
 }
 
 fn main() {
@@ -217,6 +253,9 @@ fn main() {
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
+                // Build palette config from loaded layers
+                let palette_json = serde_json::to_string(&build_palette_config()).unwrap();
+
                 let app = axum::Router::new()
                     .route("/api/ir", axum::routing::get({
                         let json = graph_json.clone();
@@ -233,6 +272,15 @@ fn main() {
                             (
                                 [(axum::http::header::CONTENT_TYPE, "text/plain")],
                                 src.clone(),
+                            )
+                        }
+                    }))
+                    .route("/api/palette", axum::routing::get({
+                        let palette = palette_json.clone();
+                        move || async move {
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                                palette.clone(),
                             )
                         }
                     }))

@@ -120,6 +120,8 @@ pub enum TokenKind {
     Request,
     Guard,
     Group,
+    Allow,
+    Deny,
 }
 
 /// Lex VEIL source code into a token stream.
@@ -485,6 +487,8 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "request" => TokenKind::Request,
         "guard" => TokenKind::Guard,
         "group" => TokenKind::Group,
+        "allow" => TokenKind::Allow,
+        "deny" => TokenKind::Deny,
         _ => TokenKind::Ident,
     }
 }

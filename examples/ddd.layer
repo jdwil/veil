@@ -4,20 +4,20 @@ pkg ddd v1
 
   construct Context
     maps_to mod
+    desc "A bounded context — autonomous domain boundary"
     contains
-      Aggregate[]
-      Entity[]
-      ValueObject[]
-      Port[]
-      Repository[]
-      DomainService[]
+      group domain
+      group infrastructure
+      group application
     visual
       icon "📦"
       color "#8b5cf6"
       label "Bounded Context"
+    allowed_in top
 
   construct Aggregate
     maps_to struct
+    desc "Aggregate root — consistency boundary with state, events, and commands"
     contains
       root: struct
       state: enum
@@ -31,18 +31,22 @@ pkg ddd v1
       icon "🧩"
       color "#ec4899"
       label "Aggregate"
+    group domain
 
   construct Entity
     maps_to struct
+    desc "Entity — domain object with identity"
     constraints
       has_identity
     visual
       icon "🔑"
       color "#f43f5e"
       label "Entity"
+    group domain
 
   construct ValueObject
     maps_to struct
+    desc "Value Object — immutable, identity-less domain concept"
     constraints
       no_identity
       equality_by_value
@@ -50,50 +54,64 @@ pkg ddd v1
       icon "💎"
       color "#14b8a6"
       label "Value Object"
+    group domain
 
   construct Event
     maps_to struct
+    desc "Domain Event — something that happened in the domain"
     constraints
       immutable
     visual
       icon "⚡"
       color "#f59e0b"
       label "Domain Event"
+    group domain
+    allowed_in Aggregate
 
   construct Command
     maps_to struct
+    desc "Command — intent to change domain state"
     visual
       icon "📨"
       color "#3b82f6"
       label "Command"
+    group domain
+    allowed_in Aggregate
 
   construct Port
     maps_to trait
+    desc "Port — interface contract for external dependencies"
     visual
       icon "🔌"
       color "#10b981"
       label "Port"
+    group domain
 
   construct Adapter
     maps_to impl
+    desc "Adapter — implementation of a port for a specific technology"
     constraints
       must_implement_port
     visual
       icon "🔗"
       color "#a855f7"
       label "Adapter"
+    group infrastructure
 
   construct Repository
     maps_to trait
+    desc "Repository — persistence interface for an aggregate"
     constraints
       crud_for_aggregate
     visual
       icon "🗄️"
       color "#10b981"
       label "Repository"
+    group domain
 
   construct DomainService
     maps_to fn
+    desc "Domain Service — orchestrates operations across aggregates within a context"
     contains
       step[]
       par[]
@@ -101,9 +119,11 @@ pkg ddd v1
       icon "🖥️"
       color "#0ea5e9"
       label "Domain Service"
+    group domain
 
   construct Saga
     maps_to fn
+    desc "Saga — cross-context orchestration with compensation semantics"
     contains
       step[]
     constraints
@@ -113,10 +133,12 @@ pkg ddd v1
       icon "🔄"
       color "#dc2626"
       label "Saga"
+    allowed_in top
 
   # Statement extensions (bus actions built on top of core 'call')
   statement dispatch
     maps_to call
+    desc "Fire event through event bus (fire-and-forget, multiple handlers)"
     semantics event_bus_fire_and_forget
     visual
       icon "📡"
@@ -125,6 +147,7 @@ pkg ddd v1
 
   statement invoke
     maps_to call
+    desc "Execute command through command bus (single handler)"
     semantics command_bus_handler
     visual
       icon "⚙️"
@@ -133,6 +156,7 @@ pkg ddd v1
 
   statement request
     maps_to call
+    desc "Query data from another context (inter-context communication)"
     semantics inter_context_query
     visual
       icon "🔌"
@@ -141,6 +165,7 @@ pkg ddd v1
 
   statement guard
     maps_to if
+    desc "Precondition check — fails the step if condition is false"
     semantics precondition_fail_step
     visual
       icon "🛡️"
