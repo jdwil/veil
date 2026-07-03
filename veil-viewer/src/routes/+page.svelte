@@ -216,7 +216,7 @@
       }
     }
 
-    nodes = layoutNodes(solNodes, solEdges);
+    nodes = layoutByType(solNodes);
     edges = solEdges;
     tabs = [];
     activeTab = null;
@@ -357,7 +357,14 @@
     const direction = parentNode?.kind === 'Flow' || parentNode?.kind === 'ParallelGateway'
       || parentNode?.kind === 'Saga' ? 'LR' : 'TB';
 
-    nodes = layoutNodes(allNodes, allEdges, direction);
+    const isFlowView = parentNode?.kind === 'Flow' || parentNode?.kind === 'Saga'
+      || parentNode?.kind === 'ParallelGateway' || parentNode?.kind === 'Step';
+
+    if (isFlowView) {
+      nodes = layoutNodes(allNodes, allEdges, direction);
+    } else {
+      nodes = layoutByType(allNodes);
+    }
     edges = allEdges;
   }
 
