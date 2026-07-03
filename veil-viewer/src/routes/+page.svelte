@@ -50,6 +50,40 @@
     return parentNode?.kind ?? 'Solution';
   });
 
+  // Derive scope variables from the current flow's Inputs node + parent chain
+  let scopeVars = $derived.by(() => {
+    const graph = $irGraph;
+    const parent = $currentParent;
+    if (!graph || !parent) return [] as string[];
+    const vars: string[] = [];
+
+    // Walk up the parent chain looking for Inputs nodes
+    let current: number | null = parent;
+    while (current !== null) {
+      const children = graph.nodes.filter(n => n.metadata.parent === current);
+      const inputsNode = children.find(n => n.kind === 'Inputs');
+      if (inputsNode) {
+        const params = inputsNode.metadata.properties.find(([k]) => k === 'params');
+        if (params) {
+          const paramList = params[1].split(', ').map(p => p.trim());
+          vars.push(...paramList);
+        }
+      }
+      // Also find assigns at this level (variables created by steps)
+      for (const child of children) {
+        if (child.kind === 'AssignAction') {
+          const assignName = child.name.split(' = ')[0];
+          if (assignName && !vars.includes(assignName)) {
+            vars.push(assignName);
+          }
+        }
+      }
+      const parentNode = graph.nodes.find(n => n.id === current);
+      current = parentNode?.metadata.parent ?? null;
+    }
+    return vars;
+  });
+
   // Get the currently selected node for property editing
   // Action-level nodes get specialized editors (Task 6 of this refactor)
 
@@ -484,7 +518,16 @@
       </p>
       <button class="retry-btn" onclick={() => fetchIr()}>Retry</button>
     </div>
+  <!-- Scope panel — shows variables available at current level -->
   {:else}
+    {#if scopeVars.length > 0}
+      <div class="scope-bar">
+        <span class="scope-label">Scope:</span>
+        {#each scopeVars as v}
+          <span class="scope-var">{v}</span>
+        {/each}
+      </div>
+    {/if}
     <div class="main-layout">
       <Palette contextKind={currentContextKind} activeGroup={activeTab} />
       <div class="graph-wrapper">
@@ -605,6 +648,35 @@
     padding: 8px 12px;
     background: rgba(26, 26, 46, 0.9);
     border-bottom: 1px solid #2d2d44;
+  }
+
+  .scope-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 16px;
+    background: rgba(34, 197, 94, 0.05);
+    border-bottom: 1px solid rgba(34, 197, 94, 0.2);
+    overflow-x: auto;
+    flex-shrink: 0;
+  }
+
+  .scope-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #22c55e;
+    font-weight: 700;
+  }
+
+  .scope-var {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    color: #86efac;
   }
 
   .tab-btn {

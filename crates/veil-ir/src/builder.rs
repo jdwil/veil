@@ -234,6 +234,32 @@ impl IrBuilder {
                     self.set_parent(svc_id, ctx_id);
                     self.set_subkind(svc_id, "DomainService");
                     self.graph.add_edge(ctx_id, svc_id, EdgeKind::Contains);
+
+                    // Build inputs node
+                    if !svc.inputs.is_empty() {
+                        let inputs_str = svc.inputs.iter()
+                            .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                            .collect::<Vec<_>>().join(", ");
+                        let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), svc.span);
+                        self.set_parent(inputs_id, svc_id);
+                        self.set_property(inputs_id, "params", &inputs_str);
+                        self.graph.add_edge(svc_id, inputs_id, EdgeKind::Contains);
+                    }
+
+                    // Build steps
+                    let mut prev_step_id: Option<NodeId> = None;
+                    for step in &svc.steps {
+                        if let FlowStep::Step(s) = step {
+                            let step_id = self.graph.add_node(NodeKind::Step, s.name.clone(), s.span);
+                            self.set_parent(step_id, svc_id);
+                            self.graph.add_edge(svc_id, step_id, EdgeKind::Contains);
+                            if let Some(prev) = prev_step_id {
+                                self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
+                            }
+                            self.build_step_body(&s.body, step_id);
+                            prev_step_id = Some(step_id);
+                        }
+                    }
                 }
                 ContextItem::Adapter(adapter) => {
                     self.build_adapter(adapter, ctx_id);
@@ -388,6 +414,17 @@ impl IrBuilder {
             if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == flow_id) {
                 node.metadata.annotations.push(annotation_to_ir_string(ann));
             }
+        }
+
+        // Build inputs node
+        if !flow.inputs.is_empty() {
+            let inputs_str = flow.inputs.iter()
+                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                .collect::<Vec<_>>().join(", ");
+            let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), flow.span);
+            self.set_parent(inputs_id, flow_id);
+            self.set_property(inputs_id, "params", &inputs_str);
+            self.graph.add_edge(flow_id, inputs_id, EdgeKind::Contains);
         }
 
         // Error boundary

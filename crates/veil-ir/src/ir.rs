@@ -76,6 +76,7 @@ pub enum NodeKind {
     Solution,
     Module,
     Group,
+    Inputs,
     TypeDef,
     Interface,
     InterfaceMethod,
