@@ -90,36 +90,6 @@ sol CustomerOnboarding
         impl send_sms(phone, msg)
           http.post("api.twilio.com/Messages", {To: phone.number, Body: msg})
 
-    group application
-      export saga Onboard
-        contexts Identity, Billing
-
-        input
-          email: Email
-          phone: Phone
-          name: Str
-
-        step create_customer
-          ctx Identity
-          c = call Customer.new(email, phone)
-          call CustomerRepo.save(c)
-          dispatch CustomerCreated{c.id, email, c.created}
-          compensate
-            call CustomerRepo.delete(c.id)
-
-        step verify_identity
-          ctx Identity
-          result = call KYCProvider.check(name, email)
-          call c.verify(result.code)
-          compensate
-            call c.reject("saga_rollback")
-
-        step setup_billing
-          ctx Billing
-          call PaymentGateway.create_customer(email.addr)
-          invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
-          compensate
-            invoke Billing.CancelTrial{customer_id: c.id}
 
   ctx Billing
     group domain
@@ -149,3 +119,34 @@ sol CustomerOnboarding
           http.post("api.stripe.com/v1/customers", {email})
 
   # Cross-context orchestration with compensation
+
+  orchestrator Onboarding
+    export saga Onboard
+      contexts Identity, Billing
+
+      input
+        email: Email
+        phone: Phone
+        name: Str
+
+      step create_customer
+        ctx Identity
+        c = call Customer.new(email, phone)
+        call CustomerRepo.save(c)
+        dispatch CustomerCreated{c.id, email, c.created}
+        compensate
+          call CustomerRepo.delete(c.id)
+
+      step verify_identity
+        ctx Identity
+        result = call KYCProvider.check(name, email)
+        call c.verify(result.code)
+        compensate
+          call c.reject("saga_rollback")
+
+      step setup_billing
+        ctx Billing
+        call PaymentGateway.create_customer(email.addr)
+        invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
+        compensate
+          invoke Billing.CancelTrial{customer_id: c.id}

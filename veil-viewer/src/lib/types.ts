@@ -99,6 +99,7 @@ export const SUBKIND_STYLES: Record<string, { color: string; icon: string; label
   Saga: { color: '#dc2626', icon: '🔄', label: 'Saga' },
   Service: { color: '#0ea5e9', icon: '🖥️', label: 'Service' },
   DomainService: { color: '#0ea5e9', icon: '🖥️', label: 'Domain Service' },
+  Orchestrator: { color: '#dc2626', icon: '🎯', label: 'Orchestrator' },
 };
 
 /** Get the display style for a node, preferring subkind if available */

@@ -123,6 +123,7 @@ pub enum TokenKind {
     Allow,
     Deny,
     Export,
+    Orchestrator,
 }
 
 /// Lex VEIL source code into a token stream.
@@ -491,6 +492,7 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "allow" => TokenKind::Allow,
         "deny" => TokenKind::Deny,
         "export" => TokenKind::Export,
+        "orchestrator" => TokenKind::Orchestrator,
         _ => TokenKind::Ident,
     }
 }

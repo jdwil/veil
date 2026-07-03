@@ -682,6 +682,12 @@ impl<'a> Parser<'a> {
                         let _ = prefix_annotations;
                         items.push(TopLevelItem::Context(ctx));
                     }
+                    TokenKind::Orchestrator => {
+                        let _ = doc;
+                        let ctx = self.parse_orchestrator()?;
+                        let _ = prefix_annotations;
+                        items.push(TopLevelItem::Context(ctx));
+                    }
                     TokenKind::Flow => {
                         let mut flow = self.parse_flow()?;
                         // Prepend decorator annotations to the flow
@@ -771,6 +777,59 @@ impl<'a> Parser<'a> {
         Ok(LangBlock {
             span: start_span.merge(self.current().span),
             entries,
+        })
+    }
+
+    fn parse_orchestrator(&mut self) -> Result<Context, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Orchestrator)?;
+        let name = self.expect_ident()?;
+
+        let mut items = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                if self.at(&TokenKind::Comment) { self.advance(); continue; }
+                let _annotations = self.parse_annotations();
+                match self.peek_kind().clone() {
+                    TokenKind::Export | TokenKind::Saga => {
+                        if self.at(&TokenKind::Export) {
+                            self.advance();
+                        }
+                        if self.at(&TokenKind::Saga) {
+                            let saga = self.parse_saga()?;
+                            let mut annotations = saga.annotations;
+                            annotations.push(Annotation {
+                                name: "__saga".to_string(),
+                                args: saga.context_refs.clone(),
+                                span: saga.span,
+                            });
+                            items.push(ContextItem::Service(Service {
+                                name: saga.name,
+                                span: saga.span,
+                                annotations,
+                                inputs: saga.inputs,
+                                steps: saga.steps.iter().map(|s| FlowStep::Step(StepDef {
+                                    name: s.name.clone(),
+                                    span: s.span,
+                                    body: s.body.clone(),
+                                })).collect(),
+                                return_expr: None,
+                            }));
+                        }
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(Context {
+            name,
+            span: start_span.merge(self.current().span),
+            items,
         })
     }
 

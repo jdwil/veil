@@ -180,7 +180,17 @@ impl IrBuilder {
     fn build_context(&mut self, ctx: &Context, parent_id: NodeId) {
         let ctx_id = self.graph.add_node(NodeKind::Module, ctx.name.clone(), ctx.span);
         self.set_parent(ctx_id, parent_id);
-        self.set_subkind(ctx_id, "Context");
+
+        // Detect orchestrator: all items are saga-marked services (no groups, no domain constructs)
+        let is_orchestrator = !ctx.items.is_empty() && ctx.items.iter().all(|item| {
+            matches!(item, ContextItem::Service(svc) if svc.annotations.iter().any(|a| a.name == "__saga"))
+        });
+
+        if is_orchestrator {
+            self.set_subkind(ctx_id, "Orchestrator");
+        } else {
+            self.set_subkind(ctx_id, "Context");
+        }
         self.graph.add_edge(parent_id, ctx_id, EdgeKind::Contains);
 
         for item in &ctx.items {
