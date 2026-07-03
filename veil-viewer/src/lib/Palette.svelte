@@ -90,7 +90,7 @@
                 class="palette-tile"
                 draggable="true"
                 ondragstart={(e) => onDragStart(e, item)}
-                style="--tile-color: {NODE_STYLES[item.kind].color}"
+                style="--tile-color: {item.color || NODE_STYLES[item.kind]?.color || '#64748b'}"
               >
                 <span class="tile-icon">{item.icon}</span>
                 <span class="tile-label">{item.label}</span>
