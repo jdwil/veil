@@ -35,6 +35,7 @@ pkg ddd v1
     allowed_in top
 
   construct Aggregate
+    keyword agg
     maps_to struct
     allowed_in Module
     desc "Aggregate root — consistency boundary with state, events, and commands"
@@ -54,6 +55,7 @@ pkg ddd v1
     group domain
 
   construct Entity
+    keyword ent
     maps_to struct
     allowed_in Module
     desc "Entity — domain object with identity"
@@ -66,6 +68,7 @@ pkg ddd v1
     group domain
 
   construct ValueObject
+    keyword val
     maps_to struct
     allowed_in Module
     desc "Value Object — immutable, identity-less domain concept"
@@ -79,6 +82,7 @@ pkg ddd v1
     group domain
 
   construct Event
+    keyword evt
     maps_to struct
     desc "Domain Event — something that happened in the domain"
     constraints
@@ -91,6 +95,7 @@ pkg ddd v1
     allowed_in TypeDef
 
   construct Command
+    keyword cmd
     maps_to struct
     desc "Command — intent to change domain state"
     visual
@@ -101,6 +106,7 @@ pkg ddd v1
     allowed_in TypeDef
 
   construct Port
+    keyword port
     maps_to trait
     allowed_in Module
     desc "Port — interface contract for external dependencies"
@@ -111,6 +117,7 @@ pkg ddd v1
     group domain
 
   construct Adapter
+    keyword adapter
     maps_to impl
     allowed_in Module
     desc "Adapter — implementation of a port for a specific technology"
@@ -123,6 +130,7 @@ pkg ddd v1
     group infrastructure
 
   construct Repository
+    keyword repo
     maps_to trait
     allowed_in Module
     desc "Repository — persistence interface for an aggregate"
@@ -135,6 +143,7 @@ pkg ddd v1
     group domain
 
   construct DomainService
+    keyword svc
     maps_to fn
     allowed_in Module
     desc "Domain Service — orchestrates operations across aggregates within a context"
@@ -148,6 +157,7 @@ pkg ddd v1
     group domain
 
   construct Saga
+    keyword saga
     maps_to fn
     desc "Saga — cross-context orchestration with compensation semantics"
     contains

@@ -10,6 +10,8 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub struct ConstructDef {
     pub name: String,
+    /// The keyword used in source code (e.g., "ctx" for Context)
+    pub keyword: String,
     /// What core primitive this maps to (mod, struct, trait, impl, fn)
     pub maps_to: String,
     /// What this construct is allowed to contain (child construct names)
@@ -27,6 +29,24 @@ pub struct ConstructDef {
 pub struct LayerSchema {
     pub name: String,
     pub constructs: HashMap<String, ConstructDef>,
+}
+
+impl LayerSchema {
+    /// Build a keyword→construct name lookup map.
+    pub fn keyword_map(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for (name, def) in &self.constructs {
+            if !def.keyword.is_empty() {
+                map.insert(def.keyword.clone(), name.clone());
+            }
+        }
+        map
+    }
+
+    /// Look up a construct by its keyword.
+    pub fn by_keyword(&self, keyword: &str) -> Option<&ConstructDef> {
+        self.constructs.values().find(|d| d.keyword == keyword)
+    }
 }
 
 /// A validation error with context.
@@ -83,6 +103,7 @@ pub fn parse_layer_schema(content: &str) -> LayerSchema {
             current_name = Some(name.clone());
             current_def = Some(ConstructDef {
                 name,
+                keyword: String::new(),
                 maps_to: String::new(),
                 contains: Vec::new(),
                 allowed_in: String::new(),
@@ -143,6 +164,8 @@ pub fn parse_layer_schema(content: &str) -> LayerSchema {
                     def.allowed_in = trimmed.strip_prefix("allowed_in ").unwrap().trim().to_string();
                 } else if trimmed.starts_with("group ") {
                     def.group = trimmed.strip_prefix("group ").unwrap().trim().to_string();
+                } else if trimmed.starts_with("keyword ") {
+                    def.keyword = trimmed.strip_prefix("keyword ").unwrap().trim().to_string();
                 }
             }
         }
