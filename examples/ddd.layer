@@ -208,7 +208,7 @@ pkg ddd v1
   # ─── Declared constructs (injected into every solution using this layer) ─────
   declare
     trait Bus
-      dispatch(evt: Event) -> Res!
-      invoke(cmd: Command) -> Res!<Any>
-      request(qry: Query) -> Res!<Any>
+      dispatch(evt: Str) -> Res!
+      invoke(cmd: Str) -> Res!
+      request(qry: Str) -> Res!<Str>
 

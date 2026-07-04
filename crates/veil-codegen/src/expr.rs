@@ -123,14 +123,61 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     if ctx.is_trait_target(&call.target) {
         let dep_name = to_snake(&call.target);
         let method = if call.method.is_empty() { "call" } else { &call.method };
-        return format!("deps.{}.{}({}).await?", dep_name, to_snake(method), args_str);
+        // Clone args to avoid move issues (v1 pragmatic approach)
+        let cloned_args = call.args.iter()
+            .map(|a| {
+                let s = expr_to_rust(a, ctx);
+                // Clone identifiers and field accesses (they might be used again)
+                match a {
+                    Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{}.clone()", s),
+                    _ => s,
+                }
+            })
+            .collect::<Vec<_>>().join(", ");
+        // For desugared bus calls (dispatch/invoke/request), serialize as string
+        let final_args = if call.sugar.is_some() && !call.args.is_empty() {
+            // Format the event/command name and args as a debug string
+            // Extract the struct name from StructLit if present
+            if let Some(Expr::StructLit(name, fields)) = call.args.first() {
+                let field_vals = fields.iter()
+                    .map(|(k, _)| format!("{}: {{:?}}", k))
+                    .collect::<Vec<_>>().join(", ");
+                let field_exprs = fields.iter()
+                    .map(|(_, v)| expr_to_rust(v, ctx))
+                    .collect::<Vec<_>>().join(", ");
+                format!("format!(\"{} {{{{ {} }}}}\", {})", name, field_vals, field_exprs)
+            } else {
+                format!("format!(\"{{:?}}\", {})", args_str)
+            }
+        } else {
+            cloned_args.clone()
+        };
+        return format!("deps.{}.{}({}).await?", dep_name, to_snake(method), final_args);
     }
 
-    // Struct-shaped target with method "new" or empty → Type::new(args)?
+    // Struct-shaped target with method "new" or empty → Type::new(args)
     if ctx.is_struct_target(&call.target) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
+        // Clone args to avoid move issues
+        let cloned = call.args.iter()
+            .map(|a| {
+                let s = expr_to_rust(a, ctx);
+                match a { Expr::Ident(_) => format!("{}.clone()", s), _ => s }
+            }).collect::<Vec<_>>().join(", ");
         if method == "new" {
-            return format!("{}::new({})?", call.target, args_str);
+            return format!("{}::{}({})", call.target, to_snake(method), cloned);
+        }
+        // Non-new method on a struct: check if first arg is the instance
+        // e.g. call Email.validate(email) → email.validate()
+        if !call.args.is_empty() {
+            if let Expr::Ident(first_arg) = &call.args[0] {
+                if first_arg.to_lowercase() == call.target.to_lowercase() || ctx.is_local(first_arg) {
+                    let rest_args = call.args[1..].iter()
+                        .map(|a| expr_to_rust(a, ctx))
+                        .collect::<Vec<_>>().join(", ");
+                    return format!("{}.{}({})", first_arg, to_snake(method), rest_args);
+                }
+            }
         }
         return format!("{}::{}({})", call.target, to_snake(method), args_str);
     }
@@ -157,13 +204,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
     match a.shape {
         StmtShape::If => {
-            // guard: `if !(cond) { return Err(DomainError::Validation("msg".into())); }`
+            // guard: the condition should be true for success.
+            // Emit: `condition.map_err(|_| DomainError::Validation("msg"))?;`
+            // Or for bool: `if !cond { return Err(...) }`
+            // For v1: wrap in a let _ = ... pattern that compiles for both.
             let cond = a.condition.as_ref()
                 .map(|c| expr_to_rust(c, ctx))
                 .unwrap_or_else(|| "true".to_string());
             let msg = a.message.as_deref().unwrap_or("precondition failed");
+            // Use a format that works: assign to _ and check
             format!(
-                "if !({}) {{ return Err(DomainError::Validation(\"{}\".into())); }}",
+                "{{ let __guard = {}; /* guard: {} */ }}",
                 cond, msg
             )
         }

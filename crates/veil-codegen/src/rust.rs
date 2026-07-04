@@ -162,7 +162,7 @@ fn gen_module_crate(
     let mut files = Vec::new();
     let mut contents = flatten_module(module);
 
-    // Include solution-level trait constructs (like declared Bus) in every module
+    // Include solution-level trait constructs (like declared Bus) in all modules
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
             if c.shape == Shape::Trait {
@@ -215,7 +215,24 @@ uuid.workspace = true"#);
         content: "pub mod types;\npub mod messages;\n".to_string(),
     });
 
-    files.push(gen_traits(&contents, &crate_name));
+    // For modules that reference siblings (orchestrators), re-export ports from the first sibling
+    // instead of generating duplicate DomainError/Bus/etc.
+    let sibling_refs = detect_sibling_refs(module, solution);
+    let has_own_traits = module.children.iter().any(|c| c.shape == Shape::Trait);
+    if !sibling_refs.is_empty() && !has_own_traits {
+        let mut sorted_siblings: Vec<&String> = sibling_refs.iter().filter(|s| **s != crate_name).collect();
+        sorted_siblings.sort();
+        let mut ports_content = String::from("//! Re-exported ports.\n\n");
+        for sibling in &sorted_siblings {
+            ports_content.push_str(&format!("pub use {}::ports::*;\n", sibling));
+        }
+        files.push(GeneratedFile {
+            path: format!("crates/{}/src/ports/mod.rs", crate_name),
+            content: ports_content,
+        });
+    } else {
+        files.push(gen_traits(&contents, &crate_name));
+    }
 
     // Impls targeting traits defined in this module (from anywhere in the tree).
     let trait_names: Vec<&str> = contents.traits.iter().map(|t| t.name.as_str()).collect();
@@ -421,20 +438,57 @@ fn gen_struct(c: &Construct) -> String {
                 .join(", "),
         ));
     } else if !fields.is_empty() {
-        // Generate a simple constructor for all struct-shaped constructs with fields
+        // Generate a smart constructor — auto-defaulting id, timestamps, and enum-state fields
+        let auto_fields = ["id", "created", "updated", "created_at", "updated_at"];
+        // Enum-typed fields (like status) get their first variant as default
+        let enum_field_names: std::collections::HashSet<String> = c.blocks.iter()
+            .filter(|b| b.shape == Shape::Enum)
+            .flat_map(|b| {
+                // Find which field references this enum by matching type name
+                fields.iter().filter(|f| {
+                    if let TypeExpr::Named(n) = &f.type_expr {
+                        b.name.as_ref().map(|bn| bn == n).unwrap_or(false)
+                    } else { false }
+                }).map(|f| f.name.clone())
+            }).collect();
+
+        let user_fields: Vec<&&Field> = fields.iter()
+            .filter(|f| !auto_fields.contains(&f.name.as_str()) && !enum_field_names.contains(&f.name))
+            .collect();
+
+        let params_str = user_fields.iter()
+            .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
+            .collect::<Vec<_>>().join(", ");
+
+        let init_fields = fields.iter().map(|f| {
+            let snake = to_snake(&f.name);
+            if f.name == "id" {
+                format!("{}: Uuid::new_v4()", snake)
+            } else if auto_fields.contains(&f.name.as_str()) {
+                format!("{}: Utc::now()", snake)
+            } else if enum_field_names.contains(&f.name) {
+                // Use first variant of the enum
+                let first_variant = c.blocks.iter()
+                    .filter(|b| b.shape == Shape::Enum)
+                    .find_map(|b| {
+                        let enum_name = b.name.clone().unwrap_or_else(|| format!("{}State", c.name));
+                        if let TypeExpr::Named(n) = &f.type_expr {
+                            if &enum_name == n {
+                                return b.variants.first().map(|v| format!("{}::{}", enum_name, v));
+                            }
+                        }
+                        None
+                    })
+                    .unwrap_or_else(|| format!("Default::default()"));
+                format!("{}: {}", snake, first_variant)
+            } else {
+                snake
+            }
+        }).collect::<Vec<_>>().join(", ");
+
         out.push_str(&format!(
             "impl {} {{\n    pub fn new({}) -> Self {{\n        Self {{ {} }}\n    }}\n}}\n\n",
-            c.name,
-            fields
-                .iter()
-                .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            fields
-                .iter()
-                .map(|f| to_snake(&f.name))
-                .collect::<Vec<_>>()
-                .join(", "),
+            c.name, params_str, init_fields,
         ));
     }
 
@@ -528,10 +582,20 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
                 Expr::Action(a) if a.keyword == "emit" => {
                     // emit EventName{fields} → events.push(ParentEvent::EventName(EventName { fields }))
                     let event_name = &a.target;
+                    // Look up the event struct's actual field names from children
+                    let event_fields: Vec<String> = c.children.iter()
+                        .find(|child| child.name == *event_name)
+                        .map(|child| child.fields.iter().map(|f| f.name.clone()).collect())
+                        .unwrap_or_default();
+
                     let fields_str = if !a.named_args.is_empty() {
-                        a.named_args.iter().map(|(k, v)| {
+                        // Map positionally: use event struct field names, values from named_args
+                        a.named_args.iter().enumerate().map(|(i, (_k, v))| {
                             let v_str = translate_emit_field(v, &ctx, &field_names);
-                            if k == &v_str { k.clone() } else { format!("{}: {}", to_snake(k), v_str) }
+                            let field_name = event_fields.get(i)
+                                .map(|n| to_snake(n))
+                                .unwrap_or_else(|| to_snake(_k));
+                            if field_name == v_str { field_name } else { format!("{}: {}", field_name, v_str) }
                         }).collect::<Vec<_>>().join(", ")
                     } else {
                         String::new()
@@ -776,14 +840,15 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             }
         }
     }
+    // Note: sibling crate types are available as local stubs (via undefined-type generation).
+    // Cross-crate type sharing will be improved in a future version.
+    // For orchestrators that use traits from siblings, import their ports:
     if let Some(module) = current_module {
-        let needed = detect_sibling_refs(module, solution);
-        for sibling in &needed {
-            if *sibling != crate_name {
-                out.push_str(&format!("use {}::domain::types::*;\n", sibling));
-                out.push_str(&format!("use {}::domain::messages::*;\n", sibling));
-                out.push_str(&format!("use {}::ports::*;\n", sibling));
-            }
+        let needed: Vec<String> = detect_sibling_refs(module, solution)
+            .into_iter().filter(|s| *s != crate_name).collect();
+        if !needed.is_empty() {
+            // Don't import local types::* — we'll use sibling types to avoid ambiguity
+            // (Already importing crate::ports which re-exports from sibling)
         }
     }
     out.push_str("\n");
@@ -873,11 +938,19 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         let flow_deps = collect_deps(steps, &base_ctx);
         let deps_param = if !flow_deps.is_empty() { "deps: &Deps, " } else { "" };
 
+        // Determine return type: if there's a return expression, use Uuid (common id return)
+        let ret_type = if return_expr.is_some() {
+            "Result<Uuid, DomainError>"
+        } else {
+            "Result<(), DomainError>"
+        };
+
         out.push_str(&format!(
-            "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> Result<(), DomainError> {{\n",
+            "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",
             to_snake(name),
             deps_param,
-            params
+            params,
+            ret_type
         ));
 
         // Build context for this flow
