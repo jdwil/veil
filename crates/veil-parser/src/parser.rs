@@ -474,7 +474,7 @@ impl<'a> Parser<'a> {
                     TokenKind::Constraints => {
                         constraints = self.parse_constraints()?;
                     }
-                    _ => { self.advance(); }
+                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in expose block", self.peek_kind()))); self.advance(); }
                 }
             }
             self.exit_block();
@@ -542,7 +542,7 @@ impl<'a> Parser<'a> {
                             self.exit_block();
                         }
                     }
-                    _ => { self.advance(); }
+                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in exposed node", self.peek_kind()))); self.advance(); }
                 }
             }
             self.exit_block();
@@ -823,7 +823,7 @@ impl<'a> Parser<'a> {
                             }));
                         }
                     }
-                    _ => { self.advance(); }
+                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in orchestrator body", self.peek_kind()))); self.advance(); }
                 }
             }
             self.exit_block();
@@ -969,7 +969,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     TokenKind::Comment => { self.advance(); }
-                    _ => { self.advance(); }
+                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in group body", self.peek_kind()))); self.advance(); }
                 }
             }
             self.exit_block();
@@ -1104,7 +1104,7 @@ impl<'a> Parser<'a> {
                         methods.push(self.parse_aggregate_fn()?);
                     }
                     TokenKind::Ident => fields.push(self.parse_field()?),
-                    _ => { self.advance(); }
+                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in aggregate body", self.peek_kind()))); self.advance(); }
                 }
             }
             self.exit_block();
@@ -1431,7 +1431,7 @@ impl<'a> Parser<'a> {
                             return_expr = Some(self.parse_expr()?);
                         }
                     }
-                    _ => { self.advance(); }
+                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in service/flow body", self.peek_kind()))); self.advance(); }
                 }
             }
             self.exit_block();
@@ -1571,7 +1571,7 @@ impl<'a> Parser<'a> {
                     TokenKind::Step => {
                         steps.push(self.parse_saga_step()?);
                     }
-                    _ => { self.advance(); }
+                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in saga body", self.peek_kind()))); self.advance(); }
                 }
             }
             self.exit_block();
