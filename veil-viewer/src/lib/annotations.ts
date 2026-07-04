@@ -92,13 +92,6 @@ export const ANNOTATION_SCHEMA: Partial<Record<NodeKind, AnnotationDef[]>> = {
       ],
     },
   ],
-  Context: [
-    {
-      name: 'bounded',
-      description: 'Explicit bounded context boundary',
-      params: [],
-    },
-  ],
   Adapter: [
     {
       name: 'env',
