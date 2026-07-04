@@ -412,9 +412,164 @@ fn gen_struct(c: &Construct) -> String {
                 .join(", "),
         ));
     }
+
+    // Generate impl block with business logic fns (if any exist).
+    if !c.fns.is_empty() {
+        out.push_str(&gen_aggregate_impl(c, &fields));
+    }
+
     out
 }
 
+/// Generate `impl Name { ... }` block for aggregate business logic fns.
+fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
+    use crate::expr::{GenCtx, expr_to_rust};
+    use std::collections::HashMap;
+
+    let mut out = String::new();
+
+    // Determine the event wrapper enum name (from children with children that are struct-shaped message types)
+    let event_enum_name = format!("{}Event", c.name);
+
+    // Collect field names for self-field detection
+    let field_names: std::collections::HashSet<String> = fields.iter()
+        .map(|f| f.name.clone())
+        .collect();
+
+    // Collect enum block variants for enum-value qualification
+    let mut enum_map: HashMap<String, String> = HashMap::new(); // variant → EnumName
+    for block in &c.blocks {
+        if block.shape == Shape::Enum {
+            let enum_name = block.name.clone().unwrap_or_else(|| format!("{}State", c.name));
+            for v in &block.variants {
+                enum_map.insert(v.clone(), enum_name.clone());
+            }
+        }
+    }
+
+    out.push_str(&format!("impl {} {{\n", c.name));
+
+    for func in &c.fns {
+        let params_str = func.params.iter()
+            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+            .collect::<Vec<_>>().join(", ");
+
+        out.push_str(&format!(
+            "    pub fn {}(&mut self, {}) -> Result<Vec<{}>, DomainError> {{\n",
+            to_snake(&func.name), params_str, event_enum_name
+        ));
+
+        // @invariant annotation → guard
+        for ann in &func.annotations {
+            if ann.name == "invariant" {
+                let cond_text = ann.args.first().map(|s| s.as_str()).unwrap_or("true");
+                // Simple invariant: field == Value → self.field == EnumName::Value
+                let cond_rust = translate_invariant_condition(cond_text, &field_names, &enum_map);
+                out.push_str(&format!(
+                    "        if !({}) {{ return Err(DomainError::Validation(\"invariant violated\".into())); }}\n",
+                    cond_rust
+                ));
+            }
+        }
+
+        out.push_str(&format!("        let mut events: Vec<{}> = Vec::new();\n", event_enum_name));
+
+        // Build context for body translation
+        let mut ctx = GenCtx::new(HashMap::new());
+        ctx.in_aggregate_fn = true;
+        ctx.self_fields = field_names.clone();
+        // Register params as locals
+        for p in &func.params {
+            ctx.locals.insert(p.name.clone());
+        }
+
+        for expr in &func.body {
+            match expr {
+                Expr::Assign(field, rhs) if field_names.contains(field) => {
+                    // Assign to a struct field: self.field = value
+                    let rhs_str = expr_to_rust(rhs, &ctx);
+                    // If the rhs is a bare ident that matches an enum variant, qualify it
+                    let qualified_rhs = if let Expr::Ident(v) = rhs.as_ref() {
+                        if let Some(enum_name) = enum_map.get(v.as_str()) {
+                            format!("{}::{}", enum_name, v)
+                        } else {
+                            rhs_str
+                        }
+                    } else {
+                        rhs_str
+                    };
+                    out.push_str(&format!("        self.{} = {};\n", to_snake(field), qualified_rhs));
+                }
+                Expr::Action(a) if a.keyword == "emit" => {
+                    // emit EventName{fields} → events.push(ParentEvent::EventName(EventName { fields }))
+                    let event_name = &a.target;
+                    let fields_str = if !a.named_args.is_empty() {
+                        a.named_args.iter().map(|(k, v)| {
+                            let v_str = translate_emit_field(v, &ctx, &field_names);
+                            if k == &v_str { k.clone() } else { format!("{}: {}", to_snake(k), v_str) }
+                        }).collect::<Vec<_>>().join(", ")
+                    } else {
+                        String::new()
+                    };
+                    out.push_str(&format!(
+                        "        events.push({}::{}({} {{ {} }}));\n",
+                        event_enum_name, event_name, event_name, fields_str
+                    ));
+                }
+                other => {
+                    out.push_str(&format!("        {};\n", expr_to_rust(other, &ctx)));
+                }
+            }
+        }
+
+        out.push_str("        Ok(events)\n");
+        out.push_str("    }\n\n");
+    }
+
+    out.push_str("}\n\n");
+    out
+}
+
+/// Translate an invariant condition expression (simple text form).
+/// e.g. "status == Pending" → "self.status == CustomerStatus::Pending"
+fn translate_invariant_condition(
+    text: &str,
+    fields: &std::collections::HashSet<String>,
+    enum_map: &std::collections::HashMap<String, String>,
+) -> String {
+    // Simple parser: split on spaces, qualify fields with self. and enum values with EnumName::
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    parts.iter().map(|part| {
+        if fields.contains(*part) {
+            format!("self.{}", to_snake(part))
+        } else if let Some(enum_name) = enum_map.get(*part) {
+            format!("{}::{}", enum_name, part)
+        } else {
+            part.to_string()
+        }
+    }).collect::<Vec<_>>().join(" ")
+}
+
+/// Translate a field value in an emit expression.
+/// Bare field names that match struct fields → self.field
+/// now() → Utc::now()
+fn translate_emit_field(
+    expr: &Expr,
+    ctx: &crate::expr::GenCtx,
+    self_fields: &std::collections::HashSet<String>,
+) -> String {
+    match expr {
+        Expr::Ident(name) if self_fields.contains(name.as_str()) => {
+            format!("self.{}", to_snake(name))
+        }
+        Expr::Call(call) if call.target == "now" && call.method.is_empty() => {
+            "Utc::now()".to_string()
+        }
+        _ => crate::expr::expr_to_rust(expr, ctx),
+    }
+}
+
+/// Generate messages.rs: structs nested inside other structs (events,
 /// Generate an enum-shaped construct.
 fn gen_enum(c: &Construct) -> String {
     let mut out = String::new();
@@ -429,9 +584,9 @@ fn gen_enum(c: &Construct) -> String {
     out
 }
 
-/// Generate messages.rs: structs nested inside other structs (events,
 /// commands, or any layer-defined message-like constructs).
 fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
+
     let mut out = String::new();
     out.push_str("//! Nested message types (grouped by parent construct).\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
