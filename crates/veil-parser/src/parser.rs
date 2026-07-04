@@ -11,7 +11,7 @@
 //! declared by the layer via `contains` entries of the form `keyword: shape`.
 
 use veil_ir::ast::*;
-use veil_ir::layer::{LayerRegistry, Shape, StmtShape};
+use veil_ir::layer::{LayerRegistry, Shape, StmtShape, StatementSpec};
 use veil_ir::span::Span;
 
 use crate::lexer::{Token, TokenKind};
@@ -1702,7 +1702,7 @@ impl<'a> Parser<'a> {
                 // Layer-defined statement?
                 let word = self.current().text.clone();
                 if let Some(stmt) = self.registry.statement(&word).cloned() {
-                    return self.parse_action(&word, stmt.shape);
+                    return self.parse_action(&word, &stmt);
                 }
             }
             _ => {}
@@ -1724,8 +1724,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a layer statement according to its core shape.
-    fn parse_action(&mut self, keyword: &str, shape: StmtShape) -> Result<Expr, ParseError> {
+    fn parse_action(&mut self, keyword: &str, stmt_spec: &StatementSpec) -> Result<Expr, ParseError> {
         let start_span = self.current().span;
+        let shape = stmt_spec.shape;
         self.advance(); // statement keyword
 
         let mut action = ActionExpr {
@@ -1767,6 +1768,30 @@ impl<'a> Parser<'a> {
         }
 
         action.span = start_span.merge(self.current().span);
+
+        // Desugar port-targeted statements into Expr::Call
+        if let (Some(port_target), Some(port_method)) = (&stmt_spec.port_target, &stmt_spec.port_method) {
+            // Build the argument: if named_args present, it's a StructLit; else positional
+            let call_arg = if !action.named_args.is_empty() {
+                // dispatch Evt{field: val} → Bus.dispatch(Evt{field: val})
+                let fields: Vec<(String, Expr)> = action.named_args;
+                vec![Expr::StructLit(action.target.clone(), fields)]
+            } else if !action.args.is_empty() {
+                // dispatch Target.method(args) → Bus.dispatch(args) — rare case
+                action.args
+            } else {
+                // dispatch Evt → Bus.dispatch(Evt)  (bare identifier as arg)
+                vec![Expr::Ident(action.target.clone())]
+            };
+            return Ok(Expr::Call(CallExpr {
+                target: port_target.clone(),
+                method: port_method.clone(),
+                args: call_arg,
+                sugar: Some(keyword.to_string()),
+                span: action.span,
+            }));
+        }
+
         Ok(Expr::Action(action))
     }
 
@@ -1782,7 +1807,7 @@ impl<'a> Parser<'a> {
             let word = self.current().text.clone();
             if let Some(stmt) = self.registry.statement(&word).cloned() {
                 if stmt.shape == StmtShape::Call {
-                    let inner = self.parse_action(&word, stmt.shape)?;
+                    let inner = self.parse_action(&word, &stmt)?;
                     return self.parse_binary_rhs(inner, 0);
                 }
             }
@@ -1818,6 +1843,7 @@ impl<'a> Parser<'a> {
                     target: name.clone(),
                     method: String::new(),
                     args,
+                    sugar: None,
                     span: Span::new(0, 0),
                 })
             } else {
@@ -1859,6 +1885,7 @@ impl<'a> Parser<'a> {
             target,
             method,
             args,
+                    sugar: None,
             span: start_span.merge(self.current().span),
         }))
     }
@@ -1883,6 +1910,7 @@ impl<'a> Parser<'a> {
                             target,
                             method,
                             args,
+                    sugar: None,
                             span: start_span.merge(self.current().span),
                         }))
                     } else {
@@ -1897,6 +1925,7 @@ impl<'a> Parser<'a> {
                     Ok(Expr::Call(CallExpr {
                         target: name,
                         method: String::new(),
+                        sugar: None,
                         args,
                         span: start_span.merge(self.current().span),
                     }))
@@ -2058,6 +2087,7 @@ impl<'a> Parser<'a> {
                                 target,
                                 method,
                                 args: nested_args,
+                                sugar: None,
                                 span: Span::new(0, 0),
                             }));
                         } else {
@@ -2072,6 +2102,7 @@ impl<'a> Parser<'a> {
                         args.push(Expr::Call(CallExpr {
                             target: name,
                             method: String::new(),
+                                sugar: None,
                             args: nested_args,
                             span: Span::new(0, 0),
                         }));

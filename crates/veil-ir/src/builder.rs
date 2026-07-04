@@ -109,6 +109,10 @@ pub fn expr_to_display(expr: &Expr) -> String {
         ),
         Expr::UnaryOp(op) => format!("{}{}", unaryop_to_str(&op.op), expr_to_display(&op.expr)),
         Expr::IfExpr(ie) => format!("if {}", expr_to_display(&ie.condition)),
+        Expr::StructLit(name, fields) => {
+            let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_display(v))).collect::<Vec<_>>().join(", ");
+            format!("{}{{{}}}", name, fs)
+        }
     }
 }
 

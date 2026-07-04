@@ -380,6 +380,8 @@ pub enum Expr {
     Return(Box<Expr>),
     /// Layer-defined statement (dispatch, invoke, guard, emit, ...).
     Action(ActionExpr),
+    /// Struct literal: `Name { field: expr, ... }`.
+    StructLit(String, Vec<(String, Expr)>),
 }
 
 /// A layer-defined statement, parsed according to its core statement shape.
@@ -455,5 +457,8 @@ pub struct CallExpr {
     pub target: String,
     pub method: String,
     pub args: Vec<Expr>,
+    /// Original statement keyword for round-trip fidelity (e.g. "dispatch").
+    /// When present, the serializer emits `dispatch Evt{...}` instead of `Bus.dispatch(...)`.
+    pub sugar: Option<String>,
     pub span: Span,
 }

@@ -558,5 +558,12 @@ fn expr_to_veil(expr: &Expr) -> String {
             format!("{}{}", op_str, expr_to_veil(&op.expr))
         }
         Expr::IfExpr(ie) => format!("if {}", expr_to_veil(&ie.condition)),
+        Expr::StructLit(name, fields) => {
+            let fs = fields.iter().map(|(k, v)| {
+                let v_str = expr_to_veil(v);
+                if k == &v_str { k.clone() } else { format!("{}: {}", k, v_str) }
+            }).collect::<Vec<_>>().join(", ");
+            format!("{}{{{}}}", name, fs)
+        }
     }
 }

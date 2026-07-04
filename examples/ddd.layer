@@ -170,7 +170,7 @@ pkg ddd v1
       label "Emit"
 
   statement dispatch
-    maps_to call
+    maps_to Bus.dispatch
     desc "Fire event through event bus (fire-and-forget, multiple handlers)"
     semantics event_bus_fire_and_forget
     visual
@@ -179,7 +179,7 @@ pkg ddd v1
       label "Dispatch"
 
   statement invoke
-    maps_to call
+    maps_to Bus.invoke
     desc "Execute command through command bus (single handler)"
     semantics command_bus_handler
     visual
@@ -188,7 +188,7 @@ pkg ddd v1
       label "Invoke"
 
   statement request
-    maps_to call
+    maps_to Bus.request
     desc "Query data from another context (inter-context communication)"
     semantics inter_context_query
     visual

@@ -224,10 +224,15 @@ sol App
         let svc = &ctx.children[0];
         assert_eq!(svc.subkind, "DomainService");
         let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
-        let Expr::Action(dispatch) = &step.body[0] else { panic!("expected action") };
-        assert_eq!(dispatch.keyword, "dispatch");
-        assert_eq!(dispatch.target, "UserCreated");
-        assert_eq!(dispatch.named_args.len(), 2);
+        // dispatch is desugared to Expr::Call targeting Bus.dispatch with sugar preserved
+        let Expr::Call(dispatch) = &step.body[0] else { panic!("expected Call (desugared dispatch)") };
+        assert_eq!(dispatch.target, "Bus");
+        assert_eq!(dispatch.method, "dispatch");
+        assert_eq!(dispatch.sugar.as_deref(), Some("dispatch"));
+        // The arg is a StructLit: UserCreated{id, email}
+        assert_eq!(dispatch.args.len(), 1);
+        assert!(matches!(&dispatch.args[0], Expr::StructLit(name, fields) if name == "UserCreated" && fields.len() == 2));
+        // guard stays as Expr::Action (If shape, no port_target)
         let Expr::Action(guard) = &step.body[1] else { panic!("expected action") };
         assert_eq!(guard.keyword, "guard");
         assert!(guard.condition.is_some());
@@ -317,11 +322,13 @@ sol Sales
         assert_eq!(integration.subkind, "Integration");
         assert_eq!(integration.shape, Shape::Trait); // integration -> port -> trait
 
-        // notify -> dispatch -> call statement chain
+        // notify -> dispatch -> Bus.dispatch statement chain (desugared)
         let svc = &group.children[2];
         let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
-        let Expr::Action(notify) = &step.body[0] else { panic!("expected action") };
-        assert_eq!(notify.keyword, "notify");
+        let Expr::Call(notify) = &step.body[0] else { panic!("expected Call (desugared notify)") };
+        assert_eq!(notify.target, "Bus");
+        assert_eq!(notify.method, "dispatch");
+        assert_eq!(notify.sugar.as_deref(), Some("notify"));
     }
 
     #[test]

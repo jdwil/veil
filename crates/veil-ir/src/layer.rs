@@ -123,6 +123,10 @@ pub struct StatementSpec {
     pub maps_to: String,
     /// Resolved core statement shape.
     pub shape: StmtShape,
+    /// If maps_to is `Port.method`, this is the port target name.
+    pub port_target: Option<String>,
+    /// If maps_to is `Port.method`, this is the method name.
+    pub port_method: Option<String>,
     pub layer: String,
     pub desc: String,
     pub semantics: String,
@@ -311,6 +315,10 @@ impl LayerRegistry {
                         stmt.keyword, stmt.layer, stmt.maps_to
                     )
                 })?;
+            // Resolve port_target/port_method: follow transitive chain to find Port.method
+            let (target, method) = resolve_port_binding(&stmt.maps_to, &existing_stmts, &snapshot_stmts);
+            stmt.port_target = target;
+            stmt.port_method = method;
             self.statements.retain(|s| s.keyword != stmt.keyword);
             self.statements.push(stmt);
         }
@@ -365,6 +373,10 @@ fn resolve_statement_shape(
     let mut current = maps_to.to_string();
     let mut visited: HashSet<String> = HashSet::new();
     loop {
+        // Check for Port.method notation — shape is Call
+        if current.contains('.') {
+            return Some(StmtShape::Call);
+        }
         if let Some(shape) = StmtShape::from_name(&current) {
             return Some(shape);
         }
@@ -377,6 +389,36 @@ fn resolve_statement_shape(
             .find(|s| s.keyword == current)
             .map(|s| s.maps_to.clone())?;
         current = next;
+    }
+}
+
+
+/// Follow the maps_to chain transitively to find a `Target.method` binding.
+/// Returns (Some(target), Some(method)) if found, (None, None) otherwise.
+fn resolve_port_binding(
+    maps_to: &str,
+    existing: &[StatementSpec],
+    incoming: &[StatementSpec],
+) -> (Option<String>, Option<String>) {
+    let mut current = maps_to.to_string();
+    let mut visited: HashSet<String> = HashSet::new();
+    loop {
+        if let Some((target, method)) = current.split_once('.') {
+            return (Some(target.to_string()), Some(method.to_string()));
+        }
+        if !visited.insert(current.clone()) {
+            return (None, None);
+        }
+        // Follow reference to another statement
+        let next = incoming
+            .iter()
+            .chain(existing.iter())
+            .find(|s| s.keyword == current)
+            .map(|s| s.maps_to.clone());
+        match next {
+            Some(n) => current = n,
+            None => return (None, None),
+        }
     }
 }
 
@@ -503,6 +545,8 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 keyword: keyword.clone(),
                 maps_to: String::new(),
                 shape: StmtShape::Call, // placeholder
+                port_target: None,
+                port_method: None,
                 layer: layer_name.to_string(),
                 desc: String::new(),
                 semantics: String::new(),
