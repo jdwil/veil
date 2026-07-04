@@ -6,7 +6,7 @@
 //! layer subkind appears only in doc comments — never in generation logic.
 
 use veil_ir::ast::*;
-use veil_ir::layer::Shape;
+use veil_ir::layer::{Shape, LayerRegistry};
 
 /// Generated Rust project output.
 pub struct GeneratedProject {
@@ -19,10 +19,10 @@ pub struct GeneratedFile {
 }
 
 /// Generate a Rust project from a VEIL Solution AST.
-pub fn generate(solution: &Solution) -> GeneratedProject {
+pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProject {
     let mut files = Vec::new();
 
-    files.push(gen_workspace_toml(solution));
+    files.push(gen_workspace_toml(solution, registry));
 
     // Each top-level mod-shaped construct becomes a crate.
     let modules: Vec<&Construct> = solution
@@ -54,6 +54,7 @@ pub fn generate(solution: &Solution) -> GeneratedProject {
             &top_level_flows,
             &mut flow_generated,
             solution,
+            registry,
         ));
     }
 
@@ -112,7 +113,7 @@ fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
     contents
 }
 
-fn gen_workspace_toml(sol: &Solution) -> GeneratedFile {
+fn gen_workspace_toml(sol: &Solution, registry: &LayerRegistry) -> GeneratedFile {
     let mut members = Vec::new();
     for item in &sol.items {
         if let TopLevelItem::Construct(c) = item {
@@ -120,6 +121,13 @@ fn gen_workspace_toml(sol: &Solution) -> GeneratedFile {
                 members.push(format!("    \"crates/{}\"", to_snake(&c.name)));
             }
         }
+    }
+
+    let mut extra_deps = String::new();
+    for stub in &registry.stubs {
+        extra_deps.push_str(&format!(
+            "{} = \"{}\"\n", stub.name, stub.version
+        ));
     }
 
     let content = format!(
@@ -141,8 +149,9 @@ serde = {{ version = "1", features = ["derive"] }}
 uuid = {{ version = "1", features = ["v4", "serde"] }}
 chrono = {{ version = "0.4", features = ["serde"] }}
 tracing = "0.1"
-"#,
-        members.join(",\n")
+{}"#,
+        members.join(",\n"),
+        extra_deps
     );
 
     GeneratedFile {
@@ -157,6 +166,7 @@ fn gen_module_crate(
     top_level_flows: &[&Flow],
     flow_generated: &mut bool,
     solution: &Solution,
+    registry: &LayerRegistry,
 ) -> Vec<GeneratedFile> {
     let crate_name = to_snake(&module.name);
     let mut files = Vec::new();
@@ -233,7 +243,7 @@ uuid.workspace = true"#);
         *flow_generated = true;
         app_flows.extend(top_level_flows.iter().map(|f| FlowLike::Flow(f)));
     }
-    files.push(gen_application(&app_flows, &contents, &crate_name, solution));
+    files.push(gen_application(&app_flows, &contents, &crate_name, solution, registry));
 
     files
 }
@@ -804,7 +814,7 @@ enum FlowLike<'a> {
     Construct(&'a Construct),
 }
 
-fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution) -> GeneratedFile {
+fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry) -> GeneratedFile {
     use crate::expr::{GenCtx, build_ctx_from_solution, collect_deps, gen_deps_struct, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
@@ -867,7 +877,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     }
 
     // Collect all deps across all flows
-    let base_ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone());
+    let base_ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
     let mut all_deps = std::collections::HashSet::new();
     for flow in flows {
         let steps = match flow {
@@ -935,7 +945,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         ));
 
         // Build context for this flow
-        let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone());
+        let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
         ctx.is_orchestrator = is_orchestrator;
         // Register inputs as locals
         for input in inputs {

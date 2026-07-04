@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use veil_ir::ast::*;
-use veil_ir::layer::{Shape, StmtShape};
+use veil_ir::layer::{Shape, StmtShape, LayerRegistry};
 
 use crate::rust::{to_snake, type_to_rust};
 
@@ -90,8 +90,8 @@ impl GenCtx {
     }
 }
 
-/// Build a GenCtx populated with type information from the solution's constructs.
-pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<String, Shape>) -> GenCtx {
+/// Build a GenCtx populated with type information from the solution's constructs and loaded stubs.
+pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<String, Shape>, registry: &LayerRegistry) -> GenCtx {
     let mut ctx = GenCtx::new(name_to_shape);
 
     fn visit_constructs(c: &Construct, ctx: &mut GenCtx) {
@@ -138,6 +138,45 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
             visit_constructs(c, &mut ctx);
+        }
+    }
+
+    // Register stub crate type information
+    for stub in &registry.stubs {
+        for s in &stub.structs {
+            // Register struct methods
+            for method in &s.methods {
+                let ret = method.return_type.as_deref().unwrap_or("()");
+                let inner = if ret.starts_with("Res!<") {
+                    ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
+                } else if ret == "Res!" {
+                    "()"
+                } else {
+                    ret
+                };
+                ctx.method_returns.insert(
+                    (s.name.clone(), method.name.clone()),
+                    inner.to_string(),
+                );
+            }
+            // Register as a known struct
+            ctx.name_to_shape.insert(s.name.clone(), Shape::Struct);
+        }
+        for i in &stub.impls {
+            for method in &i.methods {
+                let ret = method.return_type.as_deref().unwrap_or("()");
+                let inner = if ret.starts_with("Res!<") {
+                    ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
+                } else if ret == "Res!" {
+                    "()"
+                } else {
+                    ret
+                };
+                ctx.method_returns.insert(
+                    (i.target.clone(), method.name.clone()),
+                    inner.to_string(),
+                );
+            }
         }
     }
 

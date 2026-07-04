@@ -142,8 +142,9 @@ pub struct LayerRegistry {
     /// Names of layers loaded (in load order).
     pub layers: Vec<String>,
     /// Raw VEIL source blocks to inject into solutions using this registry.
-    /// Each entry is one dedented construct block (e.g. a `port Bus` definition).
     pub declarations: Vec<String>,
+    /// Loaded third-party crate stubs.
+    pub stubs: Vec<StubCrate>,
 }
 
 impl LayerRegistry {
@@ -275,6 +276,15 @@ impl LayerRegistry {
                 let layer_path = dir.join(format!("{}.layer", name));
                 if layer_path.exists() {
                     reg.load_layer(name, dir)?;
+                }
+                // Check for .stub files too
+                let stub_path = dir.join(format!("{}.stub", name));
+                if stub_path.exists() {
+                    if let Ok(stub_content) = std::fs::read_to_string(&stub_path) {
+                        if let Some(stub) = parse_stub_file(&stub_content) {
+                            reg.stubs.push(stub);
+                        }
+                    }
                 }
                 // Non-layer uses (package imports) are handled by the resolver.
             }
@@ -422,6 +432,140 @@ fn resolve_port_binding(
     }
 }
 
+// ─── Stub system (.stub files for third-party crate declarations) ─────────
+
+/// A parsed `.stub` file — declares the public API of an external Rust crate.
+#[derive(Debug, Clone, Default)]
+pub struct StubCrate {
+    /// The crate name (e.g. "reqwest").
+    pub name: String,
+    /// The crate version (e.g. "0.12").
+    pub version: String,
+    /// Struct declarations with their methods.
+    pub structs: Vec<StubStruct>,
+    /// Impl blocks (methods grouped by target type).
+    pub impls: Vec<StubImpl>,
+}
+
+/// A struct declared in a stub file.
+#[derive(Debug, Clone)]
+pub struct StubStruct {
+    pub name: String,
+    /// Methods declared directly on the struct (instance methods).
+    pub methods: Vec<StubMethod>,
+}
+
+/// An impl block in a stub file (associated functions/constructors).
+#[derive(Debug, Clone)]
+pub struct StubImpl {
+    pub target: String,
+    pub methods: Vec<StubMethod>,
+}
+
+/// A method/function signature in a stub file.
+#[derive(Debug, Clone)]
+pub struct StubMethod {
+    pub name: String,
+    pub params: Vec<(String, String)>, // (param_name, type_string)
+    pub return_type: Option<String>,   // VEIL type syntax (e.g. "Res!<Str>")
+}
+
+/// Parse a `.stub` file into a StubCrate.
+pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
+    let mut stub = StubCrate::default();
+    let mut current_struct: Option<StubStruct> = None;
+    let mut current_impl: Option<StubImpl> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+
+        // Header: stub <name> <version>
+        if trimmed.starts_with("stub ") {
+            let parts: Vec<&str> = trimmed.strip_prefix("stub ").unwrap().split_whitespace().collect();
+            stub.name = parts.first().unwrap_or(&"").to_string();
+            stub.version = parts.get(1).unwrap_or(&"*").to_string();
+            continue;
+        }
+
+        // Top-level struct declaration
+        if indent <= 2 && trimmed.starts_with("struct ") {
+            // Flush previous
+            if let Some(s) = current_struct.take() { stub.structs.push(s); }
+            if let Some(i) = current_impl.take() { stub.impls.push(i); }
+            let name = trimmed.strip_prefix("struct ").unwrap().trim().to_string();
+            current_struct = Some(StubStruct { name, methods: Vec::new() });
+            continue;
+        }
+
+        // Top-level impl declaration
+        if indent <= 2 && trimmed.starts_with("impl ") {
+            if let Some(s) = current_struct.take() { stub.structs.push(s); }
+            if let Some(i) = current_impl.take() { stub.impls.push(i); }
+            let target = trimmed.strip_prefix("impl ").unwrap().trim().to_string();
+            current_impl = Some(StubImpl { target, methods: Vec::new() });
+            continue;
+        }
+
+        // Method declaration (indented under struct or impl)
+        if indent >= 4 && trimmed.starts_with("fn ") {
+            let method = parse_stub_method(trimmed);
+            if let Some(ref mut s) = current_struct {
+                s.methods.push(method);
+            } else if let Some(ref mut i) = current_impl {
+                i.methods.push(method);
+            }
+        }
+    }
+
+    // Flush remaining
+    if let Some(s) = current_struct { stub.structs.push(s); }
+    if let Some(i) = current_impl { stub.impls.push(i); }
+
+    if stub.name.is_empty() { return None; }
+    Some(stub)
+}
+
+/// Parse a method signature line like `fn get(url: Str) -> RequestBuilder`
+fn parse_stub_method(line: &str) -> StubMethod {
+    let line = line.strip_prefix("fn ").unwrap_or(line).trim();
+
+    // Split on -> for return type
+    let (sig, ret) = if let Some((l, r)) = line.split_once("->") {
+        (l.trim(), Some(r.trim().to_string()))
+    } else {
+        (line, None)
+    };
+
+    // Parse name and params
+    let (name, params_str) = if let Some((n, p)) = sig.split_once('(') {
+        (n.trim().to_string(), p.trim_end_matches(')').to_string())
+    } else {
+        (sig.to_string(), String::new())
+    };
+
+    let params: Vec<(String, String)> = if params_str.is_empty() {
+        Vec::new()
+    } else {
+        params_str.split(',').map(|p| {
+            let p = p.trim();
+            if let Some((name, ty)) = p.split_once(':') {
+                (name.trim().to_string(), ty.trim().to_string())
+            } else {
+                (p.to_string(), "Str".to_string())
+            }
+        }).collect()
+    };
+
+    StubMethod { name, params, return_type: ret }
+}
+
+
+/// Parse a `.layer` file into raw (shape-unresolved) specs.
+
 struct RawLayer {
     constructs: Vec<ConstructSpec>,
     statements: Vec<StatementSpec>,
@@ -430,7 +574,6 @@ struct RawLayer {
     declarations: Vec<String>,
 }
 
-/// Parse a `.layer` file into raw (shape-unresolved) specs.
 fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
     #[derive(PartialEq)]
     enum Section {

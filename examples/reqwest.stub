@@ -1,0 +1,27 @@
+stub reqwest 0.12
+
+  struct Client
+
+  struct RequestBuilder
+
+  struct Response
+    fn status() -> StatusCode
+    fn text() -> Res!<Str>
+    fn bytes() -> Res!<Bytes>
+
+  struct StatusCode
+    fn is_success() -> Bool
+    fn as_u16() -> Int
+
+  impl Client
+    fn new() -> Client
+    fn get(url: Str) -> RequestBuilder
+    fn post(url: Str) -> RequestBuilder
+    fn put(url: Str) -> RequestBuilder
+    fn delete(url: Str) -> RequestBuilder
+
+  impl RequestBuilder
+    fn header(name: Str, value: Str) -> RequestBuilder
+    fn bearer_auth(token: Str) -> RequestBuilder
+    fn json(body: Str) -> RequestBuilder
+    fn send() -> Res!<Response>

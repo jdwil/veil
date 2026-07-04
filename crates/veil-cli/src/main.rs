@@ -128,9 +128,9 @@ fn main() {
         }
         Commands::Gen { file, output } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
-            let (sol, _) = parse_solution_or_exit(&source, &file);
+            let (sol, registry) = parse_solution_or_exit(&source, &file);
 
-            let project = veil_codegen::generate(&sol);
+            let project = veil_codegen::generate(&sol, &registry);
             for file in &project.files {
                 let path = output.join(&file.path);
                 if let Some(parent) = path.parent() {
