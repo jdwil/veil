@@ -173,8 +173,9 @@ fn gen_module_crate(
 
     files.push(GeneratedFile {
         path: format!("crates/{}/Cargo.toml", crate_name),
-        content: format!(
-            r#"[package]
+        content: {
+            let mut cargo = format!(
+                r#"[package]
 name = "{crate_name}"
 version.workspace = true
 edition.workspace = true
@@ -184,11 +185,19 @@ tokio.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
-uuid.workspace = true
-chrono.workspace = true
-tracing.workspace = true
-"#
-        ),
+uuid.workspace = true"#);
+            // Add sibling crate dependencies only if this module's flows
+            // reference constructs from them (detected by step ctx refs).
+            let needed_siblings = detect_sibling_refs(module, solution);
+            for sibling in &needed_siblings {
+                if *sibling != crate_name {
+                    cargo.push_str(&format!("\n{} = {{ path = \"../{}\" }}", sibling, sibling));
+                }
+            }
+            cargo.push_str("\n");
+            cargo.push_str("chrono.workspace = true\ntracing.workspace = true\n");
+            cargo
+        },
     });
 
     files.push(GeneratedFile {
@@ -238,7 +247,7 @@ fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse crate::ports::ValidationError;\n\n");
+    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse crate::ports::{ValidationError, DomainError};\nuse crate::domain::messages::*;\n\n");
 
     // Collect defined and referenced type names for stub generation.
     let mut defined_types: Vec<String> = Vec::new();
@@ -398,7 +407,23 @@ fn gen_struct(c: &Construct) -> String {
 
     if has_invariant {
         out.push_str(&format!(
-            "impl {} {{\n    pub fn new({}) -> Result<Self, ValidationError> {{\n        let value = Self {{ {} }};\n        value.validate()?;\n        Ok(value)\n    }}\n\n    fn validate(&self) -> Result<(), ValidationError> {{\n        Ok(())\n    }}\n}}\n\n",
+            "impl {} {{\n    pub fn new({}) -> Result<Self, ValidationError> {{\n        let value = Self {{ {} }};\n        value.validate()?;\n        Ok(value)\n    }}\n\n    pub fn validate(&self) -> Result<(), ValidationError> {{\n        Ok(())\n    }}\n}}\n\n",
+            c.name,
+            fields
+                .iter()
+                .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            fields
+                .iter()
+                .map(|f| to_snake(&f.name))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    } else if !fields.is_empty() {
+        // Generate a simple constructor for all struct-shaped constructs with fields
+        out.push_str(&format!(
+            "impl {} {{\n    pub fn new({}) -> Self {{\n        Self {{ {} }}\n    }}\n}}\n\n",
             c.name,
             fields
                 .iter()
@@ -740,7 +765,28 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     out.push_str("//! Application services and flow orchestrators.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse crate::domain::messages::*;\n");
-    out.push_str("use std::sync::Arc;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
+    out.push_str("use std::sync::Arc;\nuse uuid::Uuid;\nuse chrono::Utc;\n");
+    // Import sibling crate types (only those we depend on via ctx refs)
+    // Collect needed siblings from the module we're generating for
+    let mut current_module: Option<&Construct> = None;
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            if c.shape == Shape::Mod && to_snake(&c.name) == crate_name {
+                current_module = Some(c);
+            }
+        }
+    }
+    if let Some(module) = current_module {
+        let needed = detect_sibling_refs(module, solution);
+        for sibling in &needed {
+            if *sibling != crate_name {
+                out.push_str(&format!("use {}::domain::types::*;\n", sibling));
+                out.push_str(&format!("use {}::domain::messages::*;\n", sibling));
+                out.push_str(&format!("use {}::ports::*;\n", sibling));
+            }
+        }
+    }
+    out.push_str("\n");
 
     if flows.is_empty() {
         out.push_str("// No flows defined in this module.\n");
@@ -883,9 +929,40 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     }
 }
 
+/// Detect which sibling modules a module's flows reference (via step ctx refs).
+fn detect_sibling_refs(module: &Construct, solution: &Solution) -> Vec<String> {
+    let mut needed = std::collections::HashSet::new();
+    let module_names: std::collections::HashMap<String, String> = solution.items.iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Construct(c) if c.shape == Shape::Mod => Some((c.name.clone(), to_snake(&c.name))),
+            _ => None,
+        }).collect();
+
+    fn scan_refs(c: &Construct, module_names: &std::collections::HashMap<String, String>, needed: &mut std::collections::HashSet<String>) {
+        for step in &c.steps {
+            if let FlowStep::Step(s) = step {
+                for r in &s.refs {
+                    // ctx ref like "ctx Identity" → need the identity crate
+                    for val in &r.values {
+                        if let Some(crate_name) = module_names.get(val) {
+                            needed.insert(crate_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for child in &c.children {
+            scan_refs(child, module_names, needed);
+        }
+    }
+    scan_refs(module, &module_names, &mut needed);
+    needed.into_iter().collect()
+}
 // ─── Helper functions ─────────────────────────────────────────────────────
 
 pub fn to_snake(name: &str) -> String {
+
+
     let mut result = String::new();
     for (i, c) in name.chars().enumerate() {
         if c.is_uppercase() && i > 0 {

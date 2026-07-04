@@ -1829,13 +1829,21 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.parse_expr()?
             } else if self.at(&TokenKind::Dot) {
+                // Shorthand field access: {c.id} means key="id", value=c.id
                 let mut expr = Expr::Ident(name.clone());
+                let mut leaf_name = name.clone();
                 while self.at(&TokenKind::Dot) {
                     self.advance();
                     let f = self.expect_ident()?;
+                    leaf_name = f.clone();
                     expr = Expr::FieldAccess(Box::new(expr), f);
                 }
-                expr
+                // Use the leaf field name as the key, not the root variable
+                named.push((leaf_name, expr));
+                if self.at(&TokenKind::Comma) {
+                    self.advance();
+                }
+                continue;
             } else if self.at(&TokenKind::LParen) {
                 // Shorthand call value: {id, now()}
                 let args = self.parse_paren_args();
