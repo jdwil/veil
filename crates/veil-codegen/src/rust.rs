@@ -53,6 +53,7 @@ pub fn generate(solution: &Solution) -> GeneratedProject {
             &all_impls,
             &top_level_flows,
             &mut flow_generated,
+            solution,
         ));
     }
 
@@ -155,10 +156,20 @@ fn gen_module_crate(
     all_impls: &[&Construct],
     top_level_flows: &[&Flow],
     flow_generated: &mut bool,
+    solution: &Solution,
 ) -> Vec<GeneratedFile> {
     let crate_name = to_snake(&module.name);
     let mut files = Vec::new();
-    let contents = flatten_module(module);
+    let mut contents = flatten_module(module);
+
+    // Include solution-level trait constructs (like declared Bus) in every module
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            if c.shape == Shape::Trait {
+                contents.traits.push(c);
+            }
+        }
+    }
 
     files.push(GeneratedFile {
         path: format!("crates/{}/Cargo.toml", crate_name),
@@ -218,7 +229,7 @@ tracing.workspace = true
         *flow_generated = true;
         app_flows.extend(top_level_flows.iter().map(|f| FlowLike::Flow(f)));
     }
-    files.push(gen_application(&app_flows, &crate_name));
+    files.push(gen_application(&app_flows, &contents, &crate_name, solution));
 
     files
 }
@@ -566,15 +577,61 @@ enum FlowLike<'a> {
     Construct(&'a Construct),
 }
 
-fn gen_application(flows: &[FlowLike], crate_name: &str) -> GeneratedFile {
+fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution) -> GeneratedFile {
+    use crate::expr::{GenCtx, collect_deps, gen_deps_struct, stmt_to_rust, expr_to_rust};
+    use std::collections::HashMap;
+
     let mut out = String::new();
     out.push_str("//! Application services and flow orchestrators.\n\n");
-    out.push_str("#![allow(unused_imports, unused_variables)]\n\n");
-    out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse uuid::Uuid;\n\n");
+    out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
+    out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse crate::domain::messages::*;\n");
+    out.push_str("use std::sync::Arc;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
 
     if flows.is_empty() {
         out.push_str("// No flows defined in this module.\n");
+        return GeneratedFile {
+            path: format!("crates/{}/src/application/mod.rs", crate_name),
+            content: out,
+        };
     }
+
+    // Build name→shape map from ALL constructs in the solution (traits, structs, etc.)
+    let mut name_to_shape: HashMap<String, Shape> = HashMap::new();
+    // From module contents
+    for t in &module_contents.traits {
+        name_to_shape.insert(t.name.clone(), Shape::Trait);
+    }
+    for s in &module_contents.structs {
+        name_to_shape.insert(s.name.clone(), Shape::Struct);
+    }
+    // Also include top-level constructs (like injected Bus)
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            name_to_shape.insert(c.name.clone(), c.shape);
+            // Also index children recursively
+            fn index_children(c: &Construct, map: &mut HashMap<String, Shape>) {
+                for child in &c.children {
+                    map.insert(child.name.clone(), child.shape);
+                    index_children(child, map);
+                }
+            }
+            index_children(c, &mut name_to_shape);
+        }
+    }
+
+    // Collect all deps across all flows
+    let base_ctx = GenCtx::new(name_to_shape.clone());
+    let mut all_deps = std::collections::HashSet::new();
+    for flow in flows {
+        let steps = match flow {
+            FlowLike::Flow(f) => &f.steps,
+            FlowLike::Construct(c) => &c.steps,
+        };
+        all_deps.extend(collect_deps(steps, &base_ctx));
+    }
+
+    // Emit the Deps struct
+    out.push_str(&gen_deps_struct(&all_deps));
 
     for flow in flows {
         let (name, subkind, annotations, inputs, steps) = match flow {
@@ -594,6 +651,12 @@ fn gen_application(flows: &[FlowLike], crate_name: &str) -> GeneratedFile {
             ),
         };
 
+        // Get return_expr handling the Box difference
+        let return_expr: Option<&Expr> = match flow {
+            FlowLike::Flow(f) => f.return_expr.as_ref(),
+            FlowLike::Construct(c) => c.return_expr.as_deref(),
+        };
+
         out.push_str(&format!("/// {}: {}\n", subkind, name));
         for ann in annotations {
             out.push_str(&format!("/// @{}\n", ann.name));
@@ -605,22 +668,36 @@ fn gen_application(flows: &[FlowLike], crate_name: &str) -> GeneratedFile {
             .collect::<Vec<_>>()
             .join(",\n    ");
 
+        // Determine if we need deps parameter
+        let flow_deps = collect_deps(steps, &base_ctx);
+        let deps_param = if !flow_deps.is_empty() { "deps: &Deps, " } else { "" };
+
         out.push_str(&format!(
-            "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}\n) -> Result<Uuid, DomainError> {{\n",
+            "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> Result<(), DomainError> {{\n",
             to_snake(name),
+            deps_param,
             params
         ));
+
+        // Build context for this flow
+        let mut ctx = GenCtx::new(name_to_shape.clone());
+        // Register inputs as locals
+        for input in inputs {
+            ctx.locals.insert(input.name.clone());
+        }
 
         for step in steps {
             match step {
                 FlowStep::Step(s) => {
-                    out.push_str(&format!(
-                        "    // Step: {}\n    tracing::info!(\"executing: {}\");\n\n",
-                        s.name, s.name
-                    ));
+                    out.push_str(&format!("    // step: {}\n", s.name));
+                    for expr in &s.body {
+                        out.push_str(&stmt_to_rust(expr, &mut ctx));
+                        out.push_str("\n");
+                    }
+                    out.push_str("\n");
                 }
                 FlowStep::Parallel(par) => {
-                    out.push_str("    // Parallel execution\n");
+                    out.push_str("    // parallel execution\n");
                     out.push_str("    tokio::join!(\n");
                     for s in &par.steps {
                         out.push_str(&format!(
@@ -636,8 +713,12 @@ fn gen_application(flows: &[FlowLike], crate_name: &str) -> GeneratedFile {
             }
         }
 
-        out.push_str("    // TODO: implement full flow logic\n");
-        out.push_str("    Ok(Uuid::new_v4())\n");
+        // Return expression
+        if let Some(ret) = return_expr {
+            out.push_str(&format!("    Ok({})\n", expr_to_rust(ret, &ctx)));
+        } else {
+            out.push_str("    Ok(())\n");
+        }
         out.push_str("}\n\n");
     }
 
@@ -649,7 +730,7 @@ fn gen_application(flows: &[FlowLike], crate_name: &str) -> GeneratedFile {
 
 // ─── Helper functions ─────────────────────────────────────────────────────
 
-fn to_snake(name: &str) -> String {
+pub fn to_snake(name: &str) -> String {
     let mut result = String::new();
     for (i, c) in name.chars().enumerate() {
         if c.is_uppercase() && i > 0 {
@@ -660,7 +741,7 @@ fn to_snake(name: &str) -> String {
     result
 }
 
-fn type_to_rust(ty: &TypeExpr) -> String {
+pub fn type_to_rust(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Named(name) => match name.as_str() {
             "Str" => "String".to_string(),
