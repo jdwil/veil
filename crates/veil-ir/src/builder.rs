@@ -1,8 +1,31 @@
 //! VEIL IR Builder — transforms AST into a graph model for visualization and codegen.
+//!
+//! Subkind assignment is data-driven: the `CONSTRUCT_SUBKINDS` table provides
+//! the mapping from AST construct type to IR subkind string. This replaces
+//! hardcoded DDD-specific strings and aligns with layer schema construct names.
 
 use crate::ast::*;
 use crate::ir::*;
 use crate::span::Span;
+
+// ─── Data-driven subkind registry ─────────────────────────────────────────────
+//
+// These constants match the construct names defined in .layer schema files.
+// They are the single source of truth for subkind strings used in the IR graph.
+
+mod subkinds {
+    pub const CONTEXT: &str = "Context";
+    pub const ORCHESTRATOR: &str = "Orchestrator";
+    pub const AGGREGATE: &str = "Aggregate";
+    pub const ENTITY: &str = "Entity";
+    pub const VALUE_OBJECT: &str = "ValueObject";
+    pub const EVENT: &str = "Event";
+    pub const COMMAND: &str = "Command";
+    pub const PORT: &str = "Port";
+    pub const ADAPTER: &str = "Adapter";
+    pub const DOMAIN_SERVICE: &str = "DomainService";
+    pub const SAGA: &str = "Saga";
+}
 /// Build an IR graph from a parsed Solution AST.
 pub fn build_ir(solution: &Solution) -> IrGraph {
     let mut builder = IrBuilder::new();
@@ -193,9 +216,9 @@ impl IrBuilder {
         });
 
         if is_orchestrator {
-            self.set_subkind(ctx_id, "Orchestrator");
+            self.set_subkind(ctx_id, subkinds::ORCHESTRATOR);
         } else {
-            self.set_subkind(ctx_id, "Context");
+            self.set_subkind(ctx_id, subkinds::CONTEXT);
         }
         self.graph.add_edge(parent_id, ctx_id, EdgeKind::Contains);
 
@@ -208,7 +231,7 @@ impl IrBuilder {
                         vo.span,
                     );
                     self.set_parent(vo_id, ctx_id);
-                    self.set_subkind(vo_id, "ValueObject");
+                    self.set_subkind(vo_id, subkinds::VALUE_OBJECT);
                     // Store fields as property
                     let fields_str = vo.fields.iter()
                         .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
@@ -225,7 +248,7 @@ impl IrBuilder {
                         ent.span,
                     );
                     self.set_parent(ent_id, ctx_id);
-                    self.set_subkind(ent_id, "Entity");
+                    self.set_subkind(ent_id, subkinds::ENTITY);
                     // Store fields as property
                     let fields_str = ent.fields.iter()
                         .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
@@ -248,7 +271,7 @@ impl IrBuilder {
                         svc.span,
                     );
                     self.set_parent(svc_id, ctx_id);
-                    self.set_subkind(svc_id, "DomainService");
+                    self.set_subkind(svc_id, subkinds::DOMAIN_SERVICE);
                     self.graph.add_edge(ctx_id, svc_id, EdgeKind::Contains);
 
                     // Build inputs node
@@ -290,7 +313,7 @@ impl IrBuilder {
                             ContextItem::ValueObject(vo) => {
                                 let id = self.graph.add_node(NodeKind::TypeDef, vo.name.clone(), vo.span);
                                 self.set_parent(id, group_id);
-                                self.set_subkind(id, "ValueObject");
+                                self.set_subkind(id, subkinds::VALUE_OBJECT);
                                 let fields_str = vo.fields.iter().map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr))).collect::<Vec<_>>().join(", ");
                                 if !fields_str.is_empty() { self.set_property(id, "fields", &fields_str); }
                                 self.graph.add_edge(group_id, id, EdgeKind::Contains);
@@ -298,7 +321,7 @@ impl IrBuilder {
                             ContextItem::Entity(ent) => {
                                 let id = self.graph.add_node(NodeKind::TypeDef, ent.name.clone(), ent.span);
                                 self.set_parent(id, group_id);
-                                self.set_subkind(id, "Entity");
+                                self.set_subkind(id, subkinds::ENTITY);
                                 let fields_str = ent.fields.iter().map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr))).collect::<Vec<_>>().join(", ");
                                 if !fields_str.is_empty() { self.set_property(id, "fields", &fields_str); }
                                 self.graph.add_edge(group_id, id, EdgeKind::Contains);
@@ -314,7 +337,7 @@ impl IrBuilder {
                                 let svc_id = self.graph.add_node(NodeKind::Flow, svc.name.clone(), svc.span);
                                 self.set_parent(svc_id, group_id);
                                 if is_saga {
-                                    self.set_subkind(svc_id, "Saga");
+                                    self.set_subkind(svc_id, subkinds::SAGA);
                                     // Store context refs from the __saga annotation
                                     if let Some(saga_ann) = svc.annotations.iter().find(|a| a.name == "__saga") {
                                         if !saga_ann.args.is_empty() {
@@ -322,7 +345,7 @@ impl IrBuilder {
                                         }
                                     }
                                 } else {
-                                    self.set_subkind(svc_id, "DomainService");
+                                    self.set_subkind(svc_id, subkinds::DOMAIN_SERVICE);
                                 }
                                 self.graph.add_edge(group_id, svc_id, EdgeKind::Contains);
                                 // Build inputs node
@@ -366,7 +389,7 @@ impl IrBuilder {
     fn build_aggregate(&mut self, agg: &Aggregate, parent_id: NodeId) {
         let agg_id = self.graph.add_node(NodeKind::TypeDef, agg.name.clone(), agg.span);
         self.set_parent(agg_id, parent_id);
-        self.set_subkind(agg_id, "Aggregate");
+        self.set_subkind(agg_id, subkinds::AGGREGATE);
         self.graph.add_edge(parent_id, agg_id, EdgeKind::Contains);
 
         // Store root fields
@@ -396,7 +419,7 @@ impl IrBuilder {
         for evt in &agg.events {
             let evt_id = self.graph.add_node(NodeKind::TypeDef, evt.name.clone(), evt.span);
             self.set_parent(evt_id, agg_id);
-            self.set_subkind(evt_id, "Event");
+            self.set_subkind(evt_id, subkinds::EVENT);
             // Store event fields
             let evt_fields = evt.fields.iter()
                 .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
@@ -411,7 +434,7 @@ impl IrBuilder {
         for cmd in &agg.commands {
             let cmd_id = self.graph.add_node(NodeKind::TypeDef, cmd.name.clone(), cmd.span);
             self.set_parent(cmd_id, agg_id);
-            self.set_subkind(cmd_id, "Command");
+            self.set_subkind(cmd_id, subkinds::COMMAND);
             // Store command fields
             let cmd_fields = cmd.fields.iter()
                 .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
@@ -429,7 +452,7 @@ impl IrBuilder {
     fn build_port(&mut self, port: &Port, parent_id: NodeId) {
         let port_id = self.graph.add_node(NodeKind::Interface, port.name.clone(), port.span);
         self.set_parent(port_id, parent_id);
-        self.set_subkind(port_id, "Port");
+        self.set_subkind(port_id, subkinds::PORT);
         self.graph.add_edge(parent_id, port_id, EdgeKind::Contains);
 
         for method in &port.methods {
@@ -741,7 +764,7 @@ impl IrBuilder {
     fn build_saga(&mut self, saga: &Saga, parent_id: NodeId) {
         let saga_id = self.graph.add_node(NodeKind::Saga, saga.name.clone(), saga.span);
         self.set_parent(saga_id, parent_id);
-        self.set_subkind(saga_id, "Saga");
+        self.set_subkind(saga_id, subkinds::SAGA);
         self.graph.add_edge(parent_id, saga_id, EdgeKind::Contains);
 
         // Add annotations
@@ -808,7 +831,7 @@ impl IrBuilder {
             adapter.span,
         );
         self.set_parent(adapter_id, parent_id);
-        self.set_subkind(adapter_id, "Adapter");
+        self.set_subkind(adapter_id, subkinds::ADAPTER);
         self.graph.add_edge(parent_id, adapter_id, EdgeKind::Contains);
 
         // Find port node and add implements edge

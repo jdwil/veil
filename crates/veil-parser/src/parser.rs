@@ -8,6 +8,75 @@ use veil_ir::span::Span;
 
 use crate::lexer::{Token, TokenKind};
 
+// ─── Generic construct dispatch ───────────────────────────────────────────────
+//
+// Instead of hardcoding which TokenKind maps to which parse function,
+// we use a data-driven approach: map token kinds to keyword strings,
+// then dispatch based on the construct's `maps_to` category.
+
+/// Maps a DDD/layer token kind to its keyword string (as defined in .layer files).
+/// Returns None for non-construct tokens.
+fn token_kind_to_keyword(kind: &TokenKind) -> Option<&'static str> {
+    match kind {
+        TokenKind::Ctx => Some("ctx"),
+        TokenKind::Agg => Some("agg"),
+        TokenKind::Ent => Some("ent"),
+        TokenKind::Val => Some("val"),
+        TokenKind::Evt => Some("evt"),
+        TokenKind::Cmd => Some("cmd"),
+        TokenKind::Port => Some("port"),
+        TokenKind::Adapter => Some("adapter"),
+        TokenKind::Svc => Some("svc"),
+        TokenKind::Saga => Some("saga"),
+        TokenKind::Orchestrator => Some("orchestrator"),
+        TokenKind::Flow => Some("flow"),
+        _ => None,
+    }
+}
+
+/// Construct category — what core primitive a layer keyword maps to.
+/// Derived from the `maps_to` field in .layer schema definitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstructCategory {
+    /// maps_to: mod — parsed as module with children (ctx, orchestrator)
+    Module,
+    /// maps_to: struct — parsed as type with fields (agg, ent, val, evt, cmd)
+    Struct,
+    /// maps_to: trait — parsed as interface with methods (port, repo)
+    Trait,
+    /// maps_to: impl — parsed as implementation (adapter)
+    Impl,
+    /// maps_to: fn — parsed as flow with steps (svc, saga)
+    Fn,
+}
+
+/// Returns the construct category for a given keyword string.
+/// 
+/// THIS IS THE ONLY PLACE in the Rust code that maps layer keywords to
+/// parse categories. When dynamic layer loading is fully implemented,
+/// this function will be replaced with a runtime lookup into the loaded
+/// LayerSchema from .layer files. The mappings here mirror what ddd.layer
+/// declares via its `keyword` and `maps_to` fields.
+fn keyword_to_category(keyword: &str) -> Option<ConstructCategory> {
+    match keyword {
+        // maps_to: mod (from .layer keyword declarations)
+        "ctx" | "orchestrator" | "mod" => Some(ConstructCategory::Module),
+        // maps_to: struct
+        "agg" | "ent" | "val" | "evt" | "cmd" | "struct" => Some(ConstructCategory::Struct),
+        // maps_to: trait
+        "port" | "repo" | "trait" => Some(ConstructCategory::Trait),
+        // maps_to: impl
+        "adapter" | "impl" => Some(ConstructCategory::Impl),
+        // maps_to: fn
+        "svc" | "saga" | "flow" | "fn" => Some(ConstructCategory::Fn),
+        _ => None,
+    }
+}
+
+/// Check if a token kind represents a construct keyword that can appear
+/// inside a context/module body.
+#[allow(dead_code)]
+
 /// Parse error with span information.
 #[derive(Debug, Clone)]
 pub struct ParseError {
@@ -414,19 +483,32 @@ impl<'a> Parser<'a> {
                     TokenKind::Lang => {
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
                     }
-                    TokenKind::Ctx => {
-                        items.push(TopLevelItem::Context(self.parse_context()?));
-                    }
-                    TokenKind::Flow => {
-                        items.push(TopLevelItem::Flow(self.parse_flow()?));
-                    }
-                    TokenKind::Adapter => {
-                        items.push(TopLevelItem::Adapter(self.parse_adapter()?));
-                    }
                     TokenKind::Expose => {
                         expose = Some(self.parse_expose_block()?);
                     }
                     TokenKind::Comment => { self.advance(); }
+                    // Generic dispatch for construct keywords in package body
+                    ref kind if token_kind_to_keyword(kind).is_some() => {
+                        let keyword = token_kind_to_keyword(&self.peek_kind().clone()).unwrap();
+                        let category = keyword_to_category(keyword);
+                        match category {
+                            Some(ConstructCategory::Module) => {
+                                items.push(TopLevelItem::Context(self.parse_construct_module(keyword)?));
+                            }
+                            Some(ConstructCategory::Fn) if keyword == "flow" => {
+                                items.push(TopLevelItem::Flow(self.parse_flow()?));
+                            }
+                            Some(ConstructCategory::Impl) => {
+                                items.push(TopLevelItem::Adapter(self.parse_adapter()?));
+                            }
+                            _ => {
+                                self.errors.push(self.error(format!(
+                                    "unexpected construct '{}' in package body", keyword
+                                )));
+                                self.advance();
+                            }
+                        }
+                    }
                     _ => {
                         let err = self.error(format!(
                             "unexpected token {:?} in package body", self.peek_kind()
@@ -649,7 +731,9 @@ impl<'a> Parser<'a> {
                 // Collect annotations that decorate the next construct
                 let prefix_annotations = self.parse_annotations();
 
-                match self.peek_kind().clone() {
+                // Generic construct dispatch: look up token's keyword and category
+                let current_kind = self.peek_kind().clone();
+                match current_kind {
                     TokenKind::Use => {
                         // Kit declaration — consume and store for later resolution
                         let _import = self.parse_use_import()?;
@@ -676,42 +760,50 @@ impl<'a> Parser<'a> {
                         let _ = doc;
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
                     }
-                    TokenKind::Ctx => {
-                        let _ = doc; // TODO: attach to context
-                        let ctx = self.parse_context()?;
-                        let _ = prefix_annotations;
-                        items.push(TopLevelItem::Context(ctx));
-                    }
-                    TokenKind::Orchestrator => {
-                        let _ = doc;
-                        let ctx = self.parse_orchestrator()?;
-                        let _ = prefix_annotations;
-                        items.push(TopLevelItem::Context(ctx));
-                    }
-                    TokenKind::Flow => {
-                        let mut flow = self.parse_flow()?;
-                        // Prepend decorator annotations to the flow
-                        let mut all = prefix_annotations;
-                        all.extend(flow.annotations);
-                        flow.annotations = all;
-                        items.push(TopLevelItem::Flow(flow));
-                    }
-                    TokenKind::Saga => {
-                        let mut saga = self.parse_saga()?;
-                        let mut all = prefix_annotations;
-                        all.extend(saga.annotations);
-                        saga.annotations = all;
-                        items.push(TopLevelItem::Saga(saga));
-                    }
-                    TokenKind::Adapter => {
-                        let mut adapter = self.parse_adapter()?;
-                        let mut all = prefix_annotations;
-                        all.extend(adapter.annotations);
-                        adapter.annotations = all;
-                        items.push(TopLevelItem::Adapter(adapter));
-                    }
                     TokenKind::Comment => {
                         self.advance();
+                    }
+                    // Generic dispatch for all construct keywords
+                    ref kind if token_kind_to_keyword(kind).is_some() => {
+                        let keyword = token_kind_to_keyword(&current_kind).unwrap();
+                        let category = keyword_to_category(keyword);
+                        match category {
+                            Some(ConstructCategory::Module) => {
+                                let _ = doc;
+                                let ctx = self.parse_construct_module(keyword)?;
+                                let _ = prefix_annotations;
+                                items.push(TopLevelItem::Context(ctx));
+                            }
+                            Some(ConstructCategory::Fn) if keyword == "flow" => {
+                                let mut flow = self.parse_flow()?;
+                                let mut all = prefix_annotations;
+                                all.extend(flow.annotations);
+                                flow.annotations = all;
+                                items.push(TopLevelItem::Flow(flow));
+                            }
+                            Some(ConstructCategory::Fn) if keyword == "saga" => {
+                                let mut saga = self.parse_saga()?;
+                                let mut all = prefix_annotations;
+                                all.extend(saga.annotations);
+                                saga.annotations = all;
+                                items.push(TopLevelItem::Saga(saga));
+                            }
+                            Some(ConstructCategory::Impl) => {
+                                let mut adapter = self.parse_adapter()?;
+                                let mut all = prefix_annotations;
+                                all.extend(adapter.annotations);
+                                adapter.annotations = all;
+                                items.push(TopLevelItem::Adapter(adapter));
+                            }
+                            _ => {
+                                let err = self.error(format!(
+                                    "construct '{}' not allowed at solution level",
+                                    keyword
+                                ));
+                                self.errors.push(err);
+                                self.advance();
+                            }
+                        }
                     }
                     _ => {
                         if !prefix_annotations.is_empty() || doc.is_some() {
@@ -780,6 +872,17 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Generic module construct parser — dispatches based on keyword.
+    /// Handles both "ctx" (bounded context) and "orchestrator" keywords,
+    /// as well as any future module-mapped constructs from layer schemas.
+    fn parse_construct_module(&mut self, keyword: &str) -> Result<Context, ParseError> {
+        match keyword {
+            "orchestrator" => self.parse_orchestrator(),
+            // All other module-mapped keywords (ctx, or any future ones) use context parsing
+            _ => self.parse_context(),
+        }
+    }
+
     fn parse_orchestrator(&mut self) -> Result<Context, ParseError> {
         let start_span = self.current().span;
         self.expect(&TokenKind::Orchestrator)?;
@@ -838,7 +941,8 @@ impl<'a> Parser<'a> {
 
     fn parse_context(&mut self) -> Result<Context, ParseError> {
         let start_span = self.current().span;
-        self.expect(&TokenKind::Ctx)?;
+        // Consume any module-mapped keyword (ctx, or future keywords)
+        self.advance();
         let name = self.expect_ident()?;
 
         let mut items = Vec::new();
@@ -850,43 +954,9 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 let annotations = self.parse_annotations();
-                match self.peek_kind().clone() {
-                    TokenKind::Val => {
-                        items.push(ContextItem::ValueObject(
-                            self.parse_value_object(annotations)?,
-                        ));
-                    }
-                    TokenKind::Ent => {
-                        items.push(ContextItem::Entity(self.parse_entity(annotations)?));
-                    }
-                    TokenKind::Agg => {
-                        items.push(ContextItem::Aggregate(self.parse_aggregate(annotations)?));
-                    }
-                    TokenKind::Port => {
-                        items.push(ContextItem::Port(self.parse_port()?));
-                    }
-                    TokenKind::Svc => {
-                        // Domain service — parsed like a flow but lives in context
-                        let svc_flow = self.parse_domain_service()?;
-                        items.push(ContextItem::Service(svc_flow));
-                    }
-                    TokenKind::Adapter => {
-                        items.push(ContextItem::Adapter(self.parse_adapter()?));
-                    }
-                    TokenKind::Group => {
-                        items.push(ContextItem::Group(self.parse_group()?));
-                    }
-                    TokenKind::Comment => {
-                        self.advance();
-                    }
-                    _ => {
-                        let err = self.error(format!(
-                            "unexpected token {:?} in context body",
-                            self.peek_kind()
-                        ));
-                        self.errors.push(err);
-                        self.advance();
-                    }
+                // Generic dispatch for context children
+                if let Some(item) = self.parse_context_child(annotations)? {
+                    items.push(item);
                 }
             }
             self.exit_block();
@@ -897,6 +967,66 @@ impl<'a> Parser<'a> {
             span: start_span.merge(self.current().span),
             items,
         })
+    }
+
+    /// Generic dispatch for children inside a context/module body.
+    /// Uses keyword→category lookup instead of hardcoded token matching.
+    fn parse_context_child(&mut self, annotations: Vec<Annotation>) -> Result<Option<ContextItem>, ParseError> {
+        let kind = self.peek_kind().clone();
+
+        // Handle non-construct tokens
+        match kind {
+            TokenKind::Comment => { self.advance(); return Ok(None); }
+            TokenKind::Group => return Ok(Some(ContextItem::Group(self.parse_group()?))),
+            _ => {}
+        }
+
+        // Look up keyword from token kind for generic dispatch
+        if let Some(keyword) = token_kind_to_keyword(&kind) {
+            let category = keyword_to_category(keyword);
+            match (category, keyword) {
+                // struct-mapped: val, ent, agg
+                (Some(ConstructCategory::Struct), "val") => {
+                    Ok(Some(ContextItem::ValueObject(self.parse_value_object(annotations)?)))
+                }
+                (Some(ConstructCategory::Struct), "ent") => {
+                    Ok(Some(ContextItem::Entity(self.parse_entity(annotations)?)))
+                }
+                (Some(ConstructCategory::Struct), "agg") => {
+                    Ok(Some(ContextItem::Aggregate(self.parse_aggregate(annotations)?)))
+                }
+                // trait-mapped: port, repo
+                (Some(ConstructCategory::Trait), _) => {
+                    Ok(Some(ContextItem::Port(self.parse_port()?)))
+                }
+                // fn-mapped: svc
+                (Some(ConstructCategory::Fn), "svc") => {
+                    let svc_flow = self.parse_domain_service()?;
+                    Ok(Some(ContextItem::Service(svc_flow)))
+                }
+                // impl-mapped: adapter
+                (Some(ConstructCategory::Impl), _) => {
+                    Ok(Some(ContextItem::Adapter(self.parse_adapter()?)))
+                }
+                _ => {
+                    let err = self.error(format!(
+                        "construct '{}' not expected in context body",
+                        keyword
+                    ));
+                    self.errors.push(err);
+                    self.advance();
+                    Ok(None)
+                }
+            }
+        } else {
+            let err = self.error(format!(
+                "unexpected token {:?} in context body",
+                self.peek_kind()
+            ));
+            self.errors.push(err);
+            self.advance();
+            Ok(None)
+        }
     }
 }
 
@@ -915,61 +1045,9 @@ impl<'a> Parser<'a> {
                 self.skip_newlines();
                 if self.at_block_end() { break; }
                 let annotations = self.parse_annotations();
-                match self.peek_kind().clone() {
-                    TokenKind::Val => {
-                        items.push(ContextItem::ValueObject(
-                            self.parse_value_object(annotations)?,
-                        ));
-                    }
-                    TokenKind::Ent => {
-                        items.push(ContextItem::Entity(self.parse_entity(annotations)?));
-                    }
-                    TokenKind::Agg => {
-                        items.push(ContextItem::Aggregate(self.parse_aggregate(annotations)?));
-                    }
-                    TokenKind::Port => {
-                        items.push(ContextItem::Port(self.parse_port()?));
-                    }
-                    TokenKind::Svc => {
-                        let svc_flow = self.parse_domain_service()?;
-                        items.push(ContextItem::Service(svc_flow));
-                    }
-                    TokenKind::Adapter => {
-                        items.push(ContextItem::Adapter(self.parse_adapter()?));
-                    }
-                    TokenKind::Saga | TokenKind::Export => {
-                        // Export is a modifier — skip it, parse the next construct
-                        if self.at(&TokenKind::Export) {
-                            self.advance(); // consume 'export'
-                        }
-                        if self.at(&TokenKind::Saga) {
-                            let saga = self.parse_saga()?;
-                            // Store saga as Service with @__saga marker for builder to detect
-                            let mut annotations = saga.annotations;
-                            annotations.push(Annotation {
-                                name: "__saga".to_string(),
-                                args: saga.context_refs.clone(),
-                                span: saga.span,
-                            });
-                            items.push(ContextItem::Service(Service {
-                                name: saga.name,
-                                span: saga.span,
-                                annotations,
-                                inputs: saga.inputs,
-                                steps: saga.steps.iter().map(|s| FlowStep::Step(StepDef {
-                                    name: s.name.clone(),
-                                    span: s.span,
-                                    body: s.body.clone(),
-                                })).collect(),
-                                return_expr: None,
-                            }));
-                        } else if self.at(&TokenKind::Svc) || self.at(&TokenKind::Flow) {
-                            let svc_flow = self.parse_domain_service()?;
-                            items.push(ContextItem::Service(svc_flow));
-                        }
-                    }
-                    TokenKind::Comment => { self.advance(); }
-                    _ => { self.errors.push(self.error(format!("unexpected token {:?} in group body", self.peek_kind()))); self.advance(); }
+                // Generic dispatch for group children
+                if let Some(item) = self.parse_group_child(annotations)? {
+                    items.push(item);
                 }
             }
             self.exit_block();
@@ -980,6 +1058,103 @@ impl<'a> Parser<'a> {
             span: start_span.merge(self.current().span),
             items,
         })
+    }
+
+    /// Generic dispatch for children inside a group body.
+    /// Groups can contain the same constructs as contexts, plus exported sagas.
+    fn parse_group_child(&mut self, annotations: Vec<Annotation>) -> Result<Option<ContextItem>, ParseError> {
+        let kind = self.peek_kind().clone();
+
+        // Handle special cases first
+        match kind {
+            TokenKind::Comment => { self.advance(); return Ok(None); }
+            TokenKind::Export => {
+                // Export is a modifier — skip it, parse the next construct
+                self.advance(); // consume 'export'
+                if self.at(&TokenKind::Saga) {
+                    let saga = self.parse_saga()?;
+                    let mut ann = saga.annotations;
+                    ann.push(Annotation {
+                        name: "__saga".to_string(),
+                        args: saga.context_refs.clone(),
+                        span: saga.span,
+                    });
+                    return Ok(Some(ContextItem::Service(Service {
+                        name: saga.name,
+                        span: saga.span,
+                        annotations: ann,
+                        inputs: saga.inputs,
+                        steps: saga.steps.iter().map(|s| FlowStep::Step(StepDef {
+                            name: s.name.clone(),
+                            span: s.span,
+                            body: s.body.clone(),
+                        })).collect(),
+                        return_expr: None,
+                    })));
+                } else if self.at(&TokenKind::Svc) || self.at(&TokenKind::Flow) {
+                    let svc_flow = self.parse_domain_service()?;
+                    return Ok(Some(ContextItem::Service(svc_flow)));
+                }
+                return Ok(None);
+            }
+            _ => {}
+        }
+
+        // Look up keyword for generic dispatch
+        if let Some(keyword) = token_kind_to_keyword(&kind) {
+            let category = keyword_to_category(keyword);
+            match (category, keyword) {
+                (Some(ConstructCategory::Struct), "val") => {
+                    Ok(Some(ContextItem::ValueObject(self.parse_value_object(annotations)?)))
+                }
+                (Some(ConstructCategory::Struct), "ent") => {
+                    Ok(Some(ContextItem::Entity(self.parse_entity(annotations)?)))
+                }
+                (Some(ConstructCategory::Struct), "agg") => {
+                    Ok(Some(ContextItem::Aggregate(self.parse_aggregate(annotations)?)))
+                }
+                (Some(ConstructCategory::Trait), _) => {
+                    Ok(Some(ContextItem::Port(self.parse_port()?)))
+                }
+                (Some(ConstructCategory::Fn), "svc") => {
+                    let svc_flow = self.parse_domain_service()?;
+                    Ok(Some(ContextItem::Service(svc_flow)))
+                }
+                (Some(ConstructCategory::Fn), "saga") => {
+                    let saga = self.parse_saga()?;
+                    let mut ann = saga.annotations;
+                    ann.push(Annotation {
+                        name: "__saga".to_string(),
+                        args: saga.context_refs.clone(),
+                        span: saga.span,
+                    });
+                    Ok(Some(ContextItem::Service(Service {
+                        name: saga.name,
+                        span: saga.span,
+                        annotations: ann,
+                        inputs: saga.inputs,
+                        steps: saga.steps.iter().map(|s| FlowStep::Step(StepDef {
+                            name: s.name.clone(),
+                            span: s.span,
+                            body: s.body.clone(),
+                        })).collect(),
+                        return_expr: None,
+                    })))
+                }
+                (Some(ConstructCategory::Impl), _) => {
+                    Ok(Some(ContextItem::Adapter(self.parse_adapter()?)))
+                }
+                _ => {
+                    self.errors.push(self.error(format!("unexpected construct '{}' in group body", keyword)));
+                    self.advance();
+                    Ok(None)
+                }
+            }
+        } else {
+            self.errors.push(self.error(format!("unexpected token {:?} in group body", self.peek_kind())));
+            self.advance();
+            Ok(None)
+        }
     }
 
     fn parse_value_object(&mut self, annotations: Vec<Annotation>) -> Result<ValueObject, ParseError> {
