@@ -186,14 +186,7 @@ async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 uuid.workspace = true"#);
-            // Add sibling crate dependencies only if this module's flows
-            // reference constructs from them (detected by step ctx refs).
-            let needed_siblings = detect_sibling_refs(module, solution);
-            for sibling in &needed_siblings {
-                if *sibling != crate_name {
-                    cargo.push_str(&format!("\n{} = {{ path = \"../{}\" }}", sibling, sibling));
-                }
-            }
+            // Inter-context communication goes through Bus — no sibling crate deps needed.
             cargo.push_str("\n");
             cargo.push_str("chrono.workspace = true\ntracing.workspace = true\n");
             cargo
@@ -217,22 +210,7 @@ uuid.workspace = true"#);
 
     // For modules that reference siblings (orchestrators), re-export ports from the first sibling
     // instead of generating duplicate DomainError/Bus/etc.
-    let sibling_refs = detect_sibling_refs(module, solution);
-    let has_own_traits = module.children.iter().any(|c| c.shape == Shape::Trait);
-    if !sibling_refs.is_empty() && !has_own_traits {
-        let mut sorted_siblings: Vec<&String> = sibling_refs.iter().filter(|s| **s != crate_name).collect();
-        sorted_siblings.sort();
-        let mut ports_content = String::from("//! Re-exported ports.\n\n");
-        for sibling in &sorted_siblings {
-            ports_content.push_str(&format!("pub use {}::ports::*;\n", sibling));
-        }
-        files.push(GeneratedFile {
-            path: format!("crates/{}/src/ports/mod.rs", crate_name),
-            content: ports_content,
-        });
-    } else {
-        files.push(gen_traits(&contents, &crate_name));
-    }
+    files.push(gen_traits(&contents, &crate_name));
 
     // Impls targeting traits defined in this module (from anywhere in the tree).
     let trait_names: Vec<&str> = contents.traits.iter().map(|t| t.name.as_str()).collect();
@@ -507,8 +485,13 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
 
     let mut out = String::new();
 
-    // Determine the event wrapper enum name (from children with children that are struct-shaped message types)
-    let event_enum_name = format!("{}Event", c.name);
+    // Determine the event wrapper enum name from children with emit targets
+    // The enum is named {ParentName}{ChildSubkind} — find the first emittable child's subkind
+    let event_subkind = c.children.iter()
+        .find(|child| child.shape == Shape::Struct)
+        .map(|child| child.subkind.clone())
+        .unwrap_or_else(|| "Event".to_string());
+    let event_enum_name = format!("{}{}", c.name, event_subkind);
 
     // Collect field names for self-field detection
     let field_names: std::collections::HashSet<String> = fields.iter()
@@ -822,36 +805,14 @@ enum FlowLike<'a> {
 }
 
 fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution) -> GeneratedFile {
-    use crate::expr::{GenCtx, collect_deps, gen_deps_struct, stmt_to_rust, expr_to_rust};
+    use crate::expr::{GenCtx, build_ctx_from_solution, collect_deps, gen_deps_struct, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
     let mut out = String::new();
     out.push_str("//! Application services and flow orchestrators.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse crate::domain::messages::*;\n");
-    out.push_str("use std::sync::Arc;\nuse uuid::Uuid;\nuse chrono::Utc;\n");
-    // Import sibling crate types (only those we depend on via ctx refs)
-    // Collect needed siblings from the module we're generating for
-    let mut current_module: Option<&Construct> = None;
-    for item in &solution.items {
-        if let TopLevelItem::Construct(c) = item {
-            if c.shape == Shape::Mod && to_snake(&c.name) == crate_name {
-                current_module = Some(c);
-            }
-        }
-    }
-    // Note: sibling crate types are available as local stubs (via undefined-type generation).
-    // Cross-crate type sharing will be improved in a future version.
-    // For orchestrators that use traits from siblings, import their ports:
-    if let Some(module) = current_module {
-        let needed: Vec<String> = detect_sibling_refs(module, solution)
-            .into_iter().filter(|s| *s != crate_name).collect();
-        if !needed.is_empty() {
-            // Don't import local types::* — we'll use sibling types to avoid ambiguity
-            // (Already importing crate::ports which re-exports from sibling)
-        }
-    }
-    out.push_str("\n");
+    out.push_str("use std::sync::Arc;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
 
     if flows.is_empty() {
         out.push_str("// No flows defined in this module.\n");
@@ -885,8 +846,28 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         }
     }
 
+    // Detect if this module is an orchestrator (steps have ctx refs = cross-context calls)
+    let is_orchestrator = flows.iter().any(|flow| {
+        let steps = match flow {
+            FlowLike::Flow(f) => &f.steps,
+            FlowLike::Construct(c) => &c.steps,
+        };
+        steps.iter().any(|s| {
+            if let FlowStep::Step(sd) = s { !sd.refs.is_empty() } else { false }
+        })
+    });
+
+    // For orchestrators, only Bus is a direct dep — all other calls go through Bus
+    let mut effective_name_to_shape = name_to_shape.clone();
+    if is_orchestrator {
+        // Remove all non-Bus traits from the shape map so they don't become direct deps
+        effective_name_to_shape.retain(|name, shape| {
+            *shape != Shape::Trait || name == "Bus"
+        });
+    }
+
     // Collect all deps across all flows
-    let base_ctx = GenCtx::new(name_to_shape.clone());
+    let base_ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone());
     let mut all_deps = std::collections::HashSet::new();
     for flow in flows {
         let steps = match flow {
@@ -954,7 +935,8 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         ));
 
         // Build context for this flow
-        let mut ctx = GenCtx::new(name_to_shape.clone());
+        let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone());
+        ctx.is_orchestrator = is_orchestrator;
         // Register inputs as locals
         for input in inputs {
             ctx.locals.insert(input.name.clone());

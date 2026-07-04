@@ -209,6 +209,6 @@ pkg ddd v1
   declare
     trait Bus
       dispatch(evt: Str) -> Res!
-      invoke(cmd: Str) -> Res!
+      invoke(cmd: Str) -> Res!<Str>
       request(qry: Str) -> Res!<Str>
 
