@@ -43,21 +43,70 @@ pub fn parse_with_registry(
     tokens: &[Token],
     registry: LayerRegistry,
 ) -> Result<Solution, Vec<ParseError>> {
-    match parse_file_with_registry(tokens, registry)? {
-        VeilFile::Solution(sol) => Ok(sol),
-        VeilFile::Package(pkg) => Ok(Solution {
+    let mut sol = match parse_file_with_registry(tokens, registry.clone())? {
+        VeilFile::Solution(sol) => sol,
+        VeilFile::Package(pkg) => Solution {
             name: pkg.name,
             span: pkg.span,
             uses: Vec::new(),
             items: pkg.items,
-        }),
-        VeilFile::Composition(comp) => Ok(Solution {
+        },
+        VeilFile::Composition(comp) => Solution {
             name: "composition".to_string(),
             span: comp.span,
             uses: comp.imports.clone(),
             items: comp.flows.into_iter().map(TopLevelItem::Flow).collect(),
-        }),
+        },
+    };
+
+    // Inject layer declarations (e.g. `port Bus` from ddd.layer's declare section)
+    inject_declarations(&mut sol, &registry);
+
+    Ok(sol)
+}
+
+/// Parse raw declaration blocks from the layer registry and inject them into the solution.
+/// Declarations are parsed using the same registry so they can use layer keywords.
+/// Duplicate constructs (by name) are not injected.
+fn inject_declarations(sol: &mut Solution, registry: &LayerRegistry) {
+    use crate::lexer::lex;
+
+    // Collect existing top-level construct names to avoid duplicates
+    let existing_names: Vec<String> = sol.items.iter().filter_map(|item| {
+        match item {
+            TopLevelItem::Construct(c) => Some(c.name.clone()),
+            _ => None,
+        }
+    }).collect();
+
+    for decl_source in &registry.declarations {
+        // Wrap in a minimal solution so the parser can handle it
+        let wrapped = format!("sol __decl__\n{}", indent_block(decl_source, 2));
+        let tokens = lex(&wrapped);
+        if let Ok(decl_sol) = parse_file_with_registry(&tokens, registry.clone()) {
+            let items = match decl_sol {
+                VeilFile::Solution(s) => s.items,
+                _ => continue,
+            };
+            for item in items {
+                if let TopLevelItem::Construct(c) = &item {
+                    if existing_names.contains(&c.name) {
+                        continue; // already exists
+                    }
+                }
+                sol.items.push(item);
+            }
+        }
     }
+}
+
+/// Indent each line of a block by n spaces.
+fn indent_block(text: &str, n: usize) -> String {
+    let prefix = " ".repeat(n);
+    text.lines()
+        .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", prefix, l) })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Parse a token stream into a full VeilFile using only built-in core shapes.

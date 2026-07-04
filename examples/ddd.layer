@@ -204,3 +204,11 @@ pkg ddd v1
       icon "🛡️"
       color "#ef4444"
       label "Guard"
+
+  # ─── Declared constructs (injected into every solution using this layer) ─────
+  declare
+    trait Bus
+      dispatch(evt: Event) -> Res!
+      invoke(cmd: Command) -> Res!<Any>
+      request(qry: Query) -> Res!<Any>
+

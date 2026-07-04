@@ -33,7 +33,9 @@ mod tests {
     fn test_parse_empty_solution() {
         let sol = parse_src("sol MyApp");
         assert_eq!(sol.name, "MyApp");
-        assert!(sol.items.is_empty());
+        // The ddd.layer declares a Bus port, so it gets injected.
+        // No user-authored items exist, but layer declarations may be present.
+        assert!(sol.items.iter().all(|item| matches!(item, TopLevelItem::Construct(_))));
     }
 
     #[test]

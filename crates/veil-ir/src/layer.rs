@@ -137,6 +137,9 @@ pub struct LayerRegistry {
     pub statements: Vec<StatementSpec>,
     /// Names of layers loaded (in load order).
     pub layers: Vec<String>,
+    /// Raw VEIL source blocks to inject into solutions using this registry.
+    /// Each entry is one dedented construct block (e.g. a `port Bus` definition).
+    pub declarations: Vec<String>,
 }
 
 impl LayerRegistry {
@@ -311,6 +314,14 @@ impl LayerRegistry {
             self.statements.retain(|s| s.keyword != stmt.keyword);
             self.statements.push(stmt);
         }
+
+        // Accumulate raw declaration blocks (deduplicated by first line).
+        for decl in raw.declarations {
+            if !self.declarations.iter().any(|d| d == &decl) {
+                self.declarations.push(decl);
+            }
+        }
+
         Ok(())
     }
 }
@@ -372,6 +383,9 @@ fn resolve_statement_shape(
 struct RawLayer {
     constructs: Vec<ConstructSpec>,
     statements: Vec<StatementSpec>,
+    /// Raw VEIL source blocks declared by this layer (e.g. `port Bus ...`).
+    /// Each entry is one top-level construct declaration, dedented for parsing.
+    declarations: Vec<String>,
 }
 
 /// Parse a `.layer` file into raw (shape-unresolved) specs.
@@ -392,13 +406,68 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
     let mut items: Vec<Item> = Vec::new();
     let mut current: Option<Item> = None;
     let mut section = Section::None;
+    let mut declarations: Vec<String> = Vec::new();
+    let mut in_declare = false;
+    let mut declare_base_indent: usize = 0;
+    let mut current_decl_lines: Vec<String> = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            // Blank lines inside declare blocks are preserved
+            if in_declare && !current_decl_lines.is_empty() {
+                current_decl_lines.push(String::new());
+            }
             continue;
         }
         let indent = line.len() - line.trim_start().len();
+
+        // Handle `declare` section: accumulate raw VEIL source text
+        if trimmed == "declare" && indent <= 2 {
+            // Flush any previous construct/statement
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            in_declare = true;
+            declare_base_indent = indent + 2; // items inside declare are at +2
+            section = Section::None;
+            continue;
+        }
+
+        if in_declare {
+            // If we hit something at the same or lesser indent as declare, we're leaving it
+            if indent <= declare_base_indent.saturating_sub(2) && !trimmed.is_empty() {
+                // Flush current declaration block
+                if !current_decl_lines.is_empty() {
+                    // Trim trailing blank lines
+                    while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                        current_decl_lines.pop();
+                    }
+                    declarations.push(current_decl_lines.join("\n"));
+                    current_decl_lines.clear();
+                }
+                in_declare = false;
+                // Fall through to normal parsing of this line
+            } else {
+                // Check if this is a new top-level item within declare
+                if indent == declare_base_indent && !current_decl_lines.is_empty() {
+                    // Flush previous declaration
+                    while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                        current_decl_lines.pop();
+                    }
+                    declarations.push(current_decl_lines.join("\n"));
+                    current_decl_lines.clear();
+                }
+                // Dedent to be parseable as top-level VEIL
+                let dedented = if line.len() > declare_base_indent {
+                    &line[declare_base_indent..]
+                } else {
+                    trimmed
+                };
+                current_decl_lines.push(dedented.to_string());
+                continue;
+            }
+        }
 
         if trimmed.starts_with("construct ") {
             if let Some(item) = current.take() {
@@ -528,6 +597,14 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
         items.push(item);
     }
 
+    // Flush any remaining declaration block
+    if !current_decl_lines.is_empty() {
+        while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+            current_decl_lines.pop();
+        }
+        declarations.push(current_decl_lines.join("\n"));
+    }
+
     let mut constructs = Vec::new();
     let mut statements = Vec::new();
     for item in items {
@@ -543,7 +620,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             Item::Statement(s) => statements.push(s),
         }
     }
-    RawLayer { constructs, statements }
+    RawLayer { constructs, statements, declarations }
 }
 
 fn unquote(s: &str) -> String {
