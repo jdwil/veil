@@ -42,13 +42,19 @@ sol SalesCRM
       integration Outreach
         send_sequence(lead_id: UUID, sequence: Str) -> Res!
 
+      integration LeadRepo
+        find(id: UUID) -> Res!<ProspectLead>
+        save(lead: ProspectLead) -> Res!
+
       svc QualifyLeadService
         input
           lead_id: UUID
+        step lookup
+          lead = call LeadRepo.find(lead_id)
         step enrich
           company = call Enrichment.enrich(lead.company.domain)
         step score
-          guard company.name != nil, "enrichment failed"
+          guard company.name != "", "enrichment failed"
           notify LeadQualified{lead_id}
 
     group infrastructure
