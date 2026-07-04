@@ -70,7 +70,9 @@ pub struct NodeMetadata {
     pub doc: Option<String>,
 }
 
-/// The kind/type of an IR node.
+/// The kind/type of an IR node. These correspond to core language shapes
+/// only — all domain flavor lives in `metadata.subkind`, which is stamped
+/// from the layer registry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NodeKind {
     Solution,
@@ -82,20 +84,14 @@ pub enum NodeKind {
     InterfaceMethod,
     Implementation,
     Flow,
-    Saga,
     Step,
     ParallelGateway,
     ErrorBoundary,
-    // Step body elements
-    CallAction,
-    EmitAction,
-    AssignAction,
+    /// A statement inside a step body. `metadata.subkind` holds the
+    /// statement keyword ("call", "assign", or a layer keyword like "dispatch").
+    Action,
     MatchDecision,
     MatchArm,
-    DispatchAction,
-    InvokeAction,
-    RequestAction,
-    GuardAction,
 }
 
 /// An edge in the IR graph.

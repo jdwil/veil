@@ -1,12 +1,32 @@
 #[cfg(test)]
 mod tests {
     use crate::lexer::lex;
-    use crate::parser::parse;
+    use crate::parser::{parse, parse_with_registry};
     use veil_ir::ast::*;
+    use veil_ir::layer::{LayerRegistry, Shape};
+
+    /// Registry loaded from the real ddd.layer file — proves the engine
+    /// learns its entire vocabulary from layer content at runtime.
+    fn ddd_registry() -> LayerRegistry {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+            .expect("ddd layer should resolve");
+        reg
+    }
 
     fn parse_src(src: &str) -> Solution {
         let tokens = lex(src);
-        parse(&tokens).expect("parse failed")
+        parse_with_registry(&tokens, ddd_registry()).expect("parse failed")
+    }
+
+    fn find_construct<'a>(items: &'a [TopLevelItem], name: &str) -> &'a Construct {
+        items
+            .iter()
+            .find_map(|i| match i {
+                TopLevelItem::Construct(c) if c.name == name => Some(c),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("construct '{}' not found", name))
     }
 
     #[test]
@@ -21,25 +41,21 @@ mod tests {
         let src = "sol App\n  ctx Users";
         let sol = parse_src(src);
         assert_eq!(sol.name, "App");
-        assert_eq!(sol.items.len(), 1);
-        match &sol.items[0] {
-            TopLevelItem::Context(ctx) => assert_eq!(ctx.name, "Users"),
-            other => panic!("expected Context, got {:?}", other),
-        }
+        let ctx = find_construct(&sol.items, "Users");
+        assert_eq!(ctx.keyword, "ctx");
+        assert_eq!(ctx.subkind, "Context");
+        assert_eq!(ctx.shape, Shape::Mod);
     }
 
     #[test]
     fn test_parse_value_object() {
         let src = "sol App\n  ctx Identity\n    val Email\n      addr: Str";
         let sol = parse_src(src);
-        let ctx = match &sol.items[0] {
-            TopLevelItem::Context(ctx) => ctx,
-            _ => panic!("expected context"),
-        };
-        let vo = match &ctx.items[0] {
-            ContextItem::Construct(c) if c.keyword == "val" => c,
-            _ => panic!("expected value object"),
-        };
+        let ctx = find_construct(&sol.items, "Identity");
+        let vo = &ctx.children[0];
+        assert_eq!(vo.keyword, "val");
+        assert_eq!(vo.subkind, "ValueObject");
+        assert_eq!(vo.shape, Shape::Struct);
         assert_eq!(vo.name, "Email");
         assert_eq!(vo.fields.len(), 1);
         assert_eq!(vo.fields[0].name, "addr");
@@ -55,8 +71,9 @@ mod tests {
 sol App
   ctx Identity
     agg Customer
-      id: UUID
-      email: Email
+      root
+        id: UUID
+        email: Email
 
       evt CustomerCreated
         id email created
@@ -66,23 +83,21 @@ sol App
         phone: Phone
         -> Res!<Customer>";
         let sol = parse_src(src);
-        let ctx = match &sol.items[0] {
-            TopLevelItem::Context(c) => c,
-            _ => panic!("expected context"),
-        };
-        let agg = match &ctx.items[0] {
-            ContextItem::Construct(c) if c.keyword == "agg" => c,
-            _ => panic!("expected aggregate"),
-        };
+        let ctx = find_construct(&sol.items, "Identity");
+        let agg = &ctx.children[0];
+        assert_eq!(agg.subkind, "Aggregate");
         assert_eq!(agg.name, "Customer");
-        assert_eq!(agg.fields.len(), 2);
-        assert_eq!(agg.sub_constructs.iter().filter(|s| s.keyword == "evt").count(), 1);
-        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "evt").unwrap().name, "CustomerCreated");
-        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "evt").unwrap().fields.len(), 3); // id, email, created (shorthand)
-        assert_eq!(agg.sub_constructs.iter().filter(|s| s.keyword == "cmd").count(), 1);
-        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().name, "CreateCustomer");
-        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().fields.len(), 2);
-        assert!(agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().return_type.is_some());
+        // root fields land in a named block declared by the layer
+        let root = agg.blocks.iter().find(|b| b.keyword == "root").expect("root block");
+        assert_eq!(root.fields.len(), 2);
+        // events and commands are generic children with layer subkinds
+        let evt = agg.children.iter().find(|c| c.subkind == "Event").expect("event");
+        assert_eq!(evt.name, "CustomerCreated");
+        assert_eq!(evt.fields.len(), 3); // id, email, created (shorthand)
+        let cmd = agg.children.iter().find(|c| c.subkind == "Command").expect("command");
+        assert_eq!(cmd.name, "CreateCustomer");
+        assert_eq!(cmd.fields.len(), 2);
+        assert!(cmd.return_type.is_some());
     }
 
     #[test]
@@ -91,19 +106,15 @@ sol App
 sol App
   ctx X
     agg Y
+      root
+        id: UUID
       cmd DoThing
         -> Res!<Customer>";
         let sol = parse_src(src);
-        let ctx = match &sol.items[0] {
-            TopLevelItem::Context(c) => c,
-            _ => panic!("expected context"),
-        };
-        let agg = match &ctx.items[0] {
-            ContextItem::Construct(c) if c.keyword == "agg" => c,
-            _ => panic!("expected aggregate"),
-        };
-        let rt = agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().return_type.as_ref().unwrap();
-        match rt {
+        let ctx = find_construct(&sol.items, "X");
+        let agg = &ctx.children[0];
+        let cmd = agg.children.iter().find(|c| c.subkind == "Command").unwrap();
+        match cmd.return_type.as_ref().unwrap() {
             TypeExpr::Result(Some(inner)) => match inner.as_ref() {
                 TypeExpr::Named(n) => assert_eq!(n, "Customer"),
                 other => panic!("expected Named inside Result, got {:?}", other),
@@ -121,14 +132,10 @@ sol App
       send_sms(phone: Phone, msg: Str) -> Res!
       send_email(email: Email, subj: Str, body: Str) -> Res!";
         let sol = parse_src(src);
-        let ctx = match &sol.items[0] {
-            TopLevelItem::Context(c) => c,
-            _ => panic!("expected context"),
-        };
-        let port = match &ctx.items[0] {
-            ContextItem::Construct(c) if c.keyword == "port" => c,
-            _ => panic!("expected port"),
-        };
+        let ctx = find_construct(&sol.items, "Identity");
+        let port = &ctx.children[0];
+        assert_eq!(port.subkind, "Port");
+        assert_eq!(port.shape, Shape::Trait);
         assert_eq!(port.name, "Notifier");
         assert_eq!(port.methods.len(), 2);
         assert_eq!(port.methods[0].name, "send_sms");
@@ -147,12 +154,10 @@ sol App
     impl send_sms(phone, msg)
       http.post(\"api.twilio.com/Messages\", {To: phone.number})";
         let sol = parse_src(src);
-        let adapter = match &sol.items[0] {
-            TopLevelItem::Adapter(a) => a,
-            _ => panic!("expected adapter"),
-        };
-        assert_eq!(adapter.name, "SmsTwilio");
-        assert_eq!(adapter.target_port, "Notifier");
+        let adapter = find_construct(&sol.items, "SmsTwilio");
+        assert_eq!(adapter.subkind, "Adapter");
+        assert_eq!(adapter.shape, Shape::Impl);
+        assert_eq!(adapter.target.as_deref(), Some("Notifier"));
         assert_eq!(adapter.annotations.len(), 1);
         assert_eq!(adapter.annotations[0].name, "env");
         assert_eq!(adapter.annotations[0].args, vec!["TWILIO_SID", "TWILIO_TOKEN"]);
@@ -204,14 +209,128 @@ sol App
     }
 
     #[test]
+    fn test_layer_statements_parse_as_actions() {
+        let src = "\
+sol App
+  ctx C
+    svc S
+      step go
+        dispatch UserCreated{id, email}
+        guard x == 1, \"must be one\"";
+        let sol = parse_src(src);
+        let ctx = find_construct(&sol.items, "C");
+        let svc = &ctx.children[0];
+        assert_eq!(svc.subkind, "DomainService");
+        let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
+        let Expr::Action(dispatch) = &step.body[0] else { panic!("expected action") };
+        assert_eq!(dispatch.keyword, "dispatch");
+        assert_eq!(dispatch.target, "UserCreated");
+        assert_eq!(dispatch.named_args.len(), 2);
+        let Expr::Action(guard) = &step.body[1] else { panic!("expected action") };
+        assert_eq!(guard.keyword, "guard");
+        assert!(guard.condition.is_some());
+        assert_eq!(guard.message.as_deref(), Some("must be one"));
+    }
+
+    #[test]
+    fn test_saga_with_compensate_and_ctx_refs() {
+        let src = "\
+sol App
+  orchestrator O
+    group application
+      export saga Onboard
+        contexts Identity, Billing
+        input
+          email: Email
+        step create
+          ctx Identity
+          c = call Customer.new(email)
+          compensate
+            call CustomerRepo.delete(c.id)";
+        let sol = parse_src(src);
+        let orch = find_construct(&sol.items, "O");
+        assert_eq!(orch.subkind, "Orchestrator");
+        let group = &orch.children[0];
+        assert_eq!(group.shape, Shape::Group);
+        let saga = &group.children[0];
+        assert_eq!(saga.subkind, "Saga");
+        assert!(saga.exported);
+        assert_eq!(saga.refs[0].keyword, "contexts");
+        assert_eq!(saga.refs[0].values, vec!["Identity", "Billing"]);
+        let FlowStep::Step(step) = &saga.steps[0] else { panic!("expected step") };
+        assert_eq!(step.refs[0].keyword, "ctx");
+        assert_eq!(step.refs[0].values, vec!["Identity"]);
+        assert_eq!(step.sub_blocks.len(), 1);
+        assert_eq!(step.sub_blocks[0].keyword, "compensate");
+        assert_eq!(step.sub_blocks[0].body.len(), 1);
+    }
+
+    #[test]
+    fn test_unknown_keyword_is_error_without_layer() {
+        // Without the ddd layer, "ctx" is not a known construct.
+        let tokens = lex("sol App\n  ctx Users");
+        let result = parse(&tokens);
+        assert!(result.is_err(), "ctx should be unknown to the bare engine");
+    }
+
+    #[test]
+    fn test_stacked_layer_resolves_transitively() {
+        // crm.layer maps pipeline->ctx->mod and lead->agg->struct.
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+            .expect("ddd layer");
+        reg.load_content("crm", include_str!("../../../examples/crm.layer"))
+            .expect("crm layer");
+
+        let src = "\
+sol Sales
+  pipeline Outbound
+    group domain
+      lead Prospect
+        root
+          id: UUID
+        signal LeadQualified
+          id score: Int
+      integration Enrichment
+        enrich(domain: Str) -> Res!<Company>
+      svc Qualify
+        step s
+          notify LeadQualified{id}";
+        let tokens = lex(src);
+        let sol = parse_with_registry(&tokens, reg).expect("stacked parse failed");
+        let pipeline = find_construct(&sol.items, "Outbound");
+        assert_eq!(pipeline.keyword, "pipeline");
+        assert_eq!(pipeline.subkind, "Pipeline");
+        assert_eq!(pipeline.shape, Shape::Mod); // pipeline -> ctx -> mod
+
+        let group = &pipeline.children[0];
+        let lead = &group.children[0];
+        assert_eq!(lead.subkind, "Lead");
+        assert_eq!(lead.shape, Shape::Struct); // lead -> agg -> struct
+        assert_eq!(lead.blocks[0].keyword, "root"); // inherited block decl works
+        let signal = &lead.children[0];
+        assert_eq!(signal.subkind, "Signal"); // signal -> evt -> struct
+
+        let integration = &group.children[1];
+        assert_eq!(integration.subkind, "Integration");
+        assert_eq!(integration.shape, Shape::Trait); // integration -> port -> trait
+
+        // notify -> dispatch -> call statement chain
+        let svc = &group.children[2];
+        let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
+        let Expr::Action(notify) = &step.body[0] else { panic!("expected action") };
+        assert_eq!(notify.keyword, "notify");
+    }
+
+    #[test]
     fn test_parse_full_example() {
         let src = include_str!("../../../examples/customer_onboarding.veil");
         let tokens = lex(src);
-        let result = parse(&tokens);
+        let result = parse_with_registry(&tokens, ddd_registry());
         assert!(result.is_ok(), "Full example failed to parse: {:?}", result.err());
         let sol = result.unwrap();
         assert_eq!(sol.name, "CustomerOnboarding");
-        // Should have: lang, ctx Identity, ctx Billing
-        assert!(sol.items.len() >= 3, "Expected at least 3 items, got {}", sol.items.len());
+        // lang, ctx Identity, ctx Billing, orchestrator Onboarding
+        assert!(sol.items.len() >= 4, "Expected at least 4 items, got {}", sol.items.len());
     }
 }

@@ -6,10 +6,6 @@ pkg ddd v1
     keyword ctx
     maps_to mod
     desc "A bounded context — autonomous domain boundary"
-    contains
-      group domain
-      group infrastructure
-      group application
     constraints
       requires_groups
     visual
@@ -22,11 +18,8 @@ pkg ddd v1
     keyword orchestrator
     maps_to mod
     desc "Orchestrator — dedicated container for cross-context sagas"
-    contains
-      Saga[]
     constraints
-      sagas_only
-      no_domain_constructs
+      only Saga
       requires_groups
     visual
       icon "🎯"
@@ -37,7 +30,7 @@ pkg ddd v1
   construct Aggregate
     keyword agg
     maps_to struct
-    allowed_in Module
+    allowed_in Context
     desc "Aggregate root — consistency boundary with state, events, and commands"
     contains
       root: struct
@@ -46,7 +39,7 @@ pkg ddd v1
       Event[]
       Command[]
     constraints
-      must_have_root
+      must_have root
       mutations_through_methods
     visual
       icon "🧩"
@@ -57,7 +50,7 @@ pkg ddd v1
   construct Entity
     keyword ent
     maps_to struct
-    allowed_in Module
+    allowed_in Context
     desc "Entity — domain object with identity"
     constraints
       has_identity
@@ -70,7 +63,7 @@ pkg ddd v1
   construct ValueObject
     keyword val
     maps_to struct
-    allowed_in Module
+    allowed_in Context
     desc "Value Object — immutable, identity-less domain concept"
     constraints
       no_identity
@@ -92,7 +85,7 @@ pkg ddd v1
       color "#f59e0b"
       label "Domain Event"
     group domain
-    allowed_in TypeDef
+    allowed_in Aggregate
 
   construct Command
     keyword cmd
@@ -103,12 +96,12 @@ pkg ddd v1
       color "#3b82f6"
       label "Command"
     group domain
-    allowed_in TypeDef
+    allowed_in Aggregate
 
   construct Port
     keyword port
     maps_to trait
-    allowed_in Module
+    allowed_in Context
     desc "Port — interface contract for external dependencies"
     visual
       icon "🔌"
@@ -119,7 +112,7 @@ pkg ddd v1
   construct Adapter
     keyword adapter
     maps_to impl
-    allowed_in Module
+    allowed_in Context
     desc "Adapter — implementation of a port for a specific technology"
     constraints
       must_implement_port
@@ -132,7 +125,7 @@ pkg ddd v1
   construct Repository
     keyword repo
     maps_to trait
-    allowed_in Module
+    allowed_in Context
     desc "Repository — persistence interface for an aggregate"
     constraints
       crud_for_aggregate
@@ -145,11 +138,8 @@ pkg ddd v1
   construct DomainService
     keyword svc
     maps_to fn
-    allowed_in Module
+    allowed_in Context
     desc "Domain Service — orchestrates operations across aggregates within a context"
-    contains
-      step[]
-      par[]
     visual
       icon "🖥️"
       color "#0ea5e9"
@@ -160,8 +150,6 @@ pkg ddd v1
     keyword saga
     maps_to fn
     desc "Saga — cross-context orchestration with compensation semantics"
-    contains
-      step[]
     constraints
       steps_have_compensation
       spans_contexts
@@ -169,9 +157,18 @@ pkg ddd v1
       icon "🔄"
       color "#dc2626"
       label "Saga"
-    allowed_in Module
+    allowed_in Orchestrator
 
-  # Statement extensions (bus actions built on top of core 'call')
+  # Statement extensions (built on top of core statement shapes)
+  statement emit
+    maps_to call
+    desc "Emit a domain event from within an aggregate"
+    semantics domain_event_emit
+    visual
+      icon "⚡"
+      color "#f59e0b"
+      label "Emit"
+
   statement dispatch
     maps_to call
     desc "Fire event through event bus (fire-and-forget, multiple handlers)"

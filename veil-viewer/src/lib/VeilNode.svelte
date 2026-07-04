@@ -29,7 +29,6 @@
   class:has-children={hasChildren}
   class:ghost={isGhost}
   class:is-flow={kind === 'Flow'}
-  class:is-event={subkind === 'Event'}
   class:is-error={kind === 'ErrorBoundary'}
   class:is-group={isGroup}
   class:is-saga-step={sagaName !== null}
@@ -39,7 +38,7 @@
   <Handle type="target" position={Position.Left} />
 
   <!-- Glow pulse layer for events/flows -->
-  {#if (subkind === 'Event' || kind === 'Flow' || kind === 'Saga') && !isGhost}
+  {#if kind === 'Flow' && !isGhost}
     <div class="glow-pulse"></div>
   {/if}
 

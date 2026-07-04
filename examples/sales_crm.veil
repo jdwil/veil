@@ -1,0 +1,80 @@
+sol SalesCRM
+  use crm
+
+  # CRM vocabulary (pipeline, lead, signal, move, integration, connector,
+  # playbook, notify) is defined in crm.layer, which is stacked on ddd.layer.
+  # The engine has never heard of any of these words.
+
+  pipeline Outbound
+    group domain
+      val Company
+        name: Str
+        domain: Str
+
+      lead ProspectLead
+        root
+          id: UUID
+          company: Company
+          owner: Str
+          stage: FunnelStage
+          created: DateTime
+
+        stage FunnelStage
+          New -> Contacted -> Qualified -> Won
+          New -> Disqualified
+
+        fn qualify(score: Int) -> Res!
+          @invariant(stage == Contacted)
+          stage = Qualified
+          emit LeadQualified{id, score}
+
+        signal LeadQualified
+          id score: Int
+
+        move AdvanceLead
+          id: UUID
+          to_stage: Str
+          -> Res!<ProspectLead>
+
+      integration Enrichment
+        enrich(domain: Str) -> Res!<Company>
+
+      integration Outreach
+        send_sequence(lead_id: UUID, sequence: Str) -> Res!
+
+      svc QualifyLeadService
+        input
+          lead_id: UUID
+        step enrich
+          company = call Enrichment.enrich(lead.company.domain)
+        step score
+          guard company.name != nil, "enrichment failed"
+          notify LeadQualified{lead_id}
+
+    group infrastructure
+      connector ClearbitConnector for Enrichment
+        @env(CLEARBIT_KEY)
+        impl enrich(domain)
+          http.get("api.clearbit.com/companies", {domain})
+
+  orchestrator Motions
+    group application
+      export playbook OutboundMotion
+        contexts Outbound
+
+        input
+          domain: Str
+          owner: Str
+
+        step create_lead
+          ctx Outbound
+          l = call ProspectLead.new(domain, owner)
+          compensate
+            call ProspectLead.archive(l.id)
+
+        step start_outreach
+          ctx Outbound
+          call Outreach.send_sequence(l.id, "default")
+          notify LeadCreated{l.id}
+          compensate
+            call Outreach.stop_sequence(l.id)

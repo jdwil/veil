@@ -1,9 +1,11 @@
 //! VEIL Serializer — emits valid .veil text from AST.
 //!
-//! This is the inverse of the parser: takes a Solution/Package AST and
-//! produces properly indented VEIL source code.
+//! This is the inverse of the parser: shape-driven, zero domain knowledge.
+//! Each construct is emitted according to its core shape, using the keyword
+//! recorded at parse time.
 
 use crate::ast::*;
+use crate::layer::{Shape, StmtShape};
 
 /// Serialize a Solution AST into VEIL source text.
 pub fn serialize_solution(sol: &Solution) -> String {
@@ -59,11 +61,20 @@ impl Serializer {
         self.indent = self.indent.saturating_sub(1);
     }
 
-    // ─── Solution ─────────────────────────────────────────────────────
+    // ─── Solution / Package / Composition ────────────────────────────
 
     fn emit_solution(&mut self, sol: &Solution) {
         self.line(&format!("sol {}", sol.name));
         self.indent();
+        for u in &sol.uses {
+            match &u.alias {
+                Some(alias) => self.line(&format!("use {} as {}", u.package_name, alias)),
+                None => self.line(&format!("use {}", u.package_name)),
+            }
+        }
+        if !sol.uses.is_empty() {
+            self.blank();
+        }
         for (i, item) in sol.items.iter().enumerate() {
             if i > 0 {
                 self.blank();
@@ -76,14 +87,10 @@ impl Serializer {
     fn emit_top_level_item(&mut self, item: &TopLevelItem) {
         match item {
             TopLevelItem::Lang(lang) => self.emit_lang(lang),
-            TopLevelItem::Context(ctx) => self.emit_context(ctx),
+            TopLevelItem::Construct(c) => self.emit_construct(c),
             TopLevelItem::Flow(flow) => self.emit_flow(flow),
-            TopLevelItem::Adapter(adapter) => self.emit_adapter(adapter),
-            TopLevelItem::Saga(saga) => self.emit_saga(saga),
         }
     }
-
-    // ─── Package ──────────────────────────────────────────────────────
 
     fn emit_package(&mut self, pkg: &Package) {
         let version_str = pkg.version.as_deref().unwrap_or("");
@@ -116,8 +123,6 @@ impl Serializer {
         self.dedent();
     }
 
-    // ─── Composition ──────────────────────────────────────────────────
-
     fn emit_composition(&mut self, comp: &Composition) {
         for imp in &comp.imports {
             if let Some(alias) = &imp.alias {
@@ -137,8 +142,6 @@ impl Serializer {
         }
     }
 
-    // ─── Lang ─────────────────────────────────────────────────────────
-
     fn emit_lang(&mut self, lang: &LangBlock) {
         self.line("lang");
         self.indent();
@@ -148,101 +151,131 @@ impl Serializer {
         self.dedent();
     }
 
-    // ─── Context ──────────────────────────────────────────────────────
+    // ─── Generic construct emission ───────────────────────────────────
 
-    fn emit_context(&mut self, ctx: &Context) {
-        self.line(&format!("ctx {}", ctx.name));
-        self.indent();
-        for (i, item) in ctx.items.iter().enumerate() {
-            if i > 0 {
-                self.blank();
-            }
-            match item {
-                ContextItem::Construct(c) => self.emit_construct(c),
-                ContextItem::Group(group) => {
-                    self.line(&format!("group {}", group.name));
-                    self.indent();
-                    for gi in &group.items {
-                        match gi {
-                            ContextItem::Construct(c) => self.emit_construct(c),
-                            ContextItem::Group(_) => {} // nested not supported
-                        }
-                    }
-                    self.dedent();
-                }
+    fn emit_construct(&mut self, c: &Construct) {
+        for ann in &c.annotations {
+            if !ann.name.starts_with("__") {
+                self.line(&format!("@{}", annotation_to_veil(ann)));
             }
         }
-        self.dedent();
-    }
+        let export_prefix = if c.exported { "export " } else { "" };
 
-    /// Emit any construct generically based on keyword.
-    fn emit_construct(&mut self, c: &Construct) {
-        match c.keyword.as_str() {
-            "val" | "ent" | "evt" | "cmd" => {
-                // Struct-like: keyword name + fields
-                self.line(&format!("{} {}", c.keyword, c.name));
+        match c.shape {
+            Shape::Mod | Shape::Group => {
+                self.line(&format!("{}{} {}", export_prefix, c.keyword, c.name));
+                self.indent();
+                for (i, child) in c.children.iter().enumerate() {
+                    if i > 0 {
+                        self.blank();
+                    }
+                    self.emit_construct(child);
+                }
+                self.dedent();
+            }
+            Shape::Struct => {
+                self.line(&format!("{}{} {}", export_prefix, c.keyword, c.name));
                 self.indent();
                 for field in &c.fields {
                     self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
                 }
-                self.dedent();
-            }
-            "agg" => {
-                // Aggregate: keyword name + root fields + sub-constructs
-                self.line(&format!("agg {}", c.name));
-                self.indent();
-                if !c.fields.is_empty() {
-                    self.line("root");
+                if let Some(rt) = &c.return_type {
+                    self.line(&format!("-> {}", type_to_veil(rt)));
+                }
+                for block in &c.blocks {
+                    match &block.name {
+                        Some(n) => self.line(&format!("{} {}", block.keyword, n)),
+                        None => self.line(&block.keyword),
+                    }
                     self.indent();
-                    for field in &c.fields {
-                        self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
+                    if block.shape == Shape::Enum {
+                        for t in &block.transitions {
+                            self.line(&format!("{} -> {}", t.from, t.to));
+                        }
+                        // Bare variants without transitions
+                        for v in &block.variants {
+                            let in_transition = block
+                                .transitions
+                                .iter()
+                                .any(|t| &t.from == v || &t.to == v);
+                            if !in_transition {
+                                self.line(v);
+                            }
+                        }
+                    } else {
+                        for field in &block.fields {
+                            self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
+                        }
                     }
                     self.dedent();
                 }
-                for sub in &c.sub_constructs {
-                    self.emit_construct(sub);
-                }
-                for sm in &c.state_machines {
-                    self.line(&format!("state {}", sm.name));
+                for f in &c.fns {
+                    let params = f
+                        .params
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, type_to_veil(&p.type_expr)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret = f
+                        .return_type
+                        .as_ref()
+                        .map(|t| format!(" -> {}", type_to_veil(t)))
+                        .unwrap_or_default();
+                    self.line(&format!("fn {}({}){}", f.name, params, ret));
                     self.indent();
-                    for t in &sm.transitions {
-                        self.line(&format!("{} -> {}", t.from, t.to));
+                    for ann in &f.annotations {
+                        self.line(&format!("@{}", annotation_to_veil(ann)));
                     }
-                    self.dedent();
-                }
-                for m in &c.aggregate_fns {
-                    self.line(&format!("fn {}", m.name));
-                    self.indent();
-                    for expr in &m.body {
+                    for expr in &f.body {
                         self.line(&expr_to_veil(expr));
                     }
                     self.dedent();
                 }
+                for child in &c.children {
+                    self.emit_construct(child);
+                }
                 self.dedent();
             }
-            "port" | "repo" => {
-                // Trait-like: keyword name + methods
-                self.line(&format!("{} {}", c.keyword, c.name));
+            Shape::Enum => {
+                self.line(&format!("{}{} {}", export_prefix, c.keyword, c.name));
+                self.indent();
+                for t in &c.transitions {
+                    self.line(&format!("{} -> {}", t.from, t.to));
+                }
+                for v in &c.variants {
+                    let in_transition = c.transitions.iter().any(|t| &t.from == v || &t.to == v);
+                    if !in_transition {
+                        self.line(v);
+                    }
+                }
+                self.dedent();
+            }
+            Shape::Trait => {
+                self.line(&format!("{}{} {}", export_prefix, c.keyword, c.name));
                 self.indent();
                 for method in &c.methods {
-                    let params = method.params.iter()
+                    let params = method
+                        .params
+                        .iter()
                         .map(|p| format!("{}: {}", p.name, type_to_veil(&p.type_expr)))
-                        .collect::<Vec<_>>().join(", ");
-                    let ret = method.return_type.as_ref()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret = method
+                        .return_type
+                        .as_ref()
                         .map(|t| format!(" -> {}", type_to_veil(t)))
                         .unwrap_or_default();
                     self.line(&format!("{}({}){}", method.name, params, ret));
                 }
                 self.dedent();
             }
-            "adapter" => {
-                // Impl-like: keyword name : target + impls
+            Shape::Impl => {
                 let target = c.target.as_deref().unwrap_or("?");
-                self.line(&format!("adapter {} : {}", c.name, target));
+                self.line(&format!("{}{} {} for {}", export_prefix, c.keyword, c.name, target));
                 self.indent();
                 for imp in &c.impls {
-                    let params_str = imp.params.join(", ");
-                    self.line(&format!("{}({})", imp.method_name, params_str));
+                    let params = imp.params.join(", ");
+                    self.line(&format!("impl {}({})", imp.method_name, params));
                     self.indent();
                     for expr in &imp.body {
                         self.line(&expr_to_veil(expr));
@@ -251,30 +284,11 @@ impl Serializer {
                 }
                 self.dedent();
             }
-            "svc" | "saga" => {
-                // Fn-like: keyword name + inputs + steps
-                let is_saga = c.annotations.iter().any(|a| a.name == "__saga");
-                if is_saga {
-                    let ctx_refs = c.annotations.iter()
-                        .find(|a| a.name == "__saga")
-                        .map(|a| a.args.join(", "))
-                        .unwrap_or_default();
-                    if c.annotations.iter().any(|a| a.name == "export") {
-                        self.line(&format!("export saga {}", c.name));
-                    } else {
-                        self.line(&format!("saga {}", c.name));
-                    }
-                    self.indent();
-                    if !ctx_refs.is_empty() {
-                        self.line(&format!("contexts {}", ctx_refs));
-                    }
-                } else {
-                    if c.annotations.iter().any(|a| a.name == "export") {
-                        self.line(&format!("export svc {}", c.name));
-                    } else {
-                        self.line(&format!("svc {}", c.name));
-                    }
-                    self.indent();
+            Shape::Fn => {
+                self.line(&format!("{}{} {}", export_prefix, c.keyword, c.name));
+                self.indent();
+                for r in &c.refs {
+                    self.line(&format!("{} {}", r.keyword, r.values.join(", ")));
                 }
                 if !c.inputs.is_empty() {
                     self.line("input");
@@ -285,176 +299,19 @@ impl Serializer {
                     self.dedent();
                 }
                 for step in &c.steps {
-                    if let FlowStep::Step(s) = step {
-                        self.line(&format!("step {}", s.name));
-                        self.indent();
-                        for expr in &s.body {
-                            self.line(&expr_to_veil(expr));
-                        }
-                        self.dedent();
-                    }
+                    self.emit_flow_step(step);
+                }
+                if let Some(ret) = &c.return_expr {
+                    self.line(&format!("ret {}", expr_to_veil(ret)));
                 }
                 self.dedent();
             }
-            // Unknown — just emit keyword name
-            _ => {
-                self.line(&format!("{} {}", c.keyword, c.name));
-            }
         }
     }
 
-    fn emit_value_object(&mut self, vo: &ValueObject) {
-        self.line(&format!("val {}", vo.name));
-        self.indent();
-        for field in &vo.fields {
-            self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
-        }
-        for ann in &vo.annotations {
-            self.line(&format!("@{}", annotation_to_veil(ann)));
-        }
-        self.dedent();
-    }
-
-    fn emit_entity(&mut self, ent: &Entity) {
-        self.line(&format!("ent {}", ent.name));
-        self.indent();
-        for field in &ent.fields {
-            self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
-        }
-        for ann in &ent.annotations {
-            self.line(&format!("@{}", annotation_to_veil(ann)));
-        }
-        self.dedent();
-    }
-
-    fn emit_aggregate(&mut self, agg: &Aggregate) {
-        self.line(&format!("agg {}", agg.name));
-        self.indent();
-        for field in &agg.fields {
-            self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
-        }
-        for ann in &agg.annotations {
-            self.line(&format!("@{}", annotation_to_veil(ann)));
-        }
-        if !agg.fields.is_empty() && (!agg.events.is_empty() || !agg.commands.is_empty()) {
-            self.blank();
-        }
-        for evt in &agg.events {
-            self.emit_event(evt);
-            self.blank();
-        }
-        for cmd in &agg.commands {
-            self.emit_command(cmd);
-            self.blank();
-        }
-        self.dedent();
-    }
-
-    fn emit_event(&mut self, evt: &Event) {
-        self.line(&format!("evt {}", evt.name));
-        self.indent();
-        // Emit fields — use shorthand if type matches name
-        let shorthand: Vec<&Field> = evt.fields.iter()
-            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if n == &f.name))
-            .collect();
-        let typed: Vec<&Field> = evt.fields.iter()
-            .filter(|f| !matches!(&f.type_expr, TypeExpr::Named(n) if n == &f.name))
-            .collect();
-
-        if !shorthand.is_empty() && typed.is_empty() {
-            // All shorthand — emit on one line
-            let names: Vec<&str> = shorthand.iter().map(|f| f.name.as_str()).collect();
-            self.line(&names.join(" "));
-        } else {
-            for f in &evt.fields {
-                if matches!(&f.type_expr, TypeExpr::Named(n) if n == &f.name) {
-                    self.line(&f.name);
-                } else {
-                    self.line(&format!("{}: {}", f.name, type_to_veil(&f.type_expr)));
-                }
-            }
-        }
-        self.dedent();
-    }
-
-    fn emit_command(&mut self, cmd: &Command) {
-        self.line(&format!("cmd {}", cmd.name));
-        self.indent();
-        for field in &cmd.fields {
-            self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
-        }
-        if let Some(rt) = &cmd.return_type {
-            self.line(&format!("-> {}", type_to_veil(rt)));
-        }
-        self.dedent();
-    }
-
-    // ─── Port ─────────────────────────────────────────────────────────
-
-    fn emit_port(&mut self, port: &Port) {
-        self.line(&format!("port {}", port.name));
-        self.indent();
-        for method in &port.methods {
-            let params = method.params.iter()
-                .map(|p| format!("{}: {}", p.name, type_to_veil(&p.type_expr)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let ret = match &method.return_type {
-                Some(t) => format!(" -> {}", type_to_veil(t)),
-                None => String::new(),
-            };
-            self.line(&format!("{}({}){}", method.name, params, ret));
-        }
-        self.dedent();
-    }
-
-    fn emit_service(&mut self, svc: &Service) {
-        for ann in &svc.annotations {
-            self.line(&format!("@{}", annotation_to_veil(ann)));
-        }
-        self.line(&format!("svc {}", svc.name));
-        self.indent();
-        if !svc.inputs.is_empty() {
-            self.line("input");
-            self.indent();
-            for field in &svc.inputs {
-                self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
-            }
-            self.dedent();
-        }
-        for step in &svc.steps {
-            self.emit_flow_step(step);
-        }
-        if let Some(ret) = &svc.return_expr {
-            self.line(&format!("ret {}", expr_to_veil(ret)));
-        }
-        self.dedent();
-    }
-
-    // ─── Adapter ──────────────────────────────────────────────────────
-
-    fn emit_adapter(&mut self, adapter: &Adapter) {
-        self.line(&format!("adapter {} for {}", adapter.name, adapter.target_port));
-        self.indent();
-        for ann in &adapter.annotations {
-            self.line(&format!("@{}", annotation_to_veil(ann)));
-        }
-        for imp in &adapter.impls {
-            let params = imp.params.join(", ");
-            self.line(&format!("impl {}({})", imp.method_name, params));
-            self.indent();
-            for expr in &imp.body {
-                self.line(&expr_to_veil(expr));
-            }
-            self.dedent();
-        }
-        self.dedent();
-    }
-
-    // ─── Flow ─────────────────────────────────────────────────────────
+    // ─── Flow (core language) ─────────────────────────────────────────
 
     fn emit_flow(&mut self, flow: &Flow) {
-        // Annotations above the flow (decorator style)
         for ann in &flow.annotations {
             self.line(&format!("@{}", annotation_to_veil(ann)));
         }
@@ -502,24 +359,12 @@ impl Serializer {
 
     fn emit_flow_step(&mut self, step: &FlowStep) {
         match step {
-            FlowStep::Step(s) => {
-                self.line(&format!("step {}", s.name));
-                self.indent();
-                for expr in &s.body {
-                    self.line(&expr_to_veil(expr));
-                }
-                self.dedent();
-            }
+            FlowStep::Step(s) => self.emit_step_def(s),
             FlowStep::Parallel(par) => {
                 self.line("par");
                 self.indent();
                 for s in &par.steps {
-                    self.line(&format!("step {}", s.name));
-                    self.indent();
-                    for expr in &s.body {
-                        self.line(&expr_to_veil(expr));
-                    }
-                    self.dedent();
+                    self.emit_step_def(s);
                 }
                 self.dedent();
             }
@@ -539,51 +384,23 @@ impl Serializer {
         }
     }
 
-    // ─── Saga ──────────────────────────────────────────────────────────
-
-    fn emit_saga(&mut self, saga: &Saga) {
-        for ann in &saga.annotations {
-            self.line(&format!("@{}", annotation_to_veil(ann)));
-        }
-        self.line(&format!("saga {}", saga.name));
+    fn emit_step_def(&mut self, s: &StepDef) {
+        self.line(&format!("step {}", s.name));
         self.indent();
-
-        if !saga.context_refs.is_empty() {
-            self.line(&format!("contexts {}", saga.context_refs.join(", ")));
-            self.blank();
+        for r in &s.refs {
+            self.line(&format!("{} {}", r.keyword, r.values.join(", ")));
         }
-
-        if !saga.inputs.is_empty() {
-            self.line("input");
-            self.indent();
-            for field in &saga.inputs {
-                self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
-            }
-            self.dedent();
-            self.blank();
+        for expr in &s.body {
+            self.line(&expr_to_veil(expr));
         }
-
-        for step in &saga.steps {
-            self.line(&format!("step {}", step.name));
+        for sb in &s.sub_blocks {
+            self.line(&sb.keyword);
             self.indent();
-            if let Some(ctx) = &step.context {
-                self.line(&format!("ctx {}", ctx));
-            }
-            for expr in &step.body {
+            for expr in &sb.body {
                 self.line(&expr_to_veil(expr));
             }
-            if !step.compensate.is_empty() {
-                self.line("compensate");
-                self.indent();
-                for expr in &step.compensate {
-                    self.line(&expr_to_veil(expr));
-                }
-                self.dedent();
-            }
             self.dedent();
-            self.blank();
         }
-
         self.dedent();
     }
 
@@ -639,7 +456,7 @@ fn type_to_veil(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Named(n) => n.clone(),
         TypeExpr::Generic(name, args) => {
-            let a = args.iter().map(|t| type_to_veil(t)).collect::<Vec<_>>().join(", ");
+            let a = args.iter().map(type_to_veil).collect::<Vec<_>>().join(", ");
             format!("{}<{}>", name, a)
         }
         TypeExpr::Result(Some(inner)) => format!("Res!<{}>", type_to_veil(inner)),
@@ -664,53 +481,51 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::Ident(name) => name.clone(),
         Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_veil(base), field),
         Expr::Call(call) => {
-            let args = call.args.iter().map(|a| expr_to_veil(a)).collect::<Vec<_>>().join(", ");
+            let args = call.args.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
             if call.method.is_empty() {
                 format!("call {}({})", call.target, args)
             } else {
                 format!("call {}.{}({})", call.target, call.method, args)
             }
         }
-        Expr::Emit(emit) => {
-            let fields = emit.fields.iter().map(|(k, v)| {
-                let vs = expr_to_veil(v);
-                if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
-            }).collect::<Vec<_>>().join(", ");
-            format!("emit {}{{{}}}", emit.event_name, fields)
-        }
-        Expr::Dispatch(d) => {
-            let fields = d.fields.iter().map(|(k, v)| {
-                let vs = expr_to_veil(v);
-                if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
-            }).collect::<Vec<_>>().join(", ");
-            format!("dispatch {}{{{}}}", d.event_name, fields)
-        }
-        Expr::Invoke(inv) => {
-            let params = inv.params.iter().map(|(k, v)| {
-                format!("{}: {}", k, expr_to_veil(v))
-            }).collect::<Vec<_>>().join(", ");
-            if inv.command.is_empty() {
-                format!("invoke {}{{{}}}", inv.target, params)
-            } else {
-                format!("invoke {}.{}{{{}}}", inv.target, inv.command, params)
+        Expr::Action(a) => match a.shape {
+            StmtShape::Call => {
+                let head = if a.method.is_empty() {
+                    format!("{} {}", a.keyword, a.target)
+                } else {
+                    format!("{} {}.{}", a.keyword, a.target, a.method)
+                };
+                if !a.named_args.is_empty() {
+                    let fields = a
+                        .named_args
+                        .iter()
+                        .map(|(k, v)| {
+                            let vs = expr_to_veil(v);
+                            if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{}{{{}}}", head, fields)
+                } else if !a.args.is_empty() {
+                    let args = a.args.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
+                    format!("{}({})", head, args)
+                } else {
+                    head
+                }
             }
-        }
-        Expr::Request(req) => {
-            let args = req.args.iter().map(|a| expr_to_veil(a)).collect::<Vec<_>>().join(", ");
-            if req.method.is_empty() {
-                format!("request {}({})", req.port, args)
-            } else {
-                format!("request {}.{}({})", req.port, req.method, args)
+            StmtShape::If => {
+                let cond = a
+                    .condition
+                    .as_ref()
+                    .map(|c| expr_to_veil(c))
+                    .unwrap_or_default();
+                if let Some(msg) = &a.message {
+                    format!("{} {}, \"{}\"", a.keyword, cond, msg)
+                } else {
+                    format!("{} {}", a.keyword, cond)
+                }
             }
-        }
-        Expr::Guard(g) => {
-            let cond = expr_to_veil(&g.condition);
-            if let Some(msg) = &g.message {
-                format!("guard {}, \"{}\"", cond, msg)
-            } else {
-                format!("guard {}", cond)
-            }
-        }
+        },
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_veil(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
@@ -718,25 +533,30 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::BoolLit(b) => b.to_string(),
         Expr::Return(inner) => format!("ret {}", expr_to_veil(inner)),
         Expr::BinaryOp(op) => {
-            let left = expr_to_veil(&op.left);
-            let right = expr_to_veil(&op.right);
             let op_str = match &op.op {
-                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                BinOp::Div => "/", BinOp::Mod => "%", BinOp::Eq => "==",
-                BinOp::NotEq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
-                BinOp::LtEq => "<=", BinOp::GtEq => ">=",
-                BinOp::And => "&&", BinOp::Or => "||",
+                BinOp::Add => "+",
+                BinOp::Sub => "-",
+                BinOp::Mul => "*",
+                BinOp::Div => "/",
+                BinOp::Mod => "%",
+                BinOp::Eq => "==",
+                BinOp::NotEq => "!=",
+                BinOp::Lt => "<",
+                BinOp::Gt => ">",
+                BinOp::LtEq => "<=",
+                BinOp::GtEq => ">=",
+                BinOp::And => "&&",
+                BinOp::Or => "||",
             };
-            format!("{} {} {}", left, op_str, right)
+            format!("{} {} {}", expr_to_veil(&op.left), op_str, expr_to_veil(&op.right))
         }
         Expr::UnaryOp(op) => {
             let op_str = match &op.op {
-                UnaryOp::Not => "!", UnaryOp::Neg => "-",
+                UnaryOp::Not => "!",
+                UnaryOp::Neg => "-",
             };
             format!("{}{}", op_str, expr_to_veil(&op.expr))
         }
-        Expr::IfExpr(ie) => {
-            format!("if {}", expr_to_veil(&ie.condition))
-        }
+        Expr::IfExpr(ie) => format!("if {}", expr_to_veil(&ie.condition)),
     }
 }

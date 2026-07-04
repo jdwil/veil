@@ -6,6 +6,7 @@
     kind: NodeKind;
     label: string;
     icon: string;
+    color?: string;
     category: string;
     name?: string;
   }
@@ -41,6 +42,7 @@
           kind: c.kind as NodeKind,
           label: c.label,
           icon: c.icon,
+          color: c.color,
           category: c.group || 'General',
           name: c.name,
         });
@@ -51,11 +53,12 @@
   });
 
   function fallbackItems(): PaletteItem[] {
-    // Hardcoded fallback when API isn't available
+    // Core-shape fallback when the palette API isn't available.
+    // Real vocabulary always comes from /api/palette (layer files).
     if (contextKind === 'Solution') {
       return [
-        { kind: 'Module', label: 'Context', icon: '📦', category: 'General' },
-        { kind: 'Saga', label: 'Saga', icon: '🔄', category: 'General' },
+        { kind: 'Module', label: 'Module', icon: '📦', category: 'General' },
+        { kind: 'Flow', label: 'Flow', icon: '🌊', category: 'General' },
       ];
     }
     return [];

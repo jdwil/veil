@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { IrGraph, IrNode } from './types';
+import { setPaletteStyles, type IrGraph, type IrNode, type PaletteEntry } from './types';
 
 export const irGraph = writable<IrGraph | null>(null);
 export const veilSource = writable<string>('');
@@ -32,7 +32,10 @@ export async function fetchIr() {
     }
 
     if (palRes.ok) {
-      paletteConfig.set(await palRes.json());
+      const palette: PaletteEntry[] = await palRes.json();
+      paletteConfig.set(palette);
+      // Register layer visuals so getNodeStyle can resolve subkinds dynamically.
+      setPaletteStyles(palette);
     }
 
     // Find root and determine entry point

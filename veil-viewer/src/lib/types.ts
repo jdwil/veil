@@ -1,4 +1,9 @@
-// VEIL IR Types — mirrors the Rust IR graph model
+// VEIL IR Types — mirrors the Rust IR graph model.
+//
+// The viewer contains ZERO domain knowledge. NODE_STYLES below covers only
+// core language shapes; all layer vocabulary (icons, colors, labels for
+// aggregates, ports, sagas, or any future layer's constructs) arrives at
+// runtime via /api/palette and is registered with setPaletteStyles().
 
 export interface IrGraph {
   nodes: IrNode[];
@@ -31,19 +36,12 @@ export type NodeKind =
   | 'InterfaceMethod'
   | 'Implementation'
   | 'Flow'
-  | 'Saga'
   | 'Step'
   | 'ParallelGateway'
   | 'ErrorBoundary'
-  | 'CallAction'
-  | 'EmitAction'
-  | 'AssignAction'
+  | 'Action'
   | 'MatchDecision'
-  | 'MatchArm'
-  | 'DispatchAction'
-  | 'InvokeAction'
-  | 'RequestAction'
-  | 'GuardAction';
+  | 'MatchArm';
 
 export interface IrEdge {
   from: number;
@@ -59,8 +57,29 @@ export type EdgeKind =
   | 'Implements'
   | 'References';
 
-// Visual config per node kind (primitives)
-export const NODE_STYLES: Record<NodeKind, { color: string; icon: string; label: string }> = {
+export interface NodeStyle {
+  color: string;
+  icon: string;
+  label: string;
+}
+
+/** A palette entry served by /api/palette — parsed from .layer files. */
+export interface PaletteEntry {
+  name: string;
+  keyword: string;
+  kind: string;
+  shape: string;
+  icon: string;
+  color: string;
+  label: string;
+  group: string;
+  allowed_in: string;
+  layer: string;
+  entry_type: 'construct' | 'statement';
+}
+
+// Visual config per node kind — CORE SHAPES ONLY.
+export const NODE_STYLES: Record<NodeKind, NodeStyle> = {
   Solution: { color: '#6366f1', icon: '🏗️', label: 'Solution' },
   Module: { color: '#8b5cf6', icon: '📦', label: 'Module' },
   Group: { color: '#475569', icon: '📂', label: 'Group' },
@@ -70,42 +89,49 @@ export const NODE_STYLES: Record<NodeKind, { color: string; icon: string; label:
   InterfaceMethod: { color: '#34d399', icon: '⚙️', label: 'Method' },
   Implementation: { color: '#a855f7', icon: '🔗', label: 'Implementation' },
   Flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
-  Saga: { color: '#dc2626', icon: '🔄', label: 'Saga' },
   Step: { color: '#64748b', icon: '▶️', label: 'Step' },
   ParallelGateway: { color: '#eab308', icon: '⑃', label: 'Parallel' },
   ErrorBoundary: { color: '#ef4444', icon: '🛡️', label: 'Error Boundary' },
-  CallAction: { color: '#10b981', icon: '📞', label: 'Call' },
-  EmitAction: { color: '#f59e0b', icon: '⚡', label: 'Emit' },
-  AssignAction: { color: '#6366f1', icon: '←', label: 'Assign' },
+  Action: { color: '#10b981', icon: '▸', label: 'Action' },
   MatchDecision: { color: '#8b5cf6', icon: '◆', label: 'Match' },
   MatchArm: { color: '#64748b', icon: '→', label: 'Arm' },
-  DispatchAction: { color: '#f59e0b', icon: '📡', label: 'Dispatch' },
-  InvokeAction: { color: '#3b82f6', icon: '⚙️', label: 'Invoke' },
-  RequestAction: { color: '#10b981', icon: '🔌', label: 'Request' },
-  GuardAction: { color: '#ef4444', icon: '🛡️', label: 'Guard' },
 };
 
-// DDD subkind overrides — when a node has a subkind from the DDD Kit,
-// these styles take precedence over the primitive NodeKind style.
-export const SUBKIND_STYLES: Record<string, { color: string; icon: string; label: string }> = {
-  Context: { color: '#8b5cf6', icon: '📦', label: 'Context' },
-  Aggregate: { color: '#ec4899', icon: '🧩', label: 'Aggregate' },
-  Entity: { color: '#f43f5e', icon: '🔑', label: 'Entity' },
-  ValueObject: { color: '#14b8a6', icon: '💎', label: 'Value Object' },
-  Event: { color: '#f59e0b', icon: '⚡', label: 'Event' },
-  Command: { color: '#3b82f6', icon: '📨', label: 'Command' },
-  Port: { color: '#10b981', icon: '🔌', label: 'Port' },
-  Adapter: { color: '#a855f7', icon: '🔗', label: 'Adapter' },
-  Saga: { color: '#dc2626', icon: '🔄', label: 'Saga' },
-  Service: { color: '#0ea5e9', icon: '🖥️', label: 'Service' },
-  DomainService: { color: '#0ea5e9', icon: '🖥️', label: 'Domain Service' },
-  Orchestrator: { color: '#dc2626', icon: '🎯', label: 'Orchestrator' },
+// Core statement styles (call/assign are language-level, not layer-level).
+const CORE_ACTION_STYLES: Record<string, NodeStyle> = {
+  call: { color: '#10b981', icon: '📞', label: 'Call' },
+  assign: { color: '#6366f1', icon: '←', label: 'Assign' },
 };
 
-/** Get the display style for a node, preferring subkind if available */
-export function getNodeStyle(kind: NodeKind, subkind?: string | null): { color: string; icon: string; label: string } {
-  if (subkind && SUBKIND_STYLES[subkind]) {
-    return SUBKIND_STYLES[subkind];
+// Runtime style registry, populated from /api/palette. Keyed by both the
+// construct name (subkind, e.g. "Aggregate") and keyword (e.g. "agg" or
+// statement keywords like "dispatch").
+let paletteStyles: Record<string, NodeStyle> = {};
+
+/** Register layer visuals fetched from /api/palette. */
+export function setPaletteStyles(entries: PaletteEntry[]): void {
+  const styles: Record<string, NodeStyle> = {};
+  for (const e of entries) {
+    if (!e.icon && !e.color) continue;
+    const style: NodeStyle = {
+      color: e.color || '#64748b',
+      icon: e.icon || '•',
+      label: e.label || e.name,
+    };
+    styles[e.name] = style;
+    if (e.keyword && e.keyword !== e.name) styles[e.keyword] = style;
   }
-  return NODE_STYLES[kind];
+  paletteStyles = styles;
+}
+
+/**
+ * Get the display style for a node. Precedence:
+ * layer-defined subkind style → core action style → core shape style.
+ */
+export function getNodeStyle(kind: NodeKind, subkind?: string | null): NodeStyle {
+  if (subkind) {
+    if (paletteStyles[subkind]) return paletteStyles[subkind];
+    if (CORE_ACTION_STYLES[subkind]) return CORE_ACTION_STYLES[subkind];
+  }
+  return NODE_STYLES[kind] ?? { color: '#64748b', icon: '•', label: kind };
 }

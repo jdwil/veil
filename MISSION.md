@@ -131,18 +131,50 @@ crates/
 veil-viewer/             — Svelte visual editor
 ```
 
-## Current State vs Goal
+## Layer Stacking
 
-### Goal
-Zero DDD knowledge in Rust code. The system is a generic language workbench that learns vocabulary from `.layer` files.
+Layers compose: a construct's `maps_to` may name a core shape OR another
+construct from any loaded layer (by keyword or name). A layer declares its
+dependencies with `use` lines, and the `LayerRegistry` resolves `maps_to`
+chains transitively at load time:
 
-### Current Reality
-The Rust code still contains DDD-specific:
-- Lexer TokenKinds (Ctx, Agg, Ent, Val, Evt, Cmd, Port, Adapter, Saga, Orchestrator, Svc)
-- A `token_kind_to_keyword()` function mapping tokens to DDD keyword strings
-- A `default_keyword_categories()` fallback map with all DDD keywords hardcoded
-- A `capitalize()` function mapping DDD keywords to display names
-- Old typed AST structs (ValueObject, Entity, Aggregate, Port, Service, Adapter) still exist and are used internally by the parser before conversion to the generic Construct type
-- The parser has separate `parse_value_object()`, `parse_entity()`, `parse_aggregate()`, `parse_port()`, `parse_adapter()`, `parse_saga()`, `parse_domain_service()` functions — one per DDD concept
-- The builder's `capitalize()` function hardcodes the keyword→display name mapping
-- The viewer's `SUBKIND_STYLES` and `types.ts` hardcode DDD icons/colors
+```
+# crm.layer
+pkg crm v1
+  use ddd
+
+  construct Lead
+    keyword lead
+    maps_to agg          # lead -> agg -> struct
+```
+
+Constraint checks (`only Saga`, `contains` allow-lists) follow the same
+chain via an is-a relation, so a crm `Playbook` (playbook → saga) is
+accepted wherever a ddd `Saga` is allowed. Statements stack the same way
+(`notify` → `dispatch` → `call`).
+
+## Current State
+
+The zero-domain-knowledge invariant HOLDS. Implementation map:
+
+- `veil-ir/src/layer.rs` — `LayerRegistry`: parses `.layer` files, resolves
+  `maps_to` transitively, exposes constructs/statements/visuals. The 7 core
+  shapes (`mod`, `struct`, `enum`, `trait`, `impl`, `fn`, `group`) and 2
+  statement shapes (`call`, `if`) are the ONLY vocabulary the engine knows.
+- Lexer: layer keywords all lex as `Ident`; only core language/file/flow
+  keywords are TokenKinds.
+- Parser: one parse function per core shape, dispatched by registry lookup.
+  Named sub-blocks (`root`, `state`) come from `contains` entries of the
+  form `keyword: shape`. Layer statements parse into a generic `ActionExpr`.
+- AST: a single generic `Construct` stamped with its shape + layer subkind.
+  No typed DDD structs, no DDD expression variants.
+- Builder/serializer/codegen: switch on shape only; subkind is metadata.
+- Validation: generic constraint grammar (`only X`, `deny X`,
+  `must_have <block>`, `requires_groups`); unknown constraint words are
+  semantic hints, skipped by the structural validator.
+- Viewer: `NODE_STYLES` covers core shapes only; all layer visuals arrive at
+  runtime via `/api/palette` and register through `setPaletteStyles()`.
+- Proof of composability: `examples/crm.layer` stacks on `ddd.layer`
+  (`pipeline→ctx→mod`, `lead→agg→struct`, `notify→dispatch→call`) and
+  `examples/sales_crm.veil` parses, validates, and generates compiling Rust
+  without any engine changes.

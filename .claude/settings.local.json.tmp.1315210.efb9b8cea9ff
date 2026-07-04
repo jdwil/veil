@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)",
+      "Bash(cargo build *)",
+      "Bash(cargo test *)",
+      "Bash(cargo run *)",
+      "Bash(rm -rf /tmp/veil_out_ddd /tmp/veil_out_crm)",
+      "Read(//tmp/**)",
+      "Bash(npx svelte-check *)",
+      "Bash(curl -s localhost:3199/api/palette)",
+      "Bash(kill %1)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

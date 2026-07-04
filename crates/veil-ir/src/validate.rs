@@ -1,53 +1,19 @@
-//! VEIL Validation — enforces layer constraints on parsed AST.
+//! VEIL Validation — enforces layer constraints on the parsed AST.
 //!
-//! Reads construct definitions from .layer files and validates that
-//! .veil source files conform to the layer's rules.
+//! Constraints are declared in `.layer` files with a small generic grammar:
+//!
+//! - `only <Name>`            — children may only be constructs named <Name> (groups always allowed)
+//! - `deny <Name>`            — constructs named <Name> may not appear as children
+//! - `must_have <block>`      — a named sub-block (e.g. `root`) must be present
+//! - `requires_groups`        — direct children must be groups
+//!
+//! Free-form constraint words the engine does not recognize (e.g.
+//! `immutable`, `equality_by_value`) are treated as documentation/semantic
+//! hints and skipped — they carry meaning for codegen plugins or humans, not
+//! for the structural validator.
 
-use std::collections::HashMap;
-use std::path::Path;
-
-/// A construct definition from a .layer file.
-#[derive(Debug, Clone)]
-pub struct ConstructDef {
-    pub name: String,
-    /// The keyword used in source code (e.g., "ctx" for Context)
-    pub keyword: String,
-    /// What core primitive this maps to (mod, struct, trait, impl, fn)
-    pub maps_to: String,
-    /// What this construct is allowed to contain (child construct names)
-    pub contains: Vec<String>,
-    /// Where this construct can be placed
-    pub allowed_in: String,
-    /// Which group this construct belongs to
-    pub group: String,
-    /// Named constraints (e.g., "must_have_root", "sagas_only")
-    pub constraints: Vec<String>,
-}
-
-/// The full schema from a layer — all construct definitions + rules.
-#[derive(Debug, Clone)]
-pub struct LayerSchema {
-    pub name: String,
-    pub constructs: HashMap<String, ConstructDef>,
-}
-
-impl LayerSchema {
-    /// Build a keyword→construct name lookup map.
-    pub fn keyword_map(&self) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-        for (name, def) in &self.constructs {
-            if !def.keyword.is_empty() {
-                map.insert(def.keyword.clone(), name.clone());
-            }
-        }
-        map
-    }
-
-    /// Look up a construct by its keyword.
-    pub fn by_keyword(&self, keyword: &str) -> Option<&ConstructDef> {
-        self.constructs.values().find(|d| d.keyword == keyword)
-    }
-}
+use crate::ast::*;
+use crate::layer::{LayerRegistry, Shape};
 
 /// A validation error with context.
 #[derive(Debug, Clone)]
@@ -68,304 +34,154 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-/// Parse a .layer file into a LayerSchema.
-pub fn parse_layer_schema(content: &str) -> LayerSchema {
-    let mut schema = LayerSchema {
-        name: String::new(),
-        constructs: HashMap::new(),
-    };
-
-    let mut current_name: Option<String> = None;
-    let mut current_def: Option<ConstructDef> = None;
-    let mut in_contains = false;
-    let mut in_constraints = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        // Package name
-        if trimmed.starts_with("pkg ") {
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() >= 2 {
-                schema.name = parts[1].to_string();
-            }
-            continue;
-        }
-
-        // New construct
-        if trimmed.starts_with("construct ") {
-            // Save previous
-            if let (Some(name), Some(def)) = (current_name.take(), current_def.take()) {
-                schema.constructs.insert(name, def);
-            }
-            let name = trimmed.strip_prefix("construct ").unwrap().trim().to_string();
-            current_name = Some(name.clone());
-            current_def = Some(ConstructDef {
-                name,
-                keyword: String::new(),
-                maps_to: String::new(),
-                contains: Vec::new(),
-                allowed_in: String::new(),
-                group: String::new(),
-                constraints: Vec::new(),
-            });
-            in_contains = false;
-            in_constraints = false;
-            continue;
-        }
-
-        // Skip statement blocks
-        if trimmed.starts_with("statement ") {
-            if let (Some(name), Some(def)) = (current_name.take(), current_def.take()) {
-                schema.constructs.insert(name, def);
-            }
-            current_name = None;
-            current_def = None;
-            continue;
-        }
-
-        if let Some(ref mut def) = current_def {
-            // Detect sub-blocks
-            if trimmed == "contains" && indent <= 4 {
-                in_contains = true;
-                in_constraints = false;
-                continue;
-            }
-            if trimmed == "constraints" && indent <= 4 {
-                in_constraints = true;
-                in_contains = false;
-                continue;
-            }
-            if (trimmed == "visual" || trimmed.starts_with("maps_to ")
-                || trimmed.starts_with("allowed_in ") || trimmed.starts_with("group ")
-                || trimmed.starts_with("desc ")) && indent <= 4 {
-                in_contains = false;
-                in_constraints = false;
-            }
-
-            // Parse content based on current block
-            if in_contains && indent > 4 && !trimmed.is_empty() {
-                // Parse contains entries like "Saga[]", "group domain", "Event[]"
-                let entry = trimmed.trim_end_matches("[]").to_string();
-                if !entry.starts_with("group ") {
-                    def.contains.push(entry);
-                } else {
-                    // "group domain" means this construct should contain a group named that
-                    def.contains.push(trimmed.to_string());
-                }
-            } else if in_constraints && indent > 4 && !trimmed.is_empty() {
-                def.constraints.push(trimmed.to_string());
-            } else if indent <= 4 && !trimmed.is_empty() {
-                // Top-level construct field
-                if trimmed.starts_with("maps_to ") {
-                    def.maps_to = trimmed.strip_prefix("maps_to ").unwrap().trim().to_string();
-                } else if trimmed.starts_with("allowed_in ") {
-                    def.allowed_in = trimmed.strip_prefix("allowed_in ").unwrap().trim().to_string();
-                } else if trimmed.starts_with("group ") {
-                    def.group = trimmed.strip_prefix("group ").unwrap().trim().to_string();
-                } else if trimmed.starts_with("keyword ") {
-                    def.keyword = trimmed.strip_prefix("keyword ").unwrap().trim().to_string();
-                }
-            }
-        }
-    }
-
-    // Save last construct
-    if let (Some(name), Some(def)) = (current_name, current_def) {
-        schema.constructs.insert(name, def);
-    }
-
-    schema
-}
-
-/// Validate a parsed solution against a layer schema.
-/// Returns a list of validation errors.
-pub fn validate_solution(
-    items: &[(&str, &str, Vec<(&str, &str)>)], // (construct_type, name, children: [(type, name)])
-    schema: &LayerSchema,
-) -> Vec<ValidationError> {
+/// Validate a parsed solution against the layer registry.
+pub fn validate_solution(sol: &Solution, registry: &LayerRegistry) -> Vec<ValidationError> {
     let mut errors = Vec::new();
-
-    for (construct_type, name, children) in items {
-        // Check if this construct exists in the schema
-        if let Some(def) = schema.constructs.get(*construct_type) {
-            // Check children against 'contains' rules
-            if !def.contains.is_empty() {
-                for (child_type, child_name) in children {
-                    let child_allowed = def.contains.iter().any(|c| {
-                        let c_clean = c.trim_end_matches("[]");
-                        c_clean == *child_type
-                            || c.starts_with("group ")
-                            || c_clean == "fn" && (*child_type == "DomainService" || *child_type == "Saga")
-                    });
-
-                    if !child_allowed && *child_type != "Group" {
-                        errors.push(ValidationError {
-                            message: format!(
-                                "'{}' is not allowed directly inside '{}'",
-                                child_type, construct_type
-                            ),
-                            construct: child_name.to_string(),
-                            parent: name.to_string(),
-                            hint: Some(format!(
-                                "Allowed children: {}",
-                                def.contains.join(", ")
-                            )),
-                        });
-                    }
-                }
-            }
-
-            // Check constraints
-            for constraint in &def.constraints {
-                match constraint.as_str() {
-                    "sagas_only" => {
-                        for (child_type, child_name) in children {
-                            if *child_type != "Saga" && *child_type != "Group" {
-                                errors.push(ValidationError {
-                                    message: format!(
-                                        "Orchestrator only allows Sagas, found '{}'",
-                                        child_type
-                                    ),
-                                    construct: child_name.to_string(),
-                                    parent: name.to_string(),
-                                    hint: Some("Move non-saga constructs to a bounded context".to_string()),
-                                });
-                            }
-                        }
-                    }
-                    "must_have_root" => {
-                        let has_root = children.iter().any(|(t, _)| *t == "root");
-                        if !has_root {
-                            errors.push(ValidationError {
-                                message: "Aggregate must define 'root' fields".to_string(),
-                                construct: name.to_string(),
-                                parent: name.to_string(),
-                                hint: Some("Add a 'root' block with the aggregate's fields".to_string()),
-                            });
-                        }
-                    }
-                    "no_domain_constructs" => {
-                        let domain_types = ["Aggregate", "Entity", "ValueObject", "Port", "Repository"];
-                        for (child_type, child_name) in children {
-                            if domain_types.contains(child_type) {
-                                errors.push(ValidationError {
-                                    message: format!(
-                                        "Domain construct '{}' not allowed in Orchestrator",
-                                        child_type
-                                    ),
-                                    construct: child_name.to_string(),
-                                    parent: name.to_string(),
-                                    hint: Some("Domain constructs belong in a bounded context".to_string()),
-                                });
-                            }
-                        }
-                    }
-                    "requires_groups" => {
-                        // All non-Group children are invalid — must be inside groups
-                        for (child_type, child_name) in children {
-                            if *child_type != "Group" {
-                                errors.push(ValidationError {
-                                    message: format!(
-                                        "'{}' must be inside a group, not directly in '{}'",
-                                        child_type, construct_type
-                                    ),
-                                    construct: child_name.to_string(),
-                                    parent: name.to_string(),
-                                    hint: Some("Wrap in 'group application' for sagas".to_string()),
-                                });
-                            }
-                        }
-                    }
-                    "steps_have_compensation" => {
-                        // TODO: check that saga steps have compensate blocks
-                    }
-                    _ => {}
-                }
-            }
+    for item in &sol.items {
+        if let TopLevelItem::Construct(c) = item {
+            validate_construct(c, "Solution", registry, &mut errors);
         }
     }
-
     errors
 }
 
-/// Validate placement — is a construct allowed where it's placed?
-pub fn validate_placement(
-    construct_type: &str,
-    parent_type: &str,
-    parent_group: Option<&str>,
-    schema: &LayerSchema,
-) -> Option<ValidationError> {
-    if let Some(def) = schema.constructs.get(construct_type) {
-        if def.allowed_in.is_empty() {
-            return None; // No placement restriction
-        }
+fn validate_construct(
+    c: &Construct,
+    parent_name: &str,
+    registry: &LayerRegistry,
+    errors: &mut Vec<ValidationError>,
+) {
+    let spec = registry.construct(&c.keyword);
 
-        let allowed = &def.allowed_in;
-
-        // Check if placement matches
-        let is_valid = match allowed.as_str() {
-            "top" => parent_type == "Solution",
-            "any" => true,
-            _ => {
-                // allowed_in specifies a NodeKind or parent construct name
-                allowed == parent_type
-                    // Also check if the group matches
-                    || (parent_group.is_some() && def.group == parent_group.unwrap_or(""))
-            }
-        };
-
-        if !is_valid {
-            return Some(ValidationError {
-                message: format!(
-                    "'{}' is not allowed in '{}' (allowed_in: {})",
-                    construct_type, parent_type, allowed
-                ),
-                construct: construct_type.to_string(),
-                parent: parent_type.to_string(),
-                hint: if def.group.is_empty() {
-                    None
+    if let Some(spec) = spec {
+        // Effective children: direct children, plus children inside groups
+        // (groups are structural, constraints see through them).
+        let direct: Vec<&Construct> = c.children.iter().collect();
+        let effective: Vec<&Construct> = c
+            .children
+            .iter()
+            .flat_map(|ch| {
+                if ch.shape == Shape::Group {
+                    ch.children.iter().collect::<Vec<_>>()
                 } else {
-                    Some(format!("Place inside a '{}' group", def.group))
-                },
-            });
+                    vec![ch]
+                }
+            })
+            .collect();
+
+        for constraint in &spec.constraints {
+            let mut words = constraint.split_whitespace();
+            match words.next() {
+                Some("only") => {
+                    // Allowance follows the maps_to chain: a stacked construct
+                    // (e.g. crm Playbook -> ddd Saga) satisfies `only Saga`.
+                    let allowed: Vec<&str> = words.collect();
+                    for child in &effective {
+                        if !allowed
+                            .iter()
+                            .any(|a| registry.is_a(&child.keyword, a))
+                        {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "'{}' only allows {}, found '{}'",
+                                    spec.name,
+                                    allowed.join(", "),
+                                    child.subkind
+                                ),
+                                construct: child.name.clone(),
+                                parent: c.name.clone(),
+                                hint: Some(format!(
+                                    "Move the '{}' to a construct that allows it",
+                                    child.subkind
+                                )),
+                            });
+                        }
+                    }
+                }
+                Some("deny") => {
+                    let denied: Vec<&str> = words.collect();
+                    for child in &effective {
+                        if denied.iter().any(|d| registry.is_a(&child.keyword, d)) {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "'{}' is not allowed in '{}'",
+                                    child.subkind, spec.name
+                                ),
+                                construct: child.name.clone(),
+                                parent: c.name.clone(),
+                                hint: None,
+                            });
+                        }
+                    }
+                }
+                Some("must_have") => {
+                    if let Some(block_kw) = words.next() {
+                        let has = c.blocks.iter().any(|b| b.keyword == block_kw);
+                        if !has {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "'{}' must define a '{}' block",
+                                    spec.name, block_kw
+                                ),
+                                construct: c.name.clone(),
+                                parent: parent_name.to_string(),
+                                hint: Some(format!(
+                                    "Add a '{}' block with the required fields",
+                                    block_kw
+                                )),
+                            });
+                        }
+                    }
+                }
+                Some("requires_groups") => {
+                    for child in &direct {
+                        if child.shape != Shape::Group {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "'{}' must be inside a group, not directly in '{}'",
+                                    child.subkind, spec.name
+                                ),
+                                construct: child.name.clone(),
+                                parent: c.name.clone(),
+                                hint: Some("Wrap it in a 'group <name>' block".to_string()),
+                            });
+                        }
+                    }
+                }
+                // Unrecognized constraint words are semantic hints, not
+                // structural rules — skip.
+                _ => {}
+            }
         }
-    }
-    None
-}
 
-/// Load a layer schema from a file path.
-pub fn load_layer_schema(path: &Path) -> Option<LayerSchema> {
-    std::fs::read_to_string(path).ok().map(|content| parse_layer_schema(&content))
-}
-
-/// Load all layer schemas referenced by a .veil file.
-pub fn load_referenced_schemas(veil_path: &Path) -> Vec<LayerSchema> {
-    let dir = veil_path.parent().unwrap_or(Path::new("."));
-    let content = std::fs::read_to_string(veil_path).unwrap_or_default();
-
-    content.lines()
-        .map(|l| l.trim())
-        .filter(|l| l.starts_with("use "))
-        .filter_map(|l| {
-            let name = l.strip_prefix("use ")?.trim();
-            let layer_path = dir.join(format!("{}.layer", name));
-            load_layer_schema(&layer_path)
-        })
-        .collect()
-}
-
-/// Extract (keyword, maps_to) pairs from all loaded schemas.
-/// Used to build the parser's keyword→category map at runtime.
-pub fn extract_keyword_mappings(schemas: &[LayerSchema]) -> Vec<(String, String)> {
-    let mut mappings = Vec::new();
-    for schema in schemas {
-        for def in schema.constructs.values() {
-            if !def.keyword.is_empty() && !def.maps_to.is_empty() {
-                mappings.push((def.keyword.clone(), def.maps_to.clone()));
+        // `contains` allow-list: when declared, children must match one of
+        // the entries (by construct name, block keyword, or shape name).
+        if !spec.contains.is_empty() {
+            for child in &effective {
+                let allowed = spec.contains.iter().any(|entry| {
+                    let e = entry.trim_end_matches("[]");
+                    registry.is_a(&child.keyword, e)
+                        || e == child.shape.name()
+                        || entry.starts_with("group ")
+                        || e.split(':').next().map(|s| s.trim()) == Some(child.keyword.as_str())
+                });
+                if !allowed && child.shape != Shape::Group {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "'{}' is not allowed directly inside '{}'",
+                            child.subkind, spec.name
+                        ),
+                        construct: child.name.clone(),
+                        parent: c.name.clone(),
+                        hint: Some(format!("Allowed children: {}", spec.contains.join(", "))),
+                    });
+                }
             }
         }
     }
-    mappings
+
+    // Recurse (through groups too).
+    for child in &c.children {
+        validate_construct(child, &c.name, registry, errors);
+    }
 }

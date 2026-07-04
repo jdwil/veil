@@ -1,22 +1,12 @@
-//! Rust code generation from VEIL IR.
+//! Rust code generation from VEIL AST.
 //!
-//! Generates a hexagonal architecture Rust workspace from a VEIL Solution AST.
-//! Structure per bounded context:
-//!   src/
-//!     domain/
-//!       mod.rs
-//!       types.rs (value objects, entities)
-//!       events.rs (domain events enum)
-//!       commands.rs (command structs)
-//!     ports/
-//!       mod.rs (async traits)
-//!     adapters/
-//!       mod.rs (adapter stubs)
-//!     application/
-//!       mod.rs (flow orchestrators)
-//!     lib.rs
+//! Fully shape-driven: constructs are generated according to their core
+//! shape (`mod` → crate, `struct`/`enum` → types, `trait` → async traits,
+//! `impl` → adapter structs, `fn` → orchestrator functions). The construct's
+//! layer subkind appears only in doc comments — never in generation logic.
 
 use veil_ir::ast::*;
+use veil_ir::layer::Shape;
 
 /// Generated Rust project output.
 pub struct GeneratedProject {
@@ -32,25 +22,102 @@ pub struct GeneratedFile {
 pub fn generate(solution: &Solution) -> GeneratedProject {
     let mut files = Vec::new();
 
-    // Generate workspace Cargo.toml
     files.push(gen_workspace_toml(solution));
 
-    // Generate per-context crates
+    // Each top-level mod-shaped construct becomes a crate.
+    let modules: Vec<&Construct> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Construct(c) if c.shape == Shape::Mod => Some(c),
+            _ => None,
+        })
+        .collect();
+
+    // Impl-shaped constructs may live at top level or inside other modules;
+    // collect all of them so each crate can pick up impls targeting its traits.
+    let all_impls: Vec<&Construct> = collect_by_shape(solution, Shape::Impl);
+    let top_level_flows: Vec<&Flow> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Flow(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+
     let mut flow_generated = false;
-    for item in &solution.items {
-        if let TopLevelItem::Context(ctx) = item {
-            files.extend(gen_context_crate(ctx, &solution.name, solution, &mut flow_generated));
-        }
+    for module in &modules {
+        files.extend(gen_module_crate(
+            module,
+            &all_impls,
+            &top_level_flows,
+            &mut flow_generated,
+        ));
     }
 
     GeneratedProject { files }
 }
 
+/// Recursively collect all constructs of a given shape from the solution.
+fn collect_by_shape<'a>(solution: &'a Solution, shape: Shape) -> Vec<&'a Construct> {
+    let mut out = Vec::new();
+    fn walk<'a>(c: &'a Construct, shape: Shape, out: &mut Vec<&'a Construct>) {
+        if c.shape == shape {
+            out.push(c);
+        }
+        for child in &c.children {
+            walk(child, shape, out);
+        }
+    }
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            walk(c, shape, &mut out);
+        }
+    }
+    out
+}
+
+/// Flatten a module's contents (unwrapping groups) into shape buckets.
+struct ModuleContents<'a> {
+    structs: Vec<&'a Construct>,
+    enums: Vec<&'a Construct>,
+    traits: Vec<&'a Construct>,
+    impls: Vec<&'a Construct>,
+    fns: Vec<&'a Construct>,
+}
+
+fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
+    let mut contents = ModuleContents {
+        structs: Vec::new(),
+        enums: Vec::new(),
+        traits: Vec::new(),
+        impls: Vec::new(),
+        fns: Vec::new(),
+    };
+    fn walk<'a>(c: &'a Construct, contents: &mut ModuleContents<'a>) {
+        for child in &c.children {
+            match child.shape {
+                Shape::Struct => contents.structs.push(child),
+                Shape::Enum => contents.enums.push(child),
+                Shape::Trait => contents.traits.push(child),
+                Shape::Impl => contents.impls.push(child),
+                Shape::Fn => contents.fns.push(child),
+                Shape::Group | Shape::Mod => walk(child, contents),
+            }
+        }
+    }
+    walk(module, &mut contents);
+    contents
+}
+
 fn gen_workspace_toml(sol: &Solution) -> GeneratedFile {
     let mut members = Vec::new();
     for item in &sol.items {
-        if let TopLevelItem::Context(ctx) = item {
-            members.push(format!("    \"crates/{}\"", to_snake(&ctx.name)));
+        if let TopLevelItem::Construct(c) = item {
+            if c.shape == Shape::Mod {
+                members.push(format!("    \"crates/{}\"", to_snake(&c.name)));
+            }
         }
     }
 
@@ -83,11 +150,16 @@ tracing = "0.1"
     }
 }
 
-fn gen_context_crate(ctx: &Context, _sol_name: &str, solution: &Solution, flow_generated: &mut bool) -> Vec<GeneratedFile> {
-    let crate_name = to_snake(&ctx.name);
+fn gen_module_crate(
+    module: &Construct,
+    all_impls: &[&Construct],
+    top_level_flows: &[&Flow],
+    flow_generated: &mut bool,
+) -> Vec<GeneratedFile> {
+    let crate_name = to_snake(&module.name);
     let mut files = Vec::new();
+    let contents = flatten_module(module);
 
-    // Cargo.toml for the crate
     files.push(GeneratedFile {
         path: format!("crates/{}/Cargo.toml", crate_name),
         content: format!(
@@ -108,112 +180,97 @@ tracing.workspace = true
         ),
     });
 
-    // lib.rs
     files.push(GeneratedFile {
         path: format!("crates/{}/src/lib.rs", crate_name),
         content: format!(
-            "//! {} bounded context.\n\npub mod domain;\npub mod ports;\npub mod adapters;\npub mod application;\n",
-            ctx.name
+            "//! {} — {}.\n\npub mod domain;\npub mod ports;\npub mod adapters;\npub mod application;\n",
+            module.name, module.subkind
         ),
     });
 
-    // Domain types
-    files.push(gen_domain_types(ctx, &crate_name));
-    files.push(gen_domain_events(ctx, &crate_name));
-    files.push(gen_domain_commands(ctx, &crate_name));
-    files.push(gen_domain_mod(ctx, &crate_name));
+    files.push(gen_types(&contents, &crate_name));
+    files.push(gen_child_types(&contents, &crate_name));
+    files.push(GeneratedFile {
+        path: format!("crates/{}/src/domain/mod.rs", crate_name),
+        content: "pub mod types;\npub mod messages;\n".to_string(),
+    });
 
-    // Ports
-    files.push(gen_ports(ctx, &crate_name));
+    files.push(gen_traits(&contents, &crate_name));
 
-    // Adapters — find adapters that target ports in this context
-    let ctx_port_names: Vec<&str> = ctx.items.iter().filter_map(|i| {
-        if let ContextItem::Construct(c) = i { if c.keyword == "port" { Some(c.name.as_str()) } else { None } } else { None }
-    }).collect();
+    // Impls targeting traits defined in this module (from anywhere in the tree).
+    let trait_names: Vec<&str> = contents.traits.iter().map(|t| t.name.as_str()).collect();
+    let impls_for_module: Vec<&Construct> = all_impls
+        .iter()
+        .filter(|i| {
+            i.target
+                .as_deref()
+                .map(|t| trait_names.contains(&t))
+                .unwrap_or(false)
+        })
+        .copied()
+        .collect();
+    files.push(gen_impls(&impls_for_module, &crate_name));
 
-    let adapters_for_ctx: Vec<&Adapter> = solution.items.iter().filter_map(|item| {
-        if let TopLevelItem::Adapter(a) = item {
-            if ctx_port_names.contains(&a.target_port.as_str()) {
-                return Some(a);
-            }
-        }
-        None
-    }).collect();
-
-    files.push(gen_adapters(&adapters_for_ctx, &crate_name));
-
-    // Application — generate flows only in the first context with ports
-    let has_ports = ctx.items.iter().any(|i| matches!(i, ContextItem::Construct(c) if c.keyword == "port"));
-    let flows: Vec<&Flow> = solution.items.iter().filter_map(|item| {
-        if let TopLevelItem::Flow(f) = item { Some(f) } else { None }
-    }).collect();
-
-    if !*flow_generated && has_ports {
+    // Application: fn-shaped constructs in this module, plus top-level flows
+    // (generated once, in the first module that has traits).
+    let mut app_flows: Vec<FlowLike> = contents.fns.iter().map(|c| FlowLike::Construct(c)).collect();
+    if !*flow_generated && !contents.traits.is_empty() && !top_level_flows.is_empty() {
         *flow_generated = true;
-        files.push(gen_application(&flows, ctx, &crate_name));
-    } else {
-        files.push(GeneratedFile {
-            path: format!("crates/{}/src/application/mod.rs", crate_name),
-            content: "//! Application services and flow orchestrators.\n".to_string(),
-        });
+        app_flows.extend(top_level_flows.iter().map(|f| FlowLike::Flow(f)));
     }
+    files.push(gen_application(&app_flows, &crate_name));
 
     files
 }
 
-fn gen_domain_mod(_ctx: &Context, crate_name: &str) -> GeneratedFile {
-    GeneratedFile {
-        path: format!("crates/{}/src/domain/mod.rs", crate_name),
-        content: "pub mod types;\npub mod events;\npub mod commands;\n".to_string(),
-    }
-}
-
-fn gen_domain_types(ctx: &Context, crate_name: &str) -> GeneratedFile {
+fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     let mut out = String::new();
-    out.push_str("//! Domain types — value objects, entities, and aggregates.\n\n");
+    out.push_str("//! Domain types.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
     out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse crate::ports::ValidationError;\n\n");
 
-    // Collect all defined type names
+    // Collect defined and referenced type names for stub generation.
     let mut defined_types: Vec<String> = Vec::new();
-    let mut all_referenced_types: Vec<String> = Vec::new();
+    let mut referenced: Vec<String> = Vec::new();
 
-    for item in &ctx.items {
-        match item {
-            ContextItem::Construct(c) => match c.keyword.as_str() {
-                "val" | "ent" => {
-                    defined_types.push(c.name.clone());
-                    collect_referenced_types(&c.fields, &mut all_referenced_types);
+    for c in &contents.structs {
+        defined_types.push(c.name.clone());
+        collect_construct_type_refs(c, &mut referenced);
+    }
+    for e in &contents.enums {
+        defined_types.push(e.name.clone());
+    }
+    for t in &contents.traits {
+        for method in &t.methods {
+            for param in &method.params {
+                collect_type_refs(&param.type_expr, &mut referenced);
+            }
+            if let Some(rt) = &method.return_type {
+                collect_type_refs(rt, &mut referenced);
+            }
+        }
+    }
+    for f in &contents.fns {
+        for input in &f.inputs {
+            collect_type_refs(&input.type_expr, &mut referenced);
+        }
+    }
+    // Enum-shaped named blocks define types too (e.g. `state CustomerStatus`).
+    for c in &contents.structs {
+        for block in &c.blocks {
+            if block.shape == Shape::Enum {
+                if let Some(name) = &block.name {
+                    defined_types.push(name.clone());
                 }
-                "agg" => {
-                    defined_types.push(c.name.clone());
-                    collect_referenced_types(&c.fields, &mut all_referenced_types);
-                    for sub in &c.sub_constructs {
-                        if sub.keyword == "cmd" {
-                            collect_referenced_types(&sub.fields, &mut all_referenced_types);
-                        }
-                    }
-                }
-                "port" | "repo" => {
-                    for method in &c.methods {
-                        for param in &method.params {
-                            collect_type_refs(&param.type_expr, &mut all_referenced_types);
-                        }
-                        if let Some(rt) = &method.return_type {
-                            collect_type_refs(rt, &mut all_referenced_types);
-                        }
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
+            }
         }
     }
 
-    // Generate stub type aliases for referenced-but-not-defined types
-    let builtin = ["Str", "Int", "F64", "Bool", "Bytes", "UUID", "DateTime",
-                   "List", "Map", "Set", "Opt", "Res", "String"];
-    let undefined: Vec<String> = all_referenced_types
+    let builtin = [
+        "Str", "Int", "F64", "Bool", "Bytes", "UUID", "DateTime", "List", "Map", "Set", "Opt",
+        "Res", "String",
+    ];
+    let undefined: Vec<String> = referenced
         .iter()
         .filter(|t| !defined_types.contains(t) && !builtin.contains(&t.as_str()))
         .cloned()
@@ -223,28 +280,19 @@ fn gen_domain_types(ctx: &Context, crate_name: &str) -> GeneratedFile {
 
     if !undefined.is_empty() {
         out.push_str("// Stub types — replace with actual definitions\n");
-        for t in &undefined {
+        let mut sorted = undefined;
+        sorted.sort();
+        for t in &sorted {
             out.push_str(&format!("pub type {} = String;\n", t));
         }
-        out.push_str("\n");
+        out.push('\n');
     }
 
-    for item in &ctx.items {
-        match item {
-            ContextItem::Construct(c) => match c.keyword.as_str() {
-                "val" => {
-                    out.push_str(&gen_value_object_from_construct(c));
-                }
-                "ent" => {
-                    out.push_str(&gen_entity_from_construct(c));
-                }
-                "agg" => {
-                    out.push_str(&gen_aggregate_from_construct(c));
-                }
-                _ => {}
-            },
-            _ => {}
-        }
+    for c in &contents.structs {
+        out.push_str(&gen_struct(c));
+    }
+    for e in &contents.enums {
+        out.push_str(&gen_enum(e));
     }
 
     GeneratedFile {
@@ -253,9 +301,26 @@ fn gen_domain_types(ctx: &Context, crate_name: &str) -> GeneratedFile {
     }
 }
 
-fn collect_referenced_types(fields: &[Field], refs: &mut Vec<String>) {
-    for field in fields {
+/// Collect type references from a struct-shaped construct (fields + blocks + nested).
+fn collect_construct_type_refs(c: &Construct, refs: &mut Vec<String>) {
+    for field in &c.fields {
         collect_type_refs(&field.type_expr, refs);
+    }
+    for block in &c.blocks {
+        for field in &block.fields {
+            collect_type_refs(&field.type_expr, refs);
+        }
+    }
+    for child in &c.children {
+        if child.shape == Shape::Struct {
+            for field in &child.fields {
+                // Shorthand fields (type == name) use inferred types — skip.
+                if matches!(&field.type_expr, TypeExpr::Named(n) if n == &field.name) {
+                    continue;
+                }
+                collect_type_refs(&field.type_expr, refs);
+            }
+        }
     }
 }
 
@@ -279,152 +344,146 @@ fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
     }
 }
 
-/// Generate code for a value object from a generic Construct.
-fn gen_value_object_from_construct(c: &Construct) -> String {
+/// Generate a struct-shaped construct: struct + enum blocks + invariant impl.
+fn gen_struct(c: &Construct) -> String {
     let mut out = String::new();
     let has_invariant = c.annotations.iter().any(|a| a.name == "invariant");
-    out.push_str(&format!(
-        "/// Value object: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {} {{\n",
-        c.name, c.name
-    ));
-    for field in &c.fields {
-        out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), type_to_rust(&field.type_expr)));
+
+    // Fields: direct plus struct-shaped named blocks (e.g. root).
+    let mut fields: Vec<&Field> = c.fields.iter().collect();
+    for block in &c.blocks {
+        if block.shape != Shape::Enum {
+            fields.extend(block.fields.iter());
+        }
     }
-    out.push_str("}\n\n");
-    if has_invariant {
+
+    out.push_str(&format!(
+        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {} {{\n",
+        c.subkind, c.name, c.name
+    ));
+    for field in &fields {
         out.push_str(&format!(
-            "impl {} {{\n    pub fn new({}) -> Result<Self, ValidationError> {{\n        let value = Self {{ {} }};\n        value.validate()?;\n        Ok(value)\n    }}\n\n    fn validate(&self) -> Result<(), ValidationError> {{\n        Ok(())\n    }}\n}}\n\n",
-            c.name,
-            c.fields.iter().map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr))).collect::<Vec<_>>().join(", "),
-            c.fields.iter().map(|f| to_snake(&f.name)).collect::<Vec<_>>().join(", "),
+            "    pub {}: {},\n",
+            to_snake(&field.name),
+            type_to_rust(&field.type_expr)
         ));
     }
-    out
-}
-
-/// Generate code for an entity from a generic Construct.
-fn gen_entity_from_construct(c: &Construct) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "/// Entity: {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
-        c.name, c.name
-    ));
-    for field in &c.fields {
-        out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), type_to_rust(&field.type_expr)));
-    }
     out.push_str("}\n\n");
-    out
-}
 
-/// Generate code for an aggregate from a generic Construct.
-fn gen_aggregate_from_construct(c: &Construct) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "/// Aggregate root: {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
-        c.name, c.name
-    ));
-    for field in &c.fields {
-        out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), type_to_rust(&field.type_expr)));
-    }
-    out.push_str("}\n\n");
-    out
-}
-
-fn gen_domain_events(ctx: &Context, crate_name: &str) -> GeneratedFile {
-    let mut out = String::new();
-    out.push_str("//! Domain events.\n\n");
-    out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\n\n");
-
-    // Collect all events from all aggregates
-    let mut events: Vec<&Construct> = Vec::new();
-    for item in &ctx.items {
-        if let ContextItem::Construct(c) = item {
-            if c.keyword == "agg" {
-                events.extend(c.sub_constructs.iter().filter(|s| s.keyword == "evt"));
-            }
-        }
-    }
-
-    if events.is_empty() {
-        out.push_str("// No domain events defined in this context.\n");
-    } else {
-        // Generate enum
-        out.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\npub enum DomainEvent {\n");
-        for evt in &events {
-            out.push_str(&format!("    {}({}Data),\n", evt.name, evt.name));
-        }
-        out.push_str("}\n\n");
-
-        // Generate data structs for each event
-        for evt in &events {
+    // Enum-shaped named blocks become enums (e.g. state machines).
+    for block in &c.blocks {
+        if block.shape == Shape::Enum {
+            let enum_name = block.name.clone().unwrap_or_else(|| format!("{}State", c.name));
             out.push_str(&format!(
-                "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {}Data {{\n",
-                evt.name
+                "/// States for {} ({} block)\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub enum {} {{\n",
+                c.name, block.keyword, enum_name
             ));
-            for field in &evt.fields {
-                let rust_type = if field.name == field.type_expr.to_string_simple() {
-                    infer_field_type(&field.name)
-                } else {
-                    type_to_rust(&field.type_expr)
-                };
-                out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), rust_type));
+            for v in &block.variants {
+                out.push_str(&format!("    {},\n", v));
             }
             out.push_str("}\n\n");
         }
     }
 
-    GeneratedFile {
-        path: format!("crates/{}/src/domain/events.rs", crate_name),
-        content: out,
+    if has_invariant {
+        out.push_str(&format!(
+            "impl {} {{\n    pub fn new({}) -> Result<Self, ValidationError> {{\n        let value = Self {{ {} }};\n        value.validate()?;\n        Ok(value)\n    }}\n\n    fn validate(&self) -> Result<(), ValidationError> {{\n        Ok(())\n    }}\n}}\n\n",
+            c.name,
+            fields
+                .iter()
+                .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            fields
+                .iter()
+                .map(|f| to_snake(&f.name))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
     }
+    out
 }
 
-fn gen_domain_commands(ctx: &Context, crate_name: &str) -> GeneratedFile {
+/// Generate an enum-shaped construct.
+fn gen_enum(c: &Construct) -> String {
     let mut out = String::new();
-    out.push_str("//! Domain commands.\n\n");
-    out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\n\n");
-    out.push_str("use super::types::*;\n\n");
+    out.push_str(&format!(
+        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub enum {} {{\n",
+        c.subkind, c.name, c.name
+    ));
+    for v in &c.variants {
+        out.push_str(&format!("    {},\n", v));
+    }
+    out.push_str("}\n\n");
+    out
+}
 
-    let mut has_commands = false;
-    for item in &ctx.items {
-        if let ContextItem::Construct(c) = item {
-            if c.keyword == "agg" {
-                for sub in &c.sub_constructs {
-                    if sub.keyword == "cmd" {
-                        has_commands = true;
-                        out.push_str(&format!(
-                            "/// Command: {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
-                            sub.name, sub.name
-                        ));
-                        for field in &sub.fields {
-                            out.push_str(&format!(
-                                "    pub {}: {},\n",
-                                to_snake(&field.name),
-                                type_to_rust(&field.type_expr)
-                            ));
-                        }
-                        out.push_str("}\n\n");
-                    }
+/// Generate messages.rs: structs nested inside other structs (events,
+/// commands, or any layer-defined message-like constructs).
+fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
+    let mut out = String::new();
+    out.push_str("//! Nested message types (grouped by parent construct).\n\n");
+    out.push_str("#![allow(unused_imports)]\n\n");
+    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\n\nuse super::types::*;\n\n");
+
+    let mut any = false;
+    for parent in &contents.structs {
+        // Group children by subkind so each layer concept gets its own enum.
+        let mut by_subkind: Vec<(&str, Vec<&Construct>)> = Vec::new();
+        for child in &parent.children {
+            if child.shape != Shape::Struct {
+                continue;
+            }
+            if let Some(entry) = by_subkind.iter_mut().find(|(k, _)| *k == child.subkind) {
+                entry.1.push(child);
+            } else {
+                by_subkind.push((child.subkind.as_str(), vec![child]));
+            }
+        }
+        for (subkind, children) in &by_subkind {
+            any = true;
+            // Wrapper enum per (parent, subkind): e.g. CustomerEvent.
+            let enum_name = format!("{}{}", parent.name, subkind);
+            out.push_str(&format!(
+                "/// {} messages for {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub enum {} {{\n",
+                subkind, parent.name, enum_name
+            ));
+            for child in children {
+                out.push_str(&format!("    {}({}),\n", child.name, child.name));
+            }
+            out.push_str("}\n\n");
+
+            for child in children {
+                out.push_str(&format!(
+                    "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
+                    child.name
+                ));
+                for field in &child.fields {
+                    // Shorthand fields (type == name) get inferred types.
+                    let rust_type = match &field.type_expr {
+                        TypeExpr::Named(n) if n == &field.name => infer_field_type(&field.name),
+                        other => type_to_rust(other),
+                    };
+                    out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), rust_type));
                 }
+                out.push_str("}\n\n");
             }
         }
     }
 
-    if !has_commands {
-        out.push_str("// No commands defined in this context.\n");
+    if !any {
+        out.push_str("// No nested message types defined in this module.\n");
     }
 
     GeneratedFile {
-        path: format!("crates/{}/src/domain/commands.rs", crate_name),
+        path: format!("crates/{}/src/domain/messages.rs", crate_name),
         content: out,
     }
 }
 
-fn gen_ports(ctx: &Context, crate_name: &str) -> GeneratedFile {
+fn gen_traits(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     let mut out = String::new();
-    out.push_str("//! Port definitions (async traits).\n\n");
+    out.push_str("//! Trait definitions (async traits).\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
     out.push_str("use crate::domain::types::*;\n\n");
@@ -433,34 +492,28 @@ fn gen_ports(ctx: &Context, crate_name: &str) -> GeneratedFile {
     out.push_str("    #[error(\"Validation failed: {0}\")]\n    Validation(String),\n");
     out.push_str("    #[error(\"External service error: {0}\")]\n    External(String),\n");
     out.push_str("}\n\n");
-    out.push_str("/// Validation error for value objects.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\n");
+    out.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\n");
 
-    for item in &ctx.items {
-        if let ContextItem::Construct(c) = item {
-            if c.keyword == "port" || c.keyword == "repo" {
-                out.push_str(&format!(
-                    "#[async_trait]\npub trait {} {{\n",
-                    c.name
-                ));
-                for method in &c.methods {
-                    let params = method
-                        .params
-                        .iter()
-                        .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let ret = match &method.return_type {
-                        Some(t) => format!(" -> {}", type_to_rust(t)),
-                        None => String::new(),
-                    };
-                    out.push_str(&format!(
-                        "    async fn {}(&self, {}){ret};\n",
-                        to_snake(&method.name), params
-                    ));
-                }
-                out.push_str("}\n\n");
-            }
+    for t in &contents.traits {
+        out.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {} {{\n", t.subkind, t.name, t.name));
+        for method in &t.methods {
+            let params = method
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret = match &method.return_type {
+                Some(t) => format!(" -> {}", type_to_rust(t)),
+                None => String::new(),
+            };
+            out.push_str(&format!(
+                "    async fn {}(&self, {}){ret};\n",
+                to_snake(&method.name),
+                params
+            ));
         }
+        out.push_str("}\n\n");
     }
 
     GeneratedFile {
@@ -469,23 +522,22 @@ fn gen_ports(ctx: &Context, crate_name: &str) -> GeneratedFile {
     }
 }
 
-fn gen_adapters(adapters: &[&Adapter], crate_name: &str) -> GeneratedFile {
+fn gen_impls(impls: &[&Construct], crate_name: &str) -> GeneratedFile {
     let mut out = String::new();
-    out.push_str("//! Adapter implementations.\n\n");
+    out.push_str("//! Implementations of traits.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse uuid::Uuid;\n\n");
 
-    if adapters.is_empty() {
-        out.push_str("// No adapters target ports in this context.\n");
+    if impls.is_empty() {
+        out.push_str("// No implementations target traits in this module.\n");
     } else {
-        for adapter in adapters {
-            // Generate struct
+        for c in impls {
+            let target = c.target.as_deref().unwrap_or("?");
             out.push_str(&format!(
-                "/// Adapter: {} (implements {})\npub struct {} {{\n",
-                adapter.name, adapter.target_port, adapter.name
+                "/// {}: {} (implements {})\npub struct {} {{\n",
+                c.subkind, c.name, target, c.name
             ));
-            // Add env config fields from annotations
-            for ann in &adapter.annotations {
+            for ann in &c.annotations {
                 if ann.name == "env" {
                     for arg in &ann.args {
                         out.push_str(&format!("    pub {}: String,\n", arg.to_lowercase()));
@@ -494,11 +546,9 @@ fn gen_adapters(adapters: &[&Adapter], crate_name: &str) -> GeneratedFile {
             }
             out.push_str("}\n\n");
 
-            // Note: full trait impl would require matching exact method signatures
-            // from the port trait. For now, generate a placeholder comment.
             out.push_str(&format!(
                 "// TODO: Implement {} for {}\n// #[async_trait]\n// impl {} for {} {{ ... }}\n\n",
-                adapter.target_port, adapter.name, adapter.target_port, adapter.name
+                target, c.name, target, c.name
             ));
         }
     }
@@ -509,63 +559,86 @@ fn gen_adapters(adapters: &[&Adapter], crate_name: &str) -> GeneratedFile {
     }
 }
 
-fn gen_application(flows: &[&Flow], ctx: &Context, crate_name: &str) -> GeneratedFile {
+/// Something that generates an orchestrator function — either a core `flow`
+/// or an fn-shaped layer construct (service, saga, ...).
+enum FlowLike<'a> {
+    Flow(&'a Flow),
+    Construct(&'a Construct),
+}
+
+fn gen_application(flows: &[FlowLike], crate_name: &str) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Application services and flow orchestrators.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables)]\n\n");
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse uuid::Uuid;\n\n");
 
-    // Only generate flows in the first context that has ports
-    let has_ports = ctx.items.iter().any(|i| matches!(i, ContextItem::Construct(c) if c.keyword == "port"));
+    if flows.is_empty() {
+        out.push_str("// No flows defined in this module.\n");
+    }
 
-    if has_ports && !flows.is_empty() {
-        for flow in flows {
-            out.push_str(&format!("/// Flow orchestrator: {}\n", flow.name));
+    for flow in flows {
+        let (name, subkind, annotations, inputs, steps) = match flow {
+            FlowLike::Flow(f) => (
+                &f.name,
+                "Flow",
+                &f.annotations,
+                &f.inputs,
+                &f.steps,
+            ),
+            FlowLike::Construct(c) => (
+                &c.name,
+                c.subkind.as_str(),
+                &c.annotations,
+                &c.inputs,
+                &c.steps,
+            ),
+        };
 
-            for ann in &flow.annotations {
-                out.push_str(&format!("/// @{}\n", ann.name));
-            }
+        out.push_str(&format!("/// {}: {}\n", subkind, name));
+        for ann in annotations {
+            out.push_str(&format!("/// @{}\n", ann.name));
+        }
 
-            let params = flow.inputs.iter().map(|f| {
-                format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr))
-            }).collect::<Vec<_>>().join(",\n    ");
+        let params = inputs
+            .iter()
+            .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
+            .collect::<Vec<_>>()
+            .join(",\n    ");
 
-            out.push_str(&format!(
-                "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}\n) -> Result<Uuid, DomainError> {{\n",
-                to_snake(&flow.name), params
-            ));
+        out.push_str(&format!(
+            "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}\n) -> Result<Uuid, DomainError> {{\n",
+            to_snake(name),
+            params
+        ));
 
-            for step in &flow.steps {
-                match step {
-                    FlowStep::Step(s) => {
+        for step in steps {
+            match step {
+                FlowStep::Step(s) => {
+                    out.push_str(&format!(
+                        "    // Step: {}\n    tracing::info!(\"executing: {}\");\n\n",
+                        s.name, s.name
+                    ));
+                }
+                FlowStep::Parallel(par) => {
+                    out.push_str("    // Parallel execution\n");
+                    out.push_str("    tokio::join!(\n");
+                    for s in &par.steps {
                         out.push_str(&format!(
-                            "    // Step: {}\n    tracing::info!(\"executing: {}\");\n\n",
-                            s.name, s.name
+                            "        async {{ tracing::info!(\"parallel: {}\"); }},\n",
+                            s.name
                         ));
                     }
-                    FlowStep::Parallel(par) => {
-                        out.push_str("    // Parallel execution\n");
-                        out.push_str("    tokio::join!(\n");
-                        for s in &par.steps {
-                            out.push_str(&format!(
-                                "        async {{ tracing::info!(\"parallel: {}\"); }},\n",
-                                s.name
-                            ));
-                        }
-                        out.push_str("    );\n\n");
-                    }
-                    FlowStep::Match(_) => {
-                        out.push_str("    // TODO: match/branch logic\n\n");
-                    }
+                    out.push_str("    );\n\n");
+                }
+                FlowStep::Match(_) => {
+                    out.push_str("    // TODO: match/branch logic\n\n");
                 }
             }
-
-            out.push_str("    // TODO: implement full flow logic\n");
-            out.push_str("    Ok(Uuid::new_v4())\n");
-            out.push_str("}\n\n");
         }
-    } else {
-        out.push_str("// No flows generated for this context.\n");
+
+        out.push_str("    // TODO: implement full flow logic\n");
+        out.push_str("    Ok(Uuid::new_v4())\n");
+        out.push_str("}\n\n");
     }
 
     GeneratedFile {
@@ -600,40 +673,30 @@ fn type_to_rust(ty: &TypeExpr) -> String {
             other => other.to_string(),
         },
         TypeExpr::Generic(name, args) => {
-            let rust_args = args.iter().map(|a| type_to_rust(a)).collect::<Vec<_>>().join(", ");
+            let rust_args = args.iter().map(type_to_rust).collect::<Vec<_>>().join(", ");
             format!("{}<{}>", name, rust_args)
         }
         TypeExpr::Result(Some(inner)) => format!("Result<{}, DomainError>", type_to_rust(inner)),
         TypeExpr::Result(None) => "Result<(), DomainError>".to_string(),
         TypeExpr::Optional(inner) => format!("Option<{}>", type_to_rust(inner)),
         TypeExpr::List(inner) => format!("Vec<{}>", type_to_rust(inner)),
-        TypeExpr::Map(k, v) => format!("std::collections::HashMap<{}, {}>", type_to_rust(k), type_to_rust(v)),
+        TypeExpr::Map(k, v) => format!(
+            "std::collections::HashMap<{}, {}>",
+            type_to_rust(k),
+            type_to_rust(v)
+        ),
         TypeExpr::Set(inner) => format!("std::collections::HashSet<{}>", type_to_rust(inner)),
     }
 }
 
+/// Infer a Rust type for shorthand fields (untyped, name-only).
+/// Purely conventional inference on the field NAME — not domain knowledge.
 fn infer_field_type(name: &str) -> String {
-    match name {
-        "id" => "Uuid".to_string(),
-        "created" | "updated" | "verified_at" | "created_at" | "updated_at" => {
-            "DateTime<Utc>".to_string()
-        }
-        "email" => "String".to_string(),
-        "name" | "status" | "reason" => "String".to_string(),
-        _ => "String".to_string(),
+    if name == "id" || name.ends_with("_id") {
+        return "Uuid".to_string();
     }
-}
-
-// Helper trait for TypeExpr to get simple string representation
-trait TypeExprExt {
-    fn to_string_simple(&self) -> String;
-}
-
-impl TypeExprExt for TypeExpr {
-    fn to_string_simple(&self) -> String {
-        match self {
-            TypeExpr::Named(n) => n.clone(),
-            _ => String::new(),
-        }
+    if name.ends_with("_at") || name == "created" || name == "updated" {
+        return "DateTime<Utc>".to_string();
     }
+    "String".to_string()
 }

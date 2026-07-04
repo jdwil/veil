@@ -1,0 +1,103 @@
+# CRM abstraction layer — stacked on top of ddd.
+# Every construct maps to a ddd construct (by keyword or name), which itself
+# maps to a core shape. The engine resolves the chain transitively:
+#   pipeline -> ctx -> mod,  lead -> agg -> struct,  playbook -> saga -> fn
+# No Rust code knows anything about CRM (or DDD).
+pkg crm v1
+  desc "Customer Relationship Management vocabulary, built on DDD"
+  author "VEIL"
+  use ddd
+
+  construct Pipeline
+    keyword pipeline
+    maps_to ctx
+    desc "A sales pipeline — a bounded context for one revenue motion"
+    constraints
+      requires_groups
+    visual
+      icon "🛒"
+      color "#0284c7"
+      label "Pipeline"
+    allowed_in top
+
+  construct Lead
+    keyword lead
+    maps_to agg
+    allowed_in Pipeline
+    desc "A lead — aggregate tracking a potential customer through the funnel"
+    contains
+      root: struct
+      stage: enum
+      fn[]
+      Signal[]
+      Move[]
+    constraints
+      must_have root
+    visual
+      icon "🎣"
+      color "#65a30d"
+      label "Lead"
+    group domain
+
+  construct Signal
+    keyword signal
+    maps_to evt
+    desc "A buying signal — domain event on a lead"
+    visual
+      icon "📶"
+      color "#eab308"
+      label "Signal"
+    group domain
+    allowed_in Lead
+
+  construct Move
+    keyword move
+    maps_to cmd
+    desc "A funnel move — command that advances a lead"
+    visual
+      icon "➡️"
+      color "#2563eb"
+      label "Move"
+    group domain
+    allowed_in Lead
+
+  construct Integration
+    keyword integration
+    maps_to port
+    allowed_in Pipeline
+    desc "External system contract (email, enrichment, calendar...)"
+    visual
+      icon "🧷"
+      color "#0d9488"
+      label "Integration"
+    group domain
+
+  construct Connector
+    keyword connector
+    maps_to adapter
+    allowed_in Pipeline
+    desc "Concrete integration implementation for a vendor"
+    visual
+      icon "🔌"
+      color "#9333ea"
+      label "Connector"
+    group infrastructure
+
+  construct Playbook
+    keyword playbook
+    maps_to saga
+    desc "A playbook — multi-step motion across pipelines with rollback"
+    visual
+      icon "📖"
+      color "#be123c"
+      label "Playbook"
+    allowed_in Orchestrator
+
+  statement notify
+    maps_to dispatch
+    desc "Notify the team through the signal bus"
+    semantics signal_bus_notify
+    visual
+      icon "🔔"
+      color "#f59e0b"
+      label "Notify"

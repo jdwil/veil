@@ -1,7 +1,13 @@
 //! VEIL CLI — parse, validate, generate, and serve VEIL files.
+//!
+//! All vocabulary comes from `.layer` files referenced by the input's `use`
+//! lines. The CLI contains zero domain knowledge: it loads the layer registry,
+//! hands it to the parser, and serves palette metadata straight from it.
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+use veil_ir::LayerRegistry;
 
 #[derive(Parser)]
 #[command(name = "veil", version, about = "VEIL — Visual Engineering Intermediate Language")]
@@ -50,229 +56,30 @@ enum Commands {
     },
 }
 
-/// Palette construct definition for the viewer
-#[derive(serde::Serialize)]
-struct PaletteConstruct {
-    name: String,
-    kind: String,
-    icon: String,
-    color: String,
-    label: String,
-    group: String,
-    allowed_in: String,
-}
-
-/// Build the palette configuration by reading only .layer files referenced by the .veil file.
-fn build_palette_config(file_path: &std::path::Path) -> Vec<PaletteConstruct> {
-    let mut constructs = Vec::new();
-    let dir = file_path.parent().unwrap_or(std::path::Path::new("."));
-
-    // Read the .veil file to find 'use' declarations
-    let veil_content = std::fs::read_to_string(file_path).unwrap_or_default();
-    let used_layers: Vec<String> = veil_content.lines()
-        .map(|l| l.trim())
-        .filter(|l| l.starts_with("use "))
-        .map(|l| l.strip_prefix("use ").unwrap_or("").trim().to_string())
-        .collect();
-
-    // Load only the referenced .layer files
-    for layer_name in &used_layers {
-        let layer_path = dir.join(format!("{}.layer", layer_name));
-        if let Ok(content) = std::fs::read_to_string(&layer_path) {
-            constructs.extend(parse_layer_constructs(&content));
+/// Load the layer registry for a .veil file, exiting on layer errors.
+fn registry_for(file: &std::path::Path) -> LayerRegistry {
+    match LayerRegistry::for_veil_file(file) {
+        Ok(reg) => reg,
+        Err(e) => {
+            eprintln!("Layer error: {}", e);
+            std::process::exit(1);
         }
     }
-
-    // If no layers referenced, return empty (base primitives could be implicit later)
-    constructs
 }
 
-/// Parse construct definitions from a .layer file content.
-fn parse_layer_constructs(content: &str) -> Vec<PaletteConstruct> {
-    let mut constructs = Vec::new();
-    let mut current: Option<PaletteConstruct> = None;
-    let mut in_visual = false;
-    let mut in_skip_block = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed.starts_with("construct ") {
-            if let Some(c) = current.take() { constructs.push(c); }
-            let name = trimmed.strip_prefix("construct ").unwrap().trim().to_string();
-            current = Some(PaletteConstruct {
-                name: name.clone(), kind: String::new(), icon: String::new(),
-                color: String::new(), label: name, group: String::new(), allowed_in: String::new(),
-            });
-            in_visual = false;
-            in_skip_block = false;
-        } else if trimmed.starts_with("statement ") {
-            if let Some(c) = current.take() { constructs.push(c); }
-            current = None;
-            in_visual = false;
-            in_skip_block = false;
-        } else if let Some(ref mut c) = current {
-            if (trimmed == "contains" || trimmed == "constraints") && !in_visual {
-                in_skip_block = true;
-            } else if trimmed == "visual" {
-                in_visual = true;
-                in_skip_block = false;
-            } else if in_skip_block {
-                if indent <= 4 && !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    in_skip_block = false;
-                    if trimmed == "visual" {
-                        in_visual = true;
-                    } else if trimmed == "contains" || trimmed == "constraints" {
-                        in_skip_block = true;
-                    } else {
-                        parse_construct_field(c, trimmed);
-                    }
-                }
-            } else if in_visual {
-                if trimmed.starts_with("icon ") {
-                    c.icon = extract_quoted(trimmed.strip_prefix("icon ").unwrap_or(""));
-                } else if trimmed.starts_with("color ") {
-                    c.color = extract_quoted(trimmed.strip_prefix("color ").unwrap_or(""));
-                } else if trimmed.starts_with("label ") {
-                    c.label = extract_quoted(trimmed.strip_prefix("label ").unwrap_or(""));
-                } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    in_visual = false;
-                    parse_construct_field(c, trimmed);
-                }
-            } else if !trimmed.is_empty() {
-                parse_construct_field(c, trimmed);
+fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Solution, LayerRegistry) {
+    let tokens = veil_parser::lex(source);
+    let registry = registry_for(file);
+    match veil_parser::parse_with_registry(&tokens, registry.clone()) {
+        Ok(sol) => (sol, registry),
+        Err(errors) => {
+            eprintln!("Parse errors:");
+            for err in &errors {
+                eprintln!("  {}", err);
             }
+            std::process::exit(1);
         }
     }
-    if let Some(c) = current.take() { constructs.push(c); }
-
-    for c in &mut constructs {
-        if c.kind.is_empty() {
-            c.kind = match c.name.as_str() {
-                "Context" | "Orchestrator" => "Module".to_string(),
-                "Aggregate" | "Entity" | "ValueObject" | "Event" | "Command" => "TypeDef".to_string(),
-                "Port" | "Repository" => "Interface".to_string(),
-                "Adapter" => "Implementation".to_string(),
-                "DomainService" | "Saga" => "Flow".to_string(),
-                _ => "TypeDef".to_string(),
-            };
-        }
-    }
-    constructs
-}
-
-fn parse_construct_field(c: &mut PaletteConstruct, line: &str) {
-    if line.starts_with("maps_to ") {
-        let val = line.strip_prefix("maps_to ").unwrap_or("").trim();
-        c.kind = match val {
-            "mod" => "Module".to_string(),
-            "struct" => "TypeDef".to_string(),
-            "trait" => "Interface".to_string(),
-            "impl" => "Implementation".to_string(),
-            "fn" => "Flow".to_string(),
-            _ => val.to_string(),
-        };
-    } else if line.starts_with("group ") {
-        c.group = line.strip_prefix("group ").unwrap_or("").trim().to_string();
-    } else if line.starts_with("allowed_in ") {
-        c.allowed_in = line.strip_prefix("allowed_in ").unwrap_or("").trim().to_string();
-    }
-}
-
-fn extract_quoted(s: &str) -> String {
-    let s = s.trim();
-    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-        s[1..s.len() - 1].to_string()
-    } else {
-        s.to_string()
-    }
-}
-
-/// Extract validation structure from the parsed solution AST.
-
-/// Load keyword→category map from layer files referenced by a .veil file.
-/// Returns None if no layers are found (uses parser defaults).
-fn load_keywords_for_file(file: &std::path::Path) -> Option<std::collections::HashMap<String, veil_parser::ConstructCategory>> {
-    let schemas = veil_ir::validate::load_referenced_schemas(file);
-    if schemas.is_empty() {
-        return None;
-    }
-    let mappings = veil_ir::validate::extract_keyword_mappings(&schemas);
-    if mappings.is_empty() {
-        return None;
-    }
-    Some(veil_parser::categories_from_layer(&mappings))
-}
-
-fn extract_validation_items(sol: &veil_ir::Solution) -> Vec<(&str, &str, Vec<(&str, &str)>)> {
-    use veil_ir::ast::*;
-
-    let mut items = Vec::new();
-
-    fn construct_type_name(c: &Construct) -> &'static str {
-        match c.keyword.as_str() {
-            "agg" => "Aggregate",
-            "ent" => "Entity",
-            "val" => "ValueObject",
-            "port" | "repo" => "Port",
-            "svc" => "DomainService",
-            "saga" => "Saga",
-            "adapter" => "Adapter",
-            _ => "Unknown",
-        }
-    }
-
-    fn extract_children<'a>(ci_items: &'a [ContextItem]) -> Vec<(&'static str, &'a str)> {
-        let mut children = Vec::new();
-        for ci in ci_items {
-            match ci {
-                ContextItem::Construct(c) => {
-                    let type_name = if c.annotations.iter().any(|a| a.name == "__saga") {
-                        "Saga"
-                    } else {
-                        construct_type_name(c)
-                    };
-                    children.push((type_name, c.name.as_str()));
-                }
-                ContextItem::Group(g) => {
-                    children.push(("Group", g.name.as_str()));
-                }
-            }
-        }
-        children
-    }
-
-    for item in &sol.items {
-        match item {
-            TopLevelItem::Context(ctx) => {
-                let children = extract_children(&ctx.items);
-
-                // Determine if this is a Context or Orchestrator
-                let is_orchestrator = !ctx.items.is_empty() && ctx.items.iter().all(|ci| match ci {
-                    ContextItem::Construct(c) => c.keyword == "saga" || c.annotations.iter().any(|a| a.name == "__saga"),
-                    ContextItem::Group(g) => g.items.iter().all(|gi| matches!(gi,
-                        ContextItem::Construct(c) if c.keyword == "saga" || c.annotations.iter().any(|a| a.name == "__saga")
-                    )),
-                });
-
-                if is_orchestrator {
-                    items.push(("Orchestrator", ctx.name.as_str(), children));
-                } else {
-                    items.push(("Context", ctx.name.as_str(), children));
-                }
-            }
-            TopLevelItem::Saga(saga) => {
-                items.push(("Saga", saga.name.as_str(), Vec::new()));
-            }
-            TopLevelItem::Flow(flow) => {
-                items.push(("Flow", flow.name.as_str(), Vec::new()));
-            }
-            _ => {}
-        }
-    }
-
-    items
 }
 
 fn main() {
@@ -295,77 +102,33 @@ fn main() {
         }
         Commands::Parse { file } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
-            let tokens = veil_parser::lex(&source);
-            let keywords = load_keywords_for_file(&file);
-            match veil_parser::parse_with_keywords(&tokens, keywords) {
-                Ok(sol) => {
-                    println!("{}", serde_json::to_string_pretty(&sol).unwrap());
-                }
-                Err(errors) => {
-                    eprintln!("Parse errors:");
-                    for err in &errors {
-                        eprintln!("  {}", err);
-                    }
-                    std::process::exit(1);
-                }
-            }
+            let (sol, _) = parse_solution_or_exit(&source, &file);
+            println!("{}", serde_json::to_string_pretty(&sol).unwrap());
         }
         Commands::Check { file } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
-            let tokens = veil_parser::lex(&source);
-            let keywords = load_keywords_for_file(&file);
-            match veil_parser::parse_with_keywords(&tokens, keywords) {
-                Ok(sol) => {
-                    let graph = veil_ir::build_ir(&sol);
-                    println!("✓ Parsed: {}", sol.name);
-                    println!("  Nodes: {}", graph.nodes.len());
-                    println!("  Edges: {}", graph.edges.len());
+            let (sol, registry) = parse_solution_or_exit(&source, &file);
+            let graph = veil_ir::build_ir(&sol);
+            println!("✓ Parsed: {}", sol.name);
+            println!("  Layers: {}", registry.layers.join(", "));
+            println!("  Nodes: {}", graph.nodes.len());
+            println!("  Edges: {}", graph.edges.len());
 
-                    // Run layer validation
-                    let schemas = veil_ir::validate::load_referenced_schemas(&file);
-                    if !schemas.is_empty() {
-                        let mut all_errors = Vec::new();
-                        for schema in &schemas {
-                            // Extract structure from AST for validation
-                            let items = extract_validation_items(&sol);
-                            let errors = veil_ir::validate::validate_solution(&items, schema);
-                            all_errors.extend(errors);
-                        }
-                        if all_errors.is_empty() {
-                            println!("  Validation: ✓ all constraints pass");
-                        } else {
-                            println!("  Validation: ✗ {} error(s):", all_errors.len());
-                            for err in &all_errors {
-                                println!("    ✗ {}", err);
-                            }
-                        }
-                    }
-
-                    println!("\n{}", serde_json::to_string_pretty(&graph).unwrap());
-                }
-                Err(errors) => {
-                    eprintln!("Parse errors:");
-                    for err in &errors {
-                        eprintln!("  {}", err);
-                    }
-                    std::process::exit(1);
+            let errors = veil_ir::validate::validate_solution(&sol, &registry);
+            if errors.is_empty() {
+                println!("  Validation: ✓ all constraints pass");
+            } else {
+                println!("  Validation: ✗ {} error(s):", errors.len());
+                for err in &errors {
+                    println!("    ✗ {}", err);
                 }
             }
+
+            println!("\n{}", serde_json::to_string_pretty(&graph).unwrap());
         }
         Commands::Gen { file, output } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
-            let tokens = veil_parser::lex(&source);
-            let keywords = load_keywords_for_file(&file);
-            let sol = match veil_parser::parse_with_keywords(&tokens, keywords) {
-                Ok(sol) => sol,
-                Err(errors) => {
-                    eprintln!("Parse errors:");
-                    for err in &errors {
-                        eprintln!("  {}", err);
-                    }
-                    std::process::exit(1);
-                }
-            };
+            let (sol, _) = parse_solution_or_exit(&source, &file);
 
             let project = veil_codegen::generate(&sol);
             for file in &project.files {
@@ -383,28 +146,16 @@ fn main() {
         }
         Commands::Emit { file } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
-            let tokens = veil_parser::lex(&source);
-            let keywords = load_keywords_for_file(&file);
-            let sol = match veil_parser::parse_with_keywords(&tokens, keywords) {
-                Ok(sol) => sol,
-                Err(errors) => {
-                    eprintln!("Parse errors:");
-                    for err in &errors {
-                        eprintln!("  {}", err);
-                    }
-                    std::process::exit(1);
-                }
-            };
+            let (sol, _) = parse_solution_or_exit(&source, &file);
             let output = veil_ir::serialize_solution(&sol);
             print!("{}", output);
         }
         Commands::Serve { file, port } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
-            let keywords = load_keywords_for_file(&file);
+            let registry = registry_for(&file);
 
-            // Use parse_file to detect type
-            let veil_file = match veil_parser::parse_file_with_keywords(&tokens, keywords) {
+            let veil_file = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
                 Ok(f) => f,
                 Err(errors) => {
                     eprintln!("Parse errors:");
@@ -415,20 +166,18 @@ fn main() {
                 }
             };
 
-            // Build IR based on file type
             let graph = match &veil_file {
                 veil_ir::VeilFile::Solution(sol) => veil_ir::build_ir(sol),
                 veil_ir::VeilFile::Package(pkg) => {
-                    // For packages, build IR from internal items
                     let sol = veil_ir::Solution {
                         name: pkg.name.clone(),
                         span: pkg.span,
+                        uses: Vec::new(),
                         items: pkg.items.clone(),
                     };
                     veil_ir::build_ir(&sol)
                 }
                 veil_ir::VeilFile::Composition(comp) => {
-                    // For compositions, resolve packages and build filtered IR
                     let search_dir = file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
                     let search_paths = vec![search_dir];
 
@@ -440,8 +189,10 @@ fn main() {
                                 let pkg_source = std::fs::read_to_string(&path)
                                     .expect("Failed to read package");
                                 let pkg_tokens = veil_parser::lex(&pkg_source);
+                                let pkg_registry = veil_ir::LayerRegistry::for_veil_file(&path)
+                                    .unwrap_or_else(|_| veil_ir::LayerRegistry::builtin());
                                 if let Ok(veil_ir::VeilFile::Package(pkg)) =
-                                    veil_parser::parse_file(&pkg_tokens)
+                                    veil_parser::parse_file_with_registry(&pkg_tokens, pkg_registry)
                                 {
                                     resolved.push(veil_ir::resolve_package(&pkg, imp.alias));
                                 }
@@ -457,18 +208,20 @@ fn main() {
             let graph_json = serde_json::to_string(&graph).unwrap();
             let node_count = graph.nodes.len();
             let edge_count = graph.edges.len();
-
-            // Also serve the VEIL source for the code panel
             let veil_source = source.clone();
 
             println!("✓ Serving VEIL IR ({} nodes, {} edges)", node_count, edge_count);
+            println!("  Layers: {}", registry.layers.join(", "));
             println!("  API: http://localhost:{}/api/ir", port);
             println!("  Source: http://localhost:{}/api/source", port);
+            println!("  Palette: http://localhost:{}/api/palette", port);
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
-                // Build palette config from loaded layers
-                let palette_json = serde_json::to_string(&build_palette_config(&file)).unwrap();
+                // Palette straight from the registry — visuals, groups,
+                // placement rules, and statements, all layer-defined.
+                let palette_json =
+                    serde_json::to_string(&veil_ir::palette_from_registry(&registry)).unwrap();
 
                 let app = axum::Router::new()
                     .route("/api/ir", axum::routing::get({

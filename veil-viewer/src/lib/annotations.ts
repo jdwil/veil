@@ -1,7 +1,7 @@
-// Annotation schema — defines available annotations per node kind,
-// their parameters, and valid values.
-
-import type { NodeKind } from './types';
+// Annotation schema — defines available annotations per display type.
+// Keys are either core node kinds ("Flow", "Step") or layer construct
+// names ("Aggregate", "Saga"). Layer-named entries are editor conveniences;
+// unknown subkinds simply fall back to their core kind's annotations.
 
 export interface AnnotationParam {
   name: string;
@@ -17,8 +17,8 @@ export interface AnnotationDef {
   params: AnnotationParam[];
 }
 
-// Available annotations per node kind
-export const ANNOTATION_SCHEMA: Partial<Record<NodeKind, AnnotationDef[]>> = {
+// Available annotations per display type (core kind or layer construct name)
+export const ANNOTATION_SCHEMA: Record<string, AnnotationDef[]> = {
   Flow: [
     {
       name: 'async',

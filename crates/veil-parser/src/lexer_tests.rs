@@ -30,31 +30,61 @@ mod tests {
     }
 
     #[test]
-    fn test_all_toplevel_keywords() {
-        let src = "sol ctx agg ent val evt cmd qry port adapter flow svc pipe lang";
+    fn test_layer_vocabulary_lexes_as_ident() {
+        // The lexer knows NOTHING about domain vocabulary — every layer
+        // keyword is a plain identifier until the parser consults the registry.
+        let src = "ctx agg ent val evt cmd port adapter svc saga orchestrator dispatch invoke request guard emit compensate contexts root state pipeline lead";
+        let k = kinds(src);
+        assert!(
+            k.iter().all(|t| *t == TokenKind::Ident),
+            "expected all Ident, got {:?}",
+            k
+        );
+    }
+
+    #[test]
+    fn test_core_structure_keywords() {
+        let src = "sol pkg use lang expose node flow step par err call input group export";
         let k = kinds(src);
         assert_eq!(
             k,
             vec![
-                TokenKind::Sol, TokenKind::Ctx, TokenKind::Agg, TokenKind::Ent,
-                TokenKind::Val, TokenKind::Evt, TokenKind::Cmd, TokenKind::Qry,
-                TokenKind::Port, TokenKind::Adapter, TokenKind::Flow, TokenKind::Svc,
-                TokenKind::Pipe, TokenKind::Lang,
+                TokenKind::Sol,
+                TokenKind::Pkg,
+                TokenKind::Use,
+                TokenKind::Lang,
+                TokenKind::Expose,
+                TokenKind::Node,
+                TokenKind::Flow,
+                TokenKind::Step,
+                TokenKind::Par,
+                TokenKind::Err,
+                TokenKind::Call,
+                TokenKind::Input,
+                TokenKind::Group,
+                TokenKind::Export,
             ]
         );
     }
 
     #[test]
-    fn test_flow_keywords() {
-        let src = "step par alt loop err match emit call ret input fallback impl for boundary";
+    fn test_core_language_keywords() {
+        let src = "struct enum fn trait let mod if else match ret impl";
         let k = kinds(src);
         assert_eq!(
             k,
             vec![
-                TokenKind::Step, TokenKind::Par, TokenKind::Alt, TokenKind::Loop,
-                TokenKind::Err, TokenKind::Match, TokenKind::Emit, TokenKind::Call,
-                TokenKind::Ret, TokenKind::Input, TokenKind::Fallback, TokenKind::Impl,
-                TokenKind::For, TokenKind::Boundary,
+                TokenKind::Struct,
+                TokenKind::Enum,
+                TokenKind::Fn,
+                TokenKind::Trait,
+                TokenKind::Let,
+                TokenKind::Mod,
+                TokenKind::If,
+                TokenKind::Else,
+                TokenKind::Match,
+                TokenKind::Ret,
+                TokenKind::Impl,
             ]
         );
     }
@@ -84,8 +114,8 @@ mod tests {
             k,
             vec![
                 TokenKind::Sol, TokenKind::Ident, TokenKind::Newline,
-                TokenKind::Indent, TokenKind::Ctx, TokenKind::Ident, TokenKind::Newline,
-                TokenKind::Indent, TokenKind::Agg, TokenKind::Ident,
+                TokenKind::Indent, TokenKind::Ident, TokenKind::Ident, TokenKind::Newline,
+                TokenKind::Indent, TokenKind::Ident, TokenKind::Ident,
                 TokenKind::Dedent, TokenKind::Dedent,
             ]
         );
@@ -95,10 +125,8 @@ mod tests {
     fn test_indent_dedent_multiple() {
         let src = "sol App\n  ctx A\n    agg B\n  ctx C";
         let k = kinds(src);
-        // After "agg B" we should dedent back to ctx level for "ctx C"
         assert!(k.contains(&TokenKind::Indent));
         assert!(k.contains(&TokenKind::Dedent));
-        // Count: 2 indents (sol->ctx, ctx->agg), 1 dedent (agg->ctx for "ctx C"), 1 dedent at EOF
         let indent_count = k.iter().filter(|t| **t == TokenKind::Indent).count();
         let dedent_count = k.iter().filter(|t| **t == TokenKind::Dedent).count();
         assert_eq!(indent_count, 2);
@@ -128,7 +156,6 @@ mod tests {
 
     #[test]
     fn test_annotation_stops_at_keyword() {
-        // @retry 3 followed by keyword 'step' should not consume 'step'
         let src = "@retry 3\nstep foo";
         let k = kinds(src);
         assert_eq!(k[0], TokenKind::Annotation);
@@ -164,14 +191,12 @@ mod tests {
 
     #[test]
     fn test_dot_not_float() {
-        // "c.id" should be Ident Dot Ident, not a float
         let k = kinds("c.id");
         assert_eq!(k, vec![TokenKind::Ident, TokenKind::Dot, TokenKind::Ident]);
     }
 
     #[test]
     fn test_result_type_syntax() {
-        // Res!<Customer> should tokenize as: Ident("Res") Bang LAngle Ident("Customer") RAngle
         let k = kinds("Res!<Customer>");
         assert_eq!(
             k,
@@ -221,20 +246,17 @@ mod tests {
 
     #[test]
     fn test_comment_skipped_in_indentation() {
-        // Comments shouldn't affect indentation state
         let src = "sol App\n  # comment\n  ctx Users";
         let k = kinds(src);
         let indent_count = k.iter().filter(|t| **t == TokenKind::Indent).count();
-        assert_eq!(indent_count, 1); // Only one indent: sol -> ctx level
+        assert_eq!(indent_count, 1);
     }
 
     #[test]
     fn test_blank_lines_skipped() {
         let src = "sol App\n\n  ctx Users";
         let k = kinds(src);
-        // Blank line shouldn't produce spurious dedents
         assert!(k.contains(&TokenKind::Sol));
-        assert!(k.contains(&TokenKind::Ctx));
         let indent_count = k.iter().filter(|t| **t == TokenKind::Indent).count();
         assert_eq!(indent_count, 1);
     }
@@ -243,10 +265,8 @@ mod tests {
     fn test_full_example_lexes() {
         let src = include_str!("../../../examples/customer_onboarding.veil");
         let tokens = lex(src);
-        // Should have tokens and end with Eof
         assert!(tokens.len() > 50);
         assert_eq!(tokens.last().unwrap().kind, TokenKind::Eof);
-        // Should have balanced indents/dedents
         let indents = tokens.iter().filter(|t| t.kind == TokenKind::Indent).count();
         let dedents = tokens.iter().filter(|t| t.kind == TokenKind::Dedent).count();
         assert_eq!(indents, dedents);
@@ -265,21 +285,23 @@ mod tests {
 
     #[test]
     fn test_emit_expression_tokens() {
+        // emit is layer vocabulary now — lexes as Ident.
         let src = "emit CustomerCreated{c.id, email, c.created}";
         let t = tokens_text(src);
-        assert_eq!(t[0], (TokenKind::Emit, "emit".to_string()));
+        assert_eq!(t[0], (TokenKind::Ident, "emit".to_string()));
         assert_eq!(t[1], (TokenKind::Ident, "CustomerCreated".to_string()));
         assert_eq!(t[2], (TokenKind::LBrace, "{".to_string()));
     }
 
     #[test]
     fn test_adapter_for_syntax() {
+        // adapter is layer vocabulary (Ident); `for` is core.
         let src = "adapter SmsTwilio for Notifier";
         let k = kinds(src);
         assert_eq!(
             k,
             vec![
-                TokenKind::Adapter, TokenKind::Ident,
+                TokenKind::Ident, TokenKind::Ident,
                 TokenKind::For, TokenKind::Ident,
             ]
         );

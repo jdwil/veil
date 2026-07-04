@@ -71,7 +71,7 @@
       }
       // Also find assigns at this level (variables created by steps)
       for (const child of children) {
-        if (child.kind === 'AssignAction') {
+        if (child.kind === 'Action' && child.metadata.subkind === 'assign') {
           const assignName = child.name.split(' = ')[0];
           if (assignName && !vars.includes(assignName)) {
             vars.push(assignName);
@@ -162,15 +162,16 @@
     const children = getChildren(graph, parentId);
     const visibleIds = new Set(children.map(c => c.id));
 
-    // Check if we're at the Solution level with Contexts + Sagas
+    // Check if we're at the Solution level with modules + cross-module flows
     const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
     const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
-    const contexts = children.filter(c => c.metadata.subkind === 'Context');
-    const sagas = children.filter(c => c.kind === 'Saga' || c.metadata.subkind === 'Saga');
+    const modules = children.filter(c => c.kind === 'Module');
+    // Any node that declares module references (e.g. a saga's contexts) spans modules
+    const spanning = children.filter(c => c.metadata.properties.some(([k]) => k === 'contexts'));
 
-    // Simple flat view — contexts, sagas, adapters as regular nodes
-    if (isSolutionLevel && contexts.length > 0) {
-    // Saga nodes get edges to the contexts they span
+    // Simple flat view — modules and flows as regular nodes
+    if (isSolutionLevel && modules.length > 0) {
+    // Spanning nodes get edges to the modules they reference
     const solNodes: Node[] = children.map(child => {
       const childChildren = getChildren(graph, child.id);
       const refs = getCrossRefs(graph, child.id, visibleIds);
@@ -191,20 +192,19 @@
       };
     });
 
-    // Edges: saga → contexts it spans
+    // Edges: spanning node → modules it references
     const solEdges: Edge[] = [];
 
-    for (const saga of sagas) {
-      // Draw edges from saga to each context it references
-      const ctxRefs = saga.metadata.properties.find(([k]) => k === 'contexts');
+    for (const span of spanning) {
+      const ctxRefs = span.metadata.properties.find(([k]) => k === 'contexts');
       if (ctxRefs) {
         const ctxNames = ctxRefs[1].split(', ');
         for (const ctxName of ctxNames) {
-          const ctxNode = contexts.find(c => c.name === ctxName);
+          const ctxNode = modules.find(c => c.name === ctxName);
           if (ctxNode) {
             solEdges.push({
-              id: `saga-ctx-${saga.id}-${ctxNode.id}`,
-              source: String(saga.id),
+              id: `span-${span.id}-${ctxNode.id}`,
+              source: String(span.id),
               target: String(ctxNode.id),
               animated: true,
               style: 'stroke: #dc2626; stroke-width: 2.5; stroke-dasharray: 6 3;',
@@ -355,9 +355,9 @@
     const allEdges = [...flowEdges, ...ghostEdges];
 
     const direction = parentNode?.kind === 'Flow' || parentNode?.kind === 'ParallelGateway'
-      || parentNode?.kind === 'Saga' ? 'LR' : 'TB';
+      ? 'LR' : 'TB';
 
-    const isFlowView = parentNode?.kind === 'Flow' || parentNode?.kind === 'Saga'
+    const isFlowView = parentNode?.kind === 'Flow'
       || parentNode?.kind === 'ParallelGateway' || parentNode?.kind === 'Step';
 
     if (isFlowView) {
@@ -379,7 +379,7 @@
     // Group nodes by their display type (subkind or kind)
     const groups: Record<string, Node[]> = {};
     for (const node of flowNodes) {
-      const type = node.data.subkind ?? node.data.kind ?? 'Other';
+      const type = String(node.data.subkind ?? node.data.kind ?? 'Other');
       if (!groups[type]) groups[type] = [];
       groups[type].push(node);
     }

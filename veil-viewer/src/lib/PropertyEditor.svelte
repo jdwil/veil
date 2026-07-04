@@ -28,13 +28,13 @@
     children = g.nodes.filter((n: IrNode) => n.metadata.parent === nodeId);
   });
 
-  // Determine what kind of editor to show
+  // Determine what kind of editor to show — driven by the core shape
+  // (node kind), never by layer-specific subkind names.
   let editorType = $derived.by(() => {
-    const sk = subkind ?? kind;
-    if (sk === 'Port' || kind === 'Interface') return 'methods';
-    if (['Aggregate', 'ValueObject', 'Entity', 'Event', 'Command'].includes(sk)) return 'fields';
-    if (sk === 'Adapter' || kind === 'Implementation') return 'adapter';
-    if (kind === 'Flow' || kind === 'Saga' || sk === 'DomainService') return 'flow';
+    if (kind === 'Interface') return 'methods';
+    if (kind === 'TypeDef') return 'fields';
+    if (kind === 'Implementation') return 'adapter';
+    if (kind === 'Flow') return 'flow';
     return 'generic';
   });
 
@@ -58,7 +58,7 @@
   // Parse children into editable field structures (for types)
   let fields = $derived.by(() => {
     return children
-      .filter(c => c.metadata.subkind === 'Event' || c.metadata.subkind === 'Command' || c.kind === 'TypeDef')
+      .filter(c => c.kind === 'TypeDef')
       .map(c => ({ name: c.name, type: c.metadata.subkind ?? c.kind }));
   });
 

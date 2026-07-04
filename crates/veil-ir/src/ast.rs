@@ -1,10 +1,16 @@
 //! VEIL Abstract Syntax Tree definitions.
+//!
+//! The AST is fully generic: there are NO domain-specific node types.
+//! Every layer-defined construct parses into `Construct`, stamped with the
+//! resolved core `Shape` and the layer's construct name (`subkind`).
+//! Layer-defined statements parse into `Expr::Action`.
 
 use serde::{Deserialize, Serialize};
 
+use crate::layer::{Shape, StmtShape};
 use crate::span::Span;
 
-/// Root of a VEIL file — either a solution or a package.
+/// Root of a VEIL file — solution, package, or composition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VeilFile {
     Solution(Solution),
@@ -65,43 +71,23 @@ pub struct ExposedNode {
     pub span: Span,
 }
 
-/// Root of a VEIL file — a solution (legacy, still supported).
+/// Root of a VEIL solution file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Solution {
     pub name: String,
     pub span: Span,
+    /// Layer/package references (`use ddd`).
+    #[serde(default)]
+    pub uses: Vec<UseImport>,
     pub items: Vec<TopLevelItem>,
 }
 
-/// Top-level items within a solution.
+/// Top-level items within a solution or package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TopLevelItem {
     Lang(LangBlock),
-    Context(Context),
+    Construct(Construct),
     Flow(Flow),
-    Adapter(Adapter),
-    Saga(Saga),
-}
-
-/// A saga — cross-context orchestration with compensation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Saga {
-    pub name: String,
-    pub span: Span,
-    pub annotations: Vec<Annotation>,
-    pub context_refs: Vec<String>,
-    pub inputs: Vec<Field>,
-    pub steps: Vec<SagaStep>,
-}
-
-/// A step within a saga, associated with a specific context.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SagaStep {
-    pub name: String,
-    pub context: Option<String>,
-    pub span: Span,
-    pub body: Vec<Expr>,
-    pub compensate: Vec<Expr>,
 }
 
 /// Ubiquitous language definitions.
@@ -118,184 +104,108 @@ pub struct LangEntry {
     pub span: Span,
 }
 
-/// A bounded context.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Context {
-    pub name: String,
-    pub span: Span,
-    pub items: Vec<ContextItem>,
-}
-
-/// Items within a bounded context.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ContextItem {
-    Construct(Construct),
-    Group(Group),
-}
-
-/// A generic construct — unified representation for all layer-defined constructs.
-/// The `keyword` field identifies what layer construct this is (e.g., "val", "agg", "port").
-/// Fields are populated based on the construct's category (struct/trait/impl/fn).
+/// The one construct type. Which fields are populated depends on `shape`:
+///
+/// - `Mod`/`Group` — `children`
+/// - `Struct` — `fields`, `blocks`, `fns`, nested `children`, `return_type`
+/// - `Enum` — `variants`, `transitions`
+/// - `Trait` — `methods`
+/// - `Impl` — `target`, `impls`
+/// - `Fn` — `inputs`, `steps`, `return_expr`, `refs`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Construct {
-    /// The keyword used in source (e.g., "val", "agg", "port", "svc")
+    /// The keyword used in source (e.g. "agg", "port", or a stacked-layer keyword).
     pub keyword: String,
+    /// The layer construct name (e.g. "Aggregate"). Used as the IR subkind.
+    pub subkind: String,
+    /// Resolved core parse shape.
+    pub shape: Shape,
     pub name: String,
     pub span: Span,
     pub annotations: Vec<Annotation>,
-    /// Fields — for struct-like constructs (val, ent, agg, evt, cmd)
-    pub fields: Vec<Field>,
-    /// Methods — for trait-like constructs (port, repo)
-    pub methods: Vec<PortMethod>,
-    /// Inputs — for fn-like constructs (svc, saga)
-    pub inputs: Vec<Field>,
-    /// Steps — for fn-like constructs (svc, saga)
-    pub steps: Vec<FlowStep>,
-    /// Return expression — for fn-like constructs
-    pub return_expr: Option<Box<Expr>>,
-    /// Target port — for impl-like constructs (adapter)
-    pub target: Option<String>,
-    /// Method implementations — for impl-like constructs (adapter)
-    pub impls: Vec<AdapterImpl>,
-    /// Sub-constructs — for composites (e.g., aggregate's events/commands)
-    pub sub_constructs: Vec<Construct>,
-    /// State machines — for aggregates
-    pub state_machines: Vec<StateMachine>,
-    /// Business logic methods — for aggregates
-    pub aggregate_fns: Vec<AggregateFn>,
-    /// Context refs — for sagas
-    pub context_refs: Vec<String>,
-    /// Return type — for commands
-    pub return_type: Option<TypeExpr>,
-}
+    /// Was this construct prefixed with `export`?
+    pub exported: bool,
 
-/// A visual group — purely organizational, no codegen impact.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Group {
-    pub name: String,
-    pub span: Span,
-    pub items: Vec<ContextItem>,
+    // ─── struct shape ─────────────────────────────────────────────────
+    pub fields: Vec<Field>,
+    /// Optional trailing `-> Type` line (e.g. command return types).
+    pub return_type: Option<TypeExpr>,
+    /// Named sub-blocks declared by the layer (`root: struct`, `state: enum`).
+    pub blocks: Vec<NamedBlock>,
+    /// Nested function definitions (business logic methods).
+    pub fns: Vec<FnDef>,
+
+    // ─── enum shape ───────────────────────────────────────────────────
+    pub variants: Vec<String>,
+    pub transitions: Vec<StateTransition>,
+
+    // ─── trait shape ──────────────────────────────────────────────────
+    pub methods: Vec<Method>,
+
+    // ─── impl shape ───────────────────────────────────────────────────
+    /// Target trait-shaped construct (`kw Name for Target`).
+    pub target: Option<String>,
+    pub impls: Vec<MethodImpl>,
+
+    // ─── fn shape ─────────────────────────────────────────────────────
+    pub inputs: Vec<Field>,
+    pub steps: Vec<FlowStep>,
+    pub return_expr: Option<Box<Expr>>,
+    /// Reference lines (`contexts Identity, Billing`).
+    pub refs: Vec<RefLine>,
+
+    // ─── mod/group shape + nesting ────────────────────────────────────
+    pub children: Vec<Construct>,
 }
 
 impl Construct {
-    /// Create an empty construct with just keyword, name, and span.
-    pub fn new(keyword: &str, name: String, span: Span) -> Self {
+    pub fn new(keyword: &str, subkind: &str, shape: Shape, name: String, span: Span) -> Self {
         Construct {
             keyword: keyword.to_string(),
+            subkind: subkind.to_string(),
+            shape,
             name,
             span,
             annotations: Vec::new(),
+            exported: false,
             fields: Vec::new(),
+            return_type: None,
+            blocks: Vec::new(),
+            fns: Vec::new(),
+            variants: Vec::new(),
+            transitions: Vec::new(),
             methods: Vec::new(),
+            target: None,
+            impls: Vec::new(),
             inputs: Vec::new(),
             steps: Vec::new(),
             return_expr: None,
-            target: None,
-            impls: Vec::new(),
-            sub_constructs: Vec::new(),
-            state_machines: Vec::new(),
-            aggregate_fns: Vec::new(),
-            context_refs: Vec::new(),
-            return_type: None,
+            refs: Vec::new(),
+            children: Vec::new(),
         }
     }
-
-    pub fn from_value_object(vo: ValueObject) -> Self {
-        let mut c = Self::new("val", vo.name, vo.span);
-        c.annotations = vo.annotations;
-        c.fields = vo.fields;
-        c
-    }
-
-    pub fn from_entity(ent: Entity) -> Self {
-        let mut c = Self::new("ent", ent.name, ent.span);
-        c.annotations = ent.annotations;
-        c.fields = ent.fields;
-        c
-    }
-
-    pub fn from_aggregate(agg: Aggregate) -> Self {
-        let mut c = Self::new("agg", agg.name, agg.span);
-        c.annotations = agg.annotations;
-        c.fields = agg.fields;
-        c.state_machines = agg.state_machines;
-        c.aggregate_fns = agg.methods;
-        // Convert events and commands to sub-constructs
-        for evt in agg.events {
-            let mut ec = Self::new("evt", evt.name, evt.span);
-            ec.fields = evt.fields;
-            c.sub_constructs.push(ec);
-        }
-        for cmd in agg.commands {
-            let mut cc = Self::new("cmd", cmd.name, cmd.span);
-            cc.fields = cmd.fields;
-            cc.return_type = cmd.return_type;
-            c.sub_constructs.push(cc);
-        }
-        c
-    }
-
-    pub fn from_port(port: Port) -> Self {
-        let mut c = Self::new("port", port.name, port.span);
-        c.methods = port.methods;
-        c
-    }
-
-    pub fn from_service(svc: Service, keyword: &str) -> Self {
-        let mut c = Self::new(keyword, svc.name, svc.span);
-        c.annotations = svc.annotations;
-        c.inputs = svc.inputs;
-        c.steps = svc.steps;
-        c.return_expr = svc.return_expr.map(Box::new);
-        c
-    }
-
-    pub fn from_adapter(adp: Adapter) -> Self {
-        let mut c = Self::new("adapter", adp.name, adp.span);
-        c.annotations = adp.annotations;
-        c.target = Some(adp.target_port);
-        c.impls = adp.impls;
-        c
-    }
 }
 
-/// A value object (no identity).
+/// A named sub-block within a struct-shaped construct, declared by the layer
+/// via `contains` entries like `root: struct` or `state: enum`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValueObject {
-    pub name: String,
-    pub span: Span,
+pub struct NamedBlock {
+    pub keyword: String,
+    pub shape: Shape,
+    /// Optional block name (`state CustomerStatus`).
+    pub name: Option<String>,
     pub fields: Vec<Field>,
-    pub annotations: Vec<Annotation>,
-}
-
-/// An entity (has identity).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entity {
-    pub name: String,
-    pub span: Span,
-    pub fields: Vec<Field>,
-    pub annotations: Vec<Annotation>,
-}
-
-/// An aggregate root.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Aggregate {
-    pub name: String,
-    pub span: Span,
-    pub fields: Vec<Field>,
-    pub annotations: Vec<Annotation>,
-    pub events: Vec<Event>,
-    pub commands: Vec<Command>,
-    pub state_machines: Vec<StateMachine>,
-    pub methods: Vec<AggregateFn>,
-}
-
-/// A state machine definition within an aggregate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StateMachine {
-    pub name: String,
-    pub span: Span,
+    pub variants: Vec<String>,
     pub transitions: Vec<StateTransition>,
+    pub span: Span,
+}
+
+/// A reference line — `keyword Name, Name, ...` metadata inside a construct.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefLine {
+    pub keyword: String,
+    pub values: Vec<String>,
+    pub span: Span,
 }
 
 /// A state transition: From -> To
@@ -306,9 +216,9 @@ pub struct StateTransition {
     pub span: Span,
 }
 
-/// A method/function on an aggregate (business logic).
+/// A nested function definition (business logic within a construct).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AggregateFn {
+pub struct FnDef {
     pub name: String,
     pub span: Span,
     pub params: Vec<Param>,
@@ -317,71 +227,25 @@ pub struct AggregateFn {
     pub body: Vec<Expr>,
 }
 
-/// A domain event.
+/// A method signature on a trait-shaped construct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Event {
-    pub name: String,
-    pub span: Span,
-    pub fields: Vec<Field>,
-}
-
-/// A command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Command {
-    pub name: String,
-    pub span: Span,
-    pub fields: Vec<Field>,
-    pub return_type: Option<TypeExpr>,
-}
-
-/// A port (interface/trait).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Port {
-    pub name: String,
-    pub span: Span,
-    pub methods: Vec<PortMethod>,
-}
-
-/// A method on a port.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortMethod {
+pub struct Method {
     pub name: String,
     pub span: Span,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
 }
 
-/// A service (domain service — orchestrates within a context, flow-like).
+/// A method implementation within an impl-shaped construct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Service {
-    pub name: String,
-    pub span: Span,
-    pub annotations: Vec<Annotation>,
-    pub inputs: Vec<Field>,
-    pub steps: Vec<FlowStep>,
-    pub return_expr: Option<Expr>,
-}
-
-/// An adapter (implementation of a port).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Adapter {
-    pub name: String,
-    pub target_port: String,
-    pub span: Span,
-    pub annotations: Vec<Annotation>,
-    pub impls: Vec<AdapterImpl>,
-}
-
-/// An adapter method implementation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdapterImpl {
+pub struct MethodImpl {
     pub method_name: String,
     pub params: Vec<String>,
     pub span: Span,
     pub body: Vec<Expr>,
 }
 
-/// A behavioral flow (use case orchestration).
+/// A behavioral flow (use case orchestration). Core language construct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Flow {
     pub name: String,
@@ -407,6 +271,18 @@ pub struct StepDef {
     pub name: String,
     pub span: Span,
     pub body: Vec<Expr>,
+    /// Reference lines within the step (`ctx Identity`).
+    pub refs: Vec<RefLine>,
+    /// Named expression sub-blocks within the step (`compensate`).
+    pub sub_blocks: Vec<SubBlock>,
+}
+
+/// A named expression block within a step (e.g. compensation logic).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubBlock {
+    pub keyword: String,
+    pub body: Vec<Expr>,
+    pub span: Span,
 }
 
 /// A parallel execution block.
@@ -475,10 +351,9 @@ pub struct Annotation {
     pub span: Span,
 }
 
-/// An expression.
+/// An expression. Only core language constructs — layer statements become `Action`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
-    // ─── Core expressions ─────────────────────────────────────────────
     /// Identifier reference
     Ident(String),
     /// Field access: expr.field
@@ -503,18 +378,28 @@ pub enum Expr {
     BoolLit(bool),
     /// Return expression
     Return(Box<Expr>),
+    /// Layer-defined statement (dispatch, invoke, guard, emit, ...).
+    Action(ActionExpr),
+}
 
-    // ─── Kit-level expressions (backward compat) ──────────────────────
-    /// Event dispatch (DDD layer)
-    Emit(EmitExpr),
-    /// Event dispatch via bus (DDD layer)
-    Dispatch(DispatchExpr),
-    /// Command invocation via bus (DDD layer)
-    Invoke(InvokeExpr),
-    /// Port request (DDD layer)
-    Request(RequestExpr),
-    /// Precondition guard (DDD layer)
-    Guard(GuardExpr),
+/// A layer-defined statement, parsed according to its core statement shape.
+///
+/// - `Call` shape: `kw Target(.method)? (args)` or `kw Target{name: expr, ...}`
+/// - `If` shape: `kw <condition> (, "message")?`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionExpr {
+    /// The statement keyword from the layer (e.g. "dispatch").
+    pub keyword: String,
+    pub shape: StmtShape,
+    // Call shape
+    pub target: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub named_args: Vec<(String, Expr)>,
+    // If shape
+    pub condition: Option<Box<Expr>>,
+    pub message: Option<String>,
+    pub span: Span,
 }
 
 /// Binary operator kinds
@@ -565,51 +450,10 @@ pub struct IfExprData {
     pub else_body: Option<Vec<Expr>>,
 }
 
-/// Dispatch — fire an event through the event bus (fire-and-forget).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DispatchExpr {
-    pub event_name: String,
-    pub fields: Vec<(String, Expr)>,
-    pub span: Span,
-}
-
-/// Invoke — execute a command through the command bus.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InvokeExpr {
-    pub target: String,
-    pub command: String,
-    pub params: Vec<(String, Expr)>,
-    pub span: Span,
-}
-
-/// Request — query through a port (adapter resolves).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RequestExpr {
-    pub port: String,
-    pub method: String,
-    pub args: Vec<Expr>,
-    pub span: Span,
-}
-
-/// Guard — precondition check (fails the step if false).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GuardExpr {
-    pub condition: Box<Expr>,
-    pub message: Option<String>,
-    pub span: Span,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallExpr {
     pub target: String,
     pub method: String,
     pub args: Vec<Expr>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmitExpr {
-    pub event_name: String,
-    pub fields: Vec<(String, Expr)>,
     pub span: Span,
 }
