@@ -190,61 +190,71 @@ fn extract_quoted(s: &str) -> String {
 }
 
 /// Extract validation structure from the parsed solution AST.
+
+/// Load keyword→category map from layer files referenced by a .veil file.
+/// Returns None if no layers are found (uses parser defaults).
+fn load_keywords_for_file(file: &std::path::Path) -> Option<std::collections::HashMap<String, veil_parser::ConstructCategory>> {
+    let schemas = veil_ir::validate::load_referenced_schemas(file);
+    if schemas.is_empty() {
+        return None;
+    }
+    let mappings = veil_ir::validate::extract_keyword_mappings(&schemas);
+    if mappings.is_empty() {
+        return None;
+    }
+    Some(veil_parser::categories_from_layer(&mappings))
+}
+
 fn extract_validation_items(sol: &veil_ir::Solution) -> Vec<(&str, &str, Vec<(&str, &str)>)> {
     use veil_ir::ast::*;
 
     let mut items = Vec::new();
 
+    fn construct_type_name(c: &Construct) -> &'static str {
+        match c.keyword.as_str() {
+            "agg" => "Aggregate",
+            "ent" => "Entity",
+            "val" => "ValueObject",
+            "port" | "repo" => "Port",
+            "svc" => "DomainService",
+            "saga" => "Saga",
+            "adapter" => "Adapter",
+            _ => "Unknown",
+        }
+    }
+
+    fn extract_children<'a>(ci_items: &'a [ContextItem]) -> Vec<(&'static str, &'a str)> {
+        let mut children = Vec::new();
+        for ci in ci_items {
+            match ci {
+                ContextItem::Construct(c) => {
+                    let type_name = if c.annotations.iter().any(|a| a.name == "__saga") {
+                        "Saga"
+                    } else {
+                        construct_type_name(c)
+                    };
+                    children.push((type_name, c.name.as_str()));
+                }
+                ContextItem::Group(g) => {
+                    children.push(("Group", g.name.as_str()));
+                }
+            }
+        }
+        children
+    }
+
     for item in &sol.items {
         match item {
             TopLevelItem::Context(ctx) => {
-                let mut children: Vec<(&str, &str)> = Vec::new();
-                for ci in &ctx.items {
-                    match ci {
-                        ContextItem::Aggregate(a) => children.push(("Aggregate", &a.name)),
-                        ContextItem::Entity(e) => children.push(("Entity", &e.name)),
-                        ContextItem::ValueObject(v) => children.push(("ValueObject", &v.name)),
-                        ContextItem::Port(p) => children.push(("Port", &p.name)),
-                        ContextItem::Service(s) => {
-                            // Check if it's a saga (has __saga annotation)
-                            if s.annotations.iter().any(|a| a.name == "__saga") {
-                                children.push(("Saga", &s.name));
-                            } else {
-                                children.push(("DomainService", &s.name));
-                            }
-                        }
-                        ContextItem::Adapter(a) => children.push(("Adapter", &a.name)),
-                        ContextItem::Group(g) => {
-                            children.push(("Group", &g.name));
-                            // Also validate contents of the group
-                            let mut group_children: Vec<(&str, &str)> = Vec::new();
-                            for gi in &g.items {
-                                match gi {
-                                    ContextItem::Aggregate(a) => group_children.push(("Aggregate", &a.name)),
-                                    ContextItem::Entity(e) => group_children.push(("Entity", &e.name)),
-                                    ContextItem::ValueObject(v) => group_children.push(("ValueObject", &v.name)),
-                                    ContextItem::Port(p) => group_children.push(("Port", &p.name)),
-                                    ContextItem::Service(s) => {
-                                        if s.annotations.iter().any(|a| a.name == "__saga") {
-                                            group_children.push(("Saga", &s.name));
-                                        } else {
-                                            group_children.push(("DomainService", &s.name));
-                                        }
-                                    }
-                                    ContextItem::Adapter(a) => group_children.push(("Adapter", &a.name)),
-                                    ContextItem::Group(_) => {}
-                                }
-                            }
-                            // Validate group contents against parent construct type
-                            // (handled in the main validation pass)
-                        }
-                    }
-                }
+                let children = extract_children(&ctx.items);
 
                 // Determine if this is a Context or Orchestrator
-                let is_orchestrator = ctx.items.iter().all(|ci| matches!(ci,
-                    ContextItem::Service(s) if s.annotations.iter().any(|a| a.name == "__saga")
-                ));
+                let is_orchestrator = !ctx.items.is_empty() && ctx.items.iter().all(|ci| match ci {
+                    ContextItem::Construct(c) => c.keyword == "saga" || c.annotations.iter().any(|a| a.name == "__saga"),
+                    ContextItem::Group(g) => g.items.iter().all(|gi| matches!(gi,
+                        ContextItem::Construct(c) if c.keyword == "saga" || c.annotations.iter().any(|a| a.name == "__saga")
+                    )),
+                });
 
                 if is_orchestrator {
                     items.push(("Orchestrator", ctx.name.as_str(), children));
@@ -286,7 +296,8 @@ fn main() {
         Commands::Parse { file } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
-            match veil_parser::parse(&tokens) {
+            let keywords = load_keywords_for_file(&file);
+            match veil_parser::parse_with_keywords(&tokens, keywords) {
                 Ok(sol) => {
                     println!("{}", serde_json::to_string_pretty(&sol).unwrap());
                 }
@@ -302,7 +313,8 @@ fn main() {
         Commands::Check { file } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
-            match veil_parser::parse(&tokens) {
+            let keywords = load_keywords_for_file(&file);
+            match veil_parser::parse_with_keywords(&tokens, keywords) {
                 Ok(sol) => {
                     let graph = veil_ir::build_ir(&sol);
                     println!("✓ Parsed: {}", sol.name);
@@ -343,7 +355,8 @@ fn main() {
         Commands::Gen { file, output } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
-            let sol = match veil_parser::parse(&tokens) {
+            let keywords = load_keywords_for_file(&file);
+            let sol = match veil_parser::parse_with_keywords(&tokens, keywords) {
                 Ok(sol) => sol,
                 Err(errors) => {
                     eprintln!("Parse errors:");
@@ -371,7 +384,8 @@ fn main() {
         Commands::Emit { file } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
-            let sol = match veil_parser::parse(&tokens) {
+            let keywords = load_keywords_for_file(&file);
+            let sol = match veil_parser::parse_with_keywords(&tokens, keywords) {
                 Ok(sol) => sol,
                 Err(errors) => {
                     eprintln!("Parse errors:");
@@ -387,9 +401,10 @@ fn main() {
         Commands::Serve { file, port } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
+            let keywords = load_keywords_for_file(&file);
 
             // Use parse_file to detect type
-            let veil_file = match veil_parser::parse_file(&tokens) {
+            let veil_file = match veil_parser::parse_file_with_keywords(&tokens, keywords) {
                 Ok(f) => f,
                 Err(errors) => {
                     eprintln!("Parse errors:");

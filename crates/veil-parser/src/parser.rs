@@ -37,7 +37,7 @@ fn token_kind_to_keyword(kind: &TokenKind) -> Option<&'static str> {
 /// Construct category — what core primitive a layer keyword maps to.
 /// Derived from the `maps_to` field in .layer schema definitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConstructCategory {
+pub enum ConstructCategory {
     /// maps_to: mod — parsed as module with children (ctx, orchestrator)
     Module,
     /// maps_to: struct — parsed as type with fields (agg, ent, val, evt, cmd)
@@ -50,27 +50,56 @@ enum ConstructCategory {
     Fn,
 }
 
-/// Returns the construct category for a given keyword string.
-/// 
-/// THIS IS THE ONLY PLACE in the Rust code that maps layer keywords to
-/// parse categories. When dynamic layer loading is fully implemented,
-/// this function will be replaced with a runtime lookup into the loaded
-/// LayerSchema from .layer files. The mappings here mirror what ddd.layer
-/// declares via its `keyword` and `maps_to` fields.
-fn keyword_to_category(keyword: &str) -> Option<ConstructCategory> {
-    match keyword {
-        // maps_to: mod (from .layer keyword declarations)
-        "ctx" | "orchestrator" | "mod" => Some(ConstructCategory::Module),
-        // maps_to: struct
-        "agg" | "ent" | "val" | "evt" | "cmd" | "struct" => Some(ConstructCategory::Struct),
-        // maps_to: trait
-        "port" | "repo" | "trait" => Some(ConstructCategory::Trait),
-        // maps_to: impl
-        "adapter" | "impl" => Some(ConstructCategory::Impl),
-        // maps_to: fn
-        "svc" | "saga" | "flow" | "fn" => Some(ConstructCategory::Fn),
-        _ => None,
+/// Default keyword→category map (fallback when no layer schema is loaded).
+/// When a .layer file is loaded, this is replaced by the schema's keyword/maps_to declarations.
+fn default_keyword_categories() -> std::collections::HashMap<String, ConstructCategory> {
+    use std::collections::HashMap;
+    let mut m = HashMap::new();
+    // These are only used as a fallback when no layer schema is provided.
+    // The canonical source of truth is the .layer file.
+    m.insert("ctx".into(), ConstructCategory::Module);
+    m.insert("orchestrator".into(), ConstructCategory::Module);
+    m.insert("mod".into(), ConstructCategory::Module);
+    m.insert("agg".into(), ConstructCategory::Struct);
+    m.insert("ent".into(), ConstructCategory::Struct);
+    m.insert("val".into(), ConstructCategory::Struct);
+    m.insert("evt".into(), ConstructCategory::Struct);
+    m.insert("cmd".into(), ConstructCategory::Struct);
+    m.insert("struct".into(), ConstructCategory::Struct);
+    m.insert("port".into(), ConstructCategory::Trait);
+    m.insert("repo".into(), ConstructCategory::Trait);
+    m.insert("trait".into(), ConstructCategory::Trait);
+    m.insert("adapter".into(), ConstructCategory::Impl);
+    m.insert("impl".into(), ConstructCategory::Impl);
+    m.insert("svc".into(), ConstructCategory::Fn);
+    m.insert("saga".into(), ConstructCategory::Fn);
+    m.insert("flow".into(), ConstructCategory::Fn);
+    m.insert("fn".into(), ConstructCategory::Fn);
+    m
+}
+
+/// Build a keyword→category map from a LayerSchema.
+pub fn categories_from_layer(constructs: &[(String, String)]) -> std::collections::HashMap<String, ConstructCategory> {
+    use std::collections::HashMap;
+    let mut m = HashMap::new();
+    for (keyword, maps_to) in constructs {
+        let cat = match maps_to.as_str() {
+            "mod" => ConstructCategory::Module,
+            "struct" => ConstructCategory::Struct,
+            "trait" => ConstructCategory::Trait,
+            "impl" => ConstructCategory::Impl,
+            "fn" => ConstructCategory::Fn,
+            _ => continue,
+        };
+        m.insert(keyword.clone(), cat);
     }
+    // Always include core primitives
+    m.insert("mod".into(), ConstructCategory::Module);
+    m.insert("struct".into(), ConstructCategory::Struct);
+    m.insert("trait".into(), ConstructCategory::Trait);
+    m.insert("impl".into(), ConstructCategory::Impl);
+    m.insert("fn".into(), ConstructCategory::Fn);
+    m
 }
 
 /// Check if a token kind represents a construct keyword that can appear
@@ -96,7 +125,16 @@ impl std::fmt::Display for ParseError {
 
 /// Parse a token stream into a VeilFile (Solution, Package, or Composition).
 pub fn parse(tokens: &[Token]) -> Result<Solution, Vec<ParseError>> {
-    let mut parser = Parser::new(tokens);
+    parse_with_keywords(tokens, None)
+}
+
+/// Parse with a keyword→category map loaded from layer files.
+/// When `keywords` is None, uses the built-in defaults.
+pub fn parse_with_keywords(tokens: &[Token], keywords: Option<std::collections::HashMap<String, ConstructCategory>>) -> Result<Solution, Vec<ParseError>> {
+    let mut parser = match keywords {
+        Some(kw) => Parser::with_keywords(tokens, kw),
+        None => Parser::new(tokens),
+    };
     parser.skip_newlines();
 
     // Detect file type by first keyword
@@ -164,7 +202,15 @@ pub fn parse(tokens: &[Token]) -> Result<Solution, Vec<ParseError>> {
 
 /// Parse a token stream into a full VeilFile with package support.
 pub fn parse_file(tokens: &[Token]) -> Result<VeilFile, Vec<ParseError>> {
-    let mut parser = Parser::new(tokens);
+    parse_file_with_keywords(tokens, None)
+}
+
+/// Parse a token stream into a VeilFile with layer-driven keywords.
+pub fn parse_file_with_keywords(tokens: &[Token], keywords: Option<std::collections::HashMap<String, ConstructCategory>>) -> Result<VeilFile, Vec<ParseError>> {
+    let mut parser = match keywords {
+        Some(kw) => Parser::with_keywords(tokens, kw),
+        None => Parser::new(tokens),
+    };
     parser.skip_newlines();
 
     match parser.peek_kind().clone() {
@@ -220,6 +266,8 @@ struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     errors: Vec<ParseError>,
+    /// Keyword→Category mapping loaded from .layer files.
+    keyword_categories: std::collections::HashMap<String, ConstructCategory>,
 }
 
 impl<'a> Parser<'a> {
@@ -228,7 +276,21 @@ impl<'a> Parser<'a> {
             tokens,
             pos: 0,
             errors: Vec::new(),
+            keyword_categories: default_keyword_categories(),
         }
+    }
+
+    fn with_keywords(tokens: &'a [Token], keywords: std::collections::HashMap<String, ConstructCategory>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+            keyword_categories: keywords,
+        }
+    }
+
+    fn lookup_category(&self, keyword: &str) -> Option<ConstructCategory> {
+        self.keyword_categories.get(keyword).copied()
     }
 
     // ─── Navigation helpers ───────────────────────────────────────────
@@ -490,7 +552,7 @@ impl<'a> Parser<'a> {
                     // Generic dispatch for construct keywords in package body
                     ref kind if token_kind_to_keyword(kind).is_some() => {
                         let keyword = token_kind_to_keyword(&self.peek_kind().clone()).unwrap();
-                        let category = keyword_to_category(keyword);
+                        let category = self.lookup_category(keyword);
                         match category {
                             Some(ConstructCategory::Module) => {
                                 items.push(TopLevelItem::Context(self.parse_construct_module(keyword)?));
@@ -766,7 +828,7 @@ impl<'a> Parser<'a> {
                     // Generic dispatch for all construct keywords
                     ref kind if token_kind_to_keyword(kind).is_some() => {
                         let keyword = token_kind_to_keyword(&current_kind).unwrap();
-                        let category = keyword_to_category(keyword);
+                        let category = self.lookup_category(keyword);
                         match category {
                             Some(ConstructCategory::Module) => {
                                 let _ = doc;
@@ -912,7 +974,7 @@ impl<'a> Parser<'a> {
                                 args: saga.context_refs.clone(),
                                 span: saga.span,
                             });
-                            items.push(ContextItem::Service(Service {
+                            items.push(ContextItem::Construct(Construct::from_service(Service {
                                 name: saga.name,
                                 span: saga.span,
                                 annotations,
@@ -923,7 +985,7 @@ impl<'a> Parser<'a> {
                                     body: s.body.clone(),
                                 })).collect(),
                                 return_expr: None,
-                            }));
+                            }, "saga")));
                         }
                     }
                     _ => { self.errors.push(self.error(format!("unexpected token {:?} in orchestrator body", self.peek_kind()))); self.advance(); }
@@ -983,30 +1045,30 @@ impl<'a> Parser<'a> {
 
         // Look up keyword from token kind for generic dispatch
         if let Some(keyword) = token_kind_to_keyword(&kind) {
-            let category = keyword_to_category(keyword);
+            let category = self.lookup_category(keyword);
             match (category, keyword) {
                 // struct-mapped: val, ent, agg
                 (Some(ConstructCategory::Struct), "val") => {
-                    Ok(Some(ContextItem::ValueObject(self.parse_value_object(annotations)?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_value_object(self.parse_value_object(annotations)?))))
                 }
                 (Some(ConstructCategory::Struct), "ent") => {
-                    Ok(Some(ContextItem::Entity(self.parse_entity(annotations)?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_entity(self.parse_entity(annotations)?))))
                 }
                 (Some(ConstructCategory::Struct), "agg") => {
-                    Ok(Some(ContextItem::Aggregate(self.parse_aggregate(annotations)?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_aggregate(self.parse_aggregate(annotations)?))))
                 }
                 // trait-mapped: port, repo
                 (Some(ConstructCategory::Trait), _) => {
-                    Ok(Some(ContextItem::Port(self.parse_port()?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_port(self.parse_port()?))))
                 }
                 // fn-mapped: svc
                 (Some(ConstructCategory::Fn), "svc") => {
                     let svc_flow = self.parse_domain_service()?;
-                    Ok(Some(ContextItem::Service(svc_flow)))
+                    Ok(Some(ContextItem::Construct(Construct::from_service(svc_flow, "svc"))))
                 }
                 // impl-mapped: adapter
                 (Some(ConstructCategory::Impl), _) => {
-                    Ok(Some(ContextItem::Adapter(self.parse_adapter()?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_adapter(self.parse_adapter()?))))
                 }
                 _ => {
                     let err = self.error(format!(
@@ -1079,7 +1141,7 @@ impl<'a> Parser<'a> {
                         args: saga.context_refs.clone(),
                         span: saga.span,
                     });
-                    return Ok(Some(ContextItem::Service(Service {
+                    return Ok(Some(ContextItem::Construct(Construct::from_service(Service {
                         name: saga.name,
                         span: saga.span,
                         annotations: ann,
@@ -1090,10 +1152,10 @@ impl<'a> Parser<'a> {
                             body: s.body.clone(),
                         })).collect(),
                         return_expr: None,
-                    })));
+                    }, "saga"))));
                 } else if self.at(&TokenKind::Svc) || self.at(&TokenKind::Flow) {
                     let svc_flow = self.parse_domain_service()?;
-                    return Ok(Some(ContextItem::Service(svc_flow)));
+                    return Ok(Some(ContextItem::Construct(Construct::from_service(svc_flow, "svc"))));
                 }
                 return Ok(None);
             }
@@ -1102,23 +1164,23 @@ impl<'a> Parser<'a> {
 
         // Look up keyword for generic dispatch
         if let Some(keyword) = token_kind_to_keyword(&kind) {
-            let category = keyword_to_category(keyword);
+            let category = self.lookup_category(keyword);
             match (category, keyword) {
                 (Some(ConstructCategory::Struct), "val") => {
-                    Ok(Some(ContextItem::ValueObject(self.parse_value_object(annotations)?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_value_object(self.parse_value_object(annotations)?))))
                 }
                 (Some(ConstructCategory::Struct), "ent") => {
-                    Ok(Some(ContextItem::Entity(self.parse_entity(annotations)?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_entity(self.parse_entity(annotations)?))))
                 }
                 (Some(ConstructCategory::Struct), "agg") => {
-                    Ok(Some(ContextItem::Aggregate(self.parse_aggregate(annotations)?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_aggregate(self.parse_aggregate(annotations)?))))
                 }
                 (Some(ConstructCategory::Trait), _) => {
-                    Ok(Some(ContextItem::Port(self.parse_port()?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_port(self.parse_port()?))))
                 }
                 (Some(ConstructCategory::Fn), "svc") => {
                     let svc_flow = self.parse_domain_service()?;
-                    Ok(Some(ContextItem::Service(svc_flow)))
+                    Ok(Some(ContextItem::Construct(Construct::from_service(svc_flow, "svc"))))
                 }
                 (Some(ConstructCategory::Fn), "saga") => {
                     let saga = self.parse_saga()?;
@@ -1128,7 +1190,7 @@ impl<'a> Parser<'a> {
                         args: saga.context_refs.clone(),
                         span: saga.span,
                     });
-                    Ok(Some(ContextItem::Service(Service {
+                    Ok(Some(ContextItem::Construct(Construct::from_service(Service {
                         name: saga.name,
                         span: saga.span,
                         annotations: ann,
@@ -1139,10 +1201,10 @@ impl<'a> Parser<'a> {
                             body: s.body.clone(),
                         })).collect(),
                         return_expr: None,
-                    })))
+                    }, "saga"))))
                 }
                 (Some(ConstructCategory::Impl), _) => {
-                    Ok(Some(ContextItem::Adapter(self.parse_adapter()?)))
+                    Ok(Some(ContextItem::Construct(Construct::from_adapter(self.parse_adapter()?))))
                 }
                 _ => {
                     self.errors.push(self.error(format!("unexpected construct '{}' in group body", keyword)));

@@ -128,7 +128,7 @@ tracing.workspace = true
 
     // Adapters — find adapters that target ports in this context
     let ctx_port_names: Vec<&str> = ctx.items.iter().filter_map(|i| {
-        if let ContextItem::Port(p) = i { Some(p.name.as_str()) } else { None }
+        if let ContextItem::Construct(c) = i { if c.keyword == "port" { Some(c.name.as_str()) } else { None } } else { None }
     }).collect();
 
     let adapters_for_ctx: Vec<&Adapter> = solution.items.iter().filter_map(|item| {
@@ -143,7 +143,7 @@ tracing.workspace = true
     files.push(gen_adapters(&adapters_for_ctx, &crate_name));
 
     // Application — generate flows only in the first context with ports
-    let has_ports = ctx.items.iter().any(|i| matches!(i, ContextItem::Port(_)));
+    let has_ports = ctx.items.iter().any(|i| matches!(i, ContextItem::Construct(c) if c.keyword == "port"));
     let flows: Vec<&Flow> = solution.items.iter().filter_map(|item| {
         if let TopLevelItem::Flow(f) = item { Some(f) } else { None }
     }).collect();
@@ -180,34 +180,32 @@ fn gen_domain_types(ctx: &Context, crate_name: &str) -> GeneratedFile {
 
     for item in &ctx.items {
         match item {
-            ContextItem::ValueObject(vo) => {
-                defined_types.push(vo.name.clone());
-                collect_referenced_types(&vo.fields, &mut all_referenced_types);
-            }
-            ContextItem::Entity(ent) => {
-                defined_types.push(ent.name.clone());
-                collect_referenced_types(&ent.fields, &mut all_referenced_types);
-            }
-            ContextItem::Aggregate(agg) => {
-                defined_types.push(agg.name.clone());
-                collect_referenced_types(&agg.fields, &mut all_referenced_types);
-                for cmd in &agg.commands {
-                    collect_referenced_types(&cmd.fields, &mut all_referenced_types);
-                    if let Some(rt) = &cmd.return_type {
-                        collect_type_refs(rt, &mut all_referenced_types);
+            ContextItem::Construct(c) => match c.keyword.as_str() {
+                "val" | "ent" => {
+                    defined_types.push(c.name.clone());
+                    collect_referenced_types(&c.fields, &mut all_referenced_types);
+                }
+                "agg" => {
+                    defined_types.push(c.name.clone());
+                    collect_referenced_types(&c.fields, &mut all_referenced_types);
+                    for sub in &c.sub_constructs {
+                        if sub.keyword == "cmd" {
+                            collect_referenced_types(&sub.fields, &mut all_referenced_types);
+                        }
                     }
                 }
-            }
-            ContextItem::Port(port) => {
-                for method in &port.methods {
-                    for param in &method.params {
-                        collect_type_refs(&param.type_expr, &mut all_referenced_types);
-                    }
-                    if let Some(rt) = &method.return_type {
-                        collect_type_refs(rt, &mut all_referenced_types);
+                "port" | "repo" => {
+                    for method in &c.methods {
+                        for param in &method.params {
+                            collect_type_refs(&param.type_expr, &mut all_referenced_types);
+                        }
+                        if let Some(rt) = &method.return_type {
+                            collect_type_refs(rt, &mut all_referenced_types);
+                        }
                     }
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -233,15 +231,18 @@ fn gen_domain_types(ctx: &Context, crate_name: &str) -> GeneratedFile {
 
     for item in &ctx.items {
         match item {
-            ContextItem::ValueObject(vo) => {
-                out.push_str(&gen_value_object(vo));
-            }
-            ContextItem::Entity(ent) => {
-                out.push_str(&gen_entity(ent));
-            }
-            ContextItem::Aggregate(agg) => {
-                out.push_str(&gen_aggregate_struct(agg));
-            }
+            ContextItem::Construct(c) => match c.keyword.as_str() {
+                "val" => {
+                    out.push_str(&gen_value_object_from_construct(c));
+                }
+                "ent" => {
+                    out.push_str(&gen_entity_from_construct(c));
+                }
+                "agg" => {
+                    out.push_str(&gen_aggregate_from_construct(c));
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -278,65 +279,52 @@ fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
     }
 }
 
-fn gen_value_object(vo: &ValueObject) -> String {
+/// Generate code for a value object from a generic Construct.
+fn gen_value_object_from_construct(c: &Construct) -> String {
     let mut out = String::new();
-    let has_invariant = vo.annotations.iter().any(|a| a.name == "invariant");
-
+    let has_invariant = c.annotations.iter().any(|a| a.name == "invariant");
     out.push_str(&format!(
         "/// Value object: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {} {{\n",
-        vo.name, vo.name
+        c.name, c.name
     ));
-    for field in &vo.fields {
-        out.push_str(&format!(
-            "    pub {}: {},\n",
-            to_snake(&field.name),
-            type_to_rust(&field.type_expr)
-        ));
+    for field in &c.fields {
+        out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), type_to_rust(&field.type_expr)));
     }
     out.push_str("}\n\n");
-
-    // Generate TryFrom/new with validation if there's an invariant
     if has_invariant {
         out.push_str(&format!(
-            "impl {} {{\n    pub fn new({}) -> Result<Self, ValidationError> {{\n        let value = Self {{ {} }};\n        value.validate()?;\n        Ok(value)\n    }}\n\n    fn validate(&self) -> Result<(), ValidationError> {{\n        // TODO: implement invariant validation\n        Ok(())\n    }}\n}}\n\n",
-            vo.name,
-            vo.fields.iter().map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr))).collect::<Vec<_>>().join(", "),
-            vo.fields.iter().map(|f| to_snake(&f.name)).collect::<Vec<_>>().join(", "),
+            "impl {} {{\n    pub fn new({}) -> Result<Self, ValidationError> {{\n        let value = Self {{ {} }};\n        value.validate()?;\n        Ok(value)\n    }}\n\n    fn validate(&self) -> Result<(), ValidationError> {{\n        Ok(())\n    }}\n}}\n\n",
+            c.name,
+            c.fields.iter().map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr))).collect::<Vec<_>>().join(", "),
+            c.fields.iter().map(|f| to_snake(&f.name)).collect::<Vec<_>>().join(", "),
         ));
     }
-
     out
 }
 
-fn gen_entity(ent: &Entity) -> String {
+/// Generate code for an entity from a generic Construct.
+fn gen_entity_from_construct(c: &Construct) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "/// Entity: {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
-        ent.name, ent.name
+        c.name, c.name
     ));
-    for field in &ent.fields {
-        out.push_str(&format!(
-            "    pub {}: {},\n",
-            to_snake(&field.name),
-            type_to_rust(&field.type_expr)
-        ));
+    for field in &c.fields {
+        out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), type_to_rust(&field.type_expr)));
     }
     out.push_str("}\n\n");
     out
 }
 
-fn gen_aggregate_struct(agg: &Aggregate) -> String {
+/// Generate code for an aggregate from a generic Construct.
+fn gen_aggregate_from_construct(c: &Construct) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "/// Aggregate root: {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
-        agg.name, agg.name
+        c.name, c.name
     ));
-    for field in &agg.fields {
-        out.push_str(&format!(
-            "    pub {}: {},\n",
-            to_snake(&field.name),
-            type_to_rust(&field.type_expr)
-        ));
+    for field in &c.fields {
+        out.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), type_to_rust(&field.type_expr)));
     }
     out.push_str("}\n\n");
     out
@@ -349,10 +337,12 @@ fn gen_domain_events(ctx: &Context, crate_name: &str) -> GeneratedFile {
     out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\n\n");
 
     // Collect all events from all aggregates
-    let mut events: Vec<&Event> = Vec::new();
+    let mut events: Vec<&Construct> = Vec::new();
     for item in &ctx.items {
-        if let ContextItem::Aggregate(agg) = item {
-            events.extend(&agg.events);
+        if let ContextItem::Construct(c) = item {
+            if c.keyword == "agg" {
+                events.extend(c.sub_constructs.iter().filter(|s| s.keyword == "evt"));
+            }
         }
     }
 
@@ -374,7 +364,6 @@ fn gen_domain_events(ctx: &Context, crate_name: &str) -> GeneratedFile {
             ));
             for field in &evt.fields {
                 let rust_type = if field.name == field.type_expr.to_string_simple() {
-                    // Shorthand field — infer common types
                     infer_field_type(&field.name)
                 } else {
                     type_to_rust(&field.type_expr)
@@ -400,21 +389,25 @@ fn gen_domain_commands(ctx: &Context, crate_name: &str) -> GeneratedFile {
 
     let mut has_commands = false;
     for item in &ctx.items {
-        if let ContextItem::Aggregate(agg) = item {
-            for cmd in &agg.commands {
-                has_commands = true;
-                out.push_str(&format!(
-                    "/// Command: {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
-                    cmd.name, cmd.name
-                ));
-                for field in &cmd.fields {
-                    out.push_str(&format!(
-                        "    pub {}: {},\n",
-                        to_snake(&field.name),
-                        type_to_rust(&field.type_expr)
-                    ));
+        if let ContextItem::Construct(c) = item {
+            if c.keyword == "agg" {
+                for sub in &c.sub_constructs {
+                    if sub.keyword == "cmd" {
+                        has_commands = true;
+                        out.push_str(&format!(
+                            "/// Command: {}\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct {} {{\n",
+                            sub.name, sub.name
+                        ));
+                        for field in &sub.fields {
+                            out.push_str(&format!(
+                                "    pub {}: {},\n",
+                                to_snake(&field.name),
+                                type_to_rust(&field.type_expr)
+                            ));
+                        }
+                        out.push_str("}\n\n");
+                    }
                 }
-                out.push_str("}\n\n");
             }
         }
     }
@@ -443,28 +436,30 @@ fn gen_ports(ctx: &Context, crate_name: &str) -> GeneratedFile {
     out.push_str("/// Validation error for value objects.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\n");
 
     for item in &ctx.items {
-        if let ContextItem::Port(port) = item {
-            out.push_str(&format!(
-                "#[async_trait]\npub trait {} {{\n",
-                port.name
-            ));
-            for method in &port.methods {
-                let params = method
-                    .params
-                    .iter()
-                    .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let ret = match &method.return_type {
-                    Some(t) => format!(" -> {}", type_to_rust(t)),
-                    None => String::new(),
-                };
+        if let ContextItem::Construct(c) = item {
+            if c.keyword == "port" || c.keyword == "repo" {
                 out.push_str(&format!(
-                    "    async fn {}(&self, {}){ret};\n",
-                    to_snake(&method.name), params
+                    "#[async_trait]\npub trait {} {{\n",
+                    c.name
                 ));
+                for method in &c.methods {
+                    let params = method
+                        .params
+                        .iter()
+                        .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret = match &method.return_type {
+                        Some(t) => format!(" -> {}", type_to_rust(t)),
+                        None => String::new(),
+                    };
+                    out.push_str(&format!(
+                        "    async fn {}(&self, {}){ret};\n",
+                        to_snake(&method.name), params
+                    ));
+                }
+                out.push_str("}\n\n");
             }
-            out.push_str("}\n\n");
         }
     }
 
@@ -521,7 +516,7 @@ fn gen_application(flows: &[&Flow], ctx: &Context, crate_name: &str) -> Generate
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse uuid::Uuid;\n\n");
 
     // Only generate flows in the first context that has ports
-    let has_ports = ctx.items.iter().any(|i| matches!(i, ContextItem::Port(_)));
+    let has_ports = ctx.items.iter().any(|i| matches!(i, ContextItem::Construct(c) if c.keyword == "port"));
 
     if has_ports && !flows.is_empty() {
         for flow in flows {

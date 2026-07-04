@@ -355,3 +355,17 @@ pub fn load_referenced_schemas(veil_path: &Path) -> Vec<LayerSchema> {
         })
         .collect()
 }
+
+/// Extract (keyword, maps_to) pairs from all loaded schemas.
+/// Used to build the parser's keyword→category map at runtime.
+pub fn extract_keyword_mappings(schemas: &[LayerSchema]) -> Vec<(String, String)> {
+    let mut mappings = Vec::new();
+    for schema in schemas {
+        for def in schema.constructs.values() {
+            if !def.keyword.is_empty() && !def.maps_to.is_empty() {
+                mappings.push((def.keyword.clone(), def.maps_to.clone()));
+            }
+        }
+    }
+    mappings
+}

@@ -129,13 +129,44 @@ pub struct Context {
 /// Items within a bounded context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ContextItem {
-    ValueObject(ValueObject),
-    Entity(Entity),
-    Aggregate(Aggregate),
-    Port(Port),
-    Service(Service),
-    Adapter(Adapter),
+    Construct(Construct),
     Group(Group),
+}
+
+/// A generic construct — unified representation for all layer-defined constructs.
+/// The `keyword` field identifies what layer construct this is (e.g., "val", "agg", "port").
+/// Fields are populated based on the construct's category (struct/trait/impl/fn).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Construct {
+    /// The keyword used in source (e.g., "val", "agg", "port", "svc")
+    pub keyword: String,
+    pub name: String,
+    pub span: Span,
+    pub annotations: Vec<Annotation>,
+    /// Fields — for struct-like constructs (val, ent, agg, evt, cmd)
+    pub fields: Vec<Field>,
+    /// Methods — for trait-like constructs (port, repo)
+    pub methods: Vec<PortMethod>,
+    /// Inputs — for fn-like constructs (svc, saga)
+    pub inputs: Vec<Field>,
+    /// Steps — for fn-like constructs (svc, saga)
+    pub steps: Vec<FlowStep>,
+    /// Return expression — for fn-like constructs
+    pub return_expr: Option<Box<Expr>>,
+    /// Target port — for impl-like constructs (adapter)
+    pub target: Option<String>,
+    /// Method implementations — for impl-like constructs (adapter)
+    pub impls: Vec<AdapterImpl>,
+    /// Sub-constructs — for composites (e.g., aggregate's events/commands)
+    pub sub_constructs: Vec<Construct>,
+    /// State machines — for aggregates
+    pub state_machines: Vec<StateMachine>,
+    /// Business logic methods — for aggregates
+    pub aggregate_fns: Vec<AggregateFn>,
+    /// Context refs — for sagas
+    pub context_refs: Vec<String>,
+    /// Return type — for commands
+    pub return_type: Option<TypeExpr>,
 }
 
 /// A visual group — purely organizational, no codegen impact.
@@ -144,6 +175,88 @@ pub struct Group {
     pub name: String,
     pub span: Span,
     pub items: Vec<ContextItem>,
+}
+
+impl Construct {
+    /// Create an empty construct with just keyword, name, and span.
+    pub fn new(keyword: &str, name: String, span: Span) -> Self {
+        Construct {
+            keyword: keyword.to_string(),
+            name,
+            span,
+            annotations: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            inputs: Vec::new(),
+            steps: Vec::new(),
+            return_expr: None,
+            target: None,
+            impls: Vec::new(),
+            sub_constructs: Vec::new(),
+            state_machines: Vec::new(),
+            aggregate_fns: Vec::new(),
+            context_refs: Vec::new(),
+            return_type: None,
+        }
+    }
+
+    pub fn from_value_object(vo: ValueObject) -> Self {
+        let mut c = Self::new("val", vo.name, vo.span);
+        c.annotations = vo.annotations;
+        c.fields = vo.fields;
+        c
+    }
+
+    pub fn from_entity(ent: Entity) -> Self {
+        let mut c = Self::new("ent", ent.name, ent.span);
+        c.annotations = ent.annotations;
+        c.fields = ent.fields;
+        c
+    }
+
+    pub fn from_aggregate(agg: Aggregate) -> Self {
+        let mut c = Self::new("agg", agg.name, agg.span);
+        c.annotations = agg.annotations;
+        c.fields = agg.fields;
+        c.state_machines = agg.state_machines;
+        c.aggregate_fns = agg.methods;
+        // Convert events and commands to sub-constructs
+        for evt in agg.events {
+            let mut ec = Self::new("evt", evt.name, evt.span);
+            ec.fields = evt.fields;
+            c.sub_constructs.push(ec);
+        }
+        for cmd in agg.commands {
+            let mut cc = Self::new("cmd", cmd.name, cmd.span);
+            cc.fields = cmd.fields;
+            cc.return_type = cmd.return_type;
+            c.sub_constructs.push(cc);
+        }
+        c
+    }
+
+    pub fn from_port(port: Port) -> Self {
+        let mut c = Self::new("port", port.name, port.span);
+        c.methods = port.methods;
+        c
+    }
+
+    pub fn from_service(svc: Service, keyword: &str) -> Self {
+        let mut c = Self::new(keyword, svc.name, svc.span);
+        c.annotations = svc.annotations;
+        c.inputs = svc.inputs;
+        c.steps = svc.steps;
+        c.return_expr = svc.return_expr.map(Box::new);
+        c
+    }
+
+    pub fn from_adapter(adp: Adapter) -> Self {
+        let mut c = Self::new("adapter", adp.name, adp.span);
+        c.annotations = adp.annotations;
+        c.target = Some(adp.target_port);
+        c.impls = adp.impls;
+        c
+    }
 }
 
 /// A value object (no identity).

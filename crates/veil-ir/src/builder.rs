@@ -13,18 +13,23 @@ use crate::span::Span;
 // These constants match the construct names defined in .layer schema files.
 // They are the single source of truth for subkind strings used in the IR graph.
 
-mod subkinds {
-    pub const CONTEXT: &str = "Context";
-    pub const ORCHESTRATOR: &str = "Orchestrator";
-    pub const AGGREGATE: &str = "Aggregate";
-    pub const ENTITY: &str = "Entity";
-    pub const VALUE_OBJECT: &str = "ValueObject";
-    pub const EVENT: &str = "Event";
-    pub const COMMAND: &str = "Command";
-    pub const PORT: &str = "Port";
-    pub const ADAPTER: &str = "Adapter";
-    pub const DOMAIN_SERVICE: &str = "DomainService";
-    pub const SAGA: &str = "Saga";
+/// Capitalize a keyword to get its display name (e.g., "val" -> "ValueObject", "svc" -> "DomainService")
+fn capitalize(keyword: &str) -> String {
+    match keyword {
+        "val" => "ValueObject".to_string(),
+        "ent" => "Entity".to_string(),
+        "agg" => "Aggregate".to_string(),
+        "evt" => "Event".to_string(),
+        "cmd" => "Command".to_string(),
+        "port" => "Port".to_string(),
+        "repo" => "Repository".to_string(),
+        "adapter" => "Adapter".to_string(),
+        "svc" => "DomainService".to_string(),
+        "saga" => "Saga".to_string(),
+        "orchestrator" => "Orchestrator".to_string(),
+        "ctx" => "Context".to_string(),
+        other => other.to_string(),
+    }
 }
 /// Build an IR graph from a parsed Solution AST.
 pub fn build_ir(solution: &Solution) -> IrGraph {
@@ -204,181 +209,34 @@ impl IrBuilder {
         let ctx_id = self.graph.add_node(NodeKind::Module, ctx.name.clone(), ctx.span);
         self.set_parent(ctx_id, parent_id);
 
-        // Detect orchestrator: all items are saga-marked services or groups containing only sagas
+        // Detect orchestrator: all items are saga-marked constructs or groups containing only sagas
         let is_orchestrator = !ctx.items.is_empty() && ctx.items.iter().all(|item| {
             match item {
-                ContextItem::Service(svc) => svc.annotations.iter().any(|a| a.name == "__saga"),
+                ContextItem::Construct(c) => c.keyword == "saga" || c.annotations.iter().any(|a| a.name == "__saga"),
                 ContextItem::Group(g) => g.items.iter().all(|gi| {
-                    matches!(gi, ContextItem::Service(svc) if svc.annotations.iter().any(|a| a.name == "__saga"))
+                    matches!(gi, ContextItem::Construct(c) if c.keyword == "saga" || c.annotations.iter().any(|a| a.name == "__saga"))
                 }),
-                _ => false,
             }
         });
 
         if is_orchestrator {
-            self.set_subkind(ctx_id, subkinds::ORCHESTRATOR);
+            self.set_subkind(ctx_id, "Orchestrator");
         } else {
-            self.set_subkind(ctx_id, subkinds::CONTEXT);
+            self.set_subkind(ctx_id, "Context");
         }
         self.graph.add_edge(parent_id, ctx_id, EdgeKind::Contains);
 
         for item in &ctx.items {
             match item {
-                ContextItem::ValueObject(vo) => {
-                    let vo_id = self.graph.add_node(
-                        NodeKind::TypeDef,
-                        vo.name.clone(),
-                        vo.span,
-                    );
-                    self.set_parent(vo_id, ctx_id);
-                    self.set_subkind(vo_id, subkinds::VALUE_OBJECT);
-                    // Store fields as property
-                    let fields_str = vo.fields.iter()
-                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
-                        .collect::<Vec<_>>().join(", ");
-                    if !fields_str.is_empty() {
-                        self.set_property(vo_id, "fields", &fields_str);
-                    }
-                    self.graph.add_edge(ctx_id, vo_id, EdgeKind::Contains);
-                }
-                ContextItem::Entity(ent) => {
-                    let ent_id = self.graph.add_node(
-                        NodeKind::TypeDef,
-                        ent.name.clone(),
-                        ent.span,
-                    );
-                    self.set_parent(ent_id, ctx_id);
-                    self.set_subkind(ent_id, subkinds::ENTITY);
-                    // Store fields as property
-                    let fields_str = ent.fields.iter()
-                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
-                        .collect::<Vec<_>>().join(", ");
-                    if !fields_str.is_empty() {
-                        self.set_property(ent_id, "fields", &fields_str);
-                    }
-                    self.graph.add_edge(ctx_id, ent_id, EdgeKind::Contains);
-                }
-                ContextItem::Aggregate(agg) => {
-                    self.build_aggregate(agg, ctx_id);
-                }
-                ContextItem::Port(port) => {
-                    self.build_port(port, ctx_id);
-                }
-                ContextItem::Service(svc) => {
-                    let svc_id = self.graph.add_node(
-                        NodeKind::Flow,
-                        svc.name.clone(),
-                        svc.span,
-                    );
-                    self.set_parent(svc_id, ctx_id);
-                    self.set_subkind(svc_id, subkinds::DOMAIN_SERVICE);
-                    self.graph.add_edge(ctx_id, svc_id, EdgeKind::Contains);
-
-                    // Build inputs node
-                    if !svc.inputs.is_empty() {
-                        let inputs_str = svc.inputs.iter()
-                            .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
-                            .collect::<Vec<_>>().join(", ");
-                        let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), svc.span);
-                        self.set_parent(inputs_id, svc_id);
-                        self.set_property(inputs_id, "params", &inputs_str);
-                        self.graph.add_edge(svc_id, inputs_id, EdgeKind::Contains);
-                    }
-
-                    // Build steps
-                    let mut prev_step_id: Option<NodeId> = None;
-                    for step in &svc.steps {
-                        if let FlowStep::Step(s) = step {
-                            let step_id = self.graph.add_node(NodeKind::Step, s.name.clone(), s.span);
-                            self.set_parent(step_id, svc_id);
-                            self.graph.add_edge(svc_id, step_id, EdgeKind::Contains);
-                            if let Some(prev) = prev_step_id {
-                                self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
-                            }
-                            self.build_step_body(&s.body, step_id);
-                            prev_step_id = Some(step_id);
-                        }
-                    }
-                }
-                ContextItem::Adapter(adapter) => {
-                    self.build_adapter(adapter, ctx_id);
-                }
+                ContextItem::Construct(c) => self.build_construct(c, ctx_id),
                 ContextItem::Group(group) => {
                     let group_id = self.graph.add_node(NodeKind::Group, group.name.clone(), group.span);
                     self.set_parent(group_id, ctx_id);
                     self.graph.add_edge(ctx_id, group_id, EdgeKind::Contains);
-                    // Build group children under the group node
-                    for item in &group.items {
-                        match item {
-                            ContextItem::ValueObject(vo) => {
-                                let id = self.graph.add_node(NodeKind::TypeDef, vo.name.clone(), vo.span);
-                                self.set_parent(id, group_id);
-                                self.set_subkind(id, subkinds::VALUE_OBJECT);
-                                let fields_str = vo.fields.iter().map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr))).collect::<Vec<_>>().join(", ");
-                                if !fields_str.is_empty() { self.set_property(id, "fields", &fields_str); }
-                                self.graph.add_edge(group_id, id, EdgeKind::Contains);
-                            }
-                            ContextItem::Entity(ent) => {
-                                let id = self.graph.add_node(NodeKind::TypeDef, ent.name.clone(), ent.span);
-                                self.set_parent(id, group_id);
-                                self.set_subkind(id, subkinds::ENTITY);
-                                let fields_str = ent.fields.iter().map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr))).collect::<Vec<_>>().join(", ");
-                                if !fields_str.is_empty() { self.set_property(id, "fields", &fields_str); }
-                                self.graph.add_edge(group_id, id, EdgeKind::Contains);
-                            }
-                            ContextItem::Aggregate(agg) => {
-                                self.build_aggregate(agg, group_id);
-                            }
-                            ContextItem::Port(port) => {
-                                self.build_port(port, group_id);
-                            }
-                            ContextItem::Service(svc) => {
-                                let is_saga = svc.annotations.iter().any(|a| a.name == "__saga");
-                                let svc_id = self.graph.add_node(NodeKind::Flow, svc.name.clone(), svc.span);
-                                self.set_parent(svc_id, group_id);
-                                if is_saga {
-                                    self.set_subkind(svc_id, subkinds::SAGA);
-                                    // Store context refs from the __saga annotation
-                                    if let Some(saga_ann) = svc.annotations.iter().find(|a| a.name == "__saga") {
-                                        if !saga_ann.args.is_empty() {
-                                            self.set_property(svc_id, "contexts", &saga_ann.args.join(", "));
-                                        }
-                                    }
-                                } else {
-                                    self.set_subkind(svc_id, subkinds::DOMAIN_SERVICE);
-                                }
-                                self.graph.add_edge(group_id, svc_id, EdgeKind::Contains);
-                                // Build inputs node
-                                if !svc.inputs.is_empty() {
-                                    let inputs_str = svc.inputs.iter()
-                                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
-                                        .collect::<Vec<_>>().join(", ");
-                                    let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), svc.span);
-                                    self.set_parent(inputs_id, svc_id);
-                                    self.set_property(inputs_id, "params", &inputs_str);
-                                    self.graph.add_edge(svc_id, inputs_id, EdgeKind::Contains);
-                                }
-                                // Build steps
-                                let mut prev_step_id: Option<NodeId> = None;
-                                for step in &svc.steps {
-                                    if let FlowStep::Step(s) = step {
-                                        let step_id = self.graph.add_node(NodeKind::Step, s.name.clone(), s.span);
-                                        self.set_parent(step_id, svc_id);
-                                        self.graph.add_edge(svc_id, step_id, EdgeKind::Contains);
-                                        if let Some(prev) = prev_step_id {
-                                            self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
-                                        }
-                                        self.build_step_body(&s.body, step_id);
-                                        prev_step_id = Some(step_id);
-                                    }
-                                }
-                            }
-                            ContextItem::Adapter(adapter) => {
-                                self.build_adapter(adapter, group_id);
-                            }
-                            ContextItem::Group(_) => {
-                                // Nested groups not supported for now
-                            }
+                    for gi in &group.items {
+                        match gi {
+                            ContextItem::Construct(c) => self.build_construct(c, group_id),
+                            ContextItem::Group(_) => {} // nested groups not supported yet
                         }
                     }
                 }
@@ -386,98 +244,141 @@ impl IrBuilder {
         }
     }
 
-    fn build_aggregate(&mut self, agg: &Aggregate, parent_id: NodeId) {
-        let agg_id = self.graph.add_node(NodeKind::TypeDef, agg.name.clone(), agg.span);
-        self.set_parent(agg_id, parent_id);
-        self.set_subkind(agg_id, subkinds::AGGREGATE);
-        self.graph.add_edge(parent_id, agg_id, EdgeKind::Contains);
+    /// Build any construct generically — dispatches based on keyword/category.
+    fn build_construct(&mut self, c: &Construct, parent_id: NodeId) {
+        // Determine NodeKind and subkind from the keyword
+        let (node_kind, subkind) = match c.keyword.as_str() {
+            "val" | "ent" | "evt" | "cmd" => (NodeKind::TypeDef, capitalize(&c.keyword)),
+            "agg" => (NodeKind::TypeDef, "Aggregate".to_string()),
+            "port" | "repo" => (NodeKind::Interface, capitalize(&c.keyword)),
+            "adapter" => (NodeKind::Implementation, "Adapter".to_string()),
+            "svc" | "saga" => (NodeKind::Flow, capitalize(&c.keyword)),
+            _ => (NodeKind::TypeDef, c.keyword.clone()),
+        };
 
-        // Store root fields
-        let fields_str = agg.fields.iter()
-            .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
-            .collect::<Vec<_>>().join(", ");
-        if !fields_str.is_empty() {
-            self.set_property(agg_id, "fields", &fields_str);
-        }
-
-        // Store state machines
-        for sm in &agg.state_machines {
-            let transitions = sm.transitions.iter()
-                .map(|t| format!("{} → {}", t.from, t.to))
-                .collect::<Vec<_>>().join(", ");
-            self.set_property(agg_id, &format!("state:{}", sm.name), &transitions);
-        }
-
-        // Add annotations as metadata
-        for ann in &agg.annotations {
-            if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == agg_id) {
-                node.metadata.annotations.push(annotation_to_ir_string(ann));
+        match c.keyword.as_str() {
+            // Struct-like: val, ent, evt, cmd
+            "val" | "ent" | "evt" | "cmd" => {
+                let id = self.graph.add_node(node_kind, c.name.clone(), c.span);
+                self.set_parent(id, parent_id);
+                self.set_subkind(id, &subkind);
+                let fields_str = c.fields.iter()
+                    .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                    .collect::<Vec<_>>().join(", ");
+                if !fields_str.is_empty() {
+                    self.set_property(id, "fields", &fields_str);
+                }
+                self.graph.add_edge(parent_id, id, EdgeKind::Contains);
             }
-        }
-
-        // Events
-        for evt in &agg.events {
-            let evt_id = self.graph.add_node(NodeKind::TypeDef, evt.name.clone(), evt.span);
-            self.set_parent(evt_id, agg_id);
-            self.set_subkind(evt_id, subkinds::EVENT);
-            // Store event fields
-            let evt_fields = evt.fields.iter()
-                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
-                .collect::<Vec<_>>().join(", ");
-            if !evt_fields.is_empty() {
-                self.set_property(evt_id, "fields", &evt_fields);
+            // Aggregate — struct-like with sub-constructs
+            "agg" => {
+                let agg_id = self.graph.add_node(node_kind, c.name.clone(), c.span);
+                self.set_parent(agg_id, parent_id);
+                self.set_subkind(agg_id, &subkind);
+                self.graph.add_edge(parent_id, agg_id, EdgeKind::Contains);
+                // Root fields
+                let fields_str = c.fields.iter()
+                    .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                    .collect::<Vec<_>>().join(", ");
+                if !fields_str.is_empty() {
+                    self.set_property(agg_id, "fields", &fields_str);
+                }
+                // Events and commands as sub-nodes
+                for sub in &c.sub_constructs {
+                    let sub_kind_label = capitalize(&sub.keyword);
+                    let sub_id = self.graph.add_node(NodeKind::TypeDef, sub.name.clone(), sub.span);
+                    self.set_parent(sub_id, agg_id);
+                    self.set_subkind(sub_id, &sub_kind_label);
+                    let sub_fields = sub.fields.iter()
+                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                        .collect::<Vec<_>>().join(", ");
+                    if !sub_fields.is_empty() {
+                        self.set_property(sub_id, "fields", &sub_fields);
+                    }
+                    self.graph.add_edge(agg_id, sub_id, EdgeKind::Contains);
+                }
             }
-            self.graph.add_edge(agg_id, evt_id, EdgeKind::Contains);
-        }
-
-        // Commands
-        for cmd in &agg.commands {
-            let cmd_id = self.graph.add_node(NodeKind::TypeDef, cmd.name.clone(), cmd.span);
-            self.set_parent(cmd_id, agg_id);
-            self.set_subkind(cmd_id, subkinds::COMMAND);
-            // Store command fields
-            let cmd_fields = cmd.fields.iter()
-                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
-                .collect::<Vec<_>>().join(", ");
-            if !cmd_fields.is_empty() {
-                self.set_property(cmd_id, "fields", &cmd_fields);
+            // Trait-like: port, repo
+            "port" | "repo" => {
+                let port_id = self.graph.add_node(node_kind, c.name.clone(), c.span);
+                self.set_parent(port_id, parent_id);
+                self.set_subkind(port_id, &subkind);
+                self.graph.add_edge(parent_id, port_id, EdgeKind::Contains);
+                let methods_str = c.methods.iter()
+                    .map(|m| {
+                        let params = m.params.iter()
+                            .map(|p| format!("{}: {}", p.name, type_to_display(&p.type_expr)))
+                            .collect::<Vec<_>>().join(", ");
+                        let ret = m.return_type.as_ref()
+                            .map(|t| format!(" -> {}", type_to_display(t)))
+                            .unwrap_or_default();
+                        format!("{}({}){}", m.name, params, ret)
+                    })
+                    .collect::<Vec<_>>().join("; ");
+                if !methods_str.is_empty() {
+                    self.set_property(port_id, "methods", &methods_str);
+                }
             }
-            if let Some(rt) = &cmd.return_type {
-                self.set_property(cmd_id, "returns", &type_to_display(rt));
+            // Impl-like: adapter
+            "adapter" => {
+                let adapter_id = self.graph.add_node(node_kind, c.name.clone(), c.span);
+                self.set_parent(adapter_id, parent_id);
+                self.set_subkind(adapter_id, &subkind);
+                if let Some(target) = &c.target {
+                    self.set_property(adapter_id, "implements", target);
+                }
+                self.graph.add_edge(parent_id, adapter_id, EdgeKind::Contains);
             }
-            self.graph.add_edge(agg_id, cmd_id, EdgeKind::Contains);
+            // Fn-like: svc, saga
+            "svc" | "saga" => {
+                let flow_id = self.graph.add_node(node_kind, c.name.clone(), c.span);
+                self.set_parent(flow_id, parent_id);
+                // Check if saga via __saga annotation
+                if c.annotations.iter().any(|a| a.name == "__saga") {
+                    self.set_subkind(flow_id, "Saga");
+                    if let Some(saga_ann) = c.annotations.iter().find(|a| a.name == "__saga") {
+                        if !saga_ann.args.is_empty() {
+                            self.set_property(flow_id, "contexts", &saga_ann.args.join(", "));
+                        }
+                    }
+                } else {
+                    self.set_subkind(flow_id, &subkind);
+                }
+                self.graph.add_edge(parent_id, flow_id, EdgeKind::Contains);
+                // Build inputs
+                if !c.inputs.is_empty() {
+                    let inputs_str = c.inputs.iter()
+                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                        .collect::<Vec<_>>().join(", ");
+                    let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), c.span);
+                    self.set_parent(inputs_id, flow_id);
+                    self.set_property(inputs_id, "params", &inputs_str);
+                    self.graph.add_edge(flow_id, inputs_id, EdgeKind::Contains);
+                }
+                // Build steps
+                let mut prev_step_id: Option<NodeId> = None;
+                for step in &c.steps {
+                    if let FlowStep::Step(s) = step {
+                        let step_id = self.graph.add_node(NodeKind::Step, s.name.clone(), s.span);
+                        self.set_parent(step_id, flow_id);
+                        self.graph.add_edge(flow_id, step_id, EdgeKind::Contains);
+                        if let Some(prev) = prev_step_id {
+                            self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
+                        }
+                        self.build_step_body(&s.body, step_id);
+                        prev_step_id = Some(step_id);
+                    }
+                }
+            }
+            // Unknown keyword — generic node
+            _ => {
+                let id = self.graph.add_node(NodeKind::TypeDef, c.name.clone(), c.span);
+                self.set_parent(id, parent_id);
+                self.set_subkind(id, &c.keyword);
+                self.graph.add_edge(parent_id, id, EdgeKind::Contains);
+            }
         }
     }
-
-    fn build_port(&mut self, port: &Port, parent_id: NodeId) {
-        let port_id = self.graph.add_node(NodeKind::Interface, port.name.clone(), port.span);
-        self.set_parent(port_id, parent_id);
-        self.set_subkind(port_id, subkinds::PORT);
-        self.graph.add_edge(parent_id, port_id, EdgeKind::Contains);
-
-        for method in &port.methods {
-            let method_id = self.graph.add_node(
-                NodeKind::InterfaceMethod,
-                method.name.clone(),
-                method.span,
-            );
-            self.set_parent(method_id, port_id);
-            self.graph.add_edge(port_id, method_id, EdgeKind::Contains);
-
-            // Store method signature as properties
-            let params_str = method.params.iter()
-                .map(|p| format!("{}: {}", p.name, type_to_display(&p.type_expr)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            if !params_str.is_empty() {
-                self.set_property(method_id, "params", &format!("({})", params_str));
-            }
-            if let Some(rt) = &method.return_type {
-                self.set_property(method_id, "returns", &type_to_display(rt));
-            }
-        }
-    }
-
     fn build_flow(&mut self, flow: &Flow, parent_id: NodeId) {
         let flow_id = self.graph.add_node(NodeKind::Flow, flow.name.clone(), flow.span);
         self.set_parent(flow_id, parent_id);
@@ -764,7 +665,7 @@ impl IrBuilder {
     fn build_saga(&mut self, saga: &Saga, parent_id: NodeId) {
         let saga_id = self.graph.add_node(NodeKind::Saga, saga.name.clone(), saga.span);
         self.set_parent(saga_id, parent_id);
-        self.set_subkind(saga_id, subkinds::SAGA);
+        self.set_subkind(saga_id, "Saga");
         self.graph.add_edge(parent_id, saga_id, EdgeKind::Contains);
 
         // Add annotations
@@ -831,7 +732,7 @@ impl IrBuilder {
             adapter.span,
         );
         self.set_parent(adapter_id, parent_id);
-        self.set_subkind(adapter_id, subkinds::ADAPTER);
+        self.set_subkind(adapter_id, "Adapter");
         self.graph.add_edge(parent_id, adapter_id, EdgeKind::Contains);
 
         // Find port node and add implements edge

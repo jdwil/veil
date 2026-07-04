@@ -37,7 +37,7 @@ mod tests {
             _ => panic!("expected context"),
         };
         let vo = match &ctx.items[0] {
-            ContextItem::ValueObject(vo) => vo,
+            ContextItem::Construct(c) if c.keyword == "val" => c,
             _ => panic!("expected value object"),
         };
         assert_eq!(vo.name, "Email");
@@ -71,18 +71,18 @@ sol App
             _ => panic!("expected context"),
         };
         let agg = match &ctx.items[0] {
-            ContextItem::Aggregate(a) => a,
+            ContextItem::Construct(c) if c.keyword == "agg" => c,
             _ => panic!("expected aggregate"),
         };
         assert_eq!(agg.name, "Customer");
         assert_eq!(agg.fields.len(), 2);
-        assert_eq!(agg.events.len(), 1);
-        assert_eq!(agg.events[0].name, "CustomerCreated");
-        assert_eq!(agg.events[0].fields.len(), 3); // id, email, created (shorthand)
-        assert_eq!(agg.commands.len(), 1);
-        assert_eq!(agg.commands[0].name, "CreateCustomer");
-        assert_eq!(agg.commands[0].fields.len(), 2);
-        assert!(agg.commands[0].return_type.is_some());
+        assert_eq!(agg.sub_constructs.iter().filter(|s| s.keyword == "evt").count(), 1);
+        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "evt").unwrap().name, "CustomerCreated");
+        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "evt").unwrap().fields.len(), 3); // id, email, created (shorthand)
+        assert_eq!(agg.sub_constructs.iter().filter(|s| s.keyword == "cmd").count(), 1);
+        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().name, "CreateCustomer");
+        assert_eq!(agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().fields.len(), 2);
+        assert!(agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().return_type.is_some());
     }
 
     #[test]
@@ -99,10 +99,10 @@ sol App
             _ => panic!("expected context"),
         };
         let agg = match &ctx.items[0] {
-            ContextItem::Aggregate(a) => a,
+            ContextItem::Construct(c) if c.keyword == "agg" => c,
             _ => panic!("expected aggregate"),
         };
-        let rt = agg.commands[0].return_type.as_ref().unwrap();
+        let rt = agg.sub_constructs.iter().find(|s| s.keyword == "cmd").unwrap().return_type.as_ref().unwrap();
         match rt {
             TypeExpr::Result(Some(inner)) => match inner.as_ref() {
                 TypeExpr::Named(n) => assert_eq!(n, "Customer"),
@@ -126,7 +126,7 @@ sol App
             _ => panic!("expected context"),
         };
         let port = match &ctx.items[0] {
-            ContextItem::Port(p) => p,
+            ContextItem::Construct(c) if c.keyword == "port" => c,
             _ => panic!("expected port"),
         };
         assert_eq!(port.name, "Notifier");

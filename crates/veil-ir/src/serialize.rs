@@ -158,23 +158,13 @@ impl Serializer {
                 self.blank();
             }
             match item {
-                ContextItem::ValueObject(vo) => self.emit_value_object(vo),
-                ContextItem::Entity(ent) => self.emit_entity(ent),
-                ContextItem::Aggregate(agg) => self.emit_aggregate(agg),
-                ContextItem::Port(port) => self.emit_port(port),
-                ContextItem::Service(svc) => self.emit_service(svc),
-                ContextItem::Adapter(adapter) => self.emit_adapter(adapter),
+                ContextItem::Construct(c) => self.emit_construct(c),
                 ContextItem::Group(group) => {
                     self.line(&format!("group {}", group.name));
                     self.indent();
-                    for item in &group.items {
-                        match item {
-                            ContextItem::ValueObject(vo) => self.emit_value_object(vo),
-                            ContextItem::Entity(ent) => self.emit_entity(ent),
-                            ContextItem::Aggregate(agg) => self.emit_aggregate(agg),
-                            ContextItem::Port(port) => self.emit_port(port),
-                            ContextItem::Service(svc) => self.emit_service(svc),
-                            ContextItem::Adapter(adapter) => self.emit_adapter(adapter),
+                    for gi in &group.items {
+                        match gi {
+                            ContextItem::Construct(c) => self.emit_construct(c),
                             ContextItem::Group(_) => {} // nested not supported
                         }
                     }
@@ -183,6 +173,134 @@ impl Serializer {
             }
         }
         self.dedent();
+    }
+
+    /// Emit any construct generically based on keyword.
+    fn emit_construct(&mut self, c: &Construct) {
+        match c.keyword.as_str() {
+            "val" | "ent" | "evt" | "cmd" => {
+                // Struct-like: keyword name + fields
+                self.line(&format!("{} {}", c.keyword, c.name));
+                self.indent();
+                for field in &c.fields {
+                    self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
+                }
+                self.dedent();
+            }
+            "agg" => {
+                // Aggregate: keyword name + root fields + sub-constructs
+                self.line(&format!("agg {}", c.name));
+                self.indent();
+                if !c.fields.is_empty() {
+                    self.line("root");
+                    self.indent();
+                    for field in &c.fields {
+                        self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
+                    }
+                    self.dedent();
+                }
+                for sub in &c.sub_constructs {
+                    self.emit_construct(sub);
+                }
+                for sm in &c.state_machines {
+                    self.line(&format!("state {}", sm.name));
+                    self.indent();
+                    for t in &sm.transitions {
+                        self.line(&format!("{} -> {}", t.from, t.to));
+                    }
+                    self.dedent();
+                }
+                for m in &c.aggregate_fns {
+                    self.line(&format!("fn {}", m.name));
+                    self.indent();
+                    for expr in &m.body {
+                        self.line(&expr_to_veil(expr));
+                    }
+                    self.dedent();
+                }
+                self.dedent();
+            }
+            "port" | "repo" => {
+                // Trait-like: keyword name + methods
+                self.line(&format!("{} {}", c.keyword, c.name));
+                self.indent();
+                for method in &c.methods {
+                    let params = method.params.iter()
+                        .map(|p| format!("{}: {}", p.name, type_to_veil(&p.type_expr)))
+                        .collect::<Vec<_>>().join(", ");
+                    let ret = method.return_type.as_ref()
+                        .map(|t| format!(" -> {}", type_to_veil(t)))
+                        .unwrap_or_default();
+                    self.line(&format!("{}({}){}", method.name, params, ret));
+                }
+                self.dedent();
+            }
+            "adapter" => {
+                // Impl-like: keyword name : target + impls
+                let target = c.target.as_deref().unwrap_or("?");
+                self.line(&format!("adapter {} : {}", c.name, target));
+                self.indent();
+                for imp in &c.impls {
+                    let params_str = imp.params.join(", ");
+                    self.line(&format!("{}({})", imp.method_name, params_str));
+                    self.indent();
+                    for expr in &imp.body {
+                        self.line(&expr_to_veil(expr));
+                    }
+                    self.dedent();
+                }
+                self.dedent();
+            }
+            "svc" | "saga" => {
+                // Fn-like: keyword name + inputs + steps
+                let is_saga = c.annotations.iter().any(|a| a.name == "__saga");
+                if is_saga {
+                    let ctx_refs = c.annotations.iter()
+                        .find(|a| a.name == "__saga")
+                        .map(|a| a.args.join(", "))
+                        .unwrap_or_default();
+                    if c.annotations.iter().any(|a| a.name == "export") {
+                        self.line(&format!("export saga {}", c.name));
+                    } else {
+                        self.line(&format!("saga {}", c.name));
+                    }
+                    self.indent();
+                    if !ctx_refs.is_empty() {
+                        self.line(&format!("contexts {}", ctx_refs));
+                    }
+                } else {
+                    if c.annotations.iter().any(|a| a.name == "export") {
+                        self.line(&format!("export svc {}", c.name));
+                    } else {
+                        self.line(&format!("svc {}", c.name));
+                    }
+                    self.indent();
+                }
+                if !c.inputs.is_empty() {
+                    self.line("input");
+                    self.indent();
+                    for field in &c.inputs {
+                        self.line(&format!("{}: {}", field.name, type_to_veil(&field.type_expr)));
+                    }
+                    self.dedent();
+                }
+                for step in &c.steps {
+                    if let FlowStep::Step(s) = step {
+                        self.line(&format!("step {}", s.name));
+                        self.indent();
+                        for expr in &s.body {
+                            self.line(&expr_to_veil(expr));
+                        }
+                        self.dedent();
+                    }
+                }
+                self.dedent();
+            }
+            // Unknown — just emit keyword name
+            _ => {
+                self.line(&format!("{} {}", c.keyword, c.name));
+            }
+        }
     }
 
     fn emit_value_object(&mut self, vo: &ValueObject) {
