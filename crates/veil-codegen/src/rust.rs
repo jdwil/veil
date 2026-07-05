@@ -234,7 +234,7 @@ uuid.workspace = true"#);
         })
         .copied()
         .collect();
-    files.push(gen_impls(&impls_for_module, &crate_name));
+    files.push(gen_impls(&impls_for_module, &contents.traits, &crate_name, solution, registry));
 
     // Application: fn-shaped constructs in this module, plus top-level flows
     // (generated once, in the first module that has traits).
@@ -772,11 +772,48 @@ fn gen_traits(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     }
 }
 
-fn gen_impls(impls: &[&Construct], crate_name: &str) -> GeneratedFile {
+fn gen_impls(
+    impls: &[&Construct],
+    traits: &[&Construct],
+    crate_name: &str,
+    solution: &Solution,
+    registry: &LayerRegistry,
+) -> GeneratedFile {
+    use crate::expr::{build_ctx_from_solution, expr_to_rust, GenCtx};
+
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
-    out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse uuid::Uuid;\n\n");
+    out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
+
+    // Name→shape map so the body translator resolves calls correctly.
+    let name_to_shape = build_name_to_shape(solution);
+
+    // Collect external-effect hooks (`target.method(...)` where target is not a
+    // known construct/local) so we can emit compiling stub fns for them.
+    let mut hooks: std::collections::BTreeSet<(String, usize)> = std::collections::BTreeSet::new();
+    for c in impls {
+        for mimpl in &c.impls {
+            let locals: std::collections::HashSet<String> = mimpl.params.iter().cloned().collect();
+            for expr in &mimpl.body {
+                collect_effect_hooks(expr, &name_to_shape, &locals, &mut hooks);
+            }
+        }
+    }
+    if !hooks.is_empty() {
+        out.push_str("// External-effect runtime hooks (stubs). Replace with real\n");
+        out.push_str("// integrations; generated so adapter bodies compile.\n");
+        for (name, arity) in &hooks {
+            let params = (0..*arity)
+                .map(|i| format!("_arg{}: impl std::fmt::Debug", i))
+                .collect::<Vec<_>>().join(", ");
+            out.push_str(&format!(
+                "fn {}({}) -> String {{ String::new() }}\n",
+                name, params
+            ));
+        }
+        out.push('\n');
+    }
 
     if impls.is_empty() {
         out.push_str("// No implementations target traits in this module.\n");
@@ -796,16 +833,182 @@ fn gen_impls(impls: &[&Construct], crate_name: &str) -> GeneratedFile {
             }
             out.push_str("}\n\n");
 
-            out.push_str(&format!(
-                "// TODO: Implement {} for {}\n// #[async_trait]\n// impl {} for {} {{ ... }}\n\n",
-                target, c.name, target, c.name
-            ));
+            // Look up the target trait to recover real method signatures
+            // (the impl only carries bare parameter names).
+            let target_trait = traits.iter().find(|t| t.name == target);
+
+            out.push_str(&format!("#[async_trait]\nimpl {} for {} {{\n", target, c.name));
+
+            for mimpl in &c.impls {
+                // Find the trait method to get typed params + return type.
+                let trait_method = target_trait
+                    .and_then(|t| t.methods.iter().find(|m| m.name == mimpl.method_name));
+
+                // Build the signature: prefer the trait's typed params, zipping
+                // the impl's bare names by position; fall back to the impl names.
+                let (sig_params, ret_rust) = match trait_method {
+                    Some(m) => {
+                        let params = m.params.iter()
+                            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                            .collect::<Vec<_>>().join(", ");
+                        let ret = m.return_type.as_ref()
+                            .map(type_to_rust)
+                            .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                        (params, ret)
+                    }
+                    None => {
+                        // No trait match — use the impl's bare names, untyped.
+                        let params = mimpl.params.iter()
+                            .map(|p| format!("{}: ()", to_snake(p)))
+                            .collect::<Vec<_>>().join(", ");
+                        (params, "Result<(), DomainError>".to_string())
+                    }
+                };
+
+                out.push_str(&format!(
+                    "    async fn {}(&self{}{}) -> {} {{\n",
+                    to_snake(&mimpl.method_name),
+                    if sig_params.is_empty() { "" } else { ", " },
+                    sig_params,
+                    ret_rust,
+                ));
+
+                // Translate the body. Adapter bodies call external targets
+                // (e.g. `http.post(...)`) that resolve to runtime stubs.
+                let mut ctx = GenCtx::new(name_to_shape.clone());
+                // The impl's bare params are locals in the body.
+                for p in &mimpl.params {
+                    ctx.locals.insert(p.clone());
+                }
+                // Seed name→shape and method returns from stubs too.
+                let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
+                ctx.method_returns = seeded.method_returns;
+                ctx.struct_fields = seeded.struct_fields;
+
+                for expr in &mimpl.body {
+                    out.push_str(&format!("        let _ = {};\n", expr_to_rust(expr, &ctx)));
+                }
+                // Return a default Ok value matching the return type.
+                out.push_str(&format!("        {}\n", default_ok_for(&ret_rust)));
+                out.push_str("    }\n\n");
+            }
+
+            // A trait impl must cover ALL trait methods. Emit default stubs for
+            // any method the adapter did not implement, so the code compiles.
+            if let Some(t) = target_trait {
+                let implemented: std::collections::HashSet<&str> =
+                    c.impls.iter().map(|m| m.method_name.as_str()).collect();
+                for m in &t.methods {
+                    if implemented.contains(m.name.as_str()) {
+                        continue;
+                    }
+                    let params = m.params.iter()
+                        .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                        .collect::<Vec<_>>().join(", ");
+                    let ret = m.return_type.as_ref()
+                        .map(type_to_rust)
+                        .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                    out.push_str(&format!(
+                        "    async fn {}(&self{}{}) -> {} {{\n        {} // TODO: implement\n    }}\n\n",
+                        to_snake(&m.name),
+                        if params.is_empty() { "" } else { ", " },
+                        params,
+                        ret,
+                        default_ok_for(&ret),
+                    ));
+                }
+            }
+
+            out.push_str("}\n\n");
         }
     }
 
     GeneratedFile {
         path: format!("crates/{}/src/adapters/mod.rs", crate_name),
         content: out,
+    }
+}
+
+/// Build a name→shape map from ALL constructs in the solution (top-level and
+/// nested), used by the expression translator for shape-driven call resolution.
+fn build_name_to_shape(solution: &Solution) -> std::collections::HashMap<String, Shape> {
+    use std::collections::HashMap;
+    fn index(c: &Construct, map: &mut HashMap<String, Shape>) {
+        map.insert(c.name.clone(), c.shape);
+        for child in &c.children {
+            index(child, map);
+        }
+    }
+    let mut map = HashMap::new();
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            index(c, &mut map);
+        }
+    }
+    map
+}
+
+/// Walk an expression tree collecting external-effect hook calls: a `Call`
+/// with a non-empty method whose target is neither a known construct nor a
+/// local. Records `(snake(target)_snake(method), arg_count)`.
+fn collect_effect_hooks(
+    expr: &Expr,
+    name_to_shape: &std::collections::HashMap<String, Shape>,
+    locals: &std::collections::HashSet<String>,
+    hooks: &mut std::collections::BTreeSet<(String, usize)>,
+) {
+    match expr {
+        Expr::Call(call) => {
+            if !call.method.is_empty()
+                && call.receiver.is_none()
+                && !name_to_shape.contains_key(&call.target)
+                && !locals.contains(&call.target)
+                && !call.target.is_empty()
+            {
+                let name = format!("{}_{}", to_snake(&call.target), to_snake(&call.method));
+                hooks.insert((name, call.args.len()));
+            }
+            if let Some(recv) = &call.receiver {
+                collect_effect_hooks(recv, name_to_shape, locals, hooks);
+            }
+            for a in &call.args {
+                collect_effect_hooks(a, name_to_shape, locals, hooks);
+            }
+        }
+        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs) | Expr::Return(rhs) | Expr::Await(rhs) => {
+            collect_effect_hooks(rhs, name_to_shape, locals, hooks);
+        }
+        Expr::StructLit(_, fields) => {
+            for (_, v) in fields {
+                collect_effect_hooks(v, name_to_shape, locals, hooks);
+            }
+        }
+        Expr::BinaryOp(op) => {
+            collect_effect_hooks(&op.left, name_to_shape, locals, hooks);
+            collect_effect_hooks(&op.right, name_to_shape, locals, hooks);
+        }
+        _ => {}
+    }
+}
+
+/// Produce a compiling `Ok(...)` expression for a `Result<T, E>` return type.
+fn default_ok_for(ret_rust: &str) -> String {
+    // Extract T from `Result<T, DomainError>`.
+    let inner = ret_rust
+        .strip_prefix("Result<")
+        .and_then(|s| s.rfind(", ").map(|i| &s[..i]))
+        .unwrap_or("()")
+        .trim();
+    match inner {
+        "()" => "Ok(())".to_string(),
+        "String" => "Ok(String::new())".to_string(),
+        "Uuid" => "Ok(Uuid::new_v4())".to_string(),
+        "i64" | "i32" | "u64" | "u32" | "usize" | "isize" => "Ok(0)".to_string(),
+        "f64" | "f32" => "Ok(0.0)".to_string(),
+        "bool" => "Ok(false)".to_string(),
+        // Unknown concrete type: no guaranteed constructor. `todo!()` type-checks
+        // for any return type and marks the stub honestly (panics if reached).
+        _ => "todo!(\"stub — not yet implemented\")".to_string(),
     }
 }
 
@@ -817,7 +1020,7 @@ enum FlowLike<'a> {
 }
 
 fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry) -> GeneratedFile {
-    use crate::expr::{GenCtx, build_ctx_from_solution, collect_deps, gen_deps_struct, stmt_to_rust, expr_to_rust};
+    use crate::expr::{build_ctx_from_solution, collect_deps, gen_deps_struct, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
     let mut out = String::new();
@@ -954,31 +1157,87 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             ctx.locals.insert(input.name.clone());
         }
 
+        // Does any step declare a `compensate` sub-block? If so this is a saga
+        // and we wrap the body so failures trigger reverse-order rollback.
+        let has_compensation = steps.iter().any(|st| matches!(st, FlowStep::Step(s)
+            if s.sub_blocks.iter().any(|b| !b.body.is_empty())));
+
+        // Compensation snippets, in step order; emitted in reverse on failure.
+        let mut compensations: Vec<(String, Vec<String>)> = Vec::new();
+
+        let body_indent = if has_compensation { "        " } else { "    " };
+        if has_compensation {
+            out.push_str("    // Saga: run steps; on failure, compensate completed steps in reverse.\n");
+            out.push_str("    // NOTE: best-effort rollback — compensations are fire-and-forget.\n");
+            out.push_str("    let __saga: Result<(), DomainError> = async {\n");
+        }
+
         for step in steps {
             match step {
                 FlowStep::Step(s) => {
-                    out.push_str(&format!("    // step: {}\n", s.name));
+                    out.push_str(&format!("{}// step: {}\n", body_indent, s.name));
                     for expr in &s.body {
-                        out.push_str(&stmt_to_rust(expr, &mut ctx));
+                        // stmt_to_rust emits 4-space indent; re-indent for saga nesting.
+                        let stmt = stmt_to_rust(expr, &mut ctx);
+                        if has_compensation {
+                            out.push_str(&format!("    {}", stmt));
+                        } else {
+                            out.push_str(&stmt);
+                        }
                         out.push_str("\n");
+                    }
+                    // Record this step's compensation (translated now, while its
+                    // locals are in scope so field refs resolve symbolically).
+                    for block in &s.sub_blocks {
+                        if block.body.is_empty() {
+                            continue;
+                        }
+                        let comp_lines: Vec<String> = block.body.iter()
+                            .map(|e| expr_to_rust(e, &ctx))
+                            .collect();
+                        compensations.push((s.name.clone(), comp_lines));
                     }
                     out.push_str("\n");
                 }
                 FlowStep::Parallel(par) => {
-                    out.push_str("    // parallel execution\n");
-                    out.push_str("    tokio::join!(\n");
+                    out.push_str(&format!("{}// parallel execution\n", body_indent));
+                    // Each parallel branch runs its step body concurrently.
+                    out.push_str(&format!("{}tokio::join!(\n", body_indent));
                     for s in &par.steps {
+                        let branch: Vec<String> = s.body.iter()
+                            .map(|e| expr_to_rust(e, &ctx))
+                            .collect();
                         out.push_str(&format!(
-                            "        async {{ tracing::info!(\"parallel: {}\"); }},\n",
-                            s.name
+                            "{}    async {{ {} }},\n",
+                            body_indent,
+                            branch.iter().map(|b| format!("let _ = {};", b)).collect::<Vec<_>>().join(" ")
                         ));
                     }
-                    out.push_str("    );\n\n");
+                    out.push_str(&format!("{});\n\n", body_indent));
                 }
-                FlowStep::Match(_) => {
-                    out.push_str("    // TODO: match/branch logic\n\n");
+                FlowStep::Match(m) => {
+                    // Lower a match step to a real Rust match over its scrutinee.
+                    let match_expr = Expr::Match(Box::new(m.expr.clone()), m.arms.clone());
+                    out.push_str(&format!("{}{}\n\n", body_indent, expr_to_rust(&match_expr, &ctx)));
                 }
             }
+        }
+
+        if has_compensation {
+            out.push_str("        Ok(())\n");
+            out.push_str("    }.await;\n");
+            out.push_str("    if let Err(__e) = __saga {\n");
+            // Emit compensations in reverse step order.
+            for (step_name, comp_lines) in compensations.iter().rev() {
+                out.push_str(&format!("        // compensate: {}\n", step_name));
+                for line in comp_lines {
+                    // Compensations are best-effort; ignore their result.
+                    let line = line.strip_suffix('?').unwrap_or(line);
+                    out.push_str(&format!("        let _ = {};\n", line));
+                }
+            }
+            out.push_str("        return Err(__e);\n");
+            out.push_str("    }\n");
         }
 
         // Return expression
@@ -997,6 +1256,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
 }
 
 /// Detect which sibling modules a module's flows reference (via step ctx refs).
+#[allow(dead_code)] // retained for planned cross-module import generation
 fn detect_sibling_refs(module: &Construct, solution: &Solution) -> Vec<String> {
     let mut needed = std::collections::HashSet::new();
     let module_names: std::collections::HashMap<String, String> = solution.items.iter()

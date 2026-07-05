@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use veil_ir::LayerRegistry;
 
+mod serve;
+
 #[derive(Parser)]
 #[command(name = "veil", version, about = "VEIL — Visual Engineering Intermediate Language")]
 struct Cli {
@@ -479,53 +481,42 @@ fn main() {
                 }
             };
 
-            let graph_json = serde_json::to_string(&graph).unwrap();
             let node_count = graph.nodes.len();
             let edge_count = graph.edges.len();
-            let veil_source = source.clone();
 
-            // Generate Rust code for the code preview panel
-            let generated_json = {
-                let sol = parse_solution_or_exit(&source, &file);
-                let project = veil_codegen::generate(&sol.0, &sol.1);
-                let files_map: std::collections::HashMap<String, String> = project.files.iter()
-                    .map(|f| (f.path.clone(), f.content.clone()))
-                    .collect();
-                serde_json::to_string(&files_map).unwrap()
-            };
+            // Only .veil solutions (the common editing case) support write-back.
+            // Packages/compositions are served read-only.
+            let editable = matches!(&veil_file, veil_ir::VeilFile::Solution(_));
 
             println!("✓ Serving VEIL IR ({} nodes, {} edges)", node_count, edge_count);
             println!("  Layers: {}", registry.layers.join(", "));
             println!("  API: http://localhost:{}/api/ir", port);
             println!("  Source: http://localhost:{}/api/source", port);
             println!("  Palette: http://localhost:{}/api/palette", port);
+            if editable {
+                println!("  Edit: POST http://localhost:{}/api/edit (write-back enabled)", port);
+            }
+
+            // Server state: the source of truth is the on-disk .veil source.
+            // Every GET re-derives IR/generated from it, and POST /api/edit
+            // applies a structured edit, writes the file, and rebuilds.
+            let state = std::sync::Arc::new(serve::ServeState::new(
+                file.clone(),
+                source.clone(),
+                registry.clone(),
+                editable,
+            ));
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
-                // Palette straight from the registry — visuals, groups,
-                // placement rules, and statements, all layer-defined.
                 let palette_json =
                     serde_json::to_string(&veil_ir::palette_from_registry(&registry)).unwrap();
 
                 let app = axum::Router::new()
-                    .route("/api/ir", axum::routing::get({
-                        let json = graph_json.clone();
-                        move || async move {
-                            (
-                                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                                json.clone(),
-                            )
-                        }
-                    }))
-                    .route("/api/source", axum::routing::get({
-                        let src = veil_source.clone();
-                        move || async move {
-                            (
-                                [(axum::http::header::CONTENT_TYPE, "text/plain")],
-                                src.clone(),
-                            )
-                        }
-                    }))
+                    .route("/api/ir", axum::routing::get(serve::get_ir))
+                    .route("/api/source", axum::routing::get(serve::get_source))
+                    .route("/api/generated", axum::routing::get(serve::get_generated))
+                    .route("/api/edit", axum::routing::post(serve::post_edit))
                     .route("/api/palette", axum::routing::get({
                         let palette = palette_json.clone();
                         move || async move {
@@ -535,15 +526,7 @@ fn main() {
                             )
                         }
                     }))
-                    .route("/api/generated", axum::routing::get({
-                        let generated = generated_json.clone();
-                        move || async move {
-                            (
-                                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                                generated.clone(),
-                            )
-                        }
-                    }))
+                    .with_state(state)
                     .layer(
                         tower_http::cors::CorsLayer::new()
                             .allow_origin(tower_http::cors::Any)

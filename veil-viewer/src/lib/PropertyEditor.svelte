@@ -1,7 +1,7 @@
 <script lang="ts">
   import { NODE_STYLES, getNodeStyle, type NodeKind, type IrGraph, type IrNode } from '$lib/types';
   import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
-  import { irGraph } from '$lib/store';
+  import { irGraph, saveEdits, saving, saveError, type EditOp } from '$lib/store';
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
   import FieldsEditor from '$lib/FieldsEditor.svelte';
@@ -62,14 +62,37 @@
       .map(c => ({ name: c.name, type: c.metadata.subkind ?? c.kind }));
   });
 
+  // The AST span start identifies the construct on the server side. Edits are
+  // no-ops (locally only) when it's missing (e.g. an unsaved dropped node).
+  let spanStart = $derived<number | null>(node.data.spanStart ?? null);
+  let layerProvided = $derived<boolean>(node.data.layerProvided ?? false);
+
   function handleMethodsChange(newMethods: any[]) {
-    // TODO: update IR with new methods
-    console.log('Methods changed:', newMethods);
+    if (spanStart === null) return;
+    persist({
+      op: 'set_methods',
+      span_start: spanStart,
+      methods: newMethods.map(m => ({
+        name: m.name,
+        params: (m.params ?? []).map((p: any) => ({ name: p.name, type: p.type })),
+        return_type: m.returnType ?? '',
+      })),
+    });
   }
 
   function handleFieldsChange(newFields: any[]) {
-    // TODO: update IR with new fields
-    console.log('Fields changed:', newFields);
+    if (spanStart === null) return;
+    persist({
+      op: 'set_fields',
+      span_start: spanStart,
+      fields: newFields.map(f => ({ name: f.name, type: f.type })),
+    });
+  }
+
+  // Persist an edit to the server; the store updates irGraph/source/generated
+  // on success so all panels reflect the change live.
+  async function persist(edit: EditOp) {
+    await saveEdits([edit]);
   }
 
   // Annotations
@@ -144,23 +167,41 @@
       delete activeAnnotations[annName];
     }
     activeAnnotations = { ...activeAnnotations };
-    save();
+    commitAnnotations();
   }
 
   function updateAnnotationParam(annName: string, paramName: string, value: string) {
     if (activeAnnotations[annName]) {
       activeAnnotations[annName][paramName] = value;
       activeAnnotations = { ...activeAnnotations };
-      save();
+      commitAnnotations();
     }
   }
 
+  // Local echo — updates the on-canvas node immediately for responsiveness.
+  // Persistence to the server happens on commit (blur / annotation toggle).
   function save() {
     onUpdate(node.id, {
       ...node.data,
       label: name,
       annotations: serializeAnnotations(),
     });
+  }
+
+  // Persist a rename when the name field loses focus (avoids a round-trip per
+  // keystroke). No-op if the name is unchanged or the node isn't yet saved.
+  function commitName() {
+    save();
+    if (spanStart === null) return;
+    if (name === (node.data.label ?? '')) return;
+    persist({ op: 'rename', span_start: spanStart, name });
+  }
+
+  // Persist the current annotation set to the server.
+  function commitAnnotations() {
+    save();
+    if (spanStart === null) return;
+    persist({ op: 'set_annotations', span_start: spanStart, annotations: serializeAnnotations() });
   }
 </script>
 
@@ -177,8 +218,17 @@
     <!-- Name -->
     <label class="pe-label">
       <span class="label-text">Name</span>
-      <input type="text" class="pe-input" bind:value={name} oninput={save} placeholder="Enter name..." />
+      <input type="text" class="pe-input" bind:value={name} oninput={save} onblur={commitName} placeholder="Enter name..." />
     </label>
+
+    {#if layerProvided}
+      <div class="pe-note pe-note-info">Layer-provided (read-only infrastructure)</div>
+    {/if}
+    {#if $saving}
+      <div class="pe-note">Saving…</div>
+    {:else if $saveError}
+      <div class="pe-note pe-note-error">Save failed: {$saveError}</div>
+    {/if}
 
     <!-- Type-specific editor -->
     {#if editorType === 'methods'}
@@ -391,6 +441,10 @@
   .pe-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 14px; }
   .pe-label { display: flex; flex-direction: column; gap: 4px; }
   .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; }
+
+  .pe-note { font-size: 11px; color: #94a3b8; padding: 4px 2px; }
+  .pe-note-error { color: #f87171; }
+  .pe-note-info { color: #7dd3fc; }
 
   .pe-input {
     background: rgba(0,0,0,0.3); border: 1px solid #2d2d44; border-radius: 6px;

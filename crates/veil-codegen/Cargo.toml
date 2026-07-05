@@ -10,3 +10,6 @@ description = "VEIL to Rust code generation"
 veil-ir.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+veil-parser.workspace = true

@@ -306,6 +306,8 @@
           label: child.name,
           kind: child.kind,
           subkind: child.metadata.subkind,
+          spanStart: child.span.start,
+          layerProvided: child.metadata.annotations.includes('layer-provided'),
           hasChildren,
           annotations: child.metadata.annotations,
           properties: child.metadata.properties,

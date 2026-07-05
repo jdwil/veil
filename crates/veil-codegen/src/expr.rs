@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use veil_ir::ast::*;
 use veil_ir::layer::{Shape, StmtShape, LayerRegistry};
 
-use crate::rust::{to_snake, type_to_rust};
+use crate::rust::to_snake;
 
 /// Code generation context — carries name resolution and type information.
 pub struct GenCtx {
@@ -287,6 +287,15 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             format!("{}.await", inner_str)
         }
         Expr::Action(a) => translate_action(a, ctx),
+        Expr::StructLit(name, fields) if name.is_empty() => {
+            // Anonymous record/map literal (`{ key: value, ... }`). Emit as a
+            // slice of (key, value-debug) pairs — a compiling, inspectable form
+            // for external-effect payloads without inventing a concrete type.
+            let pairs = fields.iter().map(|(k, v)| {
+                format!("(\"{}\", format!(\"{{:?}}\", {}))", k, expr_to_rust(v, ctx))
+            }).collect::<Vec<_>>().join(", ");
+            format!("&[{}]", pairs)
+        }
         Expr::StructLit(name, fields) => {
             let fs = fields.iter().map(|(k, v)| {
                 let v_str = expr_to_rust(v, ctx);
@@ -370,6 +379,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     let args_str = call.args.iter()
         .map(|a| expr_to_rust(a, ctx))
         .collect::<Vec<_>>().join(", ");
+
+    // Chained method call: `<receiver>.method(args)` (e.g. `.collect()` in
+    // `items.map(f).collect()`). The receiver carries the left side of the chain.
+    if let Some(recv) = &call.receiver {
+        let recv_str = expr_to_rust(recv, ctx);
+        return format!("{}.{}({})", recv_str, to_snake(&call.method), args_str);
+    }
 
     // Trait-shaped target → deps.target.method(args).await?
     if ctx.is_trait_target(&call.target) {
@@ -479,8 +495,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             "now" => "Utc::now()".to_string(),
             _ => format!("{}({})", to_snake(&call.target), args_str),
         }
-    } else {
+    } else if ctx.is_local(&call.target) || ctx.name_to_shape.contains_key(&call.target) {
+        // Known local/construct method call (already handled above, but be safe).
         format!("{}.{}({})", call.target, to_snake(&call.method), args_str)
+    } else {
+        // Unknown target with a method (e.g. `http.post(...)`): an external
+        // effect. Route it to a generated runtime hook `<target>_<method>(...)`
+        // so the code compiles without inventing domain knowledge. The set of
+        // hooks is emitted at the bottom of the module.
+        format!("{}_{}({})", to_snake(&call.target), to_snake(&call.method), args_str)
     }
 }
 
@@ -488,19 +511,33 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
     match a.shape {
         StmtShape::If => {
-            // guard: the condition should be true for success.
-            // Emit: `condition.map_err(|_| DomainError::Validation("msg"))?;`
-            // Or for bool: `if !cond { return Err(...) }`
-            // For v1: wrap in a let _ = ... pattern that compiles for both.
-            let cond = a.condition.as_ref()
-                .map(|c| expr_to_rust(c, ctx))
-                .unwrap_or_else(|| "true".to_string());
+            // guard: the condition must hold for the flow to continue.
             let msg = a.message.as_deref().unwrap_or("precondition failed");
-            // Use a format that works: assign to _ and check
-            format!(
-                "{{ let __guard = {}; /* guard: {} */ }}",
-                cond, msg
-            )
+            let msg_escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+            match a.condition.as_deref() {
+                // Fallible-call guard (`guard call X.method(...)`): the call
+                // returns a Result that must be Ok — propagate its error as a
+                // domain validation error.
+                Some(cond @ Expr::Call(_)) | Some(cond @ Expr::Await(_)) => {
+                    let call_str = expr_to_rust(cond, ctx);
+                    // translate_call may already append `?`; strip it so our
+                    // map_err drives the propagation.
+                    let base = call_str.strip_suffix('?').unwrap_or(&call_str);
+                    format!(
+                        "{}.map_err(|_| DomainError::Validation(\"{}\".to_string()))?",
+                        base, msg_escaped
+                    )
+                }
+                // Boolean guard: the condition must evaluate to true.
+                Some(cond) => {
+                    let cond_str = expr_to_rust(cond, ctx);
+                    format!(
+                        "if !({}) {{ return Err(DomainError::Validation(\"{}\".to_string())); }}",
+                        cond_str, msg_escaped
+                    )
+                }
+                None => format!("/* guard: {} (no condition) */", msg_escaped),
+            }
         }
         StmtShape::Call => {
             // Remaining actions (emit) — handle based on keyword-like semantics.
@@ -582,6 +619,9 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
         Expr::Call(call) => {
             if ctx.is_trait_target(&call.target) {
                 deps.insert(call.target.clone());
+            }
+            if let Some(recv) = &call.receiver {
+                collect_deps_from_expr(recv, ctx, deps);
             }
             for arg in &call.args {
                 collect_deps_from_expr(arg, ctx, deps);

@@ -88,11 +88,14 @@ fn inject_declarations(sol: &mut Solution, registry: &LayerRegistry) {
                 VeilFile::Solution(s) => s.items,
                 _ => continue,
             };
-            for item in items {
-                if let TopLevelItem::Construct(c) = &item {
+            for mut item in items {
+                if let TopLevelItem::Construct(c) = &mut item {
                     if existing_names.contains(&c.name) {
                         continue; // already exists
                     }
+                    // Mark provenance so the serializer skips it and the viewer
+                    // can distinguish layer-provided infrastructure.
+                    c.layer_provided = true;
                 }
                 sol.items.push(item);
             }
@@ -1841,6 +1844,7 @@ impl<'a> Parser<'a> {
                 target: port_target.clone(),
                 method: port_method.clone(),
                 args: call_arg,
+                receiver: None,
                 sugar: Some(keyword.to_string()),
                 span: action.span,
             }));
@@ -1905,6 +1909,7 @@ impl<'a> Parser<'a> {
                     target: name.clone(),
                     method: String::new(),
                     args,
+                    receiver: None,
                     sugar: None,
                     span: Span::new(0, 0),
                 })
@@ -1947,7 +1952,8 @@ impl<'a> Parser<'a> {
             target,
             method,
             args,
-                    sugar: None,
+            receiver: None,
+            sugar: None,
             span: start_span.merge(self.current().span),
         }))
     }
@@ -1988,42 +1994,21 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let start_span = self.current().span;
                 let name = self.advance().text;
-                if self.at(&TokenKind::Dot) {
-                    let mut parts = vec![name];
-                    while self.at(&TokenKind::Dot) {
-                        self.advance();
-                        parts.push(self.expect_ident()?);
-                    }
-                    if self.at(&TokenKind::LParen) {
-                        let method = parts.pop().unwrap_or_default();
-                        let target = parts.join(".");
-                        let args = self.parse_paren_args();
-                        Ok(Expr::Call(CallExpr {
-                            target,
-                            method,
-                            args,
-                    sugar: None,
-                            span: start_span.merge(self.current().span),
-                        }))
-                    } else {
-                        let mut expr = Expr::Ident(parts[0].clone());
-                        for part in &parts[1..] {
-                            expr = Expr::FieldAccess(Box::new(expr), part.clone());
-                        }
-                        Ok(expr)
-                    }
-                } else if self.at(&TokenKind::LParen) {
+                let atom = if self.at(&TokenKind::LParen) {
+                    // Bare function call: `name(args)`.
                     let args = self.parse_paren_args();
-                    Ok(Expr::Call(CallExpr {
+                    Expr::Call(CallExpr {
                         target: name,
                         method: String::new(),
-                        sugar: None,
                         args,
+                        receiver: None,
+                        sugar: None,
                         span: start_span.merge(self.current().span),
-                    }))
+                    })
                 } else {
-                    Ok(Expr::Ident(name))
-                }
+                    Expr::Ident(name)
+                };
+                self.parse_postfix(atom, start_span)
             }
             TokenKind::StringLit => {
                 let text = self.advance().text;
@@ -2062,15 +2047,88 @@ impl<'a> Parser<'a> {
                 }))
             }
             TokenKind::LParen => {
+                let start_span = self.current().span;
                 self.advance();
                 let expr = self.parse_expr()?;
                 if self.at(&TokenKind::RParen) {
                     self.advance();
                 }
-                Ok(expr)
+                // A parenthesized expression can also be the head of a chain.
+                self.parse_postfix(expr, start_span)
+            }
+            TokenKind::LBrace => {
+                // Anonymous record/map literal: `{ key: value, key, ... }`.
+                // Represented as a StructLit with an empty type name.
+                let fields = self.parse_brace_args()?;
+                Ok(Expr::StructLit(String::new(), fields))
             }
             _ => Err(self.error(format!("expected expression, got {:?}", self.peek_kind()))),
         }
+    }
+
+    /// Consume trailing postfix operators after an atom: `.field`, `.method(args)`,
+    /// and chained calls like `items.map(f).filter(g).collect()`.
+    ///
+    /// The first `.name` after a bare identifier atom collapses into the
+    /// `CallExpr.target`/`FieldAccess` form (so `Repo.find(id)` keeps its named
+    /// target for shape-driven codegen); subsequent links attach via
+    /// `CallExpr.receiver`, threading the accumulated expression as the receiver.
+    fn parse_postfix(&mut self, mut expr: Expr, start_span: Span) -> Result<Expr, ParseError> {
+        while self.at(&TokenKind::Dot) {
+            self.advance(); // consume '.'
+            let field = self.expect_ident()?;
+            if self.at(&TokenKind::LParen) {
+                let args = self.parse_paren_args();
+                let span = start_span.merge(self.current().span);
+                // `Ident.method(args)` (no prior chaining) → named target form,
+                // preserving `Repo.find(id)` for the codegen name resolver.
+                expr = match expr {
+                    Expr::Ident(target) => Expr::Call(CallExpr {
+                        target,
+                        method: field,
+                        args,
+                        receiver: None,
+                        sugar: None,
+                        span,
+                    }),
+                    Expr::FieldAccess(base, last) => {
+                        // `a.b.method(args)` → target "a.b" (dotted path).
+                        let target = flatten_dotted_path(&base, &last);
+                        match target {
+                            Some(t) => Expr::Call(CallExpr {
+                                target: t,
+                                method: field,
+                                args,
+                                receiver: None,
+                                sugar: None,
+                                span,
+                            }),
+                            None => Expr::Call(CallExpr {
+                                target: String::new(),
+                                method: field,
+                                args,
+                                receiver: Some(Box::new(Expr::FieldAccess(base, last))),
+                                sugar: None,
+                                span,
+                            }),
+                        }
+                    }
+                    // Chain link on a call/other expression → receiver form.
+                    other => Expr::Call(CallExpr {
+                        target: String::new(),
+                        method: field,
+                        args,
+                        receiver: Some(Box::new(other)),
+                        sugar: None,
+                        span,
+                    }),
+                };
+            } else {
+                // Plain field access.
+                expr = Expr::FieldAccess(Box::new(expr), field);
+            }
+        }
+        Ok(expr)
     }
 
     /// Parse binary operators with precedence climbing.
@@ -2140,7 +2198,7 @@ impl<'a> Parser<'a> {
         // Parse arms in indented block
         let mut arms = Vec::new();
         if self.at_block_start() {
-            self.enter_block();
+            self.enter_block()?;
             loop {
                 self.skip_newlines();
                 if self.at_block_end() {
@@ -2170,7 +2228,7 @@ impl<'a> Parser<'a> {
                 if self.at(&TokenKind::Newline) || self.at_block_start() {
                     // Multi-line body
                     if self.at_block_start() {
-                        self.enter_block();
+                        self.enter_block()?;
                         loop {
                             self.skip_newlines();
                             if self.at_block_end() {
@@ -2277,92 +2335,24 @@ impl<'a> Parser<'a> {
             && !self.at(&TokenKind::Dedent)
         {
             let before = self.pos;
-            match self.peek_kind().clone() {
-                TokenKind::Ident => {
-                    let name = self.advance().text;
-                    if self.at(&TokenKind::Dot) {
-                        let mut parts = vec![name];
-                        while self.at(&TokenKind::Dot) {
-                            self.advance();
-                            if self.at(&TokenKind::Ident) {
-                                parts.push(self.advance().text);
-                            } else {
-                                break;
-                            }
-                        }
-                        if self.at(&TokenKind::LParen) {
-                            let method = parts.pop().unwrap_or_default();
-                            let target = parts.join(".");
-                            let nested_args = self.parse_paren_args();
-                            args.push(Expr::Call(CallExpr {
-                                target,
-                                method,
-                                args: nested_args,
-                                sugar: None,
-                                span: Span::new(0, 0),
-                            }));
-                        } else {
-                            let mut expr = Expr::Ident(parts[0].clone());
-                            for p in &parts[1..] {
-                                expr = Expr::FieldAccess(Box::new(expr), p.clone());
-                            }
-                            args.push(expr);
-                        }
-                    } else if self.at(&TokenKind::LParen) {
-                        let nested_args = self.parse_paren_args();
-                        args.push(Expr::Call(CallExpr {
-                            target: name,
-                            method: String::new(),
-                                sugar: None,
-                            args: nested_args,
-                            span: Span::new(0, 0),
-                        }));
-                    } else {
-                        args.push(Expr::Ident(name));
+            // Each argument is a full expression (handles literals, binary ops,
+            // closures, and nested/chained calls). Falling back to advance() on
+            // error prevents an infinite loop without silently dropping tokens
+            // from a well-formed argument.
+            match self.parse_expr() {
+                Ok(expr) => args.push(expr),
+                Err(_) => {
+                    if self.pos == before {
+                        self.advance();
                     }
-                }
-                TokenKind::StringLit => {
-                    let text = self.advance().text;
-                    let inner = if text.len() >= 2 {
-                        text[1..text.len() - 1].to_string()
-                    } else {
-                        text
-                    };
-                    args.push(Expr::StringLit(inner));
-                }
-                TokenKind::IntLit => {
-                    let text = self.advance().text;
-                    args.push(Expr::IntLit(text.parse().unwrap_or(0)));
-                }
-                TokenKind::Pipe => {
-                    // Closure argument: |params| expr
-                    self.advance(); // opening |
-                    let mut params = Vec::new();
-                    while !self.at(&TokenKind::Pipe) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::RParen) {
-                        if !params.is_empty() && self.at(&TokenKind::Comma) {
-                            self.advance();
-                        }
-                        if self.at(&TokenKind::Pipe) { break; }
-                        params.push(self.expect_ident().unwrap_or_default());
-                    }
-                    if self.at(&TokenKind::Pipe) { self.advance(); } // closing |
-                    // Parse body expression (single expr, stops at comma or rparen)
-                    let mut body = Vec::new();
-                    if !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Comma) && !self.at(&TokenKind::Eof) {
-                        if let Ok(expr) = self.parse_expr() {
-                            body.push(expr);
-                        }
-                    }
-                    args.push(Expr::Closure { params, body });
-                }
-                _ => {
-                    self.advance();
                 }
             }
             if self.at(&TokenKind::Comma) {
                 self.advance();
             }
             if self.pos == before {
+                // No progress made (e.g. an unexpected token parse_expr couldn't
+                // consume) — advance to guarantee termination.
                 self.advance();
             }
         }
@@ -2371,6 +2361,30 @@ impl<'a> Parser<'a> {
         }
         args
     }
+}
+
+/// Flatten a `FieldAccess` chain rooted at a plain identifier into a dotted
+/// path string (`a.b.c`). Returns `None` if the base is not a simple ident
+/// chain (e.g. it contains a call), in which case the receiver form is used.
+fn flatten_dotted_path(base: &Expr, last: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut cur = base;
+    loop {
+        match cur {
+            Expr::Ident(n) => {
+                parts.push(n.clone());
+                break;
+            }
+            Expr::FieldAccess(inner, field) => {
+                parts.push(field.clone());
+                cur = inner;
+            }
+            _ => return None,
+        }
+    }
+    parts.reverse();
+    parts.push(last.to_string());
+    Some(parts.join("."))
 }
 
 #[cfg(test)]

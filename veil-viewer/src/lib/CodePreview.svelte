@@ -1,26 +1,40 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { generatedCode } from '$lib/store';
 
   let files = $state<Record<string, string>>({});
   let selectedFile = $state<string | null>(null);
   let loading = $state(true);
   let visible = $state(false);
 
+  // Pick a sensible default file the first time files arrive, preserving the
+  // user's selection across live updates when it still exists.
+  function chooseSelection(paths: string[]) {
+    if (selectedFile && paths.includes(selectedFile)) return;
+    selectedFile = paths.find(p => p.includes('application/mod.rs')) || paths[0] || null;
+  }
+
   onMount(async () => {
     try {
       const res = await fetch('http://localhost:3001/api/generated');
       if (res.ok) {
         files = await res.json();
-        const paths = Object.keys(files).sort();
-        if (paths.length > 0) {
-          // Default to first application/mod.rs
-          selectedFile = paths.find(p => p.includes('application/mod.rs')) || paths[0];
-        }
+        chooseSelection(Object.keys(files).sort());
       }
     } catch (e) {
       console.error('Failed to fetch generated code:', e);
     } finally {
       loading = false;
+    }
+  });
+
+  // Live update: when an edit is saved, the store pushes fresh generated code
+  // and this panel re-renders without a manual refresh (UX-005).
+  $effect(() => {
+    const code = $generatedCode;
+    if (code) {
+      files = code;
+      chooseSelection(Object.keys(files).sort());
     }
   });
 

@@ -1,54 +1,59 @@
 pkg onboarding_kit v1
   author "JD"
   desc "Customer onboarding building blocks"
+  use ddd
 
   ctx Identity
-    val Email
-      addr: Str
+    group domain
+      val Email
+        addr: Str
 
-    val Phone
-      number: Str
-      country: Str
+      val Phone
+        number: Str
+        country: Str
 
-    agg Customer
-      id: UUID
-      email: Email
-      phone: Phone
-      status: Str
-      created: DateTime
+      agg Customer
+        root
+          id: UUID
+          email: Email
+          phone: Phone
+          status: Str
+          created: DateTime
 
-      evt CustomerCreated
-        id email created
+        evt CustomerCreated
+          id email created
 
-      cmd CreateCustomer
-        email: Email
-        phone: Phone
-        -> Res!<Customer>
+        cmd CreateCustomer
+          email: Email
+          phone: Phone
+          -> Res!<Customer>
 
-    port Notifier
-      send_sms(phone: Phone, msg: Str) -> Res!
-      send_email(email: Email, subj: Str, body: Str) -> Res!
+      port Notifier
+        send_sms(phone: Phone, msg: Str) -> Res!
+        send_email(email: Email, subj: Str, body: Str) -> Res!
 
-    port KYCProvider
-      check(name: Str, email: Email) -> Res!<Str>
+      port KYCProvider
+        check(name: Str, email: Email) -> Res!<Str>
 
-    port CustomerRepo
-      save(c: Customer) -> Res!
-      find(id: UUID) -> Res!<Opt<Customer>>
+      port CustomerRepo
+        save(c: Customer) -> Res!
+        find(id: UUID) -> Res!<Opt<Customer>>
 
   ctx Billing
-    agg Subscription
-      id: UUID
-      customer_id: UUID
-      plan: Str
+    group domain
+      agg Subscription
+        root
+          id: UUID
+          customer_id: UUID
+          plan: Str
 
-      cmd CreateTrial
-        customer_id: UUID
-        plan: Str
-        -> Res!<Subscription>
+        cmd CreateTrial
+          customer_id: UUID
+          plan: Str
+          -> Res!<Subscription>
 
-    port PaymentGateway
-      create_customer(email: Str) -> Res!<Str>
+      port PaymentGateway
+        create_customer(email: Str) -> Res!<Str>
 
   expose
     node CreateCustomer
