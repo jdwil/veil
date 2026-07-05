@@ -557,7 +557,7 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
 
         for expr in &func.body {
             match expr {
-                Expr::Assign(field, rhs) if field_names.contains(field) => {
+                Expr::Assign(field, rhs) | Expr::MutAssign(field, rhs) if field_names.contains(field) => {
                     // Assign to a struct field: self.field = value
                     let rhs_str = expr_to_rust(rhs, &ctx);
                     // If the rhs is a bare ident that matches an enum variant, qualify it

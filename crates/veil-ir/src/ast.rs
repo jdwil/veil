@@ -368,6 +368,8 @@ pub enum Expr {
     IfExpr(IfExprData),
     /// Variable assignment: name = expr
     Assign(String, Box<Expr>),
+    /// Mutable variable assignment: mut name = expr
+    MutAssign(String, Box<Expr>),
     /// String literal
     StringLit(String),
     /// Integer literal

@@ -1695,6 +1695,13 @@ impl<'a> Parser<'a> {
             TokenKind::Match => return self.parse_match_expr(),
             TokenKind::For => return self.parse_for_loop(),
             TokenKind::While => return self.parse_while_loop(),
+            TokenKind::Mut => {
+                self.advance(); // consume 'mut'
+                let name = self.expect_ident()?;
+                self.expect(&TokenKind::Eq)?;
+                let rhs = self.parse_expr()?;
+                return Ok(Expr::MutAssign(name, Box::new(rhs)));
+            }
             TokenKind::Ret => {
                 self.advance();
                 let inner = self.parse_expr()?;

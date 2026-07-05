@@ -96,6 +96,7 @@ pub fn expr_to_display(expr: &Expr) -> String {
         }
         Expr::Action(a) => action_to_display(a),
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_display(rhs)),
+        Expr::MutAssign(name, rhs) => format!("mut {} = {}", name, expr_to_display(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),

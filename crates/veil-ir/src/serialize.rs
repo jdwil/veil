@@ -527,6 +527,7 @@ fn expr_to_veil(expr: &Expr) -> String {
             }
         },
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_veil(rhs)),
+        Expr::MutAssign(name, rhs) => format!("mut {} = {}", name, expr_to_veil(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
