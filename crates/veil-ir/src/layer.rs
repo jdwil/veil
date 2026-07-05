@@ -112,11 +112,32 @@ pub struct ConstructSpec {
     pub allowed_in: String,
     pub group: String,
     pub visual: Visual,
+    /// Optional runtime binding: an fn-shaped construct whose steps are NOT
+    /// inlined but packaged and delegated to a layer-declared coordinator
+    /// function. `runtime.0` is the coordinator fn name; `runtime.1` maps each
+    /// step sub-block keyword to the trait method it fills (e.g.
+    /// `compensate -> compensate`). When set, codegen lowers each step into a
+    /// generated `impl <StepTrait>` and calls the coordinator with the list.
+    #[serde(default)]
+    pub runtime: Option<RuntimeBinding>,
     /// Annotations this construct supports, declared in the layer's
     /// `annotations` sub-block. The viewer offers these in the property editor;
     /// no annotation vocabulary is hardcoded in the viewer.
     #[serde(default)]
     pub annotations: Vec<AnnotationSpec>,
+}
+
+/// Runtime binding for a delegated fn-shaped construct (e.g. `saga`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeBinding {
+    /// The coordinator function to call (e.g. "run_saga").
+    pub coordinator: String,
+    /// The trait each step is lowered into an impl of (e.g. "SagaStep").
+    pub step_trait: String,
+    /// Maps a step's main body + its sub-blocks to trait methods. The main body
+    /// fills `action` by convention; entries here map sub-block keywords to
+    /// method names, e.g. `("compensate", "compensate")`.
+    pub method_map: Vec<(String, String)>,
 }
 
 /// A layer-declared annotation available on a construct, with optional params.
@@ -198,6 +219,7 @@ impl LayerRegistry {
                     label: label.to_string(),
                 },
                 annotations: Vec::new(),
+                runtime: None,
             });
         }
         reg.layers.push("core".to_string());
@@ -601,6 +623,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
         Constraints,
         Visual,
         Annotations,
+        Runtime,
     }
 
     enum Item {
@@ -696,6 +719,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                     ..Default::default()
                 },
                 annotations: Vec::new(),
+                runtime: None,
             }));
             section = Section::None;
             continue;
@@ -727,6 +751,22 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
 
         // Section headers (indent 4 = direct child of construct/statement).
         if indent <= 4 {
+            // `runtime <coordinator> <step_trait>` opens a runtime binding whose
+            // nested `sub_block -> method` lines fill the method map.
+            if let Some(rest) = trimmed.strip_prefix("runtime ") {
+                let mut parts = rest.split_whitespace();
+                let coordinator = parts.next().unwrap_or("").to_string();
+                let step_trait = parts.next().unwrap_or("").to_string();
+                if let Item::Construct(c) = item {
+                    c.runtime = Some(RuntimeBinding {
+                        coordinator,
+                        step_trait,
+                        method_map: Vec::new(),
+                    });
+                }
+                section = Section::Runtime;
+                continue;
+            }
             match trimmed {
                 "contains" => {
                     section = Section::Contains;
@@ -764,6 +804,16 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             Section::Constraints => {
                 if let Item::Construct(c) = item {
                     c.constraints.push(trimmed.to_string());
+                }
+            }
+            Section::Runtime => {
+                // `sub_block -> method` maps a step sub-block to a trait method.
+                if let Item::Construct(c) = item {
+                    if let Some(rt) = c.runtime.as_mut() {
+                        if let Some((kw, method)) = trimmed.split_once("->") {
+                            rt.method_map.push((kw.trim().to_string(), method.trim().to_string()));
+                        }
+                    }
                 }
             }
             Section::Annotations => {

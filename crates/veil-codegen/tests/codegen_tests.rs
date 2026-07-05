@@ -147,25 +147,35 @@ fn adapter_impls_are_real_not_todo_comments() {
 }
 
 #[test]
-fn saga_emits_reverse_order_compensation() {
+fn saga_lowers_to_step_impls_and_delegates_to_coordinator() {
     let out = customer_onboarding();
-    assert!(out.contains("let __saga: Result<(), DomainError>"), "saga wrapper missing");
-    assert!(out.contains("if let Err(__e) = __saga"), "saga error handler missing");
-    // Compensations run in reverse: setup_billing before verify_identity before
-    // create_customer. Check ordering by byte position.
-    let sb = out.find("// compensate: setup_billing");
-    let vi = out.find("// compensate: verify_identity");
-    let cc = out.find("// compensate: create_customer");
-    assert!(sb.is_some() && vi.is_some() && cc.is_some(), "compensations missing");
-    assert!(sb < vi && vi < cc, "compensations not in reverse order");
+    // Each step becomes a generated struct + `impl SagaStep` (action/compensate).
+    assert!(out.contains("impl SagaStep for OnboardStep0"), "step 0 impl missing:\n{}", grep(&out, "impl SagaStep"));
+    assert!(out.contains("async fn action(&self, bus:"), "action method missing");
+    assert!(out.contains("async fn compensate(&self, bus:"), "compensate method missing");
+    // The saga fn just builds the step list and calls the layer coordinator.
+    assert!(out.contains("run_saga(deps.bus.as_ref(), steps).await"), "coordinator call missing:\n{}", grep(&out, "run_saga"));
+    assert!(out.contains("Vec<Box<dyn SagaStep + Send + Sync>>"), "boxed step list missing");
+    // The engine no longer synthesizes the unwind machinery.
+    assert!(!out.contains("let __saga"), "hardcoded saga wrapper still present");
+    assert!(!out.contains("if let Err(__e) = __saga"), "hardcoded unwind still present");
+}
+
+#[test]
+fn saga_knowledge_is_not_in_the_engine() {
+    // The saga coordinator + SagaStep trait come from the layer, not the engine.
+    let out = customer_onboarding();
+    assert!(out.contains("pub async fn run_saga("), "coordinator not generated from layer");
+    assert!(out.contains("pub trait SagaStep"), "SagaStep trait not generated from layer");
 }
 
 #[test]
 fn orchestrator_bus_calls_use_real_json_not_placeholders() {
     let out = customer_onboarding();
-    // Cross-context calls carry a typed JSON envelope.
+    // Cross-context calls carry a typed JSON envelope (now inside step impls,
+    // routed through the injected `bus` param).
     assert!(
-        out.contains("deps.bus.invoke(serde_json::json!({ \"target\": \"CustomerRepo\""),
+        out.contains("bus.invoke(serde_json::json!({ \"target\": \"CustomerRepo\""),
         "bus call not a JSON envelope:\n{}",
         grep(&out, "bus.invoke")
     );

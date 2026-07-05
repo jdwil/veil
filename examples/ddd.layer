@@ -172,6 +172,11 @@ pkg ddd v1
     annotations
       trace: "Add distributed tracing" method
       timeout: "Overall saga timeout" ms
+    # Steps are NOT inlined: each is lowered to an `impl SagaStep` and handed to
+    # the `run_saga` coordinator (declared below). The main step body fills
+    # `action`; the `compensate` sub-block fills `compensate`.
+    runtime run_saga SagaStep
+      compensate -> compensate
     allowed_in Orchestrator
 
   # Statement extensions (built on top of core statement shapes)

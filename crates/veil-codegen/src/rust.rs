@@ -768,7 +768,7 @@ fn gen_shared_crate(
     solution: &Solution,
     registry: &LayerRegistry,
 ) -> Vec<GeneratedFile> {
-    use crate::expr::{build_ctx_from_solution, expr_to_rust, stmt_to_rust, GenCtx};
+    use crate::expr::{build_ctx_from_solution, stmt_to_rust};
     let mut files = Vec::new();
 
     files.push(GeneratedFile {
@@ -1299,6 +1299,11 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             FlowLike::Construct(c) => c.return_expr.as_deref(),
         };
 
+        // Does the construct's layer declare a runtime binding (e.g. `saga`
+        // delegating to `run_saga`)? If so, steps are packaged into trait impls
+        // and handed to the coordinator — the engine names nothing saga-specific.
+        let runtime = registry.construct_by_name(subkind).and_then(|c| c.runtime.clone());
+
         out.push_str(&format!("/// {}: {}\n", subkind, name));
         for ann in annotations {
             out.push_str(&format!("/// @{}\n", ann.name));
@@ -1323,6 +1328,13 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             ctx.local_types.insert(input.name.clone(), type_to_rust(&input.type_expr));
         }
 
+        if let Some(rt) = &runtime {
+            // Runtime-delegated construct: emit the step impls + a body that
+            // builds the step list and calls the coordinator.
+            emit_runtime_delegated(&mut out, name, subkind, inputs, steps, rt, deps_param, &ctx);
+            continue;
+        }
+
         // Infer the flow's return type from the returned expression, using a
         // pre-scan of step bodies so local bindings resolve. Falls back to
         // Result<(), _> when there's no return or the type is unknown.
@@ -1336,116 +1348,35 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             ret_type
         ));
 
-        // Does any step declare a `compensate` sub-block? If so this is a saga
-        // and we wrap the body so failures trigger reverse-order rollback.
-        let has_compensation = steps.iter().any(|st| matches!(st, FlowStep::Step(s)
-            if s.sub_blocks.iter().any(|b| !b.body.is_empty())));
-
-        // Compensation snippets, in step order; emitted in reverse on failure.
-        let mut compensations: Vec<(String, Vec<String>)> = Vec::new();
-
-        let body_indent = if has_compensation { "        " } else { "    " };
-        if has_compensation {
-            // Hoist step let-bindings to the outer scope so the compensation
-            // handler (outside the async block) can reference them. They are
-            // JSON Bus results in an orchestrator; declared here, assigned in
-            // the body.
-            let mut hoisted: Vec<String> = Vec::new();
-            for step in steps {
-                if let FlowStep::Step(s) = step {
-                    for expr in &s.body {
-                        if let Expr::Assign(name, _) | Expr::MutAssign(name, _) = expr {
-                            if !hoisted.contains(name) {
-                                hoisted.push(name.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            out.push_str("    // Saga: run steps; on failure, compensate completed steps in reverse.\n");
-            out.push_str("    // NOTE: best-effort rollback — compensations are fire-and-forget.\n");
-            for name in &hoisted {
-                out.push_str(&format!("    let mut {}: serde_json::Value = serde_json::Value::Null;\n", name));
-                // Pre-register as a JSON local so field access indexes correctly.
-                ctx.locals.insert(name.clone());
-                ctx.local_types.insert(name.clone(), "serde_json::Value".to_string());
-            }
-            out.push_str("    let __saga: Result<(), DomainError> = async {\n");
-        }
-
         for step in steps {
             match step {
                 FlowStep::Step(s) => {
-                    out.push_str(&format!("{}// step: {}\n", body_indent, s.name));
+                    out.push_str(&format!("    // step: {}\n", s.name));
                     for expr in &s.body {
-                        // stmt_to_rust emits 4-space indent; re-indent for saga nesting.
-                        let mut stmt = stmt_to_rust(expr, &mut ctx);
-                        // In a saga, bindings were hoisted — turn `let x = ..` /
-                        // `let mut x = ..` into a plain assignment to the outer var.
-                        if has_compensation {
-                            if let Expr::Assign(name, _) | Expr::MutAssign(name, _) = expr {
-                                stmt = stmt
-                                    .replacen(&format!("let mut {} =", name), &format!("{} =", name), 1)
-                                    .replacen(&format!("let {} =", name), &format!("{} =", name), 1);
-                            }
-                            out.push_str(&format!("    {}", stmt));
-                        } else {
-                            out.push_str(&stmt);
-                        }
-                        out.push_str("\n");
+                        out.push_str(&stmt_to_rust(expr, &mut ctx));
+                        out.push('\n');
                     }
-                    // Record this step's compensation (translated now, while its
-                    // locals are in scope so field refs resolve symbolically).
-                    for block in &s.sub_blocks {
-                        if block.body.is_empty() {
-                            continue;
-                        }
-                        let comp_lines: Vec<String> = block.body.iter()
-                            .map(|e| expr_to_rust(e, &ctx))
-                            .collect();
-                        compensations.push((s.name.clone(), comp_lines));
-                    }
-                    out.push_str("\n");
+                    out.push('\n');
                 }
                 FlowStep::Parallel(par) => {
-                    out.push_str(&format!("{}// parallel execution\n", body_indent));
-                    // Each parallel branch runs its step body concurrently.
-                    out.push_str(&format!("{}tokio::join!(\n", body_indent));
+                    out.push_str("    // parallel execution\n");
+                    out.push_str("    tokio::join!(\n");
                     for s in &par.steps {
                         let branch: Vec<String> = s.body.iter()
                             .map(|e| expr_to_rust(e, &ctx))
                             .collect();
                         out.push_str(&format!(
-                            "{}    async {{ {} }},\n",
-                            body_indent,
+                            "        async {{ {} }},\n",
                             branch.iter().map(|b| format!("let _ = {};", b)).collect::<Vec<_>>().join(" ")
                         ));
                     }
-                    out.push_str(&format!("{});\n\n", body_indent));
+                    out.push_str("    );\n\n");
                 }
                 FlowStep::Match(m) => {
-                    // Lower a match step to a real Rust match over its scrutinee.
                     let match_expr = Expr::Match(Box::new(m.expr.clone()), m.arms.clone());
-                    out.push_str(&format!("{}{}\n\n", body_indent, expr_to_rust(&match_expr, &ctx)));
+                    out.push_str(&format!("    {}\n\n", expr_to_rust(&match_expr, &ctx)));
                 }
             }
-        }
-
-        if has_compensation {
-            out.push_str("        Ok(())\n");
-            out.push_str("    }.await;\n");
-            out.push_str("    if let Err(__e) = __saga {\n");
-            // Emit compensations in reverse step order.
-            for (step_name, comp_lines) in compensations.iter().rev() {
-                out.push_str(&format!("        // compensate: {}\n", step_name));
-                for line in comp_lines {
-                    // Compensations are best-effort; ignore their result.
-                    let line = line.strip_suffix('?').unwrap_or(line);
-                    out.push_str(&format!("        let _ = {};\n", line));
-                }
-            }
-            out.push_str("        return Err(__e);\n");
-            out.push_str("    }\n");
         }
 
         // Return expression
@@ -1461,6 +1392,115 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         path: format!("crates/{}/src/application/mod.rs", crate_name),
         content: out,
     }
+}
+
+/// Emit a runtime-delegated construct (e.g. a saga): one `struct` + trait impl
+/// per step, then a function body that builds the boxed step list and calls the
+/// layer-declared coordinator. Contains NO saga-specific vocabulary — it keys
+/// entirely off the `RuntimeBinding` from the layer.
+fn emit_runtime_delegated(
+    out: &mut String,
+    name: &str,
+    _subkind: &str,
+    inputs: &[Field],
+    steps: &[FlowStep],
+    rt: &veil_ir::layer::RuntimeBinding,
+    deps_param: &str,
+    ctx: &crate::expr::GenCtx,
+) {
+    use crate::expr::expr_to_rust;
+
+    let step_trait = &rt.step_trait;
+    // Capture the construct's inputs on each step struct so step bodies can use
+    // them. Fields are cloned into the struct at construction.
+    let input_fields: Vec<(String, String)> = inputs
+        .iter()
+        .map(|f| (to_snake(&f.name), type_to_rust(&f.type_expr)))
+        .collect();
+
+    // One struct + impl per Step (skip par/match — delegated runtimes use
+    // plain steps).
+    let mut step_type_names: Vec<String> = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let FlowStep::Step(s) = step else { continue };
+        let type_name = format!("{}Step{}", name, i);
+        step_type_names.push(type_name.clone());
+
+        // Struct holding captured inputs.
+        out.push_str(&format!("/// Step `{}` of `{}` (impl {}).\nstruct {} {{\n", s.name, name, step_trait, type_name));
+        for (fname, ftype) in &input_fields {
+            out.push_str(&format!("    {}: {},\n", fname, ftype));
+        }
+        out.push_str("}\n\n");
+
+        // The step body ctx: inputs are `self.<field>` inside the impl, and the
+        // Bus is the injected `bus` parameter (not `deps.bus`).
+        let mut step_ctx = ctx.clone_for_inference();
+        step_ctx.is_orchestrator = true;
+        step_ctx.bus_ref = "bus".to_string();
+        step_ctx.in_aggregate_fn = true; // makes input idents render as self.<field>
+        for (fname, ftype) in &input_fields {
+            step_ctx.self_fields.insert(fname.clone());
+            step_ctx.local_types.insert(fname.clone(), ftype.clone());
+        }
+
+        out.push_str(&format!("#[async_trait::async_trait]\nimpl {} for {} {{\n", step_trait, type_name));
+
+        // The main body fills `action`; each sub-block fills its mapped method.
+        // Method signature comes from the trait — we know it's `(&self, bus)`.
+        let action_body = &s.body;
+        emit_step_method(out, "action", action_body, &step_ctx);
+
+        for block in &s.sub_blocks {
+            if let Some((_, method)) = rt.method_map.iter().find(|(kw, _)| kw == &block.keyword) {
+                emit_step_method(out, method, &block.body, &step_ctx);
+            }
+        }
+        out.push_str("}\n\n");
+    }
+
+    // The delegated function: build the step list and call the coordinator.
+    let params = inputs
+        .iter()
+        .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push_str(&format!(
+        "#[tracing::instrument(skip_all)]\npub async fn {}({}{}) -> Result<(), DomainError> {{\n",
+        to_snake(name),
+        deps_param,
+        params,
+    ));
+    out.push_str(&format!("    let steps: Vec<Box<dyn {} + Send + Sync>> = vec![\n", step_trait));
+    for (i, step) in steps.iter().enumerate() {
+        if !matches!(step, FlowStep::Step(_)) { continue; }
+        let type_name = format!("{}Step{}", name, i);
+        let ctor_args = input_fields
+            .iter()
+            .map(|(fname, _)| format!("{}: {}.clone()", fname, fname))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("        Box::new({} {{ {} }}),\n", type_name, ctor_args));
+    }
+    out.push_str("    ];\n");
+    // Call the coordinator with the Bus dependency and the step list.
+    out.push_str(&format!("    {}(deps.bus.as_ref(), steps).await\n", to_snake(&rt.coordinator)));
+    out.push_str("}\n\n");
+
+    let _ = expr_to_rust; // (used within emit_step_method)
+}
+
+/// Emit one trait-method impl (`action`/`compensate`) with a translated body.
+fn emit_step_method(out: &mut String, method: &str, body: &[Expr], ctx: &crate::expr::GenCtx) {
+    use crate::expr::expr_to_rust;
+    out.push_str(&format!(
+        "    async fn {}(&self, bus: &(dyn Bus + Send + Sync)) -> Result<(), DomainError> {{\n",
+        method
+    ));
+    for expr in body {
+        out.push_str(&format!("        {};\n", expr_to_rust(expr, ctx)));
+    }
+    out.push_str("        Ok(())\n    }\n");
 }
 
 /// Detect which sibling modules a module's flows reference (via step ctx refs).

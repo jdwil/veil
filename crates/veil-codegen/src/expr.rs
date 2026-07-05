@@ -30,6 +30,9 @@ pub struct GenCtx {
     pub local_types: HashMap<String, String>,
     /// Struct field maps: type_name → vec of (field_name, field_type_name).
     pub struct_fields: HashMap<String, Vec<(String, String)>>,
+    /// How to reference the Bus for orchestrator routing. `deps.bus` in a
+    /// flow/service; `bus` inside a saga-step impl where it's an injected param.
+    pub bus_ref: String,
 }
 
 impl GenCtx {
@@ -43,6 +46,7 @@ impl GenCtx {
             method_returns: HashMap::new(),
             local_types: HashMap::new(),
             struct_fields: HashMap::new(),
+            bus_ref: "deps.bus".to_string(),
         }
     }
 
@@ -416,7 +420,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
 fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
     match expr {
         Expr::Ident(name) => {
-            if ctx.is_local(name) {
+            // A struct-captured input (saga step) → self.<field>.
+            if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
+                format!("self.{}.clone()", to_snake(name))
+            } else if ctx.is_local(name) {
                 format!("{}.clone()", name)
             } else {
                 // Non-local bare ident in a payload → symbolic string (enum variant, marker).
@@ -528,6 +535,11 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 })
                 .collect::<Vec<_>>().join(", ")
         };
+        // The Bus itself uses the ctx bus reference (`deps.bus` in a flow,
+        // `bus` inside a saga-step impl); other trait deps come from `deps`.
+        if call.target == "Bus" {
+            return format!("{}.{}({}).await?", ctx.bus_ref, to_snake(method), final_args);
+        }
         return format!("deps.{}.{}({}).await?", dep_name, to_snake(method), final_args);
     }
 
@@ -538,7 +550,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     if ctx.is_orchestrator && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty()) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
         return format!(
-            "deps.bus.invoke({}).await?",
+            "{}.invoke({}).await?",
+            ctx.bus_ref,
             json_envelope(&call.target, method, &call.args, ctx)
         );
     }
@@ -687,6 +700,7 @@ impl GenCtx {
             method_returns: self.method_returns.clone(),
             local_types: self.local_types.clone(),
             struct_fields: self.struct_fields.clone(),
+            bus_ref: self.bus_ref.clone(),
         }
     }
 }
