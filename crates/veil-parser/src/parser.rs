@@ -447,6 +447,20 @@ impl<'a> Parser<'a> {
                         flow.annotations = all;
                         items.push(TopLevelItem::Flow(flow));
                     }
+                    TokenKind::TypeKw => {
+                        self.advance(); // consume 'type'
+                        let alias_name = self.expect_ident()?;
+                        self.expect(&TokenKind::Eq)?;
+                        let target = self.parse_type()?;
+                        items.push(TopLevelItem::TypeAlias { name: alias_name, target });
+                    }
+                    TokenKind::ConstKw => {
+                        self.advance(); // consume 'const'
+                        let const_name = self.expect_ident()?;
+                        self.expect(&TokenKind::Eq)?;
+                        let value = self.parse_expr()?;
+                        items.push(TopLevelItem::Const { name: const_name, value });
+                    }
                     _ => {
                         if let Some(c) = self.parse_any_construct(annotations)? {
                             items.push(TopLevelItem::Construct(c));

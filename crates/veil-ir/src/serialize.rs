@@ -89,6 +89,8 @@ impl Serializer {
             TopLevelItem::Lang(lang) => self.emit_lang(lang),
             TopLevelItem::Construct(c) => self.emit_construct(c),
             TopLevelItem::Flow(flow) => self.emit_flow(flow),
+            TopLevelItem::TypeAlias { name, target } => self.line(&format!("type {} = {}", name, type_to_veil(target))),
+            TopLevelItem::Const { name, value } => self.line(&format!("const {} = {}", name, expr_to_veil(value))),
         }
     }
 

@@ -88,6 +88,10 @@ pub enum TopLevelItem {
     Lang(LangBlock),
     Construct(Construct),
     Flow(Flow),
+    /// Type alias: `type X = Y`
+    TypeAlias { name: String, target: TypeExpr },
+    /// Constant: `const NAME = value`
+    Const { name: String, value: Expr },
 }
 
 /// Ubiquitous language definitions.

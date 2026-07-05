@@ -210,6 +210,7 @@ impl IrBuilder {
                 TopLevelItem::Flow(flow) => {
                     self.build_flow(flow, sol_id);
                 }
+                TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } => {}
             }
         }
     }
