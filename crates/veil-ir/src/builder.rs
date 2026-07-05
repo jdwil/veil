@@ -123,6 +123,10 @@ pub fn expr_to_display(expr: &Expr) -> String {
         Expr::WhileLoop { condition, .. } => {
             format!("while {}", expr_to_display(condition))
         }
+        Expr::Closure { params, body } => {
+            let p = params.join(", ");
+            format!("|{}| ...", p)
+        }
     }
 }
 

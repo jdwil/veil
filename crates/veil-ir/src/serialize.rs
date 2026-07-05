@@ -582,5 +582,10 @@ fn expr_to_veil(expr: &Expr) -> String {
             let body_str = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  ");
             format!("while {}\n  {}", expr_to_veil(condition), body_str)
         }
+        Expr::Closure { params, body } => {
+            let p = params.join(", ");
+            let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("; ");
+            format!("|{}| {}", p, b)
+        }
     }
 }

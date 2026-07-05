@@ -1903,6 +1903,36 @@ impl<'a> Parser<'a> {
     /// Parse a primary (atomic) expression.
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.peek_kind().clone() {
+            TokenKind::Pipe => {
+                // Closure: |params| body
+                self.advance(); // consume opening |
+                let mut params = Vec::new();
+                while !self.at(&TokenKind::Pipe) && !self.at(&TokenKind::Eof) {
+                    if !params.is_empty() && self.at(&TokenKind::Comma) {
+                        self.advance();
+                    }
+                    params.push(self.expect_ident()?);
+                }
+                if self.at(&TokenKind::Pipe) {
+                    self.advance(); // consume closing |
+                }
+                // Parse body: single expression on same line, or indented block
+                let mut body = Vec::new();
+                if self.at_block_start() {
+                    let _ = self.enter_block();
+                    loop {
+                        self.skip_newlines();
+                        if self.at_block_end() { break; }
+                        body.push(self.parse_expr()?);
+                    }
+                    self.exit_block();
+                } else if !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
+                    && !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Comma)
+                {
+                    body.push(self.parse_expr()?);
+                }
+                return Ok(Expr::Closure { params, body });
+            }
             TokenKind::Ident => {
                 let start_span = self.current().span;
                 let name = self.advance().text;

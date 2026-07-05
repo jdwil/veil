@@ -57,6 +57,7 @@ pub enum TokenKind {
     GtEq,      // >=
     And,        // &&
     Or,         // ||
+    Pipe,       // |
     Bang,       // !
     Eq,         // =
     Arrow,      // ->
@@ -166,6 +167,10 @@ impl Lexer {
                 '|' if self.peek() == Some('|') => {
                     self.emit(TokenKind::Or, self.pos, self.pos + 2);
                     self.pos += 2;
+                }
+                '|' => {
+                    self.emit(TokenKind::Pipe, self.pos, self.pos + 1);
+                    self.pos += 1;
                 }
                 '&' if self.peek() == Some('&') => {
                     self.emit(TokenKind::And, self.pos, self.pos + 2);

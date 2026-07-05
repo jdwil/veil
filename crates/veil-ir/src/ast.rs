@@ -388,6 +388,8 @@ pub enum Expr {
     ForLoop { binding: String, index: Option<String>, iterable: Box<Expr>, body: Vec<Expr> },
     /// While loop: `while <condition> { body }`.
     WhileLoop { condition: Box<Expr>, body: Vec<Expr> },
+    /// Closure: `|params| body`.
+    Closure { params: Vec<String>, body: Vec<Expr> },
 }
 
 /// A layer-defined statement, parsed according to its core statement shape.

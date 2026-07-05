@@ -318,6 +318,17 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 .collect::<Vec<_>>().join("\n");
             format!("while {} {{\n{}\n    }}", cond_str, body_str)
         }
+        Expr::Closure { params, body } => {
+            let p = params.join(", ");
+            if body.len() == 1 {
+                format!("|{}| {}", p, expr_to_rust(&body[0], ctx))
+            } else {
+                let stmts = body.iter()
+                    .map(|e| format!("    {};", expr_to_rust(e, ctx)))
+                    .collect::<Vec<_>>().join("\n");
+                format!("|{}| {{\n{}\n}}", p, stmts)
+            }
+        }
     }
 }
 
