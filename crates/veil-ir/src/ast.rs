@@ -125,6 +125,8 @@ pub struct Construct {
     /// Resolved core parse shape.
     pub shape: Shape,
     pub name: String,
+    /// Generic type parameters (e.g. ["T", "U"]).
+    pub type_params: Vec<String>,
     pub span: Span,
     pub annotations: Vec<Annotation>,
     /// Was this construct prefixed with `export`?
@@ -169,6 +171,7 @@ impl Construct {
             subkind: subkind.to_string(),
             shape,
             name,
+            type_params: Vec::new(),
             span,
             annotations: Vec::new(),
             exported: false,
@@ -404,6 +407,8 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     /// String interpolation: f"Hello {name}"
     StringInterp(Vec<StringPart>),
+    /// Await expression: `await <expr>` → `<expr>.await`
+    Await(Box<Expr>),
 }
 
 /// Part of an interpolated string.

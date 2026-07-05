@@ -282,6 +282,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let inner_str = expr_to_rust(inner, ctx);
             format!("return Ok({})", inner_str)
         }
+        Expr::Await(inner) => {
+            let inner_str = expr_to_rust(inner, ctx);
+            format!("{}.await", inner_str)
+        }
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) => {
             let fs = fields.iter().map(|(k, v)| {

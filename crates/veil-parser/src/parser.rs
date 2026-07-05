@@ -862,6 +862,29 @@ impl<'a> Parser<'a> {
         Ok(Some(c))
     }
 
+
+    /// Parse optional generic type parameters: `<A, B, C>` after a construct name.
+    fn parse_type_params(&mut self) -> Vec<String> {
+        if !self.at(&TokenKind::LAngle) {
+            return Vec::new();
+        }
+        self.advance(); // consume <
+        let mut params = Vec::new();
+        while !self.at(&TokenKind::RAngle) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Newline) {
+            if !params.is_empty() && self.at(&TokenKind::Comma) {
+                self.advance();
+            }
+            if let Ok(name) = self.expect_ident() {
+                params.push(name);
+            } else {
+                break;
+            }
+        }
+        if self.at(&TokenKind::RAngle) {
+            self.advance();
+        }
+        params
+    }
     /// mod shape: `kw Name` + block of child constructs and groups.
     fn parse_mod_shape(
         &mut self,
@@ -931,6 +954,7 @@ impl<'a> Parser<'a> {
         self.advance(); // keyword
         let name = self.expect_ident()?;
         let mut c = Construct::new(&spec.keyword, &spec.name, Shape::Struct, name, start_span);
+        c.type_params = self.parse_type_params();
 
         if self.at_block_start() {
             self.enter_block()?;
@@ -1086,6 +1110,7 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident()?;
         let mut c = Construct::new(&spec.keyword, &spec.name, Shape::Enum, name, start_span);
 
+        c.type_params = self.parse_type_params();
         let block = self.parse_named_block_body_as_enum()?;
         c.variants = block.0;
         c.transitions = block.1;
@@ -1145,6 +1170,7 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident()?;
         let mut c = Construct::new(&spec.keyword, &spec.name, Shape::Trait, name, start_span);
 
+        c.type_params = self.parse_type_params();
         if self.at_block_start() {
             self.enter_block()?;
             while !self.at_block_end() {
@@ -1715,6 +1741,11 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::Eq)?;
                 let rhs = self.parse_expr()?;
                 return Ok(Expr::MutAssign(name, Box::new(rhs)));
+            }
+            TokenKind::Await => {
+                self.advance(); // consume 'await'
+                let inner = self.parse_expr()?;
+                return Ok(Expr::Await(Box::new(inner)));
             }
             TokenKind::Ret => {
                 self.advance();
