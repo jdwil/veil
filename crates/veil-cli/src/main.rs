@@ -96,13 +96,48 @@ fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Sol
 
 /// Generate a .stub file by running `cargo +nightly rustdoc --output-format json`
 /// and converting the JSON into VEIL stub format.
+/// Creates a temporary Cargo project with the crate as a dependency if no project is specified.
 fn generate_stub(crate_name: &str, project_dir: &std::path::Path) -> Result<String, String> {
     use std::process::Command;
+
+    // If project_dir is "." and doesn't have a Cargo.toml with this crate,
+    // create a temporary project
+    let (work_dir, _temp_dir) = if project_dir == std::path::Path::new(".") || !project_dir.join("Cargo.toml").exists() {
+        let tmp = tempfile::tempdir().map_err(|e| format!("Cannot create temp dir: {}", e))?;
+        let tmp_path = tmp.path().to_path_buf();
+
+        // Create a minimal Cargo project
+        let init = Command::new("cargo")
+            .args(["init", "--lib", "--name", "stub-workspace"])
+            .current_dir(&tmp_path)
+            .output()
+            .map_err(|e| format!("Failed to init temp project: {}", e))?;
+        if !init.status.success() {
+            return Err(format!("cargo init failed: {}", String::from_utf8_lossy(&init.stderr)));
+        }
+
+        // Add the target crate as a dependency
+        let add = Command::new("cargo")
+            .args(["add", crate_name])
+            .current_dir(&tmp_path)
+            .output()
+            .map_err(|e| format!("Failed to add dep: {}", e))?;
+        if !add.status.success() {
+            return Err(format!("cargo add {} failed: {}", crate_name, String::from_utf8_lossy(&add.stderr)));
+        }
+
+        eprintln!("  Creating temp project with {} as dependency...", crate_name);
+        (tmp_path, Some(tmp))
+    } else {
+        (project_dir.to_path_buf(), None)
+    };
+
+    eprintln!("  Running cargo +nightly rustdoc...");
 
     // Run cargo rustdoc to generate JSON
     let output = Command::new("cargo")
         .args(["+nightly", "rustdoc", "-p", crate_name, "--", "--output-format", "json", "-Z", "unstable-options"])
-        .current_dir(project_dir)
+        .current_dir(&work_dir)
         .output()
         .map_err(|e| format!("Failed to run cargo: {}", e))?;
 
@@ -112,11 +147,11 @@ fn generate_stub(crate_name: &str, project_dir: &std::path::Path) -> Result<Stri
     }
 
     // Find the generated JSON file
-    let json_path = project_dir.join("target").join("doc").join(format!("{}.json", crate_name));
+    let crate_file_name = crate_name.replace('-', "_");
+    let json_path = work_dir.join("target").join("doc").join(format!("{}.json", crate_file_name));
     if !json_path.exists() {
-        // Try with hyphens replaced by underscores
-        let alt_name = crate_name.replace('-', "_");
-        let alt_path = project_dir.join("target").join("doc").join(format!("{}.json", alt_name));
+        // Try original name
+        let alt_path = work_dir.join("target").join("doc").join(format!("{}.json", crate_name));
         if !alt_path.exists() {
             return Err(format!("JSON file not found at {:?}", json_path));
         }

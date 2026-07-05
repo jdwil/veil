@@ -23,3 +23,4 @@ serde.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 miette = { workspace = true, features = ["fancy"] }
+tempfile = "3"
