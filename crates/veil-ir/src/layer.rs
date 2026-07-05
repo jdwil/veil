@@ -112,6 +112,24 @@ pub struct ConstructSpec {
     pub allowed_in: String,
     pub group: String,
     pub visual: Visual,
+    /// Annotations this construct supports, declared in the layer's
+    /// `annotations` sub-block. The viewer offers these in the property editor;
+    /// no annotation vocabulary is hardcoded in the viewer.
+    #[serde(default)]
+    pub annotations: Vec<AnnotationSpec>,
+}
+
+/// A layer-declared annotation available on a construct, with optional params.
+/// Grammar in a `.layer` construct's `annotations` block:
+///   annotations
+///     invariant: "Domain constraint" expr
+///     retry: "Retry on failure" attempts, backoff
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationSpec {
+    pub name: String,
+    pub desc: String,
+    /// Parameter names (rendered as free-text inputs by the viewer).
+    pub params: Vec<String>,
 }
 
 /// A statement definition loaded from a `.layer` file.
@@ -179,6 +197,7 @@ impl LayerRegistry {
                     color: color.to_string(),
                     label: label.to_string(),
                 },
+                annotations: Vec::new(),
             });
         }
         reg.layers.push("core".to_string());
@@ -435,7 +454,7 @@ fn resolve_port_binding(
 // ─── Stub system (.stub files for third-party crate declarations) ─────────
 
 /// A parsed `.stub` file — declares the public API of an external Rust crate.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StubCrate {
     /// The crate name (e.g. "reqwest").
     pub name: String,
@@ -448,7 +467,7 @@ pub struct StubCrate {
 }
 
 /// A struct declared in a stub file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubStruct {
     pub name: String,
     /// Methods declared directly on the struct (instance methods).
@@ -456,14 +475,14 @@ pub struct StubStruct {
 }
 
 /// An impl block in a stub file (associated functions/constructors).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubImpl {
     pub target: String,
     pub methods: Vec<StubMethod>,
 }
 
 /// A method/function signature in a stub file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubMethod {
     pub name: String,
     pub params: Vec<(String, String)>, // (param_name, type_string)
@@ -581,6 +600,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
         Contains,
         Constraints,
         Visual,
+        Annotations,
     }
 
     enum Item {
@@ -675,6 +695,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                     label: name,
                     ..Default::default()
                 },
+                annotations: Vec::new(),
             }));
             section = Section::None;
             continue;
@@ -719,6 +740,10 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                     section = Section::Visual;
                     continue;
                 }
+                "annotations" => {
+                    section = Section::Annotations;
+                    continue;
+                }
                 _ => section = Section::None,
             }
         }
@@ -739,6 +764,34 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             Section::Constraints => {
                 if let Item::Construct(c) = item {
                     c.constraints.push(trimmed.to_string());
+                }
+            }
+            Section::Annotations => {
+                // Grammar: `name: "description" param1, param2`
+                if let Item::Construct(c) = item {
+                    if let Some((name, rest)) = trimmed.split_once(':') {
+                        let rest = rest.trim();
+                        // Optional quoted description, then comma-separated params.
+                        let (desc, params_str) = if rest.starts_with('"') {
+                            if let Some(end) = rest[1..].find('"') {
+                                (rest[1..=end].to_string(), rest[end + 2..].trim().to_string())
+                            } else {
+                                (String::new(), rest.to_string())
+                            }
+                        } else {
+                            (String::new(), rest.to_string())
+                        };
+                        let params = params_str
+                            .split(',')
+                            .map(|p| p.trim().to_string())
+                            .filter(|p| !p.is_empty())
+                            .collect();
+                        c.annotations.push(AnnotationSpec {
+                            name: name.trim().to_string(),
+                            desc,
+                            params,
+                        });
+                    }
                 }
             }
             Section::Visual => {
@@ -834,6 +887,10 @@ pub struct PaletteEntry {
     pub layer: String,
     /// "construct" or "statement"
     pub entry_type: String,
+    /// Layer-declared annotations available on this construct (empty for
+    /// statements). The viewer offers these in the property editor.
+    #[serde(default)]
+    pub annotations: Vec<AnnotationSpec>,
 }
 
 pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
@@ -858,6 +915,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             allowed_in: c.allowed_in.clone(),
             layer: c.layer.clone(),
             entry_type: "construct".to_string(),
+            annotations: c.annotations.clone(),
         });
     }
     for s in &reg.statements {
@@ -876,6 +934,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             allowed_in: "Step".to_string(),
             layer: s.layer.clone(),
             entry_type: "statement".to_string(),
+            annotations: Vec::new(),
         });
     }
     out
@@ -900,4 +959,32 @@ pub fn keyword_shapes(reg: &LayerRegistry) -> HashMap<String, Shape> {
         .iter()
         .map(|c| (c.keyword.clone(), c.shape))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_annotations_parse_and_reach_palette() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+            .expect("ddd layer should load");
+        // The Aggregate construct declares an `invariant` annotation with an
+        // `expr` param — parsed from the layer, not hardcoded anywhere.
+        let agg = reg.constructs.iter().find(|c| c.name == "Aggregate").expect("Aggregate");
+        let inv = agg.annotations.iter().find(|a| a.name == "invariant").expect("invariant annotation");
+        assert_eq!(inv.params, vec!["expr".to_string()]);
+        assert!(!inv.desc.is_empty(), "annotation description should be preserved");
+
+        // Palette carries the annotations for the viewer.
+        let palette = palette_from_registry(&reg);
+        let agg_entry = palette.iter().find(|e| e.name == "Aggregate").expect("Aggregate palette entry");
+        assert!(agg_entry.annotations.iter().any(|a| a.name == "invariant"));
+        // Statements carry no annotations.
+        let dispatch = palette.iter().find(|e| e.name == "dispatch");
+        if let Some(d) = dispatch {
+            assert!(d.annotations.is_empty());
+        }
+    }
 }

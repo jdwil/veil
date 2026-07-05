@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { NODE_STYLES, getNodeStyle, type NodeKind, type IrGraph, type IrNode } from '$lib/types';
-  import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
-  import { irGraph } from '$lib/store';
+  import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/types';
+  import { irGraph, saveEdits, saving, saveError, type EditOp } from '$lib/store';
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
   import FieldsEditor from '$lib/FieldsEditor.svelte';
@@ -62,14 +61,37 @@
       .map(c => ({ name: c.name, type: c.metadata.subkind ?? c.kind }));
   });
 
+  // The AST span start identifies the construct on the server side. Edits are
+  // no-ops (locally only) when it's missing (e.g. an unsaved dropped node).
+  let spanStart = $derived<number | null>(node.data.spanStart ?? null);
+  let layerProvided = $derived<boolean>(node.data.layerProvided ?? false);
+
   function handleMethodsChange(newMethods: any[]) {
-    // TODO: update IR with new methods
-    console.log('Methods changed:', newMethods);
+    if (spanStart === null) return;
+    persist({
+      op: 'set_methods',
+      span_start: spanStart,
+      methods: newMethods.map(m => ({
+        name: m.name,
+        params: (m.params ?? []).map((p: any) => ({ name: p.name, type: p.type })),
+        return_type: m.returnType ?? '',
+      })),
+    });
   }
 
   function handleFieldsChange(newFields: any[]) {
-    // TODO: update IR with new fields
-    console.log('Fields changed:', newFields);
+    if (spanStart === null) return;
+    persist({
+      op: 'set_fields',
+      span_start: spanStart,
+      fields: newFields.map(f => ({ name: f.name, type: f.type })),
+    });
+  }
+
+  // Persist an edit to the server; the store updates irGraph/source/generated
+  // on success so all panels reflect the change live.
+  async function persist(edit: EditOp) {
+    await saveEdits([edit]);
   }
 
   // Annotations
@@ -83,10 +105,9 @@
     activeAnnotations = parseAnnotations(node.data.annotations ?? []);
   });
 
-  // Available annotations for this node kind
-  let availableAnnotations = $derived<AnnotationDef[]>(
-    ANNOTATION_SCHEMA[subkind ?? kind] ?? ANNOTATION_SCHEMA[kind] ?? []
-  );
+  // Available annotations come from the layer (via /api/palette), keyed by the
+  // construct subkind — zero hardcoded domain vocabulary in the viewer.
+  let availableAnnotations = $derived<AnnotationSpec[]>(getAnnotationDefs(subkind));
 
   function parseAnnotations(anns: string[]): Record<string, Record<string, string>> {
     const result: Record<string, Record<string, string>> = {};
@@ -104,7 +125,7 @@
             args[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim().replace(/"/g, '');
           } else if (trimmed) {
             const def = availableAnnotations.find(a => a.name === annName);
-            const paramName = def?.params[0]?.name ?? 'value';
+            const paramName = def?.params[0] ?? 'value';
             args[paramName] = trimmed;
           }
         }
@@ -144,23 +165,41 @@
       delete activeAnnotations[annName];
     }
     activeAnnotations = { ...activeAnnotations };
-    save();
+    commitAnnotations();
   }
 
   function updateAnnotationParam(annName: string, paramName: string, value: string) {
     if (activeAnnotations[annName]) {
       activeAnnotations[annName][paramName] = value;
       activeAnnotations = { ...activeAnnotations };
-      save();
+      commitAnnotations();
     }
   }
 
+  // Local echo — updates the on-canvas node immediately for responsiveness.
+  // Persistence to the server happens on commit (blur / annotation toggle).
   function save() {
     onUpdate(node.id, {
       ...node.data,
       label: name,
       annotations: serializeAnnotations(),
     });
+  }
+
+  // Persist a rename when the name field loses focus (avoids a round-trip per
+  // keystroke). No-op if the name is unchanged or the node isn't yet saved.
+  function commitName() {
+    save();
+    if (spanStart === null) return;
+    if (name === (node.data.label ?? '')) return;
+    persist({ op: 'rename', span_start: spanStart, name });
+  }
+
+  // Persist the current annotation set to the server.
+  function commitAnnotations() {
+    save();
+    if (spanStart === null) return;
+    persist({ op: 'set_annotations', span_start: spanStart, annotations: serializeAnnotations() });
   }
 </script>
 
@@ -177,8 +216,17 @@
     <!-- Name -->
     <label class="pe-label">
       <span class="label-text">Name</span>
-      <input type="text" class="pe-input" bind:value={name} oninput={save} placeholder="Enter name..." />
+      <input type="text" class="pe-input" bind:value={name} oninput={save} onblur={commitName} placeholder="Enter name..." />
     </label>
+
+    {#if layerProvided}
+      <div class="pe-note pe-note-info">Layer-provided (read-only infrastructure)</div>
+    {/if}
+    {#if $saving}
+      <div class="pe-note">Saving…</div>
+    {:else if $saveError}
+      <div class="pe-note pe-note-error">Save failed: {$saveError}</div>
+    {/if}
 
     <!-- Type-specific editor -->
     {#if editorType === 'methods'}
@@ -284,33 +332,19 @@
                   onchange={(e) => toggleAnnotation(annDef.name, e.currentTarget.checked)}
                 />
                 <span class="ann-name">@{annDef.name}</span>
-                <span class="ann-desc">{annDef.description}</span>
+                <span class="ann-desc">{annDef.desc}</span>
               </label>
               {#if isActive && annDef.params.length > 0}
                 <div class="annotation-params">
                   {#each annDef.params as param}
                     <div class="param-row">
-                      <span class="param-label">{param.name}:</span>
-                      {#if param.type === 'select' && param.options}
-                        <select
-                          class="pe-select"
-                          value={activeAnnotations[annDef.name]?.[param.name] ?? ''}
-                          onchange={(e) => updateAnnotationParam(annDef.name, param.name, e.currentTarget.value)}
-                        >
-                          <option value="">—</option>
-                          {#each param.options as opt}
-                            <option value={opt}>{opt}</option>
-                          {/each}
-                        </select>
-                      {:else}
-                        <input
-                          type={param.type === 'number' ? 'number' : 'text'}
-                          class="pe-input small"
-                          value={activeAnnotations[annDef.name]?.[param.name] ?? ''}
-                          placeholder={param.placeholder ?? ''}
-                          oninput={(e) => updateAnnotationParam(annDef.name, param.name, e.currentTarget.value)}
-                        />
-                      {/if}
+                      <span class="param-label">{param}:</span>
+                      <input
+                        type="text"
+                        class="pe-input small"
+                        value={activeAnnotations[annDef.name]?.[param] ?? ''}
+                        oninput={(e) => updateAnnotationParam(annDef.name, param, e.currentTarget.value)}
+                      />
                     </div>
                   {/each}
                 </div>
@@ -391,6 +425,10 @@
   .pe-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 14px; }
   .pe-label { display: flex; flex-direction: column; gap: 4px; }
   .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; }
+
+  .pe-note { font-size: 11px; color: #94a3b8; padding: 4px 2px; }
+  .pe-note-error { color: #f87171; }
+  .pe-note-info { color: #7dd3fc; }
 
   .pe-input {
     background: rgba(0,0,0,0.3); border: 1px solid #2d2d44; border-radius: 6px;

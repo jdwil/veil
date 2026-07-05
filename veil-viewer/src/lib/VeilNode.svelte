@@ -16,12 +16,13 @@
   let detailsOpen = $state(false);
   let childrenOpen = $state(true);
 
-  // Extract context association for saga steps
-  const ctxProp = properties.find(([k]) => k === 'ctx');
-  const contextName = ctxProp ? ctxProp[1] : null;
+  // Reference-line badge (e.g. `ctx Identity`, `contexts A, B`) — the builder
+  // prefixes ref keys with `ref:` so this stays layer-agnostic.
+  const refProp = properties.find(([k]) => k.startsWith('ref:'));
+  const refKeyword = refProp ? refProp[0].slice(4) : null;
+  const refValue = refProp ? refProp[1] : null;
   const hasCompensate = annotations.includes('has_compensate');
   const isGroup = data.isGroup ?? false;
-  const sagaName = data.sagaName ?? null;
 </script>
 
 <div
@@ -31,7 +32,6 @@
   class:is-flow={kind === 'Flow'}
   class:is-error={kind === 'ErrorBoundary'}
   class:is-group={isGroup}
-  class:is-saga-step={sagaName !== null}
   style="--node-color: {style.color}"
 >
   <Handle type="target" position={Position.Top} />
@@ -54,17 +54,10 @@
       {/if}
     </div>
 
-    {#if contextName}
+    {#if refValue}
       <div class="context-badge">
-        <span class="ctx-icon">📦</span>
-        <span class="ctx-name">{contextName}</span>
-      </div>
-    {/if}
-
-    {#if sagaName}
-      <div class="saga-badge">
-        <span class="ctx-icon">🔄</span>
-        <span class="saga-label">{sagaName}</span>
+        <span class="ctx-icon">{getNodeStyle('Module', refKeyword).icon}</span>
+        <span class="ctx-name">{refValue}</span>
       </div>
     {/if}
 
@@ -198,28 +191,6 @@
     transform: none;
     box-shadow: 0 0 20px rgba(139, 92, 246, 0.15);
     border-color: rgba(139, 92, 246, 0.6);
-  }
-
-  .veil-node.is-saga-step {
-    border-left: 3px solid #dc2626;
-  }
-
-  .saga-badge {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    margin-bottom: 4px;
-    border-radius: 4px;
-    background: rgba(220, 38, 38, 0.1);
-    border: 1px solid rgba(220, 38, 38, 0.3);
-    width: fit-content;
-  }
-
-  .saga-label {
-    font-size: 10px;
-    font-weight: 600;
-    color: #fca5a5;
   }
 
   /* Glow pulse animation for events and flows */

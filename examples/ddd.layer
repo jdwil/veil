@@ -45,6 +45,8 @@ pkg ddd v1
       icon "🧩"
       color "#ec4899"
       label "Aggregate"
+    annotations
+      invariant: "Domain constraint validation" expr
     group domain
 
   construct Entity
@@ -72,6 +74,8 @@ pkg ddd v1
       icon "💎"
       color "#14b8a6"
       label "Value Object"
+    annotations
+      invariant: "Validation rule" expr
     group domain
 
   construct Event
@@ -95,6 +99,9 @@ pkg ddd v1
       icon "📨"
       color "#3b82f6"
       label "Command"
+    annotations
+      idempotent: "Command is idempotent"
+      validate: "Run validation before execution" expr
     group domain
     allowed_in Aggregate
 
@@ -120,6 +127,8 @@ pkg ddd v1
       icon "🔗"
       color "#a855f7"
       label "Adapter"
+    annotations
+      env: "Required environment variables" vars
     group infrastructure
 
   construct Repository
@@ -144,6 +153,9 @@ pkg ddd v1
       icon "🖥️"
       color "#0ea5e9"
       label "Domain Service"
+    annotations
+      trace: "Add distributed tracing" method
+      timeout: "Service-level timeout" ms
     group domain
 
   construct Saga
@@ -157,6 +169,9 @@ pkg ddd v1
       icon "🔄"
       color "#dc2626"
       label "Saga"
+    annotations
+      trace: "Add distributed tracing" method
+      timeout: "Overall saga timeout" ms
     allowed_in Orchestrator
 
   # Statement extensions (built on top of core statement shapes)
@@ -206,9 +221,12 @@ pkg ddd v1
       label "Guard"
 
   # ─── Declared constructs (injected into every solution using this layer) ─────
+  # The Bus is a JSON message bus: cross-context payloads/results are `Json`
+  # (serde_json::Value) so orchestrators can build commands and index results
+  # without depending on another context's concrete types.
   declare
     trait Bus
-      dispatch(evt: Str) -> Res!
-      invoke(cmd: Str) -> Res!<Str>
-      request(qry: Str) -> Res!<Str>
+      dispatch(evt: Json) -> Res!
+      invoke(cmd: Json) -> Res!<Json>
+      request(qry: Json) -> Res!<Json>
 

@@ -63,6 +63,13 @@ export interface NodeStyle {
   label: string;
 }
 
+/** A layer-declared annotation available on a construct (from /api/palette). */
+export interface AnnotationSpec {
+  name: string;
+  desc: string;
+  params: string[];
+}
+
 /** A palette entry served by /api/palette — parsed from .layer files. */
 export interface PaletteEntry {
   name: string;
@@ -76,6 +83,7 @@ export interface PaletteEntry {
   allowed_in: string;
   layer: string;
   entry_type: 'construct' | 'statement';
+  annotations?: AnnotationSpec[];
 }
 
 // Visual config per node kind — CORE SHAPES ONLY.
@@ -108,20 +116,37 @@ const CORE_ACTION_STYLES: Record<string, NodeStyle> = {
 // statement keywords like "dispatch").
 let paletteStyles: Record<string, NodeStyle> = {};
 
-/** Register layer visuals fetched from /api/palette. */
+// Layer-declared annotation definitions, keyed by construct name AND keyword,
+// so the property editor can offer them without any hardcoded DDD vocabulary.
+let paletteAnnotations: Record<string, AnnotationSpec[]> = {};
+
+/** Register layer visuals + annotations fetched from /api/palette. */
 export function setPaletteStyles(entries: PaletteEntry[]): void {
   const styles: Record<string, NodeStyle> = {};
+  const annotations: Record<string, AnnotationSpec[]> = {};
   for (const e of entries) {
-    if (!e.icon && !e.color) continue;
-    const style: NodeStyle = {
-      color: e.color || '#64748b',
-      icon: e.icon || '•',
-      label: e.label || e.name,
-    };
-    styles[e.name] = style;
-    if (e.keyword && e.keyword !== e.name) styles[e.keyword] = style;
+    if (e.icon || e.color) {
+      const style: NodeStyle = {
+        color: e.color || '#64748b',
+        icon: e.icon || '•',
+        label: e.label || e.name,
+      };
+      styles[e.name] = style;
+      if (e.keyword && e.keyword !== e.name) styles[e.keyword] = style;
+    }
+    if (e.annotations && e.annotations.length > 0) {
+      annotations[e.name] = e.annotations;
+      if (e.keyword && e.keyword !== e.name) annotations[e.keyword] = e.annotations;
+    }
   }
   paletteStyles = styles;
+  paletteAnnotations = annotations;
+}
+
+/** Annotation definitions available for a construct subkind (layer-driven). */
+export function getAnnotationDefs(subkind?: string | null): AnnotationSpec[] {
+  if (subkind && paletteAnnotations[subkind]) return paletteAnnotations[subkind];
+  return [];
 }
 
 /**

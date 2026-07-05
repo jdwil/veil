@@ -150,4 +150,4 @@ sol CustomerOnboarding
           call PaymentGateway.create_customer(email.addr)
           invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
           compensate
-          invoke Billing.CancelTrial{customer_id: c.id}
+            invoke Billing.CancelTrial{customer_id: c.id}

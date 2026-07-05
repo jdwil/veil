@@ -1122,6 +1122,7 @@ dependencies = [
  "serde",
  "thiserror",
  "veil-ir",
+ "veil-parser",
 ]
 
 [[package]]

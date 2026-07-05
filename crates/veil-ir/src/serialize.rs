@@ -87,6 +87,9 @@ impl Serializer {
     fn emit_top_level_item(&mut self, item: &TopLevelItem) {
         match item {
             TopLevelItem::Lang(lang) => self.emit_lang(lang),
+            // Layer-provided constructs (e.g. the injected Bus port) are not
+            // part of the user's source and must not be written back.
+            TopLevelItem::Construct(c) if c.layer_provided => {}
             TopLevelItem::Construct(c) => self.emit_construct(c),
             TopLevelItem::Flow(flow) => self.emit_flow(flow),
             TopLevelItem::TypeAlias { name, target } => self.line(&format!("type {} = {}", name, type_to_veil(target))),
@@ -489,7 +492,27 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_veil(base), field),
         Expr::Call(call) => {
             let args = call.args.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
-            if call.method.is_empty() {
+            // Preserve the original statement sugar (e.g. `dispatch Evt{...}`)
+            // for round-trip fidelity when this call was desugared from a
+            // layer statement.
+            if let Some(kw) = &call.sugar {
+                if let Some(Expr::StructLit(name, fields)) = call.args.first() {
+                    let field_str = fields.iter()
+                        .map(|(k, v)| {
+                            let vs = expr_to_veil(v);
+                            if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
+                        })
+                        .collect::<Vec<_>>().join(", ");
+                    return format!("{} {}{{{}}}", kw, name, field_str);
+                }
+                if let Some(Expr::Ident(evt)) = call.args.first() {
+                    return format!("{} {}", kw, evt);
+                }
+                return format!("{} {}({})", kw, call.target, args);
+            }
+            if let Some(recv) = &call.receiver {
+                format!("call {}.{}({})", expr_to_veil(recv), call.method, args)
+            } else if call.method.is_empty() {
                 format!("call {}({})", call.target, args)
             } else {
                 format!("call {}.{}({})", call.target, call.method, args)

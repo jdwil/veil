@@ -1,6 +1,13 @@
 <script lang="ts">
   import { NODE_STYLES, type NodeKind } from '$lib/types';
-  import { paletteConfig } from '$lib/store';
+  import { paletteConfig, stubs } from '$lib/store';
+
+  // Format a stub method signature for the hover tooltip.
+  function stubSig(m: { name: string; params: [string, string][]; return_type: string | null }): string {
+    const params = m.params.map(([n, t]) => `${n}: ${t}`).join(', ');
+    const ret = m.return_type ? ` -> ${m.return_type}` : '';
+    return `${m.name}(${params})${ret}`;
+  }
 
   interface PaletteItem {
     kind: NodeKind;
@@ -102,6 +109,32 @@
           </div>
         </div>
       {/each}
+    {/if}
+
+    <!-- External crate APIs (from .stub files) — UX-006. -->
+    {#if $stubs.length > 0}
+      <div class="palette-category">
+        <span class="category-label">External</span>
+        {#each $stubs as stub}
+          <div class="stub-crate">
+            <span class="stub-name">{stub.name}<span class="stub-version">{stub.version}</span></span>
+            {#each stub.structs as s}
+              <div class="stub-struct" title={s.methods.map(stubSig).join('\n')}>
+                <span class="stub-icon">📚</span>
+                <span class="stub-struct-name">{s.name}</span>
+                <span class="stub-method-count">{s.methods.length} methods</span>
+              </div>
+            {/each}
+            {#each stub.impls as im}
+              <div class="stub-struct" title={im.methods.map(stubSig).join('\n')}>
+                <span class="stub-icon">🔧</span>
+                <span class="stub-struct-name">{im.target}</span>
+                <span class="stub-method-count">{im.methods.length} fns</span>
+              </div>
+            {/each}
+          </div>
+        {/each}
+      </div>
     {/if}
   </div>
 </aside>
@@ -225,5 +258,44 @@
     .palette-items {
       flex-direction: row;
     }
+  }
+
+  /* External stub crates (UX-006) */
+  .stub-crate {
+    margin-bottom: 8px;
+  }
+  .stub-name {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: #cbd5e1;
+    padding: 2px 0;
+  }
+  .stub-version {
+    font-weight: 400;
+    color: #64748b;
+    margin-left: 6px;
+  }
+  .stub-struct {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(148, 163, 184, 0.06);
+    border: 1px solid #2d2d44;
+    margin: 2px 0;
+    cursor: help;
+  }
+  .stub-icon { font-size: 12px; }
+  .stub-struct-name {
+    font-size: 11px;
+    color: #e2e8f0;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .stub-method-count {
+    font-size: 9px;
+    color: #64748b;
+    margin-left: auto;
   }
 </style>

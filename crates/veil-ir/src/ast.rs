@@ -131,6 +131,12 @@ pub struct Construct {
     pub annotations: Vec<Annotation>,
     /// Was this construct prefixed with `export`?
     pub exported: bool,
+    /// True when this construct was injected from a layer's `declare` section
+    /// (e.g. the `Bus` port from ddd.layer) rather than authored by the user.
+    /// Layer-provided constructs are not re-emitted by the serializer and are
+    /// visually distinguished in the viewer.
+    #[serde(default)]
+    pub layer_provided: bool,
 
     // ─── struct shape ─────────────────────────────────────────────────
     pub fields: Vec<Field>,
@@ -175,6 +181,7 @@ impl Construct {
             span,
             annotations: Vec::new(),
             exported: false,
+            layer_provided: false,
             fields: Vec::new(),
             return_type: None,
             blocks: Vec::new(),
@@ -488,11 +495,20 @@ pub struct IfExprData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallExpr {
+    /// Named target for the base of a call (e.g. `Repo` in `Repo.find(id)`).
+    /// Empty when the call is a method invocation on `receiver` (a chain link).
     pub target: String,
     pub method: String,
     pub args: Vec<Expr>,
+    /// Expression receiver for method chaining: `<receiver>.method(args)`.
+    /// Set when the call is a postfix `.method()` on another expression
+    /// (e.g. the `.collect()` in `items.map(f).collect()`). When present,
+    /// `target` is empty and the receiver carries the left side of the chain.
+    #[serde(default)]
+    pub receiver: Option<Box<Expr>>,
     /// Original statement keyword for round-trip fidelity (e.g. "dispatch").
     /// When present, the serializer emits `dispatch Evt{...}` instead of `Bus.dispatch(...)`.
+    #[serde(default)]
     pub sugar: Option<String>,
     pub span: Span,
 }

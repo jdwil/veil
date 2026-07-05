@@ -331,6 +331,61 @@ sol Sales
         assert_eq!(notify.sugar.as_deref(), Some("notify"));
     }
 
+    /// Extract the body expressions of the first step of `svc S` in a minimal
+    /// solution, so expression-level parsing can be asserted directly.
+    fn step_body(body_line: &str) -> Vec<Expr> {
+        let src = format!(
+            "sol App\n  ctx C\n    svc S\n      step go\n        {}",
+            body_line
+        );
+        let sol = parse_src(&src);
+        let ctx = find_construct(&sol.items, "C");
+        let svc = &ctx.children[0];
+        let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
+        step.body.clone()
+    }
+
+    #[test]
+    fn test_paren_args_preserve_all_argument_kinds() {
+        // Regression: parse_paren_args used to drop floats/bools and split
+        // binary expressions into multiple args.
+        let body = step_body("x = calc(1.5, true, y + 1)");
+        let Expr::Assign(_, rhs) = &body[0] else { panic!("expected assign, got {:?}", body[0]) };
+        let Expr::Call(call) = rhs.as_ref() else { panic!("expected call rhs") };
+        assert_eq!(call.args.len(), 3, "expected exactly 3 args, got {:?}", call.args);
+        assert!(matches!(&call.args[0], Expr::FloatLit(f) if (*f - 1.5).abs() < 1e-9));
+        assert!(matches!(&call.args[1], Expr::BoolLit(true)));
+        assert!(matches!(&call.args[2], Expr::BinaryOp(_)), "third arg should be `y + 1`, got {:?}", call.args[2]);
+    }
+
+    #[test]
+    fn test_method_chaining_builds_single_expression() {
+        // Regression: `a.b().c()` used to parse as two separate statements.
+        let body = step_body("y = items.map(f).collect()");
+        assert_eq!(body.len(), 1, "chain should be one statement, got {:?}", body);
+        let Expr::Assign(_, rhs) = &body[0] else { panic!("expected assign") };
+        // Outer call is `.collect()` with a receiver = `items.map(f)`.
+        let Expr::Call(outer) = rhs.as_ref() else { panic!("expected call") };
+        assert_eq!(outer.method, "collect");
+        assert!(outer.target.is_empty());
+        let recv = outer.receiver.as_ref().expect("collect should have a receiver");
+        let Expr::Call(inner) = recv.as_ref() else { panic!("receiver should be items.map(f)") };
+        assert_eq!(inner.target, "items");
+        assert_eq!(inner.method, "map");
+        assert_eq!(inner.args.len(), 1);
+    }
+
+    #[test]
+    fn test_named_target_call_keeps_target() {
+        // `Repo.find(id)` must keep the named target for codegen resolution.
+        let body = step_body("lead = Repo.find(id)");
+        let Expr::Assign(_, rhs) = &body[0] else { panic!("expected assign") };
+        let Expr::Call(call) = rhs.as_ref() else { panic!("expected call") };
+        assert_eq!(call.target, "Repo");
+        assert_eq!(call.method, "find");
+        assert!(call.receiver.is_none());
+    }
+
     #[test]
     fn test_parse_full_example() {
         let src = include_str!("../../../examples/customer_onboarding.veil");
@@ -341,5 +396,81 @@ sol Sales
         assert_eq!(sol.name, "CustomerOnboarding");
         // lang, ctx Identity, ctx Billing, orchestrator Onboarding
         assert!(sol.items.len() >= 4, "Expected at least 4 items, got {}", sol.items.len());
+    }
+
+    #[test]
+    fn test_roundtrip_preserves_statement_sugar_and_hides_bus() {
+        use veil_ir::serialize::serialize_solution;
+        let src = include_str!("../../../examples/customer_onboarding.veil");
+        let sol = {
+            let tokens = lex(src);
+            parse_with_registry(&tokens, ddd_registry()).expect("parse failed")
+        };
+        let emitted = serialize_solution(&sol);
+        // Statement sugar survives: `dispatch Evt{...}`, not `call Bus.dispatch(...)`.
+        assert!(emitted.contains("dispatch CustomerCreated"), "sugar lost:\n{}", emitted);
+        assert!(!emitted.contains("call Bus.dispatch"), "sugar was desugared in output");
+        // The injected Bus port is layer-provided and must not be written back.
+        assert!(!emitted.contains("trait Bus"), "injected Bus leaked into source");
+        assert!(!emitted.contains("port Bus"), "injected Bus leaked into source");
+    }
+
+    #[test]
+    fn test_edit_rename_roundtrips_through_serializer() {
+        use veil_ir::edit::{apply_edits, EditOp};
+        use veil_ir::serialize::serialize_solution;
+        let src = "sol App\n  ctx Identity\n    port Notifier\n      send(msg: Str) -> Res!";
+        let mut sol = parse_src(src);
+        // Locate the port's span start (as the viewer would from the IR node).
+        let ctx = find_construct(&sol.items, "Identity");
+        let port_span = ctx.children[0].span.start;
+        assert_eq!(ctx.children[0].name, "Notifier");
+        // Apply a rename edit and re-serialize.
+        apply_edits(&mut sol, &[EditOp::Rename { span_start: port_span, name: "Alerts".to_string() }])
+            .expect("edit should apply");
+        let emitted = serialize_solution(&sol);
+        assert!(emitted.contains("port Alerts"), "rename not serialized:\n{}", emitted);
+        assert!(!emitted.contains("Notifier"), "old name still present:\n{}", emitted);
+        // The edited source must re-parse cleanly.
+        let reparsed = parse_src(&emitted);
+        let ctx2 = find_construct(&reparsed.items, "Identity");
+        assert_eq!(ctx2.children[0].name, "Alerts");
+    }
+
+    #[test]
+    fn test_edit_set_fields_changes_struct() {
+        use veil_ir::edit::{apply_edits, EditOp, FieldSpec};
+        use veil_ir::serialize::serialize_solution;
+        let src = "sol App\n  ctx Identity\n    val Email\n      addr: Str";
+        let mut sol = parse_src(src);
+        let ctx = find_construct(&sol.items, "Identity");
+        let vo_span = ctx.children[0].span.start;
+        apply_edits(&mut sol, &[EditOp::SetFields {
+            span_start: vo_span,
+            fields: vec![
+                FieldSpec { name: "addr".to_string(), type_str: "Str".to_string() },
+                FieldSpec { name: "verified".to_string(), type_str: "Bool".to_string() },
+            ],
+        }]).expect("edit should apply");
+        let emitted = serialize_solution(&sol);
+        assert!(emitted.contains("verified: Bool"), "new field missing:\n{}", emitted);
+    }
+
+    #[test]
+    fn test_roundtrip_is_idempotent() {
+        use veil_ir::serialize::serialize_solution;
+        let src = include_str!("../../../examples/customer_onboarding.veil");
+        let emit_once = {
+            let tokens = lex(src);
+            let sol = parse_with_registry(&tokens, ddd_registry()).expect("parse 1 failed");
+            serialize_solution(&sol)
+        };
+        let emit_twice = {
+            let tokens = lex(&emit_once);
+            let sol = parse_with_registry(&tokens, ddd_registry()).expect("re-parse failed");
+            serialize_solution(&sol)
+        };
+        // A load→save cycle must reach a fixed point so editing never drifts.
+        assert_eq!(emit_once, emit_twice, "serializer is not idempotent");
     }
 }

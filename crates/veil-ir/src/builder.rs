@@ -93,7 +93,9 @@ pub fn expr_to_display(expr: &Expr) -> String {
         Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_display(base), field),
         Expr::Call(call) => {
             let args = call.args.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
-            if call.method.is_empty() {
+            if let Some(recv) = &call.receiver {
+                format!("{}.{}({})", expr_to_display(recv), call.method, args)
+            } else if call.method.is_empty() {
                 format!("{}({})", call.target, args)
             } else {
                 format!("{}.{}({})", call.target, call.method, args)
@@ -134,10 +136,10 @@ pub fn expr_to_display(expr: &Expr) -> String {
             let parts = items.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
             format!("({})", parts)
         }
-        Expr::StringInterp(parts) => {
+        Expr::StringInterp(_parts) => {
             "f\"...\"".to_string()
         }
-        Expr::Closure { params, body } => {
+        Expr::Closure { params, body: _ } => {
             let p = params.join(", ");
             format!("|{}| ...", p)
         }
@@ -239,6 +241,14 @@ impl IrBuilder {
         for ann in &c.annotations {
             if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == id) {
                 node.metadata.annotations.push(annotation_to_ir_string(ann));
+            }
+        }
+        // Surface layer-provided provenance to the viewer so it can visually
+        // distinguish injected infrastructure (e.g. the Bus port) from
+        // user-authored constructs.
+        if c.layer_provided {
+            if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == id) {
+                node.metadata.annotations.push("layer-provided".to_string());
             }
         }
 
@@ -351,9 +361,11 @@ impl IrBuilder {
                 }
             }
             Shape::Fn => {
-                // Reference lines (e.g. contexts) as properties.
+                // Reference lines (e.g. `contexts Identity, Billing`) as
+                // properties, prefixed with `ref:` so the viewer renders them
+                // generically without knowing the layer keyword.
                 for r in &c.refs {
-                    self.set_property(id, &r.keyword, &r.values.join(", "));
+                    self.set_property(id, &format!("ref:{}", r.keyword), &r.values.join(", "));
                 }
                 if !c.inputs.is_empty() {
                     let inputs_str = c
@@ -421,8 +433,10 @@ impl IrBuilder {
                         self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
                     }
                     // Reference lines within the step (e.g. `ctx Identity`).
+                    // Prefixed with `ref:` so the viewer can render them
+                    // generically without knowing the layer keyword.
                     for r in &s.refs {
-                        self.set_property(step_id, &r.keyword, &r.values.join(", "));
+                        self.set_property(step_id, &format!("ref:{}", r.keyword), &r.values.join(", "));
                     }
                     // Named sub-blocks (e.g. compensate).
                     for sb in &s.sub_blocks {

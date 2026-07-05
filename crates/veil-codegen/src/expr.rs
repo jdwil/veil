@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use veil_ir::ast::*;
 use veil_ir::layer::{Shape, StmtShape, LayerRegistry};
 
-use crate::rust::{to_snake, type_to_rust};
+use crate::rust::to_snake;
 
 /// Code generation context — carries name resolution and type information.
 pub struct GenCtx {
@@ -218,24 +218,21 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::Ident(name) => {
             if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
                 format!("self.{}", to_snake(name))
-            } else if ctx.is_orchestrator && !ctx.is_local(name) && !ctx.locals.is_empty() {
-                // In orchestrator mode, unknown identifiers are symbolic references
-                format!("\"{}\".to_string()", name)
             } else {
                 name.clone()
             }
         }
         Expr::FieldAccess(base, field) => {
-            let base_str = expr_to_rust(base, ctx);
-            // In orchestrator mode, field access on Bus-returned locals is symbolic
+            // In the JSON-bus orchestrator, a field of a Bus-returned local is a
+            // JSON index: `result["code"]`. Bus results are serde_json::Value.
             if ctx.is_orchestrator {
                 if let Expr::Ident(name) = base.as_ref() {
-                    if ctx.is_local(name) {
-                        // Symbolic field reference — used in Bus call format strings
-                        return format!("\"{{}}:{}\".to_string()", field);
+                    if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
+                        return format!("{}[\"{}\"]", name, field);
                     }
                 }
             }
+            let base_str = expr_to_rust(base, ctx);
             format!("{}.{}", base_str, to_snake(field))
         }
         Expr::Call(call) => translate_call(call, ctx),
@@ -287,6 +284,15 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             format!("{}.await", inner_str)
         }
         Expr::Action(a) => translate_action(a, ctx),
+        Expr::StructLit(name, fields) if name.is_empty() => {
+            // Anonymous record/map literal (`{ key: value, ... }`). Emit as a
+            // slice of (key, value-debug) pairs — a compiling, inspectable form
+            // for external-effect payloads without inventing a concrete type.
+            let pairs = fields.iter().map(|(k, v)| {
+                format!("(\"{}\", format!(\"{{:?}}\", {}))", k, expr_to_rust(v, ctx))
+            }).collect::<Vec<_>>().join(", ");
+            format!("&[{}]", pairs)
+        }
         Expr::StructLit(name, fields) => {
             let fs = fields.iter().map(|(k, v)| {
                 let v_str = expr_to_rust(v, ctx);
@@ -365,59 +371,112 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
     }
 }
 
+/// Render an expression for embedding inside a `json!` payload. Values are
+/// cloned to avoid moving locals that are reused across bus calls; bare
+/// non-local identifiers (e.g. enum variants like `FreeTier`) become JSON
+/// strings; field access uses JSON indexing on the serialized base so it works
+/// regardless of the (opaque) source type.
+fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
+    match expr {
+        Expr::Ident(name) => {
+            if ctx.is_local(name) {
+                format!("{}.clone()", name)
+            } else {
+                // Non-local bare ident in a payload → symbolic string (enum variant, marker).
+                format!("\"{}\"", name)
+            }
+        }
+        Expr::FieldAccess(base, field) => {
+            // If the base is already a serde_json::Value local, index it directly.
+            if let Expr::Ident(name) = base.as_ref() {
+                if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
+                    return format!("{}[\"{}\"].clone()", name, field);
+                }
+            }
+            // Otherwise serialize the base then index (works for opaque stub types;
+            // Index yields Null on mismatch rather than panicking).
+            format!("serde_json::json!({})[\"{}\"].clone()", to_json_arg(base, ctx), field)
+        }
+        _ => expr_to_rust(expr, ctx),
+    }
+}
+
+/// Build a `serde_json::json!` object for a message (event/command) with a
+/// `"type"` tag plus its named fields — the wire form for a JSON Bus payload.
+fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> String {
+    let mut parts = vec![format!("\"type\": \"{}\"", name)];
+    for (k, v) in fields {
+        parts.push(format!("\"{}\": {}", k, to_json_arg(v, ctx)));
+    }
+    format!("serde_json::json!({{ {} }})", parts.join(", "))
+}
+
+/// Build a JSON envelope for a cross-context call routed through the Bus:
+/// `{ "target": T, "method": m, "args": [ ... ] }`. Positional args are
+/// rendered as JSON values so the receiving context can decode them.
+fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> String {
+    let arg_vals = args.iter().map(|a| to_json_arg(a, ctx)).collect::<Vec<_>>().join(", ");
+    format!(
+        "serde_json::json!({{ \"target\": \"{}\", \"method\": \"{}\", \"args\": [{}] }})",
+        target, method, arg_vals
+    )
+}
+
 /// Translate a Call expression with shape-aware name resolution.
 fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     let args_str = call.args.iter()
         .map(|a| expr_to_rust(a, ctx))
         .collect::<Vec<_>>().join(", ");
 
+    // Chained method call: `<receiver>.method(args)` (e.g. `.collect()` in
+    // `items.map(f).collect()`). The receiver carries the left side of the chain.
+    if let Some(recv) = &call.receiver {
+        let recv_str = expr_to_rust(recv, ctx);
+        return format!("{}.{}({})", recv_str, to_snake(&call.method), args_str);
+    }
+
     // Trait-shaped target → deps.target.method(args).await?
     if ctx.is_trait_target(&call.target) {
         let dep_name = to_snake(&call.target);
         let method = if call.method.is_empty() { "call" } else { &call.method };
-        // Clone args to avoid move issues (v1 pragmatic approach)
-        let cloned_args = call.args.iter()
-            .map(|a| {
-                let s = expr_to_rust(a, ctx);
-                // Clone identifiers and field accesses (they might be used again)
-                match a {
-                    Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{}.clone()", s),
-                    _ => s,
-                }
-            })
-            .collect::<Vec<_>>().join(", ");
-        // For desugared bus calls (dispatch/invoke/request), serialize as string
-        let final_args = if call.sugar.is_some() && !call.args.is_empty() {
-            // Format the event/command name and args as a debug string
-            // Extract the struct name from StructLit if present
-            if let Some(Expr::StructLit(name, fields)) = call.args.first() {
-                let field_vals = fields.iter()
-                    .map(|(k, _)| format!("{}: {{:?}}", k))
-                    .collect::<Vec<_>>().join(", ");
-                let field_exprs = fields.iter()
-                    .map(|(_, v)| expr_to_rust(v, ctx))
-                    .collect::<Vec<_>>().join(", ");
-                format!("format!(\"{} {{{{ {} }}}}\", {})", name, field_vals, field_exprs)
-            } else {
-                format!("format!(\"{{:?}}\", {})", args_str)
+        // Desugared bus calls (dispatch/invoke/request) carry a StructLit
+        // event/command; build a JSON payload tagged with its type.
+        let final_args = if call.sugar.is_some() {
+            match call.args.first() {
+                Some(Expr::StructLit(name, fields)) => json_message(name, fields, ctx),
+                Some(Expr::Ident(evt)) => format!("serde_json::json!({{ \"type\": \"{}\" }})", evt),
+                _ => json_envelope(&call.target, method, &call.args, ctx),
             }
         } else {
-            cloned_args.clone()
+            // Direct Bus call — clone args to avoid move issues.
+            call.args.iter()
+                .map(|a| {
+                    let s = expr_to_rust(a, ctx);
+                    match a {
+                        Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{}.clone()", s),
+                        _ => s,
+                    }
+                })
+                .collect::<Vec<_>>().join(", ")
         };
         return format!("deps.{}.{}({}).await?", dep_name, to_snake(method), final_args);
+    }
+
+    // In an orchestrator, ANY call to another context (struct construction,
+    // aggregate method, or repo/port) is routed through the JSON Bus with a
+    // typed envelope — the orchestrator crate can't see the other context's
+    // concrete types.
+    if ctx.is_orchestrator && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty()) {
+        let method = if call.method.is_empty() { "new" } else { &call.method };
+        return format!(
+            "deps.bus.invoke({}).await?",
+            json_envelope(&call.target, method, &call.args, ctx)
+        );
     }
 
     // Struct-shaped target with method "new" or empty → Type::new(args)
     if ctx.is_struct_target(&call.target) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
-        // In orchestrators, struct construction from other contexts goes through Bus
-        if ctx.is_orchestrator {
-            let format_placeholders = call.args.iter().map(|_| "{:?}").collect::<Vec<_>>().join(", ");
-            return format!(
-                "deps.bus.invoke(format!(\"{}.{}({})\", {})).await?",
-                call.target, method, format_placeholders, args_str
-            );
-        }
         // Clone args to avoid move issues
         let cloned = call.args.iter()
             .map(|a| {
@@ -445,14 +504,6 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // Local variable target → target.method(args)?
     if ctx.is_local(&call.target) {
         let method = to_snake(&call.method);
-        // In orchestrators, calls on locals from other contexts go through Bus
-        if ctx.is_orchestrator && !call.method.is_empty() {
-            let format_placeholders = call.args.iter().map(|_| "{:?}").collect::<Vec<_>>().join(", ");
-            return format!(
-                "deps.bus.invoke(format!(\"{}.{}({})\", {})).await?",
-                call.target, call.method, format_placeholders, args_str
-            );
-        }
         // Check if the local's type has this method defined (aggregate fn)
         if let Some(type_name) = ctx.local_type(&call.target) {
             if ctx.method_returns.contains_key(&(type_name.to_string(), call.method.clone())) {
@@ -463,24 +514,21 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Unknown method on local — call without ? (might be a field accessor or infallible)
         return format!("{}.{}({})", call.target, method, args_str);
     }
-
-    // Unknown: bare function call or method call
-    // In orchestrators, unknown targets with methods are remote port calls → route through Bus
-    if ctx.is_orchestrator && !call.method.is_empty() {
-        let format_placeholders = call.args.iter().map(|_| "{:?}").collect::<Vec<_>>().join(", ");
-        return format!(
-            "deps.bus.invoke(format!(\"{}.{}({})\", {})).await?",
-            call.target, call.method, format_placeholders, args_str
-        );
-    }
     if call.method.is_empty() {
         // Bare call: now() → Utc::now(), others → as-is
         match call.target.as_str() {
             "now" => "Utc::now()".to_string(),
             _ => format!("{}({})", to_snake(&call.target), args_str),
         }
-    } else {
+    } else if ctx.is_local(&call.target) || ctx.name_to_shape.contains_key(&call.target) {
+        // Known local/construct method call (already handled above, but be safe).
         format!("{}.{}({})", call.target, to_snake(&call.method), args_str)
+    } else {
+        // Unknown target with a method (e.g. `http.post(...)`): an external
+        // effect. Route it to a generated runtime hook `<target>_<method>(...)`
+        // so the code compiles without inventing domain knowledge. The set of
+        // hooks is emitted at the bottom of the module.
+        format!("{}_{}({})", to_snake(&call.target), to_snake(&call.method), args_str)
     }
 }
 
@@ -488,19 +536,33 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
     match a.shape {
         StmtShape::If => {
-            // guard: the condition should be true for success.
-            // Emit: `condition.map_err(|_| DomainError::Validation("msg"))?;`
-            // Or for bool: `if !cond { return Err(...) }`
-            // For v1: wrap in a let _ = ... pattern that compiles for both.
-            let cond = a.condition.as_ref()
-                .map(|c| expr_to_rust(c, ctx))
-                .unwrap_or_else(|| "true".to_string());
+            // guard: the condition must hold for the flow to continue.
             let msg = a.message.as_deref().unwrap_or("precondition failed");
-            // Use a format that works: assign to _ and check
-            format!(
-                "{{ let __guard = {}; /* guard: {} */ }}",
-                cond, msg
-            )
+            let msg_escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+            match a.condition.as_deref() {
+                // Fallible-call guard (`guard call X.method(...)`): the call
+                // returns a Result that must be Ok — propagate its error as a
+                // domain validation error.
+                Some(cond @ Expr::Call(_)) | Some(cond @ Expr::Await(_)) => {
+                    let call_str = expr_to_rust(cond, ctx);
+                    // translate_call may already append `?`; strip it so our
+                    // map_err drives the propagation.
+                    let base = call_str.strip_suffix('?').unwrap_or(&call_str);
+                    format!(
+                        "{}.map_err(|_| DomainError::Validation(\"{}\".to_string()))?",
+                        base, msg_escaped
+                    )
+                }
+                // Boolean guard: the condition must evaluate to true.
+                Some(cond) => {
+                    let cond_str = expr_to_rust(cond, ctx);
+                    format!(
+                        "if !({}) {{ return Err(DomainError::Validation(\"{}\".to_string())); }}",
+                        cond_str, msg_escaped
+                    )
+                }
+                None => format!("/* guard: {} (no condition) */", msg_escaped),
+            }
         }
         StmtShape::Call => {
             // Remaining actions (emit) — handle based on keyword-like semantics.
@@ -539,10 +601,82 @@ pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
     }
 }
 
+impl GenCtx {
+    /// A shallow clone carrying just the maps needed for type inference (used
+    /// by the return-type pre-scan in rust.rs).
+    pub fn clone_for_inference(&self) -> GenCtx {
+        GenCtx {
+            name_to_shape: self.name_to_shape.clone(),
+            locals: self.locals.clone(),
+            self_fields: self.self_fields.clone(),
+            in_aggregate_fn: self.in_aggregate_fn,
+            is_orchestrator: self.is_orchestrator,
+            method_returns: self.method_returns.clone(),
+            local_types: self.local_types.clone(),
+            struct_fields: self.struct_fields.clone(),
+        }
+    }
+}
+
+/// Public wrapper for `infer_expr_type`, for the return-type pre-scan.
+pub fn infer_expr_type_pub(expr: &Expr, ctx: &GenCtx) -> Option<String> {
+    infer_expr_type(expr, ctx)
+}
+
+/// Infer the Rust type of a flow's return expression (`ret <expr>`).
+/// Resolves idents and field access against known local/struct-field types.
+pub fn infer_return_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
+    match expr {
+        Expr::IntLit(_) => Some("i64".to_string()),
+        Expr::FloatLit(_) => Some("f64".to_string()),
+        Expr::BoolLit(_) => Some("bool".to_string()),
+        Expr::StringLit(_) | Expr::StringInterp(_) => Some("String".to_string()),
+        Expr::Ident(name) => ctx.local_type(name).map(|s| s.to_string()),
+        Expr::FieldAccess(base, field) => {
+            // Resolve the base's type, then the field's declared type.
+            if let Expr::Ident(name) = base.as_ref() {
+                if let Some(type_name) = ctx.local_type(name) {
+                    if type_name == "serde_json::Value" {
+                        // Orchestrator: JSON index — type is Value.
+                        return Some("serde_json::Value".to_string());
+                    }
+                    if let Some(ft) = ctx.field_type(type_name, field) {
+                        return Some(rust_type_for_named(ft));
+                    }
+                }
+            }
+            None
+        }
+        Expr::Call(_) => infer_expr_type(expr, ctx),
+        _ => None,
+    }
+}
+
+/// Map a VEIL simple type name (as stored in struct_fields) to its Rust form.
+fn rust_type_for_named(name: &str) -> String {
+    match name {
+        "Str" => "String".to_string(),
+        "Int" => "i64".to_string(),
+        "F64" => "f64".to_string(),
+        "Bool" => "bool".to_string(),
+        "UUID" => "Uuid".to_string(),
+        "DateTime" => "DateTime<Utc>".to_string(),
+        "Json" => "serde_json::Value".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Attempt to infer the type of an expression from context.
 fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
     match expr {
         Expr::Call(call) => {
+            // In an orchestrator, cross-context calls route through the JSON Bus
+            // and yield `serde_json::Value` (unless the target is a direct dep).
+            if ctx.is_orchestrator && call.receiver.is_none() && !ctx.is_trait_target(&call.target) {
+                if ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty() {
+                    return Some("serde_json::Value".to_string());
+                }
+            }
             // If calling a trait method, return type is known
             if ctx.is_trait_target(&call.target) {
                 let method = if call.method.is_empty() { "call" } else { &call.method };
@@ -582,6 +716,9 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
         Expr::Call(call) => {
             if ctx.is_trait_target(&call.target) {
                 deps.insert(call.target.clone());
+            }
+            if let Some(recv) = &call.receiver {
+                collect_deps_from_expr(recv, ctx, deps);
             }
             for arg in &call.args {
                 collect_deps_from_expr(arg, ctx, deps);

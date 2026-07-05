@@ -10,22 +10,58 @@ export const error = writable<string | null>(null);
 export const selectedNodeId = writable<string | null>(null);
 export const paletteConfig = writable<any[]>([]);
 
-const API_URL = 'http://localhost:3001/api/ir';
-const SOURCE_URL = 'http://localhost:3001/api/source';
-const PALETTE_URL = 'http://localhost:3001/api/palette';
+const API_BASE = 'http://localhost:3001/api';
+const API_URL = `${API_BASE}/ir`;
+const SOURCE_URL = `${API_BASE}/source`;
+const PALETTE_URL = `${API_BASE}/palette`;
+const EDIT_URL = `${API_BASE}/edit`;
+const STUBS_URL = `${API_BASE}/stubs`;
+
+/** External crate stubs (from .stub files), for the External palette section. */
+export const stubs = writable<StubCrate[]>([]);
+
+export interface StubMethod {
+  name: string;
+  params: [string, string][];
+  return_type: string | null;
+}
+export interface StubStruct {
+  name: string;
+  methods: StubMethod[];
+}
+export interface StubImpl {
+  target: string;
+  methods: StubMethod[];
+}
+export interface StubCrate {
+  name: string;
+  version: string;
+  structs: StubStruct[];
+  impls: StubImpl[];
+}
+
+/** Whether the last edit is in flight (disables re-entrant saves). */
+export const saving = writable(false);
+/** Last edit error message, if any. */
+export const saveError = writable<string | null>(null);
 
 export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes, palRes] = await Promise.all([
+    const [irRes, srcRes, palRes, stubRes] = await Promise.all([
       fetch(API_URL),
       fetch(SOURCE_URL),
       fetch(PALETTE_URL),
+      fetch(STUBS_URL).catch(() => null),
     ]);
     if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
     const data: IrGraph = await irRes.json();
     irGraph.set(data);
+
+    if (stubRes && stubRes.ok) {
+      stubs.set(await stubRes.json());
+    }
 
     if (srcRes.ok) {
       veilSource.set(await srcRes.text());
@@ -79,4 +115,53 @@ export function getChildren(graph: IrGraph, parentId: number | null): IrNode[] {
     return graph.nodes.filter(n => n.metadata.parent === null);
   }
   return graph.nodes.filter(n => n.metadata.parent === parentId);
+}
+
+/** Generated Rust files (path → content), refreshed after each successful edit. */
+export const generatedCode = writable<Record<string, string> | null>(null);
+
+/**
+ * A structured edit operation, keyed by the target construct's AST span start
+ * (`node.span.start`). Mirrors veil-ir's `EditOp` (serde tag = "op").
+ */
+export type EditOp =
+  | { op: 'rename'; span_start: number; name: string }
+  | { op: 'set_annotations'; span_start: number; annotations: string[] }
+  | { op: 'set_fields'; span_start: number; fields: { name: string; type: string }[] }
+  | { op: 'set_methods'; span_start: number; methods: { name: string; params: { name: string; type: string }[]; return_type: string }[] };
+
+/**
+ * Persist a batch of structured edits to the server. The server applies them
+ * to the AST, re-serializes + validates, writes the .veil file, and returns
+ * fresh source / IR / generated code, which we push into the stores so every
+ * panel (graph, source, code preview) updates live.
+ *
+ * Returns true on success; on failure sets `saveError` and leaves state intact.
+ */
+export async function saveEdits(edits: EditOp[]): Promise<boolean> {
+  if (edits.length === 0) return true;
+  saving.set(true);
+  saveError.set(null);
+  try {
+    const res = await fetch(EDIT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ edits }),
+    });
+    if (!res.ok) {
+      const msg = await res.text();
+      saveError.set(msg || `HTTP ${res.status}`);
+      return false;
+    }
+    const data: { source: string; ir: IrGraph; generated: Record<string, string> } = await res.json();
+    irGraph.set(data.ir);
+    veilSource.set(data.source);
+    generatedCode.set(data.generated);
+    return true;
+  } catch (e) {
+    saveError.set(e instanceof Error ? e.message : 'Save failed');
+    return false;
+  } finally {
+    saving.set(false);
+  }
 }
