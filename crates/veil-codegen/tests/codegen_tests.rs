@@ -42,6 +42,36 @@ fn generate_with_layer(layer_name: &str, layer_src: &str, app_src: &str) -> Stri
 }
 
 #[test]
+fn list_of_trait_lowers_to_boxed_trait_objects() {
+    // The foundation for saga steps: a declared coordinator taking a
+    // List<Trait> and calling methods on loop elements must lower to
+    // Vec<Box<dyn Trait + Send + Sync>> with `.await?` method calls.
+    let layer = "\
+pkg jobs v1
+  construct Thing
+    keyword thing
+    maps_to struct
+    allowed_in top
+  declare
+    trait Job
+      run() -> Res!
+    fn run_all(jobs: List<Job>) -> Res!
+      for j in jobs
+        call j.run()
+      ret Ok";
+    let app = "sol JobsApp\n  use jobs\n  thing Gadget\n    size: Int";
+    let out = generate_with_layer("jobs", layer, app);
+    assert!(
+        out.contains("jobs: Vec<Box<dyn Job + Send + Sync>>"),
+        "List<Trait> did not box:\n{}",
+        out
+    );
+    assert!(out.contains("j.run().await?"), "trait method call not async/fallible:\n{}", out);
+    assert!(out.contains("return Ok(())"), "`ret Ok` mistranslated:\n{}", out);
+    assert!(!out.contains("Ok(Ok)"), "`ret Ok` double-wrapped");
+}
+
+#[test]
 fn declared_fn_with_body_generates_free_function() {
     // A `fn` with a real body declared in a layer's `declare` block must
     // generate a compiling free function in veil_shared — the foundation for

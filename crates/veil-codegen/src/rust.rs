@@ -800,20 +800,25 @@ chrono.workspace = true
     lib.push_str("}\n\n");
     lib.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\n");
 
+    // Trait names in scope — used to box value-position references (List<Trait>).
+    let trait_names: std::collections::HashSet<String> =
+        traits.iter().map(|t| t.name.clone()).collect();
+
     for t in traits {
-        lib.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {} {{\n", t.subkind, t.name, t.name));
+        lib.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {}: Send + Sync {{\n", t.subkind, t.name, t.name));
         for method in &t.methods {
             let params = method
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_traits(&p.type_expr, &trait_names)))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let sep = if params.is_empty() { "" } else { ", " };
             let ret = match &method.return_type {
-                Some(t) => format!(" -> {}", type_to_rust(t)),
+                Some(t) => format!(" -> {}", type_to_rust_with_traits(t, &trait_names)),
                 None => String::new(),
             };
-            lib.push_str(&format!("    async fn {}(&self, {}){ret};\n", to_snake(&method.name), params));
+            lib.push_str(&format!("    async fn {}(&self{}{}){ret};\n", to_snake(&method.name), sep, params));
         }
         lib.push_str("}\n\n");
     }
@@ -838,11 +843,11 @@ chrono.workspace = true
         let params = f
             .params
             .iter()
-            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_traits(&p.type_expr, &trait_names)))
             .collect::<Vec<_>>()
             .join(", ");
         let ret = match &f.return_type {
-            Some(t) => type_to_rust(t),
+            Some(t) => type_to_rust_with_traits(t, &trait_names),
             None => "Result<(), DomainError>".to_string(),
         };
         let bus_param = if has_bus { "bus: &(dyn Bus + Send + Sync)" } else { "" };
@@ -1513,6 +1518,18 @@ pub fn to_snake(name: &str) -> String {
 }
 
 pub fn type_to_rust(ty: &TypeExpr) -> String {
+    type_to_rust_impl(ty, &std::collections::HashSet::new())
+}
+
+/// Trait-aware type rendering: a value-position reference to a known trait
+/// becomes a boxed trait object `Box<dyn Trait + Send + Sync>`. Used when
+/// generating coordinator signatures (`List<SagaStep>` → `Vec<Box<dyn ..>>`).
+pub fn type_to_rust_with_traits(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
+    type_to_rust_impl(ty, traits)
+}
+
+fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
+    let rec = |t: &TypeExpr| type_to_rust_impl(t, traits);
     match ty {
         TypeExpr::Named(name) => match name.as_str() {
             "Str" => "String".to_string(),
@@ -1523,27 +1540,30 @@ pub fn type_to_rust(ty: &TypeExpr) -> String {
             "UUID" => "Uuid".to_string(),
             "DateTime" => "DateTime<Utc>".to_string(),
             "Json" => "serde_json::Value".to_string(),
+            other if traits.contains(other) => {
+                format!("Box<dyn {} + Send + Sync>", other)
+            }
             other => other.to_string(),
         },
         TypeExpr::Generic(name, args) => {
-            let rust_args = args.iter().map(type_to_rust).collect::<Vec<_>>().join(", ");
+            let rust_args = args.iter().map(rec).collect::<Vec<_>>().join(", ");
             format!("{}<{}>", name, rust_args)
         }
-        TypeExpr::Result(Some(inner)) => format!("Result<{}, DomainError>", type_to_rust(inner)),
+        TypeExpr::Result(Some(inner)) => format!("Result<{}, DomainError>", rec(inner)),
         TypeExpr::Result(None) => "Result<(), DomainError>".to_string(),
-        TypeExpr::Optional(inner) => format!("Option<{}>", type_to_rust(inner)),
-        TypeExpr::List(inner) => format!("Vec<{}>", type_to_rust(inner)),
+        TypeExpr::Optional(inner) => format!("Option<{}>", rec(inner)),
+        TypeExpr::List(inner) => format!("Vec<{}>", rec(inner)),
         TypeExpr::Map(k, v) => format!(
             "std::collections::HashMap<{}, {}>",
-            type_to_rust(k),
-            type_to_rust(v)
+            rec(k),
+            rec(v)
         ),
-        TypeExpr::Set(inner) => format!("std::collections::HashSet<{}>", type_to_rust(inner)),
+        TypeExpr::Set(inner) => format!("std::collections::HashSet<{}>", rec(inner)),
         TypeExpr::Tuple(items) => {
-            let parts = items.iter().map(type_to_rust).collect::<Vec<_>>().join(", ");
+            let parts = items.iter().map(rec).collect::<Vec<_>>().join(", ");
             format!("({})", parts)
         }
-        TypeExpr::Array(inner, size) => format!("[{}; {}]", type_to_rust(inner), size),
+        TypeExpr::Array(inner, size) => format!("[{}; {}]", rec(inner), size),
     }
 }
 

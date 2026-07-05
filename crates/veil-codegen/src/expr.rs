@@ -279,8 +279,25 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::FloatLit(f) => f.to_string(),
         Expr::BoolLit(b) => b.to_string(),
         Expr::Return(inner) => {
-            let inner_str = expr_to_rust(inner, ctx);
-            format!("return Ok({})", inner_str)
+            // `ret Ok` / `ret Err e` construct the Result directly; anything
+            // else is the success value and gets wrapped in `Ok(..)`.
+            match inner.as_ref() {
+                Expr::Ident(n) if n == "Ok" => "return Ok(())".to_string(),
+                Expr::Ident(n) if n == "Err" => {
+                    "return Err(DomainError::External(\"error\".to_string()))".to_string()
+                }
+                // `ret Err e` parses as a call `Err(e)` or ident chain; handle a
+                // call whose target is Err.
+                Expr::Call(c) if c.target == "Err" && c.method.is_empty() => {
+                    let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+                    format!("return Err({})", if a.is_empty() { "DomainError::External(\"error\".to_string())".to_string() } else { a })
+                }
+                Expr::Call(c) if c.target == "Ok" && c.method.is_empty() => {
+                    let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+                    format!("return Ok({})", if a.is_empty() { "()".to_string() } else { a })
+                }
+                _ => format!("return Ok({})", expr_to_rust(inner, ctx)),
+            }
         }
         Expr::Await(inner) => {
             let inner_str = expr_to_rust(inner, ctx);
@@ -327,8 +344,19 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             } else {
                 binding.clone()
             };
+            // The loop variable is a local within the body. Infer its element
+            // type from the iterable so method calls on it resolve (e.g. a
+            // `List<SagaStep>` yields `SagaStep` elements).
+            let mut body_ctx = ctx.clone_for_inference();
+            body_ctx.locals.insert(binding.clone());
+            if let Some(elem) = element_type_of(iterable, ctx) {
+                body_ctx.local_types.insert(binding.clone(), elem);
+            }
+            if let Some(idx) = index {
+                body_ctx.locals.insert(idx.clone());
+            }
             let body_str = body.iter()
-                .map(|e| format!("        {};", expr_to_rust(e, ctx)))
+                .map(|e| format!("        {};", expr_to_rust(e, &body_ctx)))
                 .collect::<Vec<_>>().join("\n");
             let enumerate = if index.is_some() { ".enumerate()" } else { "" };
             format!("for {} in {}{} {{\n{}\n    }}", bind, iter_str, enumerate, body_str)
@@ -507,10 +535,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // Local variable target → target.method(args)?
     if ctx.is_local(&call.target) {
         let method = to_snake(&call.method);
-        // Check if the local's type has this method defined (aggregate fn)
         if let Some(type_name) = ctx.local_type(&call.target) {
+            // If the local's type is a known trait, its methods are async and
+            // fallible (`#[async_trait]` + `-> Result`): emit `.await?`.
+            if ctx.name_to_shape.get(type_name) == Some(&Shape::Trait) {
+                return format!("{}.{}({}).await?", call.target, method, args_str);
+            }
+            // Known concrete method (e.g. aggregate fn) — call with ?
             if ctx.method_returns.contains_key(&(type_name.to_string(), call.method.clone())) {
-                // Known method — call with ?
                 return format!("{}.{}({})?", call.target, method, args_str);
             }
         }
@@ -624,6 +656,25 @@ impl GenCtx {
 /// Public wrapper for `infer_expr_type`, for the return-type pre-scan.
 pub fn infer_expr_type_pub(expr: &Expr, ctx: &GenCtx) -> Option<String> {
     infer_expr_type(expr, ctx)
+}
+
+/// Infer the element type of an iterable expression. If it's a local whose
+/// tracked type is `Vec<T>` (or a boxed-trait vec), return the inner `T`
+/// (unwrapping `Box<dyn T ..>` to `T`) so method calls on the loop var resolve.
+fn element_type_of(iterable: &Expr, ctx: &GenCtx) -> Option<String> {
+    if let Expr::Ident(name) = iterable {
+        if let Some(t) = ctx.local_type(name) {
+            let inner = t.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>'))?;
+            let inner = inner.trim();
+            // Unwrap Box<dyn Trait + Send + Sync> → Trait.
+            if let Some(rest) = inner.strip_prefix("Box<dyn ") {
+                let name = rest.split([' ', '+', '>']).next().unwrap_or(rest);
+                return Some(name.to_string());
+            }
+            return Some(inner.to_string());
+        }
+    }
+    None
 }
 
 /// Infer the Rust type of a flow's return expression (`ret <expr>`).
