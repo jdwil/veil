@@ -54,6 +54,17 @@ enum Commands {
         /// Path to the .veil file
         file: PathBuf,
     },
+    /// Generate a .stub file from a Rust crate's rustdoc JSON
+    StubGen {
+        /// Crate name (e.g. "reqwest")
+        crate_name: String,
+        /// Output .stub file path (default: <crate_name>.stub)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Path to a Cargo project that has the crate as a dependency
+        #[arg(short, long, default_value = ".")]
+        project: PathBuf,
+    },
 }
 
 /// Load the layer registry for a .veil file, exiting on layer errors.
@@ -80,6 +91,220 @@ fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Sol
             std::process::exit(1);
         }
     }
+}
+
+
+/// Generate a .stub file by running `cargo +nightly rustdoc --output-format json`
+/// and converting the JSON into VEIL stub format.
+fn generate_stub(crate_name: &str, project_dir: &std::path::Path) -> Result<String, String> {
+    use std::process::Command;
+
+    // Run cargo rustdoc to generate JSON
+    let output = Command::new("cargo")
+        .args(["+nightly", "rustdoc", "-p", crate_name, "--", "--output-format", "json", "-Z", "unstable-options"])
+        .current_dir(project_dir)
+        .output()
+        .map_err(|e| format!("Failed to run cargo: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("cargo rustdoc failed: {}", stderr));
+    }
+
+    // Find the generated JSON file
+    let json_path = project_dir.join("target").join("doc").join(format!("{}.json", crate_name));
+    if !json_path.exists() {
+        // Try with hyphens replaced by underscores
+        let alt_name = crate_name.replace('-', "_");
+        let alt_path = project_dir.join("target").join("doc").join(format!("{}.json", alt_name));
+        if !alt_path.exists() {
+            return Err(format!("JSON file not found at {:?}", json_path));
+        }
+        let content = std::fs::read_to_string(&alt_path)
+            .map_err(|e| format!("Cannot read JSON: {}", e))?;
+        return convert_rustdoc_json_to_stub(&content, crate_name);
+    }
+
+    let content = std::fs::read_to_string(&json_path)
+        .map_err(|e| format!("Cannot read JSON: {}", e))?;
+    convert_rustdoc_json_to_stub(&content, crate_name)
+}
+
+/// Convert rustdoc JSON to .stub file format.
+fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<String, String> {
+    let data: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let version = data.get("crate_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("*");
+
+    let index = data.get("index")
+        .and_then(|v| v.as_object())
+        .ok_or("No index in JSON")?;
+
+    let mut out = format!("stub {} {}\n", crate_name, version);
+
+    // Collect structs and their impl items
+    let mut struct_ids: Vec<(String, String)> = Vec::new(); // (id, name)
+    let mut struct_impls: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new(); // name → method signatures
+
+    for (id, item) in index {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let vis = item.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
+        if vis != "public" { continue; }
+
+        let inner = match item.get("inner").and_then(|v| v.as_object()) {
+            Some(i) => i,
+            None => continue,
+        };
+
+        // Collect public structs
+        if inner.contains_key("struct") {
+            struct_ids.push((id.clone(), name.to_string()));
+            // Get impls for this struct
+            if let Some(struct_data) = inner.get("struct").and_then(|v| v.as_object()) {
+                if let Some(impls) = struct_data.get("impls").and_then(|v| v.as_array()) {
+                    for impl_id in impls {
+                        let impl_id_str = impl_id.as_u64().map(|n| n.to_string())
+                            .or_else(|| impl_id.as_str().map(|s| s.to_string()));
+                        if let Some(impl_id_str) = impl_id_str {
+                            if let Some(impl_item) = index.get(&impl_id_str) {
+                                if let Some(impl_inner) = impl_item.get("inner")
+                                    .and_then(|v| v.as_object())
+                                    .and_then(|o| o.get("impl"))
+                                    .and_then(|v| v.as_object())
+                                {
+                                    // Skip trait impls (Display, Clone, etc.)
+                                    if impl_inner.get("trait_").is_some() { continue; }
+                                    if let Some(items) = impl_inner.get("items").and_then(|v| v.as_array()) {
+                                        for method_id in items {
+                                            let method_id_str = method_id.as_u64().map(|n| n.to_string())
+                                                .or_else(|| method_id.as_str().map(|s| s.to_string()));
+                                            if let Some(mid) = method_id_str {
+                                                if let Some(method) = index.get(&mid) {
+                                                    let method_vis = method.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
+                                                    if method_vis != "public" { continue; }
+                                                    if let Some(sig) = extract_method_sig(method) {
+                                                        struct_impls.entry(name.to_string())
+                                                            .or_default()
+                                                            .push(sig);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Emit structs with their methods
+    for (_, name) in &struct_ids {
+        out.push_str(&format!("\n  struct {}\n", name));
+        if let Some(methods) = struct_impls.get(name) {
+            for sig in methods {
+                out.push_str(&format!("    {}\n", sig));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Extract a method signature from a rustdoc JSON item.
+fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
+    let name = item.get("name")?.as_str()?;
+    let inner = item.get("inner")?.as_object()?;
+    let func = inner.get("function")?.as_object()?;
+    let sig = func.get("sig")?.as_object()?;
+
+    // Build params
+    let inputs = sig.get("inputs").and_then(|v| v.as_array())?;
+    let params: Vec<String> = inputs.iter().filter_map(|input| {
+        let arr = input.as_array()?;
+        let param_name = arr.get(0)?.as_str()?;
+        if param_name == "self" { return None; } // Skip self
+        let type_val = arr.get(1)?;
+        let type_str = rustdoc_type_to_veil(type_val);
+        Some(format!("{}: {}", param_name, type_str))
+    }).collect();
+
+    // Build return type
+    let output = sig.get("output");
+    let ret = output.and_then(|o| {
+        if o.is_null() { return None; }
+        let t = rustdoc_type_to_veil(o);
+        if t == "()" { None } else { Some(t) }
+    });
+
+    let sig_str = if let Some(ret) = ret {
+        format!("fn {}({}) -> {}", name, params.join(", "), ret)
+    } else {
+        format!("fn {}({})", name, params.join(", "))
+    };
+    Some(sig_str)
+}
+
+/// Convert a rustdoc JSON type representation to VEIL type syntax.
+fn rustdoc_type_to_veil(ty: &serde_json::Value) -> String {
+    if let Some(obj) = ty.as_object() {
+        if let Some(path) = obj.get("resolved_path").and_then(|v| v.as_object()) {
+            let type_path = path.get("path").and_then(|v| v.as_str()).unwrap_or("Unknown");
+            // Simplify: take the last segment
+            let simple = type_path.rsplit("::").next().unwrap_or(type_path);
+            // Map common Rust types to VEIL types
+            let veil_type = match simple {
+                "String" | "str" => "Str",
+                "bool" => "Bool",
+                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize" | "isize" => "Int",
+                "f32" | "f64" => "F64",
+                "Vec" => "List",
+                "Option" => "Opt",
+                "Result" => "Res",
+                other => other,
+            };
+            // Handle generics
+            if let Some(args) = path.get("args").and_then(|v| v.as_object()) {
+                if let Some(angle) = args.get("angle_bracketed").and_then(|v| v.as_object()) {
+                    if let Some(type_args) = angle.get("args").and_then(|v| v.as_array()) {
+                        let arg_strs: Vec<String> = type_args.iter().filter_map(|a| {
+                            a.as_object()?.get("type").map(|t| rustdoc_type_to_veil(t))
+                        }).collect();
+                        if !arg_strs.is_empty() {
+                            if veil_type == "Res" {
+                                return format!("Res!<{}>", arg_strs.first().unwrap_or(&"()".to_string()));
+                            }
+                            return format!("{}<{}>", veil_type, arg_strs.join(", "));
+                        }
+                    }
+                }
+            }
+            return veil_type.to_string();
+        }
+        if let Some(prim) = obj.get("primitive").and_then(|v| v.as_str()) {
+            return match prim {
+                "bool" => "Bool".to_string(),
+                "str" => "Str".to_string(),
+                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => "Int".to_string(),
+                "f32" | "f64" => "F64".to_string(),
+                other => other.to_string(),
+            };
+        }
+        if let Some(g) = obj.get("generic").and_then(|v| v.as_str()) {
+            return g.to_string();
+        }
+        if let Some(borrow) = obj.get("borrowed_ref").and_then(|v| v.as_object()) {
+            if let Some(inner) = borrow.get("type") {
+                return rustdoc_type_to_veil(inner);
+            }
+        }
+    }
+    "Str".to_string() // fallback
 }
 
 fn main() {
@@ -149,6 +374,20 @@ fn main() {
             let (sol, _) = parse_solution_or_exit(&source, &file);
             let output = veil_ir::serialize_solution(&sol);
             print!("{}", output);
+        }
+        Commands::StubGen { crate_name, output, project } => {
+            let output_path = output.unwrap_or_else(|| PathBuf::from(format!("{}.stub", crate_name)));
+            match generate_stub(&crate_name, &project) {
+                Ok(content) => {
+                    std::fs::write(&output_path, &content)
+                        .expect("Failed to write .stub file");
+                    println!("✓ Generated {} ({} bytes)", output_path.display(), content.len());
+                }
+                Err(e) => {
+                    eprintln!("Error generating stub: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Serve { file, port } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
