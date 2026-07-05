@@ -2303,6 +2303,27 @@ impl<'a> Parser<'a> {
                     let text = self.advance().text;
                     args.push(Expr::IntLit(text.parse().unwrap_or(0)));
                 }
+                TokenKind::Pipe => {
+                    // Closure argument: |params| expr
+                    self.advance(); // opening |
+                    let mut params = Vec::new();
+                    while !self.at(&TokenKind::Pipe) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::RParen) {
+                        if !params.is_empty() && self.at(&TokenKind::Comma) {
+                            self.advance();
+                        }
+                        if self.at(&TokenKind::Pipe) { break; }
+                        params.push(self.expect_ident().unwrap_or_default());
+                    }
+                    if self.at(&TokenKind::Pipe) { self.advance(); } // closing |
+                    // Parse body expression (single expr, stops at comma or rparen)
+                    let mut body = Vec::new();
+                    if !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Comma) && !self.at(&TokenKind::Eof) {
+                        if let Ok(expr) = self.parse_expr() {
+                            body.push(expr);
+                        }
+                    }
+                    args.push(Expr::Closure { params, body });
+                }
                 _ => {
                     self.advance();
                 }
