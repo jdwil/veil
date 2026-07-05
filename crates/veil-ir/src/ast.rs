@@ -382,6 +382,8 @@ pub enum Expr {
     Action(ActionExpr),
     /// Struct literal: `Name { field: expr, ... }`.
     StructLit(String, Vec<(String, Expr)>),
+    /// Match expression: `match <expr> { pattern -> body, ... }`.
+    Match(Box<Expr>, Vec<MatchArm>),
 }
 
 /// A layer-defined statement, parsed according to its core statement shape.

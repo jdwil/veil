@@ -565,5 +565,13 @@ fn expr_to_veil(expr: &Expr) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{}{{{}}}", name, fs)
         }
+        Expr::Match(scrutinee, arms) => {
+            let mut s = format!("match {}", expr_to_veil(scrutinee));
+            for arm in arms {
+                let body_str = arm.body.iter().map(expr_to_veil).collect::<Vec<_>>().join("; ");
+                s.push_str(&format!("\n  {} -> {}", arm.pattern, body_str));
+            }
+            s
+        }
     }
 }

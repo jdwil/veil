@@ -281,6 +281,23 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             }).collect::<Vec<_>>().join(", ");
             format!("{} {{ {} }}", name, fs)
         }
+        Expr::Match(scrutinee, arms) => {
+            let scrutinee_str = expr_to_rust(scrutinee, ctx);
+            let mut out = format!("match {} {{\n", scrutinee_str);
+            for arm in arms {
+                let body_str = if arm.body.len() == 1 {
+                    expr_to_rust(&arm.body[0], ctx)
+                } else {
+                    let stmts = arm.body.iter()
+                        .map(|e| format!("        {};", expr_to_rust(e, ctx)))
+                        .collect::<Vec<_>>().join("\n");
+                    format!("{{\n{}\n    }}", stmts)
+                };
+                out.push_str(&format!("        {} => {},\n", arm.pattern, body_str));
+            }
+            out.push_str("    }");
+            out
+        }
     }
 }
 

@@ -113,6 +113,10 @@ pub fn expr_to_display(expr: &Expr) -> String {
             let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_display(v))).collect::<Vec<_>>().join(", ");
             format!("{}{{{}}}", name, fs)
         }
+        Expr::Match(scrutinee, arms) => {
+            let arms_str = arms.iter().map(|a| format!("{} -> ...", a.pattern)).collect::<Vec<_>>().join(", ");
+            format!("match {} {{ {} }}", expr_to_display(scrutinee), arms_str)
+        }
     }
 }
 

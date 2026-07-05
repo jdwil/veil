@@ -2048,16 +2048,69 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_match_expr(&mut self) -> Result<Expr, ParseError> {
-        // Skip match blocks for now (parity with previous implementation).
         self.advance(); // consume 'match'
-        while !self.at(&TokenKind::Newline)
-            && !self.at(&TokenKind::Eof)
-            && !self.at(&TokenKind::Dedent)
-        {
-            self.advance();
+
+        // Parse the scrutinee expression (up to newline)
+        let scrutinee = self.parse_expr()?;
+
+        // Parse arms in indented block
+        let mut arms = Vec::new();
+        if self.at_block_start() {
+            self.enter_block();
+            loop {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                let arm_span = self.current().span;
+
+                // Parse pattern: everything up to `->`
+                let mut pattern_parts = Vec::new();
+                while !self.at(&TokenKind::Arrow)
+                    && !self.at(&TokenKind::Newline)
+                    && !self.at(&TokenKind::Eof)
+                    && !self.at(&TokenKind::Dedent)
+                {
+                    pattern_parts.push(self.advance().text);
+                }
+                let pattern = pattern_parts.join(" ");
+
+                if !self.at(&TokenKind::Arrow) {
+                    // Skip malformed arm
+                    continue;
+                }
+                self.advance(); // consume ->
+
+                // Parse body: either a single expression on the same line, or an indented block
+                let mut body = Vec::new();
+                if self.at(&TokenKind::Newline) || self.at_block_start() {
+                    // Multi-line body
+                    if self.at_block_start() {
+                        self.enter_block();
+                        loop {
+                            self.skip_newlines();
+                            if self.at_block_end() {
+                                break;
+                            }
+                            body.push(self.parse_expr()?);
+                        }
+                        self.exit_block();
+                    }
+                } else {
+                    // Single expression on same line
+                    body.push(self.parse_expr()?);
+                }
+
+                arms.push(MatchArm {
+                    pattern,
+                    span: arm_span.merge(self.current().span),
+                    body,
+                });
+            }
+            self.exit_block();
         }
-        self.skip_block()?;
-        Ok(Expr::Ident("__match_placeholder".to_string()))
+
+        Ok(Expr::Match(Box::new(scrutinee), arms))
     }
 
     /// Safely parse parenthesized argument list.
