@@ -87,11 +87,86 @@ fn saga_emits_reverse_order_compensation() {
 }
 
 #[test]
+fn orchestrator_bus_calls_use_real_json_not_placeholders() {
+    let out = customer_onboarding();
+    // Cross-context calls carry a typed JSON envelope.
+    assert!(
+        out.contains("deps.bus.invoke(serde_json::json!({ \"target\": \"CustomerRepo\""),
+        "bus call not a JSON envelope:\n{}",
+        grep(&out, "bus.invoke")
+    );
+    // Events dispatch with a typed JSON message.
+    assert!(
+        out.contains("\"type\": \"CustomerCreated\""),
+        "event not a typed JSON message"
+    );
+    // The old junk placeholders must be gone.
+    assert!(!out.contains("{}:id"), "symbolic-placeholder junk still present");
+    assert!(
+        !out.contains("format!(\"Customer.new"),
+        "debug-string pseudo-call still present"
+    );
+    // Bus results index as JSON.
+    assert!(out.contains("[\"id\"]"), "JSON field indexing missing");
+}
+
+#[test]
 fn bus_port_generated_from_layer_declaration() {
     let out = customer_onboarding();
     // The injected Bus port becomes a trait with the declared methods.
     assert!(out.contains("trait Bus"), "declared Bus port not generated");
     assert!(out.contains("async fn dispatch"), "Bus.dispatch missing");
+}
+
+#[test]
+fn bus_and_errors_defined_once_in_shared_crate() {
+    let out = customer_onboarding();
+    // Exactly one `pub trait Bus` definition, in veil_shared.
+    let bus_defs = out.matches("pub trait Bus").count();
+    assert_eq!(bus_defs, 1, "Bus trait should be defined exactly once, found {}", bus_defs);
+    assert!(
+        out.contains("// ==== crates/veil_shared/src/lib.rs ===="),
+        "shared crate not generated"
+    );
+    // Error types defined once (in the shared crate), re-exported elsewhere.
+    let err_defs = out.matches("pub enum DomainError").count();
+    assert_eq!(err_defs, 1, "DomainError should be defined once, found {}", err_defs);
+    assert!(out.contains("pub use veil_shared::{DomainError, ValidationError}"), "context crates should re-export shared errors");
+}
+
+#[test]
+fn flow_return_type_is_inferred_not_hardcoded() {
+    // A service returning `ret c.id` (a UUID field of a Customer) infers Uuid.
+    let out = customer_onboarding();
+    assert!(
+        out.contains("pub async fn create_customer_service(") && out.contains("-> Result<Uuid, DomainError>"),
+        "service return type not inferred as Uuid:\n{}",
+        grep(&out, "create_customer_service")
+    );
+
+    // A flow that returns an Int field must infer i64, proving it's not a
+    // blanket Uuid. Build a minimal solution inline.
+    let src = "\
+sol T
+  use ddd
+  ctx C
+    group g
+      agg Order
+        root
+          id: UUID
+          total: Int
+      svc TotalService
+        input
+          order_id: UUID
+        step load
+          o = call Order.new(order_id)
+        ret o.total";
+    let out2 = generate_example(src);
+    assert!(
+        out2.contains("-> Result<i64, DomainError>"),
+        "Int return not inferred as i64:\n{}",
+        grep(&out2, "total_service")
+    );
 }
 
 /// Return only lines containing `needle` (for readable assertion failures).

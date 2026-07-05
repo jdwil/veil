@@ -206,9 +206,12 @@ pkg ddd v1
       label "Guard"
 
   # ─── Declared constructs (injected into every solution using this layer) ─────
+  # The Bus is a JSON message bus: cross-context payloads/results are `Json`
+  # (serde_json::Value) so orchestrators can build commands and index results
+  # without depending on another context's concrete types.
   declare
     trait Bus
-      dispatch(evt: Str) -> Res!
-      invoke(cmd: Str) -> Res!<Str>
-      request(qry: Str) -> Res!<Str>
+      dispatch(evt: Json) -> Res!
+      invoke(cmd: Json) -> Res!<Json>
+      request(qry: Json) -> Res!<Json>
 
