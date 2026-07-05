@@ -192,6 +192,22 @@
       }) : []}
       <FieldsEditor fields={parsedFields} label="Fields" onChange={handleFieldsChange} />
 
+      <!-- Business logic methods (fn:* properties) -->
+      {@const fnProps = (node.data.properties ?? []).filter(([k]: [string, string]) => k.startsWith('fn:'))}
+      {#if fnProps.length > 0}
+        <div class="pe-section">
+          <span class="label-text">Methods</span>
+          <div class="methods-list">
+            {#each fnProps as [key, sig]}
+              <div class="method-item">
+                <span class="method-icon">⚡</span>
+                <code class="method-sig">{key.slice(3)}{sig}</code>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       <!-- Show children (events, commands) if any -->
       {#if children.length > 0}
         <div class="pe-section">
@@ -309,6 +325,33 @@
 
 <style>
   .property-editor {
+
+  .methods-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+  }
+
+  .method-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: rgba(99, 102, 241, 0.1);
+    border-radius: 4px;
+    border-left: 2px solid #6366f1;
+  }
+
+  .method-icon {
+    font-size: 12px;
+  }
+
+  .method-sig {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #c4b5fd;
+  }
     position: absolute;
     top: 12px;
     right: 12px;

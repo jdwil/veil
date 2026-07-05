@@ -484,6 +484,16 @@ fn main() {
             let edge_count = graph.edges.len();
             let veil_source = source.clone();
 
+            // Generate Rust code for the code preview panel
+            let generated_json = {
+                let sol = parse_solution_or_exit(&source, &file);
+                let project = veil_codegen::generate(&sol.0, &sol.1);
+                let files_map: std::collections::HashMap<String, String> = project.files.iter()
+                    .map(|f| (f.path.clone(), f.content.clone()))
+                    .collect();
+                serde_json::to_string(&files_map).unwrap()
+            };
+
             println!("✓ Serving VEIL IR ({} nodes, {} edges)", node_count, edge_count);
             println!("  Layers: {}", registry.layers.join(", "));
             println!("  API: http://localhost:{}/api/ir", port);
@@ -522,6 +532,15 @@ fn main() {
                             (
                                 [(axum::http::header::CONTENT_TYPE, "application/json")],
                                 palette.clone(),
+                            )
+                        }
+                    }))
+                    .route("/api/generated", axum::routing::get({
+                        let generated = generated_json.clone();
+                        move || async move {
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                                generated.clone(),
                             )
                         }
                     }))

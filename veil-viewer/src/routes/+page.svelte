@@ -16,6 +16,7 @@
   import VeilNode from '$lib/VeilNode.svelte';
   import Palette from '$lib/Palette.svelte';
   import PropertyEditor from '$lib/PropertyEditor.svelte';
+  import CodePreview from '$lib/CodePreview.svelte';
   import { layoutNodes } from '$lib/layout';
   import {
     irGraph,
@@ -578,6 +579,7 @@
       </div>
     </div>
   {/if}
+  <CodePreview />
 </div>
 
 <style>

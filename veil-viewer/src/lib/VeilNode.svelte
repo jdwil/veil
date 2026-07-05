@@ -68,7 +68,7 @@
       </div>
     {/if}
 
-    <div class="node-name">{data.label}</div>
+    <div class="node-name" class:code-name={kind === 'Action'}>{data.label}</div>
 
     {#if properties.length > 0}
       <button class="details-toggle" onclick={(e) => { e.stopPropagation(); detailsOpen = !detailsOpen; }}>
@@ -283,6 +283,16 @@
     color: #f1f5f9;
     word-break: break-word;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+
+  .node-name.code-name {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 4px 8px;
+    border-radius: 4px;
+    color: #a5f3fc;
   }
 
   .context-badge {
