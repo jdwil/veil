@@ -366,6 +366,8 @@ fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
             collect_type_refs(v, refs);
         }
         TypeExpr::Set(inner) => collect_type_refs(inner, refs),
+        TypeExpr::Tuple(items) => { for item in items { collect_type_refs(item, refs); } }
+        TypeExpr::Array(inner, _) => collect_type_refs(inner, refs),
     }
 }
 
@@ -1064,6 +1066,11 @@ pub fn type_to_rust(ty: &TypeExpr) -> String {
             type_to_rust(v)
         ),
         TypeExpr::Set(inner) => format!("std::collections::HashSet<{}>", type_to_rust(inner)),
+        TypeExpr::Tuple(items) => {
+            let parts = items.iter().map(type_to_rust).collect::<Vec<_>>().join(", ");
+            format!("({})", parts)
+        }
+        TypeExpr::Array(inner, size) => format!("[{}; {}]", type_to_rust(inner), size),
     }
 }
 

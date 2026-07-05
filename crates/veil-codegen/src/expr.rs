@@ -204,6 +204,11 @@ fn type_name_simple(ty: &TypeExpr) -> String {
         TypeExpr::List(inner) => format!("Vec<{}>", type_name_simple(inner)),
         TypeExpr::Map(k, v) => format!("HashMap<{}, {}>", type_name_simple(k), type_name_simple(v)),
         TypeExpr::Set(inner) => format!("HashSet<{}>", type_name_simple(inner)),
+        TypeExpr::Tuple(items) => {
+            let parts = items.iter().map(type_name_simple).collect::<Vec<_>>().join(", ");
+            format!("({})", parts)
+        }
+        TypeExpr::Array(inner, size) => format!("[{}; {}]", type_name_simple(inner), size),
     }
 }
 
@@ -321,6 +326,26 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 .map(|e| format!("        {};", expr_to_rust(e, ctx)))
                 .collect::<Vec<_>>().join("\n");
             format!("while {} {{\n{}\n    }}", cond_str, body_str)
+        }
+        Expr::Tuple(items) => {
+            let parts = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+            format!("({})", parts)
+        }
+        Expr::StringInterp(parts) => {
+            use veil_ir::ast::StringPart;
+            let mut fmt = String::new();
+            let mut args = Vec::new();
+            for p in parts {
+                match p {
+                    StringPart::Literal(l) => fmt.push_str(l),
+                    StringPart::Expr(e) => { fmt.push_str("{}"); args.push(expr_to_rust(e, ctx)); }
+                }
+            }
+            if args.is_empty() {
+                format!("\"{}\"", fmt)
+            } else {
+                format!("format!(\"{}\", {})", fmt, args.join(", "))
+            }
         }
         Expr::Closure { params, body } => {
             let p = params.join(", ");

@@ -465,6 +465,11 @@ fn type_to_veil(ty: &TypeExpr) -> String {
         TypeExpr::List(inner) => format!("List<{}>", type_to_veil(inner)),
         TypeExpr::Map(k, v) => format!("Map<{}, {}>", type_to_veil(k), type_to_veil(v)),
         TypeExpr::Set(inner) => format!("Set<{}>", type_to_veil(inner)),
+        TypeExpr::Tuple(items) => {
+            let parts = items.iter().map(type_to_veil).collect::<Vec<_>>().join(", ");
+            format!("({})", parts)
+        }
+        TypeExpr::Array(inner, size) => format!("[{}; {}]", type_to_veil(inner), size),
     }
 }
 
@@ -582,6 +587,18 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::WhileLoop { condition, body } => {
             let body_str = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  ");
             format!("while {}\n  {}", expr_to_veil(condition), body_str)
+        }
+        Expr::Tuple(items) => {
+            let parts = items.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
+            format!("({})", parts)
+        }
+        Expr::StringInterp(parts) => {
+            use crate::ast::StringPart;
+            let s: String = parts.iter().map(|p| match p {
+                StringPart::Literal(l) => l.clone(),
+                StringPart::Expr(e) => format!("{{{}}}", expr_to_veil(e)),
+            }).collect();
+            format!("f\"{}\"", s)
         }
         Expr::Closure { params, body } => {
             let p = params.join(", ");

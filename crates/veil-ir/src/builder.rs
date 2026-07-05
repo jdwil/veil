@@ -30,6 +30,11 @@ fn type_to_display(ty: &TypeExpr) -> String {
         TypeExpr::List(inner) => format!("List<{}>", type_to_display(inner)),
         TypeExpr::Map(k, v) => format!("Map<{}, {}>", type_to_display(k), type_to_display(v)),
         TypeExpr::Set(inner) => format!("Set<{}>", type_to_display(inner)),
+        TypeExpr::Tuple(items) => {
+            let parts = items.iter().map(type_to_display).collect::<Vec<_>>().join(", ");
+            format!("({})", parts)
+        }
+        TypeExpr::Array(inner, size) => format!("[{}; {}]", type_to_display(inner), size),
     }
 }
 
@@ -123,6 +128,13 @@ pub fn expr_to_display(expr: &Expr) -> String {
         }
         Expr::WhileLoop { condition, .. } => {
             format!("while {}", expr_to_display(condition))
+        }
+        Expr::Tuple(items) => {
+            let parts = items.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
+            format!("({})", parts)
+        }
+        Expr::StringInterp(parts) => {
+            "f\"...\"".to_string()
         }
         Expr::Closure { params, body } => {
             let p = params.join(", ");

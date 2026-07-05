@@ -341,6 +341,10 @@ pub enum TypeExpr {
     List(Box<TypeExpr>),
     Map(Box<TypeExpr>, Box<TypeExpr>),
     Set(Box<TypeExpr>),
+    /// Tuple type: (A, B, C)
+    Tuple(Vec<TypeExpr>),
+    /// Fixed-size array: [T; N]
+    Array(Box<TypeExpr>, usize),
 }
 
 /// An annotation (@keyword or @keyword(args)).
@@ -392,6 +396,17 @@ pub enum Expr {
     WhileLoop { condition: Box<Expr>, body: Vec<Expr> },
     /// Closure: `|params| body`.
     Closure { params: Vec<String>, body: Vec<Expr> },
+    /// Tuple expression: (a, b, c)
+    Tuple(Vec<Expr>),
+    /// String interpolation: f"Hello {name}"
+    StringInterp(Vec<StringPart>),
+}
+
+/// Part of an interpolated string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StringPart {
+    Literal(String),
+    Expr(Expr),
 }
 
 /// A layer-defined statement, parsed according to its core statement shape.
