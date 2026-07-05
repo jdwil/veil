@@ -321,9 +321,15 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             format!("{} {{ {} }}", name, fs)
         }
         Expr::Match(scrutinee, arms) => {
-            let scrutinee_str = expr_to_rust(scrutinee, ctx);
+            // The match consumes the scrutinee's Result directly, so a fallible
+            // call scrutinee must NOT auto-propagate with `?`.
+            let raw = expr_to_rust(scrutinee, ctx);
+            let scrutinee_str = raw.strip_suffix(".await?")
+                .map(|s| format!("{}.await", s))
+                .unwrap_or_else(|| raw.strip_suffix('?').map(|s| s.to_string()).unwrap_or(raw));
             let mut out = format!("match {} {{\n", scrutinee_str);
             for arm in arms {
+                let pattern = normalize_match_pattern(&arm.pattern);
                 let body_str = if arm.body.len() == 1 {
                     expr_to_rust(&arm.body[0], ctx)
                 } else {
@@ -332,7 +338,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         .collect::<Vec<_>>().join("\n");
                     format!("{{\n{}\n    }}", stmts)
                 };
-                out.push_str(&format!("        {} => {},\n", arm.pattern, body_str));
+                out.push_str(&format!("        {} => {},\n", pattern, body_str));
             }
             out.push_str("    }");
             out
@@ -432,6 +438,17 @@ fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
     }
 }
 
+/// Determine the call suffix for a method invoked on a chained receiver.
+/// If the method is declared on any known trait (async_trait + Result), it
+/// needs `.await?`; otherwise no suffix (e.g. iterator adapters).
+fn receiver_call_suffix(_recv: &Expr, method: &str, ctx: &GenCtx) -> String {
+    let is_trait_method = ctx
+        .method_returns
+        .keys()
+        .any(|(ty, m)| m == method && ctx.name_to_shape.get(ty) == Some(&Shape::Trait));
+    if is_trait_method { ".await?".to_string() } else { String::new() }
+}
+
 /// Build a `serde_json::json!` object for a message (event/command) with a
 /// `"type"` tag plus its named fields — the wire form for a JSON Bus payload.
 fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> String {
@@ -459,11 +476,32 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         .map(|a| expr_to_rust(a, ctx))
         .collect::<Vec<_>>().join(", ");
 
+    // Built-in List methods: `.get(i)` → indexing (`[i as usize]`), `.len()` →
+    // `.len() as i64`. The receiver/target is the list expression.
+    let list_base = if let Some(recv) = &call.receiver {
+        Some(expr_to_rust(recv, ctx))
+    } else if !call.target.is_empty() && call.method == "get" || (!call.target.is_empty() && call.method == "len") {
+        Some(call.target.clone())
+    } else {
+        None
+    };
+    if let Some(base) = list_base {
+        if call.method == "get" && call.args.len() == 1 {
+            let idx = expr_to_rust(&call.args[0], ctx);
+            return format!("{}[({}) as usize]", base, idx);
+        }
+        if call.method == "len" && call.args.is_empty() {
+            return format!("({}.len() as i64)", base);
+        }
+    }
+
     // Chained method call: `<receiver>.method(args)` (e.g. `.collect()` in
     // `items.map(f).collect()`). The receiver carries the left side of the chain.
     if let Some(recv) = &call.receiver {
         let recv_str = expr_to_rust(recv, ctx);
-        return format!("{}.{}({})", recv_str, to_snake(&call.method), args_str);
+        // A trait method invoked on a chained receiver is async + fallible.
+        let suffix = receiver_call_suffix(recv, &call.method, ctx);
+        return format!("{}.{}({}){}", recv_str, to_snake(&call.method), args_str, suffix);
     }
 
     // Trait-shaped target → deps.target.method(args).await?
@@ -704,6 +742,24 @@ pub fn infer_return_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
         Expr::Call(_) => infer_expr_type(expr, ctx),
         _ => None,
     }
+}
+
+/// Normalize a VEIL match pattern into Rust form. VEIL writes `Ok _` / `Err e`
+/// (space-separated binding); Rust needs `Ok(_)` / `Err(e)`. A bare word or
+/// already-parenthesized pattern is left as-is.
+fn normalize_match_pattern(pattern: &str) -> String {
+    let p = pattern.trim();
+    // Enum-variant-with-binding: `Variant binding` → `Variant(binding)`.
+    if let Some((head, rest)) = p.split_once(char::is_whitespace) {
+        let rest = rest.trim();
+        if !rest.is_empty() && !rest.starts_with('(') {
+            // Only treat capitalized heads as variants (Ok, Err, Some, custom).
+            if head.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                return format!("{}({})", head, rest);
+            }
+        }
+    }
+    p.to_string()
 }
 
 /// Map a VEIL simple type name (as stored in struct_fields) to its Rust form.

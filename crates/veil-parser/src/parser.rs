@@ -1968,14 +1968,17 @@ impl<'a> Parser<'a> {
             args = named.into_iter().map(|(_, v)| v).collect();
         }
 
-        Ok(Expr::Call(CallExpr {
+        let call = Expr::Call(CallExpr {
             target,
             method,
             args,
             receiver: None,
             sugar: None,
             span: start_span.merge(self.current().span),
-        }))
+        });
+        // Continue any method chain: `call a.b(i).c(x)` → the `.c(x)` attaches
+        // via receiver form.
+        self.parse_postfix(call, start_span)
     }
 
     /// Parse a primary (atomic) expression.

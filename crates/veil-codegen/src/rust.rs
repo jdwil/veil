@@ -810,7 +810,7 @@ chrono.workspace = true
             let params = method
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_traits(&p.type_expr, &trait_names)))
+                .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let sep = if params.is_empty() { "" } else { ", " };
@@ -823,40 +823,31 @@ chrono.workspace = true
         lib.push_str("}\n\n");
     }
 
-    // Emit layer-declared free functions (e.g. the saga coordinator). When a
-    // Bus trait is present, coordinators receive it as a `bus` parameter so
-    // they can orchestrate across contexts.
-    let has_bus = traits.iter().any(|t| t.name == "Bus");
+    // Emit layer-declared free functions (e.g. the saga coordinator). The
+    // author declares any Bus/step params explicitly; a bare trait-typed
+    // parameter is passed by shared reference.
     for f in functions {
         let name_to_shape = build_name_to_shape(solution);
         let mut ctx = build_ctx_from_solution(solution, name_to_shape, registry);
-        // `bus` is an in-scope Bus dependency inside a coordinator body.
-        if has_bus {
-            ctx.locals.insert("bus".to_string());
-            ctx.local_types.insert("bus".to_string(), "Bus".to_string());
-        }
         for p in &f.params {
             ctx.locals.insert(p.name.clone());
-            ctx.local_types.insert(p.name.clone(), type_to_rust(&p.type_expr));
+            // Track the trait name (unboxed) so method calls resolve to .await?.
+            ctx.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names));
         }
 
         let params = f
             .params
             .iter()
-            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_traits(&p.type_expr, &trait_names)))
+            .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names)))
             .collect::<Vec<_>>()
             .join(", ");
         let ret = match &f.return_type {
             Some(t) => type_to_rust_with_traits(t, &trait_names),
             None => "Result<(), DomainError>".to_string(),
         };
-        let bus_param = if has_bus { "bus: &(dyn Bus + Send + Sync)" } else { "" };
-        let sep = if has_bus && !params.is_empty() { ", " } else { "" };
         lib.push_str(&format!(
-            "/// Layer-declared coordinator.\npub async fn {}({}{}{}) -> {} {{\n",
+            "/// Layer-declared coordinator.\npub async fn {}({}) -> {} {{\n",
             to_snake(&f.name),
-            bus_param,
-            sep,
             params,
             ret,
         ));
@@ -1525,6 +1516,30 @@ pub fn type_to_rust(ty: &TypeExpr) -> String {
 /// becomes a boxed trait object `Box<dyn Trait + Send + Sync>`. Used when
 /// generating coordinator signatures (`List<SagaStep>` → `Vec<Box<dyn ..>>`).
 pub fn type_to_rust_with_traits(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
+    type_to_rust_impl(ty, traits)
+}
+
+/// Render a function parameter type. A bare trait-typed parameter is passed by
+/// shared reference (`&(dyn Trait + Send + Sync)`); everything else (including
+/// `List<Trait>`) uses the standard boxed rendering.
+fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
+    if let TypeExpr::Named(name) = ty {
+        if traits.contains(name) {
+            return format!("&(dyn {} + Send + Sync)", name);
+        }
+    }
+    type_to_rust_impl(ty, traits)
+}
+
+/// The type name tracked for a parameter local, for method resolution. A bare
+/// trait param tracks the unboxed trait name (so `x.method()` resolves to an
+/// async trait call); other types track their Rust rendering.
+fn local_type_for_param(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
+    if let TypeExpr::Named(name) = ty {
+        if traits.contains(name) {
+            return name.clone();
+        }
+    }
     type_to_rust_impl(ty, traits)
 }
 

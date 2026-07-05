@@ -33,9 +33,18 @@ mod tests {
     fn test_parse_empty_solution() {
         let sol = parse_src("sol MyApp");
         assert_eq!(sol.name, "MyApp");
-        // The ddd.layer declares a Bus port, so it gets injected.
-        // No user-authored items exist, but layer declarations may be present.
-        assert!(sol.items.iter().all(|item| matches!(item, TopLevelItem::Construct(_))));
+        // The ddd.layer declares infrastructure (Bus/SagaStep traits) and the
+        // saga coordinator functions, so they get injected. No user-authored
+        // items exist; injected items are constructs or functions.
+        assert!(sol.items.iter().all(|item| matches!(
+            item,
+            TopLevelItem::Construct(_) | TopLevelItem::Function(_)
+        )));
+        // The saga coordinator is injected as a layer-provided function.
+        assert!(sol.items.iter().any(|item| matches!(
+            item,
+            TopLevelItem::Function(f) if f.name == "run_saga" && f.layer_provided
+        )));
     }
 
     #[test]
