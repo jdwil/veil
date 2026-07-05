@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { NODE_STYLES, getNodeStyle, type NodeKind, type IrGraph, type IrNode } from '$lib/types';
-  import { ANNOTATION_SCHEMA, type AnnotationDef } from '$lib/annotations';
+  import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/types';
   import { irGraph, saveEdits, saving, saveError, type EditOp } from '$lib/store';
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
@@ -106,10 +105,9 @@
     activeAnnotations = parseAnnotations(node.data.annotations ?? []);
   });
 
-  // Available annotations for this node kind
-  let availableAnnotations = $derived<AnnotationDef[]>(
-    ANNOTATION_SCHEMA[subkind ?? kind] ?? ANNOTATION_SCHEMA[kind] ?? []
-  );
+  // Available annotations come from the layer (via /api/palette), keyed by the
+  // construct subkind — zero hardcoded domain vocabulary in the viewer.
+  let availableAnnotations = $derived<AnnotationSpec[]>(getAnnotationDefs(subkind));
 
   function parseAnnotations(anns: string[]): Record<string, Record<string, string>> {
     const result: Record<string, Record<string, string>> = {};
@@ -127,7 +125,7 @@
             args[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim().replace(/"/g, '');
           } else if (trimmed) {
             const def = availableAnnotations.find(a => a.name === annName);
-            const paramName = def?.params[0]?.name ?? 'value';
+            const paramName = def?.params[0] ?? 'value';
             args[paramName] = trimmed;
           }
         }
@@ -334,33 +332,19 @@
                   onchange={(e) => toggleAnnotation(annDef.name, e.currentTarget.checked)}
                 />
                 <span class="ann-name">@{annDef.name}</span>
-                <span class="ann-desc">{annDef.description}</span>
+                <span class="ann-desc">{annDef.desc}</span>
               </label>
               {#if isActive && annDef.params.length > 0}
                 <div class="annotation-params">
                   {#each annDef.params as param}
                     <div class="param-row">
-                      <span class="param-label">{param.name}:</span>
-                      {#if param.type === 'select' && param.options}
-                        <select
-                          class="pe-select"
-                          value={activeAnnotations[annDef.name]?.[param.name] ?? ''}
-                          onchange={(e) => updateAnnotationParam(annDef.name, param.name, e.currentTarget.value)}
-                        >
-                          <option value="">—</option>
-                          {#each param.options as opt}
-                            <option value={opt}>{opt}</option>
-                          {/each}
-                        </select>
-                      {:else}
-                        <input
-                          type={param.type === 'number' ? 'number' : 'text'}
-                          class="pe-input small"
-                          value={activeAnnotations[annDef.name]?.[param.name] ?? ''}
-                          placeholder={param.placeholder ?? ''}
-                          oninput={(e) => updateAnnotationParam(annDef.name, param.name, e.currentTarget.value)}
-                        />
-                      {/if}
+                      <span class="param-label">{param}:</span>
+                      <input
+                        type="text"
+                        class="pe-input small"
+                        value={activeAnnotations[annDef.name]?.[param] ?? ''}
+                        oninput={(e) => updateAnnotationParam(annDef.name, param, e.currentTarget.value)}
+                      />
                     </div>
                   {/each}
                 </div>

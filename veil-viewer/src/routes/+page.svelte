@@ -167,8 +167,9 @@
     const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
     const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
     const modules = children.filter(c => c.kind === 'Module');
-    // Any node that declares module references (e.g. a saga's contexts) spans modules
-    const spanning = children.filter(c => c.metadata.properties.some(([k]) => k === 'contexts'));
+    // Any node with a reference line (`ref:*`, e.g. a saga's `contexts`) spans
+    // modules — layer-agnostic, no hardcoded keyword.
+    const spanning = children.filter(c => c.metadata.properties.some(([k]) => k.startsWith('ref:')));
 
     // Simple flat view — modules and flows as regular nodes
     if (isSolutionLevel && modules.length > 0) {
@@ -197,7 +198,7 @@
     const solEdges: Edge[] = [];
 
     for (const span of spanning) {
-      const ctxRefs = span.metadata.properties.find(([k]) => k === 'contexts');
+      const ctxRefs = span.metadata.properties.find(([k]) => k.startsWith('ref:'));
       if (ctxRefs) {
         const ctxNames = ctxRefs[1].split(', ');
         for (const ctxName of ctxNames) {

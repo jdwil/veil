@@ -361,9 +361,11 @@ impl IrBuilder {
                 }
             }
             Shape::Fn => {
-                // Reference lines (e.g. contexts) as properties.
+                // Reference lines (e.g. `contexts Identity, Billing`) as
+                // properties, prefixed with `ref:` so the viewer renders them
+                // generically without knowing the layer keyword.
                 for r in &c.refs {
-                    self.set_property(id, &r.keyword, &r.values.join(", "));
+                    self.set_property(id, &format!("ref:{}", r.keyword), &r.values.join(", "));
                 }
                 if !c.inputs.is_empty() {
                     let inputs_str = c
@@ -431,8 +433,10 @@ impl IrBuilder {
                         self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
                     }
                     // Reference lines within the step (e.g. `ctx Identity`).
+                    // Prefixed with `ref:` so the viewer can render them
+                    // generically without knowing the layer keyword.
                     for r in &s.refs {
-                        self.set_property(step_id, &r.keyword, &r.values.join(", "));
+                        self.set_property(step_id, &format!("ref:{}", r.keyword), &r.values.join(", "));
                     }
                     // Named sub-blocks (e.g. compensate).
                     for sb in &s.sub_blocks {
