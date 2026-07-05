@@ -384,6 +384,8 @@ pub enum Expr {
     StructLit(String, Vec<(String, Expr)>),
     /// Match expression: `match <expr> { pattern -> body, ... }`.
     Match(Box<Expr>, Vec<MatchArm>),
+    /// For loop: `for <binding> in <iterable> { body }`.
+    ForLoop { binding: String, index: Option<String>, iterable: Box<Expr>, body: Vec<Expr> },
 }
 
 /// A layer-defined statement, parsed according to its core statement shape.

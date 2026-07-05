@@ -1693,6 +1693,7 @@ impl<'a> Parser<'a> {
         match self.peek_kind().clone() {
             TokenKind::Call => return self.parse_call_stmt(),
             TokenKind::Match => return self.parse_match_expr(),
+            TokenKind::For => return self.parse_for_loop(),
             TokenKind::Ret => {
                 self.advance();
                 let inner = self.parse_expr()?;
@@ -2114,6 +2115,48 @@ impl<'a> Parser<'a> {
     }
 
     /// Safely parse parenthesized argument list.
+    /// Parse a for loop: `for <binding> in <expr>` with indented body.
+    fn parse_for_loop(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // consume 'for'
+
+        // Parse binding (and optional index): `for i, item in ...` or `for item in ...`
+        let first = self.expect_ident()?;
+        let (index, binding) = if self.at(&TokenKind::Comma) {
+            self.advance();
+            let second = self.expect_ident()?;
+            (Some(first), second)
+        } else {
+            (None, first)
+        };
+
+        // Expect 'in' (which is just an ident)
+        let word = self.current_word();
+        if word == Some("in") {
+            self.advance();
+        } else {
+            return Err(self.error("expected 'in' after for binding".to_string()));
+        }
+
+        // Parse iterable expression
+        let iterable = self.parse_expr()?;
+
+        // Parse body block
+        let mut body = Vec::new();
+        if self.at_block_start() {
+            let _ = self.enter_block();
+            loop {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                body.push(self.parse_expr()?);
+            }
+            self.exit_block();
+        }
+
+        Ok(Expr::ForLoop { binding, index, iterable: Box::new(iterable), body })
+    }
+
     fn parse_paren_args(&mut self) -> Vec<Expr> {
         if !self.at(&TokenKind::LParen) {
             return Vec::new();

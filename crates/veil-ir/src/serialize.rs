@@ -573,5 +573,10 @@ fn expr_to_veil(expr: &Expr) -> String {
             }
             s
         }
+        Expr::ForLoop { binding, index, iterable, body } => {
+            let idx = index.as_ref().map(|i| format!("{}, ", i)).unwrap_or_default();
+            let body_str = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  ");
+            format!("for {}{} in {}\n  {}", idx, binding, expr_to_veil(iterable), body_str)
+        }
     }
 }

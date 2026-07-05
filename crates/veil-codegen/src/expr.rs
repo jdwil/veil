@@ -298,6 +298,19 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             out.push_str("    }");
             out
         }
+        Expr::ForLoop { binding, index, iterable, body } => {
+            let iter_str = expr_to_rust(iterable, ctx);
+            let bind = if let Some(idx) = index {
+                format!("({}, {})", idx, binding)
+            } else {
+                binding.clone()
+            };
+            let body_str = body.iter()
+                .map(|e| format!("        {};", expr_to_rust(e, ctx)))
+                .collect::<Vec<_>>().join("\n");
+            let enumerate = if index.is_some() { ".enumerate()" } else { "" };
+            format!("for {} in {}{} {{\n{}\n    }}", bind, iter_str, enumerate, body_str)
+        }
     }
 }
 

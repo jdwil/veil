@@ -117,6 +117,9 @@ pub fn expr_to_display(expr: &Expr) -> String {
             let arms_str = arms.iter().map(|a| format!("{} -> ...", a.pattern)).collect::<Vec<_>>().join(", ");
             format!("match {} {{ {} }}", expr_to_display(scrutinee), arms_str)
         }
+        Expr::ForLoop { binding, iterable, .. } => {
+            format!("for {} in {}", binding, expr_to_display(iterable))
+        }
     }
 }
 
