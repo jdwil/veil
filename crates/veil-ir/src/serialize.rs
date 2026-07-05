@@ -578,5 +578,9 @@ fn expr_to_veil(expr: &Expr) -> String {
             let body_str = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  ");
             format!("for {}{} in {}\n  {}", idx, binding, expr_to_veil(iterable), body_str)
         }
+        Expr::WhileLoop { condition, body } => {
+            let body_str = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  ");
+            format!("while {}\n  {}", expr_to_veil(condition), body_str)
+        }
     }
 }

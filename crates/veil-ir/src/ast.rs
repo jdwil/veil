@@ -386,6 +386,8 @@ pub enum Expr {
     Match(Box<Expr>, Vec<MatchArm>),
     /// For loop: `for <binding> in <iterable> { body }`.
     ForLoop { binding: String, index: Option<String>, iterable: Box<Expr>, body: Vec<Expr> },
+    /// While loop: `while <condition> { body }`.
+    WhileLoop { condition: Box<Expr>, body: Vec<Expr> },
 }
 
 /// A layer-defined statement, parsed according to its core statement shape.

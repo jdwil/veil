@@ -1694,6 +1694,7 @@ impl<'a> Parser<'a> {
             TokenKind::Call => return self.parse_call_stmt(),
             TokenKind::Match => return self.parse_match_expr(),
             TokenKind::For => return self.parse_for_loop(),
+            TokenKind::While => return self.parse_while_loop(),
             TokenKind::Ret => {
                 self.advance();
                 let inner = self.parse_expr()?;
@@ -2155,6 +2156,30 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Expr::ForLoop { binding, index, iterable: Box::new(iterable), body })
+    }
+
+    /// Parse a while loop: `while <condition>` with indented body.
+    fn parse_while_loop(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // consume 'while'
+
+        // Parse condition expression (everything on the same line)
+        let condition = self.parse_expr()?;
+
+        // Parse body block
+        let mut body = Vec::new();
+        if self.at_block_start() {
+            let _ = self.enter_block();
+            loop {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                body.push(self.parse_expr()?);
+            }
+            self.exit_block();
+        }
+
+        Ok(Expr::WhileLoop { condition: Box::new(condition), body })
     }
 
     fn parse_paren_args(&mut self) -> Vec<Expr> {

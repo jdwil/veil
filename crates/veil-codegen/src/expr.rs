@@ -311,6 +311,13 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let enumerate = if index.is_some() { ".enumerate()" } else { "" };
             format!("for {} in {}{} {{\n{}\n    }}", bind, iter_str, enumerate, body_str)
         }
+        Expr::WhileLoop { condition, body } => {
+            let cond_str = expr_to_rust(condition, ctx);
+            let body_str = body.iter()
+                .map(|e| format!("        {};", expr_to_rust(e, ctx)))
+                .collect::<Vec<_>>().join("\n");
+            format!("while {} {{\n{}\n    }}", cond_str, body_str)
+        }
     }
 }
 

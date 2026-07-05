@@ -120,6 +120,9 @@ pub fn expr_to_display(expr: &Expr) -> String {
         Expr::ForLoop { binding, iterable, .. } => {
             format!("for {} in {}", binding, expr_to_display(iterable))
         }
+        Expr::WhileLoop { condition, .. } => {
+            format!("while {}", expr_to_display(condition))
+        }
     }
 }
 
