@@ -213,6 +213,20 @@ impl IrBuilder {
                 TopLevelItem::Flow(flow) => {
                     self.build_flow(flow, sol_id);
                 }
+                TopLevelItem::Function(f) => {
+                    // A free function (e.g. a layer-declared coordinator) shows
+                    // as a Flow-kind node with its signature as a property.
+                    let id = self.graph.add_node(NodeKind::Flow, f.name.clone(), f.span);
+                    self.set_parent(id, sol_id);
+                    self.graph.add_edge(sol_id, id, EdgeKind::Contains);
+                    let sig = f
+                        .params
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, type_to_display(&p.type_expr)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.set_property(id, "params", &sig);
+                }
                 TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } => {}
             }
         }

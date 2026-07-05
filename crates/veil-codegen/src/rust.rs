@@ -35,7 +35,17 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             _ => None,
         })
         .collect();
-    files.extend(gen_shared_crate(&shared_traits));
+    // Top-level free functions (e.g. the layer-declared saga coordinator) also
+    // live in the shared crate so every context can call them through the Bus.
+    let shared_fns: Vec<&FnDef> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Function(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    files.extend(gen_shared_crate(&shared_traits, &shared_fns, solution, registry));
 
     // Each top-level mod-shaped construct becomes a crate.
     let modules: Vec<&Construct> = solution
@@ -752,7 +762,13 @@ fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile
 /// Generate the shared library crate that all context crates depend on. It
 /// owns the common error types and the layer-provided top-level traits (Bus),
 /// so there is exactly one definition of each across the workspace.
-fn gen_shared_crate(traits: &[&Construct]) -> Vec<GeneratedFile> {
+fn gen_shared_crate(
+    traits: &[&Construct],
+    functions: &[&FnDef],
+    solution: &Solution,
+    registry: &LayerRegistry,
+) -> Vec<GeneratedFile> {
+    use crate::expr::{build_ctx_from_solution, expr_to_rust, stmt_to_rust, GenCtx};
     let mut files = Vec::new();
 
     files.push(GeneratedFile {
@@ -798,6 +814,56 @@ chrono.workspace = true
                 None => String::new(),
             };
             lib.push_str(&format!("    async fn {}(&self, {}){ret};\n", to_snake(&method.name), params));
+        }
+        lib.push_str("}\n\n");
+    }
+
+    // Emit layer-declared free functions (e.g. the saga coordinator). When a
+    // Bus trait is present, coordinators receive it as a `bus` parameter so
+    // they can orchestrate across contexts.
+    let has_bus = traits.iter().any(|t| t.name == "Bus");
+    for f in functions {
+        let name_to_shape = build_name_to_shape(solution);
+        let mut ctx = build_ctx_from_solution(solution, name_to_shape, registry);
+        // `bus` is an in-scope Bus dependency inside a coordinator body.
+        if has_bus {
+            ctx.locals.insert("bus".to_string());
+            ctx.local_types.insert("bus".to_string(), "Bus".to_string());
+        }
+        for p in &f.params {
+            ctx.locals.insert(p.name.clone());
+            ctx.local_types.insert(p.name.clone(), type_to_rust(&p.type_expr));
+        }
+
+        let params = f
+            .params
+            .iter()
+            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ret = match &f.return_type {
+            Some(t) => type_to_rust(t),
+            None => "Result<(), DomainError>".to_string(),
+        };
+        let bus_param = if has_bus { "bus: &(dyn Bus + Send + Sync)" } else { "" };
+        let sep = if has_bus && !params.is_empty() { ", " } else { "" };
+        lib.push_str(&format!(
+            "/// Layer-declared coordinator.\npub async fn {}({}{}{}) -> {} {{\n",
+            to_snake(&f.name),
+            bus_param,
+            sep,
+            params,
+            ret,
+        ));
+        for expr in &f.body {
+            // stmt_to_rust tracks let-bindings so `mut x` then `x = ..` becomes
+            // a declaration then a reassignment (not shadowing).
+            lib.push_str(&format!("    {}\n", stmt_to_rust(expr, &mut ctx)));
+        }
+        // Ensure a trailing Ok for () returns when the body didn't `ret`.
+        let ends_in_return = matches!(f.body.last(), Some(Expr::Return(_)));
+        if !ends_in_return && ret.starts_with("Result<(),") {
+            lib.push_str("    Ok(())\n");
         }
         lib.push_str("}\n\n");
     }

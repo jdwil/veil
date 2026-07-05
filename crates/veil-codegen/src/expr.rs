@@ -263,6 +263,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let rhs_str = expr_to_rust(rhs, ctx);
             if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
                 format!("self.{} = {}", to_snake(name), rhs_str)
+            } else if ctx.is_local(name) {
+                // Already-declared local (e.g. a `mut` var) → reassignment, no `let`.
+                format!("{} = {}", name, rhs_str)
             } else {
                 format!("let {} = {}", name, rhs_str)
             }

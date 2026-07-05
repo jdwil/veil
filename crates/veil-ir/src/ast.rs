@@ -92,6 +92,11 @@ pub enum TopLevelItem {
     TypeAlias { name: String, target: TypeExpr },
     /// Constant: `const NAME = value`
     Const { name: String, value: Expr },
+    /// A free function with an expression body: `fn name(params) -> T { body }`.
+    /// Used for reusable code declared in a layer's `declare` block (e.g. the
+    /// saga coordinator). Distinct from fn-shaped Constructs (svc/saga), which
+    /// carry steps rather than a raw body.
+    Function(FnDef),
 }
 
 /// Ubiquitous language definitions.
@@ -239,6 +244,10 @@ pub struct FnDef {
     pub return_type: Option<TypeExpr>,
     pub annotations: Vec<Annotation>,
     pub body: Vec<Expr>,
+    /// True when this function was injected from a layer's `declare` block
+    /// (e.g. the saga coordinator). Not re-emitted by the serializer.
+    #[serde(default)]
+    pub layer_provided: bool,
 }
 
 /// A method signature on a trait-shaped construct.

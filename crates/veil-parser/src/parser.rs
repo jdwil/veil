@@ -71,10 +71,11 @@ pub fn parse_with_registry(
 fn inject_declarations(sol: &mut Solution, registry: &LayerRegistry) {
     use crate::lexer::lex;
 
-    // Collect existing top-level construct names to avoid duplicates
+    // Collect existing top-level names (constructs + functions) to avoid dupes.
     let existing_names: Vec<String> = sol.items.iter().filter_map(|item| {
         match item {
             TopLevelItem::Construct(c) => Some(c.name.clone()),
+            TopLevelItem::Function(f) => Some(f.name.clone()),
             _ => None,
         }
     }).collect();
@@ -89,13 +90,22 @@ fn inject_declarations(sol: &mut Solution, registry: &LayerRegistry) {
                 _ => continue,
             };
             for mut item in items {
-                if let TopLevelItem::Construct(c) = &mut item {
-                    if existing_names.contains(&c.name) {
-                        continue; // already exists
+                match &mut item {
+                    TopLevelItem::Construct(c) => {
+                        if existing_names.contains(&c.name) {
+                            continue; // already exists
+                        }
+                        // Mark provenance so the serializer skips it and the
+                        // viewer can distinguish layer-provided infrastructure.
+                        c.layer_provided = true;
                     }
-                    // Mark provenance so the serializer skips it and the viewer
-                    // can distinguish layer-provided infrastructure.
-                    c.layer_provided = true;
+                    TopLevelItem::Function(f) => {
+                        if existing_names.contains(&f.name) {
+                            continue;
+                        }
+                        f.layer_provided = true;
+                    }
+                    _ => {}
                 }
                 sol.items.push(item);
             }
@@ -449,6 +459,15 @@ impl<'a> Parser<'a> {
                         all.extend(flow.annotations);
                         flow.annotations = all;
                         items.push(TopLevelItem::Flow(flow));
+                    }
+                    // Free function with an expression body (e.g. a layer's
+                    // declared saga coordinator). `fn name(params) -> T` then body.
+                    TokenKind::Fn => {
+                        let mut func = self.parse_fn_def()?;
+                        let mut all = annotations;
+                        all.extend(func.annotations);
+                        func.annotations = all;
+                        items.push(TopLevelItem::Function(func));
                     }
                     TokenKind::TypeKw => {
                         self.advance(); // consume 'type'
@@ -1454,6 +1473,7 @@ impl<'a> Parser<'a> {
             return_type,
             annotations: fn_annotations,
             body,
+            layer_provided: false,
         })
     }
 }

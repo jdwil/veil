@@ -26,6 +26,50 @@ fn customer_onboarding() -> String {
     generate_example(include_str!("../../../examples/customer_onboarding.veil"))
 }
 
+/// Generate from a custom layer + app source (for language-feature tests).
+fn generate_with_layer(layer_name: &str, layer_src: &str, app_src: &str) -> String {
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content(layer_name, layer_src).expect("layer should load");
+    let tokens = veil_parser::lex(app_src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate(&sol, &reg);
+    project
+        .files
+        .iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn declared_fn_with_body_generates_free_function() {
+    // A `fn` with a real body declared in a layer's `declare` block must
+    // generate a compiling free function in veil_shared — the foundation for
+    // moving the saga coordinator into the layer.
+    let layer = "\
+pkg mini v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in top
+  declare
+    fn sum_all(items: List<Int>) -> Res!<Int>
+      mut total = 0
+      for x in items
+        total = total + x
+      ret total";
+    let app = "sol MiniApp\n  use mini\n  widget Gadget\n    size: Int";
+    let out = generate_with_layer("mini", layer, app);
+    assert!(
+        out.contains("pub async fn sum_all("),
+        "declared fn not generated:\n{}",
+        out
+    );
+    // Reassignment to a `mut` var must not shadow (no second `let`).
+    assert!(out.contains("total = total + x;"), "mut reassignment shadowed:\n{}", out);
+    assert!(!out.contains("let total = total + x"), "reassignment emitted as let-shadow");
+}
+
 #[test]
 fn guard_enforces_validation() {
     let out = customer_onboarding();

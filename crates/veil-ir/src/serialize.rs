@@ -94,6 +94,9 @@ impl Serializer {
             TopLevelItem::Flow(flow) => self.emit_flow(flow),
             TopLevelItem::TypeAlias { name, target } => self.line(&format!("type {} = {}", name, type_to_veil(target))),
             TopLevelItem::Const { name, value } => self.line(&format!("const {} = {}", name, expr_to_veil(value))),
+            // Layer-provided functions (declared coordinators) are not user source.
+            TopLevelItem::Function(f) if f.layer_provided => {}
+            TopLevelItem::Function(f) => self.emit_function(f),
         }
     }
 
@@ -315,6 +318,29 @@ impl Serializer {
     }
 
     // ─── Flow (core language) ─────────────────────────────────────────
+
+    fn emit_function(&mut self, f: &FnDef) {
+        for ann in &f.annotations {
+            self.line(&format!("@{}", annotation_to_veil(ann)));
+        }
+        let params = f
+            .params
+            .iter()
+            .map(|p| format!("{}: {}", p.name, type_to_veil(&p.type_expr)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ret = f
+            .return_type
+            .as_ref()
+            .map(|t| format!(" -> {}", type_to_veil(t)))
+            .unwrap_or_default();
+        self.line(&format!("fn {}({}){}", f.name, params, ret));
+        self.indent();
+        for expr in &f.body {
+            self.line(&expr_to_veil(expr));
+        }
+        self.dedent();
+    }
 
     fn emit_flow(&mut self, flow: &Flow) {
         for ann in &flow.annotations {
