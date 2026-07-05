@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { generatedCode } from '$lib/store';
+  import { highlightLine } from '$lib/rustHighlight';
 
   let files = $state<Record<string, string>>({});
   let selectedFile = $state<string | null>(null);
@@ -44,6 +45,8 @@
 
   let sortedPaths = $derived(Object.keys(files).filter(p => p.endsWith('.rs')).sort());
   let content = $derived(selectedFile ? files[selectedFile] || '' : '');
+  // Highlighted lines for rendering (tokenized Rust).
+  let lines = $derived(content ? content.split('\n').map(highlightLine) : []);
 </script>
 
 <div class="code-preview">
@@ -68,7 +71,8 @@
         {#if loading}
           <p class="loading">Loading...</p>
         {:else if content}
-          <pre><code>{content}</code></pre>
+          <pre><code>{#each lines as toks, i}<span class="ln">{#each toks as t}<span class={t.cls}>{t.text}</span>{/each}
+</span>{/each}</code></pre>
         {:else}
           <p class="empty">Select a file</p>
         {/if}
@@ -168,4 +172,15 @@
     font-size: 13px;
     padding: 20px;
   }
+
+  /* Rust syntax highlighting (tokens from rustHighlight.ts). */
+  .code-content :global(.tok-keyword)  { color: #c792ea; }
+  .code-content :global(.tok-type)     { color: #82aaff; }
+  .code-content :global(.tok-string)   { color: #c3e88d; }
+  .code-content :global(.tok-number)   { color: #f78c6c; }
+  .code-content :global(.tok-comment)  { color: #546e7a; font-style: italic; }
+  .code-content :global(.tok-fn)       { color: #82b1ff; }
+  .code-content :global(.tok-macro)    { color: #ffcb6b; }
+  .code-content :global(.tok-attr)     { color: #ffcb6b; }
+  .code-content :global(.tok-lifetime) { color: #f78c6c; }
 </style>

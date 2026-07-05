@@ -454,7 +454,7 @@ fn resolve_port_binding(
 // ─── Stub system (.stub files for third-party crate declarations) ─────────
 
 /// A parsed `.stub` file — declares the public API of an external Rust crate.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StubCrate {
     /// The crate name (e.g. "reqwest").
     pub name: String,
@@ -467,7 +467,7 @@ pub struct StubCrate {
 }
 
 /// A struct declared in a stub file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubStruct {
     pub name: String,
     /// Methods declared directly on the struct (instance methods).
@@ -475,14 +475,14 @@ pub struct StubStruct {
 }
 
 /// An impl block in a stub file (associated functions/constructors).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubImpl {
     pub target: String,
     pub methods: Vec<StubMethod>,
 }
 
 /// A method/function signature in a stub file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubMethod {
     pub name: String,
     pub params: Vec<(String, String)>, // (param_name, type_string)

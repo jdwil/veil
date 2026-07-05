@@ -516,6 +516,7 @@ fn main() {
                     .route("/api/ir", axum::routing::get(serve::get_ir))
                     .route("/api/source", axum::routing::get(serve::get_source))
                     .route("/api/generated", axum::routing::get(serve::get_generated))
+                    .route("/api/stubs", axum::routing::get(serve::get_stubs))
                     .route("/api/edit", axum::routing::post(serve::post_edit))
                     .route("/api/palette", axum::routing::get({
                         let palette = palette_json.clone();

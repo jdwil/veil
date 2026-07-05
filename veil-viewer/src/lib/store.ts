@@ -15,6 +15,30 @@ const API_URL = `${API_BASE}/ir`;
 const SOURCE_URL = `${API_BASE}/source`;
 const PALETTE_URL = `${API_BASE}/palette`;
 const EDIT_URL = `${API_BASE}/edit`;
+const STUBS_URL = `${API_BASE}/stubs`;
+
+/** External crate stubs (from .stub files), for the External palette section. */
+export const stubs = writable<StubCrate[]>([]);
+
+export interface StubMethod {
+  name: string;
+  params: [string, string][];
+  return_type: string | null;
+}
+export interface StubStruct {
+  name: string;
+  methods: StubMethod[];
+}
+export interface StubImpl {
+  target: string;
+  methods: StubMethod[];
+}
+export interface StubCrate {
+  name: string;
+  version: string;
+  structs: StubStruct[];
+  impls: StubImpl[];
+}
 
 /** Whether the last edit is in flight (disables re-entrant saves). */
 export const saving = writable(false);
@@ -25,14 +49,19 @@ export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes, palRes] = await Promise.all([
+    const [irRes, srcRes, palRes, stubRes] = await Promise.all([
       fetch(API_URL),
       fetch(SOURCE_URL),
       fetch(PALETTE_URL),
+      fetch(STUBS_URL).catch(() => null),
     ]);
     if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
     const data: IrGraph = await irRes.json();
     irGraph.set(data);
+
+    if (stubRes && stubRes.ok) {
+      stubs.set(await stubRes.json());
+    }
 
     if (srcRes.ok) {
       veilSource.set(await srcRes.text());

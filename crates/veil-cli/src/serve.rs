@@ -98,6 +98,15 @@ pub async fn get_generated(State(state): State<SharedState>) -> axum::response::
     }
 }
 
+/// Serve the loaded `.stub` crates (external crate APIs) so the viewer can
+/// show them in a dedicated "External" palette section (UX-006).
+pub async fn get_stubs(State(state): State<SharedState>) -> axum::response::Response {
+    match serde_json::to_string(&state.registry.stubs) {
+        Ok(json) => json_ok(json).into_response(),
+        Err(e) => server_error(e.to_string()).into_response(),
+    }
+}
+
 /// Request body for `POST /api/edit`: an ordered batch of structured edits.
 #[derive(Debug, Deserialize)]
 pub struct EditRequest {
