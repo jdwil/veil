@@ -302,6 +302,35 @@
       </div>
     {/if}
 
+    <!-- Expression Editor for flow/step bodies (Task 6 specialized editors) -->
+    {#if kind === 'Step' || kind === 'Action' || kind === 'Flow'}
+      <div class="pe-section">
+        <span class="label-text">
+          {kind === 'Step' ? 'Step Body' : kind === 'Action' ? 'Expression' : 'Flow Body'}
+        </span>
+        <div class="expr-editor-container">
+          <p class="pe-hint">
+            Edit expressions in this {kind.toLowerCase()} using the visual editor below.
+            Changes are reflected in the generated code.
+          </p>
+          <!-- TODO: Wire BlockEditor here when AST mutation API is ready.
+               Currently read-only preview of the node's contents. -->
+          {#if children.length > 0}
+            <div class="step-body-preview">
+              {#each children as child}
+                <div class="body-line">
+                  <span class="body-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
+                  <code class="body-code">{child.name}</code>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="pe-empty">No expressions yet. Drill into this node to add them.</p>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
     <!-- Properties from IR -->
     {#if node.data.properties && node.data.properties.length > 0}
       <div class="pe-section">
@@ -487,4 +516,44 @@
   @keyframes slideDown { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
   .param-row { display: flex; align-items: center; gap: 6px; }
   .param-label { font-size: 10px; color: #64748b; min-width: 50px; }
+  .expr-editor-container {
+    padding: 4px 0;
+  }
+
+  .pe-hint {
+    font-size: 11px;
+    color: #64748b;
+    margin: 0 0 8px 0;
+  }
+
+  .pe-empty {
+    font-size: 11px;
+    color: #475569;
+    font-style: italic;
+    margin: 0;
+  }
+
+  .step-body-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .body-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+    border-left: 2px solid #334155;
+  }
+
+  .body-icon { font-size: 12px; }
+
+  .body-code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #a5f3fc;
+  }
 </style>
