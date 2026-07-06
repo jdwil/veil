@@ -224,6 +224,151 @@ fn validate_construct(
                         });
                     }
                 }
+                // `immutable` — the construct must not have mut assignments
+                // to self fields in any fn body.
+                Some("immutable") => {
+                    for f in &c.fns {
+                        for expr in &f.body {
+                            if let Expr::MutAssign(_, _) = expr {
+                                errors.push(ValidationError {
+                                    message: format!(
+                                        "'{}' is immutable but fn '{}' contains a mutable assignment",
+                                        c.name, f.name
+                                    ),
+                                    construct: c.name.clone(),
+                                    parent: parent_name.to_string(),
+                                    hint: Some(format!("'{}' constructs cannot mutate state", spec.name)),
+                                });
+                            }
+                            if let Expr::Assign(name, _) = expr {
+                                // Check if assigning to a field of the construct
+                                let all_fields: Vec<&str> = c.fields.iter()
+                                    .map(|f| f.name.as_str())
+                                    .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
+                                    .collect();
+                                if all_fields.contains(&name.as_str()) {
+                                    errors.push(ValidationError {
+                                        message: format!(
+                                            "'{}' is immutable but fn '{}' assigns to field '{}'",
+                                            c.name, f.name, name
+                                        ),
+                                        construct: c.name.clone(),
+                                        parent: parent_name.to_string(),
+                                        hint: Some(format!("'{}' constructs cannot mutate fields", spec.name)),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                // `mutations_through_methods` — fields can only be changed
+                // inside fn methods, not directly accessible from outside.
+                // Enforced at codegen level (fields are pub but setters required).
+                // At validation level: ensure the construct HAS methods if it has
+                // mutable fields (a construct with state but no methods is suspicious).
+                Some("mutations_through_methods") => {
+                    let has_state = c.blocks.iter().any(|b| b.shape == Shape::Enum);
+                    if has_state && c.fns.is_empty() {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "'{}' has state but no methods to mutate it",
+                                c.name
+                            ),
+                            construct: c.name.clone(),
+                            parent: parent_name.to_string(),
+                            hint: Some("Add fn methods that transition state".to_string()),
+                        });
+                    }
+                }
+                // `must_implement_port` — an impl-shaped construct must
+                // implement all methods of its target trait.
+                Some("must_implement_port") => {
+                    if c.shape == Shape::Impl {
+                        if let Some(target_name) = &c.target {
+                            // Find the target trait in siblings
+                            let target_trait = effective.iter()
+                                .find(|ch| ch.shape == Shape::Trait && ch.name == *target_name);
+                            if let Some(trait_construct) = target_trait {
+                                let impl_methods: Vec<&str> = c.impls.iter()
+                                    .map(|m| m.method_name.as_str())
+                                    .collect();
+                                for method in &trait_construct.methods {
+                                    if !impl_methods.contains(&method.name.as_str()) {
+                                        errors.push(ValidationError {
+                                            message: format!(
+                                                "'{}' does not implement method '{}' from '{}'",
+                                                c.name, method.name, target_name
+                                            ),
+                                            construct: c.name.clone(),
+                                            parent: parent_name.to_string(),
+                                            hint: Some(format!("Add 'impl {}(...)' to the adapter", method.name)),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // `crud_for_aggregate` — a repo/port must have at minimum
+                // find, save, and delete methods.
+                Some("crud_for_aggregate") => {
+                    let required = ["find", "save", "delete"];
+                    let method_names: Vec<&str> = c.methods.iter()
+                        .map(|m| m.name.as_str())
+                        .collect();
+                    for req in &required {
+                        if !method_names.iter().any(|m| m.starts_with(req)) {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "'{}' requires a '{}' method (crud_for_aggregate)",
+                                    c.name, req
+                                ),
+                                construct: c.name.clone(),
+                                parent: parent_name.to_string(),
+                                hint: Some(format!("Add a '{}' method to the port", req)),
+                            });
+                        }
+                    }
+                }
+                // `spans_contexts` — the construct must have reference lines
+                // (ctx refs) indicating it coordinates across contexts.
+                Some("spans_contexts") => {
+                    let has_refs = c.steps.iter().any(|s| {
+                        if let FlowStep::Step(sd) = s { !sd.refs.is_empty() } else { false }
+                    });
+                    if !has_refs && c.refs.is_empty() {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "'{}' must span multiple contexts (spans_contexts)",
+                                c.name
+                            ),
+                            construct: c.name.clone(),
+                            parent: parent_name.to_string(),
+                            hint: Some("Add 'contexts X, Y' or 'ctx X' references to steps".to_string()),
+                        });
+                    }
+                }
+                // `steps_have_compensation` — every step must have a
+                // 'compensate' sub-block.
+                Some("steps_have_compensation") => {
+                    for step in &c.steps {
+                        if let FlowStep::Step(sd) = step {
+                            let has_compensate = sd.sub_blocks.iter()
+                                .any(|sb| sb.keyword == "compensate");
+                            if !has_compensate {
+                                errors.push(ValidationError {
+                                    message: format!(
+                                        "Step '{}' in '{}' must have a 'compensate' block",
+                                        sd.name, c.name
+                                    ),
+                                    construct: c.name.clone(),
+                                    parent: parent_name.to_string(),
+                                    hint: Some("Add a 'compensate' sub-block with rollback logic".to_string()),
+                                });
+                            }
+                        }
+                    }
+                }
                 // Unrecognized constraint words are semantic hints, not
                 // structural rules — skip.
                 _ => {}

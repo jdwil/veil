@@ -103,6 +103,14 @@ sol CustomerOnboarding
         state SubStatus
           Trial -> Active -> Cancelled
 
+        fn activate() -> Res!
+          @invariant(status == Trial)
+          status = Active
+
+        fn cancel() -> Res!
+          @invariant(status == Active)
+          status = Cancelled
+
         cmd CreateTrial
           customer_id: UUID
           plan: Plan
