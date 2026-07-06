@@ -140,6 +140,7 @@ pkg functional v1
   # pipe-through: feeds a value through a chain of functions
   # x |> f |> g  means  g(f(x))
   statement pipe_through
+    keyword |>
     maps_to call
     desc "Pipe a value through a function: value |> transform"
     semantics function_composition

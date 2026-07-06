@@ -2358,6 +2358,21 @@ impl<'a> Parser<'a> {
         loop {
             let prec = self.current_binop_precedence();
             if prec == 0 || prec < min_prec {
+                // Check for layer-defined infix operators (e.g. |>)
+                if let Some(infix_stmt) = self.try_match_infix_operator() {
+                    let rhs = self.parse_primary()?;
+                    // Desugar: `lhs |> rhs` → Call with lhs as first arg to rhs
+                    // For pipe: rhs(lhs) — the RHS is the function, LHS is the input
+                    lhs = Expr::Call(CallExpr {
+                        target: String::new(),
+                        method: String::new(),
+                        args: vec![lhs, rhs],
+                        receiver: None,
+                        sugar: Some(infix_stmt.keyword.clone()),
+                        span: self.current().span,
+                    });
+                    continue;
+                }
                 break;
             }
 
@@ -2376,6 +2391,28 @@ impl<'a> Parser<'a> {
             });
         }
         Ok(lhs)
+    }
+
+    /// Try to match the current token(s) against a layer-defined infix operator.
+    /// Returns the statement spec if matched, consuming the tokens.
+    fn try_match_infix_operator(&mut self) -> Option<StatementSpec> {
+        // Build the current 1-2 token text and check against registry
+        let t1 = &self.current().text;
+        // Try 2-char operators first (|>, <|, etc.)
+        if let Some(next) = self.tokens.get(self.pos + 1) {
+            let two_char = format!("{}{}", t1, next.text);
+            if let Some(stmt) = self.registry.infix_operator(&two_char).cloned() {
+                self.advance(); // consume first token
+                self.advance(); // consume second token
+                return Some(stmt);
+            }
+        }
+        // Try single-char operators
+        if let Some(stmt) = self.registry.infix_operator(t1).cloned() {
+            self.advance();
+            return Some(stmt);
+        }
+        None
     }
 
     fn current_binop_precedence(&self) -> u8 {

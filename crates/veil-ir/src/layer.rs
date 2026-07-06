@@ -158,7 +158,7 @@ pub struct AnnotationSpec {
 /// A statement definition loaded from a `.layer` file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatementSpec {
-    /// Source keyword, e.g. "dispatch".
+    /// Source keyword, e.g. "dispatch" or "|>" for operator keywords.
     pub keyword: String,
     /// Raw maps_to value.
     pub maps_to: String,
@@ -168,6 +168,9 @@ pub struct StatementSpec {
     pub port_target: Option<String>,
     /// If maps_to is `Port.method`, this is the method name.
     pub port_method: Option<String>,
+    /// Whether this is an infix operator keyword (like |>).
+    /// Infix operators appear BETWEEN expressions: `expr |> expr`
+    pub is_infix: bool,
     pub layer: String,
     pub desc: String,
     pub semantics: String,
@@ -283,6 +286,17 @@ impl LayerRegistry {
     /// Look up a statement by its source keyword.
     pub fn statement(&self, keyword: &str) -> Option<&StatementSpec> {
         self.statements.iter().find(|s| s.keyword == keyword)
+    }
+
+    /// Find an infix operator statement that matches a token text sequence.
+    /// E.g., for tokens `|` `>`, checks if any statement has keyword `|>`.
+    pub fn infix_operator(&self, token_text: &str) -> Option<&StatementSpec> {
+        self.statements.iter().find(|s| s.is_infix && s.keyword == token_text)
+    }
+
+    /// Get all infix operator statements.
+    pub fn infix_operators(&self) -> Vec<&StatementSpec> {
+        self.statements.iter().filter(|s| s.is_infix).collect()
     }
 
     /// Is-a check through the maps_to chain: a construct "is" another when
@@ -847,6 +861,8 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 shape: StmtShape::Call, // placeholder
                 port_target: None,
                 port_method: None,
+                // Auto-detect infix operators: keywords containing non-alphanumeric chars
+                is_infix: keyword.chars().any(|c| !c.is_alphanumeric() && c != '_'),
                 layer: layer_name.to_string(),
                 desc: String::new(),
                 semantics: String::new(),
@@ -988,6 +1004,10 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 Item::Statement(s) => {
                     if let Some(v) = trimmed.strip_prefix("maps_to ") {
                         s.maps_to = v.trim().to_string();
+                    } else if let Some(v) = trimmed.strip_prefix("keyword ") {
+                        s.keyword = v.trim().to_string();
+                        // Re-detect infix based on the new keyword
+                        s.is_infix = s.keyword.chars().any(|c| !c.is_alphanumeric() && c != '_');
                     } else if let Some(v) = trimmed.strip_prefix("desc ") {
                         s.desc = unquote(v);
                     } else if let Some(v) = trimmed.strip_prefix("semantics ") {
