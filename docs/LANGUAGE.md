@@ -232,10 +232,22 @@ match call step.action(bus, state)
 ### `true` / `false` — boolean literals
 
 ### Reserved but not (yet) wired
-`let`, `if`, `else`, `alt`, `loop` are recognized by the lexer but have **no
-parser behavior** — do not use them. In particular, **conditionals are not
-core**: a condition/guard is a *layer statement* of the `if` shape (e.g. `guard
-<cond>, "message"` from `ddd.layer`), not an `if` keyword.
+`let`, `alt` are recognized by the lexer but have **no parser behavior** — do
+not use them.
+
+### Additional core expressions (fully wired)
+
+- **`if` / `else`** — standard conditional: `if cond` + body, optional `else` + body. Supports `else if` chaining and `if let pattern = expr`.
+- **`loop`** — infinite loop: `loop` + body. Use `break` to exit.
+- **`break`** — exit current loop.
+- **`continue`** — skip to next iteration.
+- **`expr?`** — try operator (propagate errors).
+- **`expr as Type`** — type cast.
+- **`expr[index]`** — index access.
+- **`[a, b, c]`** — array literal.
+- **`start..end`** / **`start..=end`** — range expressions.
+- **`if let pattern = expr`** — pattern-matching conditional.
+- **`while let pattern = expr`** — pattern-matching loop.
 
 ---
 
@@ -348,6 +360,10 @@ construct Aggregate
     Event[]
   constraints                 # free-text semantic rules (advisory)
     must_have root
+
+Notably **not** reserved (they lex as identifiers): `step`, `par`, `root`,
+`state`, and all domain vocabulary (`ctx`, `agg`, `port`, `saga`, `dispatch`,
+`guard`, …), which is defined entirely in `.layer` files.
   visual                      # viewer styling
     icon "🧩"
     color "#ec4899"
@@ -422,16 +438,13 @@ stub reqwest 0.12
 The definitive list of words the **lexer** reserves (everything else is an
 identifier / layer vocabulary):
 
-`struct` `enum` `fn` `trait` `let`* `mod` `if`* `else`* `match` `ret` `true`
-`false` `impl` `sol` `pkg` `use` `lang` `expose` `node` `flow` `alt`* `loop`*
+`struct` `enum` `fn` `trait` `let`* `mod` `if` `else` `match` `ret` `true`
+`false` `impl` `sol` `pkg` `use` `lang` `expose` `node` `flow` `alt`* `loop`
 `err` `call` `input` `fallback` `for` `while` `mut` `type` `const` `await`
-`boundary` `as` `desc` `output` `constraints` `group` `allow` `deny` `export`
+`break` `continue` `static` `boundary` `as` `desc` `output` `constraints`
+`group` `allow` `deny` `export`
 
 `*` = reserved by the lexer but not wired into the parser; do not use.
-
-Notably **not** reserved (they lex as identifiers): `step`, `par`, `root`,
-`state`, and all domain vocabulary (`ctx`, `agg`, `port`, `saga`, `dispatch`,
-`guard`, …), which is defined entirely in `.layer` files.
 
 ### Source of truth
 - Core token list: `crates/veil-parser/src/lexer.rs` — `keyword_lookup`.
