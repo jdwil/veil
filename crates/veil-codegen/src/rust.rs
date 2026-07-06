@@ -1138,6 +1138,7 @@ fn collect_effect_hooks(
                 && !name_to_shape.contains_key(&call.target)
                 && !locals.contains(&call.target)
                 && !call.target.is_empty()
+                && !call.target.contains('.') // dotted paths resolve as Struct::method
             {
                 let name = format!("{}_{}", to_snake(&call.target), to_snake(&call.method));
                 hooks.insert((name, call.args.len()));
