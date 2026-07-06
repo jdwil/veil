@@ -636,7 +636,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     }
 
     // Struct-shaped target with method "new" or empty → Type::new(args)
-    if ctx.is_struct_target(&call.target) {
+    // Handle dotted paths: `sqlx.Query` → check if `Query` is a known struct
+    let effective_target = if call.target.contains('.') {
+        call.target.split('.').last().unwrap_or(&call.target).to_string()
+    } else {
+        call.target.clone()
+    };
+    if ctx.is_struct_target(&effective_target) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
         // Clone args to avoid move issues
         let cloned = call.args.iter()
@@ -645,13 +651,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 match a { Expr::Ident(_) => format!("{}.clone()", s), _ => s }
             }).collect::<Vec<_>>().join(", ");
         if method == "new" {
-            return format!("{}::{}({})", call.target, to_snake(method), cloned);
+            return format!("{}::{}({})", effective_target, to_snake(method), cloned);
         }
         // Non-new method on a struct: check if first arg is the instance
         // e.g. call Email.validate(email) → email.validate()
         if !call.args.is_empty() {
             if let Expr::Ident(first_arg) = &call.args[0] {
-                if first_arg.to_lowercase() == call.target.to_lowercase() || ctx.is_local(first_arg) {
+                if first_arg.to_lowercase() == effective_target.to_lowercase() || ctx.is_local(first_arg) {
                     let rest_args = call.args[1..].iter()
                         .map(|a| expr_to_rust(a, ctx))
                         .collect::<Vec<_>>().join(", ");
@@ -659,7 +665,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 }
             }
         }
-        return format!("{}::{}({})", call.target, to_snake(method), args_str);
+        return format!("{}::{}({})", effective_target, to_snake(method), args_str);
     }
 
     // Local variable target → target.method(args)?
@@ -694,6 +700,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // effect. Route it to a generated runtime hook `<target>_<method>(...)`
         // so the code compiles without inventing domain knowledge. The set of
         // hooks is emitted at the bottom of the module.
+        //
+        // If target has dots (e.g. `sqlx.Query`), the last segment is the
+        // struct name — emit `Struct::method(args)` (Rust path syntax).
+        if call.target.contains('.') {
+            let parts: Vec<&str> = call.target.split('.').collect();
+            let struct_name = parts.last().unwrap_or(&"");
+            return format!("{}::{}({})", struct_name, to_snake(&call.method), args_str);
+        }
         format!("{}_{}({})", to_snake(&call.target), to_snake(&call.method), args_str)
     }
 }
