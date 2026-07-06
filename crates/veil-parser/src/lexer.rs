@@ -87,8 +87,6 @@ pub enum TokenKind {
     Expose,
     Node,
     Flow,
-    Step,
-    Par,
     Alt,
     Loop,
     Err,
@@ -444,8 +442,10 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "expose" => TokenKind::Expose,
         "node" => TokenKind::Node,
         "flow" => TokenKind::Flow,
-        "step" => TokenKind::Step,
-        "par" => TokenKind::Par,
+        // `step` and `par` are flow-modeling vocabulary from the layer (DDD),
+        // not core tokens — they lex as identifiers and are recognized
+        // contextually inside fn-shaped bodies, so users can name variables
+        // `step`/`par` freely.
         "alt" => TokenKind::Alt,
         "loop" => TokenKind::Loop,
         "err" => TokenKind::Err,

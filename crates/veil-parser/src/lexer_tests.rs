@@ -44,6 +44,8 @@ mod tests {
 
     #[test]
     fn test_core_structure_keywords() {
+        // `step`/`par` are NOT core tokens — they are layer flow vocabulary and
+        // lex as identifiers so they can be used as variable names.
         let src = "sol pkg use lang expose node flow step par err call input group export";
         let k = kinds(src);
         assert_eq!(
@@ -56,8 +58,8 @@ mod tests {
                 TokenKind::Expose,
                 TokenKind::Node,
                 TokenKind::Flow,
-                TokenKind::Step,
-                TokenKind::Par,
+                TokenKind::Ident, // step
+                TokenKind::Ident, // par
                 TokenKind::Err,
                 TokenKind::Call,
                 TokenKind::Input,
@@ -159,7 +161,8 @@ mod tests {
         let src = "@retry 3\nstep foo";
         let k = kinds(src);
         assert_eq!(k[0], TokenKind::Annotation);
-        assert!(k.contains(&TokenKind::Step));
+        // `step` now lexes as an identifier (layer vocabulary, not a core token).
+        assert!(k.contains(&TokenKind::Ident));
     }
 
     #[test]

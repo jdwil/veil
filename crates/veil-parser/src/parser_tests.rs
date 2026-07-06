@@ -385,6 +385,29 @@ sol Sales
     }
 
     #[test]
+    fn test_step_and_par_usable_as_variables() {
+        // Regression: `step`/`par` were reserved tokens and broke as loop/var
+        // names. They are now layer vocabulary (idents), recognized contextually.
+        let src = "\
+sol S
+  ctx C
+    svc F
+      step iterate
+        for step in items
+          call step.run(bus)
+        par = compute()";
+        let sol = parse_src(src);
+        let ctx = find_construct(&sol.items, "C");
+        let svc = &ctx.children[0];
+        let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
+        assert_eq!(step.name, "iterate");
+        // The for-loop binding named `step`, the `.run` call on it, and the
+        // `par` assignment all parse without treating them as keywords.
+        assert!(step.body.iter().any(|e| matches!(e, Expr::ForLoop { binding, .. } if binding == "step")));
+        assert!(step.body.iter().any(|e| matches!(e, Expr::Assign(n, _) if n == "par")));
+    }
+
+    #[test]
     fn test_named_target_call_keeps_target() {
         // `Repo.find(id)` must keep the named target for codegen resolution.
         let body = step_body("lead = Repo.find(id)");

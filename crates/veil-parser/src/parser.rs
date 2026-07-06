@@ -1349,16 +1349,20 @@ impl<'a> Parser<'a> {
                     c.annotations.extend(self.parse_annotations());
                     continue;
                 }
+                // `step`/`par` are layer flow-vocabulary (ident-keywords),
+                // recognized contextually so they don't shadow variable names.
+                if self.at_step_header() {
+                    c.steps.push(FlowStep::Step(self.parse_step_def()?));
+                    continue;
+                }
+                if self.at_par_header() {
+                    c.steps.push(FlowStep::Parallel(self.parse_par_block()?));
+                    continue;
+                }
                 match self.peek_kind().clone() {
                     TokenKind::Input => {
                         self.advance();
                         c.inputs = self.parse_field_block()?;
-                    }
-                    TokenKind::Step => {
-                        c.steps.push(FlowStep::Step(self.parse_step_def()?));
-                    }
-                    TokenKind::Par => {
-                        c.steps.push(FlowStep::Parallel(self.parse_par_block()?));
                     }
                     TokenKind::Ret => {
                         self.advance();
@@ -1503,6 +1507,14 @@ impl<'a> Parser<'a> {
                     annotations.extend(self.parse_annotations());
                     continue;
                 }
+                if self.at_step_header() {
+                    steps.push(FlowStep::Step(self.parse_step_def()?));
+                    continue;
+                }
+                if self.at_par_header() {
+                    steps.push(FlowStep::Parallel(self.parse_par_block()?));
+                    continue;
+                }
                 match self.peek_kind().clone() {
                     TokenKind::Input => {
                         self.advance();
@@ -1510,12 +1522,6 @@ impl<'a> Parser<'a> {
                     }
                     TokenKind::Err => {
                         error_boundary = Some(self.parse_error_boundary()?);
-                    }
-                    TokenKind::Step => {
-                        steps.push(FlowStep::Step(self.parse_step_def()?));
-                    }
-                    TokenKind::Par => {
-                        steps.push(FlowStep::Parallel(self.parse_par_block()?));
                     }
                     TokenKind::Ret => {
                         self.advance();
@@ -1588,7 +1594,7 @@ impl<'a> Parser<'a> {
 
     fn parse_step_def(&mut self) -> Result<StepDef, ParseError> {
         let start_span = self.current().span;
-        self.expect(&TokenKind::Step)?;
+        self.advance(); // `step` ident-keyword
         let name = self.expect_ident()?;
 
         let mut body = Vec::new();
@@ -1719,9 +1725,28 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// `step <name>` — the flow-step header. `step`/`par` are layer vocabulary
+    /// (lexed as idents), recognized here by word + shape so users can still
+    /// name variables `step`. A step header is `step <Ident>`; anything else
+    /// (e.g. `step = 1`) is an ordinary expression.
+    fn at_step_header(&self) -> bool {
+        self.current_word() == Some("step")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident))
+    }
+
+    /// `par` alone on its line, opening a parallel block.
+    fn at_par_header(&self) -> bool {
+        self.current_word() == Some("par")
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                Some(TokenKind::Newline) | Some(TokenKind::Indent)
+            )
+    }
+
     fn parse_par_block(&mut self) -> Result<ParBlock, ParseError> {
         let start_span = self.current().span;
-        self.expect(&TokenKind::Par)?;
+        // `par` is now an ident-keyword, not a reserved token.
+        self.advance();
 
         let mut steps = Vec::new();
         if self.at_block_start() {
@@ -1731,7 +1756,7 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
-                if self.at(&TokenKind::Step) {
+                if self.at_step_header() {
                     steps.push(self.parse_step_def()?);
                 } else {
                     self.advance();
