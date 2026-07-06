@@ -320,7 +320,7 @@ fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     }
 
     let builtin = [
-        "Str", "Int", "F64", "Bool", "Bytes", "UUID", "DateTime", "List", "Map", "Set", "Opt",
+        "Str", "Int", "F64", "Bool", "Bytes", "UUID", "Id", "DateTime", "Dt", "List", "Map", "Set", "Opt",
         "Res", "String",
     ];
     let undefined: Vec<String> = referenced
@@ -1643,8 +1643,8 @@ fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>) 
             "F64" => "f64".to_string(),
             "Bool" => "bool".to_string(),
             "Bytes" => "Vec<u8>".to_string(),
-            "UUID" => "Uuid".to_string(),
-            "DateTime" => "DateTime<Utc>".to_string(),
+            "UUID" | "Id" => "Uuid".to_string(),
+            "DateTime" | "Dt" => "DateTime<Utc>".to_string(),
             "Json" => "serde_json::Value".to_string(),
             other if traits.contains(other) => {
                 format!("Box<dyn {} + Send + Sync>", other)
@@ -1684,11 +1684,31 @@ fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>) 
 /// Infer a Rust type for shorthand fields (untyped, name-only).
 /// Purely conventional inference on the field NAME — not domain knowledge.
 fn infer_field_type(name: &str) -> String {
+    // UUID conventions
     if name == "id" || name.ends_with("_id") {
         return "Uuid".to_string();
     }
-    if name.ends_with("_at") || name == "created" || name == "updated" {
+    // DateTime conventions
+    if name.ends_with("_at") || name == "created" || name == "updated"
+        || name == "deleted" || name == "expires" || name == "timestamp" {
         return "DateTime<Utc>".to_string();
+    }
+    // Boolean conventions
+    if name.starts_with("is_") || name.starts_with("has_") || name.starts_with("can_")
+        || name == "active" || name == "enabled" || name == "verified" || name == "deleted" {
+        return "bool".to_string();
+    }
+    // Numeric conventions
+    if name == "count" || name == "total" || name == "amount" || name == "quantity"
+        || name == "score" || name == "age" || name == "size" || name == "length"
+        || name == "port" || name == "retries" {
+        return "i64".to_string();
+    }
+    // Email/URL are strings
+    if name == "email" || name == "url" || name == "name" || name == "title"
+        || name == "description" || name == "message" || name == "reason"
+        || name == "path" || name == "key" || name == "token" || name == "code" {
+        return "String".to_string();
     }
     "String".to_string()
 }

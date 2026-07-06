@@ -512,3 +512,83 @@ identifier / layer vocabulary):
   `crates/veil-codegen/src/rust.rs` (`type_to_rust`).
 - Stub format: `crates/veil-ir/src/layer.rs` — `parse_stub_file`.
 - Visual editors: `veil-viewer/src/lib/editors/` — composable components.
+
+---
+
+## 11. Token Efficiency Shorthands
+
+VEIL is designed to minimize token usage for AI-generated code. These
+shorthands are all optional — the full form is always accepted.
+
+### `call` is optional
+Bare `Target.method(args)` at statement position is a call:
+```
+# Full form (accepted but verbose):
+c = call Customer.new(email)
+call CustomerRepo.save(c)
+
+# Short form (preferred):
+c = Customer.new(email)
+CustomerRepo.save(c)
+```
+
+### `+` for `export`
+```
++saga Onboard      # same as: export saga Onboard
+```
+
+### `name!(params)` for fallible methods
+A `!` after the method name means `-> Res!`:
+```
+# Full form:
+save(customer: Customer) -> Res!
+
+# Short form:
+save!(customer: Customer)
+```
+
+### Short type aliases
+| Short | Full | Rust |
+|-------|------|------|
+| `Id` | `UUID` | `Uuid` |
+| `Dt` | `DateTime` | `DateTime<Utc>` |
+
+### Convention-based type inference
+Shorthand fields (bare names without `: Type`) infer types by name:
+| Pattern | Inferred type |
+|---------|--------------|
+| `id`, `*_id` | UUID |
+| `created`, `updated`, `*_at` | DateTime |
+| `is_*`, `has_*`, `can_*`, `active`, `enabled` | Bool |
+| `count`, `total`, `amount`, `score`, `age` | Int |
+| `email`, `url`, `name`, `title`, `token` | Str |
+
+```
+# These two are equivalent:
+agg Customer
+  root
+    id email created
+
+agg Customer
+  root
+    id: UUID
+    email: Str
+    created: DateTime
+```
+
+### Token savings example
+```
+# Before (67 tokens):
+export saga Onboard
+  step create
+    c = call Customer.new(email, phone)
+    call CustomerRepo.save(c)
+    dispatch CustomerCreated{c.id, email, c.created}
+
+# After (52 tokens — 22% reduction):
++saga Onboard
+  step create
+    c = Customer.new(email, phone)
+    CustomerRepo.save(c)
+    dispatch CustomerCreated{c.id, email, c.created}
+```

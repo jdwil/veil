@@ -50,9 +50,9 @@ sol SalesCRM
         input
           lead_id: UUID
         step lookup
-          lead = call LeadRepo.find(lead_id)
+          lead = LeadRepo.find(lead_id)
         step enrich
-          company = call Enrichment.enrich(lead.company.domain)
+          company = Enrichment.enrich(lead.company.domain)
         step score
           guard company.name != "", "enrichment failed"
           notify LeadQualified{lead_id}
@@ -65,7 +65,7 @@ sol SalesCRM
 
   orchestrator Motions
     group application
-      export playbook OutboundMotion
+      +playbook OutboundMotion
         contexts Outbound
 
         input
@@ -74,13 +74,13 @@ sol SalesCRM
 
         step create_lead
           ctx Outbound
-          l = call ProspectLead.new(domain, owner)
+          l = ProspectLead.new(domain, owner)
           compensate
-            call ProspectLead.archive(l.id)
+            ProspectLead.archive(l.id)
 
         step start_outreach
           ctx Outbound
-          call Outreach.send_sequence(l.id, "default")
+          Outreach.send_sequence(l.id, "default")
           notify LeadCreated{l.id}
           compensate
-            call Outreach.stop_sequence(l.id)
+            Outreach.stop_sequence(l.id)

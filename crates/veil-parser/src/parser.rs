@@ -828,7 +828,7 @@ impl<'a> Parser<'a> {
         annotations: Vec<Annotation>,
     ) -> Result<Option<Construct>, ParseError> {
         // `export` prefix
-        let exported = if self.at(&TokenKind::Export) {
+        let exported = if self.at(&TokenKind::Export) || self.at(&TokenKind::Plus) {
             self.advance();
             true
         } else {
@@ -1261,6 +1261,15 @@ impl<'a> Parser<'a> {
     fn parse_method_signature(&mut self) -> Result<Method, ParseError> {
         let start_span = self.current().span;
         let name = self.expect_ident()?;
+
+        // Check for ! shorthand: `name!(params)` means returns Res!
+        let implicit_result = if self.at(&TokenKind::Bang) {
+            self.advance(); // consume !
+            true
+        } else {
+            false
+        };
+
         self.expect(&TokenKind::LParen)?;
 
         let mut params = Vec::new();
@@ -1284,6 +1293,11 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::Arrow) {
             self.advance();
             return_type = Some(self.parse_type()?);
+        }
+
+        // If ! shorthand was used and no explicit return type, default to Res!
+        if implicit_result && return_type.is_none() {
+            return_type = Some(TypeExpr::Result(None));
         }
 
         Ok(Method {

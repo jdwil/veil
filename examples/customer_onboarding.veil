@@ -79,8 +79,8 @@ sol CustomerOnboarding
         step validate
           guard call Email.validate(email), "invalid email"
         step persist
-          c = call Customer.new(email, phone)
-          call CustomerRepo.save(c)
+          c = Customer.new(email, phone)
+          CustomerRepo.save(c)
           dispatch CustomerCreated{c.id, email, c.created}
         ret c.id
 
@@ -122,7 +122,7 @@ sol CustomerOnboarding
 
   orchestrator Onboarding
     group application
-      export saga Onboard
+      +saga Onboard
         contexts Identity, Billing
 
         input
@@ -132,22 +132,22 @@ sol CustomerOnboarding
 
         step create_customer
           ctx Identity
-          c = call Customer.new(email, phone)
-          call CustomerRepo.save(c)
+          c = Customer.new(email, phone)
+          CustomerRepo.save(c)
           dispatch CustomerCreated{c.id, email, c.created}
           compensate
-            call CustomerRepo.delete(c.id)
+            CustomerRepo.delete(c.id)
 
         step verify_identity
           ctx Identity
-          result = call KYCProvider.check(name, email)
-          call c.verify(result.code)
+          result = KYCProvider.check(name, email)
+          c.verify(result.code)
           compensate
-            call c.reject("saga_rollback")
+            c.reject("saga_rollback")
 
         step setup_billing
           ctx Billing
-          call PaymentGateway.create_customer(email.addr)
+          PaymentGateway.create_customer(email.addr)
           invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
           compensate
             invoke Billing.CancelTrial{customer_id: c.id}
