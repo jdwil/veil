@@ -324,6 +324,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let inner_str = expr_to_rust(inner, ctx);
             format!("{}.await", inner_str)
         }
+        Expr::Break => "break".to_string(),
+        Expr::Continue => "continue".to_string(),
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) if name.is_empty() => {
             // Anonymous record/map literal (`{}` or `{ key: value, ... }`) → a

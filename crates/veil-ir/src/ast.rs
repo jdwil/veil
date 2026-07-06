@@ -425,6 +425,10 @@ pub enum Expr {
     StringInterp(Vec<StringPart>),
     /// Await expression: `await <expr>` → `<expr>.await`
     Await(Box<Expr>),
+    /// Break out of a loop.
+    Break,
+    /// Continue to next loop iteration.
+    Continue,
 }
 
 /// Part of an interpolated string.

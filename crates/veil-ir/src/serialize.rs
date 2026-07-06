@@ -590,6 +590,8 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::BoolLit(b) => b.to_string(),
         Expr::Return(inner) => format!("ret {}", expr_to_veil(inner)),
         Expr::Await(inner) => format!("await {}", expr_to_veil(inner)),
+        Expr::Break => "break".to_string(),
+        Expr::Continue => "continue".to_string(),
         Expr::BinaryOp(op) => {
             let op_str = match &op.op {
                 BinOp::Add => "+",

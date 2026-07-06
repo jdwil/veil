@@ -1783,6 +1783,9 @@ impl<'a> Parser<'a> {
             TokenKind::Match => return self.parse_match_expr(),
             TokenKind::For => return self.parse_for_loop(),
             TokenKind::While => return self.parse_while_loop(),
+            TokenKind::If => return self.parse_if_expr(),
+            TokenKind::Break => { self.advance(); return Ok(Expr::Break); }
+            TokenKind::Continue => { self.advance(); return Ok(Expr::Continue); }
             TokenKind::Mut => {
                 self.advance(); // consume 'mut'
                 let name = self.expect_ident()?;
@@ -2368,6 +2371,56 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Expr::WhileLoop { condition: Box::new(condition), body })
+    }
+
+
+    /// Parse an if/else expression: `if <condition>` with indented then-body,
+    /// optionally followed by `else` with indented else-body.
+    fn parse_if_expr(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // consume 'if'
+
+        // Parse condition (everything up to the block)
+        let condition = self.parse_expr()?;
+
+        // Parse then-body
+        let mut then_body = Vec::new();
+        if self.at_block_start() {
+            let _ = self.enter_block();
+            loop {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                then_body.push(self.parse_expr()?);
+            }
+            self.exit_block();
+        }
+
+        // Check for else
+        self.skip_newlines();
+        let else_body = if self.at(&TokenKind::Else) {
+            self.advance(); // consume 'else'
+            let mut body = Vec::new();
+            // else if (chained)
+            if self.at(&TokenKind::If) {
+                body.push(self.parse_if_expr()?);
+            } else if self.at_block_start() {
+                let _ = self.enter_block();
+                loop {
+                    self.skip_newlines();
+                    if self.at_block_end() { break; }
+                    body.push(self.parse_expr()?);
+                }
+                self.exit_block();
+            }
+            Some(body)
+        } else {
+            None
+        };
+
+        Ok(Expr::IfExpr(IfExprData {
+            condition: Box::new(condition),
+            then_body,
+            else_body,
+        }))
     }
 
     fn parse_paren_args(&mut self) -> Vec<Expr> {
