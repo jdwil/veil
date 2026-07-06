@@ -250,6 +250,47 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
         }
     }
 
+    // Collect and emit public traits with their methods
+    for (id, item) in index {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let vis = item.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
+        if vis != "public" { continue; }
+
+        let inner = match item.get("inner").and_then(|v| v.as_object()) {
+            Some(i) => i,
+            None => continue,
+        };
+
+        if let Some(trait_data) = inner.get("trait").and_then(|v| v.as_object()) {
+            let items = trait_data.get("items").and_then(|v| v.as_array());
+            let mut methods = Vec::new();
+            if let Some(items) = items {
+                for method_id in items {
+                    let method_id_str = method_id.as_u64().map(|n| n.to_string())
+                        .or_else(|| method_id.as_str().map(|s| s.to_string()));
+                    if let Some(mid) = method_id_str {
+                        if let Some(method) = index.get(&mid) {
+                            // Only include function items (skip associated types, consts)
+                            if let Some(method_inner) = method.get("inner").and_then(|v| v.as_object()) {
+                                if method_inner.contains_key("function") {
+                                    if let Some(sig) = extract_method_sig(method) {
+                                        methods.push(sig);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !methods.is_empty() {
+                out.push_str(&format!("\n  trait {}\n", name));
+                for sig in &methods {
+                    out.push_str(&format!("    {}\n", sig));
+                }
+            }
+        }
+    }
+
     Ok(out)
 }
 
