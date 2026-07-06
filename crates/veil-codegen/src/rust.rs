@@ -1029,11 +1029,27 @@ fn gen_impls(
                 ctx.method_returns = seeded.method_returns;
                 ctx.struct_fields = seeded.struct_fields;
 
-                for expr in &mimpl.body {
-                    out.push_str(&format!("        let _ = {};\n", expr_to_rust(expr, &ctx)));
+                for (i, expr) in mimpl.body.iter().enumerate() {
+                    let is_last = i == mimpl.body.len() - 1;
+                    let rust_expr = expr_to_rust(expr, &ctx);
+                    if is_last {
+                        // Last expression is the return value
+                        if ret_rust == "Result<(), DomainError>" {
+                            // Void result — execute the expression, then Ok(())
+                            out.push_str(&format!("        {};\n", rust_expr));
+                            out.push_str("        Ok(())\n");
+                        } else if ret_rust.starts_with("Result<") {
+                            out.push_str(&format!("        Ok({})\n", rust_expr));
+                        } else {
+                            out.push_str(&format!("        {}\n", rust_expr));
+                        }
+                    } else {
+                        out.push_str(&format!("        {};\n", rust_expr));
+                    }
                 }
-                // Return a default Ok value matching the return type.
-                out.push_str(&format!("        {}\n", default_ok_for(&ret_rust)));
+                if mimpl.body.is_empty() {
+                    out.push_str(&format!("        {}\n", default_ok_for(&ret_rust)));
+                }
                 out.push_str("    }\n\n");
             }
 
@@ -1401,7 +1417,15 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         if let Some(ret) = return_expr {
             out.push_str(&format!("    Ok({})\n", expr_to_rust(ret, &ctx)));
         } else {
-            out.push_str("    Ok(())\n");
+            // Only emit Ok(()) if no step body contains an explicit `ret`
+            let has_return_in_body = steps.iter().any(|s| {
+                if let FlowStep::Step(sd) = s {
+                    sd.body.iter().any(|e| matches!(e, Expr::Return(_)))
+                } else { false }
+            });
+            if !has_return_in_body {
+                out.push_str("    Ok(())\n");
+            }
         }
         out.push_str("}\n\n");
     }
