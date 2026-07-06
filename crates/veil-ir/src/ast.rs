@@ -164,6 +164,8 @@ pub struct Construct {
 
     // ─── trait shape ──────────────────────────────────────────────────
     pub methods: Vec<Method>,
+    /// Associated types: `type Item = T` or `type Item` (unbound).
+    pub associated_types: Vec<(String, Option<TypeExpr>)>,
 
     // ─── impl shape ───────────────────────────────────────────────────
     /// Target trait-shaped construct (`kw Name for Target`).
@@ -202,6 +204,7 @@ impl Construct {
             variants: Vec::new(),
             transitions: Vec::new(),
             methods: Vec::new(),
+            associated_types: Vec::new(),
             target: None,
             impls: Vec::new(),
             inputs: Vec::new(),
@@ -459,6 +462,10 @@ pub enum Expr {
     Try(Box<Expr>),
     /// Struct update: `Name { field: val, ..base }`
     StructUpdate { name: String, fields: Vec<(String, Expr)>, base: Box<Expr> },
+    /// If let: `if let pattern = expr { body } else { body }`
+    IfLet { pattern: String, expr: Box<Expr>, then_body: Vec<Expr>, else_body: Option<Vec<Expr>> },
+    /// While let: `while let pattern = expr { body }`
+    WhileLet { pattern: String, expr: Box<Expr>, body: Vec<Expr> },
 }
 
 /// Part of an interpolated string.

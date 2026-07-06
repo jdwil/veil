@@ -337,6 +337,17 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_rust(expr, ctx), ty),
         Expr::Try(expr) => format!("{}?", expr_to_rust(expr, ctx)),
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)) }
+        Expr::IfLet { pattern, expr, then_body, else_body } => {
+            let e = expr_to_rust(expr, ctx);
+            let then_str = then_body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
+            let else_str = else_body.as_ref().map(|eb| { let s = eb.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n"); format!(" else {{\n{}\n}}", s) }).unwrap_or_default();
+            format!("if let {} = {} {{\n{}\n}}{}", pattern, e, then_str, else_str)
+        }
+        Expr::WhileLet { pattern, expr, body } => {
+            let e = expr_to_rust(expr, ctx);
+            let body_str = body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
+            format!("while let {} = {} {{\n{}\n}}", pattern, e, body_str)
+        }
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) if name.is_empty() => {
             // Anonymous record/map literal (`{}` or `{ key: value, ... }`) → a

@@ -1170,7 +1170,37 @@ impl<'a> Parser<'a> {
                 }
                 if self.at(&TokenKind::Ident) {
                     let trans_span = self.current().span;
-                    let mut states = vec![self.advance().text];
+                    let first_name = self.advance().text;
+                    // Check for data variant: Foo(T, U) or Foo { x: T }
+                    let variant_name = if self.at(&TokenKind::LParen) {
+                        let mut data = first_name.clone();
+                        data.push('(');
+                        self.advance();
+                        let mut depth = 1;
+                        while depth > 0 && !self.at(&TokenKind::Eof) {
+                            if self.at(&TokenKind::LParen) { depth += 1; }
+                            if self.at(&TokenKind::RParen) { depth -= 1; if depth == 0 { self.advance(); break; } }
+                            data.push_str(&self.advance().text);
+                            if depth > 0 && !self.at(&TokenKind::RParen) { data.push_str(" "); }
+                        }
+                        data.push(')');
+                        data
+                    } else if self.at(&TokenKind::LBrace) {
+                        let mut data = first_name.clone();
+                        data.push_str(" { ");
+                        self.advance();
+                        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Newline) {
+                            data.push_str(&self.advance().text);
+                            data.push(' ');
+                        }
+                        if self.at(&TokenKind::RBrace) { self.advance(); }
+                        data.push('}');
+                        data
+                    } else {
+                        first_name.clone()
+                    };
+
+                    let mut states = vec![variant_name];
                     while self.at(&TokenKind::Arrow) {
                         self.advance();
                         if self.at(&TokenKind::Ident) {
@@ -1852,6 +1882,16 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_expr()?;
                 return Ok(Expr::Assign(name, Box::new(rhs)));
             }
+            // Tuple destructuring: (a, b) = expr
+            if let Expr::Tuple(items) = &lhs {
+                let parts: Vec<String> = items.iter().map(|e| {
+                    if let Expr::Ident(n) = e { n.clone() } else { "_".to_string() }
+                }).collect();
+                let pattern = format!("({})", parts.join(", "));
+                self.advance();
+                let rhs = self.parse_expr()?;
+                return Ok(Expr::Assign(pattern, Box::new(rhs)));
+            }
         }
 
         self.parse_binary_rhs(lhs, 0)
@@ -2425,6 +2465,25 @@ impl<'a> Parser<'a> {
     fn parse_while_loop(&mut self) -> Result<Expr, ParseError> {
         self.advance(); // consume 'while'
 
+        // Check for `while let pattern = expr`
+        if self.at(&TokenKind::Let) {
+            self.advance();
+            let mut pattern_parts = Vec::new();
+            while !self.at(&TokenKind::Eq) && !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof) {
+                pattern_parts.push(self.advance().text);
+            }
+            let pattern = pattern_parts.join(" ");
+            if self.at(&TokenKind::Eq) { self.advance(); }
+            let expr = self.parse_expr()?;
+            let mut body = Vec::new();
+            if self.at_block_start() {
+                let _ = self.enter_block();
+                loop { self.skip_newlines(); if self.at_block_end() { break; } body.push(self.parse_expr()?); }
+                self.exit_block();
+            }
+            return Ok(Expr::WhileLet { pattern, expr: Box::new(expr), body });
+        }
+
         // Parse condition expression (everything on the same line)
         let condition = self.parse_expr()?;
 
@@ -2450,6 +2509,39 @@ impl<'a> Parser<'a> {
     /// optionally followed by `else` with indented else-body.
     fn parse_if_expr(&mut self) -> Result<Expr, ParseError> {
         self.advance(); // consume 'if'
+
+        // Check for `if let pattern = expr`
+        if self.at(&TokenKind::Let) {
+            self.advance(); // consume 'let'
+            // Collect pattern tokens until `=`
+            let mut pattern_parts = Vec::new();
+            while !self.at(&TokenKind::Eq) && !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof) {
+                pattern_parts.push(self.advance().text);
+            }
+            let pattern = pattern_parts.join(" ");
+            if self.at(&TokenKind::Eq) { self.advance(); }
+            let expr = self.parse_expr()?;
+
+            let mut then_body = Vec::new();
+            if self.at_block_start() {
+                let _ = self.enter_block();
+                loop { self.skip_newlines(); if self.at_block_end() { break; } then_body.push(self.parse_expr()?); }
+                self.exit_block();
+            }
+            self.skip_newlines();
+            let else_body = if self.at(&TokenKind::Else) {
+                self.advance();
+                let mut body = Vec::new();
+                if self.at_block_start() {
+                    let _ = self.enter_block();
+                    loop { self.skip_newlines(); if self.at_block_end() { break; } body.push(self.parse_expr()?); }
+                    self.exit_block();
+                }
+                Some(body)
+            } else { None };
+
+            return Ok(Expr::IfLet { pattern, expr: Box::new(expr), then_body, else_body });
+        }
 
         // Parse condition (everything up to the block)
         let condition = self.parse_expr()?;

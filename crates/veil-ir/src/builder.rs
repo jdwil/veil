@@ -123,6 +123,8 @@ pub fn expr_to_display(expr: &Expr) -> String {
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_display(expr), ty),
         Expr::Try(expr) => format!("{}?", expr_to_display(expr)),
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_display(v))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_display(base)) }
+        Expr::IfLet { pattern, .. } => format!("if let {} = ...", pattern),
+        Expr::WhileLet { pattern, .. } => format!("while let {} = ...", pattern),
         Expr::BinaryOp(op) => format!(
             "{} {} {}",
             expr_to_display(&op.left),

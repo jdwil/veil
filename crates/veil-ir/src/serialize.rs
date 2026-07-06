@@ -604,6 +604,8 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_veil(expr), ty),
         Expr::Try(expr) => format!("{}?", expr_to_veil(expr)),
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_veil(v))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_veil(base)) }
+        Expr::IfLet { pattern, expr, then_body, .. } => { let e = expr_to_veil(expr); format!("if let {} = {}\n  ...", pattern, e) }
+        Expr::WhileLet { pattern, expr, body } => { let e = expr_to_veil(expr); format!("while let {} = {}\n  ...", pattern, e) }
         Expr::BinaryOp(op) => {
             let op_str = match &op.op {
                 BinOp::Add => "+",
