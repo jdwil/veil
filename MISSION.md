@@ -8,9 +8,17 @@ VEIL is a token-efficient, indentation-based DSL designed for AI-generated appli
 
 VEIL has three layers:
 
-1. **Core Language** — language primitives only (struct, enum, fn, trait, impl, mod, group, match, for, while, ret, call, and expressions)
+1. **Core Language** — every Rust primitive: struct, enum, fn, trait, impl, mod,
+   if/else, match, for, while, loop, break, continue, closures, let/mut, return,
+   await, try(?), cast, index, range, arrays, tuples, operators, and literals.
 2. **Abstraction Layers** (`.layer` files) — teach the system new domain-specific constructs
 3. **Application Code** (`.veil` files) — written using vocabulary from the referenced layers
+
+Additionally:
+- **`.stub` files** declare external Rust crate APIs so adapters can call them
+  with full type inference. Generated automatically via `veil stub-gen <crate>`.
+- The **viewer IS the editor** — every expression, type, and construct is
+  editable through composable visual form components. No raw code editing.
 
 ## How Layers Work
 
@@ -144,16 +152,43 @@ examples/
   sales_crm.veil         — Example app using the CRM layer
   reqwest.stub           — Example external-crate stub
 
+stories/                 — User stories for UX features
+
 crates/
-  veil-parser/           — Lexer + Parser
+  veil-parser/           — Lexer + Parser (comprehensive Rust expression coverage)
   veil-ir/               — AST, IR graph, builder, serializer, validator,
-                           layer registry, structured edits
-  veil-codegen/          — IR → Rust code generation (+ veil_shared crate)
+                           layer registry (with .stub parsing)
+  veil-codegen/          — IR → Rust code generation (expr translator + type inference)
   veil-cli/              — CLI (lex, parse, check, gen, emit, stub-gen, serve)
 
-veil-viewer/             — Svelte visual editor (reads /api/palette,
-                           /api/ir, /api/generated, /api/stubs; writes /api/edit)
+veil-viewer/             — Svelte visual editor
+  src/lib/editors/       — Composable expression editing components:
+    ExprEditor.svelte    — Recursive editor for all 33 expression kinds
+    BlockEditor.svelte   — Reusable expression list (bodies, arms, etc.)
+    ExprPicker.svelte    — Searchable dropdown to add expressions
+    TypeEditor.svelte    — Recursive type annotation editor
+    EnumEditor.svelte    — Variant + transition editor
+    ConstructEditor.svelte — Unified construct editor (dispatches by shape)
+    AnnotationEditor.svelte — @annotation toggle + param editor
+    expr-types.ts        — Full Expr/TypeExpr type system for the UI
+    ir-convert.ts        — IR nodes → Expr trees for editing
+    expr-serialize.ts    — Expr trees → VEIL source text
 ```
+
+## Transpilation Design
+
+VEIL core expressions are **universal programming primitives** — they map to
+both Rust and TypeScript (and potentially other targets). The AST is
+target-agnostic; only the codegen backend decides how to lower:
+
+- `Res!<T>` → Rust: `Result<T, DomainError>` / TypeScript: `Promise<T>` or thrown
+- `mut x = 0` → Rust: `let mut x = 0;` / TypeScript: `let x = 0;` (skip mut)
+- `await expr` → Rust: `expr.await` / TypeScript: `await expr`
+- `expr?` → Rust: `expr?` / TypeScript: unwrap/throw
+- `.clone()` in codegen → TypeScript: skip (reference semantics)
+
+Rust-specific artifacts (Arc, Box, lifetimes, .await placement) are codegen
+concerns, not source-level. A TypeScript backend would read the same AST.
 
 ## Layer Stacking
 

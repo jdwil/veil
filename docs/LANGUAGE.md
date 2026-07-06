@@ -237,17 +237,41 @@ not use them.
 
 ### Additional core expressions (fully wired)
 
-- **`if` / `else`** — standard conditional: `if cond` + body, optional `else` + body. Supports `else if` chaining and `if let pattern = expr`.
-- **`loop`** — infinite loop: `loop` + body. Use `break` to exit.
+**Conditionals:**
+- **`if` / `else`** — standard conditional: `if cond` + body, optional `else` + body. Supports `else if` chaining.
+- **`if let pattern = expr`** — pattern-matching conditional.
+
+**Loops:**
+- **`for binding in iterable`** — iteration. Optional index: `for i, item in items`.
+- **`while condition`** — conditional loop.
+- **`while let pattern = expr`** — pattern-matching loop.
+- **`loop`** — infinite loop. Use `break` to exit.
 - **`break`** — exit current loop.
 - **`continue`** — skip to next iteration.
+
+**Pattern matching:**
+- **`match scrutinee`** — with indented `pattern -> body` arms.
+- Or-patterns: `A | B -> body`
+- Match guards: `x if x > 5 -> body`
+- Pattern destructuring: `(a, b) = get_pair()`
+
+**Expressions:**
 - **`expr?`** — try operator (propagate errors).
 - **`expr as Type`** — type cast.
 - **`expr[index]`** — index access.
 - **`[a, b, c]`** — array literal.
+- **`(a, b, c)`** — tuple literal.
 - **`start..end`** / **`start..=end`** — range expressions.
-- **`if let pattern = expr`** — pattern-matching conditional.
-- **`while let pattern = expr`** — pattern-matching loop.
+- **`|params| body`** — closures (single-line or multi-line).
+- **`await expr`** — await an async expression.
+- **`f"Hello {name}"`** — string interpolation.
+- **`Name { field: val, ..base }`** — struct literal / update.
+
+**Declarations:**
+- **`mut name = expr`** — mutable binding.
+- **`type X = Y`** — type alias.
+- **`const NAME = value`** — constant.
+- **`static [mut] NAME = value`** — static variable.
 
 ---
 
@@ -306,6 +330,13 @@ Type constructors:
 | `Set<T>` | set | `HashSet<T>` |
 | `Map<K, V>` | map | `HashMap<K, V>` |
 | `Name<A, B>` | generic | `Name<A, B>` |
+| `(A, B, C)` | tuple | `(A, B, C)` |
+| `[T; N]` | fixed-size array | `[T; N]` |
+| `&T` | shared reference | `&T` |
+| `&mut T` | mutable reference | `&mut T` |
+| `dyn Trait` | dynamic dispatch | `dyn Trait` |
+| `impl Trait` | opaque return | `impl Trait` |
+| `fn(A, B) -> C` | function pointer | `fn(A, B) -> C` |
 
 Any other capitalized name is a user/domain type and passes through by name.
 
@@ -325,7 +356,10 @@ Any other capitalized name is a user/domain type and passes through by name.
 | Logical | `&&` `\|\|` `!` |
 | Assignment | `=` |
 | Type/return | `->` (return type / transition), `!` (result marker) |
-| Access/grouping | `.` `:` `,` `( )` `{ }` `< >` |
+| Access/grouping | `.` `:` `,` `( )` `{ }` `[ ]` `< >` |
+| Range | `..` (exclusive), `..=` (inclusive) |
+| Try | `?` (error propagation) |
+| Cast | `as` (type coercion) |
 | Closure params | `\|params\| body` |
 
 ### Annotations
@@ -421,15 +455,38 @@ Loads a dependency layer, so layers can stack (`crm.layer` builds on
 
 ## 10. The `.stub` format — external crate APIs
 
-A `.stub` file declares a third-party Rust crate's surface so VEIL adapters can
-call it. Keywords: `stub <name> <version>`, then `struct` / `impl` / `fn`
+A `.stub` file declares a third-party Rust crate's public API so VEIL's type
+inference and codegen can use it. The `veil stub-gen <crate_name>` CLI command
+generates these automatically from rustdoc JSON (requires nightly).
+
+Keywords: `stub <name> <version>`, then `struct` / `impl` blocks with `fn`
 signature lines.
+
 ```
 stub reqwest 0.12
+  struct Client
+
   struct Response
     fn status() -> StatusCode
     fn text() -> Res!<Str>
+    fn json() -> Res!<T>
+
+  impl Client
+    fn new() -> Client
+    fn get(url: Str) -> RequestBuilder
+    fn post(url: Str) -> RequestBuilder
+
+  impl RequestBuilder
+    fn header(name: Str, value: Str) -> RequestBuilder
+    fn send() -> Res!<Response>
 ```
+
+**How stubs integrate:**
+- Referenced via `use reqwest` in a `.veil` file (loads `reqwest.stub`)
+- Type inference learns method return types (e.g. `Client.get()` → `RequestBuilder`)
+- Codegen adds the crate to `Cargo.toml` dependencies
+- The `veil stub-gen` command creates a temp project, runs `cargo +nightly rustdoc
+  --output-format json`, and converts the JSON to `.stub` format automatically.
 
 ---
 
@@ -449,5 +506,9 @@ identifier / layer vocabulary):
 ### Source of truth
 - Core token list: `crates/veil-parser/src/lexer.rs` — `keyword_lookup`.
 - Parse behavior: `crates/veil-parser/src/parser.rs`.
+- Expression types: `crates/veil-ir/src/ast.rs` — `Expr` enum (33 variants).
+- Type system: `crates/veil-ir/src/ast.rs` — `TypeExpr` enum (13 variants).
 - Shapes, layer format, type mapping: `crates/veil-ir/src/layer.rs`,
   `crates/veil-codegen/src/rust.rs` (`type_to_rust`).
+- Stub format: `crates/veil-ir/src/layer.rs` — `parse_stub_file`.
+- Visual editors: `veil-viewer/src/lib/editors/` — composable components.
