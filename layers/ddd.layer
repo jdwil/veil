@@ -57,6 +57,7 @@ pkg ddd v1
     desc "Entity — domain object with identity"
     constraints
       has_identity
+      deny_calls Bus
     visual
       icon "🔑"
       color "#f43f5e"
@@ -71,6 +72,7 @@ pkg ddd v1
     constraints
       no_identity
       equality_by_value
+      deny_calls trait
     visual
       icon "💎"
       color "#14b8a6"
