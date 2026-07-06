@@ -396,6 +396,10 @@ fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
         TypeExpr::Set(inner) => collect_type_refs(inner, refs),
         TypeExpr::Tuple(items) => { for item in items { collect_type_refs(item, refs); } }
         TypeExpr::Array(inner, _) => collect_type_refs(inner, refs),
+        TypeExpr::Ref(inner, _) => collect_type_refs(inner, refs),
+        TypeExpr::Dyn(inner) => collect_type_refs(inner, refs),
+        TypeExpr::ImplTrait(inner) => collect_type_refs(inner, refs),
+        TypeExpr::FnPtr(params, ret) => { for p in params { collect_type_refs(p, refs); } if let Some(r) = ret { collect_type_refs(r, refs); } }
     }
 }
 
@@ -1666,6 +1670,14 @@ fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>) 
             format!("({})", parts)
         }
         TypeExpr::Array(inner, size) => format!("[{}; {}]", rec(inner), size),
+        TypeExpr::Ref(inner, is_mut) => if *is_mut { format!("&mut {}", rec(inner)) } else { format!("&{}", rec(inner)) },
+        TypeExpr::Dyn(inner) => format!("dyn {}", rec(inner)),
+        TypeExpr::ImplTrait(inner) => format!("impl {}", rec(inner)),
+        TypeExpr::FnPtr(params, ret) => {
+            let p = params.iter().map(|t| rec(t)).collect::<Vec<_>>().join(", ");
+            let r = ret.as_ref().map(|t| format!(" -> {}", rec(t))).unwrap_or_default();
+            format!("fn({}){}", p, r)
+        }
     }
 }
 

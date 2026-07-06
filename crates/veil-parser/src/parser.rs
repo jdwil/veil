@@ -897,7 +897,23 @@ impl<'a> Parser<'a> {
                 self.advance();
             }
             if let Ok(name) = self.expect_ident() {
-                params.push(name);
+                // Check for trait bound: T: Trait + OtherTrait
+                if self.at(&TokenKind::Colon) {
+                    self.advance();
+                    let mut bounds = Vec::new();
+                    // Collect bound names until comma or >
+                    while !self.at(&TokenKind::Comma) && !self.at(&TokenKind::RAngle)
+                        && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Newline) {
+                        if let Ok(bound) = self.expect_ident() {
+                            bounds.push(bound);
+                        }
+                        // Handle + between bounds
+                        if self.at(&TokenKind::Plus) { self.advance(); }
+                    }
+                    params.push(format!("{}: {}", name, bounds.join(" + ")));
+                } else {
+                    params.push(name);
+                }
             } else {
                 break;
             }

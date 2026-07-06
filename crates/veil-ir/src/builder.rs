@@ -35,6 +35,10 @@ fn type_to_display(ty: &TypeExpr) -> String {
             format!("({})", parts)
         }
         TypeExpr::Array(inner, size) => format!("[{}; {}]", type_to_display(inner), size),
+        TypeExpr::Ref(inner, is_mut) => if *is_mut { format!("&mut {}", type_to_display(inner)) } else { format!("&{}", type_to_display(inner)) },
+        TypeExpr::Dyn(inner) => format!("dyn {}", type_to_display(inner)),
+        TypeExpr::ImplTrait(inner) => format!("impl {}", type_to_display(inner)),
+        TypeExpr::FnPtr(params, ret) => { let p = params.iter().map(type_to_display).collect::<Vec<_>>().join(", "); let r = ret.as_ref().map(|t| format!(" -> {}", type_to_display(t))).unwrap_or_default(); format!("fn({}){}", p, r) }
     }
 }
 
@@ -118,6 +122,7 @@ pub fn expr_to_display(expr: &Expr) -> String {
         Expr::Loop(_) => "loop { ... }".to_string(),
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_display(expr), ty),
         Expr::Try(expr) => format!("{}?", expr_to_display(expr)),
+        Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_display(v))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_display(base)) }
         Expr::BinaryOp(op) => format!(
             "{} {} {}",
             expr_to_display(&op.left),
@@ -235,7 +240,7 @@ impl IrBuilder {
                         .join(", ");
                     self.set_property(id, "params", &sig);
                 }
-                TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } => {}
+                TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } | TopLevelItem::Static { .. } => {}
             }
         }
     }

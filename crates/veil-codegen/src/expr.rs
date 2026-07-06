@@ -218,6 +218,10 @@ fn type_name_simple(ty: &TypeExpr) -> String {
             format!("({})", parts)
         }
         TypeExpr::Array(inner, size) => format!("[{}; {}]", type_name_simple(inner), size),
+        TypeExpr::Ref(inner, _) => type_name_simple(inner),
+        TypeExpr::Dyn(inner) => format!("dyn {}", type_name_simple(inner)),
+        TypeExpr::ImplTrait(inner) => format!("impl {}", type_name_simple(inner)),
+        TypeExpr::FnPtr(_, _) => "fn()".to_string(),
     }
 }
 
@@ -332,6 +336,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::Loop(body) => { let b = body.iter().map(|e| format!("    {};", expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n"); format!("loop {{\n{}\n}}", b) }
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_rust(expr, ctx), ty),
         Expr::Try(expr) => format!("{}?", expr_to_rust(expr, ctx)),
+        Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)) }
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) if name.is_empty() => {
             // Anonymous record/map literal (`{}` or `{ key: value, ... }`) → a

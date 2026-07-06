@@ -94,6 +94,7 @@ impl Serializer {
             TopLevelItem::Flow(flow) => self.emit_flow(flow),
             TopLevelItem::TypeAlias { name, target } => self.line(&format!("type {} = {}", name, type_to_veil(target))),
             TopLevelItem::Const { name, value } => self.line(&format!("const {} = {}", name, expr_to_veil(value))),
+            TopLevelItem::Static { name, mutable, value } => { let m = if *mutable { "mut " } else { "" }; self.line(&format!("static {}{} = {}", m, name, expr_to_veil(value))); }
             // Layer-provided functions (declared coordinators) are not user source.
             TopLevelItem::Function(f) if f.layer_provided => {}
             TopLevelItem::Function(f) => self.emit_function(f),
@@ -501,6 +502,10 @@ fn type_to_veil(ty: &TypeExpr) -> String {
             format!("({})", parts)
         }
         TypeExpr::Array(inner, size) => format!("[{}; {}]", type_to_veil(inner), size),
+        TypeExpr::Ref(inner, is_mut) => if *is_mut { format!("&mut {}", type_to_veil(inner)) } else { format!("&{}", type_to_veil(inner)) },
+        TypeExpr::Dyn(inner) => format!("dyn {}", type_to_veil(inner)),
+        TypeExpr::ImplTrait(inner) => format!("impl {}", type_to_veil(inner)),
+        TypeExpr::FnPtr(params, ret) => { let p = params.iter().map(type_to_veil).collect::<Vec<_>>().join(", "); let r = ret.as_ref().map(|t| format!(" -> {}", type_to_veil(t))).unwrap_or_default(); format!("fn({}){}", p, r) }
     }
 }
 
@@ -598,6 +603,7 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::Loop(body) => { let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  "); format!("loop\n  {}", b) }
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_veil(expr), ty),
         Expr::Try(expr) => format!("{}?", expr_to_veil(expr)),
+        Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_veil(v))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_veil(base)) }
         Expr::BinaryOp(op) => {
             let op_str = match &op.op {
                 BinOp::Add => "+",

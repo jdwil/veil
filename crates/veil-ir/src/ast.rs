@@ -92,6 +92,8 @@ pub enum TopLevelItem {
     TypeAlias { name: String, target: TypeExpr },
     /// Constant: `const NAME = value`
     Const { name: String, value: Expr },
+    /// Static variable: `static [mut] NAME: Type = value`
+    Static { name: String, mutable: bool, value: Expr },
     /// A free function with an expression body: `fn name(params) -> T { body }`.
     /// Used for reusable code declared in a layer's `declare` block (e.g. the
     /// saga coordinator). Distinct from fn-shaped Constructs (svc/saga), which
@@ -136,6 +138,10 @@ pub struct Construct {
     pub annotations: Vec<Annotation>,
     /// Was this construct prefixed with `export`?
     pub exported: bool,
+    /// Visibility modifier: "pub", "pub(crate)", "pub(super)", or "" (private).
+    pub visibility: String,
+    /// Where clause on generics: ["T: Send + Sync", "U: Clone"]
+    pub where_clause: Vec<String>,
     /// True when this construct was injected from a layer's `declare` section
     /// (e.g. the `Bus` port from ddd.layer) rather than authored by the user.
     /// Layer-provided constructs are not re-emitted by the serializer and are
@@ -186,6 +192,8 @@ impl Construct {
             span,
             annotations: Vec::new(),
             exported: false,
+            visibility: String::new(),
+            where_clause: Vec::new(),
             layer_provided: false,
             fields: Vec::new(),
             return_type: None,
@@ -368,6 +376,14 @@ pub enum TypeExpr {
     Tuple(Vec<TypeExpr>),
     /// Fixed-size array: [T; N]
     Array(Box<TypeExpr>, usize),
+    /// Reference type: &T or &mut T
+    Ref(Box<TypeExpr>, bool), // (inner, is_mut)
+    /// dyn Trait
+    Dyn(Box<TypeExpr>),
+    /// impl Trait (return position)
+    ImplTrait(Box<TypeExpr>),
+    /// Function pointer: fn(A, B) -> C
+    FnPtr(Vec<TypeExpr>, Option<Box<TypeExpr>>),
 }
 
 /// An annotation (@keyword or @keyword(args)).
@@ -441,6 +457,8 @@ pub enum Expr {
     Cast(Box<Expr>, String),
     /// Try/question-mark: `expr?`
     Try(Box<Expr>),
+    /// Struct update: `Name { field: val, ..base }`
+    StructUpdate { name: String, fields: Vec<(String, Expr)>, base: Box<Expr> },
 }
 
 /// Part of an interpolated string.
