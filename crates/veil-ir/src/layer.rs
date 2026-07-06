@@ -174,7 +174,6 @@ pub struct StatementSpec {
 
 /// The resolved vocabulary for a compilation: built-in core constructs plus
 /// everything from the loaded (possibly stacked) layers.
-#[derive(Debug, Clone, Default)]
 pub struct LayerRegistry {
     pub constructs: Vec<ConstructSpec>,
     pub statements: Vec<StatementSpec>,
@@ -184,6 +183,48 @@ pub struct LayerRegistry {
     pub declarations: Vec<String>,
     /// Loaded third-party crate stubs.
     pub stubs: Vec<StubCrate>,
+    /// External layer resolver — called when a layer isn't found locally or in system.
+    /// Provided by the hosting runtime (e.g. veil-runtime for database-backed resolution).
+    pub external_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+}
+
+impl Default for LayerRegistry {
+    fn default() -> Self {
+        Self {
+            constructs: Vec::new(),
+            statements: Vec::new(),
+            layers: Vec::new(),
+            declarations: Vec::new(),
+            stubs: Vec::new(),
+            external_resolver: None,
+        }
+    }
+}
+
+impl Clone for LayerRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            constructs: self.constructs.clone(),
+            statements: self.statements.clone(),
+            layers: self.layers.clone(),
+            declarations: self.declarations.clone(),
+            stubs: self.stubs.clone(),
+            external_resolver: None, // resolver is not cloneable — cleared on clone
+        }
+    }
+}
+
+impl std::fmt::Debug for LayerRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LayerRegistry")
+            .field("constructs", &self.constructs.len())
+            .field("statements", &self.statements.len())
+            .field("layers", &self.layers)
+            .field("declarations", &self.declarations.len())
+            .field("stubs", &self.stubs.len())
+            .field("external_resolver", &self.external_resolver.is_some())
+            .finish()
+    }
 }
 
 impl LayerRegistry {
@@ -270,13 +311,17 @@ impl LayerRegistry {
     }
 
     /// Load a layer file (and, recursively, layers it `use`s) into this registry.
+    /// Load a layer by name, searching in order:
+    /// 1. The provided local directory
+    /// 2. The system layers directory (ships with VEIL)
+    /// 3. An external resolver (if configured)
     pub fn load_layer(&mut self, name: &str, dir: &Path) -> Result<(), String> {
         if self.layers.iter().any(|l| l == name) {
             return Ok(()); // already loaded
         }
-        let path = dir.join(format!("{}.layer", name));
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("cannot read layer '{}' at {}: {}", name, path.display(), e))?;
+
+        // Resolution order: local → system → external
+        let content = self.resolve_layer_content(name, dir)?;
 
         // First, load dependency layers (`use xxx` lines at pkg level).
         for line in content.lines() {
@@ -290,6 +335,69 @@ impl LayerRegistry {
         let raw = parse_layer_file(&content, name);
         self.merge_and_resolve(raw)?;
         Ok(())
+    }
+
+    /// Resolve layer content by searching multiple locations.
+    fn resolve_layer_content(&self, name: &str, local_dir: &Path) -> Result<String, String> {
+        // 1. Local directory (same dir as the .veil file)
+        let local_path = local_dir.join(format!("{}.layer", name));
+        if local_path.exists() {
+            return std::fs::read_to_string(&local_path)
+                .map_err(|e| format!("cannot read layer '{}' at {}: {}", name, local_path.display(), e));
+        }
+
+        // 2. System layers directory
+        if let Some(content) = Self::load_system_layer(name) {
+            return Ok(content);
+        }
+
+        // 3. External resolver (port for veil-runtime or other backends)
+        if let Some(resolver) = &self.external_resolver {
+            if let Some(content) = resolver(name) {
+                return Ok(content);
+            }
+        }
+
+        Err(format!(
+            "layer '{}' not found (searched: {}, system layers)",
+            name, local_dir.display()
+        ))
+    }
+
+    /// Load a layer from the system layers directory.
+    /// Searches relative to the VEIL binary or the VEIL_LAYERS_DIR env var.
+    fn load_system_layer(name: &str) -> Option<String> {
+        // Check VEIL_LAYERS_DIR env var first
+        if let Ok(dir) = std::env::var("VEIL_LAYERS_DIR") {
+            let path = Path::new(&dir).join(format!("{}.layer", name));
+            if path.exists() {
+                return std::fs::read_to_string(&path).ok();
+            }
+        }
+
+        // Check relative to the executable (for installed VEIL)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                // Try ../layers/ (standard install layout)
+                let path = exe_dir.join("../layers").join(format!("{}.layer", name));
+                if path.exists() {
+                    return std::fs::read_to_string(&path).ok();
+                }
+                // Try ./layers/ (dev layout)
+                let path = exe_dir.join("layers").join(format!("{}.layer", name));
+                if path.exists() {
+                    return std::fs::read_to_string(&path).ok();
+                }
+            }
+        }
+
+        // Try workspace root /layers/ (for dev)
+        let path = Path::new("layers").join(format!("{}.layer", name));
+        if path.exists() {
+            return std::fs::read_to_string(&path).ok();
+        }
+
+        None
     }
 
     /// Load a layer from in-memory content (no `use` dependency resolution).
@@ -314,11 +422,11 @@ impl LayerRegistry {
             if let Some(name) = t.strip_prefix("use ") {
                 // Strip aliases: "use onboarding_kit as ok"
                 let name = name.split_whitespace().next().unwrap_or("");
-                let layer_path = dir.join(format!("{}.layer", name));
-                if layer_path.exists() {
-                    reg.load_layer(name, dir)?;
-                }
-                // Check for .stub files too
+
+                // Try to load as a layer (searches local → system → external)
+                let _ = reg.load_layer(name, dir);
+
+                // Also check for .stub files (local dir only for now)
                 let stub_path = dir.join(format!("{}.stub", name));
                 if stub_path.exists() {
                     if let Ok(stub_content) = std::fs::read_to_string(&stub_path) {
@@ -327,7 +435,6 @@ impl LayerRegistry {
                         }
                     }
                 }
-                // Non-layer uses (package imports) are handled by the resolver.
             }
         }
         Ok(reg)

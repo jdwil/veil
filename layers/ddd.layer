@@ -1,0 +1,270 @@
+pkg ddd v1
+  desc "Domain-Driven Design abstraction layer"
+  author "VEIL"
+
+  construct Context
+    keyword ctx
+    maps_to mod
+    desc "A bounded context — autonomous domain boundary"
+    constraints
+      requires_groups
+    visual
+      icon "📦"
+      color "#8b5cf6"
+      label "Bounded Context"
+    allowed_in top
+
+  construct Orchestrator
+    keyword orchestrator
+    maps_to mod
+    desc "Orchestrator — dedicated container for cross-context sagas"
+    constraints
+      only Saga
+      requires_groups
+    visual
+      icon "🎯"
+      color "#dc2626"
+      label "Orchestrator"
+    allowed_in top
+
+  construct Aggregate
+    keyword agg
+    maps_to struct
+    allowed_in Context
+    desc "Aggregate root — consistency boundary with state, events, and commands"
+    contains
+      root: struct
+      state: enum
+      fn[]
+      Event[]
+      Command[]
+    constraints
+      must_have root
+      mutations_through_methods
+    visual
+      icon "🧩"
+      color "#ec4899"
+      label "Aggregate"
+    annotations
+      invariant: "Domain constraint validation" expr
+    group domain
+
+  construct Entity
+    keyword ent
+    maps_to struct
+    allowed_in Context
+    desc "Entity — domain object with identity"
+    constraints
+      has_identity
+    visual
+      icon "🔑"
+      color "#f43f5e"
+      label "Entity"
+    group domain
+
+  construct ValueObject
+    keyword val
+    maps_to struct
+    allowed_in Context
+    desc "Value Object — immutable, identity-less domain concept"
+    constraints
+      no_identity
+      equality_by_value
+    visual
+      icon "💎"
+      color "#14b8a6"
+      label "Value Object"
+    annotations
+      invariant: "Validation rule" expr
+    group domain
+
+  construct Event
+    keyword evt
+    maps_to struct
+    desc "Domain Event — something that happened in the domain"
+    constraints
+      immutable
+    visual
+      icon "⚡"
+      color "#f59e0b"
+      label "Domain Event"
+    group domain
+    allowed_in Aggregate
+
+  construct Command
+    keyword cmd
+    maps_to struct
+    desc "Command — intent to change domain state"
+    visual
+      icon "📨"
+      color "#3b82f6"
+      label "Command"
+    annotations
+      idempotent: "Command is idempotent"
+      validate: "Run validation before execution" expr
+    group domain
+    allowed_in Aggregate
+
+  construct Port
+    keyword port
+    maps_to trait
+    allowed_in Context
+    desc "Port — interface contract for external dependencies"
+    visual
+      icon "🔌"
+      color "#10b981"
+      label "Port"
+    group domain
+
+  construct Adapter
+    keyword adapter
+    maps_to impl
+    allowed_in Context
+    desc "Adapter — implementation of a port for a specific technology"
+    constraints
+      must_implement_port
+    visual
+      icon "🔗"
+      color "#a855f7"
+      label "Adapter"
+    annotations
+      env: "Required environment variables" vars
+    group infrastructure
+
+  construct Repository
+    keyword repo
+    maps_to trait
+    allowed_in Context
+    desc "Repository — persistence interface for an aggregate"
+    constraints
+      crud_for_aggregate
+    visual
+      icon "🗄️"
+      color "#10b981"
+      label "Repository"
+    group domain
+
+  construct DomainService
+    keyword svc
+    maps_to fn
+    allowed_in Context
+    desc "Domain Service — orchestrates operations across aggregates within a context"
+    visual
+      icon "🖥️"
+      color "#0ea5e9"
+      label "Domain Service"
+    annotations
+      trace: "Add distributed tracing" method
+      timeout: "Service-level timeout" ms
+    group domain
+
+  construct Saga
+    keyword saga
+    maps_to fn
+    desc "Saga — cross-context orchestration with compensation semantics"
+    constraints
+      steps_have_compensation
+      spans_contexts
+    visual
+      icon "🔄"
+      color "#dc2626"
+      label "Saga"
+    annotations
+      trace: "Add distributed tracing" method
+      timeout: "Overall saga timeout" ms
+    # Steps are NOT inlined: each is lowered to an `impl SagaStep` and handed to
+    # the `run_saga` coordinator (declared below). The main step body fills
+    # `action`; the `compensate` sub-block fills `compensate`.
+    runtime run_saga SagaStep
+      compensate -> compensate
+    allowed_in Orchestrator
+
+  # Statement extensions (built on top of core statement shapes)
+  statement emit
+    maps_to call
+    desc "Emit a domain event from within an aggregate"
+    semantics domain_event_emit
+    visual
+      icon "⚡"
+      color "#f59e0b"
+      label "Emit"
+
+  statement dispatch
+    maps_to Bus.dispatch
+    desc "Fire event through event bus (fire-and-forget, multiple handlers)"
+    semantics event_bus_fire_and_forget
+    visual
+      icon "📡"
+      color "#f59e0b"
+      label "Dispatch"
+
+  statement invoke
+    maps_to Bus.invoke
+    desc "Execute command through command bus (single handler)"
+    semantics command_bus_handler
+    visual
+      icon "⚙️"
+      color "#3b82f6"
+      label "Invoke"
+
+  statement request
+    maps_to Bus.request
+    desc "Query data from another context (inter-context communication)"
+    semantics inter_context_query
+    visual
+      icon "🔌"
+      color "#10b981"
+      label "Request"
+
+  statement guard
+    maps_to if
+    desc "Precondition check — fails the step if condition is false"
+    semantics precondition_fail_step
+    visual
+      icon "🛡️"
+      color "#ef4444"
+      label "Guard"
+
+  # ─── Declared constructs (injected into every solution using this layer) ─────
+  # The Bus is a JSON message bus: cross-context payloads/results are `Json`
+  # (serde_json::Value) so orchestrators can build commands and index results
+  # without depending on another context's concrete types.
+  declare
+    trait Bus
+      dispatch(evt: Json) -> Res!
+      invoke(cmd: Json) -> Res!<Json>
+      request(qry: Json) -> Res!<Json>
+
+    # ─── Saga runtime (the transactional coordinator), written in VEIL ─────
+    # A saga step is a unit of work with a compensating action. Steps share a
+    # JSON `state`: each `action` reads prior results from it and returns the
+    # updated state, so later steps see earlier results. `run_saga` threads the
+    # state forward and, on the first failure, replays the completed steps'
+    # compensations in reverse. All ordinary VEIL over the Bus — the engine has
+    # no saga knowledge.
+    trait SagaStep
+      action(bus: Bus, state: Json) -> Res!<Json>
+      compensate(bus: Bus, state: Json) -> Res!
+
+    # Replay compensations for the first `upto` steps, most-recent first.
+    fn unwind(bus: Bus, steps: List<SagaStep>, upto: Int, state: Json) -> Res!
+      mut i = upto
+      while i > 0
+        i = i - 1
+        call steps.get(i).compensate(bus, state)
+      ret Ok
+
+    # Run steps forward, threading state; on failure, unwind and propagate.
+    fn run_saga(bus: Bus, steps: List<SagaStep>) -> Res!
+      mut state = {}
+      mut i = 0
+      while i < steps.len()
+        match call steps.get(i).action(bus, state)
+          Ok next ->
+            state = next
+            i = i + 1
+          Err e ->
+            call unwind(bus, steps, i, state)
+            ret Err(e)
+      ret Ok
+
