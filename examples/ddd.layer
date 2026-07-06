@@ -105,6 +105,16 @@ pkg ddd v1
     group domain
     allowed_in Aggregate
 
+  construct Query
+    keyword qry
+    maps_to struct
+    desc "Query — request for data, no side effects"
+    visual
+      icon "🔍"
+      color "#06b6d4"
+      label "Query"
+    group domain
+
   construct Port
     keyword port
     maps_to trait

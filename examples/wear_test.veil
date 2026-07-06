@@ -1,2 +1,50 @@
 sol WearTest
-  use wear_test
+  use ddd
+  use dlx_core
+
+  # `use dlx_core` gives us:
+  #   DTOs: TenantDTO, UserDTO, CohortDTO, CohortMemberDTO
+  #   Queries: GetCohort, GetCohortMembers, GetUserCohorts, ...
+  #   Commands: CreateCohort, AddCohortMember, ...
+
+  ctx WearTesting
+    group domain
+      agg TestPlan
+        root
+          id: Id
+          cohort_id: Id
+          name: Str
+          description: Str
+          start_date: Opt<Dt>
+          end_date: Opt<Dt>
+          active: Bool
+          created_on: Dt
+
+      port TestPlanRepo
+        find!(id: Id) -> Opt<TestPlan>
+        find_by_cohort!(cohort_id: Id) -> List<TestPlan>
+        save!(plan: TestPlan)
+
+    group application
+      svc CreateTestPlan
+        input
+          id: Id
+          cohort_id: Id
+          name: Str
+          description: Str
+        step verify_cohort
+          cohort: CohortDTO = request GetCohort{id: cohort_id}
+          guard cohort.active == true, "cohort is not active"
+        step create
+          plan = TestPlan.new(id, cohort_id, name, description)
+          TestPlanRepo.save!(plan)
+
+      svc GetTestPlanWithParticipants
+        input
+          plan_id: Id
+        step load_plan
+          plan = TestPlanRepo.find!(plan_id)
+          guard plan != null, "test plan not found"
+        step load_participants
+          members: List<CohortMemberDTO> = request GetCohortMembers{cohort_id: plan.cohort_id}
+          ret {plan, members}

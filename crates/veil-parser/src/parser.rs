@@ -698,6 +698,28 @@ impl<'a> Parser<'a> {
                 match self.peek_kind().clone() {
                     TokenKind::Node => nodes.push(self.parse_exposed_node()?),
                     TokenKind::Constraints => constraints = self.parse_constraint_lines()?,
+                    TokenKind::Ident => {
+                        // Layer-defined construct in expose block (val, cmd, qry, etc.)
+                        // Parse as a construct and convert to an ExposedNode
+                        let annotations = self.parse_annotations();
+                        if let Some(construct) = self.parse_any_construct(annotations)? {
+                            // Convert construct to ExposedNode format
+                            let node = ExposedNode {
+                                name: construct.name.clone(),
+                                description: None,
+                                inputs: construct.fields.clone(),
+                                outputs: construct.return_type
+                                    .map(|rt| vec![Field {
+                                        name: "result".to_string(),
+                                        type_expr: rt,
+                                        span: construct.span,
+                                    }])
+                                    .unwrap_or_default(),
+                                span: construct.span,
+                            };
+                            nodes.push(node);
+                        }
+                    }
                     _ => {
                         self.errors.push(self.error(format!(
                             "unexpected token {:?} in expose block",
