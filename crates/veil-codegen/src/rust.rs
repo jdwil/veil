@@ -273,7 +273,86 @@ uuid.workspace = true"#);
     }
     files.push(gen_application(&app_flows, &contents, &crate_name, solution, registry));
 
+    // Generate manifest.json — tells the runtime how to wire deps and handlers
+    files.push(gen_manifest(module, &contents, &impls_for_module, &crate_name));
+
     files
+}
+
+
+/// Generate a manifest.json describing the module's wiring requirements.
+/// The runtime reads this to construct Deps and register Bus handlers.
+fn gen_manifest(
+    module: &Construct,
+    contents: &ModuleContents,
+    impls: &[&Construct],
+    crate_name: &str,
+) -> GeneratedFile {
+    use serde_json::json;
+
+    // Collect deps: each trait (port) that has an adapter implementing it
+    let mut deps = serde_json::Map::new();
+    for t in &contents.traits {
+        let dep_name = to_snake(&t.name);
+        let mut dep_info = serde_json::Map::new();
+        dep_info.insert("trait".to_string(), json!(t.name));
+
+        // Find the adapter that implements this trait
+        if let Some(adapter) = impls.iter().find(|i| i.target.as_deref() == Some(&t.name)) {
+            dep_info.insert("adapter".to_string(), json!(adapter.name));
+            // Collect @env annotations for config requirements
+            let env_vars: Vec<&str> = adapter.annotations.iter()
+                .filter(|a| a.name == "env")
+                .flat_map(|a| a.args.iter().map(|s| s.as_str()))
+                .collect();
+            if !env_vars.is_empty() {
+                dep_info.insert("env".to_string(), json!(env_vars));
+            }
+        }
+
+        deps.insert(dep_name, serde_json::Value::Object(dep_info));
+    }
+
+    // Always include Bus
+    if !deps.contains_key("bus") {
+        let mut bus_info = serde_json::Map::new();
+        bus_info.insert("trait".to_string(), json!("Bus"));
+        bus_info.insert("provided_by".to_string(), json!("runtime"));
+        deps.insert("bus".to_string(), serde_json::Value::Object(bus_info));
+    }
+
+    // Collect handlers: fn-shaped constructs in the application group
+    // that have names starting with "Handle" (convention for Bus handlers)
+    let mut handlers = serde_json::Map::new();
+    for f in &contents.fns {
+        let fn_name = to_snake(&f.name);
+        // Derive the message name from the handler name
+        // HandleGetCohort → GetCohort, HandleAddCohortMember → AddCohortMember
+        let message_name = f.name.strip_prefix("Handle").unwrap_or(&f.name);
+        handlers.insert(message_name.to_string(), json!({
+            "function": fn_name,
+            "inputs": f.inputs.iter().map(|i| {
+                json!({ "name": i.name, "type": format!("{:?}", i.type_expr) })
+            }).collect::<Vec<_>>(),
+        }));
+    }
+
+    // Collect exposed queries and commands (from the package expose block if present)
+    // These come from the module's parent solution expose block
+    let expose_info: Vec<serde_json::Value> = Vec::new(); // TODO: extract from solution expose
+
+    let manifest = json!({
+        "context": module.name,
+        "crate": crate_name,
+        "deps": deps,
+        "handlers": handlers,
+        "expose": expose_info,
+    });
+
+    GeneratedFile {
+        path: format!("crates/{}/manifest.json", crate_name),
+        content: serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+    }
 }
 
 fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
