@@ -1682,7 +1682,10 @@ fn detect_sibling_refs(module: &Construct, solution: &Solution) -> Vec<String> {
 // ─── Helper functions ─────────────────────────────────────────────────────
 
 pub fn to_snake(name: &str) -> String {
-
+    // If the entire name is uppercase (like IAAA, HTTP, API), just lowercase it
+    if name.chars().all(|c| c.is_uppercase() || !c.is_alphabetic()) {
+        return name.to_lowercase();
+    }
 
     let mut result = String::new();
     for (i, c) in name.chars().enumerate() {
