@@ -2161,6 +2161,11 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let start_span = self.current().span;
                 let name = self.advance().text;
+                // Handle name!(args) — Bang before LParen means fallible call
+                let _is_bang = if self.at(&TokenKind::Bang)
+                    && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false) {
+                    self.advance(); true
+                } else { false };
                 let atom = if self.at(&TokenKind::LParen) {
                     // Bare function call: `name(args)`.
                     let args = self.parse_paren_args();
@@ -2244,6 +2249,14 @@ impl<'a> Parser<'a> {
         while self.at(&TokenKind::Dot) {
             self.advance(); // consume '.'
             let field = self.expect_ident()?;
+
+            // Handle method!(args) — the ! is part of the method name (fallible shorthand)
+            let is_bang_call = self.at(&TokenKind::Bang)
+                && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
+            if is_bang_call {
+                self.advance(); // consume !
+            }
+
             if self.at(&TokenKind::LParen) {
                 let args = self.parse_paren_args();
                 let span = start_span.merge(self.current().span);
