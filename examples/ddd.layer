@@ -41,6 +41,7 @@ pkg ddd v1
       Command[]
     constraints
       must_have root
+      has_identity id
       mutations_through_methods
     visual
       icon "🧩"
@@ -56,7 +57,7 @@ pkg ddd v1
     allowed_in Context
     desc "Entity — domain object with identity"
     constraints
-      has_identity
+      has_identity id
       deny_calls Bus
     visual
       icon "🔑"

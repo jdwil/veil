@@ -183,6 +183,47 @@ fn validate_construct(
                         }
                     }
                 }
+                // `has_identity <field>` — the construct must have the named
+                // field, and codegen will generate PartialEq comparing only that field.
+                Some("has_identity") => {
+                    if let Some(id_field) = words.next() {
+                        let all_fields: Vec<&str> = c.fields.iter()
+                            .map(|f| f.name.as_str())
+                            .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
+                            .collect();
+                        if !all_fields.iter().any(|f| *f == id_field) {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "'{}' requires an identity field '{}' but it was not found",
+                                    spec.name, id_field
+                                ),
+                                construct: c.name.clone(),
+                                parent: parent_name.to_string(),
+                                hint: Some(format!("Add a '{}' field to the construct", id_field)),
+                            });
+                        }
+                    }
+                }
+                // `equality_by_value` — no identity field; equality uses all fields.
+                // This is the default #[derive(PartialEq)] behavior, so validation
+                // just ensures there is NO field named 'id' (which would imply identity).
+                Some("equality_by_value") | Some("no_identity") => {
+                    let all_fields: Vec<&str> = c.fields.iter()
+                        .map(|f| f.name.as_str())
+                        .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
+                        .collect();
+                    if all_fields.contains(&"id") {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "'{}' has equality_by_value but contains an 'id' field (implies identity)",
+                                c.name
+                            ),
+                            construct: c.name.clone(),
+                            parent: parent_name.to_string(),
+                            hint: Some("Value objects should not have an 'id' field — they are compared by all fields".to_string()),
+                        });
+                    }
+                }
                 // Unrecognized constraint words are semantic hints, not
                 // structural rules — skip.
                 _ => {}
