@@ -102,6 +102,12 @@ resolve transitively — see Layer Stacking.
 The full language reference (every core keyword, operator, type form, and the
 `.layer`/`.stub` formats) lives in [`docs/LANGUAGE.md`](docs/LANGUAGE.md).
 
+Architecture decisions, CQRS patterns, and deployment model are in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+The runtime implementation guide (for `veil-runtime`) is in
+[`docs/RUNTIME_PROMPT.md`](docs/RUNTIME_PROMPT.md).
+
 ## Statement Types (inside `fn`-mapped constructs)
 
 The engine knows only **2 statement shapes**: `call` (an invocation) and `if`
