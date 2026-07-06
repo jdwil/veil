@@ -8,7 +8,7 @@ VEIL is a token-efficient, indentation-based DSL designed for AI-generated appli
 
 VEIL has three layers:
 
-1. **Core Language** — language primitives only (struct, enum, fn, trait, impl, let, mod, if, match, ret, expressions)
+1. **Core Language** — language primitives only (struct, enum, fn, trait, impl, mod, group, match, for, while, ret, call, and expressions)
 2. **Abstraction Layers** (`.layer` files) — teach the system new domain-specific constructs
 3. **Application Code** (`.veil` files) — written using vocabulary from the referenced layers
 
@@ -17,7 +17,7 @@ VEIL has three layers:
 A `.layer` file defines constructs that map to core primitives. For example, `ddd.layer` defines domain-driven design constructs:
 
 ```
-layer ddd
+pkg ddd v1
 
   construct Context
     keyword ctx
@@ -47,17 +47,17 @@ layer ddd
 A `.veil` file references layers via `use`:
 
 ```
-use ddd
-
 sol MyApp
+  use ddd
   ctx Identity
-    agg Customer
-      root
-        id: UUID
-        email: Email
-    port CustomerRepo
-      save(customer: Customer)
-      find(id: UUID) -> Opt!<Customer>
+    group domain
+      agg Customer
+        root
+          id: UUID
+          email: Email
+      port CustomerRepo
+        save(customer: Customer) -> Res!
+        find(id: UUID) -> Res!<Opt<Customer>>
 ```
 
 ## The Critical Invariant
@@ -79,24 +79,38 @@ Every layer construct maps to exactly one core primitive via `maps_to`:
 | maps_to | Parse shape | Contains |
 |---------|-------------|----------|
 | `mod`   | Block of child constructs and groups | Other constructs, groups |
-| `struct` | Named type with fields | Fields (name: type) |
+| `struct` | Named type with fields | Fields (name: type), nested `fn` methods, named sub-blocks |
+| `enum` | Named set of variants, optionally with transitions | Variants; `A -> B` records state transitions |
 | `trait` | Interface with method signatures | Methods |
-| `impl` | Implementation binding to a trait | Method implementations |
-| `fn` | Flow with inputs and steps | Input block, step blocks with expressions |
+| `impl` | Implementation binding to a trait | Method implementations (expression bodies) |
+| `fn` | Flow/function with inputs and steps, or a code function with an expression body | Input block, step/par blocks, or a raw body |
+| `group` | Visual/organizational container | Child constructs |
 
-The parser only needs to understand these 5 shapes. When it encounters a keyword, it looks up which shape to use from the loaded layer schema.
+The parser only needs to understand these **7 shapes**. When it encounters a
+keyword, it looks up which shape to use from the loaded layer schema. A
+`maps_to` may also name another construct (by keyword or name), and shapes
+resolve transitively — see Layer Stacking.
+
+The full language reference (every core keyword, operator, type form, and the
+`.layer`/`.stub` formats) lives in [`docs/LANGUAGE.md`](docs/LANGUAGE.md).
 
 ## Statement Types (inside `fn`-mapped constructs)
 
-Steps within flows/sagas contain statements with DDD-style semantics. These are also layer-defined:
+The engine knows only **2 statement shapes**: `call` (an invocation) and `if`
+(a conditional/guard). Every domain statement is layer-defined and maps to one
+of them. In `ddd.layer`, for example:
 
-- `call` — direct dependency call
-- `dispatch` — event bus (fire-and-forget)
-- `invoke` — command bus (request processing)
-- `request` — inter-context query
-- `guard` — validation/precondition check
+- `call` — direct dependency call (core)
+- `dispatch` — `maps_to Bus.dispatch` (fire-and-forget event)
+- `invoke` — `maps_to Bus.invoke` (command)
+- `request` — `maps_to Bus.request` (inter-context query)
+- `emit` — aggregate-local event collection (`maps_to call`)
+- `guard` — `maps_to if` (validation/precondition)
 
-These keywords should also be layer-defined, not hardcoded.
+A statement whose `maps_to` names `Port.method` **desugars** at parse time into
+a `call` on that port, so `dispatch Evt{...}` becomes a `Bus.dispatch(...)`
+call while the source and viewer keep the `dispatch` sugar (via
+`CallExpr.sugar`). None of these keywords are hardcoded in the engine.
 
 ## Visual Metadata
 
@@ -109,26 +123,36 @@ visual
   label "Bounded Context"
 ```
 
-The viewer reads this from the `/api/palette` endpoint (which parses the layer files) and uses it for:
+The viewer reads this from the `/api/palette` endpoint (which parses the layer
+files) and uses it for:
 - Node styling (background color, icon)
 - Palette sidebar (what constructs are available to drag onto the canvas)
-- Property editor labels
+- Property editor labels **and available annotations** (declared per construct
+  in the layer's `annotations` block)
 
 ## File Structure
 
 ```
+docs/
+  LANGUAGE.md            — Complete language reference (keywords, types, formats)
+
 examples/
-  ddd.layer              — DDD abstraction layer
   base.layer             — Core primitives layer
-  customer_onboarding.veil — Example app using DDD layer
+  ddd.layer              — DDD abstraction layer (Bus, SagaStep + run_saga, ...)
+  crm.layer              — Stacks on ddd.layer (proof of composability)
+  customer_onboarding.veil — Example app using the DDD layer
+  sales_crm.veil         — Example app using the CRM layer
+  reqwest.stub           — Example external-crate stub
 
 crates/
   veil-parser/           — Lexer + Parser
-  veil-ir/               — AST, IR graph, builder, serializer, validator
-  veil-codegen/          — IR → Rust code generation
-  veil-cli/              — CLI commands (lex, parse, check, gen, emit, serve)
+  veil-ir/               — AST, IR graph, builder, serializer, validator,
+                           layer registry, structured edits
+  veil-codegen/          — IR → Rust code generation (+ veil_shared crate)
+  veil-cli/              — CLI (lex, parse, check, gen, emit, stub-gen, serve)
 
-veil-viewer/             — Svelte visual editor
+veil-viewer/             — Svelte visual editor (reads /api/palette,
+                           /api/ir, /api/generated, /api/stubs; writes /api/edit)
 ```
 
 ## Layer Stacking
@@ -155,25 +179,59 @@ accepted wherever a ddd `Saga` is allowed. Statements stack the same way
 
 ## Current State
 
-The zero-domain-knowledge invariant HOLDS. Implementation map:
+The zero-domain-knowledge invariant HOLDS across the whole pipeline —
+lexer, parser, IR builder, **codegen**, and **viewer**. Both example
+workspaces generate Rust that compiles. Implementation map:
 
 - `veil-ir/src/layer.rs` — `LayerRegistry`: parses `.layer` files, resolves
-  `maps_to` transitively, exposes constructs/statements/visuals. The 7 core
-  shapes (`mod`, `struct`, `enum`, `trait`, `impl`, `fn`, `group`) and 2
-  statement shapes (`call`, `if`) are the ONLY vocabulary the engine knows.
+  `maps_to` transitively, exposes constructs/statements/visuals/annotations.
+  The 7 core shapes (`mod`, `struct`, `enum`, `trait`, `impl`, `fn`, `group`)
+  and 2 statement shapes (`call`, `if`) are the ONLY vocabulary the engine
+  knows.
 - Lexer: layer keywords all lex as `Ident`; only core language/file/flow
-  keywords are TokenKinds.
+  keywords are TokenKinds. Flow-modeling words (`step`, `par`) are NOT
+  reserved — they lex as identifiers and are recognized contextually, so
+  they can be used as variable names.
 - Parser: one parse function per core shape, dispatched by registry lookup.
   Named sub-blocks (`root`, `state`) come from `contains` entries of the
-  form `keyword: shape`. Layer statements parse into a generic `ActionExpr`.
-- AST: a single generic `Construct` stamped with its shape + layer subkind.
-  No typed DDD structs, no DDD expression variants.
+  form `keyword: shape`. Layer statements parse into a generic `ActionExpr`,
+  and `Port.method` statements desugar into `call`s.
+- AST: a single generic `Construct` stamped with its shape + layer subkind,
+  plus a top-level `Function` (for layer-declared code). No typed DDD structs,
+  no DDD expression variants.
 - Builder/serializer/codegen: switch on shape only; subkind is metadata.
+  Codegen emits **real behavior**, not stubs — aggregate methods, adapter
+  impls, guards that enforce, and a JSON message Bus (see below).
 - Validation: generic constraint grammar (`only X`, `deny X`,
   `must_have <block>`, `requires_groups`); unknown constraint words are
   semantic hints, skipped by the structural validator.
-- Viewer: `NODE_STYLES` covers core shapes only; all layer visuals arrive at
-  runtime via `/api/palette` and register through `setPaletteStyles()`.
+- Viewer: fully layer-driven. `NODE_STYLES` covers core shapes only; all
+  layer visuals AND the available annotations arrive at runtime via
+  `/api/palette`. It is an **editor**: `POST /api/edit` applies structured
+  edits to the AST, re-serializes, validates, writes the file, and regenerates
+  — the "viewer IS the editor" loop.
+
+### Codegen decisions (all keep the invariant)
+
+- **JSON message Bus.** Cross-context calls route through a `Bus` whose payloads
+  are `Json` (`serde_json::Value`), so an orchestrator crate never depends on
+  another context's concrete types. `Bus`, `DomainError`, and shared traits
+  live in a single generated `veil_shared` crate that every context re-exports.
+- **Sagas are defined in the layer, not the engine.** A layer construct may
+  declare a `runtime` binding (`runtime run_saga SagaStep` +
+  `compensate -> compensate`). Codegen then lowers each authored `step` into a
+  generated `struct` + `impl SagaStep` (action from the body, compensate from
+  the sub-block, Bus injected, inputs captured as fields), collects them into a
+  `Vec<Box<dyn SagaStep>>`, and calls the layer-declared coordinator. The
+  coordinator (`run_saga`/`unwind` — forward-run, then reverse-unwind on
+  failure, threading a shared JSON `state` so later steps see earlier results)
+  is written in **VEIL in `ddd.layer`'s `declare` block**. `rust.rs` contains
+  zero saga control flow.
+- **Layer-declared code.** A `fn` with a body in a layer's `declare` block
+  generates a real function in `veil_shared`. This — plus first-class trait
+  objects (`List<Trait>` → `Vec<Box<dyn Trait>>`) — is what lets the saga
+  runtime be authored entirely in VEIL.
+
 - Proof of composability: `examples/crm.layer` stacks on `ddd.layer`
   (`pipeline→ctx→mod`, `lead→agg→struct`, `notify→dispatch→call`) and
   `examples/sales_crm.veil` parses, validates, and generates compiling Rust
