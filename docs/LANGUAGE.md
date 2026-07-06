@@ -76,8 +76,8 @@ lang
 ```
 
 ### `export` — Visibility modifier
-A prefix on a construct (`export saga Onboard`) marking it as part of the
-package's public surface. Not a construct itself.
+A prefix on a construct (`+saga Onboard`) marking it as part of the
+package's public surface. Written as `+` (or the legacy `export` keyword).
 
 ### `desc` — Description
 A description line taking a string literal, used inside packages and exposed
@@ -191,12 +191,12 @@ Like a `fn`-shaped construct but built in: `input`, `step`/`par` blocks, an
 
 These are the expressions that appear inside function/step bodies.
 
-### `call` — invocation
-The one core invocation primitive: `call Target[.method]([args] | {named})`.
-Supports method chaining (`call a.b(x).c(y)`).
+### Invocations
+`Target.method(args)` or `Target(args)` — a function or method call.
+Method chaining: `a.b(x).c(y)`.
 ```
-c = call Customer.new(email, phone)
-call CustomerRepo.save(c)
+c = Customer.new(email, phone)
+CustomerRepo.save(c)
 ```
 
 ### `mut` — mutable binding
@@ -208,7 +208,7 @@ note below.)
 `match <scrutinee>` with indented `pattern -> body` arms. Multi-statement arms
 use a deeper indent.
 ```
-match call step.action(bus, state)
+match step.action(bus, state)
   Ok next ->
     state = next
   Err e ->
@@ -227,7 +227,7 @@ match call step.action(bus, state)
 `ret <value>` wraps in `Ok(...)`.
 
 ### `await` — await an async expression
-`await call fetch(url)` → `fetch(url).await` in Rust.
+`await fetch(url)` → `fetch(url).await` in Rust.
 
 ### `true` / `false` — boolean literals
 
@@ -515,77 +515,59 @@ identifier / layer vocabulary):
 
 ---
 
-## 11. Token Efficiency Shorthands
+## 11. Token Efficiency
 
-VEIL is designed to minimize token usage for AI-generated code. These
-shorthands are all optional — the full form is always accepted.
+VEIL is designed to minimize token count. The forms below are the standard
+way to write VEIL — use them exclusively.
 
-### `call` is optional
-Bare `Target.method(args)` at statement position is a call:
+### Calls are bare expressions
+`Target.method(args)` — no keyword prefix needed:
 ```
-# Full form (accepted but verbose):
-c = call Customer.new(email)
-call CustomerRepo.save(c)
-
-# Short form (preferred):
-c = Customer.new(email)
+c = Customer.new(email, phone)
 CustomerRepo.save(c)
 ```
 
-### `+` for `export`
+### `+` marks public/exported constructs
 ```
-+saga Onboard      # same as: export saga Onboard
++saga Onboard
++svc CreateCustomer
 ```
 
-### `name!(params)` for fallible methods
+### `!` marks fallible methods
 A `!` after the method name means `-> Res!`:
 ```
-# Full form:
-save(customer: Customer) -> Res!
-
-# Short form:
 save!(customer: Customer)
+find!(id: Id) -> Opt<Customer>
 ```
 
-### Short type aliases
-| Short | Full | Rust |
-|-------|------|------|
-| `Id` | `UUID` | `Uuid` |
-| `Dt` | `DateTime` | `DateTime<Utc>` |
+### Preferred type names
+| Use | Meaning |
+|-----|---------|
+| `Id` | UUID |
+| `Dt` | DateTime |
+| `Str` | String |
+| `Int` | i64 |
+| `F64` | f64 |
+| `Bool` | boolean |
 
-### Convention-based type inference
-Shorthand fields (bare names without `: Type`) infer types by name:
-| Pattern | Inferred type |
-|---------|--------------|
-| `id`, `*_id` | UUID |
-| `created`, `updated`, `*_at` | DateTime |
-| `is_*`, `has_*`, `can_*`, `active`, `enabled` | Bool |
-| `count`, `total`, `amount`, `score`, `age` | Int |
-| `email`, `url`, `name`, `title`, `token` | Str |
+### Bare field names infer types
+Fields without explicit types are inferred by convention:
+| Pattern | Type |
+|---------|------|
+| `id`, `*_id` | Id |
+| `created`, `updated`, `*_at` | Dt |
+| `is_*`, `has_*`, `can_*`, `active` | Bool |
+| `count`, `total`, `amount`, `score` | Int |
+| `email`, `url`, `name`, `title` | Str |
 
 ```
-# These two are equivalent:
 agg Customer
   root
     id email created
-
-agg Customer
-  root
-    id: UUID
-    email: Str
-    created: DateTime
 ```
 
-### Token savings example
+### Complete example (minimal token form)
 ```
-# Before (67 tokens):
-export saga Onboard
-  step create
-    c = call Customer.new(email, phone)
-    call CustomerRepo.save(c)
-    dispatch CustomerCreated{c.id, email, c.created}
-
-# After (52 tokens — 22% reduction):
 +saga Onboard
   step create
     c = Customer.new(email, phone)

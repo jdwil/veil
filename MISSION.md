@@ -108,7 +108,7 @@ The engine knows only **2 statement shapes**: `call` (an invocation) and `if`
 (a conditional/guard). Every domain statement is layer-defined and maps to one
 of them. In `ddd.layer`, for example:
 
-- `call` — direct dependency call (core)
+- Bare invocations — `Target.method(args)` (no keyword needed)
 - `dispatch` — `maps_to Bus.dispatch` (fire-and-forget event)
 - `invoke` — `maps_to Bus.invoke` (command)
 - `request` — `maps_to Bus.request` (inter-context query)
@@ -116,7 +116,7 @@ of them. In `ddd.layer`, for example:
 - `guard` — `maps_to if` (validation/precondition)
 
 A statement whose `maps_to` names `Port.method` **desugars** at parse time into
-a `call` on that port, so `dispatch Evt{...}` becomes a `Bus.dispatch(...)`
+a call on that port, so `dispatch Evt{...}` becomes a `Bus.dispatch(...)`
 call while the source and viewer keep the `dispatch` sugar (via
 `CallExpr.sugar`). None of these keywords are hardcoded in the engine.
 
