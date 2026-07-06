@@ -4,6 +4,10 @@
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
   import FieldsEditor from '$lib/FieldsEditor.svelte';
+  import { BlockEditor } from '$lib/editors';
+  import { irChildrenToExprs } from '$lib/editors/ir-convert';
+  import { exprToVeil } from '$lib/editors/expr-serialize';
+  import type { Expr } from '$lib/editors/expr-types';
 
   let { node, onUpdate, onClose }: {
     node: { id: string; data: any };
@@ -65,6 +69,20 @@
   // no-ops (locally only) when it's missing (e.g. an unsaved dropped node).
   let spanStart = $derived<number | null>(node.data.spanStart ?? null);
   let layerProvided = $derived<boolean>(node.data.layerProvided ?? false);
+
+
+  function handleBodyEdit(newExprs: Expr[]) {
+    // Convert exprs back to VEIL source for logging/eventual persistence
+    const veilSource = newExprs.map(e => exprToVeil(e)).join('\n');
+    console.log('[VEIL Edit] Step body changed:', {
+      nodeId: node.id,
+      nodeName: name,
+      exprCount: newExprs.length,
+      veilSource,
+    });
+    // TODO: When backend edit API is connected, send the edit operation here.
+    // For now, the edit is logged to console and visible in the code preview.
+  }
 
   function handleMethodsChange(newMethods: any[]) {
     if (spanStart === null) return;
@@ -302,30 +320,22 @@
       </div>
     {/if}
 
-    <!-- Expression Editor for flow/step bodies (Task 6 specialized editors) -->
+    <!-- Expression Editor for flow/step bodies -->
     {#if kind === 'Step' || kind === 'Action' || kind === 'Flow'}
       <div class="pe-section">
         <span class="label-text">
           {kind === 'Step' ? 'Step Body' : kind === 'Action' ? 'Expression' : 'Flow Body'}
         </span>
         <div class="expr-editor-container">
-          <p class="pe-hint">
-            Edit expressions in this {kind.toLowerCase()} using the visual editor below.
-            Changes are reflected in the generated code.
-          </p>
-          <!-- TODO: Wire BlockEditor here when AST mutation API is ready.
-               Currently read-only preview of the node's contents. -->
           {#if children.length > 0}
-            <div class="step-body-preview">
-              {#each children as child}
-                <div class="body-line">
-                  <span class="body-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
-                  <code class="body-code">{child.name}</code>
-                </div>
-              {/each}
-            </div>
+            {@const bodyExprs = irChildrenToExprs(children)}
+            <BlockEditor
+              exprs={bodyExprs}
+              onChange={(newExprs) => handleBodyEdit(newExprs)}
+              depth={0}
+            />
           {:else}
-            <p class="pe-empty">No expressions yet. Drill into this node to add them.</p>
+            <p class="pe-empty">No expressions. Drill into this node to add them.</p>
           {/if}
         </div>
       </div>
