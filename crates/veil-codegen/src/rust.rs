@@ -273,8 +273,10 @@ uuid.workspace = true"#);
     }
     files.push(gen_application(&app_flows, &contents, &crate_name, solution, registry));
 
-    // Generate manifest.json — tells the runtime how to wire deps and handlers
-    files.push(gen_manifest(module, &contents, &impls_for_module, &crate_name));
+    // Generate manifest.json only for deployment units (constructs marked with `au`)
+    if module.deployment_unit {
+        files.push(gen_manifest(module, &contents, &impls_for_module, &crate_name));
+    }
 
     files
 }

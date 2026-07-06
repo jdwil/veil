@@ -142,6 +142,9 @@ pub struct Construct {
     pub visibility: String,
     /// Where clause on generics: ["T: Send + Sync", "U: Clone"]
     pub where_clause: Vec<String>,
+    /// Whether this construct is a deployment unit boundary (`au`).
+    /// All exported items beneath it group into one service.
+    pub deployment_unit: bool,
     /// True when this construct was injected from a layer's `declare` section
     /// (e.g. the `Bus` port from ddd.layer) rather than authored by the user.
     /// Layer-provided constructs are not re-emitted by the serializer and are
@@ -194,6 +197,7 @@ impl Construct {
             span,
             annotations: Vec::new(),
             exported: false,
+            deployment_unit: false,
             visibility: String::new(),
             where_clause: Vec::new(),
             layer_provided: false,

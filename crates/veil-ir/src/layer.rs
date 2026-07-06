@@ -124,6 +124,8 @@ pub struct ConstructSpec {
     /// `annotations` sub-block. The viewer offers these in the property editor;
     /// no annotation vocabulary is hardcoded in the viewer.
     #[serde(default)]
+    /// Whether constructs of this kind are deployment unit boundaries.
+    pub au: bool,
     pub annotations: Vec<AnnotationSpec>,
 }
 
@@ -259,6 +261,7 @@ impl LayerRegistry {
                     color: color.to_string(),
                     label: label.to_string(),
                 },
+                au: false,
                 annotations: Vec::new(),
                 runtime: None,
             });
@@ -822,6 +825,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 constraints: Vec::new(),
                 allowed_in: String::new(),
                 group: String::new(),
+                au: false,
                 visual: Visual {
                     label: name,
                     ..Default::default()
@@ -977,6 +981,8 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                         c.allowed_in = v.trim().to_string();
                     } else if let Some(v) = trimmed.strip_prefix("group ") {
                         c.group = v.trim().to_string();
+                    } else if trimmed == "au" {
+                        c.au = true;
                     }
                 }
                 Item::Statement(s) => {
@@ -1048,6 +1054,8 @@ pub struct PaletteEntry {
     /// Layer-declared annotations available on this construct (empty for
     /// statements). The viewer offers these in the property editor.
     #[serde(default)]
+    /// Whether constructs of this kind are deployment unit boundaries.
+    pub au: bool,
     pub annotations: Vec<AnnotationSpec>,
 }
 
@@ -1073,6 +1081,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             allowed_in: c.allowed_in.clone(),
             layer: c.layer.clone(),
             entry_type: "construct".to_string(),
+            au: false,
             annotations: c.annotations.clone(),
         });
     }
@@ -1092,6 +1101,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             allowed_in: "Step".to_string(),
             layer: s.layer.clone(),
             entry_type: "statement".to_string(),
+            au: false,
             annotations: Vec::new(),
         });
     }

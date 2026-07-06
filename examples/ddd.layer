@@ -5,6 +5,7 @@ pkg ddd v1
   construct Context
     keyword ctx
     maps_to mod
+    au
     desc "A bounded context — autonomous domain boundary"
     constraints
       requires_groups

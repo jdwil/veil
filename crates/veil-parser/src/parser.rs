@@ -903,6 +903,10 @@ impl<'a> Parser<'a> {
         all.extend(c.annotations);
         c.annotations = all;
         c.exported = exported;
+        // If the layer declares this construct as a deployment unit, mark it
+        if spec.au {
+            c.deployment_unit = true;
+        }
         Ok(Some(c))
     }
 
@@ -965,6 +969,12 @@ impl<'a> Parser<'a> {
                 let annotations = self.parse_annotations();
                 if self.at_block_end() {
                     break;
+                }
+                // `au` marks this construct as a deployment unit
+                if self.at(&TokenKind::Au) {
+                    self.advance();
+                    c.deployment_unit = true;
+                    continue;
                 }
                 if let Some(child) = self.parse_any_construct(annotations)? {
                     c.children.push(child);

@@ -100,6 +100,7 @@ pub enum TokenKind {
     ConstKw,
     Await,
     Break,
+    Au,
     Continue,
     LBracket,   // [
     RBracket,   // ]
@@ -486,6 +487,7 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "const" => TokenKind::ConstKw,
         "await" => TokenKind::Await,
         "break" => TokenKind::Break,
+        "au" => TokenKind::Au,
         "continue" => TokenKind::Continue,
         "boundary" => TokenKind::Boundary,
         "as" => TokenKind::As,
