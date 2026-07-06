@@ -10,7 +10,8 @@ pkg functional v1
     maps_to fn
     desc "A pure function — no side effects, deterministic"
     constraints
-      no_side_effects
+      deny_calls trait
+      deny_calls Effect
     visual
       icon "λ"
       color "#8b5cf6"
