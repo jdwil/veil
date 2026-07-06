@@ -429,6 +429,18 @@ pub enum Expr {
     Break,
     /// Continue to next loop iteration.
     Continue,
+    /// Index access: `expr[index]`
+    Index(Box<Expr>, Box<Expr>),
+    /// Array literal: `[1, 2, 3]`
+    ArrayLit(Vec<Expr>),
+    /// Range expression: `start..end` or `start..=end`
+    Range { start: Option<Box<Expr>>, end: Option<Box<Expr>>, inclusive: bool },
+    /// Infinite loop: `loop { body }`
+    Loop(Vec<Expr>),
+    /// Cast: `expr as Type`
+    Cast(Box<Expr>, String),
+    /// Try/question-mark: `expr?`
+    Try(Box<Expr>),
 }
 
 /// Part of an interpolated string.

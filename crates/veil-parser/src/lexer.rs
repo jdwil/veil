@@ -101,6 +101,11 @@ pub enum TokenKind {
     Await,
     Break,
     Continue,
+    LBracket,   // [
+    RBracket,   // ]
+    DotDot,     // ..
+    DotDotEq,   // ..=
+    Question,   // ?
     Boundary,
     As,
     Desc,
@@ -220,6 +225,14 @@ impl Lexer {
                     self.emit(TokenKind::Colon, self.pos, self.pos + 1);
                     self.pos += 1;
                 }
+                '.' if self.peek() == Some('.') && self.chars.get(self.pos + 2) == Some(&'=') => {
+                    self.emit(TokenKind::DotDotEq, self.pos, self.pos + 3);
+                    self.pos += 3;
+                }
+                '.' if self.peek() == Some('.') => {
+                    self.emit(TokenKind::DotDot, self.pos, self.pos + 2);
+                    self.pos += 2;
+                }
                 '.' => {
                     self.emit(TokenKind::Dot, self.pos, self.pos + 1);
                     self.pos += 1;
@@ -254,6 +267,18 @@ impl Lexer {
                 }
                 '}' => {
                     self.emit(TokenKind::RBrace, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                '[' => {
+                    self.emit(TokenKind::LBracket, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                ']' => {
+                    self.emit(TokenKind::RBracket, self.pos, self.pos + 1);
+                    self.pos += 1;
+                }
+                '?' => {
+                    self.emit(TokenKind::Question, self.pos, self.pos + 1);
                     self.pos += 1;
                 }
                 c if c.is_ascii_digit() => self.lex_number(),

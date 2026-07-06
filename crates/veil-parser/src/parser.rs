@@ -1786,6 +1786,16 @@ impl<'a> Parser<'a> {
             TokenKind::If => return self.parse_if_expr(),
             TokenKind::Break => { self.advance(); return Ok(Expr::Break); }
             TokenKind::Continue => { self.advance(); return Ok(Expr::Continue); }
+            TokenKind::Loop => {
+                self.advance();
+                let mut body = Vec::new();
+                if self.at_block_start() {
+                    let _ = self.enter_block();
+                    loop { self.skip_newlines(); if self.at_block_end() { break; } body.push(self.parse_expr()?); }
+                    self.exit_block();
+                }
+                return Ok(Expr::Loop(body));
+            }
             TokenKind::Mut => {
                 self.advance(); // consume 'mut'
                 let name = self.expect_ident()?;
@@ -1800,6 +1810,9 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ret => {
                 self.advance();
+                if self.at(&TokenKind::Newline) || self.at(&TokenKind::Eof) || self.at(&TokenKind::Dedent) {
+                    return Ok(Expr::Return(Box::new(Expr::Tuple(Vec::new()))));
+                }
                 let inner = self.parse_expr()?;
                 return Ok(Expr::Return(Box::new(inner)));
             }
@@ -2012,6 +2025,17 @@ impl<'a> Parser<'a> {
     /// Parse a primary (atomic) expression.
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.peek_kind().clone() {
+            TokenKind::LBracket => {
+                self.advance(); // consume [
+                let mut items = Vec::new();
+                while !self.at(&TokenKind::RBracket) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Newline) {
+                    if !items.is_empty() && self.at(&TokenKind::Comma) { self.advance(); }
+                    if self.at(&TokenKind::RBracket) { break; }
+                    items.push(self.parse_expr()?);
+                }
+                if self.at(&TokenKind::RBracket) { self.advance(); }
+                return Ok(Expr::ArrayLit(items));
+            }
             TokenKind::Pipe => {
                 // Closure: |params| body
                 self.advance(); // consume opening |
@@ -2177,6 +2201,38 @@ impl<'a> Parser<'a> {
             } else {
                 // Plain field access.
                 expr = Expr::FieldAccess(Box::new(expr), field);
+            }
+        }
+        // Additional postfix: ?, [index], as, ..
+        loop {
+            match self.peek_kind().clone() {
+                TokenKind::Question => { self.advance(); expr = Expr::Try(Box::new(expr)); }
+                TokenKind::LBracket => {
+                    self.advance();
+                    let index = self.parse_expr()?;
+                    if self.at(&TokenKind::RBracket) { self.advance(); }
+                    expr = Expr::Index(Box::new(expr), Box::new(index));
+                }
+                TokenKind::As => {
+                    self.advance();
+                    let type_name = self.expect_ident()?;
+                    expr = Expr::Cast(Box::new(expr), type_name);
+                }
+                TokenKind::DotDot => {
+                    self.advance();
+                    let end = if !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
+                        && !self.at(&TokenKind::RParen) && !self.at(&TokenKind::RBracket)
+                        && !self.at(&TokenKind::Comma) && !self.at(&TokenKind::Dedent) {
+                        Some(Box::new(self.parse_primary()?))
+                    } else { None };
+                    expr = Expr::Range { start: Some(Box::new(expr)), end, inclusive: false };
+                }
+                TokenKind::DotDotEq => {
+                    self.advance();
+                    let end = Some(Box::new(self.parse_primary()?));
+                    expr = Expr::Range { start: Some(Box::new(expr)), end, inclusive: true };
+                }
+                _ => break,
             }
         }
         Ok(expr)

@@ -112,6 +112,12 @@ pub fn expr_to_display(expr: &Expr) -> String {
         Expr::Await(inner) => format!("await {}", expr_to_display(inner)),
         Expr::Break => "break".to_string(),
         Expr::Continue => "continue".to_string(),
+        Expr::Index(base, idx) => format!("{}[{}]", expr_to_display(base), expr_to_display(idx)),
+        Expr::ArrayLit(items) => { let s = items.iter().map(expr_to_display).collect::<Vec<_>>().join(", "); format!("[{}]", s) }
+        Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| expr_to_display(e)).unwrap_or_default(); let e = end.as_ref().map(|e| expr_to_display(e)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
+        Expr::Loop(_) => "loop { ... }".to_string(),
+        Expr::Cast(expr, ty) => format!("{} as {}", expr_to_display(expr), ty),
+        Expr::Try(expr) => format!("{}?", expr_to_display(expr)),
         Expr::BinaryOp(op) => format!(
             "{} {} {}",
             expr_to_display(&op.left),

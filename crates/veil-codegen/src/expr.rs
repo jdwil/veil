@@ -326,6 +326,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::Break => "break".to_string(),
         Expr::Continue => "continue".to_string(),
+        Expr::Index(base, idx) => format!("{}[{}]", expr_to_rust(base, ctx), expr_to_rust(idx, ctx)),
+        Expr::ArrayLit(items) => { let s = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", "); format!("vec![{}]", s) }
+        Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let e = end.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
+        Expr::Loop(body) => { let b = body.iter().map(|e| format!("    {};", expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n"); format!("loop {{\n{}\n}}", b) }
+        Expr::Cast(expr, ty) => format!("{} as {}", expr_to_rust(expr, ctx), ty),
+        Expr::Try(expr) => format!("{}?", expr_to_rust(expr, ctx)),
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) if name.is_empty() => {
             // Anonymous record/map literal (`{}` or `{ key: value, ... }`) → a

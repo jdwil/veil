@@ -592,6 +592,12 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::Await(inner) => format!("await {}", expr_to_veil(inner)),
         Expr::Break => "break".to_string(),
         Expr::Continue => "continue".to_string(),
+        Expr::Index(base, idx) => format!("{}[{}]", expr_to_veil(base), expr_to_veil(idx)),
+        Expr::ArrayLit(items) => { let s = items.iter().map(expr_to_veil).collect::<Vec<_>>().join(", "); format!("[{}]", s) }
+        Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| expr_to_veil(e)).unwrap_or_default(); let e = end.as_ref().map(|e| expr_to_veil(e)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
+        Expr::Loop(body) => { let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  "); format!("loop\n  {}", b) }
+        Expr::Cast(expr, ty) => format!("{} as {}", expr_to_veil(expr), ty),
+        Expr::Try(expr) => format!("{}?", expr_to_veil(expr)),
         Expr::BinaryOp(op) => {
             let op_str = match &op.op {
                 BinOp::Add => "+",
