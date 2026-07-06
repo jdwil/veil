@@ -148,6 +148,41 @@ fn validate_construct(
                         }
                     }
                 }
+                // `deny_calls <shape|kind>` — check that function bodies
+                // do NOT call constructs of the given shape/kind.
+                // Used by functional.layer to enforce purity.
+                Some("deny_calls") => {
+                    let denied_targets: Vec<&str> = words.collect();
+                    // Check all fn bodies in this construct
+                    let mut call_targets = Vec::new();
+                    collect_call_targets_from_construct(c, &mut call_targets);
+                    for (target_name, call_location) in &call_targets {
+                        // Check if the target is a known construct of a denied shape
+                        if let Some(target_spec) = registry.construct(target_name) {
+                            let shape_name = format!("{:?}", target_spec.shape).to_lowercase();
+                            let is_denied = denied_targets.iter().any(|d| {
+                                *d == shape_name
+                                    || *d == target_spec.name.to_lowercase()
+                                    || registry.is_a(&target_spec.keyword, d)
+                            });
+                            if is_denied {
+                                errors.push(ValidationError {
+                                    message: format!(
+                                        "'{}' in '{}' calls '{}' ({}) which is not allowed (deny_calls {})",
+                                        call_location, c.name, target_name, target_spec.name,
+                                        denied_targets.join(" ")
+                                    ),
+                                    construct: c.name.clone(),
+                                    parent: parent_name.to_string(),
+                                    hint: Some(format!(
+                                        "'{}' constructs cannot call {} targets",
+                                        spec.name, denied_targets.join("/")
+                                    )),
+                                });
+                            }
+                        }
+                    }
+                }
                 // Unrecognized constraint words are semantic hints, not
                 // structural rules — skip.
                 _ => {}
@@ -183,5 +218,73 @@ fn validate_construct(
     // Recurse (through groups too).
     for child in &c.children {
         validate_construct(child, &c.name, registry, errors);
+    }
+}
+
+/// Collect all call target names from a construct's function bodies.
+/// Returns (target_name, location_description) pairs.
+fn collect_call_targets_from_construct(c: &Construct, targets: &mut Vec<(String, String)>) {
+    // Check step bodies
+    for step in &c.steps {
+        if let FlowStep::Step(s) = step {
+            for expr in &s.body {
+                collect_call_targets_from_expr(expr, &s.name, targets);
+            }
+        }
+    }
+    // Check fn bodies
+    for f in &c.fns {
+        for expr in &f.body {
+            collect_call_targets_from_expr(expr, &f.name, targets);
+        }
+    }
+}
+
+/// Recursively collect call targets from an expression.
+fn collect_call_targets_from_expr(expr: &Expr, location: &str, targets: &mut Vec<(String, String)>) {
+    match expr {
+        Expr::Call(call) => {
+            if !call.target.is_empty() {
+                targets.push((call.target.clone(), location.to_string()));
+            }
+            for arg in &call.args {
+                collect_call_targets_from_expr(arg, location, targets);
+            }
+        }
+        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs) | Expr::Return(rhs)
+        | Expr::Await(rhs) | Expr::Try(rhs) => {
+            collect_call_targets_from_expr(rhs, location, targets);
+        }
+        Expr::BinaryOp(op) => {
+            collect_call_targets_from_expr(&op.left, location, targets);
+            collect_call_targets_from_expr(&op.right, location, targets);
+        }
+        Expr::IfExpr(ie) => {
+            collect_call_targets_from_expr(&ie.condition, location, targets);
+            for e in &ie.then_body { collect_call_targets_from_expr(e, location, targets); }
+            if let Some(eb) = &ie.else_body {
+                for e in eb { collect_call_targets_from_expr(e, location, targets); }
+            }
+        }
+        Expr::ForLoop { iterable, body, .. } => {
+            collect_call_targets_from_expr(iterable, location, targets);
+            for e in body { collect_call_targets_from_expr(e, location, targets); }
+        }
+        Expr::WhileLoop { condition, body } => {
+            collect_call_targets_from_expr(condition, location, targets);
+            for e in body { collect_call_targets_from_expr(e, location, targets); }
+        }
+        Expr::Loop(body) => {
+            for e in body { collect_call_targets_from_expr(e, location, targets); }
+        }
+        Expr::Closure { body, .. } => {
+            for e in body { collect_call_targets_from_expr(e, location, targets); }
+        }
+        Expr::Action(a) => {
+            if !a.target.is_empty() {
+                targets.push((a.target.clone(), location.to_string()));
+            }
+        }
+        _ => {}
     }
 }
