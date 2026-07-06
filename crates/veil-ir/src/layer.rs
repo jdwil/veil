@@ -324,10 +324,11 @@ impl LayerRegistry {
         let content = self.resolve_layer_content(name, dir)?;
 
         // First, load dependency layers (`use xxx` lines at pkg level).
+        // Skip silently if not found — it might be a .stub or package reference.
         for line in content.lines() {
             let t = line.trim();
             if let Some(dep) = t.strip_prefix("use ") {
-                self.load_layer(dep.trim(), dir)?;
+                let _ = self.load_layer(dep.trim(), dir);
             }
         }
 

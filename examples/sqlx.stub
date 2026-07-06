@@ -1,0 +1,35 @@
+stub sqlx 0.8
+
+  struct PgPool
+
+  struct PgPoolOptions
+    fn new() -> PgPoolOptions
+    fn max_connections(self, n: Int) -> PgPoolOptions
+    fn connect!(url: Str) -> PgPool
+
+  impl PgPool
+    fn acquire!() -> PgConnection
+    fn close!()
+
+  struct PgConnection
+
+  struct QueryBuilder
+    fn new(sql: Str) -> QueryBuilder
+    fn build(self) -> Query
+
+  struct Query
+    fn bind(self, value: Str) -> Query
+    fn execute!(self, pool: &PgPool)
+    fn fetch_one!(self, pool: &PgPool) -> Row
+    fn fetch_all!(self, pool: &PgPool) -> List<Row>
+    fn fetch_optional!(self, pool: &PgPool) -> Opt<Row>
+
+  struct Row
+    fn get(self, col: Str) -> Str
+    fn get_int(self, col: Str) -> Int
+    fn get_bool(self, col: Str) -> Bool
+    fn get_uuid(self, col: Str) -> Id
+    fn get_timestamp(self, col: Str) -> Dt
+    fn get_json(self, col: Str) -> Json
+    fn get_optional(self, col: Str) -> Opt<Str>
+    fn get_f64(self, col: Str) -> F64

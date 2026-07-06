@@ -1,0 +1,169 @@
+pkg dlx_core v1
+  desc "DashLX platform core abstractions"
+  use ddd
+  use sqlx
+
+  declare
+    ctx IAAA
+      group domain
+        val Email
+          addr: Str
+          @invariant(addr.matches(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"))
+
+        agg Tenant
+          root
+            id: Id
+            name: Str
+            logo: Str
+            internal_name: Str
+            privacy_policy: Json
+            created_on: Dt
+            updated_on: Dt
+            deleted_on: Opt<Dt>
+
+        agg User
+          root
+            id: Id
+            sub: Id
+            cognito_sub: Id
+            name: Str
+            given_name: Str
+            family_name: Str
+            middle_name: Str
+            nickname: Str
+            preferred_username: Str
+            profile: Str
+            picture: Str
+            website: Str
+            email: Email
+            email_verified: Bool
+            gender: Str
+            birthdate: Str
+            zoneinfo: Str
+            locale: Str
+            phone_number: Str
+            phone_number_verified: Bool
+            preferred_units: Str
+            height: F64
+            weight: F64
+            address: Json
+            employer_id: Opt<Id>
+            created_on: Dt
+            updated_on: Dt
+            deleted_on: Opt<Dt>
+
+        agg Cohort
+          root
+            id: Id
+            tenant_id: Id
+            name: Str
+            active: Bool
+            start_date: Opt<Dt>
+            end_date: Opt<Dt>
+            short_description: Str
+            public: Bool
+            slug: Str
+            testing_enabled: Bool
+            sms_optin_enabled: Bool
+            mobile_integrations_enabled: Bool
+            program_code: Str
+            strava_enabled: Bool
+            parent_id: Opt<Id>
+            max_lists: Int
+            max_segments: Int
+            max_initiatives: Int
+            available_permissions: Json
+            landing_page_config: Json
+            backfill_settings: Json
+            sms_optin_promo: Json
+            sms_optin_terms: Json
+            created_on: Dt
+            updated_on: Dt
+            deleted_on: Opt<Dt>
+
+        ent CohortMember
+          id: Id
+          cohort_id: Id
+          user_id: Id
+          permissions: Int
+          date_joined: Dt
+          sms_optin: Opt<Dt>
+          created_on: Dt
+          updated_on: Dt
+          deleted_on: Opt<Dt>
+
+        port TenantRepo
+          find!(id: Id) -> Opt<Tenant>
+          save!(tenant: Tenant)
+          delete!(id: Id)
+
+        port UserRepo
+          find!(id: Id) -> Opt<User>
+          find_by_email!(email: Email) -> Opt<User>
+          find_by_tenant!(tenant_id: Id) -> List<User>
+          save!(user: User)
+          delete!(id: Id)
+
+        port CohortRepo
+          find!(id: Id) -> Opt<Cohort>
+          find_by_tenant!(tenant_id: Id) -> List<Cohort>
+          find_by_slug!(slug: Str) -> Opt<Cohort>
+          save!(cohort: Cohort)
+          delete!(id: Id)
+
+        port CohortMemberRepo
+          find!(id: Id) -> Opt<CohortMember>
+          find_by_cohort!(cohort_id: Id) -> List<CohortMember>
+          find_by_user!(user_id: Id) -> List<CohortMember>
+          save!(member: CohortMember)
+          delete!(id: Id)
+
+      group infrastructure
+        adapter PgTenantRepo for TenantRepo
+          @env(DATABASE_URL)
+          impl find(id)
+            row = sqlx.Query.new("SELECT * FROM tenants WHERE id = $1").bind(id).fetch_optional!(pool)
+            row
+          impl save(tenant)
+            sqlx.Query.new("INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = $2, updated_on = now()").bind(tenant.id).bind(tenant.name).execute!(pool)
+          impl delete(id)
+            sqlx.Query.new("UPDATE tenants SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+        adapter PgUserRepo for UserRepo
+          @env(DATABASE_URL)
+          impl find(id)
+            sqlx.Query.new("SELECT * FROM users WHERE id = $1").bind(id).fetch_optional!(pool)
+          impl find_by_email(email)
+            sqlx.Query.new("SELECT * FROM users WHERE email = $1").bind(email.addr).fetch_optional!(pool)
+          impl find_by_tenant(tenant_id)
+            sqlx.Query.new("SELECT * FROM users WHERE employer_id = $1").bind(tenant_id).fetch_all!(pool)
+          impl save(user)
+            sqlx.Query.new("INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET updated_on = now()").bind(user.id).execute!(pool)
+          impl delete(id)
+            sqlx.Query.new("UPDATE users SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+        adapter PgCohortRepo for CohortRepo
+          @env(DATABASE_URL)
+          impl find(id)
+            sqlx.Query.new("SELECT * FROM cohorts WHERE id = $1").bind(id).fetch_optional!(pool)
+          impl find_by_tenant(tenant_id)
+            sqlx.Query.new("SELECT * FROM cohorts WHERE tenant_id = $1").bind(tenant_id).fetch_all!(pool)
+          impl find_by_slug(slug)
+            sqlx.Query.new("SELECT * FROM cohorts WHERE slug = $1").bind(slug).fetch_optional!(pool)
+          impl save(cohort)
+            sqlx.Query.new("INSERT INTO cohorts (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET updated_on = now()").bind(cohort.id).execute!(pool)
+          impl delete(id)
+            sqlx.Query.new("UPDATE cohorts SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+        adapter PgCohortMemberRepo for CohortMemberRepo
+          @env(DATABASE_URL)
+          impl find(id)
+            sqlx.Query.new("SELECT * FROM cohort_members WHERE id = $1").bind(id).fetch_optional!(pool)
+          impl find_by_cohort(cohort_id)
+            sqlx.Query.new("SELECT * FROM cohort_members WHERE cohort_id = $1").bind(cohort_id).fetch_all!(pool)
+          impl find_by_user(user_id)
+            sqlx.Query.new("SELECT * FROM cohort_members WHERE user_id = $1").bind(user_id).fetch_all!(pool)
+          impl save(member)
+            sqlx.Query.new("INSERT INTO cohort_members (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET updated_on = now()").bind(member.id).execute!(pool)
+          impl delete(id)
+            sqlx.Query.new("UPDATE cohort_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
