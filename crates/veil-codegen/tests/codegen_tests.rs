@@ -61,9 +61,11 @@ pkg jobs v1
       ret Ok";
     let app = "sol JobsApp\n  use jobs\n  thing Gadget\n    size: Int";
     let out = generate_with_layer("jobs", layer, app);
+    // A List<Trait> coordinator param is a borrowed slice of boxed trait
+    // objects (boxed trait objects aren't Clone, so they're borrowed not moved).
     assert!(
-        out.contains("jobs: Vec<Box<dyn Job + Send + Sync>>"),
-        "List<Trait> did not box:\n{}",
+        out.contains("jobs: &[Box<dyn Job + Send + Sync>]"),
+        "List<Trait> param not a boxed-trait slice:\n{}",
         out
     );
     assert!(out.contains("j.run().await?"), "trait method call not async/fallible:\n{}", out);
@@ -154,9 +156,11 @@ fn saga_lowers_to_step_impls_and_delegates_to_coordinator() {
     assert!(out.contains("async fn action(&self, bus:"), "action method missing");
     assert!(out.contains("async fn compensate(&self, bus:"), "compensate method missing");
     // The saga fn just builds the step list and calls the layer coordinator.
-    assert!(out.contains("run_saga(deps.bus.as_ref(), steps).await"), "coordinator call missing:\n{}", grep(&out, "run_saga"));
+    assert!(out.contains("run_saga(deps.bus.as_ref(), &steps).await"), "coordinator call missing:\n{}", grep(&out, "run_saga"));
     assert!(out.contains("Vec<Box<dyn SagaStep + Send + Sync>>"), "boxed step list missing");
-    // The engine no longer synthesizes the unwind machinery.
+    // Cross-step results thread through shared JSON state (step 0 writes it,
+    // later steps read it) — no engine-side unwind machinery.
+    assert!(out.contains("state[\"c\"]"), "cross-step state threading missing:\n{}", grep(&out, "state["));
     assert!(!out.contains("let __saga"), "hardcoded saga wrapper still present");
     assert!(!out.contains("if let Err(__e) = __saga"), "hardcoded unwind still present");
 }

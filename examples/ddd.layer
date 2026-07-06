@@ -236,31 +236,35 @@ pkg ddd v1
       request(qry: Json) -> Res!<Json>
 
     # ─── Saga runtime (the transactional coordinator), written in VEIL ─────
-    # A saga step is a unit of work with a compensating action. `run_saga`
-    # executes each step's action in order; on the first failure it unwinds by
-    # replaying the completed steps' compensations in reverse. All of this is
-    # ordinary VEIL over the Bus — the engine has no saga knowledge.
+    # A saga step is a unit of work with a compensating action. Steps share a
+    # JSON `state`: each `action` reads prior results from it and returns the
+    # updated state, so later steps see earlier results. `run_saga` threads the
+    # state forward and, on the first failure, replays the completed steps'
+    # compensations in reverse. All ordinary VEIL over the Bus — the engine has
+    # no saga knowledge.
     trait SagaStep
-      action(bus: Bus) -> Res!
-      compensate(bus: Bus) -> Res!
+      action(bus: Bus, state: Json) -> Res!<Json>
+      compensate(bus: Bus, state: Json) -> Res!
 
     # Replay compensations for the first `upto` steps, most-recent first.
-    fn unwind(bus: Bus, steps: List<SagaStep>, upto: Int) -> Res!
+    fn unwind(bus: Bus, steps: List<SagaStep>, upto: Int, state: Json) -> Res!
       mut i = upto
       while i > 0
         i = i - 1
-        call steps.get(i).compensate(bus)
+        call steps.get(i).compensate(bus, state)
       ret Ok
 
-    # Run steps forward; on failure, unwind completed steps and propagate.
+    # Run steps forward, threading state; on failure, unwind and propagate.
     fn run_saga(bus: Bus, steps: List<SagaStep>) -> Res!
+      mut state = {}
       mut i = 0
       while i < steps.len()
-        match call steps.get(i).action(bus)
-          Ok _ ->
+        match call steps.get(i).action(bus, state)
+          Ok next ->
+            state = next
             i = i + 1
           Err e ->
-            call unwind(bus, steps, i)
+            call unwind(bus, steps, i, state)
             ret Err(e)
       ret Ok
 

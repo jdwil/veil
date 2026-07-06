@@ -1069,6 +1069,20 @@ fn gen_impls(
     }
 }
 
+/// Find a construct by name anywhere in the solution (top-level or nested).
+fn find_construct_by_name<'a>(solution: &'a Solution, name: &str) -> Option<&'a Construct> {
+    fn walk<'a>(c: &'a Construct, name: &str) -> Option<&'a Construct> {
+        if c.name == name {
+            return Some(c);
+        }
+        c.children.iter().find_map(|ch| walk(ch, name))
+    }
+    solution.items.iter().find_map(|i| match i {
+        TopLevelItem::Construct(c) => walk(c, name),
+        _ => None,
+    })
+}
+
 /// Build a name→shape map from ALL constructs in the solution (top-level and
 /// nested), used by the expression translator for shape-driven call resolution.
 fn build_name_to_shape(solution: &Solution) -> std::collections::HashMap<String, Shape> {
@@ -1331,7 +1345,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         if let Some(rt) = &runtime {
             // Runtime-delegated construct: emit the step impls + a body that
             // builds the step list and calls the coordinator.
-            emit_runtime_delegated(&mut out, name, subkind, inputs, steps, rt, deps_param, &ctx);
+            emit_runtime_delegated(&mut out, name, inputs, steps, rt, deps_param, solution, &ctx);
             continue;
         }
 
@@ -1401,15 +1415,13 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
 fn emit_runtime_delegated(
     out: &mut String,
     name: &str,
-    _subkind: &str,
     inputs: &[Field],
     steps: &[FlowStep],
     rt: &veil_ir::layer::RuntimeBinding,
     deps_param: &str,
+    solution: &Solution,
     ctx: &crate::expr::GenCtx,
 ) {
-    use crate::expr::expr_to_rust;
-
     let step_trait = &rt.step_trait;
     // Capture the construct's inputs on each step struct so step bodies can use
     // them. Fields are cloned into the struct at construction.
@@ -1418,13 +1430,35 @@ fn emit_runtime_delegated(
         .map(|f| (to_snake(&f.name), type_to_rust(&f.type_expr)))
         .collect();
 
+    // A trait method threads state iff the layer declares it returning a payload
+    // (`Res!<T>` → Result<T, _>); a payload-less `Res!` method takes state
+    // read-only. This keeps codegen keyed off the layer, not a hardcoded name.
+    let step_trait_construct = find_construct_by_name(solution, step_trait);
+    let method_returns_state = |method: &str| -> bool {
+        step_trait_construct
+            .and_then(|t| t.methods.iter().find(|m| m.name == method))
+            .map(|m| matches!(&m.return_type, Some(TypeExpr::Result(Some(_)))))
+            .unwrap_or(false)
+    };
+
+    // Every let-binding across ALL step bodies is a shared saga-state key, so a
+    // later step can read an earlier step's result.
+    let mut state_locals: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for step in steps {
+        if let FlowStep::Step(s) = step {
+            for expr in &s.body {
+                if let Expr::Assign(n, _) | Expr::MutAssign(n, _) = expr {
+                    state_locals.insert(n.clone());
+                }
+            }
+        }
+    }
+
     // One struct + impl per Step (skip par/match — delegated runtimes use
     // plain steps).
-    let mut step_type_names: Vec<String> = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         let FlowStep::Step(s) = step else { continue };
         let type_name = format!("{}Step{}", name, i);
-        step_type_names.push(type_name.clone());
 
         // Struct holding captured inputs.
         out.push_str(&format!("/// Step `{}` of `{}` (impl {}).\nstruct {} {{\n", s.name, name, step_trait, type_name));
@@ -1433,27 +1467,26 @@ fn emit_runtime_delegated(
         }
         out.push_str("}\n\n");
 
-        // The step body ctx: inputs are `self.<field>` inside the impl, and the
-        // Bus is the injected `bus` parameter (not `deps.bus`).
+        // The step body ctx: inputs are `self.<field>`; the Bus is the injected
+        // `bus` param; cross-step locals live in the threaded `state`.
         let mut step_ctx = ctx.clone_for_inference();
         step_ctx.is_orchestrator = true;
         step_ctx.bus_ref = "bus".to_string();
-        step_ctx.in_aggregate_fn = true; // makes input idents render as self.<field>
+        step_ctx.in_aggregate_fn = true; // input idents render as self.<field>
         for (fname, ftype) in &input_fields {
             step_ctx.self_fields.insert(fname.clone());
             step_ctx.local_types.insert(fname.clone(), ftype.clone());
         }
+        step_ctx.state_locals = state_locals.clone();
 
         out.push_str(&format!("#[async_trait::async_trait]\nimpl {} for {} {{\n", step_trait, type_name));
 
-        // The main body fills `action`; each sub-block fills its mapped method.
-        // Method signature comes from the trait — we know it's `(&self, bus)`.
-        let action_body = &s.body;
-        emit_step_method(out, "action", action_body, &step_ctx);
-
+        // The main body fills `action` (returns updated state); each sub-block
+        // fills its mapped method.
+        emit_step_method(out, "action", &s.body, method_returns_state("action"), &step_ctx);
         for block in &s.sub_blocks {
             if let Some((_, method)) = rt.method_map.iter().find(|(kw, _)| kw == &block.keyword) {
-                emit_step_method(out, method, &block.body, &step_ctx);
+                emit_step_method(out, method, &block.body, method_returns_state(method), &step_ctx);
             }
         }
         out.push_str("}\n\n");
@@ -1484,23 +1517,28 @@ fn emit_runtime_delegated(
     }
     out.push_str("    ];\n");
     // Call the coordinator with the Bus dependency and the step list.
-    out.push_str(&format!("    {}(deps.bus.as_ref(), steps).await\n", to_snake(&rt.coordinator)));
+    out.push_str(&format!("    {}(deps.bus.as_ref(), &steps).await\n", to_snake(&rt.coordinator)));
     out.push_str("}\n\n");
-
-    let _ = expr_to_rust; // (used within emit_step_method)
 }
 
 /// Emit one trait-method impl (`action`/`compensate`) with a translated body.
-fn emit_step_method(out: &mut String, method: &str, body: &[Expr], ctx: &crate::expr::GenCtx) {
+/// State-threading methods take a `state` param and return the updated state;
+/// others take state read-only and return unit.
+fn emit_step_method(out: &mut String, method: &str, body: &[Expr], returns_state: bool, ctx: &crate::expr::GenCtx) {
     use crate::expr::expr_to_rust;
+    let ret = if returns_state { "serde_json::Value" } else { "()" };
     out.push_str(&format!(
-        "    async fn {}(&self, bus: &(dyn Bus + Send + Sync)) -> Result<(), DomainError> {{\n",
-        method
+        "    async fn {}(&self, bus: &(dyn Bus + Send + Sync), mut state: serde_json::Value) -> Result<{}, DomainError> {{\n",
+        method, ret
     ));
     for expr in body {
         out.push_str(&format!("        {};\n", expr_to_rust(expr, ctx)));
     }
-    out.push_str("        Ok(())\n    }\n");
+    if returns_state {
+        out.push_str("        Ok(state)\n    }\n");
+    } else {
+        out.push_str("        Ok(())\n    }\n");
+    }
 }
 
 /// Detect which sibling modules a module's flows reference (via step ctx refs).
@@ -1560,12 +1598,21 @@ pub fn type_to_rust_with_traits(ty: &TypeExpr, traits: &std::collections::HashSe
 }
 
 /// Render a function parameter type. A bare trait-typed parameter is passed by
-/// shared reference (`&(dyn Trait + Send + Sync)`); everything else (including
-/// `List<Trait>`) uses the standard boxed rendering.
+/// shared reference (`&(dyn Trait + Send + Sync)`); a `List<Trait>` is passed as
+/// a borrowed slice (`&[Box<dyn Trait + Send + Sync>]`) since boxed trait
+/// objects aren't Clone and shouldn't be moved into a coordinator; other types
+/// use the standard rendering.
 fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
     if let TypeExpr::Named(name) = ty {
         if traits.contains(name) {
             return format!("&(dyn {} + Send + Sync)", name);
+        }
+    }
+    if let TypeExpr::List(inner) = ty {
+        if let TypeExpr::Named(name) = inner.as_ref() {
+            if traits.contains(name) {
+                return format!("&[Box<dyn {} + Send + Sync>]", name);
+            }
         }
     }
     type_to_rust_impl(ty, traits)

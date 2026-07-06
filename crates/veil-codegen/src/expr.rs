@@ -33,6 +33,10 @@ pub struct GenCtx {
     /// How to reference the Bus for orchestrator routing. `deps.bus` in a
     /// flow/service; `bus` inside a saga-step impl where it's an injected param.
     pub bus_ref: String,
+    /// Names backed by a threaded JSON state (saga steps). A read of such a name
+    /// becomes `state["name"]`; an assignment writes `state["name"] = ...`. This
+    /// lets independent step impls share results across steps.
+    pub state_locals: HashSet<String>,
 }
 
 impl GenCtx {
@@ -47,6 +51,7 @@ impl GenCtx {
             local_types: HashMap::new(),
             struct_fields: HashMap::new(),
             bus_ref: "deps.bus".to_string(),
+            state_locals: HashSet::new(),
         }
     }
 
@@ -220,13 +225,22 @@ fn type_name_simple(ty: &TypeExpr) -> String {
 pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
     match expr {
         Expr::Ident(name) => {
-            if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
+            if ctx.state_locals.contains(name.as_str()) {
+                // Shared saga state: read from the threaded JSON state.
+                format!("state[\"{}\"]", name)
+            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
                 format!("self.{}", to_snake(name))
             } else {
                 name.clone()
             }
         }
         Expr::FieldAccess(base, field) => {
+            // A field of a state-local: index into the threaded JSON state.
+            if let Expr::Ident(name) = base.as_ref() {
+                if ctx.state_locals.contains(name.as_str()) {
+                    return format!("state[\"{}\"][\"{}\"]", name, field);
+                }
+            }
             // In the JSON-bus orchestrator, a field of a Bus-returned local is a
             // JSON index: `result["code"]`. Bus results are serde_json::Value.
             if ctx.is_orchestrator {
@@ -265,7 +279,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::Assign(name, rhs) => {
             let rhs_str = expr_to_rust(rhs, ctx);
-            if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
+            if ctx.state_locals.contains(name.as_str()) {
+                // Write the result into the threaded saga state as JSON.
+                format!("state[\"{}\"] = serde_json::json!({})", name, rhs_str)
+            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
                 format!("self.{} = {}", to_snake(name), rhs_str)
             } else if ctx.is_local(name) {
                 // Already-declared local (e.g. a `mut` var) → reassignment, no `let`.
@@ -309,13 +326,16 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) if name.is_empty() => {
-            // Anonymous record/map literal (`{ key: value, ... }`). Emit as a
-            // slice of (key, value-debug) pairs — a compiling, inspectable form
-            // for external-effect payloads without inventing a concrete type.
-            let pairs = fields.iter().map(|(k, v)| {
-                format!("(\"{}\", format!(\"{{:?}}\", {}))", k, expr_to_rust(v, ctx))
-            }).collect::<Vec<_>>().join(", ");
-            format!("&[{}]", pairs)
+            // Anonymous record/map literal (`{}` or `{ key: value, ... }`) → a
+            // JSON object value.
+            if fields.is_empty() {
+                "serde_json::json!({})".to_string()
+            } else {
+                let pairs = fields.iter().map(|(k, v)| {
+                    format!("\"{}\": {}", k, to_json_arg(v, ctx))
+                }).collect::<Vec<_>>().join(", ");
+                format!("serde_json::json!({{ {} }})", pairs)
+            }
         }
         Expr::StructLit(name, fields) => {
             let fs = fields.iter().map(|(k, v)| {
@@ -420,8 +440,11 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
 fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
     match expr {
         Expr::Ident(name) => {
-            // A struct-captured input (saga step) → self.<field>.
-            if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
+            // A shared saga-state value → read from the threaded state.
+            if ctx.state_locals.contains(name.as_str()) {
+                format!("state[\"{}\"].clone()", name)
+            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
+                // A struct-captured input (saga step) → self.<field>.
                 format!("self.{}.clone()", to_snake(name))
             } else if ctx.is_local(name) {
                 format!("{}.clone()", name)
@@ -431,6 +454,12 @@ fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
             }
         }
         Expr::FieldAccess(base, field) => {
+            // A field of a state-local → index into the threaded state.
+            if let Expr::Ident(name) = base.as_ref() {
+                if ctx.state_locals.contains(name.as_str()) {
+                    return format!("state[\"{}\"][\"{}\"].clone()", name, field);
+                }
+            }
             // If the base is already a serde_json::Value local, index it directly.
             if let Expr::Ident(name) = base.as_ref() {
                 if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
@@ -477,6 +506,32 @@ fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> Str
     )
 }
 
+/// Render call args, cloning value-bearing locals/state so passing them into a
+/// by-value parameter doesn't move them out of the caller. Skips the Bus
+/// reference and Copy scalars (which don't move).
+fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
+    args.iter()
+        .map(|a| match a {
+            Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => format!("state[\"{}\"].clone()", n),
+            // The bus reference (bus_ref) and Copy scalars are passed as-is.
+            Expr::Ident(n) if *n == ctx.bus_ref => n.clone(),
+            Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
+            Expr::Ident(n) if ctx.is_local(n) => format!("{}.clone()", n),
+            _ => expr_to_rust(a, ctx),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A local whose inferred type is a Copy scalar (int/bool/float) — no clone.
+fn is_copy_local(name: &str, ctx: &GenCtx) -> bool {
+    matches!(
+        ctx.local_type(name),
+        Some("i64") | Some("i32") | Some("u64") | Some("u32")
+            | Some("usize") | Some("isize") | Some("f64") | Some("f32") | Some("bool")
+    )
+}
+
 /// Translate a Call expression with shape-aware name resolution.
 fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     let args_str = call.args.iter()
@@ -508,7 +563,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         let recv_str = expr_to_rust(recv, ctx);
         // A trait method invoked on a chained receiver is async + fallible.
         let suffix = receiver_call_suffix(recv, &call.method, ctx);
-        return format!("{}.{}({}){}", recv_str, to_snake(&call.method), args_str, suffix);
+        return format!("{}.{}({}){}", recv_str, to_snake(&call.method), clone_args(&call.args, ctx), suffix);
     }
 
     // Trait-shaped target → deps.target.method(args).await?
@@ -601,10 +656,11 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         return format!("{}.{}({})", call.target, method, args_str);
     }
     if call.method.is_empty() {
-        // Bare call: now() → Utc::now(), others → as-is
+        // Bare call: now() → Utc::now(), others → as-is (cloning value args so
+        // passing locals/state into a by-value param doesn't move them).
         match call.target.as_str() {
             "now" => "Utc::now()".to_string(),
-            _ => format!("{}({})", to_snake(&call.target), args_str),
+            _ => format!("{}({})", to_snake(&call.target), clone_args(&call.args, ctx)),
         }
     } else if ctx.is_local(&call.target) || ctx.name_to_shape.contains_key(&call.target) {
         // Known local/construct method call (already handled above, but be safe).
@@ -701,6 +757,7 @@ impl GenCtx {
             local_types: self.local_types.clone(),
             struct_fields: self.struct_fields.clone(),
             bus_ref: self.bus_ref.clone(),
+            state_locals: self.state_locals.clone(),
         }
     }
 }
