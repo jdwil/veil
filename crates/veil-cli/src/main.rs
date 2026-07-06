@@ -441,6 +441,17 @@ fn main() {
                 }
                 std::fs::write(&path, &file.content).expect("Failed to write file");
             }
+
+            // Run rustfmt on all generated .rs files for clean output
+            for file in &project.files {
+                if file.path.ends_with(".rs") {
+                    let path = output.join(&file.path);
+                    let _ = std::process::Command::new("rustfmt")
+                        .args(["--edition", "2024", &path.to_string_lossy()])
+                        .output();
+                }
+            }
+
             println!(
                 "✓ Generated {} files in {}",
                 project.files.len(),
