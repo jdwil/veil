@@ -1,35 +1,527 @@
-stub sqlx 0.8
+stub sqlx-core 0.8.6
 
-  struct PgPool
+  struct Text
+    fn into_inner() -> T
 
-  struct PgPoolOptions
-    fn new() -> PgPoolOptions
-    fn max_connections(self, n: Int) -> PgPoolOptions
-    fn connect!(url: Str) -> PgPool
+  struct AnyTypeInfo
+    fn kind() -> AnyTypeInfoKind
 
-  impl PgPool
-    fn acquire!() -> PgConnection
-    fn close!()
+  struct Map
+    fn map(g: G) -> Map<DB, Str, A>
+    fn try_map(g: G) -> Map<DB, Str, A>
+    fn fetch(executor: E) -> BoxStream<Res!<O>>
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, O>>>
+    fn fetch_all(executor: E) -> Res!<List<O>>
+    fn fetch_one(executor: E) -> Res!<O>
+    fn fetch_optional(executor: E) -> Res!<Opt<O>>
 
-  struct PgConnection
+  struct AnyColumn
+
+  struct AnyRow
+
+  struct AnyStatement
+
+  struct QueryAs
+    fn bind(value: T) -> Self
+    fn persistent(value: Bool) -> Self
+    fn fetch(executor: E) -> BoxStream<Res!<O>>
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, O>>>
+    fn fetch_all(executor: E) -> Res!<List<O>>
+    fn fetch_one(executor: E) -> Res!<O>
+    fn fetch_optional(executor: E) -> Res!<Opt<O>>
+
+  struct QueryScalar
+    fn bind(value: T) -> Self
+    fn persistent(value: Bool) -> Self
+    fn fetch(executor: E) -> BoxStream<Res!<O>>
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, O>>>
+    fn fetch_all(executor: E) -> Res!<List<O>>
+    fn fetch_one(executor: E) -> Res!<O>
+    fn fetch_optional(executor: E) -> Res!<Opt<O>>
+
+  struct TryAsyncStream
+    fn new(f: F) -> Self
+
+  struct StatementCache
+    fn new(capacity: usize) -> Self
+    fn get_mut(k: Str) -> Opt<T>
+    fn insert(k: Str, v: T) -> Opt<T>
+    fn len() -> usize
+    fn is_empty() -> Bool
+    fn remove_lru() -> Opt<T>
+    fn clear()
+    fn contains_key(k: Str) -> Bool
+    fn capacity() -> usize
+    fn is_enabled() -> Bool
+
+  struct Yielder
+    fn yield(val: T)
+
+  struct DebugFn
+
+  struct AnyTransactionManager
+
+  struct AnyQueryResult
+    fn rows_affected() -> Int
+    fn last_insert_id() -> Opt<Int>
+
+  struct AnyValue
+
+  struct RawSql
+    fn execute(executor: E) -> Res!<Str>
+    fn execute_many(executor: E) -> BoxStream<Res!<Str>>
+    fn fetch(executor: E) -> BoxStream<Res!<Str>>
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, Str>>>
+    fn fetch_all(executor: E) -> Res!<List<Str>>
+    fn fetch_one(executor: E) -> Res!<Str>
+    fn fetch_optional(executor: E) -> Res!<Str>
+
+  struct ReadDir
+    fn next() -> Res!<Opt<DirEntry>>
+
+  struct DirEntry
+
+  struct QueryLogger
+    fn new(sql: Str, settings: LogSettings) -> Self
+    fn increment_rows_returned()
+    fn increase_rows_affected(n: Int)
+    fn finish()
+
+  struct BufferedSocket
+    fn new(socket: S) -> Self
+    fn read_buffered(len: usize) -> Res!<BytesMut>
+    fn try_read(try_read: F) -> Res!<R>
+    fn write_buffer() -> WriteBuffer
+    fn write_buffer_mut() -> WriteBuffer
+    fn read(byte_len: usize) -> Res!<T>
+    fn read_with(byte_len: usize, context: C) -> Res!<T>
+    fn write(value: T) -> Res!<Str>
+    fn write_with(value: T, context: C) -> Res!<Str>
+    fn flush() -> Res!<Str>
+    fn shutdown() -> Res!<Str>
+    fn shrink_buffers()
+    fn into_inner() -> S
+    fn boxed() -> BufferedSocket<Box<Str>>
+
+  struct WriteBuffer
+    fn buf_mut() -> List<Int>
+    fn init_remaining_mut() -> Str
+    fn put_slice(slice: Str)
+    fn advance(amt: usize)
+    fn read_from(source: Str) -> Res!<usize>
+    fn is_empty() -> Bool
+    fn is_full() -> Bool
+    fn get() -> Str
+    fn get_mut() -> Str
+    fn shrink()
+
+  struct Read
+
+  struct Write
+
+  struct Flush
+
+  struct Shutdown
+
+  struct SocketIntoBox
+
+  struct TlsConfig
 
   struct QueryBuilder
-    fn new(sql: Str) -> QueryBuilder
-    fn build(self) -> Query
+    fn new(init: Str) -> Self
+    fn with_arguments(init: Str, arguments: A) -> Self
+    fn push(sql: Str) -> Self
+    fn push_bind(value: T) -> Self
+    fn separated(separator: Sep) -> Separated<DB, Sep>
+    fn push_values(tuples: I, push_tuple: F) -> Self
+    fn push_tuples(tuples: I, push_tuple: F) -> Self
+    fn build() -> Query<DB, Str>
+    fn build_query_as() -> QueryAs<DB, T, Str>
+    fn build_query_scalar() -> QueryScalar<DB, T, Str>
+    fn reset() -> Self
+    fn sql() -> Str
+    fn into_sql() -> Str
+
+  struct Separated
+    fn push(sql: Str) -> Self
+    fn push_unseparated(sql: Str) -> Self
+    fn push_bind(value: T) -> Self
+    fn push_bind_unseparated(value: T) -> Self
+
+  struct UnexpectedNullError
+
+  struct TimeoutError
+
+  struct AsyncSemaphore
+    fn new(fair: Bool, permits: usize) -> Self
+    fn permits() -> usize
+    fn acquire(permits: Int) -> AsyncSemaphoreReleaser
+    fn try_acquire(permits: Int) -> Opt<AsyncSemaphoreReleaser>
+    fn release(permits: usize)
+
+  struct AsyncSemaphoreReleaser
+    fn disarm()
+
+  struct FmtValue
+    fn debug(value: Str) -> Self
+    fn unknown(value: Str) -> Self
+
+  struct AppliedMigration
+
+  struct Migration
+    fn new(version: Int, description: Cow<Str>, migration_type: MigrationType, sql: Cow<Str>, no_tx: Bool) -> Self
+
+  struct Migrator
+    fn new(source: S) -> Res!<Self>
+    fn set_ignore_missing(ignore_missing: Bool) -> Self
+    fn set_locking(locking: Bool) -> Self
+    fn iter() -> Iter<Migration>
+    fn version_exists(version: Int) -> Bool
+    fn run(migrator: A) -> Res!<Str>
+    fn undo(migrator: A, target: Int) -> Res!<Str>
+
+  struct ResolveError
+
+  struct AnyDriver
+    fn without_migrate() -> Self
+    fn with_migrate() -> Self
+    fn get_migrate_database() -> Res!<AnyMigrateDatabase>
+
+  struct AnyMigrateDatabase
+    fn create_database(url: Str) -> BoxFuture<Res!<Str>>
+    fn database_exists(url: Str) -> BoxFuture<Res!<Bool>>
+    fn drop_database(url: Str) -> BoxFuture<Res!<Str>>
+    fn force_drop_database(url: Str) -> BoxFuture<Res!<Str>>
+
+  struct FixtureSnapshot
+    fn additive_fixture() -> Res!<Fixture<DB>>
+
+  struct Fixture
+
+  struct FixtureError
+
+  struct TestArgs
+    fn new(test_path: Str) -> Self
+    fn migrator(migrator: Migrator)
+    fn fixtures(fixtures: Str)
+
+  struct TestContext
+
+  struct TestFixture
+
+  struct Any
+
+  struct AnyArguments
+
+  struct ImmutableArguments
+
+  struct PoolConnection
+    fn close() -> Res!<Str>
+    fn close_on_drop()
+    fn detach() -> Str
+    fn leak() -> Str
+
+  struct Pool
+    fn connect(url: Str) -> Res!<Self>
+    fn connect_with(options: Str) -> Res!<Self>
+    fn connect_lazy(url: Str) -> Res!<Self>
+    fn connect_lazy_with(options: Str) -> Self
+    fn acquire() -> Str
+    fn try_acquire() -> Opt<PoolConnection<DB>>
+    fn begin() -> Res!<Transaction<DB>>
+    fn try_begin() -> Res!<Opt<Transaction<DB>>>
+    fn begin_with(statement: Str) -> Res!<Transaction<DB>>
+    fn try_begin_with(statement: Str) -> Res!<Opt<Transaction<DB>>>
+    fn close() -> Str
+    fn is_closed() -> Bool
+    fn close_event() -> CloseEvent
+    fn size() -> Int
+    fn num_idle() -> usize
+    fn connect_options() -> Arc<Str>
+    fn set_connect_options(connect_options: Str)
+    fn options() -> PoolOptions<DB>
+
+  struct Transaction
+    fn commit() -> Res!<Str>
+    fn rollback() -> Res!<Str>
+
+  struct PoolOptions
+    fn new() -> Self
+    fn max_connections(max: Int) -> Self
+    fn get_max_connections() -> Int
+    fn min_connections(min: Int) -> Self
+    fn get_min_connections() -> Int
+    fn acquire_time_level(level: LevelFilter) -> Self
+    fn acquire_slow_level(level: LevelFilter) -> Self
+    fn acquire_slow_threshold(threshold: Duration) -> Self
+    fn get_acquire_slow_threshold() -> Duration
+    fn acquire_timeout(timeout: Duration) -> Self
+    fn get_acquire_timeout() -> Duration
+    fn max_lifetime(lifetime: Str) -> Self
+    fn get_max_lifetime() -> Opt<Duration>
+    fn idle_timeout(timeout: Str) -> Self
+    fn get_idle_timeout() -> Opt<Duration>
+    fn test_before_acquire(test: Bool) -> Self
+    fn get_test_before_acquire() -> Bool
+    fn after_connect(callback: F) -> Self
+    fn before_acquire(callback: F) -> Self
+    fn after_release(callback: F) -> Self
+    fn connect(url: Str) -> Res!<Pool<DB>>
+    fn connect_with(options: Str) -> Res!<Pool<DB>>
+    fn connect_lazy(url: Str) -> Res!<Pool<DB>>
+    fn connect_lazy_with(options: Str) -> Pool<DB>
+
+  struct PoolConnectionMetadata
 
   struct Query
-    fn bind(self, value: Str) -> Query
-    fn execute!(self, pool: &PgPool)
-    fn fetch_one!(self, pool: &PgPool) -> Row
-    fn fetch_all!(self, pool: &PgPool) -> List<Row>
-    fn fetch_optional!(self, pool: &PgPool) -> Opt<Row>
+    fn bind(value: T) -> Self
+    fn try_bind(value: T) -> Res!<Str>
+    fn persistent(value: Bool) -> Self
+    fn map(f: F) -> Map<DB, Str, A>
+    fn try_map(f: F) -> Map<DB, F, A>
+    fn execute(executor: E) -> Res!<Str>
+    fn execute_many(executor: E) -> BoxStream<Res!<Str>>
+    fn fetch(executor: E) -> BoxStream<Res!<Str>>
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, Str>>>
+    fn fetch_all(executor: E) -> Res!<List<Str>>
+    fn fetch_one(executor: E) -> Res!<Str>
+    fn fetch_optional(executor: E) -> Res!<Opt<Str>>
 
-  struct Row
-    fn get(self, col: Str) -> Str
-    fn get_int(self, col: Str) -> Int
-    fn get_bool(self, col: Str) -> Bool
-    fn get_uuid(self, col: Str) -> Id
-    fn get_timestamp(self, col: Str) -> Dt
-    fn get_json(self, col: Str) -> Json
-    fn get_optional(self, col: Str) -> Opt<Str>
-    fn get_f64(self, col: Str) -> F64
+  struct CloseEvent
+    fn do_until(fut: Fut) -> Res!<Str>
+
+  struct AnyConnectOptions
+
+  struct AnyConnection
+    fn backend_name() -> Str
+
+  struct LogSettings
+    fn log_statements(level: LevelFilter)
+    fn log_slow_statements(level: LevelFilter, duration: Duration)
+
+  struct Json
+
+  struct AnyArgumentBuffer
+
+  struct AnyValueRef
+
+  trait FromRow
+    fn from_row(row: R) -> Res!<Self>
+
+  trait Column
+    fn ordinal() -> usize
+    fn name() -> Str
+    fn type_info() -> Str
+
+  trait Row
+    fn is_empty() -> Bool
+    fn len() -> usize
+    fn column(index: I) -> Str
+    fn try_column(index: I) -> Res!<Str>
+    fn columns() -> Str
+    fn get(index: I) -> T
+    fn get_unchecked(index: I) -> T
+    fn try_get(index: I) -> Res!<T>
+    fn try_get_unchecked(index: I) -> Res!<T>
+    fn try_get_raw(index: I) -> Res!<Str>
+
+  trait Statement
+    fn to_owned() -> Str
+    fn sql() -> Str
+    fn parameters() -> Opt<Either<Str, usize>>
+    fn columns() -> Str
+    fn column(index: I) -> Str
+    fn try_column(index: I) -> Res!<Str>
+    fn query() -> Query<Str, Str>
+    fn query_with(arguments: A) -> Query<Str, A>
+    fn query_as() -> QueryAs<Str, O, Str>
+    fn query_as_with(arguments: A) -> QueryAs<Str, O, A>
+    fn query_scalar() -> QueryScalar<Str, O, Str>
+    fn query_scalar_with(arguments: A) -> QueryScalar<Str, O, A>
+
+  trait ColumnIndex
+    fn index(container: T) -> Res!<usize>
+
+  trait TypeInfo
+    fn is_null() -> Bool
+    fn name() -> Str
+    fn type_compatible(other: Self) -> Bool
+
+  trait Value
+    fn as_ref() -> Str
+    fn type_info() -> Cow<Str>
+    fn is_null() -> Bool
+    fn decode() -> T
+    fn decode_unchecked() -> T
+    fn try_decode() -> Res!<T>
+    fn try_decode_unchecked() -> Res!<T>
+
+  trait ValueRef
+    fn to_owned() -> Str
+    fn type_info() -> Cow<Str>
+    fn is_null() -> Bool
+
+  trait BufExt
+    fn get_bytes_nul() -> Res!<Bytes>
+    fn get_bytes(len: usize) -> Bytes
+    fn get_str_nul() -> Res!<Str>
+    fn get_str(len: usize) -> Res!<Str>
+
+  trait BufMutExt
+    fn put_str_nul(s: Str)
+
+  trait ProtocolDecode
+    fn decode(buf: Bytes) -> Res!<Self>
+    fn decode_with(buf: Bytes, context: Context) -> Res!<Self>
+
+  trait ProtocolEncode
+    fn encode(buf: List<Int>) -> Res!<Str>
+    fn encode_with(buf: List<Int>, context: Context) -> Res!<Str>
+
+  trait ReadBuf
+    fn init_mut() -> Str
+
+  trait Socket
+    fn try_read(buf: Str) -> Res!<usize>
+    fn try_write(buf: Str) -> Res!<usize>
+    fn poll_read_ready(cx: Context) -> Poll<Res!<Str>>
+    fn poll_write_ready(cx: Context) -> Poll<Res!<Str>>
+    fn poll_flush(_cx: Context) -> Poll<Res!<Str>>
+    fn poll_shutdown(cx: Context) -> Poll<Res!<Str>>
+    fn read(buf: B) -> Read<Self, B>
+    fn write(buf: Str) -> Write<Self>
+    fn flush() -> Flush<Self>
+    fn shutdown() -> Shutdown<Self>
+
+  trait WithSocket
+    fn with_socket(socket: S) -> Str
+
+  trait TypeChecking
+    fn param_type_for_id(id: Str) -> Opt<Str>
+    fn return_type_for_id(id: Str) -> Opt<Str>
+    fn get_feature_gate(info: Str) -> Opt<Str>
+    fn fmt_value_debug(value: Str) -> FmtValue<Self>
+
+  trait DatabaseError
+    fn message() -> Str
+    fn code() -> Opt<Cow<Str>>
+    fn constraint() -> Opt<Str>
+    fn table() -> Opt<Str>
+    fn kind() -> ErrorKind
+    fn is_unique_violation() -> Bool
+    fn is_foreign_key_violation() -> Bool
+    fn is_check_violation() -> Bool
+
+  trait MigrateDatabase
+    fn create_database(url: Str) -> BoxFuture<Res!<Str>>
+    fn database_exists(url: Str) -> BoxFuture<Res!<Bool>>
+    fn drop_database(url: Str) -> BoxFuture<Res!<Str>>
+    fn force_drop_database(_url: Str) -> BoxFuture<Res!<Str>>
+
+  trait Migrate
+    fn ensure_migrations_table() -> BoxFuture<Res!<Str>>
+    fn dirty_version() -> BoxFuture<Res!<Opt<Int>>>
+    fn list_applied_migrations() -> BoxFuture<Res!<List<AppliedMigration>>>
+    fn lock() -> BoxFuture<Res!<Str>>
+    fn unlock() -> BoxFuture<Res!<Str>>
+    fn apply(migration: Migration) -> BoxFuture<Res!<Duration>>
+    fn revert(migration: Migration) -> BoxFuture<Res!<Duration>>
+
+  trait MigrationSource
+    fn resolve() -> BoxFuture<Res!<List<Migration>>>
+
+  trait AnyConnectionBackend
+    fn name() -> Str
+    fn close() -> BoxFuture<Res!<Str>>
+    fn ping() -> BoxFuture<Res!<Str>>
+    fn begin(statement: Opt<Cow<Str>>) -> BoxFuture<Res!<Str>>
+    fn commit() -> BoxFuture<Res!<Str>>
+    fn rollback() -> BoxFuture<Res!<Str>>
+    fn start_rollback()
+    fn get_transaction_depth() -> usize
+    fn is_in_transaction() -> Bool
+    fn cached_statements_size() -> usize
+    fn clear_cached_statements() -> BoxFuture<Res!<Str>>
+    fn shrink_buffers()
+    fn as_migrate() -> Res!<Str>
+    fn fetch_many(query: Str, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxStream<Res!<Either<AnyQueryResult, AnyRow>>>
+    fn fetch_optional(query: Str, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxFuture<Res!<Opt<AnyRow>>>
+    fn prepare_with(sql: Str, parameters: Str) -> BoxFuture<Res!<AnyStatement>>
+    fn describe(sql: Str) -> BoxFuture<Res!<Describe<Any>>>
+
+  trait Type
+    fn type_info() -> Str
+    fn compatible(ty: Str) -> Bool
+
+  trait TestSupport
+    fn test_context(args: TestArgs) -> BoxFuture<Res!<TestContext<Self>>>
+    fn cleanup_test(db_name: Str) -> BoxFuture<Res!<Str>>
+    fn cleanup_test_dbs() -> BoxFuture<Res!<Opt<usize>>>
+    fn snapshot(conn: Str) -> BoxFuture<Res!<FixtureSnapshot<Self>>>
+    fn db_name(args: TestArgs) -> Str
+
+  trait TestFn
+    fn run_test(args: TestArgs) -> Str
+
+  trait TestTermination
+    fn is_success() -> Bool
+
+  trait Encode
+    fn encode(buf: Str) -> Res!<IsNull>
+    fn encode_by_ref(buf: Str) -> Res!<IsNull>
+    fn produces() -> Opt<Str>
+    fn size_hint() -> usize
+
+  trait Arguments
+    fn reserve(additional: usize, size: usize)
+    fn add(value: T) -> Res!<Str>
+    fn len() -> usize
+    fn format_placeholder(writer: W) -> Res
+
+  trait IntoArguments
+    fn into_arguments() -> Str
+
+  trait Acquire
+    fn acquire() -> BoxFuture<Res!<Str>>
+    fn begin() -> BoxFuture<Res!<Transaction<Str>>>
+
+  trait Connection
+    fn close() -> BoxFuture<Res!<Str>>
+    fn ping() -> BoxFuture<Res!<Str>>
+    fn begin() -> BoxFuture<Res!<Transaction<Str>>>
+    fn begin_with(statement: Str) -> BoxFuture<Res!<Transaction<Str>>>
+    fn is_in_transaction() -> Bool
+    fn transaction(callback: F) -> BoxFuture<Res!<R>>
+    fn cached_statements_size() -> usize
+    fn clear_cached_statements() -> BoxFuture<Res!<Str>>
+    fn shrink_buffers()
+    fn connect(url: Str) -> BoxFuture<Res!<Self>>
+    fn connect_with(options: Str) -> BoxFuture<Res!<Self>>
+
+  trait ConnectOptions
+    fn from_url(url: Url) -> Res!<Self>
+    fn to_url_lossy() -> Url
+    fn connect() -> BoxFuture<Res!<Str>>
+    fn log_statements(level: LevelFilter) -> Self
+    fn log_slow_statements(level: LevelFilter, duration: Duration) -> Self
+    fn disable_statement_logging() -> Self
+
+  trait Execute
+    fn sql() -> Str
+    fn statement() -> Opt<Str>
+    fn take_arguments() -> Res!<Opt<Str>>
+    fn persistent() -> Bool
+
+  trait Executor
+    fn execute(query: E) -> BoxFuture<Res!<Str>>
+    fn execute_many(query: E) -> BoxStream<Res!<Str>>
+    fn fetch(query: E) -> BoxStream<Res!<Str>>
+    fn fetch_many(query: E) -> BoxStream<Res!<Either<Str, Str>>>
+    fn fetch_all(query: E) -> BoxFuture<Res!<List<Str>>>
+    fn fetch_one(query: E) -> BoxFuture<Res!<Str>>
+    fn fetch_optional(query: E) -> BoxFuture<Res!<Opt<Str>>>
+    fn prepare(query: Str) -> BoxFuture<Res!<Str>>
+    fn prepare_with(sql: Str, parameters: Str) -> BoxFuture<Res!<Str>>
+
+  trait Decode
+    fn decode(value: Str) -> Res!<Self>
