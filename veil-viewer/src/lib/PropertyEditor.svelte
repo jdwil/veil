@@ -4,7 +4,7 @@
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
   import FieldsEditor from '$lib/FieldsEditor.svelte';
-  import { BlockEditor } from '$lib/editors';
+  import { BlockEditor, AnnotationEditor, EnumEditor } from '$lib/editors';
   import { irChildrenToExprs } from '$lib/editors/ir-convert';
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
