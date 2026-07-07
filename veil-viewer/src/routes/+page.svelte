@@ -41,6 +41,7 @@
   let nextNodeId = $state(1000);
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
+  let showLayerProvided = $state(false);
 
   // Derive the current context kind for palette filtering
   let currentContextKind = $derived.by(() => {
@@ -160,7 +161,13 @@
   }
 
   function computeView(graph: IrGraph, parentId: number | null) {
-    const children = getChildren(graph, parentId);
+    let children = getChildren(graph, parentId);
+
+    // Filter out layer-provided infrastructure unless toggled on
+    if (!showLayerProvided) {
+      children = children.filter(c => !c.metadata.annotations.includes('layer-provided'));
+    }
+
     const visibleIds = new Set(children.map(c => c.id));
 
     // Check if we're at the Solution level with modules + cross-module flows
@@ -513,6 +520,10 @@
         </button>
       {/each}
     </div>
+    <label class="layer-toggle">
+      <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = $irGraph; const p = $currentParent; if (g) computeView(g, p); }} />
+      <span>Show infrastructure</span>
+    </label>
   </div>
 
   {#if $loading}
@@ -604,6 +615,17 @@
     backdrop-filter: blur(12px);
     z-index: 10;
   }
+
+  .layer-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #64748b;
+    cursor: pointer;
+  }
+  .layer-toggle input { accent-color: #6366f1; }
+  .layer-toggle:hover { color: #94a3b8; }
 
   .breadcrumbs {
     display: flex;
