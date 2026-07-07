@@ -24,11 +24,16 @@
 
   // Check if any impl-shaped construct in the palette targets this node's subkind.
   // If so, we can offer a "Create [impl label]" button.
+  // tgt may be a comma-separated list (e.g. "Port, Repository").
   let implConstruct = $derived.by(() => {
     if (!subkind) return null;
     const config = $paletteConfig;
     if (!config || config.length === 0) return null;
-    return config.find((c: any) => c.tgt === subkind) ?? null;
+    return config.find((c: any) => {
+      if (!c.tgt) return false;
+      const targets = c.tgt.split(',').map((t: string) => t.trim());
+      return targets.includes(subkind);
+    }) ?? null;
   });
 
   // Get children of this node from the graph

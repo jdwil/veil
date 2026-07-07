@@ -144,7 +144,7 @@ pkg ddd v1
     ann
       env: "Required environment variables" vars
     group infrastructure
-    tgt Port
+    tgt Port, Repository
     dg infrastructure
 
   construct Repository
