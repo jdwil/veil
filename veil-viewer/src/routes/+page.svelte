@@ -477,6 +477,10 @@
   }
 
   function handleKeyDown(event: KeyboardEvent) {
+    // Don't delete if user is typing in an input/textarea
+    const tag = (event.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
     if ((event.key === 'Delete' || event.key === 'Backspace') && $selectedNodeId) {
       nodes = nodes.filter(n => n.id !== $selectedNodeId);
       edges = edges.filter(e => e.source !== $selectedNodeId && e.target !== $selectedNodeId);
@@ -502,6 +506,8 @@
     }
   }
 </script>
+
+<svelte:window onkeydown={handleKeyDown} />
 
 <div class="viewer-container">
   <!-- Top bar -->
