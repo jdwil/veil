@@ -20,7 +20,7 @@ sol WearTest
           active: Bool
           created_on: Dt
 
-      port TestPlanRepo
+      repo TestPlanRepo
         find!(id: Id) -> Opt<TestPlan>
         find_by_cohort!(cohort_id: Id) -> List<TestPlan>
         save!(plan: TestPlan)
