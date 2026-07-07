@@ -1,6 +1,7 @@
 <script lang="ts">
   import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/types';
   import { irGraph, saveEdits, saving, saveError, paletteConfig, type EditOp } from '$lib/store';
+  import { get } from 'svelte/store';
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
   import FieldsEditor from '$lib/FieldsEditor.svelte';
@@ -38,13 +39,16 @@
 
   // Get children of this node from the graph
   let children = $state<IrNode[]>([]);
-  $effect(() => {
-    const g = $irGraph;
+  // Compute children from the IR graph WITHOUT auto-subscribing to irGraph.
+  // Uses get() to avoid creating a reactive dependency that loops with xyflow.
+  function refreshChildren() {
+    const g = get(irGraph);
     if (!g) { children = []; return; }
     const nodeId = Number(node.id);
     if (isNaN(nodeId)) { children = []; return; }
     children = g.nodes.filter((n: IrNode) => n.metadata.parent === nodeId);
-  });
+  }
+  refreshChildren();
 
   // Determine what kind of editor to show — driven by the core shape
   // (node kind), never by layer-specific subkind names.
@@ -360,7 +364,7 @@
     {:else if editorType === 'adapter'}
       <!-- Impl-shaped: show inherited methods with editable bodies -->
       {@const implementsName = node.data.properties?.find(([k]: [string, string]) => k === 'implements')?.[1] ?? ''}
-      {@const targetNode = implementsName && $irGraph ? $irGraph.nodes.find((n: any) => n.name === implementsName) : null}
+      {@const targetNode = implementsName ? (() => { const g = get(irGraph); return g ? g.nodes.find((n: any) => n.name === implementsName) : null; })() : null}
       {@const targetMethods = targetNode?.metadata?.properties?.find(([k]: [string, string]) => k === 'methods')?.[1] ?? ''}
       {@const inheritedMethods = targetMethods ? targetMethods.split('; ').filter(Boolean).map((sig: string) => {
         const parenIdx = sig.indexOf('(');

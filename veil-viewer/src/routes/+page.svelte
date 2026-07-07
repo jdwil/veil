@@ -42,7 +42,7 @@
   let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
   let flowKey = $state(0);
-  let skipIrSubscription = false;
+  let graphRefreshing = $state(false);
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
   let showLayerProvided = $state(false);
@@ -142,7 +142,9 @@
     // Close the property editor FIRST — before any saveEdits calls.
     // PropertyEditor has a $effect reading $irGraph that causes loops if still mounted.
     selectedNodeId.set(null);
-    // Two frames to ensure Svelte unmounts PropertyEditor before we touch irGraph
+    // Hide SvelteFlow during save to prevent xyflow effects from looping
+    graphRefreshing = true;
+    // Two frames to ensure Svelte unmounts PropertyEditor and SvelteFlow
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     // Find the parent context node's span (we need it to create a child construct)
@@ -174,7 +176,6 @@
           name: targetGroup,
         }]);
         console.log('[handleImplement] group creation result:', createGroupSuccess);
-        if (!createGroupSuccess) { skipIrSubscription = false; return; }
         // Remount xyflow after structural change
         flowKey += 1;
         // Refresh the view after group creation
@@ -195,7 +196,6 @@
     }
 
     // Skip the irGraph subscription during save to prevent the loop
-    skipIrSubscription = true;
 
     // Call backend to create the impl construct in the source
     // Set the active tab AFTER saving completes so the $effect uses it
@@ -213,28 +213,31 @@
       // then remount xyflow with the fresh state.
       const freshGraph = get(irGraph);
       if (freshGraph) computeView(freshGraph, get(currentParent), get(paletteConfig));
-      skipIrSubscription = false;
       flowKey += 1;
+      graphRefreshing = false;
       // Defer tab switch to after remount
       setTimeout(() => { activeTab = targetGroup; switchTab(targetGroup); flowKey += 1; }, 100);
+    } else {
+      // Re-show even on failure
+      const g = get(irGraph);
+      if (g) computeView(g, get(currentParent), get(paletteConfig));
+      graphRefreshing = false;
     }
   }
 
   onMount(() => {
-    fetchIr();
+    fetchIr().then(() => {
+      const graph = get(irGraph);
+      if (graph) computeView(graph, get(currentParent), get(paletteConfig));
+    });
 
     // Apply saved theme on mount
     document.documentElement.setAttribute('data-theme', theme);
 
-    // Subscribe to irGraph and currentParent changes.
-    // With bind:nodes/bind:edges, xyflow handles write-backs properly.
-    let skipIrSubscription_unused = false; // moved to component scope
-    const unsubIr = irGraph.subscribe((graph) => {
-      if (!graph || skipIrSubscription) return;
-      const parent = get(currentParent);
-      const palette = get(paletteConfig);
-      computeView(graph, parent, palette);
-    });
+    // No irGraph subscription — computeView is called explicitly by
+    // fetchIr (on load) and handleImplement (on save).
+    // This prevents any auto-triggered computeView → nodes assignment
+    // that could loop with xyflow's bind:nodes write-back.
     const unsubParent = currentParent.subscribe((parent) => {
       const graph = get(irGraph);
       if (!graph) return;
@@ -243,7 +246,6 @@
     });
 
     return () => {
-      unsubIr();
       unsubParent();
     };
   });
@@ -722,6 +724,7 @@
           </div>
         {/if}
         <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+        {#if !graphRefreshing}
         {#key flowKey}
         <SvelteFlow
           bind:nodes
@@ -737,6 +740,7 @@
           <MiniMap />
         </SvelteFlow>
         {/key}
+        {/if}
 
         {#if selectedNode}
           <PropertyEditor
