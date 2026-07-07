@@ -42,7 +42,7 @@
           show = true;
         }
       }
-      else if (c.allowed_in === 'any') show = true;
+      else if (c.allowed_in === 'any' && ck !== 'Solution') show = true;
 
       if (show) {
         results.push({
