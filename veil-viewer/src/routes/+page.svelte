@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import {
     SvelteFlow,
     Controls,
@@ -138,9 +139,15 @@
    * group tab. Entirely layer-driven — no domain knowledge.
    */
   async function handleImplement(implEntry: any, targetNodeName: string) {
+    // Close the property editor FIRST — before any saveEdits calls.
+    // PropertyEditor has a $effect reading $irGraph that causes loops if still mounted.
+    selectedNodeId.set(null);
+    // Two frames to ensure Svelte unmounts PropertyEditor before we touch irGraph
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
     // Find the parent context node's span (we need it to create a child construct)
-    const graph = $irGraph;
-    const parent = $currentParent;
+    const graph = get(irGraph);
+    const parent = get(currentParent);
     console.log('[handleImplement] start', { parent, targetNodeName, implEntry: implEntry.name, dg: implEntry.dg });
     if (!graph || !parent) { console.log('[handleImplement] no graph or parent'); return; }
     const parentNode = graph.nodes.find(n => n.id === parent);
@@ -172,8 +179,8 @@
         flowKey += 1;
         // Refresh the view after group creation
         await new Promise(r => setTimeout(r, 0));
-        const gAfterGroup = $irGraph;
-        if (gAfterGroup) computeView(gAfterGroup, $currentParent, $paletteConfig);
+        const gAfterGroup = get(irGraph);
+        if (gAfterGroup) computeView(gAfterGroup, get(currentParent), get(paletteConfig));
         // Fetch the fresh IR directly to find the new group's span,
         // avoiding reactive store reads that could trigger effect loops.
         const freshRes = await fetch('http://localhost:3001/api/ir');
@@ -186,12 +193,6 @@
         }
       }
     }
-
-    // Close the property editor before making API calls to avoid reactive loops
-    // between PropertyEditor's $effect and our saveEdits calls.
-    // Must await tick() so Svelte actually unmounts it before we update $irGraph.
-    selectedNodeId.set(null);
-    await new Promise(r => setTimeout(r, 0));
 
     // Skip the irGraph subscription during save to prevent the loop
     skipIrSubscription = true;
@@ -210,8 +211,8 @@
     if (success && targetGroup) {
       // Compute the view with new IR first (sets nodes/edges),
       // then remount xyflow with the fresh state.
-      const freshGraph = $irGraph;
-      if (freshGraph) computeView(freshGraph, $currentParent, $paletteConfig);
+      const freshGraph = get(irGraph);
+      if (freshGraph) computeView(freshGraph, get(currentParent), get(paletteConfig));
       skipIrSubscription = false;
       flowKey += 1;
       // Defer tab switch to after remount
@@ -230,14 +231,14 @@
     let skipIrSubscription_unused = false; // moved to component scope
     const unsubIr = irGraph.subscribe((graph) => {
       if (!graph || skipIrSubscription) return;
-      const parent = $currentParent;
-      const palette = $paletteConfig;
+      const parent = get(currentParent);
+      const palette = get(paletteConfig);
       computeView(graph, parent, palette);
     });
     const unsubParent = currentParent.subscribe((parent) => {
-      const graph = $irGraph;
+      const graph = get(irGraph);
       if (!graph) return;
-      const palette = $paletteConfig;
+      const palette = get(paletteConfig);
       computeView(graph, parent, palette);
     });
 
@@ -249,9 +250,9 @@
 
   function switchTab(tab: string) {
     activeTab = tab;
-    const graph = $irGraph;
-    const parent = $currentParent;
-    const palette = $paletteConfig;
+    const graph = get(irGraph);
+    const parent = get(currentParent);
+    const palette = get(paletteConfig);
     if (graph) computeView(graph, parent, palette);
   }
 
@@ -590,7 +591,7 @@
   }
 
   function handleNodeClick({ node, event }: { node: Node; event: MouseEvent | TouchEvent }) {
-    const graph = $irGraph;
+    const graph = get(irGraph);
     if (!graph) return;
     const irNode = graph.nodes.find(n => n.id === Number(node.id));
 
@@ -614,7 +615,7 @@
 
     // Enter to drill into selected node (same as double-click)
     if (event.key === 'Enter' && $selectedNodeId) {
-      const graph = $irGraph;
+      const graph = get(irGraph);
       if (!graph) return;
       const irNode = graph.nodes.find(n => n.id === Number($selectedNodeId));
       if (irNode) {
@@ -672,7 +673,7 @@
       {/each}
     </div>
     <label class="layer-toggle">
-      <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = $irGraph; const p = $currentParent; if (g) computeView(g, p); }} />
+      <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
       <span>Show infrastructure</span>
     </label>
     <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
