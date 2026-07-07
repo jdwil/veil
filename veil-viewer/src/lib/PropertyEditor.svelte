@@ -318,6 +318,49 @@
     <!-- Type-specific editor -->
     {#if editorType === 'methods'}
       <MethodEditor methods={methods} onChange={handleMethodsChange} />
+    {:else if editorType === 'adapter'}
+      <!-- Impl-shaped: show inherited methods with editable bodies -->
+      {@const implementsName = node.data.properties?.find(([k]: [string, string]) => k === 'implements')?.[1] ?? ''}
+      {@const targetNode = implementsName && $irGraph ? $irGraph.nodes.find((n: any) => n.name === implementsName) : null}
+      {@const targetMethods = targetNode?.metadata?.properties?.find(([k]: [string, string]) => k === 'methods')?.[1] ?? ''}
+      {@const inheritedMethods = targetMethods ? targetMethods.split('; ').filter(Boolean).map((sig: string) => {
+        const parenIdx = sig.indexOf('(');
+        if (parenIdx < 0) return { name: sig.trim(), signature: sig.trim(), body: [] };
+        let methodName = sig.slice(0, parenIdx).trim();
+        if (methodName.endsWith('!')) methodName = methodName.slice(0, -1);
+        return { name: methodName, signature: sig.trim(), body: [] };
+      }) : []}
+
+      {#if implementsName}
+        <div class="pe-section">
+          <span class="label-text">Implements</span>
+          <div class="pe-note pe-note-info">{implementsName}</div>
+        </div>
+      {/if}
+
+      <div class="pe-section">
+        <span class="label-text">Methods</span>
+        {#if inheritedMethods.length > 0}
+          <div class="impl-methods">
+            {#each inheritedMethods as method}
+              <div class="impl-method-card">
+                <div class="impl-method-sig">
+                  <span class="impl-method-icon">⚡</span>
+                  <code class="impl-method-name">{method.signature}</code>
+                </div>
+                <div class="impl-method-body">
+                  <span class="body-hint">// TODO: implement</span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <div class="pe-empty">No methods inherited. Add methods to the target interface first.</div>
+        {/if}
+      </div>
+
+      <!-- Additional methods (not from target) -->
+      <MethodEditor methods={localMethods} onChange={handleMethodsChange} />
     {:else if editorType === 'fields'}
       <!-- Fields from properties -->
       {@const fieldsRaw = node.data.properties?.find(([k]: [string, string]) => k === 'fields')?.[1] ?? ''}
@@ -610,6 +653,38 @@
     color: #475569;
     font-style: italic;
     margin: 0;
+  }
+
+  .impl-methods { display: flex; flex-direction: column; gap: 6px; }
+  .impl-method-card {
+    background: rgba(0,0,0,0.2);
+    border: 1px solid #2d2d44;
+    border-radius: 8px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .impl-method-sig {
+    display: flex; align-items: center; gap: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .impl-method-icon { font-size: 12px; }
+  .impl-method-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; color: #a5b4fc; word-break: break-all;
+  }
+  .impl-method-body {
+    padding: 4px 8px;
+    background: rgba(0,0,0,0.15);
+    border-radius: 4px;
+    border-left: 2px solid #334155;
+    min-height: 32px;
+  }
+  .body-hint {
+    font-size: 10px; color: #475569; font-style: italic;
+    font-family: 'JetBrains Mono', monospace;
   }
 
   .pe-implement-btn {
