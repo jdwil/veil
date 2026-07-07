@@ -87,7 +87,7 @@
     right: 0;
     top: 60px;
     bottom: 0;
-    z-index: 100;
+    z-index: 10;
     display: flex;
     flex-direction: row;
     align-items: flex-start;
