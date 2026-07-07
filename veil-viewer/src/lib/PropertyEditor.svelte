@@ -565,4 +565,4 @@
     border-left: 2px solid var(--veil-border);
     min-height: 32px;
   }
-
+</style>
