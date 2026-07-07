@@ -87,7 +87,7 @@
   .type-input:focus { border-color: #06b6d4; }
   .type-kw { color: #c084fc; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   .type-angle, .type-paren, .type-comma, .type-arrow {
-    color: #737373; font-size: 11px; font-family: 'JetBrains Mono', monospace;
+    color: var(--veil-text-dim); font-size: 11px; font-family: 'JetBrains Mono', monospace;
   }
-  .type-fallback { color: #737373; font-size: 10px; }
+  .type-fallback { color: var(--veil-text-dim); font-size: 10px; }
 </style>

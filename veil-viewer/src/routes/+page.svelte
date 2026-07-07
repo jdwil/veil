@@ -43,6 +43,15 @@
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
   let showLayerProvided = $state(false);
+  let theme = $state<'dark' | 'light'>(
+    (typeof localStorage !== 'undefined' && localStorage.getItem('veil-theme') as 'dark' | 'light') || 'dark'
+  );
+
+  function toggleTheme() {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('veil-theme', theme);
+  }
 
   // Derive the current context kind for palette filtering
   let currentContextKind = $derived.by(() => {
@@ -196,6 +205,10 @@
         }]);
         console.log('[handleImplement] group creation result:', createGroupSuccess);
         if (!createGroupSuccess) return;
+        // Refresh the view after group creation
+        await new Promise(r => setTimeout(r, 0));
+        const gAfterGroup = $irGraph;
+        if (gAfterGroup) computeView(gAfterGroup, $currentParent, $paletteConfig);
         // Fetch the fresh IR directly to find the new group's span,
         // avoiding reactive store reads that could trigger effect loops.
         const freshRes = await fetch('http://localhost:3001/api/ir');
@@ -230,37 +243,46 @@
       // Defer tab switch to next tick to avoid reactive loop
       setTimeout(() => {
         activeTab = targetGroup;
-        switchTab(targetGroup);
+        const g1 = $irGraph;
+        if (g1) computeView(g1, $currentParent, $paletteConfig);
       }, 0);
     } else if (!success && targetGroup) {
       console.log('[handleImplement] adapter creation FAILED');
     } else {
       console.log('[handleImplement] adapter creation SUCCESS');
+      setTimeout(() => {
+        const g2 = $irGraph;
+        if (g2) computeView(g2, $currentParent, $paletteConfig);
+      }, 0);
     }
   }
 
   onMount(() => {
     fetchIr();
 
+    // Apply saved theme on mount
+    document.documentElement.setAttribute('data-theme', theme);
+
     // Subscribe to irGraph and currentParent changes manually (NOT via $effect)
     // to avoid Svelte 5's effect_update_depth_exceeded when computeView writes
     // to reactive state (nodes, edges, tabs) during the same microtask.
-    // We defer with setTimeout(0) to break xyflow's internal reactive chain.
+    let initialLoad = true;
     const unsubIr = irGraph.subscribe((graph) => {
       if (!graph) return;
-      setTimeout(() => {
+      // Only auto-compute on initial load. After that, callers (saveEdits,
+      // switchTab) must call computeView themselves to avoid xyflow loops.
+      if (initialLoad) {
+        initialLoad = false;
         const parent = $currentParent;
         const palette = $paletteConfig;
         computeView(graph, parent, palette);
-      }, 0);
+      }
     });
     const unsubParent = currentParent.subscribe((parent) => {
-      setTimeout(() => {
-        const graph = $irGraph;
-        if (!graph) return;
-        const palette = $paletteConfig;
-        computeView(graph, parent, palette);
-      }, 0);
+      const graph = $irGraph;
+      if (!graph) return;
+      const palette = $paletteConfig;
+      computeView(graph, parent, palette);
     });
 
     return () => {
@@ -485,7 +507,7 @@
         animated: e.kind === 'SequenceFlow',
         style: getEdgeStyle(e.kind),
         label: e.kind === 'Implements' ? 'implements' : e.kind === 'SequenceFlow' ? '' : e.kind,
-        labelStyle: 'font-size: 10px; fill: #737373;',
+        labelStyle: 'font-size: 10px; fill: var(--veil-text-dim);',
       }));
 
     // Ghost nodes for cross-references
@@ -587,15 +609,15 @@
   function getEdgeStyle(kind: string): string {
     switch (kind) {
       case 'Implements':
-        return 'stroke: #a3a3a3; stroke-width: 2; stroke-dasharray: 6 3;';
+        return 'stroke: var(--veil-text-secondary); stroke-width: 2; stroke-dasharray: 6 3;';
       case 'SequenceFlow':
-        return 'stroke: #737373; stroke-width: 2;';
+        return 'stroke: var(--veil-text-dim); stroke-width: 2;';
       case 'Calls':
-        return 'stroke: #737373; stroke-width: 1.5; stroke-dasharray: 4 2;';
+        return 'stroke: var(--veil-text-dim); stroke-width: 1.5; stroke-dasharray: 4 2;';
       case 'Emits':
-        return 'stroke: #737373; stroke-width: 1.5; stroke-dasharray: 3 3;';
+        return 'stroke: var(--veil-text-dim); stroke-width: 1.5; stroke-dasharray: 3 3;';
       default:
-        return 'stroke: #525252; stroke-width: 1.5;';
+        return 'stroke: var(--veil-text-faint); stroke-width: 1.5;';
     }
   }
 
@@ -663,7 +685,7 @@
       source: connection.source,
       target: connection.target,
       animated: true,
-      style: 'stroke: #737373; stroke-width: 2;',
+      style: 'stroke: var(--veil-text-dim); stroke-width: 2;',
     };
     edges = [...edges, newEdge];
   }
@@ -699,6 +721,9 @@
       <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = $irGraph; const p = $currentParent; if (g) computeView(g, p); }} />
       <span>Show infrastructure</span>
     </label>
+    <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
+      {theme === 'dark' ? '☀️' : '🌙'}
+    </button>
   </div>
 
   {#if $loading}
@@ -778,7 +803,7 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
-    background: #0f0f0f;
+    background: var(--veil-bg);
   }
 
   .top-bar {
@@ -786,8 +811,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 20px;
-    background: rgba(26, 26, 26, 0.95);
-    border-bottom: 1px solid #2e2e2e;
+    background: var(--veil-surface-alt);
+    border-bottom: 1px solid var(--veil-border);
     backdrop-filter: blur(12px);
     z-index: 10;
   }
@@ -797,11 +822,25 @@
     align-items: center;
     gap: 6px;
     font-size: 11px;
-    color: #737373;
+    color: var(--veil-text-dim);
     cursor: pointer;
   }
-  .layer-toggle input { accent-color: #737373; }
-  .layer-toggle:hover { color: #a3a3a3; }
+  .layer-toggle input { accent-color: var(--veil-text-dim); }
+  .layer-toggle:hover { color: var(--veil-text-secondary); }
+
+  .theme-toggle {
+    background: none;
+    border: 1px solid var(--veil-border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+    line-height: 1;
+  }
+  .theme-toggle:hover {
+    background: var(--veil-accent-hover);
+  }
 
   .breadcrumbs {
     display: flex;
@@ -813,7 +852,7 @@
   .breadcrumb-item {
     background: none;
     border: none;
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
     font-size: 13px;
     cursor: pointer;
     padding: 4px 8px;
@@ -822,18 +861,18 @@
   }
 
   .breadcrumb-item:hover {
-    background: rgba(115, 115, 115, 0.1);
-    color: #e5e5e5;
+    background: var(--veil-accent-subtle);
+    color: var(--veil-text);
   }
 
   .breadcrumb-item.active {
-    color: #e5e5e5;
+    color: var(--veil-text);
     font-weight: 600;
-    background: rgba(115, 115, 115, 0.15);
+    background: var(--veil-accent-hover);
   }
 
   .breadcrumb-sep {
-    color: #525252;
+    color: var(--veil-text-faint);
     font-size: 14px;
   }
 
@@ -856,8 +895,8 @@
     display: flex;
     gap: 2px;
     padding: 8px 12px;
-    background: rgba(26, 26, 26, 0.9);
-    border-bottom: 1px solid #2e2e2e;
+    background: var(--veil-surface-alt);
+    border-bottom: 1px solid var(--veil-border);
   }
 
   .scope-bar {
@@ -865,8 +904,8 @@
     align-items: center;
     gap: 6px;
     padding: 6px 16px;
-    background: rgba(60, 60, 60, 0.1);
-    border-bottom: 1px solid rgba(82, 82, 82, 0.3);
+    background: var(--veil-accent-subtle);
+    border-bottom: 1px solid var(--veil-border);
     overflow-x: auto;
     flex-shrink: 0;
   }
@@ -875,7 +914,7 @@
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
     font-weight: 700;
   }
 
@@ -884,9 +923,9 @@
     font-family: 'JetBrains Mono', monospace;
     padding: 2px 8px;
     border-radius: 4px;
-    background: rgba(82, 82, 82, 0.15);
-    border: 1px solid rgba(82, 82, 82, 0.3);
-    color: #d4d4d4;
+    background: var(--veil-accent-hover);
+    border: 1px solid var(--veil-border);
+    color: var(--veil-text);
   }
 
   .tab-btn {
@@ -894,22 +933,22 @@
     font-size: 11px;
     font-weight: 600;
     text-transform: capitalize;
-    border: 1px solid #2e2e2e;
+    border: 1px solid var(--veil-border);
     border-radius: 6px;
     background: transparent;
-    color: #737373;
+    color: var(--veil-text-dim);
     cursor: pointer;
     transition: all 0.15s;
   }
 
   .tab-btn:hover {
-    background: rgba(115, 115, 115, 0.08);
-    color: #a3a3a3;
+    background: var(--veil-accent-subtle);
+    color: var(--veil-text-secondary);
   }
 
   .tab-btn.active {
-    background: rgba(115, 115, 115, 0.15);
-    color: #d4d4d4;
+    background: var(--veil-accent-hover);
+    color: var(--veil-text);
     border-color: rgba(115, 115, 115, 0.4);
   }
 
@@ -926,27 +965,27 @@
     align-items: center;
     justify-content: center;
     gap: 12px;
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
   }
 
   .status-overlay.error { color: #f87171; }
   .error-title { font-size: 18px; font-weight: 600; }
-  .error-msg { font-size: 14px; color: #a3a3a3; }
-  .error-hint { font-size: 12px; color: #737373; margin-top: 8px; }
-  .error-hint code { color: #d4d4d4; background: rgba(82, 82, 82, 0.2); padding: 2px 6px; border-radius: 4px; }
-  .retry-btn { margin-top: 12px; padding: 8px 20px; background: #525252; color: white; border: none; border-radius: 8px; cursor: pointer; }
-  .retry-btn:hover { background: #404040; }
-  .pulse-ring { width: 40px; height: 40px; border-radius: 50%; border: 3px solid #525252; animation: pulse 1.5s infinite; }
+  .error-msg { font-size: 14px; color: var(--veil-text-secondary); }
+  .error-hint { font-size: 12px; color: var(--veil-text-dim); margin-top: 8px; }
+  .error-hint code { color: var(--veil-text); background: var(--veil-accent-subtle); padding: 2px 6px; border-radius: 4px; }
+  .retry-btn { margin-top: 12px; padding: 8px 20px; background: var(--veil-text-faint); color: white; border: none; border-radius: 8px; cursor: pointer; }
+  .retry-btn:hover { background: var(--veil-accent); }
+  .pulse-ring { width: 40px; height: 40px; border-radius: 50%; border: 3px solid var(--veil-text-faint); animation: pulse 1.5s infinite; }
   @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.5; } 100% { transform: scale(1); opacity: 1; } }
 
-  :global(.svelte-flow) { background: #0f0f0f !important; }
+  :global(.svelte-flow) { background: var(--veil-bg) !important; }
   :global(.svelte-flow__background) { opacity: 0.4; }
-  :global(.svelte-flow__minimap) { background: rgba(26, 26, 26, 0.9) !important; border: 1px solid #2e2e2e !important; border-radius: 10px !important; }
-  :global(.svelte-flow__controls) { background: rgba(26, 26, 26, 0.9) !important; border: 1px solid #2e2e2e !important; border-radius: 10px !important; }
-  :global(.svelte-flow__controls button) { background: transparent !important; border-color: #2e2e2e !important; color: #e5e5e5 !important; }
-  :global(.svelte-flow__controls button:hover) { background: rgba(115, 115, 115, 0.15) !important; }
+  :global(.svelte-flow__minimap) { background: var(--veil-surface-alt) !important; border: 1px solid var(--veil-border) !important; border-radius: 10px !important; }
+  :global(.svelte-flow__controls) { background: var(--veil-surface-alt) !important; border: 1px solid var(--veil-border) !important; border-radius: 10px !important; }
+  :global(.svelte-flow__controls button) { background: transparent !important; border-color: var(--veil-border) !important; color: var(--veil-text) !important; }
+  :global(.svelte-flow__controls button:hover) { background: var(--veil-accent-hover) !important; }
   :global(.svelte-flow__edge-path) { stroke-width: 2px; filter: drop-shadow(0 0 3px rgba(100, 100, 100, 0.2)); }
-  :global(.svelte-flow__edge.animated .svelte-flow__edge-path) { stroke: #737373 !important; stroke-width: 2.5px; filter: drop-shadow(0 0 6px rgba(100, 100, 100, 0.3)); }
-  :global(.svelte-flow__handle) { width: 8px !important; height: 8px !important; background: var(--node-color, #525252) !important; border: 2px solid #1a1a1a !important; opacity: 0; transition: opacity 0.2s; }
+  :global(.svelte-flow__edge.animated .svelte-flow__edge-path) { stroke: var(--veil-text-dim) !important; stroke-width: 2.5px; filter: drop-shadow(0 0 6px rgba(100, 100, 100, 0.3)); }
+  :global(.svelte-flow__handle) { width: 8px !important; height: 8px !important; background: var(--node-color, var(--veil-text-faint)) !important; border: 2px solid var(--veil-surface) !important; opacity: 0; transition: opacity 0.2s; }
   :global(.svelte-flow__node:hover .svelte-flow__handle) { opacity: 1; }
 </style>

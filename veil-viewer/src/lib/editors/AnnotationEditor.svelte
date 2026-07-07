@@ -90,7 +90,7 @@
 
 <style>
   .annotation-editor { display: flex; flex-direction: column; gap: 4px; }
-  .label-text { font-size: 10px; text-transform: uppercase; color: #737373; font-weight: 600; }
+  .label-text { font-size: 10px; text-transform: uppercase; color: var(--veil-text-dim); font-weight: 600; }
 
   .ann-row {
     display: flex; flex-direction: column; gap: 3px;
@@ -103,7 +103,7 @@
   }
 
   .ann-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-  .ann-toggle input { width: 14px; height: 14px; accent-color: #737373; }
+  .ann-toggle input { width: 14px; height: 14px; accent-color: var(--veil-text-dim); }
   .ann-name {
     font-family: 'JetBrains Mono', monospace; font-size: 11px;
     color: #c084fc; font-weight: 500;
@@ -112,11 +112,11 @@
   .ann-args { display: flex; gap: 4px; padding-left: 20px; flex-wrap: wrap; }
   .ann-arg-input {
     background: #0f172a; border: 1px solid #334155; border-radius: 3px;
-    padding: 3px 6px; font-size: 11px; color: #e5e5e5; outline: none;
+    padding: 3px 6px; font-size: 11px; color: var(--veil-text); outline: none;
     font-family: 'JetBrains Mono', monospace; min-width: 80px;
   }
-  .ann-arg-input:focus { border-color: #737373; }
+  .ann-arg-input:focus { border-color: var(--veil-text-dim); }
 
-  .ann-desc { font-size: 10px; color: #525252; padding-left: 20px; }
-  .empty-hint { font-size: 10px; color: #525252; font-style: italic; }
+  .ann-desc { font-size: 10px; color: var(--veil-text-faint); padding-left: 20px; }
+  .empty-hint { font-size: 10px; color: var(--veil-text-faint); font-style: italic; }
 </style>

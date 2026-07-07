@@ -124,11 +124,11 @@
 <style>
   .methods-editor { display: flex; flex-direction: column; gap: 8px; }
   .section-header { display: flex; align-items: center; justify-content: space-between; }
-  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #737373; font-weight: 600; }
+  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--veil-text-dim); font-weight: 600; }
 
   .method-card {
     background: rgba(0,0,0,0.2);
-    border: 1px solid #2e2e2e;
+    border: 1px solid var(--veil-border);
     border-radius: 8px;
     padding: 8px;
     display: flex;
@@ -139,15 +139,15 @@
   .method-header { display: flex; align-items: center; gap: 4px; }
   .method-name-input {
     flex: 1;
-    background: rgba(0,0,0,0.3); border: 1px solid #2e2e2e; border-radius: 4px;
-    padding: 5px 8px; font-size: 12px; color: #e5e5e5; font-weight: 600;
+    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 4px;
+    padding: 5px 8px; font-size: 12px; color: var(--veil-text); font-weight: 600;
     outline: none; font-family: monospace;
   }
-  .method-name-input:focus { border-color: #737373; }
+  .method-name-input:focus { border-color: var(--veil-text-dim); }
 
   .params-section { display: flex; flex-direction: column; gap: 3px; padding-left: 8px; }
   .params-header { display: flex; align-items: center; gap: 4px; }
-  .sub-label { font-size: 9px; color: #525252; text-transform: uppercase; }
+  .sub-label { font-size: 9px; color: var(--veil-text-faint); text-transform: uppercase; }
 
   .param-row { display: flex; gap: 3px; align-items: center; }
   .param-name {
@@ -155,42 +155,42 @@
     background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px;
     padding: 3px 6px; font-size: 11px; color: #cbd5e1; outline: none; font-family: monospace;
   }
-  .param-name:focus { border-color: #737373; }
+  .param-name:focus { border-color: var(--veil-text-dim); }
   .param-type {
     width: 80px;
     background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px;
-    padding: 3px 4px; font-size: 10px; color: #a3a3a3; outline: none; cursor: pointer;
+    padding: 3px 4px; font-size: 10px; color: var(--veil-text-secondary); outline: none; cursor: pointer;
   }
 
   .return-section { display: flex; align-items: center; gap: 6px; padding-left: 8px; }
   .return-type {
     flex: 1;
     background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px;
-    padding: 3px 6px; font-size: 10px; color: #a3a3a3; outline: none; cursor: pointer;
+    padding: 3px 6px; font-size: 10px; color: var(--veil-text-secondary); outline: none; cursor: pointer;
   }
 
   .add-btn {
     font-size: 10px; padding: 3px 8px; border-radius: 4px;
     background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.3);
-    color: #d4d4d4; cursor: pointer;
+    color: var(--veil-text); cursor: pointer;
   }
   .add-btn:hover { background: rgba(99,102,241,0.2); }
   .add-btn-small {
     font-size: 10px; padding: 1px 6px; border-radius: 3px;
     background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
-    color: #d4d4d4; cursor: pointer;
+    color: var(--veil-text); cursor: pointer;
   }
 
   .remove-btn {
-    background: none; border: none; color: #737373; font-size: 12px;
+    background: none; border: none; color: var(--veil-text-dim); font-size: 12px;
     cursor: pointer; padding: 2px 4px; border-radius: 3px;
   }
   .remove-btn:hover { color: #f87171; background: rgba(248,113,113,0.1); }
   .remove-btn-small {
-    background: none; border: none; color: #525252; font-size: 10px;
+    background: none; border: none; color: var(--veil-text-faint); font-size: 10px;
     cursor: pointer; padding: 1px 3px;
   }
   .remove-btn-small:hover { color: #f87171; }
 
-  .empty-hint { font-size: 10px; color: #525252; font-style: italic; padding: 4px 8px; }
+  .empty-hint { font-size: 10px; color: var(--veil-text-faint); font-style: italic; padding: 4px 8px; }
 </style>

@@ -107,7 +107,7 @@
                 class="palette-tile"
                 draggable="true"
                 ondragstart={(e) => onDragStart(e, item)}
-                style="--tile-color: {item.color || NODE_STYLES[item.kind]?.color || '#737373'}"
+                style="--tile-color: {item.color || NODE_STYLES[item.kind]?.color || 'var(--veil-text-dim)'}"
               >
                 <span class="tile-icon">{item.icon}</span>
                 <span class="tile-label">{item.label}</span>
@@ -152,8 +152,8 @@
     min-width: 200px;
     display: flex;
     flex-direction: column;
-    background: rgba(26, 26, 26, 0.95);
-    border-right: 1px solid #2e2e2e;
+    background: var(--veil-surface-alt);
+    border-right: 1px solid var(--veil-border);
     backdrop-filter: blur(12px);
     overflow-y: auto;
     z-index: 5;
@@ -161,7 +161,7 @@
 
   .palette-header {
     padding: 12px 16px;
-    border-bottom: 1px solid #2e2e2e;
+    border-bottom: 1px solid var(--veil-border);
   }
 
   .palette-title {
@@ -169,7 +169,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.8px;
-    color: #737373;
+    color: var(--veil-text-dim);
   }
 
   .palette-body {
@@ -186,7 +186,7 @@
 
   .empty-text {
     font-size: 10px;
-    color: #525252;
+    color: var(--veil-text-faint);
     font-style: italic;
   }
 
@@ -200,7 +200,7 @@
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: #525252;
+    color: var(--veil-text-faint);
     padding: 0 4px;
     margin-bottom: 2px;
   }
@@ -218,14 +218,14 @@
     padding: 8px 10px;
     border-radius: 8px;
     border: 1px solid rgba(255, 255, 255, 0.05);
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--veil-code-bg);
     cursor: grab;
     transition: all 0.15s;
     user-select: none;
   }
 
   .palette-tile:hover {
-    background: rgba(82, 82, 82, 0.08);
+    background: var(--veil-accent-subtle);
     border-color: var(--tile-color);
     transform: translateX(2px);
   }
@@ -252,7 +252,7 @@
       max-height: 120px;
       flex-direction: row;
       border-right: none;
-      border-bottom: 1px solid #2e2e2e;
+      border-bottom: 1px solid var(--veil-border);
       overflow-x: auto;
       overflow-y: hidden;
     }
@@ -280,7 +280,7 @@
   }
   .stub-version {
     font-weight: 400;
-    color: #737373;
+    color: var(--veil-text-dim);
     margin-left: 6px;
   }
   .stub-struct {
@@ -290,19 +290,19 @@
     padding: 3px 8px;
     border-radius: 4px;
     background: rgba(148, 163, 184, 0.06);
-    border: 1px solid #2e2e2e;
+    border: 1px solid var(--veil-border);
     margin: 2px 0;
     cursor: help;
   }
   .stub-icon { font-size: 12px; }
   .stub-struct-name {
     font-size: 11px;
-    color: #e5e5e5;
+    color: var(--veil-text);
     font-family: 'JetBrains Mono', monospace;
   }
   .stub-method-count {
     font-size: 9px;
-    color: #737373;
+    color: var(--veil-text-dim);
     margin-left: auto;
   }
 </style>

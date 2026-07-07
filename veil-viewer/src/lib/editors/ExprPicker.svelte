@@ -89,7 +89,7 @@
     border: none;
     border-bottom: 1px solid #334155;
     background: #0f172a;
-    color: #e5e5e5;
+    color: var(--veil-text);
     font-size: 12px;
     outline: none;
   }
@@ -103,7 +103,7 @@
     padding: 4px 8px;
     font-size: 10px;
     text-transform: uppercase;
-    color: #737373;
+    color: var(--veil-text-dim);
     font-weight: 600;
     border-top: 1px solid #1e293b;
     background: #0f172a;
@@ -117,7 +117,7 @@
     padding: 6px 10px;
     border: none;
     background: transparent;
-    color: #e5e5e5;
+    color: var(--veil-text);
     font-size: 12px;
     cursor: pointer;
     text-align: left;

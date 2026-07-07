@@ -95,7 +95,7 @@
 
   .toggle-btn {
     background: #1e293b;
-    color: #e5e5e5;
+    color: var(--veil-text);
     border: 1px solid #334155;
     border-radius: 4px 0 0 4px;
     padding: 8px 12px;
@@ -132,7 +132,7 @@
 
   .file-item {
     background: #1e293b;
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
     border: 1px solid #334155;
     border-radius: 3px;
     padding: 3px 8px;
@@ -162,13 +162,13 @@
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 12px;
     line-height: 1.5;
-    color: #e5e5e5;
+    color: var(--veil-text);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
   .loading, .empty {
-    color: #737373;
+    color: var(--veil-text-dim);
     font-size: 13px;
     padding: 20px;
   }

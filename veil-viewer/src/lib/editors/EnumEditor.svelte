@@ -134,12 +134,12 @@
 <style>
   .enum-editor { display: flex; flex-direction: column; gap: 6px; }
   .section-header { display: flex; align-items: center; justify-content: space-between; }
-  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #737373; font-weight: 600; }
+  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--veil-text-dim); font-weight: 600; }
 
   .variant-row { display: flex; gap: 4px; align-items: center; }
   .variant-name {
     min-width: 80px; flex: 1;
-    background: rgba(0,0,0,0.3); border: 1px solid #2e2e2e; border-radius: 4px;
+    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 4px;
     padding: 5px 8px; font-size: 11px; color: #fbbf24; outline: none;
     font-family: 'JetBrains Mono', monospace; font-weight: 600;
   }
@@ -147,28 +147,28 @@
   .variant-data {
     min-width: 80px; flex: 1;
     background: rgba(0,0,0,0.2); border: 1px solid #1e293b; border-radius: 4px;
-    padding: 5px 6px; font-size: 10px; color: #a3a3a3; outline: none;
+    padding: 5px 6px; font-size: 10px; color: var(--veil-text-secondary); outline: none;
     font-family: 'JetBrains Mono', monospace;
   }
-  .variant-data:focus { border-color: #737373; }
+  .variant-data:focus { border-color: var(--veil-text-dim); }
 
   .transitions-section { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
   .transition-row { display: flex; gap: 4px; align-items: center; }
   .trans-select {
     flex: 1;
-    background: rgba(0,0,0,0.3); border: 1px solid #2e2e2e; border-radius: 4px;
-    padding: 4px 6px; font-size: 10px; color: #a3a3a3; outline: none;
+    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 4px;
+    padding: 4px 6px; font-size: 10px; color: var(--veil-text-secondary); outline: none;
   }
-  .trans-arrow { color: #737373; font-size: 14px; }
+  .trans-arrow { color: var(--veil-text-dim); font-size: 14px; }
 
   .add-btn {
     font-size: 10px; padding: 3px 8px; border-radius: 4px;
     background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.3);
-    color: #d4d4d4; cursor: pointer;
+    color: var(--veil-text); cursor: pointer;
   }
   .add-btn:hover { background: rgba(99,102,241,0.2); }
   .remove-btn {
-    background: none; border: none; color: #737373; font-size: 11px;
+    background: none; border: none; color: var(--veil-text-dim); font-size: 11px;
     cursor: pointer; padding: 2px 4px; border-radius: 3px;
   }
   .remove-btn:hover { color: #f87171; background: rgba(248,113,113,0.1); }

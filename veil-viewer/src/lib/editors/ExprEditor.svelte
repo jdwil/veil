@@ -222,40 +222,40 @@
 
   .collapsed-preview {
     background: #1e293b; border: 1px solid #334155; border-radius: 3px;
-    padding: 2px 6px; color: #a3a3a3; font-size: 11px; cursor: pointer;
+    padding: 2px 6px; color: var(--veil-text-secondary); font-size: 11px; cursor: pointer;
     font-family: 'JetBrains Mono', monospace; display: inline-flex; gap: 4px;
   }
   .collapsed-preview:hover { background: #334155; }
-  .expand-icon { font-size: 8px; color: #737373; }
+  .expand-icon { font-size: 8px; color: var(--veil-text-dim); }
 
   .collapse-btn {
-    background: none; border: none; color: #737373; font-size: 8px;
+    background: none; border: none; color: var(--veil-text-dim); font-size: 8px;
     cursor: pointer; padding: 0 2px;
   }
 
   .inline-input {
     background: #0f172a; border: 1px solid #334155; border-radius: 3px;
-    color: #e5e5e5; padding: 2px 6px; font-size: 11px; min-width: 50px;
+    color: var(--veil-text); padding: 2px 6px; font-size: 11px; min-width: 50px;
     font-family: 'JetBrains Mono', monospace; outline: none;
   }
-  .inline-input:focus { border-color: #737373; }
+  .inline-input:focus { border-color: var(--veil-text-dim); }
   .inline-input.sm { min-width: 35px; max-width: 80px; }
   .inline-input.num { max-width: 60px; }
   .inline-input.str { min-width: 80px; }
 
   .inline-select {
     background: #0f172a; border: 1px solid #334155; border-radius: 3px;
-    color: #e5e5e5; padding: 2px 4px; font-size: 11px;
+    color: var(--veil-text); padding: 2px 4px; font-size: 11px;
   }
 
   .op-select {
-    background: #1e293b; border: 1px solid #525252; border-radius: 3px;
+    background: #1e293b; border: 1px solid var(--veil-text-faint); border-radius: 3px;
     color: #fbbf24; padding: 2px 4px; font-size: 11px; font-weight: 600;
   }
 
   .kw { color: #c084fc; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
   .dot, .comma, .eq, .arrow, .paren, .bracket, .pipe, .postfix {
-    color: #737373; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--veil-text-dim); font-family: 'JetBrains Mono', monospace; font-size: 11px;
   }
   .string-quote { color: #4ade80; font-family: 'JetBrains Mono', monospace; }
 
@@ -275,5 +275,5 @@
   }
   .tiny-btn:hover { background: #2563eb; }
 
-  .fallback { color: #737373; font-style: italic; font-size: 11px; }
+  .fallback { color: var(--veil-text-dim); font-style: italic; font-size: 11px; }
 </style>

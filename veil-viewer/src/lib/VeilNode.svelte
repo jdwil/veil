@@ -126,7 +126,7 @@
 <style>
   .veil-node {
     position: relative;
-    background: linear-gradient(145deg, rgba(26, 26, 26, 0.95), rgba(20, 20, 20, 0.98));
+    background: linear-gradient(145deg, var(--veil-node-bg, rgba(26, 26, 26, 0.95)), var(--veil-node-bg-end, rgba(20, 20, 20, 0.98)));
     border: 1.5px solid var(--node-color);
     border-radius: 14px;
     padding: 0;
@@ -135,8 +135,8 @@
     backdrop-filter: blur(12px);
     box-shadow:
       0 0 15px color-mix(in srgb, var(--node-color) 25%, transparent),
-      0 8px 32px rgba(0, 0, 0, 0.5),
-      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      0 8px 32px var(--veil-shadow),
+      inset 0 1px 0 var(--veil-highlight);
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     transform: perspective(800px) rotateX(2deg);
     transform-style: preserve-3d;
@@ -146,8 +146,8 @@
     transform: perspective(800px) rotateX(0deg) translateY(-4px) scale(1.02);
     box-shadow:
       0 0 30px color-mix(in srgb, var(--node-color) 45%, transparent),
-      0 16px 48px rgba(0, 0, 0, 0.6),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      0 16px 48px var(--veil-shadow-strong),
+      inset 0 1px 0 var(--veil-highlight);
     border-color: color-mix(in srgb, var(--node-color) 80%, white);
   }
 
@@ -194,7 +194,7 @@
 
   .veil-node.is-group:hover {
     transform: none;
-    box-shadow: 0 0 20px rgba(82, 82, 82, 0.15);
+    box-shadow: 0 0 20px var(--veil-accent-hover);
     border-color: rgba(82, 82, 82, 0.6);
   }
 
@@ -244,7 +244,7 @@
   .expand-indicator {
     margin-left: auto;
     font-size: 12px;
-    color: #525252;
+    color: var(--veil-text-faint);
     animation: bobble 2s ease-in-out infinite;
   }
 
@@ -258,17 +258,17 @@
     font-weight: 800;
     color: #f1f5f9;
     word-break: break-word;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    text-shadow: 0 1px 2px var(--veil-input-bg);
   }
 
   .node-name.code-name {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 12px;
     font-weight: 500;
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--veil-code-bg);
     padding: 4px 8px;
     border-radius: 4px;
-    color: #d4d4d4;
+    color: var(--veil-text);
   }
 
   .context-badge {
@@ -290,7 +290,7 @@
   .ctx-name {
     font-size: 10px;
     font-weight: 600;
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
   }
 
   .compensate-badge {
@@ -310,9 +310,9 @@
   .node-details {
     margin-top: 4px;
     padding: 6px 8px;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--veil-input-bg);
     border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--veil-highlight);
   }
 
   .details-toggle {
@@ -321,18 +321,18 @@
     gap: 4px;
     margin-top: 6px;
     padding: 2px 6px;
-    background: rgba(82, 82, 82, 0.1);
+    background: var(--veil-accent-subtle);
     border: 1px solid rgba(82, 82, 82, 0.2);
     border-radius: 4px;
     cursor: pointer;
-    color: #737373;
+    color: var(--veil-text-dim);
     font-size: 9px;
     transition: all 0.15s;
   }
 
   .details-toggle:hover {
     background: rgba(82, 82, 82, 0.2);
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
   }
 
   .toggle-icon {
@@ -347,12 +347,12 @@
     font-size: 10px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     line-height: 1.5;
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
     word-break: break-all;
   }
 
   .detail-key {
-    color: #737373;
+    color: var(--veil-text-dim);
   }
 
   .detail-value {
@@ -372,7 +372,7 @@
     gap: 6px;
     padding: 4px 8px;
     background: rgba(82, 82, 82, 0.06);
-    border: 1px solid rgba(82, 82, 82, 0.15);
+    border: 1px solid var(--veil-accent-hover);
     border-radius: 6px;
     font-size: 11px;
   }
@@ -382,7 +382,7 @@
   }
 
   .child-name {
-    color: #e5e5e5;
+    color: var(--veil-text);
     font-weight: 600;
   }
 
@@ -391,7 +391,7 @@
     padding: 2px 7px;
     border-radius: 6px;
     background: rgba(148, 163, 184, 0.12);
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
     border: 1px solid rgba(148, 163, 184, 0.25);
     font-weight: 500;
     font-style: italic;
@@ -402,8 +402,8 @@
     font-size: 9px;
     padding: 2px 7px;
     border-radius: 6px;
-    background: rgba(82, 82, 82, 0.15);
-    color: #d4d4d4;
+    background: var(--veil-accent-hover);
+    color: var(--veil-text);
     border: 1px solid rgba(82, 82, 82, 0.25);
     font-weight: 500;
     width: fit-content;
@@ -414,7 +414,7 @@
     padding: 2px 7px;
     border-radius: 6px;
     background: rgba(168, 85, 247, 0.12);
-    color: #a3a3a3;
+    color: var(--veil-text-secondary);
     border: 1px solid rgba(168, 85, 247, 0.25);
     font-weight: 500;
   }
