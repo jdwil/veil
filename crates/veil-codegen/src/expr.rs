@@ -369,6 +369,11 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let body_str = body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
             format!("while let {} = {} {{\n{}\n}}", pattern, e, body_str)
         }
+        Expr::LetPattern(pattern, expr) => {
+            let pat_str = pattern_to_rust(pattern);
+            let e = expr_to_rust(expr, ctx);
+            format!("let {} = {}", pat_str, e)
+        }
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) if name.is_empty() => {
             // Anonymous record/map literal (`{}` or `{ key: value, ... }`) → a
@@ -807,6 +812,38 @@ pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
             format!("    {};", s)
         }
         _ => format!("    {};", expr_to_rust(expr, ctx)),
+    }
+}
+
+/// Convert a structured Pattern to Rust pattern syntax.
+pub fn pattern_to_rust(pat: &Pattern) -> String {
+    match pat {
+        Pattern::Ident(s) => to_snake(s),
+        Pattern::Tuple(parts) => {
+            let inner = parts.iter().map(pattern_to_rust).collect::<Vec<_>>().join(", ");
+            format!("({})", inner)
+        }
+        Pattern::Struct(name, fields, has_rest) => {
+            let mut fs: Vec<String> = fields.iter().map(|(k, v)| {
+                match v {
+                    Some(pat) => format!("{}: {}", to_snake(k), pattern_to_rust(pat)),
+                    None => to_snake(k),
+                }
+            }).collect();
+            if *has_rest { fs.push("..".to_string()); }
+            format!("{} {{ {} }}", name, fs.join(", "))
+        }
+        Pattern::Variant(name, args) => {
+            if args.is_empty() { name.clone() }
+            else {
+                let inner = args.iter().map(pattern_to_rust).collect::<Vec<_>>().join(", ");
+                format!("{}({})", name, inner)
+            }
+        }
+        Pattern::Literal(s) => s.clone(),
+        Pattern::Or(alts) => alts.iter().map(pattern_to_rust).collect::<Vec<_>>().join(" | "),
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Rest => "..".to_string(),
     }
 }
 

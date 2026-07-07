@@ -163,6 +163,10 @@ pub struct Construct {
 
     // ─── enum shape ───────────────────────────────────────────────────
     pub variants: Vec<String>,
+    /// Rich enum variants with optional data (tuple/struct variants).
+    /// When populated, these take precedence over the flat `variants` list.
+    #[serde(default)]
+    pub rich_variants: Vec<EnumVariant>,
     pub transitions: Vec<StateTransition>,
 
     // ─── trait shape ──────────────────────────────────────────────────
@@ -206,6 +210,7 @@ impl Construct {
             blocks: Vec::new(),
             fns: Vec::new(),
             variants: Vec::new(),
+            rich_variants: Vec::new(),
             transitions: Vec::new(),
             methods: Vec::new(),
             associated_types: Vec::new(),
@@ -341,6 +346,12 @@ pub struct MatchBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchArm {
     pub pattern: String,
+    /// Structured pattern (when available, takes precedence over string pattern).
+    #[serde(default)]
+    pub rich_pattern: Option<Pattern>,
+    /// Optional guard expression: `pattern if guard -> body`
+    #[serde(default)]
+    pub guard: Option<Expr>,
     pub span: Span,
     pub body: Vec<Expr>,
 }
@@ -470,6 +481,8 @@ pub enum Expr {
     IfLet { pattern: String, expr: Box<Expr>, then_body: Vec<Expr>, else_body: Option<Vec<Expr>> },
     /// While let: `while let pattern = expr { body }`
     WhileLet { pattern: String, expr: Box<Expr>, body: Vec<Expr> },
+    /// Let binding with destructuring pattern: `let (a, b) = expr`
+    LetPattern(Pattern, Box<Expr>),
 }
 
 /// Part of an interpolated string.
@@ -477,6 +490,80 @@ pub enum Expr {
 pub enum StringPart {
     Literal(String),
     Expr(Expr),
+}
+
+/// A destructuring pattern used in let bindings, match arms, and if-let.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Pattern {
+    /// Simple binding: `x` or `_`
+    Ident(String),
+    /// Tuple destructuring: `(a, b, c)`
+    Tuple(Vec<Pattern>),
+    /// Struct destructuring: `Name { field1, field2, .. }`
+    Struct(String, Vec<(String, Option<Pattern>)>, bool), // (name, fields, has_rest)
+    /// Enum variant: `Variant(a, b)` or `Variant { x, y }`
+    Variant(String, Vec<Pattern>),
+    /// Literal pattern: `42`, `"hello"`, `true`
+    Literal(String),
+    /// Or-pattern: `A | B | C`
+    Or(Vec<Pattern>),
+    /// Wildcard: `_`
+    Wildcard,
+    /// Rest/spread: `..`
+    Rest,
+}
+
+impl Pattern {
+    /// Convert pattern to a string representation (for display and backward compat).
+    pub fn to_string_repr(&self) -> String {
+        match self {
+            Pattern::Ident(s) => s.clone(),
+            Pattern::Tuple(parts) => {
+                let inner = parts.iter().map(|p| p.to_string_repr()).collect::<Vec<_>>().join(", ");
+                format!("({})", inner)
+            }
+            Pattern::Struct(name, fields, has_rest) => {
+                let mut fs: Vec<String> = fields.iter().map(|(k, v)| {
+                    match v {
+                        Some(pat) => format!("{}: {}", k, pat.to_string_repr()),
+                        None => k.clone(),
+                    }
+                }).collect();
+                if *has_rest { fs.push("..".to_string()); }
+                format!("{} {{ {} }}", name, fs.join(", "))
+            }
+            Pattern::Variant(name, args) => {
+                if args.is_empty() { name.clone() }
+                else {
+                    let inner = args.iter().map(|p| p.to_string_repr()).collect::<Vec<_>>().join(", ");
+                    format!("{}({})", name, inner)
+                }
+            }
+            Pattern::Literal(s) => s.clone(),
+            Pattern::Or(alts) => alts.iter().map(|p| p.to_string_repr()).collect::<Vec<_>>().join(" | "),
+            Pattern::Wildcard => "_".to_string(),
+            Pattern::Rest => "..".to_string(),
+        }
+    }
+}
+
+/// An enum variant with optional associated data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EnumVariant {
+    /// Unit variant: `Pending`, `Active`
+    Unit(String),
+    /// Tuple variant: `Message(String, u32)`
+    Tuple(String, Vec<TypeExpr>),
+    /// Struct variant: `Error { code: Int, message: Str }`
+    Struct(String, Vec<Field>),
+}
+
+impl EnumVariant {
+    pub fn name(&self) -> &str {
+        match self {
+            EnumVariant::Unit(n) | EnumVariant::Tuple(n, _) | EnumVariant::Struct(n, _) => n,
+        }
+    }
 }
 
 /// A layer-defined statement, parsed according to its core statement shape.

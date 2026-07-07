@@ -158,6 +158,9 @@ pub fn expr_to_display(expr: &Expr) -> String {
             let p = params.join(", ");
             format!("|{}| ...", p)
         }
+        Expr::LetPattern(pattern, expr) => {
+            format!("let {} = {}", pattern.to_string_repr(), expr_to_display(expr))
+        }
     }
 }
 

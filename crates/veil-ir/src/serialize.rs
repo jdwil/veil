@@ -673,5 +673,8 @@ fn expr_to_veil(expr: &Expr) -> String {
             let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("; ");
             format!("|{}| {}", p, b)
         }
+        Expr::LetPattern(pattern, expr) => {
+            format!("let {} = {}", pattern.to_string_repr(), expr_to_veil(expr))
+        }
     }
 }

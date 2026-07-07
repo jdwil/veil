@@ -114,6 +114,84 @@ sol WearTest
         impl save(plan)
         impl delete(id)
 
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
     group infrastructure
 
     group infrastructure

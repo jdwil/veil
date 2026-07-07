@@ -307,6 +307,12 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
             let body_str = body_to_ts(body, indent + 1);
             format!("while (({} = {}) != null) {{\n{}\n{}}}", pattern, val, body_str, pad)
         }
+
+        Expr::LetPattern(pattern, expr) => {
+            let pat_str = pattern_to_ts(pattern);
+            let val = expr_to_ts(expr, indent);
+            format!("const {} = {}", pat_str, val)
+        }
     }
 }
 
@@ -366,6 +372,39 @@ fn body_to_ts(exprs: &[Expr], indent: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Convert a structured Pattern to TypeScript destructuring syntax.
+fn pattern_to_ts(pat: &Pattern) -> String {
+    match pat {
+        Pattern::Ident(s) => to_camel(s),
+        Pattern::Tuple(parts) => {
+            let inner = parts.iter().map(pattern_to_ts).collect::<Vec<_>>().join(", ");
+            format!("[{}]", inner)  // TS uses array destructuring for tuples
+        }
+        Pattern::Struct(_, fields, has_rest) => {
+            let mut fs: Vec<String> = fields.iter().map(|(k, v)| {
+                match v {
+                    Some(pat) => format!("{}: {}", to_camel(k), pattern_to_ts(pat)),
+                    None => to_camel(k),
+                }
+            }).collect();
+            if *has_rest { fs.push("...rest".to_string()); }
+            format!("{{ {} }}", fs.join(", "))
+        }
+        Pattern::Variant(name, args) => {
+            // TS doesn't have native variant destructuring — emit as comment + binding
+            if args.is_empty() { format!("/* {} */", name) }
+            else {
+                let inner = args.iter().map(pattern_to_ts).collect::<Vec<_>>().join(", ");
+                format!("[{}] /* {} */", inner, name)
+            }
+        }
+        Pattern::Literal(s) => s.clone(),
+        Pattern::Or(alts) => alts.iter().map(pattern_to_ts).collect::<Vec<_>>().join(" /* | */ "),
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Rest => "...rest".to_string(),
+    }
 }
 
 fn binop_to_ts(op: &BinOp) -> &'static str {

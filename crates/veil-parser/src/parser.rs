@@ -2504,6 +2504,8 @@ impl<'a> Parser<'a> {
 
                 arms.push(MatchArm {
                     pattern,
+                    rich_pattern: None,
+                    guard: None,
                     span: arm_span.merge(self.current().span),
                     body,
                 });
