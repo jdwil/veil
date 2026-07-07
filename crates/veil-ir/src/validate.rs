@@ -229,7 +229,7 @@ fn validate_construct(
                 Some("immutable") => {
                     for f in &c.fns {
                         for expr in &f.body {
-                            if let Expr::MutAssign(_, _) = expr {
+                            if let Expr::MutAssign(_, _, _) = expr {
                                 errors.push(ValidationError {
                                     message: format!(
                                         "'{}' is immutable but fn '{}' contains a mutable assignment",
@@ -437,7 +437,7 @@ fn collect_call_targets_from_expr(expr: &Expr, location: &str, targets: &mut Vec
                 collect_call_targets_from_expr(arg, location, targets);
             }
         }
-        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs) | Expr::Return(rhs)
+        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs)
         | Expr::Await(rhs) | Expr::Try(rhs) => {
             collect_call_targets_from_expr(rhs, location, targets);
         }

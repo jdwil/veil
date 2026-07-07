@@ -316,9 +316,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 format!("let {} = {}", name, rhs_str)
             }
         }
-        Expr::MutAssign(name, rhs) => {
+        Expr::MutAssign(name, rhs, ty_ann) => {
             let rhs_str = expr_to_rust(rhs, ctx);
-            format!("let mut {} = {}", name, rhs_str)
+            match ty_ann {
+                Some(ty) => format!("let mut {}: {} = {}", name, crate::rust::type_to_rust(ty), rhs_str),
+                None => format!("let mut {} = {}", name, rhs_str),
+            }
         }
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
@@ -369,10 +372,13 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let body_str = body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
             format!("while let {} = {} {{\n{}\n}}", pattern, e, body_str)
         }
-        Expr::LetPattern(pattern, expr) => {
+        Expr::LetPattern(pattern, expr, ty_ann) => {
             let pat_str = pattern_to_rust(pattern);
             let e = expr_to_rust(expr, ctx);
-            format!("let {} = {}", pat_str, e)
+            match ty_ann {
+                Some(ty) => format!("let {}: {} = {}", pat_str, crate::rust::type_to_rust(ty), e),
+                None => format!("let {} = {}", pat_str, e),
+            }
         }
         Expr::Action(a) => translate_action(a, ctx),
         Expr::StructLit(name, fields) if name.is_empty() => {
@@ -809,7 +815,7 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
 /// Translate a full statement (expression at statement position) with semicolons.
 pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
     match expr {
-        Expr::Assign(name, rhs) | Expr::MutAssign(name, rhs) => {
+        Expr::Assign(name, rhs) | Expr::MutAssign(name, rhs, _) => {
             // Infer the type of the RHS
             let inferred_type = infer_expr_type(rhs, ctx);
             let s = expr_to_rust(expr, ctx);
@@ -1020,7 +1026,7 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
                 collect_deps_from_expr(arg, ctx, deps);
             }
         }
-        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs) => collect_deps_from_expr(rhs, ctx, deps),
+        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs, _) => collect_deps_from_expr(rhs, ctx, deps),
         Expr::Action(a) => {
             for arg in &a.args {
                 collect_deps_from_expr(arg, ctx, deps);

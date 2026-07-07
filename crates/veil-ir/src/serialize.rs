@@ -588,7 +588,7 @@ fn expr_to_veil(expr: &Expr) -> String {
             }
         },
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_veil(rhs)),
-        Expr::MutAssign(name, rhs) => format!("mut {} = {}", name, expr_to_veil(rhs)),
+        Expr::MutAssign(name, rhs, _) => format!("mut {} = {}", name, expr_to_veil(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
@@ -673,7 +673,7 @@ fn expr_to_veil(expr: &Expr) -> String {
             let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("; ");
             format!("|{}| {}", p, b)
         }
-        Expr::LetPattern(pattern, expr) => {
+        Expr::LetPattern(pattern, expr, _) => {
             format!("let {} = {}", pattern.to_string_repr(), expr_to_veil(expr))
         }
     }

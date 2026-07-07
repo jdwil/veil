@@ -709,7 +709,7 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
 
         for expr in &func.body {
             match expr {
-                Expr::Assign(field, rhs) | Expr::MutAssign(field, rhs) if field_names.contains(field) => {
+                Expr::Assign(field, rhs) | Expr::MutAssign(field, rhs, _) if field_names.contains(field) => {
                     // Assign to a struct field: self.field = value
                     let rhs_str = expr_to_rust(rhs, &ctx);
                     // If the rhs is a bare ident that matches an enum variant, qualify it
@@ -1321,7 +1321,7 @@ fn collect_effect_hooks(
                 collect_effect_hooks(a, name_to_shape, locals, hooks);
             }
         }
-        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs) | Expr::Return(rhs) | Expr::Await(rhs) => {
+        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs) | Expr::Await(rhs) => {
             collect_effect_hooks(rhs, name_to_shape, locals, hooks);
         }
         Expr::StructLit(_, fields) => {
@@ -1385,7 +1385,7 @@ fn infer_flow_return_type(
     for step in steps {
         if let FlowStep::Step(s) = step {
             for expr in &s.body {
-                if let Expr::Assign(name, rhs) | Expr::MutAssign(name, rhs) = expr {
+                if let Expr::Assign(name, rhs) | Expr::MutAssign(name, rhs, _) = expr {
                     ctx.locals.insert(name.clone());
                     if is_orchestrator {
                         // Orchestrator locals are JSON Bus results.
@@ -1649,7 +1649,7 @@ fn emit_runtime_delegated(
     for step in steps {
         if let FlowStep::Step(s) = step {
             for expr in &s.body {
-                if let Expr::Assign(n, _) | Expr::MutAssign(n, _) = expr {
+                if let Expr::Assign(n, _) | Expr::MutAssign(n, _, _) = expr {
                     state_locals.insert(n.clone());
                 }
             }

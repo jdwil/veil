@@ -371,3 +371,31 @@ fn ts_type_mapping_covers_all_primitives() {
         "Map<string, number>"
     );
 }
+
+#[test]
+fn rich_enum_variants_parse_and_generate() {
+    let layer = "\
+pkg test v1
+  construct Ctx
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct Status
+    keyword status
+    maps_to enum
+    allowed_in Ctx";
+    let app = "\
+sol TestApp
+  use test
+  ctx Core
+    status Message
+      Text(Str)
+      Image(Str, Int, Int)
+      Empty";
+    let out = generate_with_layer("test", layer, app);
+    // Tuple variant with types
+    assert!(out.contains("Text(String)"), "tuple variant not generated:\n{}", grep(&out, "Text"));
+    assert!(out.contains("Image(String, i64, i64)"), "multi-type tuple variant not generated:\n{}", grep(&out, "Image"));
+    // Unit variant still works
+    assert!(out.contains("Empty,"), "unit variant missing:\n{}", grep(&out, "Empty"));
+}

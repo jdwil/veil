@@ -152,8 +152,11 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
         Expr::Assign(name, value) => {
             format!("{} = {}", to_camel(name), expr_to_ts(value, indent))
         }
-        Expr::MutAssign(name, value) => {
-            format!("let {} = {}", to_camel(name), expr_to_ts(value, indent))
+        Expr::MutAssign(name, value, ty_ann) => {
+            match ty_ann {
+                Some(ty) => format!("let {}: {} = {}", to_camel(name), type_to_ts(ty), expr_to_ts(value, indent)),
+                None => format!("let {} = {}", to_camel(name), expr_to_ts(value, indent)),
+            }
         }
 
         Expr::Return(inner) => {
@@ -317,10 +320,13 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
             format!("while (({} = {}) != null) {{\n{}\n{}}}", pattern, val, body_str, pad)
         }
 
-        Expr::LetPattern(pattern, expr) => {
+        Expr::LetPattern(pattern, expr, ty_ann) => {
             let pat_str = pattern_to_ts(pattern);
             let val = expr_to_ts(expr, indent);
-            format!("const {} = {}", pat_str, val)
+            match ty_ann {
+                Some(ty) => format!("const {}: {} = {}", pat_str, type_to_ts(ty), val),
+                None => format!("const {} = {}", pat_str, val),
+            }
         }
     }
 }

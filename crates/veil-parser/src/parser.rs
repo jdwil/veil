@@ -1181,18 +1181,24 @@ impl<'a> Parser<'a> {
         let mut c = Construct::new(&spec.keyword, &spec.name, Shape::Enum, name, start_span);
 
         c.type_params = self.parse_type_params();
-        let block = self.parse_named_block_body_as_enum()?;
-        c.variants = block.0;
-        c.transitions = block.1;
+        let (variants, rich_variants, transitions) = self.parse_enum_body()?;
+        c.variants = variants;
+        c.rich_variants = rich_variants;
+        c.transitions = transitions;
         c.span = start_span.merge(self.current().span);
         Ok(c)
     }
 
-    fn parse_named_block_body_as_enum(
+    /// Parse an enum body, producing both flat variant names (backward compat)
+    /// and structured EnumVariant entries for data-carrying variants.
+    fn parse_enum_body(
         &mut self,
-    ) -> Result<(Vec<String>, Vec<StateTransition>), ParseError> {
+    ) -> Result<(Vec<String>, Vec<EnumVariant>, Vec<StateTransition>), ParseError> {
         let mut variants = Vec::new();
+        let mut rich_variants = Vec::new();
         let mut transitions = Vec::new();
+        let mut has_data_variants = false;
+
         if self.at_block_start() {
             self.enter_block()?;
             while !self.at_block_end() {
@@ -1203,53 +1209,101 @@ impl<'a> Parser<'a> {
                 if self.at(&TokenKind::Ident) {
                     let trans_span = self.current().span;
                     let first_name = self.advance().text;
-                    // Check for data variant: Foo(T, U) or Foo { x: T }
-                    let variant_name = if self.at(&TokenKind::LParen) {
-                        let mut data = first_name.clone();
-                        data.push('(');
-                        self.advance();
-                        let mut depth = 1;
-                        while depth > 0 && !self.at(&TokenKind::Eof) {
-                            if self.at(&TokenKind::LParen) { depth += 1; }
-                            if self.at(&TokenKind::RParen) { depth -= 1; if depth == 0 { self.advance(); break; } }
-                            data.push_str(&self.advance().text);
-                            if depth > 0 && !self.at(&TokenKind::RParen) { data.push_str(" "); }
+
+                    // Tuple variant: Variant(Type1, Type2)
+                    if self.at(&TokenKind::LParen) {
+                        self.advance(); // consume (
+                        let mut types = Vec::new();
+                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                            let ty = self.parse_type()?;
+                            types.push(ty);
+                            if self.at(&TokenKind::Comma) { self.advance(); }
                         }
-                        data.push(')');
-                        data
-                    } else if self.at(&TokenKind::LBrace) {
-                        let mut data = first_name.clone();
-                        data.push_str(" { ");
-                        self.advance();
+                        if self.at(&TokenKind::RParen) { self.advance(); }
+                        has_data_variants = true;
+                        variants.push(first_name.clone());
+                        rich_variants.push(EnumVariant::Tuple(first_name, types));
+                    }
+                    // Struct variant: Variant + indented field block
+                    else if self.at_block_start() {
+                        self.enter_block()?;
+                        let mut fields = Vec::new();
+                        while !self.at_block_end() {
+                            self.skip_newlines();
+                            if self.at_block_end() { break; }
+                            if self.at(&TokenKind::Ident) {
+                                let field_name = self.advance().text;
+                                if self.at(&TokenKind::Colon) {
+                                    self.advance();
+                                    let ty = self.parse_type()?;
+                                    fields.push(Field {
+                                        name: field_name,
+                                        type_expr: ty,
+                                        span: trans_span,
+                                    });
+                                } else {
+                                    // Bare field name — infer type
+                                    fields.push(Field {
+                                        name: field_name,
+                                        type_expr: TypeExpr::Named(String::new()),
+                                        span: trans_span,
+                                    });
+                                }
+                            } else {
+                                self.advance();
+                            }
+                        }
+                        self.exit_block();
+                        has_data_variants = true;
+                        variants.push(first_name.clone());
+                        rich_variants.push(EnumVariant::Struct(first_name, fields));
+                    }
+                    // Inline brace variant: Variant { x: T, y: U }
+                    else if self.at(&TokenKind::LBrace) {
+                        self.advance(); // consume {
+                        let mut fields = Vec::new();
                         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Newline) {
-                            data.push_str(&self.advance().text);
-                            data.push(' ');
+                            if self.at(&TokenKind::Ident) {
+                                let field_name = self.advance().text;
+                                if self.at(&TokenKind::Colon) {
+                                    self.advance();
+                                    let ty = self.parse_type()?;
+                                    fields.push(Field {
+                                        name: field_name,
+                                        type_expr: ty,
+                                        span: trans_span,
+                                    });
+                                }
+                            }
+                            if self.at(&TokenKind::Comma) { self.advance(); }
                         }
                         if self.at(&TokenKind::RBrace) { self.advance(); }
-                        data.push('}');
-                        data
-                    } else {
-                        first_name.clone()
-                    };
-
-                    let mut states = vec![variant_name];
-                    while self.at(&TokenKind::Arrow) {
-                        self.advance();
-                        if self.at(&TokenKind::Ident) {
-                            states.push(self.advance().text);
-                        }
+                        has_data_variants = true;
+                        variants.push(first_name.clone());
+                        rich_variants.push(EnumVariant::Struct(first_name, fields));
                     }
-                    for s in &states {
-                        if !variants.contains(s) {
-                            variants.push(s.clone());
+                    // Unit variant (possibly with transitions: A -> B -> C)
+                    else {
+                        let mut states = vec![first_name.clone()];
+                        while self.at(&TokenKind::Arrow) {
+                            self.advance();
+                            if self.at(&TokenKind::Ident) {
+                                states.push(self.advance().text);
+                            }
                         }
-                    }
-                    for i in 0..states.len().saturating_sub(1) {
-                        transitions.push(StateTransition {
-                            from: states[i].clone(),
-                            to: states[i + 1].clone(),
-                            span: trans_span,
-                        });
+                        for s in &states {
+                            if !variants.contains(s) {
+                                variants.push(s.clone());
+                                rich_variants.push(EnumVariant::Unit(s.clone()));
+                            }
+                        }
+                        for i in 0..states.len().saturating_sub(1) {
+                            transitions.push(StateTransition {
+                                from: states[i].clone(),
+                                to: states[i + 1].clone(),
+                                span: trans_span,
+                            });
+                        }
                     }
                 } else {
                     self.advance();
@@ -1257,7 +1311,15 @@ impl<'a> Parser<'a> {
             }
             self.exit_block();
         }
-        Ok((variants, transitions))
+
+        // Only keep rich_variants if there are actual data-carrying variants;
+        // for pure state-machine enums (all units + transitions), keep it empty
+        // so codegen falls back to the simpler flat variant path.
+        if !has_data_variants {
+            rich_variants.clear();
+        }
+
+        Ok((variants, rich_variants, transitions))
     }
 
     /// trait shape: `kw Name` + block of method signatures.
@@ -1891,9 +1953,16 @@ impl<'a> Parser<'a> {
             TokenKind::Mut => {
                 self.advance(); // consume 'mut'
                 let name = self.expect_ident()?;
+                // Optional type annotation: `mut x: Type = expr`
+                let type_ann = if self.at(&TokenKind::Colon) {
+                    self.advance();
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
                 self.expect(&TokenKind::Eq)?;
                 let rhs = self.parse_expr()?;
-                return Ok(Expr::MutAssign(name, Box::new(rhs)));
+                return Ok(Expr::MutAssign(name, Box::new(rhs), type_ann));
             }
             TokenKind::Await => {
                 self.advance(); // consume 'await'
@@ -1939,7 +2008,7 @@ impl<'a> Parser<'a> {
                 }).collect();
                 self.advance();
                 let rhs = self.parse_expr()?;
-                return Ok(Expr::LetPattern(Pattern::Tuple(parts), Box::new(rhs)));
+                return Ok(Expr::LetPattern(Pattern::Tuple(parts), Box::new(rhs), None));
             }
         }
 

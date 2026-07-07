@@ -107,7 +107,7 @@ pub fn expr_to_display(expr: &Expr) -> String {
         }
         Expr::Action(a) => action_to_display(a),
         Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_display(rhs)),
-        Expr::MutAssign(name, rhs) => format!("mut {} = {}", name, expr_to_display(rhs)),
+        Expr::MutAssign(name, rhs, _) => format!("mut {} = {}", name, expr_to_display(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
@@ -158,7 +158,7 @@ pub fn expr_to_display(expr: &Expr) -> String {
             let p = params.join(", ");
             format!("|{}| ...", p)
         }
-        Expr::LetPattern(pattern, expr) => {
+        Expr::LetPattern(pattern, expr, _) => {
             format!("let {} = {}", pattern.to_string_repr(), expr_to_display(expr))
         }
     }

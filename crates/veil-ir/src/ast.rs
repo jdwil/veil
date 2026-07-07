@@ -429,8 +429,8 @@ pub enum Expr {
     IfExpr(IfExprData),
     /// Variable assignment: name = expr
     Assign(String, Box<Expr>),
-    /// Mutable variable assignment: mut name = expr
-    MutAssign(String, Box<Expr>),
+    /// Mutable variable assignment: mut name = expr (with optional type annotation)
+    MutAssign(String, Box<Expr>, Option<TypeExpr>),
     /// String literal
     StringLit(String),
     /// Integer literal
@@ -481,8 +481,8 @@ pub enum Expr {
     IfLet { pattern: String, expr: Box<Expr>, then_body: Vec<Expr>, else_body: Option<Vec<Expr>> },
     /// While let: `while let pattern = expr { body }`
     WhileLet { pattern: String, expr: Box<Expr>, body: Vec<Expr> },
-    /// Let binding with destructuring pattern: `let (a, b) = expr`
-    LetPattern(Pattern, Box<Expr>),
+    /// Let binding with destructuring pattern: `let (a, b) = expr` (with optional type annotation)
+    LetPattern(Pattern, Box<Expr>, Option<TypeExpr>),
 }
 
 /// Part of an interpolated string.
