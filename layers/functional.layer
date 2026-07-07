@@ -6,17 +6,17 @@ pkg functional v1
   # A pure function — no side effects, same input always produces same output.
   # Encourages referential transparency.
   construct PureFunction
-    keyword pure
-    maps_to fn
+    kw pure
+    mt fn
     desc "A pure function — no side effects, deterministic"
-    constraints
+    cst
       deny_calls trait
       deny_calls Effect
     visual
       icon "λ"
       color "#8b5cf6"
       label "Pure Function"
-    annotations
+    ann
       memoize: "Cache results for repeated inputs"
       total: "Function is defined for all possible inputs"
       partial: "Function may not be defined for all inputs"
@@ -25,34 +25,34 @@ pkg functional v1
   # An algebraic data type — sum type (tagged union).
   # The FP equivalent of Rust's enum with data.
   construct ADT
-    keyword adt
-    maps_to enum
+    kw adt
+    mt enum
     desc "Algebraic data type — a tagged union / sum type"
     visual
       icon "⊕"
       color "#06b6d4"
       label "Sum Type"
-    annotations
+    ann
       derive: "Auto-derive capabilities" functor, foldable, traversable
     group core
 
   # A product type — record with named fields.
   construct Record
-    keyword rec
-    maps_to struct
+    kw rec
+    mt struct
     desc "A product type — an immutable record with named fields"
     visual
       icon "⊗"
       color "#14b8a6"
       label "Record"
-    annotations
+    ann
       derive: "Auto-derive capabilities" eq, ord, hash, show
     group core
 
   # A typeclass / trait — defines a set of operations over a type.
   construct Typeclass
-    keyword class
-    maps_to trait
+    kw class
+    mt trait
     desc "A typeclass — defines behavior that types can implement"
     visual
       icon "𝕋"
@@ -62,8 +62,8 @@ pkg functional v1
 
   # A typeclass instance — implements a typeclass for a specific type.
   construct Instance
-    keyword instance
-    maps_to impl
+    kw instance
+    mt impl
     desc "A typeclass instance — implements a class for a type"
     visual
       icon "⊢"
@@ -73,8 +73,8 @@ pkg functional v1
 
   # A module for grouping related functions and types.
   construct Module
-    keyword module
-    maps_to mod
+    kw module
+    mt mod
     au
     desc "A module — namespace for related types and functions"
     visual
@@ -85,16 +85,16 @@ pkg functional v1
 
   # A newtype — zero-cost wrapper for type safety.
   construct Newtype
-    keyword newtype
-    maps_to struct
+    kw newtype
+    mt struct
     desc "A newtype wrapper — zero-cost type distinction"
-    contains
+    has
       fn[]
     visual
       icon "🏷️"
       color "#ec4899"
       label "Newtype"
-    annotations
+    ann
       derive: "Auto-derive capabilities" eq, ord, show
     group core
 
@@ -103,8 +103,8 @@ pkg functional v1
   # An effect — represents a side effect that a function may perform.
   # Inspired by algebraic effects / IO monad.
   construct Effect
-    keyword effect
-    maps_to trait
+    kw effect
+    mt trait
     desc "An effect — a capability a computation may require"
     visual
       icon "⚡"
@@ -114,8 +114,8 @@ pkg functional v1
 
   # An effect handler — provides the implementation for an effect.
   construct Handler
-    keyword handler
-    maps_to impl
+    kw handler
+    mt impl
     desc "An effect handler — interprets an effect"
     visual
       icon "🎛️"
@@ -127,8 +127,8 @@ pkg functional v1
 
   # A pipeline — a chain of pure transformations.
   construct Pipeline
-    keyword pipe
-    maps_to fn
+    kw pipe
+    mt fn
     desc "A pipeline — sequential composition of pure transformations"
     visual
       icon "⟩⟩"
@@ -141,10 +141,10 @@ pkg functional v1
   # pipe-through: feeds a value through a chain of functions
   # x |> f |> g  means  g(f(x))
   statement pipe_through
-    keyword |>
-    maps_to call
+    kw |>
+    mt call
     desc "Pipe a value through a function: value |> transform"
-    semantics function_composition
+    sem function_composition
     visual
       icon "⟩"
       color "#3b82f6"
@@ -152,9 +152,9 @@ pkg functional v1
 
   # map: apply a function over a functor (List, Option, Result, etc.)
   statement map
-    maps_to call
+    mt call
     desc "Apply a function to the inner value of a container"
-    semantics functor_map
+    sem functor_map
     visual
       icon "𝑓"
       color "#8b5cf6"
@@ -162,9 +162,9 @@ pkg functional v1
 
   # filter: keep elements matching a predicate
   statement filter
-    maps_to call
+    mt call
     desc "Keep elements satisfying a predicate"
-    semantics filter_predicate
+    sem filter_predicate
     visual
       icon "⊳"
       color "#06b6d4"
@@ -172,9 +172,9 @@ pkg functional v1
 
   # fold: reduce a collection to a single value
   statement fold
-    maps_to call
+    mt call
     desc "Reduce a collection to a single value with an accumulator"
-    semantics fold_reduce
+    sem fold_reduce
     visual
       icon "⊕"
       color "#14b8a6"
@@ -182,9 +182,9 @@ pkg functional v1
 
   # flat_map: map then flatten (monadic bind)
   statement flat_map
-    maps_to call
+    mt call
     desc "Map a function that returns a container, then flatten (>>= / bind)"
-    semantics monadic_bind
+    sem monadic_bind
     visual
       icon "⟫"
       color "#a855f7"
@@ -192,9 +192,9 @@ pkg functional v1
 
   # perform: invoke an effect (like IO actions)
   statement perform
-    maps_to call
+    mt call
     desc "Perform an effectful operation"
-    semantics effect_perform
+    sem effect_perform
     visual
       icon "⚡"
       color "#ef4444"

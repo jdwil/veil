@@ -127,6 +127,15 @@ pub struct ConstructSpec {
     /// Whether constructs of this kind are deployment unit boundaries.
     pub au: bool,
     pub annotations: Vec<AnnotationSpec>,
+    /// Target construct name (for impl-shaped constructs): the trait-shaped
+    /// construct this implements. Declared as `tgt Port` in the layer file.
+    /// The viewer shows a "Create <label>" button on the target construct.
+    #[serde(default)]
+    pub tgt: String,
+    /// Default group placement (for impl-shaped constructs): the group name
+    /// where implementations should be created. Declared as `dg infrastructure`.
+    #[serde(default)]
+    pub dg: String,
 }
 
 /// Runtime binding for a delegated fn-shaped construct (e.g. `saga`).
@@ -267,6 +276,8 @@ impl LayerRegistry {
                 au: false,
                 annotations: Vec::new(),
                 runtime: None,
+                tgt: String::new(),
+                dg: String::new(),
             });
         }
         reg.layers.push("core".to_string());
@@ -846,6 +857,8 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 },
                 annotations: Vec::new(),
                 runtime: None,
+                tgt: String::new(),
+                dg: String::new(),
             }));
             section = Section::None;
             continue;
@@ -896,11 +909,11 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 continue;
             }
             match trimmed {
-                "contains" => {
+                "has" | "contains" => {
                     section = Section::Contains;
                     continue;
                 }
-                "constraints" => {
+                "cst" | "constraints" => {
                     section = Section::Constraints;
                     continue;
                 }
@@ -908,7 +921,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                     section = Section::Visual;
                     continue;
                 }
-                "annotations" => {
+                "ann" | "annotations" => {
                     section = Section::Annotations;
                     continue;
                 }
@@ -987,30 +1000,34 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             }
             Section::None => match item {
                 Item::Construct(c) => {
-                    if let Some(v) = trimmed.strip_prefix("keyword ") {
+                    if let Some(v) = trimmed.strip_prefix("kw ").or_else(|| trimmed.strip_prefix("keyword ")) {
                         c.keyword = v.trim().to_string();
-                    } else if let Some(v) = trimmed.strip_prefix("maps_to ") {
+                    } else if let Some(v) = trimmed.strip_prefix("mt ").or_else(|| trimmed.strip_prefix("maps_to ")) {
                         c.maps_to = v.trim().to_string();
                     } else if let Some(v) = trimmed.strip_prefix("desc ") {
                         c.desc = unquote(v);
-                    } else if let Some(v) = trimmed.strip_prefix("allowed_in ") {
+                    } else if let Some(v) = trimmed.strip_prefix("in ").or_else(|| trimmed.strip_prefix("allowed_in ")) {
                         c.allowed_in = v.trim().to_string();
                     } else if let Some(v) = trimmed.strip_prefix("group ") {
                         c.group = v.trim().to_string();
+                    } else if let Some(v) = trimmed.strip_prefix("tgt ") {
+                        c.tgt = v.trim().to_string();
+                    } else if let Some(v) = trimmed.strip_prefix("dg ") {
+                        c.dg = v.trim().to_string();
                     } else if trimmed == "au" {
                         c.au = true;
                     }
                 }
                 Item::Statement(s) => {
-                    if let Some(v) = trimmed.strip_prefix("maps_to ") {
+                    if let Some(v) = trimmed.strip_prefix("mt ").or_else(|| trimmed.strip_prefix("maps_to ")) {
                         s.maps_to = v.trim().to_string();
-                    } else if let Some(v) = trimmed.strip_prefix("keyword ") {
+                    } else if let Some(v) = trimmed.strip_prefix("kw ").or_else(|| trimmed.strip_prefix("keyword ")) {
                         s.keyword = v.trim().to_string();
                         // Re-detect infix based on the new keyword
                         s.is_infix = s.keyword.chars().any(|c| !c.is_alphanumeric() && c != '_');
                     } else if let Some(v) = trimmed.strip_prefix("desc ") {
                         s.desc = unquote(v);
-                    } else if let Some(v) = trimmed.strip_prefix("semantics ") {
+                    } else if let Some(v) = trimmed.strip_prefix("sem ").or_else(|| trimmed.strip_prefix("semantics ")) {
                         s.semantics = v.trim().to_string();
                     }
                 }
@@ -1077,6 +1094,17 @@ pub struct PaletteEntry {
     /// Whether constructs of this kind are deployment unit boundaries.
     pub au: bool,
     pub annotations: Vec<AnnotationSpec>,
+    /// Expected group names (from `requires_groups` constraint). The viewer
+    /// shows these as tabs even if they don't have children yet.
+    #[serde(default)]
+    pub expected_groups: Vec<String>,
+    /// Target construct name — for impl-shaped constructs, the trait-shaped
+    /// construct they implement. The viewer shows a button on the target.
+    #[serde(default)]
+    pub tgt: String,
+    /// Default group — where this construct should be created by default.
+    #[serde(default)]
+    pub dg: String,
 }
 
 pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
@@ -1103,6 +1131,19 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             entry_type: "construct".to_string(),
             au: false,
             annotations: c.annotations.clone(),
+            expected_groups: c.constraints.iter()
+                .find(|cst| cst.starts_with("requires_groups"))
+                .map(|cst| {
+                    cst.strip_prefix("requires_groups")
+                        .unwrap_or("")
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            tgt: c.tgt.clone(),
+            dg: c.dg.clone(),
         });
     }
     for s in &reg.statements {
@@ -1123,6 +1164,9 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             entry_type: "statement".to_string(),
             au: false,
             annotations: Vec::new(),
+            expected_groups: Vec::new(),
+            tgt: String::new(),
+            dg: String::new(),
         });
     }
     out

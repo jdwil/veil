@@ -94,7 +94,7 @@ Only valid inside a `pkg`. Declares the operations the package offers.
   `output`.
 - **`input` / `output`** — indented `name: Type` field blocks for the node's
   parameters and results.
-- **`constraints`** — free-text constraint lines within `expose`.
+- **`cst`** — free-text constraint lines within `expose`.
 
 ```
 expose
@@ -104,7 +104,7 @@ expose
       email: Email
     output
       customer_id: UUID
-  constraints
+  cst
     flow-only
 ```
 
@@ -303,7 +303,7 @@ saga Onboard
 > elsewhere.
 >
 > **`root` and `state` are not keywords either.** They are examples of
-> *named sub-blocks* a layer declares via `contains` (`root: struct`,
+> *named sub-blocks* a layer declares via `has` (`root: struct`,
 > `state: enum`); the parser matches them by name.
 
 ---
@@ -383,9 +383,9 @@ separate, line-oriented mini-format (not the expression grammar above).
 ### `construct <Name>` — a new noun
 ```
 construct Aggregate
-  keyword agg                 # the source keyword users write
-  maps_to struct              # resolves to a core shape (or another construct)
-  allowed_in Context          # which container it may appear in
+  kw agg                 # the source keyword users write
+  mt struct              # resolves to a core shape (or another construct)
+  in Context          # which container it may appear in
   desc "Aggregate root ..."   # human description
   contains                    # allowed children + named sub-blocks
     root: struct              #   `kw: shape` declares a named sub-block
@@ -409,16 +409,16 @@ Notably **not** reserved (they lex as identifiers): `step`, `par`, `root`,
 
 Field meanings:
 
-- **`keyword`** — the word users write (defaults to the construct name).
-- **`maps_to`** — the core shape (`mod`/`struct`/…) or a parent construct this
+- **`kw`** — the word users write (defaults to the construct name).
+- **`mt`** — the core shape (`mod`/`struct`/…) or a parent construct this
   resolves to. Chains resolve transitively (`lead → agg → struct`). The special
   value `primitive` means "I *am* the core shape named by my keyword."
-- **`allowed_in`** — legal parent container (`top` = solution level).
-- **`contains`** — allowed child constructs; a `keyword: shape` line declares a
+- **`in`** — legal parent container (`top` = solution level).
+- **`has`** — allowed child constructs; a `keyword: shape` line declares a
   named sub-block (like `root`/`state`); `[]` marks a repeatable child.
-- **`constraints`** — advisory semantic rules (e.g. `must_have root`).
+- **`cst`** — advisory semantic rules (e.g. `must_have root`).
 - **`visual`** → `icon` / `color` / `label` — how the viewer renders it.
-- **`annotations`** — `name: "desc" p1, p2` lines; offered in the property
+- **`ann`** — `name: "desc" p1, p2` lines; offered in the property
   editor.
 - **`group`** — a palette-grouping label.
 - **`runtime <coordinator> <step_trait>`** — for delegated fn-shaped constructs
@@ -429,12 +429,12 @@ Field meanings:
 ### `statement <kw>` — a new verb
 ```
 statement dispatch
-  maps_to Bus.dispatch        # `Port.method` → desugars to a bus call
+  mt Bus.dispatch        # `Port.method` → desugars to a bus call
   desc "Fire a domain event"
 ```
-- **`maps_to`** — a core statement shape (`call`/`if`), another statement, or a
+- **`mt`** — a core statement shape (`call`/`if`), another statement, or a
   `Port.method` that the statement desugars into.
-- **`semantics`** — describes runtime meaning.
+- **`sem`** — describes runtime meaning.
 
 ### `declare` — inject concrete constructs
 Raw VEIL blocks that get parsed and injected into every solution using the
@@ -498,7 +498,7 @@ identifier / layer vocabulary):
 `struct` `enum` `fn` `trait` `let`* `mod` `if` `else` `match` `ret` `true`
 `false` `impl` `sol` `pkg` `use` `lang` `expose` `node` `flow` `alt`* `loop`
 `err` `call` `input` `fallback` `for` `while` `mut` `type` `const` `await`
-`break` `continue` `static` `boundary` `as` `desc` `output` `constraints`
+`break` `continue` `static` `boundary` `as` `desc` `output` `cst`
 `group` `allow` `deny` `export`
 
 `*` = reserved by the lexer but not wired into the parser; do not use.

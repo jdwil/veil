@@ -6,7 +6,6 @@
     Background,
     BackgroundVariant,
     MiniMap,
-    useSvelteFlow,
     type Node,
     type Edge,
     type NodeTypes,
@@ -29,6 +28,7 @@
     navigateTo,
     getChildren,
     selectedNodeId,
+    paletteConfig,
   } from '$lib/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
 
@@ -110,13 +110,28 @@
 
     const item = JSON.parse(data) as { kind: NodeKind; label: string; icon: string; name?: string };
 
-    // Create new node at drop position
+    // Create new node at drop position (convert screen coords to flow coords)
     const id = String(nextNodeId++);
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const position = {
-      x: event.clientX - rect.left - 100,
-      y: event.clientY - rect.top - 40,
-    };
+
+    // Get the viewport transform from the xyflow DOM to convert screen → flow coords
+    const viewportEl = (event.currentTarget as HTMLElement).querySelector('.svelte-flow__viewport');
+    let position = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    if (viewportEl) {
+      const transform = window.getComputedStyle(viewportEl).transform;
+      // Parse matrix(a, b, c, d, tx, ty) — a=scale, tx/ty=translate
+      const match = transform.match(/matrix\(([^)]+)\)/);
+      if (match) {
+        const parts = match[1].split(',').map(Number);
+        const scale = parts[0];
+        const tx = parts[4];
+        const ty = parts[5];
+        position = {
+          x: (event.clientX - rect.left - tx) / scale,
+          y: (event.clientY - rect.top - ty) / scale,
+        };
+      }
+    }
 
     const newNode: Node = {
       id,
@@ -142,6 +157,42 @@
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = 'move';
     }
+  }
+
+  /**
+   * Handle "Create Implementation" button click. Navigates to the target group
+   * (dg) and creates a new impl-shaped node linked to the target trait node.
+   * Entirely layer-driven — no domain knowledge.
+   */
+  function handleImplement(implEntry: any, targetNodeName: string) {
+    // Navigate to the dg tab
+    const targetGroup = implEntry.dg;
+    if (targetGroup && tabs.includes(targetGroup)) {
+      activeTab = targetGroup;
+      switchTab(targetGroup);
+    }
+
+    // Create the impl node
+    const id = String(nextNodeId++);
+    const newNode: Node = {
+      id,
+      type: 'veil',
+      position: { x: 100, y: 100 },
+      data: {
+        label: `${targetNodeName}${implEntry.label}`,
+        kind: implEntry.kind,
+        subkind: implEntry.name,
+        hasChildren: false,
+        annotations: [],
+        properties: [['implements', targetNodeName]],
+        inlineChildren: [],
+        refs: [],
+      },
+    };
+
+    nodes = [...nodes, newNode];
+    // Select the new node
+    selectedNodeId.set(id);
   }
 
   onMount(() => {
@@ -236,10 +287,34 @@
     }
 
     // Standard flat view for other levels
-    // Check if children contain groups — if so, use tabs
+    // Check if children contain groups — if so, use tabs.
+    // Also check for expected groups declared in the layer (via requires_groups)
+    // so we show tabs even for groups that don't have children yet.
     const groupNodes = children.filter(c => c.kind === 'Group');
-    if (groupNodes.length > 0) {
-      tabs = groupNodes.map(g => g.name);
+
+    // Get expected groups from the layer config for this parent's subkind
+    const parentSubkind = parentNode?.metadata.subkind ?? null;
+    const paletteEntry = parentSubkind
+      ? $paletteConfig.find((p: any) => p.name === parentSubkind)
+      : null;
+    const expectedGroups: string[] = paletteEntry?.expected_groups ?? [];
+
+    // Merge: actual group nodes + expected groups that don't exist yet
+    const allGroupNames = [...new Set([
+      ...groupNodes.map(g => g.name),
+      ...expectedGroups,
+    ])];
+
+    if (allGroupNames.length > 0) {
+      // Sort to match the expected order from the layer
+      if (expectedGroups.length > 0) {
+        allGroupNames.sort((a, b) => {
+          const ai = expectedGroups.indexOf(a);
+          const bi = expectedGroups.indexOf(b);
+          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+        });
+      }
+      tabs = allGroupNames;
       // Use activeTab if valid, otherwise default to first
       let currentTab = activeTab;
       if (!currentTab || !tabs.includes(currentTab)) {
@@ -289,6 +364,10 @@
         edges = tabEdges;
         return;
       }
+      // Active tab is an expected group with no content yet — show empty canvas
+      nodes = layoutByType([]);
+      edges = [];
+      return;
     } else {
       tabs = [];
       activeTab = null;
@@ -382,8 +461,52 @@
     edges = allEdges;
   }
 
-  /** Layout nodes in vertical columns grouped by subkind/kind */
+  /** Layout nodes in vertical columns grouped by subkind/kind.
+   *  Preserves positions for nodes that already exist on the canvas. */
   function layoutByType(flowNodes: Node[]): Node[] {
+    // Capture existing positions from current nodes on canvas
+    const existingPositions: Record<string, { x: number; y: number }> = {};
+    for (const n of nodes) {
+      existingPositions[n.id] = n.position;
+    }
+
+    // Separate nodes that already have a position from those that need layout
+    const positioned: Node[] = [];
+    const needsLayout: Node[] = [];
+
+    for (const node of flowNodes) {
+      if (existingPositions[node.id]) {
+        positioned.push({ ...node, position: existingPositions[node.id] });
+      } else {
+        needsLayout.push(node);
+      }
+    }
+
+    // If all nodes already have positions, just return them
+    if (needsLayout.length === 0) return positioned;
+
+    // If ALL nodes need layout (initial load), do full layout
+    if (positioned.length === 0) {
+      return doColumnLayout(flowNodes);
+    }
+
+    // Layout only the new nodes, placing them after existing ones
+    const maxX = Math.max(0, ...positioned.map(n => n.position.x));
+    const maxY = Math.max(0, ...positioned.map(n => n.position.y));
+    const NODE_H = 140;
+    const V_GAP = 30;
+
+    let y = maxY + NODE_H + V_GAP;
+    for (const node of needsLayout) {
+      positioned.push({ ...node, position: { x: maxX, y } });
+      y += NODE_H + V_GAP;
+    }
+
+    return positioned;
+  }
+
+  /** Pure column layout (used for initial load when no positions exist) */
+  function doColumnLayout(flowNodes: Node[]): Node[] {
     const NODE_W = 240;
     const NODE_H = 140;    // account for badges, details button
     const V_GAP = 30;      // vertical gap between same-type nodes
@@ -596,6 +719,7 @@
             node={selectedNode}
             onUpdate={updateNodeData}
             onClose={() => selectedNodeId.set(null)}
+            onImplement={handleImplement}
           />
         {/if}
       </div>

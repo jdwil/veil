@@ -1,6 +1,6 @@
 <script lang="ts">
   import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/types';
-  import { irGraph, saveEdits, saving, saveError, type EditOp } from '$lib/store';
+  import { irGraph, saveEdits, saving, saveError, paletteConfig, type EditOp } from '$lib/store';
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
   import FieldsEditor from '$lib/FieldsEditor.svelte';
@@ -9,10 +9,11 @@
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
 
-  let { node, onUpdate, onClose }: {
+  let { node, onUpdate, onClose, onImplement }: {
     node: { id: string; data: any };
     onUpdate: (id: string, data: any) => void;
     onClose: () => void;
+    onImplement?: (implEntry: any, targetNodeName: string) => void;
   } = $props();
 
   let name = $state(node.data.label ?? '');
@@ -20,6 +21,15 @@
   let subkind = $derived<string | null>(node.data.subkind ?? null);
   let style = $derived(getNodeStyle(kind, subkind));
   let displayKind = $derived(subkind ?? kind);
+
+  // Check if any impl-shaped construct in the palette targets this node's subkind.
+  // If so, we can offer a "Create [impl label]" button.
+  let implConstruct = $derived.by(() => {
+    if (!subkind) return null;
+    const config = $paletteConfig;
+    if (!config || config.length === 0) return null;
+    return config.find((c: any) => c.tgt === subkind) ?? null;
+  });
 
   // Get children of this node from the graph
   let children = $state<IrNode[]>([]);
@@ -43,7 +53,8 @@
 
   // Parse children into editable method structures (for Port/Interface)
   let methods = $derived.by(() => {
-    return children
+    // First try: parse from InterfaceMethod child nodes
+    const fromChildren = children
       .filter(c => c.kind === 'InterfaceMethod')
       .map(c => {
         const paramsRaw = c.metadata.properties.find(([k]) => k === 'params')?.[1] ?? '';
@@ -56,7 +67,44 @@
         }) : [];
         return { name: c.name, params, returnType: returnsRaw };
       });
+    if (fromChildren.length > 0) return fromChildren;
+
+    // Fallback: parse from properties "methods" string (semicolon-separated signatures)
+    const methodsStr = (node.data.properties ?? []).find(([k]: [string, string]) => k === 'methods')?.[1] ?? '';
+    if (!methodsStr) return localMethods;
+    return methodsStr.split('; ').filter(Boolean).map((sig: string) => {
+      // Parse "name(params) -> RetType" or "name!(params) -> RetType"
+      const parenIdx = sig.indexOf('(');
+      if (parenIdx < 0) return { name: sig.trim(), params: [], returnType: '' };
+      let methodName = sig.slice(0, parenIdx).trim();
+      // Handle "!" suffix (fallible methods)
+      let fallible = false;
+      if (methodName.endsWith('!')) {
+        fallible = true;
+        methodName = methodName.slice(0, -1);
+      }
+      const closeIdx = sig.indexOf(')', parenIdx);
+      const paramStr = sig.slice(parenIdx + 1, closeIdx);
+      const params = paramStr ? paramStr.split(', ').map(p => {
+        const [name, type] = p.split(': ');
+        return { name: name?.trim() ?? '', type: type?.trim() ?? 'Str' };
+      }) : [];
+      let returnType = '';
+      const arrowIdx = sig.indexOf('->', closeIdx);
+      if (arrowIdx >= 0) {
+        returnType = sig.slice(arrowIdx + 2).trim();
+        if (fallible && !returnType.startsWith('Res!')) {
+          returnType = returnType ? `Res!<${returnType}>` : 'Res!';
+        }
+      } else if (fallible) {
+        returnType = 'Res!';
+      }
+      return { name: methodName, params, returnType };
+    });
   });
+
+  // Local methods state for unsaved nodes (no spanStart yet)
+  let localMethods = $state<any[]>([]);
 
   // Parse children into editable field structures (for types)
   let fields = $derived.by(() => {
@@ -85,7 +133,11 @@
   }
 
   function handleMethodsChange(newMethods: any[]) {
-    if (spanStart === null) return;
+    if (spanStart === null) {
+      // Node not yet saved — update local state so the UI responds
+      localMethods = newMethods;
+      return;
+    }
     persist({
       op: 'set_methods',
       span_start: spanStart,
@@ -244,6 +296,18 @@
       <div class="pe-note">Saving…</div>
     {:else if $saveError}
       <div class="pe-note pe-note-error">Save failed: {$saveError}</div>
+    {/if}
+
+    <!-- Implement button: shown on trait-shaped nodes that have a paired impl construct -->
+    {#if implConstruct && onImplement}
+      <button
+        class="pe-implement-btn"
+        onclick={() => onImplement(implConstruct, name)}
+        title="Create a {implConstruct.label} that implements this {displayKind}"
+      >
+        <span class="impl-icon">{implConstruct.icon}</span>
+        Create {implConstruct.label}
+      </button>
     {/if}
 
     <!-- Type-specific editor -->
@@ -542,6 +606,28 @@
     font-style: italic;
     margin: 0;
   }
+
+  .pe-implement-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(168, 85, 247, 0.1);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    color: #c4b5fd;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .pe-implement-btn:hover {
+    background: rgba(168, 85, 247, 0.2);
+    border-color: rgba(168, 85, 247, 0.5);
+    transform: translateY(-1px);
+  }
+  .impl-icon { font-size: 14px; }
 
   .step-body-preview {
     display: flex;

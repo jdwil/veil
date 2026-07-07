@@ -3,43 +3,43 @@ pkg ddd v1
   author "VEIL"
 
   construct Context
-    keyword ctx
-    maps_to mod
+    kw ctx
+    mt mod
     au
     desc "A bounded context — autonomous domain boundary"
-    constraints
-      requires_groups
+    cst
+      requires_groups domain, application, infrastructure, presentation
     visual
       icon "📦"
       color "#8b5cf6"
       label "Bounded Context"
-    allowed_in top
+    in top
 
   construct Orchestrator
-    keyword orchestrator
-    maps_to mod
+    kw orchestrator
+    mt mod
     desc "Orchestrator — dedicated container for cross-context sagas"
-    constraints
+    cst
       only Saga
-      requires_groups
+      requires_groups domain, application, infrastructure, presentation
     visual
       icon "🎯"
       color "#dc2626"
       label "Orchestrator"
-    allowed_in top
+    in top
 
   construct Aggregate
-    keyword agg
-    maps_to struct
-    allowed_in Context
+    kw agg
+    mt struct
+    in Context
     desc "Aggregate root — consistency boundary with state, events, and commands"
-    contains
+    has
       root: struct
       state: enum
       fn[]
       Event[]
       Command[]
-    constraints
+    cst
       must_have root
       has_identity id
       mutations_through_methods
@@ -47,16 +47,16 @@ pkg ddd v1
       icon "🧩"
       color "#ec4899"
       label "Aggregate"
-    annotations
+    ann
       invariant: "Domain constraint validation" expr
     group domain
 
   construct Entity
-    keyword ent
-    maps_to struct
-    allowed_in Context
+    kw ent
+    mt struct
+    in Context
     desc "Entity — domain object with identity"
-    constraints
+    cst
       has_identity id
       deny_calls Bus
     visual
@@ -66,11 +66,11 @@ pkg ddd v1
     group domain
 
   construct ValueObject
-    keyword val
-    maps_to struct
-    allowed_in Context
+    kw val
+    mt struct
+    in Context
     desc "Value Object — immutable, identity-less domain concept"
-    constraints
+    cst
       no_identity
       equality_by_value
       deny_calls trait
@@ -78,40 +78,40 @@ pkg ddd v1
       icon "💎"
       color "#14b8a6"
       label "Value Object"
-    annotations
+    ann
       invariant: "Validation rule" expr
     group domain
 
   construct Event
-    keyword evt
-    maps_to struct
+    kw evt
+    mt struct
     desc "Domain Event — something that happened in the domain"
-    constraints
+    cst
       immutable
     visual
       icon "⚡"
       color "#f59e0b"
       label "Domain Event"
     group domain
-    allowed_in Aggregate
+    in Aggregate
 
   construct Command
-    keyword cmd
-    maps_to struct
+    kw cmd
+    mt struct
     desc "Command — intent to change domain state"
     visual
       icon "📨"
       color "#3b82f6"
       label "Command"
-    annotations
+    ann
       idempotent: "Command is idempotent"
       validate: "Run validation before execution" expr
     group domain
-    allowed_in Aggregate
+    in Aggregate
 
   construct Query
-    keyword qry
-    maps_to struct
+    kw qry
+    mt struct
     desc "Query — request for data, no side effects"
     visual
       icon "🔍"
@@ -120,9 +120,9 @@ pkg ddd v1
     group domain
 
   construct Port
-    keyword port
-    maps_to trait
-    allowed_in Context
+    kw port
+    mt trait
+    in Context
     desc "Port — interface contract for external dependencies"
     visual
       icon "🔌"
@@ -131,26 +131,28 @@ pkg ddd v1
     group domain
 
   construct Adapter
-    keyword adapter
-    maps_to impl
-    allowed_in Context
+    kw adapter
+    mt impl
+    in Context
     desc "Adapter — implementation of a port for a specific technology"
-    constraints
+    cst
       must_implement_port
     visual
       icon "🔗"
       color "#a855f7"
       label "Adapter"
-    annotations
+    ann
       env: "Required environment variables" vars
     group infrastructure
+    tgt Port
+    dg infrastructure
 
   construct Repository
-    keyword repo
-    maps_to trait
-    allowed_in Context
+    kw repo
+    mt trait
+    in Context
     desc "Repository — persistence interface for an aggregate"
-    constraints
+    cst
       crud_for_aggregate
     visual
       icon "🗄️"
@@ -159,31 +161,31 @@ pkg ddd v1
     group domain
 
   construct DomainService
-    keyword svc
-    maps_to fn
-    allowed_in Context
+    kw svc
+    mt fn
+    in Context
     desc "Domain Service — orchestrates operations across aggregates within a context"
     visual
       icon "🖥️"
       color "#0ea5e9"
       label "Domain Service"
-    annotations
+    ann
       trace: "Add distributed tracing" method
       timeout: "Service-level timeout" ms
     group domain
 
   construct Saga
-    keyword saga
-    maps_to fn
+    kw saga
+    mt fn
     desc "Saga — cross-context orchestration with compensation semantics"
-    constraints
+    cst
       steps_have_compensation
       spans_contexts
     visual
       icon "🔄"
       color "#dc2626"
       label "Saga"
-    annotations
+    ann
       trace: "Add distributed tracing" method
       timeout: "Overall saga timeout" ms
     # Steps are NOT inlined: each is lowered to an `impl SagaStep` and handed to
@@ -191,49 +193,49 @@ pkg ddd v1
     # `action`; the `compensate` sub-block fills `compensate`.
     runtime run_saga SagaStep
       compensate -> compensate
-    allowed_in Orchestrator
+    in Orchestrator
 
   # Statement extensions (built on top of core statement shapes)
   statement emit
-    maps_to call
+    mt call
     desc "Emit a domain event from within an aggregate"
-    semantics domain_event_emit
+    sem domain_event_emit
     visual
       icon "⚡"
       color "#f59e0b"
       label "Emit"
 
   statement dispatch
-    maps_to Bus.dispatch
+    mt Bus.dispatch
     desc "Fire event through event bus (fire-and-forget, multiple handlers)"
-    semantics event_bus_fire_and_forget
+    sem event_bus_fire_and_forget
     visual
       icon "📡"
       color "#f59e0b"
       label "Dispatch"
 
   statement invoke
-    maps_to Bus.invoke
+    mt Bus.invoke
     desc "Execute command through command bus (single handler)"
-    semantics command_bus_handler
+    sem command_bus_handler
     visual
       icon "⚙️"
       color "#3b82f6"
       label "Invoke"
 
   statement request
-    maps_to Bus.request
+    mt Bus.request
     desc "Query data from another context (inter-context communication)"
-    semantics inter_context_query
+    sem inter_context_query
     visual
       icon "🔌"
       color "#10b981"
       label "Request"
 
   statement guard
-    maps_to if
+    mt if
     desc "Precondition check — fails the step if condition is false"
-    semantics precondition_fail_step
+    sem precondition_fail_step
     visual
       icon "🛡️"
       color "#ef4444"

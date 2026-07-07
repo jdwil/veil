@@ -50,7 +50,7 @@
         <span class="compensate-badge" title="Has compensation (rollback)">↩</span>
       {/if}
       {#if hasChildren && !isGhost}
-        <span class="expand-indicator">⤵</span>
+        <span class="expand-indicator" title="Double-click to expand">⤵</span>
       {/if}
     </div>
 

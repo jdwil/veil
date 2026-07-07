@@ -28,24 +28,24 @@ A `.layer` file defines constructs that map to core primitives. For example, `dd
 pkg ddd v1
 
   construct Context
-    keyword ctx
-    maps_to mod
+    kw ctx
+    mt mod
     visual
       icon "📦"
       color "#8b5cf6"
       label "Bounded Context"
 
   construct Aggregate
-    keyword agg
-    maps_to struct
+    kw agg
+    mt struct
     visual
       icon "🏛️"
       color "#0891b2"
       label "Aggregate Root"
 
   construct Port
-    keyword port
-    maps_to trait
+    kw port
+    mt trait
     visual
       icon "🔌"
       color "#059669"
@@ -75,14 +75,14 @@ sol MyApp
 This means:
 - The parser does NOT know what "ctx", "agg", "port" mean — it reads the layer file to learn that "ctx" maps to "mod" (a module-shaped construct with children), "agg" maps to "struct" (a struct-shaped construct with fields), etc.
 - The builder does NOT hardcode subkind strings like "Context" or "Aggregate" — it reads the construct name from the layer schema
-- The codegen does NOT have DDD-specific generation — it generates code based on the `maps_to` category (mod → module, struct → struct, trait → trait, etc.)
+- The codegen does NOT have DDD-specific generation — it generates code based on the `mt` category (mod → module, struct → struct, trait → trait, etc.)
 - The viewer does NOT hardcode icons, colors, or labels — it reads visual metadata from the layer file via an API
 
 If someone creates a `crud.layer` or `ecs.layer` or `microservices.layer`, the system should work WITHOUT changing any Rust code or viewer code.
 
 ## Construct Categories
 
-Every layer construct maps to exactly one core primitive via `maps_to`:
+Every layer construct maps to exactly one core primitive via `mt`:
 
 | maps_to | Parse shape | Contains |
 |---------|-------------|----------|
@@ -96,7 +96,7 @@ Every layer construct maps to exactly one core primitive via `maps_to`:
 
 The parser only needs to understand these **7 shapes**. When it encounters a
 keyword, it looks up which shape to use from the loaded layer schema. A
-`maps_to` may also name another construct (by keyword or name), and shapes
+`mt` may also name another construct (by keyword or name), and shapes
 resolve transitively — see Layer Stacking.
 
 The full language reference (every core keyword, operator, type form, and the
@@ -121,7 +121,7 @@ of them. In `ddd.layer`, for example:
 - `emit` — aggregate-local event collection (`maps_to call`)
 - `guard` — `maps_to if` (validation/precondition)
 
-A statement whose `maps_to` names `Port.method` **desugars** at parse time into
+A statement whose `mt` names `Port.method` **desugars** at parse time into
 a call on that port, so `dispatch Evt{...}` becomes a `Bus.dispatch(...)`
 call while the source and viewer keep the `dispatch` sugar (via
 `CallExpr.sugar`). None of these keywords are hardcoded in the engine.
@@ -142,7 +142,7 @@ files) and uses it for:
 - Node styling (background color, icon)
 - Palette sidebar (what constructs are available to drag onto the canvas)
 - Property editor labels **and available annotations** (declared per construct
-  in the layer's `annotations` block)
+  in the layer's `ann` block)
 
 ## File Structure
 
@@ -198,9 +198,9 @@ concerns, not source-level. A TypeScript backend would read the same AST.
 
 ## Layer Stacking
 
-Layers compose: a construct's `maps_to` may name a core shape OR another
+Layers compose: a construct's `mt` may name a core shape OR another
 construct from any loaded layer (by keyword or name). A layer declares its
-dependencies with `use` lines, and the `LayerRegistry` resolves `maps_to`
+dependencies with `use` lines, and the `LayerRegistry` resolves `mt`
 chains transitively at load time:
 
 ```
@@ -209,11 +209,11 @@ pkg crm v1
   use ddd
 
   construct Lead
-    keyword lead
-    maps_to agg          # lead -> agg -> struct
+    kw lead
+    mt agg          # lead -> agg -> struct
 ```
 
-Constraint checks (`only Saga`, `contains` allow-lists) follow the same
+Constraint checks (`only Saga`, `has` allow-lists) follow the same
 chain via an is-a relation, so a crm `Playbook` (playbook → saga) is
 accepted wherever a ddd `Saga` is allowed. Statements stack the same way
 (`notify` → `dispatch` → `call`).
@@ -225,7 +225,7 @@ lexer, parser, IR builder, **codegen**, and **viewer**. Both example
 workspaces generate Rust that compiles. Implementation map:
 
 - `veil-ir/src/layer.rs` — `LayerRegistry`: parses `.layer` files, resolves
-  `maps_to` transitively, exposes constructs/statements/visuals/annotations.
+  `mt` transitively, exposes constructs/statements/visuals/annotations.
   The 7 core shapes (`mod`, `struct`, `enum`, `trait`, `impl`, `fn`, `group`)
   and 2 statement shapes (`call`, `if`) are the ONLY vocabulary the engine
   knows.
@@ -234,7 +234,7 @@ workspaces generate Rust that compiles. Implementation map:
   reserved — they lex as identifiers and are recognized contextually, so
   they can be used as variable names.
 - Parser: one parse function per core shape, dispatched by registry lookup.
-  Named sub-blocks (`root`, `state`) come from `contains` entries of the
+  Named sub-blocks (`root`, `state`) come from `has` entries of the
   form `keyword: shape`. Layer statements parse into a generic `ActionExpr`,
   and `Port.method` statements desugar into `call`s.
 - AST: a single generic `Construct` stamped with its shape + layer subkind,

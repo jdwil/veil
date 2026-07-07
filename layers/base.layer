@@ -3,64 +3,64 @@ pkg base v1
   author "VEIL"
 
   construct struct
-    maps_to primitive
+    mt primitive
     desc "Product type — named collection of typed fields"
     visual
       icon "📋"
       color "#14b8a6"
       label "Struct"
-    allowed_in any
+    in any
 
   construct enum
-    maps_to primitive
+    mt primitive
     desc "Sum type — named set of variants"
     visual
       icon "🔀"
       color "#8b5cf6"
       label "Enum"
-    allowed_in any
+    in any
 
   construct fn
-    maps_to primitive
+    mt primitive
     desc "Function — callable with parameters and return type"
     visual
       icon "⚡"
       color "#f97316"
       label "Function"
-    allowed_in any
+    in any
 
   construct trait
-    maps_to primitive
+    mt primitive
     desc "Contract — set of method signatures"
     visual
       icon "🔌"
       color "#10b981"
       label "Trait"
-    allowed_in any
+    in any
 
   construct impl
-    maps_to primitive
+    mt primitive
     desc "Implementation of a trait for a struct"
     visual
       icon "🔗"
       color "#a855f7"
       label "Implementation"
-    allowed_in any
+    in any
 
   construct mod
-    maps_to primitive
+    mt primitive
     desc "Module — namespace boundary"
     visual
       icon "📦"
       color "#8b5cf6"
       label "Module"
-    allowed_in top
+    in top
 
   construct group
-    maps_to primitive
+    mt primitive
     desc "Visual grouping — organizational container (no codegen impact)"
     visual
       icon "📂"
       color "#475569"
       label "Group"
-    allowed_in mod
+    in mod

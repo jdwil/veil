@@ -9,29 +9,29 @@ pkg crm v1
   use ddd
 
   construct Pipeline
-    keyword pipeline
-    maps_to ctx
+    kw pipeline
+    mt ctx
     desc "A sales pipeline — a bounded context for one revenue motion"
-    constraints
+    cst
       requires_groups
     visual
       icon "🛒"
       color "#0284c7"
       label "Pipeline"
-    allowed_in top
+    in top
 
   construct Lead
-    keyword lead
-    maps_to agg
-    allowed_in Pipeline
+    kw lead
+    mt agg
+    in Pipeline
     desc "A lead — aggregate tracking a potential customer through the funnel"
-    contains
+    has
       root: struct
       stage: enum
       fn[]
       Signal[]
       Move[]
-    constraints
+    cst
       must_have root
     visual
       icon "🎣"
@@ -40,31 +40,31 @@ pkg crm v1
     group domain
 
   construct Signal
-    keyword signal
-    maps_to evt
+    kw signal
+    mt evt
     desc "A buying signal — domain event on a lead"
     visual
       icon "📶"
       color "#eab308"
       label "Signal"
     group domain
-    allowed_in Lead
+    in Lead
 
   construct Move
-    keyword move
-    maps_to cmd
+    kw move
+    mt cmd
     desc "A funnel move — command that advances a lead"
     visual
       icon "➡️"
       color "#2563eb"
       label "Move"
     group domain
-    allowed_in Lead
+    in Lead
 
   construct Integration
-    keyword integration
-    maps_to port
-    allowed_in Pipeline
+    kw integration
+    mt port
+    in Pipeline
     desc "External system contract (email, enrichment, calendar...)"
     visual
       icon "🧷"
@@ -73,9 +73,9 @@ pkg crm v1
     group domain
 
   construct Connector
-    keyword connector
-    maps_to adapter
-    allowed_in Pipeline
+    kw connector
+    mt adapter
+    in Pipeline
     desc "Concrete integration implementation for a vendor"
     visual
       icon "🔌"
@@ -84,19 +84,19 @@ pkg crm v1
     group infrastructure
 
   construct Playbook
-    keyword playbook
-    maps_to saga
+    kw playbook
+    mt saga
     desc "A playbook — multi-step motion across pipelines with rollback"
     visual
       icon "📖"
       color "#be123c"
       label "Playbook"
-    allowed_in Orchestrator
+    in Orchestrator
 
   statement notify
-    maps_to dispatch
+    mt dispatch
     desc "Notify the team through the signal bus"
-    semantics signal_bus_notify
+    sem signal_bus_notify
     visual
       icon "🔔"
       color "#f59e0b"

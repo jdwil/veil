@@ -42,7 +42,14 @@
           show = true;
         }
       }
-      else if (c.allowed_in === 'any' && ck !== 'Solution') show = true;
+      else if (c.allowed_in === 'any' && ck !== 'Solution') {
+        // Group is structural — only show it when NOT already inside a group.
+        if (c.kind === 'Group' && activeGroup) {
+          show = false;
+        } else {
+          show = true;
+        }
+      }
 
       if (show) {
         results.push({
