@@ -108,7 +108,7 @@
     const data = event.dataTransfer.getData('application/veil-node');
     if (!data) return;
 
-    const item = JSON.parse(data) as { kind: NodeKind; label: string; icon: string };
+    const item = JSON.parse(data) as { kind: NodeKind; label: string; icon: string; name?: string };
 
     // Create new node at drop position
     const id = String(nextNodeId++);
@@ -125,6 +125,7 @@
       data: {
         label: `New ${item.label}`,
         kind: item.kind,
+        subkind: item.name || null,
         hasChildren: false,
         annotations: [],
         properties: [],
