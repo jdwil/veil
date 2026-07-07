@@ -251,6 +251,21 @@ pkg ddd v1
       invoke(cmd: Json) -> Res!<Json>
       request(qry: Json) -> Res!<Json>
 
+    # ─── Auth service (runtime-injected authentication & authorization) ─────
+    # The runtime provides the concrete implementation: Cognito, Auth0, custom
+    # RBAC, or a BusAuthAdapter that delegates to a VEIL-authored auth context.
+    # Domain code calls these methods via the Deps struct like any other port.
+    # @strategy selects the runtime adapter (e.g. cognito, auth0, bus).
+    @strategy(bus)
+    trait AuthService
+      validate_token(token: Str) -> Res!<Principal>
+      check_permission(principal: Principal, permission: Str) -> Res!<Bool>
+
+    struct Principal
+      id: Str
+      roles: List<Str>
+      claims: Map<Str, Str>
+
     # ─── Saga runtime (the transactional coordinator), written in VEIL ─────
     # A saga step is a unit of work with a compensating action. Steps share a
     # JSON `state`: each `action` reads prior results from it and returns the

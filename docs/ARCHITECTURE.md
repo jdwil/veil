@@ -26,9 +26,20 @@ Consumers who `use <pkg_name>` get ONLY the exposed surface — not the
 internal implementation.
 
 The expose block contains:
-- **DTOs** (`val`) — typed response shapes consumers receive
-- **Queries** (`qry`) — read operations that return DTOs
-- **Commands** (`cmd`) — write operations that accept an ID and return `Res!`
+- **`node <Name>`** — a single exposed operation (command or query)
+- **`input`** — typed parameters the operation accepts
+- **`output`** — typed response fields the operation returns
+- **`cst`** — free-text constraints (e.g. `flow-only`)
+
+```
+expose
+  node CreateCustomer
+    desc "Register a new customer"
+    input
+      email: Email
+    output
+      customer_id: UUID
+```
 
 Internals (aggregates, repos, adapters, services) are PRIVATE to the package.
 
@@ -72,8 +83,11 @@ Context A                    Bus                     Context B
 The Bus is an abstract trait (`ddd.layer` declares it). The concrete
 implementation is provided by `veil-runtime` at deployment time.
 
-**Message format (v1):** Messages are serialized as formatted debug strings.
-The Bus parses the message name from the first word before `{`.
+**Message format:** Messages are serialized as `serde_json::Value` payloads.
+Commands/events carry a `"type"` field identifying the message name and a
+`"target"` field identifying the recipient port/method. Results are returned
+as JSON values, enabling orchestrators to index into them without depending
+on another context's concrete Rust types.
 
 ---
 
@@ -81,10 +95,14 @@ The Bus parses the message name from the first word before `{`.
 
 When VEIL encounters `use <name>`:
 1. **Local directory** — same dir as the .veil file (highest priority)
-2. **System layers** — `layers/` directory (ships with VEIL: base, ddd)
+2. **System layers** — `layers/` directory (ships with VEIL: base, ddd, functional)
 3. **External resolver** — trait-based port for custom backends (databases, etc.)
 
 For `.stub` files: local directory only (no system stubs).
+
+Note: `crm.layer` lives in `examples/` as a composability proof. To use it
+in a `.veil` file, place a local copy next to the file or reference it via
+a custom resolver.
 
 ---
 

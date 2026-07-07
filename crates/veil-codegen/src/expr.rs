@@ -33,6 +33,12 @@ pub struct GenCtx {
     /// How to reference the Bus for orchestrator routing. `deps.bus` in a
     /// flow/service; `bus` inside a saga-step impl where it's an injected param.
     pub bus_ref: String,
+    /// Names of traits used as message-routing ports (e.g. "Bus"). Calls to these
+    /// use `bus_ref` instead of `deps.<name>`. Derived from the layer registry.
+    pub routing_traits: HashSet<String>,
+    /// Names of known async free functions (e.g. layer-declared coordinators like
+    /// `run_saga`, `unwind`). Calls to these need `.await?`.
+    pub async_fns: HashSet<String>,
     /// Names backed by a threaded JSON state (saga steps). A read of such a name
     /// becomes `state["name"]`; an assignment writes `state["name"] = ...`. This
     /// lets independent step impls share results across steps.
@@ -51,6 +57,8 @@ impl GenCtx {
             local_types: HashMap::new(),
             struct_fields: HashMap::new(),
             bus_ref: "deps.bus".to_string(),
+            routing_traits: HashSet::new(),
+            async_fns: HashSet::new(),
             state_locals: HashSet::new(),
         }
     }
@@ -186,6 +194,19 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     inner.to_string(),
                 );
             }
+        }
+    }
+
+    // Populate routing traits from the layer registry so call generation can
+    // identify which traits are message-routing ports (e.g. Bus) without
+    // hardcoding names.
+    ctx.routing_traits = registry.routing_traits().into_iter().collect();
+
+    // Track layer-declared free functions (e.g. run_saga, unwind) as async —
+    // they generate as `pub async fn` and calls to them need `.await?`.
+    for item in &solution.items {
+        if let TopLevelItem::Function(f) = item {
+            ctx.async_fns.insert(f.name.clone());
         }
     }
 
@@ -614,9 +635,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 })
                 .collect::<Vec<_>>().join(", ")
         };
-        // The Bus itself uses the ctx bus reference (`deps.bus` in a flow,
+        // Routing traits (e.g. Bus) use the ctx bus reference (`deps.bus` in a flow,
         // `bus` inside a saga-step impl); other trait deps come from `deps`.
-        if call.target == "Bus" {
+        if ctx.routing_traits.contains(&call.target) {
             return format!("{}.{}({}).await?", ctx.bus_ref, to_snake(method), final_args);
         }
         return format!("deps.{}.{}({}).await?", dep_name, to_snake(method), final_args);
@@ -690,7 +711,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // passing locals/state into a by-value param doesn't move them).
         match call.target.as_str() {
             "now" => "Utc::now()".to_string(),
-            _ => format!("{}({})", to_snake(&call.target), clone_args(&call.args, ctx)),
+            _ => {
+                let base = format!("{}({})", to_snake(&call.target), clone_args(&call.args, ctx));
+                // Layer-declared async functions (e.g. unwind, run_saga) need .await?
+                if ctx.async_fns.contains(&call.target) {
+                    format!("{}.await?", base)
+                } else {
+                    base
+                }
+            }
         }
     } else if ctx.is_local(&call.target) || ctx.name_to_shape.contains_key(&call.target) {
         // Known local/construct method call (already handled above, but be safe).
@@ -795,6 +824,8 @@ impl GenCtx {
             local_types: self.local_types.clone(),
             struct_fields: self.struct_fields.clone(),
             bus_ref: self.bus_ref.clone(),
+            routing_traits: self.routing_traits.clone(),
+            async_fns: self.async_fns.clone(),
             state_locals: self.state_locals.clone(),
         }
     }

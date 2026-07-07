@@ -40,11 +40,12 @@ export function irNodeToExpr(node: IrNode): Expr {
     }
 
     case 'guard': {
+      // Guard maps to 'if' shape — it's a precondition check.
       // name is "guard condition"
-      const guardText = node.name.replace(/^guard\s+/, '');
+      const guardText = node.name.replace(new RegExp(`^${subkind}\\s+`), '');
       return {
         kind: 'action',
-        keyword: 'guard',
+        keyword: subkind,
         target: guardText,
         method: '',
         args: [],
@@ -52,24 +53,23 @@ export function irNodeToExpr(node: IrNode): Expr {
       };
     }
 
-    case 'dispatch':
-    case 'invoke':
-    case 'request':
-    case 'notify':
-    case 'emit': {
-      const text = node.name.replace(new RegExp(`^${subkind}\\s+`), '');
-      return {
-        kind: 'action',
-        keyword: subkind,
-        target: text.split('{')[0].trim(),
-        method: '',
-        args: [],
-        named_args: parseNamedArgs(text),
-      };
-    }
-
     default: {
-      // Generic: try to parse the name as an expression
+      // Any other subkind is a layer-defined statement (dispatch, invoke,
+      // request, emit, notify, or any custom statement from any layer).
+      // They all follow the same pattern: keyword + target + optional {fields}.
+      // This is fully generic — no layer keywords are enumerated here.
+      if (subkind && subkind !== 'assign' && subkind !== 'call') {
+        const text = node.name.replace(new RegExp(`^${subkind}\\s+`), '');
+        return {
+          kind: 'action',
+          keyword: subkind,
+          target: text.split('{')[0].trim(),
+          method: '',
+          args: [],
+          named_args: parseNamedArgs(text),
+        };
+      }
+      // Truly unknown: try to parse the name as an expression
       return parseInlineExpr(node.name);
     }
   }

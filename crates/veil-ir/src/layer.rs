@@ -310,6 +310,19 @@ impl LayerRegistry {
         self.statements.iter().filter(|s| s.is_infix).collect()
     }
 
+    /// Get the names of traits used as message-routing ports by layer statements.
+    /// These are the traits that statements target via `maps_to Port.method` (e.g. Bus).
+    /// Orchestrators keep only these as direct deps; all other calls route through them.
+    pub fn routing_traits(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.statements.iter()
+            .filter_map(|s| s.port_target.as_ref())
+            .cloned()
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Is-a check through the maps_to chain: a construct "is" another when
     /// its maps_to chain passes through it (by name or keyword). Stacked
     /// constructs inherit the identity of what they build on — e.g. a
@@ -813,9 +826,18 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 in_declare = false;
                 // Fall through to normal parsing of this line
             } else {
-                // Check if this is a new top-level item within declare
-                if indent == declare_base_indent && !current_decl_lines.is_empty() {
-                    // Flush previous declaration
+                // Determine whether to flush the accumulated declaration block.
+                // A declaration is "one construct with optional leading annotations."
+                // We flush when a new top-level item begins. An annotation at base
+                // indent signals a new item IF the block already has a construct
+                // keyword. A non-annotation at base indent always signals a new item
+                // if there's anything accumulated.
+                let block_has_construct = current_decl_lines.iter().any(|l| {
+                    let lt = l.trim();
+                    !lt.is_empty() && !lt.starts_with('@')
+                });
+                let should_flush = indent == declare_base_indent && block_has_construct;
+                if should_flush {
                     while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
                         current_decl_lines.pop();
                     }

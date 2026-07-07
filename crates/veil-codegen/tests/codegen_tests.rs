@@ -265,3 +265,30 @@ fn grep(haystack: &str, needle: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+#[test]
+fn manifest_includes_layer_provided_deps_with_strategy() {
+    let out = customer_onboarding();
+    // The manifest should include Bus with "provided_by": "runtime"
+    assert!(
+        out.contains(r#""provided_by": "runtime""#),
+        "runtime-provided deps not in manifest:\n{}",
+        grep(&out, "manifest.json")
+    );
+    assert!(
+        out.contains(r#""trait": "Bus""#),
+        "Bus trait not in manifest:\n{}",
+        grep(&out, "Bus")
+    );
+    // AuthService should also appear with "provided_by": "runtime" and a strategy
+    assert!(
+        out.contains(r#""trait": "AuthService""#),
+        "AuthService trait not in manifest:\n{}",
+        grep(&out, "AuthService")
+    );
+    assert!(
+        out.contains(r#""strategy": "bus""#),
+        "strategy field not in manifest for AuthService:\n{}",
+        grep(&out, "strategy")
+    );
+}

@@ -547,8 +547,24 @@ impl IrBuilder {
                     }
                     prev_step_id = Some(par_id);
                 }
-                FlowStep::Match(_) => {
-                    // TODO: match blocks as decision nodes
+                FlowStep::Match(m) => {
+                    // Match blocks appear as decision nodes. The scrutinee is the
+                    // node label; each arm is a child step whose name is the pattern.
+                    let scrutinee = expr_to_display(&m.expr);
+                    let match_id = self.graph.add_node(NodeKind::Step, format!("match {}", scrutinee), m.span);
+                    self.set_parent(match_id, parent_id);
+                    self.set_subkind(match_id, "decision");
+                    self.graph.add_edge(parent_id, match_id, EdgeKind::Contains);
+                    if let Some(prev) = prev_step_id {
+                        self.graph.add_edge(prev, match_id, EdgeKind::SequenceFlow);
+                    }
+                    for arm in &m.arms {
+                        let arm_id = self.graph.add_node(NodeKind::Step, arm.pattern.clone(), arm.span);
+                        self.set_parent(arm_id, match_id);
+                        self.graph.add_edge(match_id, arm_id, EdgeKind::Contains);
+                        self.build_step_body(&arm.body, arm_id);
+                    }
+                    prev_step_id = Some(match_id);
                 }
             }
         }

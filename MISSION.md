@@ -105,9 +105,6 @@ The full language reference (every core keyword, operator, type form, and the
 Architecture decisions, CQRS patterns, and deployment model are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The runtime implementation guide (for `veil-runtime`) is in
-[`docs/RUNTIME_PROMPT.md`](docs/RUNTIME_PROMPT.md).
-
 ## Statement Types (inside `fn`-mapped constructs)
 
 The engine knows only **2 statement shapes**: `call` (an invocation) and `if`
@@ -154,6 +151,7 @@ examples/
   base.layer             — Core primitives layer
   ddd.layer              — DDD abstraction layer (Bus, SagaStep + run_saga, ...)
   crm.layer              — Stacks on ddd.layer (proof of composability)
+  functional.layer       — FP abstractions (pure, adt, pipe, typeclasses, effects)
   customer_onboarding.veil — Example app using the DDD layer
   sales_crm.veil         — Example app using the CRM layer
   reqwest.stub           — Example external-crate stub

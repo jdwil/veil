@@ -35,6 +35,16 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             _ => None,
         })
         .collect();
+    // Layer-provided structs (e.g. Principal) also live in the shared crate
+    // so traits can reference them.
+    let shared_structs: Vec<&Construct> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Construct(c) if c.shape == Shape::Struct && c.layer_provided => Some(c),
+            _ => None,
+        })
+        .collect();
     // Top-level free functions (e.g. the layer-declared saga coordinator) also
     // live in the shared crate so every context can call them through the Bus.
     let shared_fns: Vec<&FnDef> = solution
@@ -45,7 +55,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             _ => None,
         })
         .collect();
-    files.extend(gen_shared_crate(&shared_traits, &shared_fns, solution, registry));
+    files.extend(gen_shared_crate(&shared_traits, &shared_structs, &shared_fns, solution, registry));
 
     // Each top-level mod-shaped construct becomes a crate.
     let modules: Vec<&Construct> = solution
@@ -275,7 +285,7 @@ uuid.workspace = true"#);
 
     // Generate manifest.json only for deployment units (constructs marked with `au`)
     if module.deployment_unit {
-        files.push(gen_manifest(module, &contents, &impls_for_module, &crate_name));
+        files.push(gen_manifest(module, &contents, &impls_for_module, &crate_name, solution));
     }
 
     files
@@ -289,6 +299,7 @@ fn gen_manifest(
     contents: &ModuleContents,
     impls: &[&Construct],
     crate_name: &str,
+    solution: &Solution,
 ) -> GeneratedFile {
     use serde_json::json;
 
@@ -315,12 +326,37 @@ fn gen_manifest(
         deps.insert(dep_name, serde_json::Value::Object(dep_info));
     }
 
-    // Always include Bus
-    if !deps.contains_key("bus") {
-        let mut bus_info = serde_json::Map::new();
-        bus_info.insert("trait".to_string(), json!("Bus"));
-        bus_info.insert("provided_by".to_string(), json!("runtime"));
-        deps.insert("bus".to_string(), serde_json::Value::Object(bus_info));
+    // Layer-provided traits (from `declare` blocks) that have no adapter in
+    // this module are provided by the runtime. This generalizes the old
+    // Bus-only hardcode: Bus, AuthService, and any future runtime-injected
+    // dependency all follow the same pattern.
+    let layer_provided_traits: Vec<&Construct> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Construct(c) if c.shape == Shape::Trait && c.layer_provided => Some(c),
+            _ => None,
+        })
+        .collect();
+
+    for t in &layer_provided_traits {
+        let dep_name = to_snake(&t.name);
+        if deps.contains_key(&dep_name) {
+            // Already has an adapter defined in-module; skip runtime fallback
+            continue;
+        }
+        let mut dep_info = serde_json::Map::new();
+        dep_info.insert("trait".to_string(), json!(t.name));
+        dep_info.insert("provided_by".to_string(), json!("runtime"));
+
+        // Emit @strategy annotation if present (e.g. @strategy(cognito))
+        if let Some(strategy_ann) = t.annotations.iter().find(|a| a.name == "strategy") {
+            if let Some(strategy_value) = strategy_ann.args.first() {
+                dep_info.insert("strategy".to_string(), json!(strategy_value));
+            }
+        }
+
+        deps.insert(dep_name, serde_json::Value::Object(dep_info));
     }
 
     // Collect handlers: fn-shaped constructs in the application group
@@ -339,9 +375,10 @@ fn gen_manifest(
         }));
     }
 
-    // Collect exposed queries and commands (from the package expose block if present)
-    // These come from the module's parent solution expose block
-    let expose_info: Vec<serde_json::Value> = Vec::new(); // TODO: extract from solution expose
+    // The `expose` block lives on `Package` (pkg files), not on `Solution`
+    // (sol files). For sol-based generation, expose info is empty. When
+    // package-level codegen is added, this will extract from the Package AST.
+    let expose_info: Vec<serde_json::Value> = Vec::new();
 
     let manifest = json!({
         "context": module.name,
@@ -849,6 +886,7 @@ fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile
 /// so there is exactly one definition of each across the workspace.
 fn gen_shared_crate(
     traits: &[&Construct],
+    structs: &[&Construct],
     functions: &[&FnDef],
     solution: &Solution,
     registry: &LayerRegistry,
@@ -904,6 +942,27 @@ chrono.workspace = true
                 None => String::new(),
             };
             lib.push_str(&format!("    async fn {}(&self{}{}){ret};\n", to_snake(&method.name), sep, params));
+        }
+        lib.push_str("}\n\n");
+    }
+
+    // Emit layer-provided structs (e.g. Principal) so traits can reference them.
+    for s in structs {
+        lib.push_str(&format!("/// Layer-provided struct: {}\n", s.name));
+        lib.push_str("#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]\n");
+        lib.push_str(&format!("pub struct {} {{\n", s.name));
+        for field in &s.fields {
+            let ft = type_to_rust(&field.type_expr);
+            lib.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), ft));
+        }
+        // Also check named blocks (root, etc.)
+        for block in &s.blocks {
+            if block.shape != Shape::Enum {
+                for field in &block.fields {
+                    let ft = type_to_rust(&field.type_expr);
+                    lib.push_str(&format!("    pub {}: {},\n", to_snake(&field.name), ft));
+                }
+            }
         }
         lib.push_str("}\n\n");
     }
@@ -1033,7 +1092,7 @@ fn gen_impls(
                 .map(|i| format!("_arg{}: impl std::fmt::Debug", i))
                 .collect::<Vec<_>>().join(", ");
             out.push_str(&format!(
-                "fn {}({}) -> String {{ String::new() }}\n",
+                "fn {}({}) {{ /* stub — replace with real integration */ }}\n",
                 name, params
             ));
         }
@@ -1120,7 +1179,16 @@ fn gen_impls(
                             out.push_str(&format!("        {};\n", rust_expr));
                             out.push_str("        Ok(())\n");
                         } else if ret_rust.starts_with("Result<") {
-                            out.push_str(&format!("        Ok({})\n", rust_expr));
+                            // If the expression calls an external-effect stub,
+                            // it returns () which won't match the expected type.
+                            // Use todo!() to defer to real implementation.
+                            let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
+                            if uses_effect {
+                                out.push_str(&format!("        {}; // effect stub (void)\n", rust_expr));
+                                out.push_str(&format!("        todo!(\"implement {} — effect stub returns no value\")\n", mimpl.method_name));
+                            } else {
+                                out.push_str(&format!("        Ok({})\n", rust_expr));
+                            }
                         } else {
                             out.push_str(&format!("        {}\n", rust_expr));
                         }
@@ -1368,12 +1436,14 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         })
     });
 
-    // For orchestrators, only Bus is a direct dep — all other calls go through Bus
+    // For orchestrators, only routing traits (e.g. Bus) are direct deps — all
+    // other calls go through the message bus.
     let mut effective_name_to_shape = name_to_shape.clone();
     if is_orchestrator {
-        // Remove all non-Bus traits from the shape map so they don't become direct deps
+        let routing = registry.routing_traits();
+        // Remove all non-routing traits from the shape map so they don't become direct deps
         effective_name_to_shape.retain(|name, shape| {
-            *shape != Shape::Trait || name == "Bus"
+            *shape != Shape::Trait || routing.contains(name)
         });
     }
 
