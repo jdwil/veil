@@ -111,6 +111,23 @@
   // Local methods state for unsaved nodes (no spanStart yet)
   let localMethods = $state<any[]>([]);
 
+  // Method bodies for impl-shaped nodes (one Expr[] per inherited method)
+  let implMethodBodies = $state<import('$lib/editors/expr-types').Expr[][]>([]);
+
+  function handleImplMethodBodyChange(methodIndex: number, newExprs: import('$lib/editors/expr-types').Expr[]) {
+    const updated = [...implMethodBodies];
+    while (updated.length <= methodIndex) updated.push([]);
+    updated[methodIndex] = newExprs;
+    implMethodBodies = updated;
+    // Log for now — will persist when backend supports it
+    console.log('[VEIL Edit] Impl method body changed:', {
+      nodeId: node.id,
+      nodeName: name,
+      methodIndex,
+      exprCount: newExprs.length,
+    });
+  }
+
   // Parse children into editable field structures (for types)
   let fields = $derived.by(() => {
     return children
@@ -318,6 +335,28 @@
     <!-- Type-specific editor -->
     {#if editorType === 'methods'}
       <MethodEditor methods={methods} onChange={handleMethodsChange} />
+      <!-- Method bodies (concrete default implementations) -->
+      {#if methods.length > 0}
+        <div class="pe-section">
+          <span class="label-text">Method Bodies</span>
+          <div class="impl-methods">
+            {#each methods as method, mi}
+              <div class="impl-method-card">
+                <div class="impl-method-sig">
+                  <span class="impl-method-icon">⚡</span>
+                  <code class="impl-method-name">{method.name || '(unnamed)'}({method.params?.map((p: any) => `${p.name}: ${p.type}`).join(', ') ?? ''}){method.returnType ? ` -> ${method.returnType}` : ''}</code>
+                </div>
+                <BlockEditor
+                  exprs={implMethodBodies[mi] ?? []}
+                  onChange={(newExprs) => handleImplMethodBodyChange(mi, newExprs)}
+                  depth={0}
+                  label="body"
+                />
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {:else if editorType === 'adapter'}
       <!-- Impl-shaped: show inherited methods with editable bodies -->
       {@const implementsName = node.data.properties?.find(([k]: [string, string]) => k === 'implements')?.[1] ?? ''}
@@ -325,10 +364,10 @@
       {@const targetMethods = targetNode?.metadata?.properties?.find(([k]: [string, string]) => k === 'methods')?.[1] ?? ''}
       {@const inheritedMethods = targetMethods ? targetMethods.split('; ').filter(Boolean).map((sig: string) => {
         const parenIdx = sig.indexOf('(');
-        if (parenIdx < 0) return { name: sig.trim(), signature: sig.trim(), body: [] };
+        if (parenIdx < 0) return { name: sig.trim(), signature: sig.trim() };
         let methodName = sig.slice(0, parenIdx).trim();
         if (methodName.endsWith('!')) methodName = methodName.slice(0, -1);
-        return { name: methodName, signature: sig.trim(), body: [] };
+        return { name: methodName, signature: sig.trim() };
       }) : []}
 
       {#if implementsName}
@@ -342,15 +381,18 @@
         <span class="label-text">Methods</span>
         {#if inheritedMethods.length > 0}
           <div class="impl-methods">
-            {#each inheritedMethods as method}
+            {#each inheritedMethods as method, mi}
               <div class="impl-method-card">
                 <div class="impl-method-sig">
                   <span class="impl-method-icon">⚡</span>
                   <code class="impl-method-name">{method.signature}</code>
                 </div>
-                <div class="impl-method-body">
-                  <span class="body-hint">// TODO: implement</span>
-                </div>
+                <BlockEditor
+                  exprs={implMethodBodies[mi] ?? []}
+                  onChange={(newExprs) => handleImplMethodBodyChange(mi, newExprs)}
+                  depth={0}
+                  label="body"
+                />
               </div>
             {/each}
           </div>
@@ -681,10 +723,6 @@
     border-radius: 4px;
     border-left: 2px solid #334155;
     min-height: 32px;
-  }
-  .body-hint {
-    font-size: 10px; color: #475569; font-style: italic;
-    font-family: 'JetBrains Mono', monospace;
   }
 
   .pe-implement-btn {
