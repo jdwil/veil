@@ -2,11 +2,6 @@ sol WearTest
   use ddd
   use dlx_core
 
-  # `use dlx_core` gives us:
-  #   DTOs: TenantDTO, UserDTO, CohortDTO, CohortMemberDTO
-  #   Queries: GetCohort, GetCohortMembers, GetUserCohorts, ...
-  #   Commands: CreateCohort, AddCohortMember, ...
-
   ctx WearTesting
     group domain
       agg TestPlan
@@ -21,9 +16,10 @@ sol WearTest
           created_on: Dt
 
       repo TestPlanRepo
-        find!(id: Id) -> Opt<TestPlan>
-        find_by_cohort!(cohort_id: Id) -> List<TestPlan>
-        save!(plan: TestPlan)
+        find(id: Id) -> Opt<TestPlan>
+        find_by_cohort(cohort_id: Id) -> List<TestPlan>
+        save(plan: TestPlan) -> Res!
+        delete(id: Id) -> Res!
 
     group application
       svc CreateTestPlan
@@ -33,18 +29,31 @@ sol WearTest
           name: Str
           description: Str
         step verify_cohort
-          cohort: CohortDTO = request GetCohort{id: cohort_id}
+          CohortDTO = request GetCohort{id: cohort_id}
           guard cohort.active == true, "cohort is not active"
+          cohort
         step create
-          plan = TestPlan.new(id, cohort_id, name, description)
-          TestPlanRepo.save!(plan)
+          plan = call TestPlan.new(id, cohort_id, name, description)
+          call TestPlanRepo.save(plan)
 
       svc GetTestPlanWithParticipants
         input
           plan_id: Id
         step load_plan
-          plan = TestPlanRepo.find!(plan_id)
+          plan = call TestPlanRepo.find(plan_id)
           guard plan != null, "test plan not found"
         step load_participants
-          members: List<CohortMemberDTO> = request GetCohortMembers{cohort_id: plan.cohort_id}
+          request GetCohortMembers{cohort_id: plan.cohort_id}
           ret {plan, members}
+          members
+
+    group infrastructure
+      adapter TestPlanRepoAdapter for TestPlanRepo
+        impl find(id)
+        impl find_by_cohort(cohort_id)
+        impl save(plan)
+        impl delete(id)
+
+
+
+

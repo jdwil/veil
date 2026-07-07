@@ -380,6 +380,7 @@ impl IrBuilder {
                     self.set_property(method_id, "params", &format!("({})", params));
                     self.set_property(method_id, "returns", &ret.trim_start_matches(" -> ").to_string());
                     self.set_property(method_id, "signature", &sig);
+                    self.set_property(method_id, "abstract", "true");
                     self.graph.add_edge(id, method_id, EdgeKind::Contains);
                 }
 
@@ -421,6 +422,23 @@ impl IrBuilder {
                         let target_id = target_node.id;
                         self.graph.add_edge(id, target_id, EdgeKind::Implements);
                     }
+                }
+                // Emit each implemented method as a child node.
+                for imp in &c.impls {
+                    let params_str = imp.params.join(", ");
+                    let method_id = self.graph.add_node(
+                        NodeKind::InterfaceMethod,
+                        imp.method_name.clone(),
+                        imp.span,
+                    );
+                    self.set_parent(method_id, id);
+                    self.set_property(method_id, "params", &format!("({})", params_str));
+                    if imp.body.is_empty() {
+                        self.set_property(method_id, "abstract", "true");
+                    } else {
+                        self.set_property(method_id, "has_body", "true");
+                    }
+                    self.graph.add_edge(id, method_id, EdgeKind::Contains);
                 }
             }
             Shape::Fn => {

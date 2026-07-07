@@ -29,6 +29,7 @@
     getChildren,
     selectedNodeId,
     paletteConfig,
+    saveEdits,
   } from '$lib/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
 
@@ -160,39 +161,66 @@
   }
 
   /**
-   * Handle "Create Implementation" button click. Navigates to the target group
-   * (dg) and creates a new impl-shaped node linked to the target trait node.
-   * Entirely layer-driven — no domain knowledge.
+   * Handle "Create Implementation" button click. Calls the backend to create
+   * an impl-shaped construct in the .veil source, then navigates to the target
+   * group tab. Entirely layer-driven — no domain knowledge.
    */
-  function handleImplement(implEntry: any, targetNodeName: string) {
-    // Navigate to the dg tab
+  async function handleImplement(implEntry: any, targetNodeName: string) {
+    // Find the parent context node's span (we need it to create a child construct)
+    const graph = $irGraph;
+    const parent = $currentParent;
+    if (!graph || !parent) return;
+    const parentNode = graph.nodes.find(n => n.id === parent);
+    if (!parentNode) return;
+
+    const implName = `${targetNodeName}${implEntry.label}`;
     const targetGroup = implEntry.dg;
-    if (targetGroup && tabs.includes(targetGroup)) {
-      activeTab = targetGroup;
-      switchTab(targetGroup);
+
+    // Find the target group node to insert into (dg = default group)
+    let insertParentSpan = parentNode.span.start;
+    if (targetGroup) {
+      const groupNode = graph.nodes.find(
+        (n: any) => n.kind === 'Group' && n.name === targetGroup && n.metadata.parent === parent
+      );
+      if (groupNode) {
+        insertParentSpan = groupNode.span.start;
+      } else {
+        // Group doesn't exist yet — create it first, then insert into it
+        const createGroupSuccess = await saveEdits([{
+          op: 'create_construct',
+          parent_span: parentNode.span.start,
+          keyword: 'group',
+          name: targetGroup,
+        }]);
+        if (!createGroupSuccess) return;
+        // After creating the group, find its span in the fresh IR
+        const freshGraph = $irGraph;
+        if (!freshGraph) return;
+        const newGroupNode = freshGraph.nodes.find(
+          (n: any) => n.kind === 'Group' && n.name === targetGroup && n.metadata.parent === parent
+        );
+        if (newGroupNode) {
+          insertParentSpan = newGroupNode.span.start;
+        }
+      }
     }
 
-    // Create the impl node
-    const id = String(nextNodeId++);
-    const newNode: Node = {
-      id,
-      type: 'veil',
-      position: { x: 100, y: 100 },
-      data: {
-        label: `${targetNodeName}${implEntry.label}`,
-        kind: implEntry.kind,
-        subkind: implEntry.name,
-        hasChildren: false,
-        annotations: [],
-        properties: [['implements', targetNodeName]],
-        inlineChildren: [],
-        refs: [],
-      },
-    };
+    // Call backend to create the impl construct in the source
+    const success = await saveEdits([{
+      op: 'create_construct',
+      parent_span: insertParentSpan,
+      keyword: implEntry.keyword,
+      name: implName,
+      target: targetNodeName,
+    }]);
 
-    nodes = [...nodes, newNode];
-    // Select the new node
-    selectedNodeId.set(id);
+    if (success) {
+      // Navigate to the dg tab after the IR refreshes
+      if (targetGroup) {
+        activeTab = targetGroup;
+        switchTab(targetGroup);
+      }
+    }
   }
 
   onMount(() => {

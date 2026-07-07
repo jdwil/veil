@@ -29,6 +29,17 @@ pub enum EditOp {
     SetFields { span_start: usize, fields: Vec<FieldSpec> },
     /// Replace the method signatures of a trait-shaped construct.
     SetMethods { span_start: usize, methods: Vec<MethodSpec> },
+    /// Create a new child construct inside the parent at `parent_span`.
+    /// The construct is inserted as a child with the given keyword, name, and
+    /// optional target (for impl-shaped constructs).
+    CreateConstruct {
+        parent_span: usize,
+        keyword: String,
+        name: String,
+        /// For impl-shaped: the name of the trait being implemented.
+        #[serde(default)]
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +91,40 @@ pub fn apply_edits(sol: &mut Solution, ops: &[EditOp]) -> Result<(), EditError> 
 
 /// Apply a single edit to the solution.
 pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
+    // CreateConstruct targets a parent, not the construct itself.
+    if let EditOp::CreateConstruct { parent_span, keyword, name, target } = op {
+        // For impl-shaped constructs: collect method signatures from the target
+        // trait BEFORE borrowing the parent mutably.
+        let trait_methods: Vec<Method> = if let Some(target_name) = target {
+            find_trait_methods_in_solution(&sol.items, target_name)
+        } else {
+            Vec::new()
+        };
+
+        let parent = find_construct_mut(&mut sol.items, *parent_span)
+            .ok_or(EditError::TargetNotFound(*parent_span))?;
+        // Determine the shape from the keyword. For simplicity, impl-shaped if
+        // target is specified, otherwise we rely on the keyword matching core shapes.
+        let shape = if target.is_some() {
+            Shape::Impl
+        } else {
+            Shape::from_name(keyword).unwrap_or(Shape::Struct)
+        };
+        let mut child = Construct::new(keyword, keyword, shape, name.clone(), Span::new(0, 0));
+        child.target = target.clone();
+        // Copy method stubs from the trait so the serializer emits them.
+        for m in trait_methods {
+            child.impls.push(MethodImpl {
+                method_name: m.name.clone(),
+                params: m.params.iter().map(|p| p.name.clone()).collect(),
+                span: Span::new(0, 0),
+                body: Vec::new(),
+            });
+        }
+        parent.children.push(child);
+        return Ok(());
+    }
+
     let span_start = op.span_start();
     let target = find_construct_mut(&mut sol.items, span_start)
         .ok_or(EditError::TargetNotFound(span_start))?;
@@ -119,6 +164,7 @@ pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
             }).collect();
             Ok(())
         }
+        EditOp::CreateConstruct { .. } => unreachable!("handled above"),
     }
 }
 
@@ -129,6 +175,7 @@ impl EditOp {
             | EditOp::SetAnnotations { span_start, .. }
             | EditOp::SetFields { span_start, .. }
             | EditOp::SetMethods { span_start, .. } => *span_start,
+            EditOp::CreateConstruct { parent_span, .. } => *parent_span,
         }
     }
 }
@@ -157,6 +204,31 @@ fn find_in_construct(c: &mut Construct, span_start: usize) -> Option<&mut Constr
         }
     }
     None
+}
+
+/// Recursively search for a trait-shaped construct by name and return its methods.
+fn find_trait_methods(constructs: &[Construct], name: &str) -> Option<Vec<Method>> {
+    for c in constructs {
+        if c.name == name && c.shape == Shape::Trait {
+            return Some(c.methods.clone());
+        }
+        if let Some(methods) = find_trait_methods(&c.children, name) {
+            return Some(methods);
+        }
+    }
+    None
+}
+
+/// Search the entire solution for a trait-shaped construct by name.
+fn find_trait_methods_in_solution(items: &[TopLevelItem], name: &str) -> Vec<Method> {
+    for item in items {
+        if let TopLevelItem::Construct(c) = item {
+            if let Some(methods) = find_trait_methods(std::slice::from_ref(c), name) {
+                return methods;
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// Parse a VEIL display type string into a `TypeExpr`, mirroring the display

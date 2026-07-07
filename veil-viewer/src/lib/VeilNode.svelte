@@ -23,6 +23,7 @@
   const refValue = refProp ? refProp[1] : null;
   const hasCompensate = annotations.includes('has_compensate');
   const isGroup = data.isGroup ?? false;
+  const isAbstract = properties.some(([k, v]) => k === 'abstract' && v === 'true');
 </script>
 
 <div
@@ -62,6 +63,10 @@
     {/if}
 
     <div class="node-name" class:code-name={kind === 'Action'}>{data.label}</div>
+
+    {#if isAbstract}
+      <span class="abstract-badge">abstract</span>
+    {/if}
 
     {#if properties.length > 0}
       <button class="details-toggle" onclick={(e) => { e.stopPropagation(); detailsOpen = !detailsOpen; }}>
@@ -379,6 +384,18 @@
   .child-name {
     color: #e2e8f0;
     font-weight: 600;
+  }
+
+  .abstract-badge {
+    font-size: 9px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: rgba(148, 163, 184, 0.12);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    font-weight: 500;
+    font-style: italic;
+    width: fit-content;
   }
 
   .annotation-badge {

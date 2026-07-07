@@ -128,7 +128,8 @@ export type EditOp =
   | { op: 'rename'; span_start: number; name: string }
   | { op: 'set_annotations'; span_start: number; annotations: string[] }
   | { op: 'set_fields'; span_start: number; fields: { name: string; type: string }[] }
-  | { op: 'set_methods'; span_start: number; methods: { name: string; params: { name: string; type: string }[]; return_type: string }[] };
+  | { op: 'set_methods'; span_start: number; methods: { name: string; params: { name: string; type: string }[]; return_type: string }[] }
+  | { op: 'create_construct'; parent_span: number; keyword: string; name: string; target?: string };
 
 /**
  * Persist a batch of structured edits to the server. The server applies them
