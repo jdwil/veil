@@ -241,6 +241,11 @@ impl IrBuilder {
                         .collect::<Vec<_>>()
                         .join(", ");
                     self.set_property(id, "params", &sig);
+                    if f.layer_provided {
+                        if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == id) {
+                            node.metadata.annotations.push("layer-provided".to_string());
+                        }
+                    }
                 }
                 TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } | TopLevelItem::Static { .. } => {}
             }
