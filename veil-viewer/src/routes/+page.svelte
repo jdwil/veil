@@ -54,49 +54,10 @@
   }
 
   // Derive the current context kind for palette filtering
-  let currentContextKind = $derived.by(() => {
-    const graph = $irGraph;
-    const parent = $currentParent;
-    if (!graph || !parent) return 'Solution';
-    const parentNode = graph.nodes.find(n => n.id === parent);
-    // Use subkind (layer name like "Context", "Orchestrator") for palette
-    // filtering, falling back to the core kind.
-    return parentNode?.metadata.subkind ?? parentNode?.kind ?? 'Solution';
-  });
+  let currentContextKind = $state<string>('Solution');
 
-  // Derive scope variables from the current flow's Inputs node + parent chain
-  let scopeVars = $derived.by(() => {
-    const graph = $irGraph;
-    const parent = $currentParent;
-    if (!graph || !parent) return [] as string[];
-    const vars: string[] = [];
-
-    // Walk up the parent chain looking for Inputs nodes
-    let current: number | null = parent;
-    while (current !== null) {
-      const children = graph.nodes.filter(n => n.metadata.parent === current);
-      const inputsNode = children.find(n => n.kind === 'Inputs');
-      if (inputsNode) {
-        const params = inputsNode.metadata.properties.find(([k]) => k === 'params');
-        if (params) {
-          const paramList = params[1].split(', ').map(p => p.trim());
-          vars.push(...paramList);
-        }
-      }
-      // Also find assigns at this level (variables created by steps)
-      for (const child of children) {
-        if (child.kind === 'Action' && child.metadata.subkind === 'assign') {
-          const assignName = child.name.split(' = ')[0];
-          if (assignName && !vars.includes(assignName)) {
-            vars.push(assignName);
-          }
-        }
-      }
-      const parentNode = graph.nodes.find(n => n.id === current);
-      current = parentNode?.metadata.parent ?? null;
-    }
-    return vars;
-  });
+  // Scope variables computed inside computeView (was $derived, moved to avoid reactive loops)
+  let scopeVars = $state<string[]>([]);
 
   // Get the currently selected node for property editing
   // Action-level nodes get specialized editors (Task 6 of this refactor)
@@ -315,6 +276,8 @@
 
     // Check if we're at the Solution level with modules + cross-module flows
     const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
+    // Update context kind for palette filtering (was a $derived, moved here to avoid reactive loops)
+    currentContextKind = parentNode?.metadata.subkind ?? parentNode?.kind ?? 'Solution';
     const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
     const modules = children.filter(c => c.kind === 'Module');
     // Any node with a reference line (`ref:*`, e.g. a saga's `contexts`) spans
