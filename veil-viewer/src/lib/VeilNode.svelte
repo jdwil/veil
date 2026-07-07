@@ -126,7 +126,7 @@
 <style>
   .veil-node {
     position: relative;
-    background: linear-gradient(145deg, var(--veil-node-bg, rgba(26, 26, 26, 0.95)), var(--veil-node-bg-end, rgba(20, 20, 20, 0.98)));
+    background: linear-gradient(145deg, var(--veil-node-bg), var(--veil-node-bg-end));
     border: 1.5px solid var(--node-color);
     border-radius: 14px;
     padding: 0;
@@ -174,17 +174,17 @@
 
   .veil-node.is-flow {
     border-width: 2px;
-    background: linear-gradient(145deg, rgba(30, 30, 30, 0.95), rgba(22, 22, 22, 0.98));
+    background: linear-gradient(145deg, var(--veil-node-bg), var(--veil-node-bg-end));
   }
 
   .veil-node.is-error {
     border-width: 2px;
-    background: linear-gradient(145deg, rgba(35, 20, 20, 0.95), rgba(25, 15, 15, 0.98));
+    background: linear-gradient(145deg, var(--veil-node-bg), var(--veil-node-bg-end));
   }
 
   .veil-node.is-group {
-    background: rgba(82, 82, 82, 0.06);
-    border: 2px dashed rgba(82, 82, 82, 0.4);
+    background: var(--veil-accent-subtle);
+    border: 2px dashed var(--veil-border);
     border-radius: 16px;
     box-shadow: none;
     transform: none;
@@ -195,7 +195,7 @@
   .veil-node.is-group:hover {
     transform: none;
     box-shadow: 0 0 20px var(--veil-accent-hover);
-    border-color: rgba(82, 82, 82, 0.6);
+    border-color: var(--veil-accent);
   }
 
   /* Glow pulse animation for events and flows */
@@ -278,8 +278,8 @@
     padding: 2px 8px;
     margin-bottom: 4px;
     border-radius: 4px;
-    background: rgba(82, 82, 82, 0.12);
-    border: 1px solid rgba(82, 82, 82, 0.3);
+    background: var(--veil-accent-subtle);
+    border: 1px solid var(--veil-border);
     width: fit-content;
   }
 
@@ -322,7 +322,7 @@
     margin-top: 6px;
     padding: 2px 6px;
     background: var(--veil-accent-subtle);
-    border: 1px solid rgba(82, 82, 82, 0.2);
+    border: 1px solid var(--veil-accent-hover);
     border-radius: 4px;
     cursor: pointer;
     color: var(--veil-text-dim);
@@ -331,7 +331,7 @@
   }
 
   .details-toggle:hover {
-    background: rgba(82, 82, 82, 0.2);
+    background: var(--veil-accent-hover);
     color: var(--veil-text-secondary);
   }
 
@@ -371,7 +371,7 @@
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    background: rgba(82, 82, 82, 0.06);
+    background: var(--veil-accent-subtle);
     border: 1px solid var(--veil-accent-hover);
     border-radius: 6px;
     font-size: 11px;
@@ -404,7 +404,7 @@
     border-radius: 6px;
     background: var(--veil-accent-hover);
     color: var(--veil-text);
-    border: 1px solid rgba(82, 82, 82, 0.25);
+    border: 1px solid var(--veil-border);
     font-weight: 500;
     width: fit-content;
   }

@@ -1,5 +1,4 @@
 import { writable } from 'svelte/store';
-import { tick } from 'svelte';
 import { setPaletteStyles, type IrGraph, type IrNode, type PaletteEntry } from './types';
 
 export const irGraph = writable<IrGraph | null>(null);
@@ -156,18 +155,9 @@ export async function saveEdits(edits: EditOp[]): Promise<boolean> {
       return false;
     }
     const data: { source: string; ir: IrGraph; generated: Record<string, string> } = await res.json();
-    // Defer store updates to next macrotask to completely escape Svelte's
-    // reactive tracking context. This prevents @xyflow/svelte's internal
-    // effects from creating infinite loops when $irGraph triggers $derived
-    // recomputations that affect the template.
-    await new Promise<void>(resolve => {
-      setTimeout(() => {
-        irGraph.set(data.ir);
-        veilSource.set(data.source);
-        generatedCode.set(data.generated);
-        resolve();
-      }, 0);
-    });
+    irGraph.set(data.ir);
+    veilSource.set(data.source);
+    generatedCode.set(data.generated);
     return true;
   } catch (e) {
     saveError.set(e instanceof Error ? e.message : 'Save failed');

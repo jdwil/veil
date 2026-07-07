@@ -731,14 +731,13 @@
         {/if}
         <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
         <SvelteFlow
-          {nodes}
-          {edges}
+          bind:nodes
+          bind:edges
           {nodeTypes}
-          fitView
           onnodeclick={handleNodeClick}
           onconnect={handleConnect}
           onpaneclick={handlePaneClick}
-          colorMode="dark"
+          colorMode={theme}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
           <Controls />
