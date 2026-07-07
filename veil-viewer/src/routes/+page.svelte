@@ -169,9 +169,11 @@
     // Find the parent context node's span (we need it to create a child construct)
     const graph = $irGraph;
     const parent = $currentParent;
-    if (!graph || !parent) return;
+    console.log('[handleImplement] start', { parent, targetNodeName, implEntry: implEntry.name, dg: implEntry.dg });
+    if (!graph || !parent) { console.log('[handleImplement] no graph or parent'); return; }
     const parentNode = graph.nodes.find(n => n.id === parent);
-    if (!parentNode) return;
+    if (!parentNode) { console.log('[handleImplement] no parentNode for id', parent); return; }
+    console.log('[handleImplement] parentNode', parentNode.name, 'span', parentNode.span.start);
 
     const implName = `${targetNodeName}${implEntry.label}`;
     const targetGroup = implEntry.dg;
@@ -192,6 +194,7 @@
           keyword: 'group',
           name: targetGroup,
         }]);
+        console.log('[handleImplement] group creation result:', createGroupSuccess);
         if (!createGroupSuccess) return;
         // After creating the group, find its span in the fresh IR
         const freshGraph = $irGraph;
@@ -211,6 +214,7 @@
     if (targetGroup) {
       activeTab = targetGroup;
     }
+    console.log('[handleImplement] creating adapter', { insertParentSpan, keyword: implEntry.keyword, name: implName, target: targetNodeName });
     const success = await saveEdits([{
       op: 'create_construct',
       parent_span: insertParentSpan,
@@ -221,7 +225,10 @@
 
     if (!success && targetGroup) {
       // Revert tab if the create failed
+      console.log('[handleImplement] adapter creation FAILED');
       activeTab = null;
+    } else {
+      console.log('[handleImplement] adapter creation SUCCESS');
     }
   }
 
