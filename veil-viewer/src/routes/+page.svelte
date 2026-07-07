@@ -40,6 +40,8 @@
   let nodes = $state.raw<Node[]>([]);
   let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
+  let flowKey = $state(0);
+  let skipIrSubscription = false;
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
   let showLayerProvided = $state(false);
@@ -165,7 +167,9 @@
           name: targetGroup,
         }]);
         console.log('[handleImplement] group creation result:', createGroupSuccess);
-        if (!createGroupSuccess) return;
+        if (!createGroupSuccess) { skipIrSubscription = false; return; }
+        // Remount xyflow after structural change
+        flowKey += 1;
         // Refresh the view after group creation
         await new Promise(r => setTimeout(r, 0));
         const gAfterGroup = $irGraph;
@@ -189,6 +193,9 @@
     selectedNodeId.set(null);
     await new Promise(r => setTimeout(r, 0));
 
+    // Skip the irGraph subscription during save to prevent the loop
+    skipIrSubscription = true;
+
     // Call backend to create the impl construct in the source
     // Set the active tab AFTER saving completes so the $effect uses it
     // on the next render cycle (avoids effect_update_depth_exceeded).
@@ -201,20 +208,14 @@
     }]);
 
     if (success && targetGroup) {
-      // Defer tab switch to next tick to avoid reactive loop
-      setTimeout(() => {
-        activeTab = targetGroup;
-        const g1 = $irGraph;
-        if (g1) computeView(g1, $currentParent, $paletteConfig);
-      }, 0);
-    } else if (!success && targetGroup) {
-      console.log('[handleImplement] adapter creation FAILED');
-    } else {
-      console.log('[handleImplement] adapter creation SUCCESS');
-      setTimeout(() => {
-        const g2 = $irGraph;
-        if (g2) computeView(g2, $currentParent, $paletteConfig);
-      }, 0);
+      // Compute the view with new IR first (sets nodes/edges),
+      // then remount xyflow with the fresh state.
+      const freshGraph = $irGraph;
+      if (freshGraph) computeView(freshGraph, $currentParent, $paletteConfig);
+      skipIrSubscription = false;
+      flowKey += 1;
+      // Defer tab switch to after remount
+      setTimeout(() => { activeTab = targetGroup; switchTab(targetGroup); flowKey += 1; }, 100);
     }
   }
 
@@ -224,20 +225,14 @@
     // Apply saved theme on mount
     document.documentElement.setAttribute('data-theme', theme);
 
-    // Subscribe to irGraph and currentParent changes manually (NOT via $effect)
-    // to avoid Svelte 5's effect_update_depth_exceeded when computeView writes
-    // to reactive state (nodes, edges, tabs) during the same microtask.
-    let initialLoad = true;
+    // Subscribe to irGraph and currentParent changes.
+    // With bind:nodes/bind:edges, xyflow handles write-backs properly.
+    let skipIrSubscription_unused = false; // moved to component scope
     const unsubIr = irGraph.subscribe((graph) => {
-      if (!graph) return;
-      // Only auto-compute on initial load. After that, callers (saveEdits,
-      // switchTab) must call computeView themselves to avoid xyflow loops.
-      if (initialLoad) {
-        initialLoad = false;
-        const parent = $currentParent;
-        const palette = $paletteConfig;
-        computeView(graph, parent, palette);
-      }
+      if (!graph || skipIrSubscription) return;
+      const parent = $currentParent;
+      const palette = $paletteConfig;
+      computeView(graph, parent, palette);
     });
     const unsubParent = currentParent.subscribe((parent) => {
       const graph = $irGraph;
@@ -262,9 +257,6 @@
 
   let computeInProgress = false;
   function computeView(graph: IrGraph, parentId: number | null, palette: any[] = []) {
-    if (computeInProgress) return;
-    computeInProgress = true;
-    try {
     let children = getChildren(graph, parentId);
 
     // Filter out layer-provided infrastructure unless toggled on
@@ -511,7 +503,6 @@
       nodes = layoutByType(allNodes);
     }
     edges = allEdges;
-  } finally { computeInProgress = false; }
   }
 
   /** Layout nodes in vertical columns grouped by subkind/kind. */
@@ -730,6 +721,7 @@
           </div>
         {/if}
         <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+        {#key flowKey}
         <SvelteFlow
           bind:nodes
           bind:edges
@@ -743,6 +735,7 @@
           <Controls />
           <MiniMap />
         </SvelteFlow>
+        {/key}
 
         {#if selectedNode}
           <PropertyEditor
