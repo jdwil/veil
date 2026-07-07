@@ -49,7 +49,9 @@
     const parent = $currentParent;
     if (!graph || !parent) return 'Solution';
     const parentNode = graph.nodes.find(n => n.id === parent);
-    return parentNode?.kind ?? 'Solution';
+    // Use subkind (layer name like "Context", "Orchestrator") for palette
+    // filtering, falling back to the core kind.
+    return parentNode?.metadata.subkind ?? parentNode?.kind ?? 'Solution';
   });
 
   // Derive scope variables from the current flow's Inputs node + parent chain

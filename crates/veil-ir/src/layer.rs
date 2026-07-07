@@ -237,16 +237,16 @@ impl LayerRegistry {
     pub fn builtin() -> Self {
         let mut reg = LayerRegistry::default();
         let core = [
-            ("mod", "Module", Shape::Mod, "📦", "#8b5cf6", "Module"),
-            ("struct", "Struct", Shape::Struct, "📋", "#14b8a6", "Struct"),
-            ("enum", "Enum", Shape::Enum, "🔀", "#8b5cf6", "Enum"),
-            ("trait", "Trait", Shape::Trait, "🔌", "#10b981", "Trait"),
-            ("impl", "Impl", Shape::Impl, "🔗", "#a855f7", "Implementation"),
-            ("fn", "Fn", Shape::Fn, "⚡", "#f97316", "Function"),
-            ("flow", "Flow", Shape::Fn, "🌊", "#f97316", "Flow"),
-            ("group", "Group", Shape::Group, "📂", "#475569", "Group"),
+            ("mod", "Module", Shape::Mod, "📦", "#8b5cf6", "Module", "none"),
+            ("struct", "Struct", Shape::Struct, "📋", "#14b8a6", "Struct", "any"),
+            ("enum", "Enum", Shape::Enum, "🔀", "#8b5cf6", "Enum", "any"),
+            ("trait", "Trait", Shape::Trait, "🔌", "#10b981", "Trait", "any"),
+            ("impl", "Impl", Shape::Impl, "🔗", "#a855f7", "Implementation", "any"),
+            ("fn", "Fn", Shape::Fn, "⚡", "#f97316", "Function", "any"),
+            ("flow", "Flow", Shape::Fn, "🌊", "#f97316", "Flow", "none"),
+            ("group", "Group", Shape::Group, "📂", "#475569", "Group", "any"),
         ];
-        for (kw, name, shape, icon, color, label) in core {
+        for (kw, name, shape, icon, color, label, allowed) in core {
             reg.constructs.push(ConstructSpec {
                 name: name.to_string(),
                 keyword: kw.to_string(),
@@ -257,7 +257,7 @@ impl LayerRegistry {
                 contains: Vec::new(),
                 blocks: Vec::new(),
                 constraints: Vec::new(),
-                allowed_in: "any".to_string(),
+                allowed_in: allowed.to_string(),
                 group: String::new(),
                 visual: Visual {
                     icon: icon.to_string(),
