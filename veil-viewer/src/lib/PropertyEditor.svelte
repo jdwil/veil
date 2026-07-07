@@ -10,11 +10,10 @@
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
 
-  let { node, onUpdate, onClose, onImplement }: {
+  let { node, onUpdate, onClose }: {
     node: { id: string; data: any };
     onUpdate: (id: string, data: any) => void;
     onClose: () => void;
-    onImplement?: (implEntry: any, targetNodeName: string) => void;
   } = $props();
 
   let name = $state(node.data.label ?? '');
@@ -26,16 +25,6 @@
   // Check if any impl-shaped construct in the palette targets this node's subkind.
   // If so, we can offer a "Create [impl label]" button.
   // tgt may be a comma-separated list (e.g. "Port, Repository").
-  let implConstruct = $derived.by(() => {
-    if (!subkind) return null;
-    const config = $paletteConfig;
-    if (!config || config.length === 0) return null;
-    return config.find((c: any) => {
-      if (!c.tgt) return false;
-      const targets = c.tgt.split(',').map((t: string) => t.trim());
-      return targets.includes(subkind);
-    }) ?? null;
-  });
 
   // Get children of this node from the graph
   let children = $state<IrNode[]>([]);
@@ -325,158 +314,6 @@
     {/if}
 
     <!-- Implement button: shown on trait-shaped nodes that have a paired impl construct -->
-    {#if implConstruct && onImplement}
-      <button
-        class="pe-implement-btn"
-        onclick={() => onImplement(implConstruct, name)}
-        title="Create a {implConstruct.label} that implements this {displayKind}"
-      >
-        <span class="impl-icon">{implConstruct.icon}</span>
-        Create {implConstruct.label}
-      </button>
-    {/if}
-
-    <!-- Type-specific editor -->
-    {#if editorType === 'methods'}
-      <MethodEditor methods={methods} onChange={handleMethodsChange} />
-      <!-- Method bodies (concrete default implementations) -->
-      {#if methods.length > 0}
-        <div class="pe-section">
-          <span class="label-text">Method Bodies</span>
-          <div class="impl-methods">
-            {#each methods as method, mi}
-              <div class="impl-method-card">
-                <div class="impl-method-sig">
-                  <span class="impl-method-icon">⚡</span>
-                  <code class="impl-method-name">{method.name || '(unnamed)'}({method.params?.map((p: any) => `${p.name}: ${p.type}`).join(', ') ?? ''}){method.returnType ? ` -> ${method.returnType}` : ''}</code>
-                </div>
-                <BlockEditor
-                  exprs={implMethodBodies[mi] ?? []}
-                  onChange={(newExprs) => handleImplMethodBodyChange(mi, newExprs)}
-                  depth={0}
-                  label="body"
-                />
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
-    {:else if editorType === 'adapter'}
-      <!-- Impl-shaped: show inherited methods with editable bodies -->
-      {@const implementsName = node.data.properties?.find(([k]: [string, string]) => k === 'implements')?.[1] ?? ''}
-      {@const targetNode = implementsName ? (() => { const g = get(irGraph); return g ? g.nodes.find((n: any) => n.name === implementsName) : null; })() : null}
-      {@const targetMethods = targetNode?.metadata?.properties?.find(([k]: [string, string]) => k === 'methods')?.[1] ?? ''}
-      {@const inheritedMethods = targetMethods ? targetMethods.split('; ').filter(Boolean).map((sig: string) => {
-        const parenIdx = sig.indexOf('(');
-        if (parenIdx < 0) return { name: sig.trim(), signature: sig.trim() };
-        let methodName = sig.slice(0, parenIdx).trim();
-        if (methodName.endsWith('!')) methodName = methodName.slice(0, -1);
-        return { name: methodName, signature: sig.trim() };
-      }) : []}
-
-      {#if implementsName}
-        <div class="pe-section">
-          <span class="label-text">Implements</span>
-          <div class="pe-note pe-note-info">{implementsName}</div>
-        </div>
-      {/if}
-
-      <div class="pe-section">
-        <span class="label-text">Methods</span>
-        {#if inheritedMethods.length > 0}
-          <div class="impl-methods">
-            {#each inheritedMethods as method, mi}
-              <div class="impl-method-card">
-                <div class="impl-method-sig">
-                  <span class="impl-method-icon">⚡</span>
-                  <code class="impl-method-name">{method.signature}</code>
-                </div>
-                <BlockEditor
-                  exprs={implMethodBodies[mi] ?? []}
-                  onChange={(newExprs) => handleImplMethodBodyChange(mi, newExprs)}
-                  depth={0}
-                  label="body"
-                />
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="pe-empty">No methods inherited. Add methods to the target interface first.</div>
-        {/if}
-      </div>
-
-      <!-- Additional methods (not from target) -->
-      <MethodEditor methods={localMethods} onChange={handleMethodsChange} />
-    {:else if editorType === 'fields'}
-      <!-- Fields from properties -->
-      {@const fieldsRaw = node.data.properties?.find(([k]: [string, string]) => k === 'fields')?.[1] ?? ''}
-      {@const parsedFields = fieldsRaw ? fieldsRaw.split(', ').map((f: string) => {
-        const [name, type] = f.split(': ');
-        return { name: name?.trim() ?? '', type: type?.trim() ?? 'Str' };
-      }) : []}
-      <FieldsEditor fields={parsedFields} label="Fields" onChange={handleFieldsChange} />
-
-      <!-- Business logic methods (fn:* properties) -->
-      {@const fnProps = (node.data.properties ?? []).filter(([k]: [string, string]) => k.startsWith('fn:'))}
-      {#if fnProps.length > 0}
-        <div class="pe-section">
-          <span class="label-text">Methods</span>
-          <div class="methods-list">
-            {#each fnProps as [key, sig]}
-              <div class="method-item">
-                <span class="method-icon">⚡</span>
-                <code class="method-sig">{key.slice(3)}{sig}</code>
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      <!-- Show children (events, commands) if any -->
-      {#if children.length > 0}
-        <div class="pe-section">
-          <span class="label-text">Contains</span>
-          <div class="children-list">
-            {#each children as child}
-              <div class="child-item">
-                <span class="child-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
-                <div class="child-info">
-                  <span class="child-name">{child.name}</span>
-                  {#if child.metadata.properties.length > 0}
-                    <span class="child-sig">
-                      {#each child.metadata.properties as [key, value]}
-                        <span class="sig-part">{key}: {formatType(value)}</span>
-                      {/each}
-                    </span>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
-    {:else if children.length > 0}
-      <div class="pe-section">
-        <span class="label-text">Contains</span>
-        <div class="children-list">
-          {#each children as child}
-            <div class="child-item">
-              <span class="child-icon">{getNodeStyle(child.kind, child.metadata.subkind)?.icon ?? '•'}</span>
-              <div class="child-info">
-                <span class="child-name">{child.name}</span>
-                {#if child.metadata.properties.length > 0}
-                  <span class="child-sig">
-                    {#each child.metadata.properties as [key, value]}
-                      <span class="sig-part">{value}</span>
-                    {/each}
-                  </span>
-                {/if}
-              </div>
-            </div>
-          {/each}
-        </div>
-      </div>
-    {/if}
 
     <!-- Expression Editor for flow/step bodies -->
     {#if kind === 'Step' || kind === 'Action' || kind === 'Flow'}
@@ -729,49 +566,3 @@
     min-height: 32px;
   }
 
-  .pe-implement-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: rgba(168, 85, 247, 0.1);
-    border: 1px solid rgba(168, 85, 247, 0.3);
-    color: var(--veil-text-secondary);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-  .pe-implement-btn:hover {
-    background: rgba(168, 85, 247, 0.2);
-    border-color: rgba(168, 85, 247, 0.5);
-    transform: translateY(-1px);
-  }
-  .impl-icon { font-size: 14px; }
-
-  .step-body-preview {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .body-line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 6px;
-    background: var(--veil-input-bg);
-    border-radius: 3px;
-    border-left: 2px solid var(--veil-border);
-  }
-
-  .body-icon { font-size: 12px; }
-
-  .body-code {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: var(--veil-text);
-  }
-</style>

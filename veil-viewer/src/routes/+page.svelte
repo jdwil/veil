@@ -42,7 +42,6 @@
   let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
   let flowKey = $state(0);
-  let graphRefreshing = $state(false);
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
   let showLayerProvided = $state(false);
@@ -143,7 +142,6 @@
     // PropertyEditor has a $effect reading $irGraph that causes loops if still mounted.
     selectedNodeId.set(null);
     // Hide SvelteFlow during save to prevent xyflow effects from looping
-    graphRefreshing = true;
     // Two frames to ensure Svelte unmounts PropertyEditor and SvelteFlow
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
@@ -214,14 +212,12 @@
       const freshGraph = get(irGraph);
       if (freshGraph) computeView(freshGraph, get(currentParent), get(paletteConfig));
       flowKey += 1;
-      graphRefreshing = false;
       // Defer tab switch to after remount
       setTimeout(() => { activeTab = targetGroup; switchTab(targetGroup); flowKey += 1; }, 100);
     } else {
       // Re-show even on failure
       const g = get(irGraph);
       if (g) computeView(g, get(currentParent), get(paletteConfig));
-      graphRefreshing = false;
     }
   }
 
@@ -724,7 +720,7 @@
           </div>
         {/if}
         <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
-        {#if !graphRefreshing}
+        
         {#key flowKey}
         <SvelteFlow
           bind:nodes
@@ -740,14 +736,13 @@
           <MiniMap />
         </SvelteFlow>
         {/key}
-        {/if}
 
         {#if selectedNode}
           <PropertyEditor
             node={selectedNode}
             onUpdate={updateNodeData}
             onClose={() => selectedNodeId.set(null)}
-            onImplement={handleImplement}
+            
           />
         {/if}
       </div>
