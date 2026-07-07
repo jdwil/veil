@@ -624,7 +624,7 @@
   .pe-note-info { color: var(--veil-text); }
 
   .pe-input {
-    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 6px;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 6px;
     padding: 8px 10px; font-size: 13px; color: var(--veil-text); outline: none; transition: border-color 0.15s;
     width: 100%; box-sizing: border-box;
   }
@@ -633,7 +633,7 @@
   .pe-input.small { padding: 6px 8px; font-size: 11px; flex: 1; }
 
   .pe-select {
-    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 6px;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 6px;
     padding: 6px 8px; font-size: 11px; color: var(--veil-text); outline: none; cursor: pointer; min-width: 70px;
   }
   .pe-select:focus { border-color: var(--veil-text-dim); }
@@ -644,7 +644,7 @@
   .child-item {
     display: flex; align-items: center; gap: 6px;
     padding: 6px 8px; border-radius: 6px;
-    background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05);
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border);
     font-size: 11px;
   }
   .child-icon { font-size: 12px; }
@@ -657,11 +657,11 @@
   .prop-item {
     display: flex; gap: 6px; align-items: baseline;
     padding: 4px 8px; border-radius: 4px;
-    background: rgba(0,0,0,0.15);
+    background: var(--veil-input-bg);
     font-size: 11px;
   }
   .prop-key { color: var(--veil-text-dim); font-family: monospace; }
-  .prop-value { color: #cbd5e1; font-family: monospace; word-break: break-all; }
+  .prop-value { color: var(--veil-text); font-family: monospace; word-break: break-all; }
 
   .annotations-list { display: flex; flex-direction: column; gap: 2px; }
   .annotation-item { border-radius: 6px; overflow: hidden; }
@@ -699,7 +699,7 @@
 
   .impl-methods { display: flex; flex-direction: column; gap: 6px; }
   .impl-method-card {
-    background: rgba(0,0,0,0.2);
+    background: var(--veil-input-bg);
     border: 1px solid var(--veil-border);
     border-radius: 8px;
     padding: 8px;
@@ -719,9 +719,9 @@
   }
   .impl-method-body {
     padding: 4px 8px;
-    background: rgba(0,0,0,0.15);
+    background: var(--veil-input-bg);
     border-radius: 4px;
-    border-left: 2px solid #334155;
+    border-left: 2px solid var(--veil-border);
     min-height: 32px;
   }
 
@@ -758,9 +758,9 @@
     align-items: center;
     gap: 6px;
     padding: 3px 6px;
-    background: rgba(0, 0, 0, 0.15);
+    background: var(--veil-input-bg);
     border-radius: 3px;
-    border-left: 2px solid #334155;
+    border-left: 2px solid var(--veil-border);
   }
 
   .body-icon { font-size: 12px; }
@@ -768,6 +768,6 @@
   .body-code {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
-    color: #a5f3fc;
+    color: var(--veil-text);
   }
 </style>

@@ -68,7 +68,7 @@
     flex-direction: column;
     gap: 2px;
     padding-left: 8px;
-    border-left: 2px solid #334155;
+    border-left: 2px solid var(--veil-border);
     margin-left: 4px;
     min-width: 0;
   }

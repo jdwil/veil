@@ -58,23 +58,23 @@
   }
 
   .add-btn {
-    background: #1e40af;
-    color: white;
+    background: var(--veil-accent);
+    color: var(--veil-text);
     border: none;
     border-radius: 4px;
     padding: 4px 10px;
     font-size: 12px;
     cursor: pointer;
   }
-  .add-btn:hover { background: #2563eb; }
+  .add-btn:hover { background: var(--veil-accent); }
 
   .picker-dropdown {
     position: absolute;
     top: 100%;
     left: 0;
     z-index: 1000;
-    background: #1e293b;
-    border: 1px solid #334155;
+    background: var(--veil-surface);
+    border: 1px solid var(--veil-border);
     border-radius: 6px;
     width: 220px;
     max-height: 320px;
@@ -87,8 +87,8 @@
   .picker-search {
     padding: 8px;
     border: none;
-    border-bottom: 1px solid #334155;
-    background: #0f172a;
+    border-bottom: 1px solid var(--veil-border);
+    background: var(--veil-bg);
     color: var(--veil-text);
     font-size: 12px;
     outline: none;
@@ -105,8 +105,8 @@
     text-transform: uppercase;
     color: var(--veil-text-dim);
     font-weight: 600;
-    border-top: 1px solid #1e293b;
-    background: #0f172a;
+    border-top: 1px solid var(--veil-surface);
+    background: var(--veil-bg);
   }
 
   .picker-item {
@@ -122,7 +122,7 @@
     cursor: pointer;
     text-align: left;
   }
-  .picker-item:hover { background: #334155; }
+  .picker-item:hover { background: var(--veil-border); }
 
   .picker-icon { font-size: 14px; }
   .picker-label { flex: 1; }

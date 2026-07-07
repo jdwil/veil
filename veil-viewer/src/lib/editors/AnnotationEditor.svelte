@@ -106,12 +106,12 @@
   .ann-toggle input { width: 14px; height: 14px; accent-color: var(--veil-text-dim); }
   .ann-name {
     font-family: 'JetBrains Mono', monospace; font-size: 11px;
-    color: #c084fc; font-weight: 500;
+    color: var(--veil-text-secondary); font-weight: 500;
   }
 
   .ann-args { display: flex; gap: 4px; padding-left: 20px; flex-wrap: wrap; }
   .ann-arg-input {
-    background: #0f172a; border: 1px solid #334155; border-radius: 3px;
+    background: var(--veil-bg); border: 1px solid var(--veil-border); border-radius: 3px;
     padding: 3px 6px; font-size: 11px; color: var(--veil-text); outline: none;
     font-family: 'JetBrains Mono', monospace; min-width: 80px;
   }

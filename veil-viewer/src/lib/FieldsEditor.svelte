@@ -139,7 +139,7 @@
 
   .field-name {
     flex: 1; min-width: 60px;
-    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 4px;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 4px;
     padding: 5px 8px; font-size: 11px; color: var(--veil-text); outline: none;
     font-family: 'JetBrains Mono', monospace;
   }
@@ -147,8 +147,8 @@
   .field-colon { color: var(--veil-text-dim); font-size: 11px; }
   .field-type {
     width: 90px;
-    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 4px;
-    padding: 5px 4px; font-size: 10px; color: #67e8f9; outline: none; cursor: pointer;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 4px;
+    padding: 5px 4px; font-size: 10px; color: var(--veil-text); outline: none; cursor: pointer;
   }
 
   .add-btn {
@@ -159,9 +159,9 @@
   .add-btn:hover { background: rgba(99,102,241,0.2); }
   .toggle-btn {
     font-size: 12px; padding: 2px 4px; border-radius: 3px;
-    background: none; border: 1px solid #334155; cursor: pointer;
+    background: none; border: 1px solid var(--veil-border); cursor: pointer;
   }
-  .toggle-btn:hover { background: #334155; }
+  .toggle-btn:hover { background: var(--veil-border); }
   .remove-btn {
     background: none; border: none; color: var(--veil-text-dim); font-size: 11px;
     cursor: pointer; padding: 2px 4px; border-radius: 3px;

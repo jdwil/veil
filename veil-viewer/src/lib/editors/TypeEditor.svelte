@@ -80,12 +80,12 @@
 <style>
   .type-editor { display: inline-flex; align-items: center; gap: 2px; }
   .type-input {
-    background: #0f172a; border: 1px solid #334155; border-radius: 3px;
-    color: #67e8f9; padding: 2px 6px; font-size: 11px; min-width: 40px; max-width: 100px;
+    background: var(--veil-bg); border: 1px solid var(--veil-border); border-radius: 3px;
+    color: var(--veil-text); padding: 2px 6px; font-size: 11px; min-width: 40px; max-width: 100px;
     font-family: 'JetBrains Mono', monospace; outline: none;
   }
-  .type-input:focus { border-color: #06b6d4; }
-  .type-kw { color: #c084fc; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+  .type-input:focus { border-color: var(--veil-accent); }
+  .type-kw { color: var(--veil-text-secondary); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   .type-angle, .type-paren, .type-comma, .type-arrow {
     color: var(--veil-text-dim); font-size: 11px; font-family: 'JetBrains Mono', monospace;
   }

@@ -94,9 +94,9 @@
   }
 
   .toggle-btn {
-    background: #1e293b;
+    background: var(--veil-surface);
     color: var(--veil-text);
-    border: 1px solid #334155;
+    border: 1px solid var(--veil-border);
     border-radius: 4px 0 0 4px;
     padding: 8px 12px;
     cursor: pointer;
@@ -107,14 +107,14 @@
   }
 
   .toggle-btn:hover {
-    background: #334155;
+    background: var(--veil-border);
   }
 
   .panel {
     width: 500px;
     height: 100%;
-    background: #0f172a;
-    border-left: 1px solid #334155;
+    background: var(--veil-bg);
+    border-left: 1px solid var(--veil-border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -125,15 +125,15 @@
     flex-wrap: wrap;
     gap: 2px;
     padding: 8px;
-    border-bottom: 1px solid #334155;
+    border-bottom: 1px solid var(--veil-border);
     max-height: 120px;
     overflow-y: auto;
   }
 
   .file-item {
-    background: #1e293b;
+    background: var(--veil-surface);
     color: var(--veil-text-secondary);
-    border: 1px solid #334155;
+    border: 1px solid var(--veil-border);
     border-radius: 3px;
     padding: 3px 8px;
     font-size: 11px;
@@ -142,13 +142,13 @@
   }
 
   .file-item:hover {
-    background: #334155;
+    background: var(--veil-border);
   }
 
   .file-item.active {
-    background: #1d4ed8;
-    color: #fff;
-    border-color: #3b82f6;
+    background: var(--veil-accent);
+    color: var(--veil-bg);
+    border-color: var(--veil-accent);
   }
 
   .code-content {
@@ -183,4 +183,15 @@
   .code-content :global(.tok-macro)    { color: #ffcb6b; }
   .code-content :global(.tok-attr)     { color: #ffcb6b; }
   .code-content :global(.tok-lifetime) { color: #f78c6c; }
+
+  /* Light mode syntax highlighting */
+  :global([data-theme="light"]) .code-content :global(.tok-keyword)  { color: #7c3aed; }
+  :global([data-theme="light"]) .code-content :global(.tok-type)     { color: #2563eb; }
+  :global([data-theme="light"]) .code-content :global(.tok-string)   { color: #16a34a; }
+  :global([data-theme="light"]) .code-content :global(.tok-number)   { color: #c2410c; }
+  :global([data-theme="light"]) .code-content :global(.tok-comment)  { color: #6b7280; font-style: italic; }
+  :global([data-theme="light"]) .code-content :global(.tok-fn)       { color: #1d4ed8; }
+  :global([data-theme="light"]) .code-content :global(.tok-macro)    { color: #b45309; }
+  :global([data-theme="light"]) .code-content :global(.tok-attr)     { color: #b45309; }
+  :global([data-theme="light"]) .code-content :global(.tok-lifetime) { color: #c2410c; }
 </style>

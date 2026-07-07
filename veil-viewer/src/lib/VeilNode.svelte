@@ -256,7 +256,7 @@
   .node-name {
     font-size: 15px;
     font-weight: 800;
-    color: #f1f5f9;
+    color: var(--veil-text);
     word-break: break-word;
     text-shadow: 0 1px 2px var(--veil-input-bg);
   }
@@ -295,7 +295,7 @@
 
   .compensate-badge {
     font-size: 12px;
-    color: #10b981;
+    color: var(--veil-text-secondary);
     margin-left: auto;
     title: "Has compensation";
   }
@@ -356,7 +356,7 @@
   }
 
   .detail-value {
-    color: #cbd5e1;
+    color: var(--veil-text);
   }
 
   .inline-children {

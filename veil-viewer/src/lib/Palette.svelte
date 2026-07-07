@@ -241,7 +241,7 @@
 
   .tile-label {
     font-size: 11px;
-    color: #cbd5e1;
+    color: var(--veil-text);
     font-weight: 500;
   }
 
@@ -275,7 +275,7 @@
     display: block;
     font-size: 11px;
     font-weight: 700;
-    color: #cbd5e1;
+    color: var(--veil-text);
     padding: 2px 0;
   }
   .stub-version {

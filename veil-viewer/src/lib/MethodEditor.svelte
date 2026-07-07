@@ -127,7 +127,7 @@
   .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--veil-text-dim); font-weight: 600; }
 
   .method-card {
-    background: rgba(0,0,0,0.2);
+    background: var(--veil-input-bg);
     border: 1px solid var(--veil-border);
     border-radius: 8px;
     padding: 8px;
@@ -139,7 +139,7 @@
   .method-header { display: flex; align-items: center; gap: 4px; }
   .method-name-input {
     flex: 1;
-    background: rgba(0,0,0,0.3); border: 1px solid var(--veil-border); border-radius: 4px;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 4px;
     padding: 5px 8px; font-size: 12px; color: var(--veil-text); font-weight: 600;
     outline: none; font-family: monospace;
   }
@@ -152,32 +152,32 @@
   .param-row { display: flex; gap: 3px; align-items: center; }
   .param-name {
     flex: 1;
-    background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px;
-    padding: 3px 6px; font-size: 11px; color: #cbd5e1; outline: none; font-family: monospace;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 4px;
+    padding: 3px 6px; font-size: 11px; color: var(--veil-text); outline: none; font-family: monospace;
   }
   .param-name:focus { border-color: var(--veil-text-dim); }
   .param-type {
     width: 80px;
-    background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 4px;
     padding: 3px 4px; font-size: 10px; color: var(--veil-text-secondary); outline: none; cursor: pointer;
   }
 
   .return-section { display: flex; align-items: center; gap: 6px; padding-left: 8px; }
   .return-type {
     flex: 1;
-    background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px;
+    background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 4px;
     padding: 3px 6px; font-size: 10px; color: var(--veil-text-secondary); outline: none; cursor: pointer;
   }
 
   .add-btn {
     font-size: 10px; padding: 3px 8px; border-radius: 4px;
-    background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.3);
+    background: var(--veil-accent-subtle); border: 1px solid var(--veil-border);
     color: var(--veil-text); cursor: pointer;
   }
-  .add-btn:hover { background: rgba(99,102,241,0.2); }
+  .add-btn:hover { background: var(--veil-accent-hover); }
   .add-btn-small {
     font-size: 10px; padding: 1px 6px; border-radius: 3px;
-    background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
+    background: var(--veil-accent-subtle); border: 1px solid var(--veil-accent-hover);
     color: var(--veil-text); cursor: pointer;
   }
 

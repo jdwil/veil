@@ -121,14 +121,14 @@
   .ce-row { display: flex; align-items: center; gap: 6px; }
   .ce-label { font-size: 10px; color: var(--veil-text-dim); text-transform: uppercase; min-width: 55px; }
   .ce-input {
-    flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 4px;
+    flex: 1; background: var(--veil-bg); border: 1px solid var(--veil-border); border-radius: 4px;
     padding: 5px 8px; font-size: 12px; color: var(--veil-text); outline: none;
     font-family: 'JetBrains Mono', monospace;
   }
   .ce-input.sm { max-width: 120px; }
   .ce-input:focus { border-color: var(--veil-text-dim); }
   .ce-select {
-    background: #0f172a; border: 1px solid #334155; border-radius: 4px;
+    background: var(--veil-bg); border: 1px solid var(--veil-border); border-radius: 4px;
     padding: 5px 8px; font-size: 11px; color: var(--veil-text-secondary); outline: none;
   }
   .ce-angle { color: var(--veil-text-dim); font-size: 12px; }
