@@ -206,6 +206,11 @@
     }
 
     // Call backend to create the impl construct in the source
+    // Set the active tab BEFORE saving so the $effect renders the right view
+    // when it fires from the irGraph update.
+    if (targetGroup) {
+      activeTab = targetGroup;
+    }
     const success = await saveEdits([{
       op: 'create_construct',
       parent_span: insertParentSpan,
@@ -214,12 +219,9 @@
       target: targetNodeName,
     }]);
 
-    if (success) {
-      // Navigate to the dg tab after the IR refreshes
-      if (targetGroup) {
-        activeTab = targetGroup;
-        switchTab(targetGroup);
-      }
+    if (!success && targetGroup) {
+      // Revert tab if the create failed
+      activeTab = null;
     }
   }
 
