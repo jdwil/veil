@@ -196,10 +196,11 @@
         }]);
         console.log('[handleImplement] group creation result:', createGroupSuccess);
         if (!createGroupSuccess) return;
-        // After creating the group, find its span in the fresh IR
-        const freshGraph = $irGraph;
-        if (!freshGraph) return;
-        const newGroupNode = freshGraph.nodes.find(
+        // Fetch the fresh IR directly to find the new group's span,
+        // avoiding reactive store reads that could trigger effect loops.
+        const freshRes = await fetch('http://localhost:3001/api/ir');
+        const freshIr = await freshRes.json();
+        const newGroupNode = freshIr.nodes.find(
           (n: any) => n.kind === 'Group' && n.name === targetGroup && n.metadata.parent === parent
         );
         if (newGroupNode) {
@@ -207,6 +208,10 @@
         }
       }
     }
+
+    // Close the property editor before making API calls to avoid reactive loops
+    // between PropertyEditor's $effect and our saveEdits calls.
+    selectedNodeId.set(null);
 
     // Call backend to create the impl construct in the source
     // Set the active tab AFTER saving completes so the $effect uses it
@@ -236,22 +241,29 @@
     fetchIr();
   });
 
-  // Recompute nodes/edges when graph or current parent changes
+  // Recompute nodes/edges when graph or current parent changes.
+  // IMPORTANT: Only $irGraph and $currentParent should trigger this effect.
+  // All other reads (palette, activeTab, etc.) happen inside untrack to
+  // prevent infinite loops when computeView writes to reactive state.
   $effect(() => {
     const graph = $irGraph;
     const parent = $currentParent;
     if (!graph) return;
-    untrack(() => computeView(graph, parent, []));
+    untrack(() => {
+      const palette = $paletteConfig;
+      computeView(graph, parent, palette);
+    });
   });
 
   function switchTab(tab: string) {
     activeTab = tab;
     const graph = $irGraph;
     const parent = $currentParent;
-    if (graph) computeView(graph, parent);
+    const palette = $paletteConfig;
+    if (graph) computeView(graph, parent, palette);
   }
 
-  function computeView(graph: IrGraph, parentId: number | null, prevNodes: Node[] = []) {
+  function computeView(graph: IrGraph, parentId: number | null, palette: any[] = []) {
     let children = getChildren(graph, parentId);
 
     // Filter out layer-provided infrastructure unless toggled on
@@ -332,7 +344,7 @@
     // Get expected groups from the layer config for this parent's subkind
     const parentSubkind = parentNode?.metadata.subkind ?? null;
     const paletteEntry = parentSubkind
-      ? $paletteConfig.find((p: any) => p.name === parentSubkind)
+      ? palette.find((p: any) => p.name === parentSubkind)
       : null;
     const expectedGroups: string[] = paletteEntry?.expected_groups ?? [];
 
