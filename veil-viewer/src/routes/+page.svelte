@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount } from 'svelte';
   import {
     SvelteFlow,
     Controls,
@@ -211,7 +211,9 @@
 
     // Close the property editor before making API calls to avoid reactive loops
     // between PropertyEditor's $effect and our saveEdits calls.
+    // Must await tick() so Svelte actually unmounts it before we update $irGraph.
     selectedNodeId.set(null);
+    await new Promise(r => setTimeout(r, 0));
 
     // Call backend to create the impl construct in the source
     // Set the active tab AFTER saving completes so the $effect uses it
@@ -239,20 +241,32 @@
 
   onMount(() => {
     fetchIr();
-  });
 
-  // Recompute nodes/edges when graph or current parent changes.
-  // IMPORTANT: Only $irGraph and $currentParent should trigger this effect.
-  // All other reads (palette, activeTab, etc.) happen inside untrack to
-  // prevent infinite loops when computeView writes to reactive state.
-  $effect(() => {
-    const graph = $irGraph;
-    const parent = $currentParent;
-    if (!graph) return;
-    untrack(() => {
-      const palette = $paletteConfig;
-      computeView(graph, parent, palette);
+    // Subscribe to irGraph and currentParent changes manually (NOT via $effect)
+    // to avoid Svelte 5's effect_update_depth_exceeded when computeView writes
+    // to reactive state (nodes, edges, tabs) during the same microtask.
+    // We defer with setTimeout(0) to break xyflow's internal reactive chain.
+    const unsubIr = irGraph.subscribe((graph) => {
+      if (!graph) return;
+      setTimeout(() => {
+        const parent = $currentParent;
+        const palette = $paletteConfig;
+        computeView(graph, parent, palette);
+      }, 0);
     });
+    const unsubParent = currentParent.subscribe((parent) => {
+      setTimeout(() => {
+        const graph = $irGraph;
+        if (!graph) return;
+        const palette = $paletteConfig;
+        computeView(graph, parent, palette);
+      }, 0);
+    });
+
+    return () => {
+      unsubIr();
+      unsubParent();
+    };
   });
 
   function switchTab(tab: string) {
@@ -568,15 +582,15 @@
   function getEdgeStyle(kind: string): string {
     switch (kind) {
       case 'Implements':
-        return 'stroke: #a855f7; stroke-width: 2; stroke-dasharray: 6 3;';
+        return 'stroke: #a3a3a3; stroke-width: 2; stroke-dasharray: 6 3;';
       case 'SequenceFlow':
-        return 'stroke: #6366f1; stroke-width: 2;';
+        return 'stroke: #737373; stroke-width: 2;';
       case 'Calls':
-        return 'stroke: #10b981; stroke-width: 1.5; stroke-dasharray: 4 2;';
+        return 'stroke: #737373; stroke-width: 1.5; stroke-dasharray: 4 2;';
       case 'Emits':
-        return 'stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 3 3;';
+        return 'stroke: #737373; stroke-width: 1.5; stroke-dasharray: 3 3;';
       default:
-        return 'stroke: #475569; stroke-width: 1.5;';
+        return 'stroke: #525252; stroke-width: 1.5;';
     }
   }
 
@@ -759,7 +773,7 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
-    background: #0a0a0f;
+    background: #0f0f0f;
   }
 
   .top-bar {
@@ -767,8 +781,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 20px;
-    background: rgba(26, 26, 46, 0.95);
-    border-bottom: 1px solid #2d2d44;
+    background: rgba(26, 26, 26, 0.95);
+    border-bottom: 1px solid #2e2e2e;
     backdrop-filter: blur(12px);
     z-index: 10;
   }
@@ -778,11 +792,11 @@
     align-items: center;
     gap: 6px;
     font-size: 11px;
-    color: #64748b;
+    color: #737373;
     cursor: pointer;
   }
-  .layer-toggle input { accent-color: #6366f1; }
-  .layer-toggle:hover { color: #94a3b8; }
+  .layer-toggle input { accent-color: #737373; }
+  .layer-toggle:hover { color: #a3a3a3; }
 
   .breadcrumbs {
     display: flex;
@@ -794,7 +808,7 @@
   .breadcrumb-item {
     background: none;
     border: none;
-    color: #94a3b8;
+    color: #a3a3a3;
     font-size: 13px;
     cursor: pointer;
     padding: 4px 8px;
@@ -803,18 +817,18 @@
   }
 
   .breadcrumb-item:hover {
-    background: rgba(99, 102, 241, 0.1);
-    color: #e2e8f0;
+    background: rgba(115, 115, 115, 0.1);
+    color: #e5e5e5;
   }
 
   .breadcrumb-item.active {
-    color: #e2e8f0;
+    color: #e5e5e5;
     font-weight: 600;
-    background: rgba(99, 102, 241, 0.15);
+    background: rgba(115, 115, 115, 0.15);
   }
 
   .breadcrumb-sep {
-    color: #475569;
+    color: #525252;
     font-size: 14px;
   }
 
@@ -837,8 +851,8 @@
     display: flex;
     gap: 2px;
     padding: 8px 12px;
-    background: rgba(26, 26, 46, 0.9);
-    border-bottom: 1px solid #2d2d44;
+    background: rgba(26, 26, 26, 0.9);
+    border-bottom: 1px solid #2e2e2e;
   }
 
   .scope-bar {
@@ -846,8 +860,8 @@
     align-items: center;
     gap: 6px;
     padding: 6px 16px;
-    background: rgba(34, 197, 94, 0.05);
-    border-bottom: 1px solid rgba(34, 197, 94, 0.2);
+    background: rgba(60, 60, 60, 0.1);
+    border-bottom: 1px solid rgba(82, 82, 82, 0.3);
     overflow-x: auto;
     flex-shrink: 0;
   }
@@ -856,7 +870,7 @@
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #22c55e;
+    color: #a3a3a3;
     font-weight: 700;
   }
 
@@ -865,9 +879,9 @@
     font-family: 'JetBrains Mono', monospace;
     padding: 2px 8px;
     border-radius: 4px;
-    background: rgba(34, 197, 94, 0.08);
-    border: 1px solid rgba(34, 197, 94, 0.2);
-    color: #86efac;
+    background: rgba(82, 82, 82, 0.15);
+    border: 1px solid rgba(82, 82, 82, 0.3);
+    color: #d4d4d4;
   }
 
   .tab-btn {
@@ -875,23 +889,23 @@
     font-size: 11px;
     font-weight: 600;
     text-transform: capitalize;
-    border: 1px solid #2d2d44;
+    border: 1px solid #2e2e2e;
     border-radius: 6px;
     background: transparent;
-    color: #64748b;
+    color: #737373;
     cursor: pointer;
     transition: all 0.15s;
   }
 
   .tab-btn:hover {
-    background: rgba(99, 102, 241, 0.08);
-    color: #94a3b8;
+    background: rgba(115, 115, 115, 0.08);
+    color: #a3a3a3;
   }
 
   .tab-btn.active {
-    background: rgba(99, 102, 241, 0.15);
-    color: #a5b4fc;
-    border-color: rgba(99, 102, 241, 0.4);
+    background: rgba(115, 115, 115, 0.15);
+    color: #d4d4d4;
+    border-color: rgba(115, 115, 115, 0.4);
   }
 
   .main-layout {
@@ -907,27 +921,27 @@
     align-items: center;
     justify-content: center;
     gap: 12px;
-    color: #94a3b8;
+    color: #a3a3a3;
   }
 
   .status-overlay.error { color: #f87171; }
   .error-title { font-size: 18px; font-weight: 600; }
-  .error-msg { font-size: 14px; color: #94a3b8; }
-  .error-hint { font-size: 12px; color: #64748b; margin-top: 8px; }
-  .error-hint code { color: #a5b4fc; background: rgba(99, 102, 241, 0.1); padding: 2px 6px; border-radius: 4px; }
-  .retry-btn { margin-top: 12px; padding: 8px 20px; background: #6366f1; color: white; border: none; border-radius: 8px; cursor: pointer; }
-  .retry-btn:hover { background: #4f46e5; }
-  .pulse-ring { width: 40px; height: 40px; border-radius: 50%; border: 3px solid #6366f1; animation: pulse 1.5s infinite; }
+  .error-msg { font-size: 14px; color: #a3a3a3; }
+  .error-hint { font-size: 12px; color: #737373; margin-top: 8px; }
+  .error-hint code { color: #d4d4d4; background: rgba(82, 82, 82, 0.2); padding: 2px 6px; border-radius: 4px; }
+  .retry-btn { margin-top: 12px; padding: 8px 20px; background: #525252; color: white; border: none; border-radius: 8px; cursor: pointer; }
+  .retry-btn:hover { background: #404040; }
+  .pulse-ring { width: 40px; height: 40px; border-radius: 50%; border: 3px solid #525252; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.5; } 100% { transform: scale(1); opacity: 1; } }
 
-  :global(.svelte-flow) { background: #0a0a0f !important; }
+  :global(.svelte-flow) { background: #0f0f0f !important; }
   :global(.svelte-flow__background) { opacity: 0.4; }
-  :global(.svelte-flow__minimap) { background: rgba(26, 26, 46, 0.9) !important; border: 1px solid #2d2d44 !important; border-radius: 10px !important; }
-  :global(.svelte-flow__controls) { background: rgba(26, 26, 46, 0.9) !important; border: 1px solid #2d2d44 !important; border-radius: 10px !important; }
-  :global(.svelte-flow__controls button) { background: transparent !important; border-color: #2d2d44 !important; color: #e2e8f0 !important; }
-  :global(.svelte-flow__controls button:hover) { background: rgba(99, 102, 241, 0.15) !important; }
-  :global(.svelte-flow__edge-path) { stroke-width: 2px; filter: drop-shadow(0 0 3px rgba(99, 102, 241, 0.3)); }
-  :global(.svelte-flow__edge.animated .svelte-flow__edge-path) { stroke: #6366f1 !important; stroke-width: 2.5px; filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.5)); }
-  :global(.svelte-flow__handle) { width: 8px !important; height: 8px !important; background: var(--node-color, #475569) !important; border: 2px solid #1a1a2e !important; opacity: 0; transition: opacity 0.2s; }
+  :global(.svelte-flow__minimap) { background: rgba(26, 26, 26, 0.9) !important; border: 1px solid #2e2e2e !important; border-radius: 10px !important; }
+  :global(.svelte-flow__controls) { background: rgba(26, 26, 26, 0.9) !important; border: 1px solid #2e2e2e !important; border-radius: 10px !important; }
+  :global(.svelte-flow__controls button) { background: transparent !important; border-color: #2e2e2e !important; color: #e5e5e5 !important; }
+  :global(.svelte-flow__controls button:hover) { background: rgba(115, 115, 115, 0.15) !important; }
+  :global(.svelte-flow__edge-path) { stroke-width: 2px; filter: drop-shadow(0 0 3px rgba(100, 100, 100, 0.2)); }
+  :global(.svelte-flow__edge.animated .svelte-flow__edge-path) { stroke: #737373 !important; stroke-width: 2.5px; filter: drop-shadow(0 0 6px rgba(100, 100, 100, 0.3)); }
+  :global(.svelte-flow__handle) { width: 8px !important; height: 8px !important; background: var(--node-color, #525252) !important; border: 2px solid #1a1a1a !important; opacity: 0; transition: opacity 0.2s; }
   :global(.svelte-flow__node:hover .svelte-flow__handle) { opacity: 1; }
 </style>
