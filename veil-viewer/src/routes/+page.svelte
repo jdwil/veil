@@ -640,9 +640,23 @@
   }
 
   function handleKeyDown(event: KeyboardEvent) {
-    // Don't delete if user is typing in an input/textarea
+    // Don't act if user is typing in an input/textarea
     const tag = (event.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    // Enter to drill into selected node (same as double-click)
+    if (event.key === 'Enter' && $selectedNodeId) {
+      const graph = $irGraph;
+      if (!graph) return;
+      const irNode = graph.nodes.find(n => n.id === Number($selectedNodeId));
+      if (irNode) {
+        const children = getChildren(graph, irNode.id);
+        if (children.length > 0) {
+          drillDown(irNode);
+          selectedNodeId.set(null);
+        }
+      }
+    }
 
     if ((event.key === 'Delete' || event.key === 'Backspace') && $selectedNodeId) {
       nodes = nodes.filter(n => n.id !== $selectedNodeId);
