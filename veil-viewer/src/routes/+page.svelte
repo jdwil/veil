@@ -209,12 +209,8 @@
     }
 
     // Call backend to create the impl construct in the source
-    // Set the active tab BEFORE saving so the $effect renders the right view
-    // when it fires from the irGraph update.
-    if (targetGroup) {
-      activeTab = targetGroup;
-    }
-    console.log('[handleImplement] creating adapter', { insertParentSpan, keyword: implEntry.keyword, name: implName, target: targetNodeName });
+    // Set the active tab AFTER saving completes so the $effect uses it
+    // on the next render cycle (avoids effect_update_depth_exceeded).
     const success = await saveEdits([{
       op: 'create_construct',
       parent_span: insertParentSpan,
@@ -223,10 +219,14 @@
       target: targetNodeName,
     }]);
 
-    if (!success && targetGroup) {
-      // Revert tab if the create failed
+    if (success && targetGroup) {
+      // Defer tab switch to next tick to avoid reactive loop
+      setTimeout(() => {
+        activeTab = targetGroup;
+        switchTab(targetGroup);
+      }, 0);
+    } else if (!success && targetGroup) {
       console.log('[handleImplement] adapter creation FAILED');
-      activeTab = null;
     } else {
       console.log('[handleImplement] adapter creation SUCCESS');
     }
@@ -241,7 +241,7 @@
     const graph = $irGraph;
     const parent = $currentParent;
     if (!graph) return;
-    untrack(() => computeView(graph, parent));
+    untrack(() => computeView(graph, parent, []));
   });
 
   function switchTab(tab: string) {
@@ -251,7 +251,7 @@
     if (graph) computeView(graph, parent);
   }
 
-  function computeView(graph: IrGraph, parentId: number | null) {
+  function computeView(graph: IrGraph, parentId: number | null, prevNodes: Node[] = []) {
     let children = getChildren(graph, parentId);
 
     // Filter out layer-provided infrastructure unless toggled on
@@ -498,48 +498,9 @@
     edges = allEdges;
   }
 
-  /** Layout nodes in vertical columns grouped by subkind/kind.
-   *  Preserves positions for nodes that already exist on the canvas. */
+  /** Layout nodes in vertical columns grouped by subkind/kind. */
   function layoutByType(flowNodes: Node[]): Node[] {
-    // Capture existing positions from current nodes on canvas
-    const existingPositions: Record<string, { x: number; y: number }> = {};
-    for (const n of nodes) {
-      existingPositions[n.id] = n.position;
-    }
-
-    // Separate nodes that already have a position from those that need layout
-    const positioned: Node[] = [];
-    const needsLayout: Node[] = [];
-
-    for (const node of flowNodes) {
-      if (existingPositions[node.id]) {
-        positioned.push({ ...node, position: existingPositions[node.id] });
-      } else {
-        needsLayout.push(node);
-      }
-    }
-
-    // If all nodes already have positions, just return them
-    if (needsLayout.length === 0) return positioned;
-
-    // If ALL nodes need layout (initial load), do full layout
-    if (positioned.length === 0) {
-      return doColumnLayout(flowNodes);
-    }
-
-    // Layout only the new nodes, placing them after existing ones
-    const maxX = Math.max(0, ...positioned.map(n => n.position.x));
-    const maxY = Math.max(0, ...positioned.map(n => n.position.y));
-    const NODE_H = 140;
-    const V_GAP = 30;
-
-    let y = maxY + NODE_H + V_GAP;
-    for (const node of needsLayout) {
-      positioned.push({ ...node, position: { x: maxX, y } });
-      y += NODE_H + V_GAP;
-    }
-
-    return positioned;
+    return doColumnLayout(flowNodes);
   }
 
   /** Pure column layout (used for initial load when no positions exist) */
