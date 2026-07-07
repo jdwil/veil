@@ -535,8 +535,8 @@ fn gen_struct(c: &Construct) -> String {
     }
 
     out.push_str(&format!(
-        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {} {{\n",
-        c.subkind, c.name, c.name
+        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {}{} {{\n",
+        c.subkind, c.name, c.name, generic_params_rust(&c.type_params)
     ));
     for field in &fields {
         out.push_str(&format!(
@@ -808,12 +808,34 @@ fn translate_emit_field(
 fn gen_enum(c: &Construct) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub enum {} {{\n",
-        c.subkind, c.name, c.name
+        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub enum {}{} {{\n",
+        c.subkind, c.name, c.name, generic_params_rust(&c.type_params)
     ));
-    for v in &c.variants {
-        out.push_str(&format!("    {},\n", v));
+
+    // Use rich_variants if available, otherwise fall back to flat string variants
+    if !c.rich_variants.is_empty() {
+        for v in &c.rich_variants {
+            match v {
+                EnumVariant::Unit(name) => out.push_str(&format!("    {},\n", name)),
+                EnumVariant::Tuple(name, types) => {
+                    let fields = types.iter().map(type_to_rust).collect::<Vec<_>>().join(", ");
+                    out.push_str(&format!("    {}({}),\n", name, fields));
+                }
+                EnumVariant::Struct(name, fields) => {
+                    out.push_str(&format!("    {} {{\n", name));
+                    for f in fields {
+                        out.push_str(&format!("        {}: {},\n", to_snake(&f.name), type_to_rust(&f.type_expr)));
+                    }
+                    out.push_str("    },\n");
+                }
+            }
+        }
+    } else {
+        for v in &c.variants {
+            out.push_str(&format!("    {},\n", v));
+        }
     }
+
     out.push_str("}\n\n");
     out
 }
@@ -1029,7 +1051,7 @@ fn gen_traits(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     out.push_str("pub use veil_shared::*;\n\n");
 
     for t in &contents.traits {
-        out.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {} {{\n", t.subkind, t.name, t.name));
+        out.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {}{} {{\n", t.subkind, t.name, t.name, generic_params_rust(&t.type_params)));
         for method in &t.methods {
             let params = method
                 .params
@@ -1771,6 +1793,15 @@ pub fn to_snake(name: &str) -> String {
 
 pub fn type_to_rust(ty: &TypeExpr) -> String {
     type_to_rust_impl(ty, &std::collections::HashSet::new())
+}
+
+/// Format generic type parameters: `<T, U>` or empty string if none.
+fn generic_params_rust(params: &[String]) -> String {
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", params.join(", "))
+    }
 }
 
 /// Trait-aware type rendering: a value-position reference to a known trait

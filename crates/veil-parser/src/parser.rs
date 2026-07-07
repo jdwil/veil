@@ -1928,15 +1928,18 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_expr()?;
                 return Ok(Expr::Assign(name, Box::new(rhs)));
             }
-            // Tuple destructuring: (a, b) = expr
+            // Tuple destructuring: (a, b) = expr → LetPattern
             if let Expr::Tuple(items) = &lhs {
-                let parts: Vec<String> = items.iter().map(|e| {
-                    if let Expr::Ident(n) = e { n.clone() } else { "_".to_string() }
+                let parts: Vec<Pattern> = items.iter().map(|e| {
+                    match e {
+                        Expr::Ident(n) if n == "_" => Pattern::Wildcard,
+                        Expr::Ident(n) => Pattern::Ident(n.clone()),
+                        _ => Pattern::Wildcard,
+                    }
                 }).collect();
-                let pattern = format!("({})", parts.join(", "));
                 self.advance();
                 let rhs = self.parse_expr()?;
-                return Ok(Expr::Assign(pattern, Box::new(rhs)));
+                return Ok(Expr::LetPattern(Pattern::Tuple(parts), Box::new(rhs)));
             }
         }
 
@@ -2476,6 +2479,14 @@ impl<'a> Parser<'a> {
                 }
                 let pattern = pattern_parts.join(" ");
 
+                // Parse match guard: `pattern if condition -> body`
+                let guard = if self.at(&TokenKind::If) {
+                    self.advance(); // consume 'if'
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+
                 if !self.at(&TokenKind::Arrow) {
                     // Skip malformed arm
                     continue;
@@ -2502,10 +2513,13 @@ impl<'a> Parser<'a> {
                     body.push(self.parse_expr()?);
                 }
 
+                // Build a rich_pattern from the string for common cases
+                let rich_pattern = parse_pattern_string(&pattern);
+
                 arms.push(MatchArm {
                     pattern,
-                    rich_pattern: None,
-                    guard: None,
+                    rich_pattern,
+                    guard,
                     span: arm_span.merge(self.current().span),
                     body,
                 });
@@ -2748,6 +2762,88 @@ fn flatten_dotted_path(base: &Expr, last: &str) -> Option<String> {
     parts.reverse();
     parts.push(last.to_string());
     Some(parts.join("."))
+}
+
+/// Parse a pattern string into a structured Pattern for common cases.
+/// Falls back to Pattern::Ident for unrecognized patterns.
+fn parse_pattern_string(s: &str) -> Option<Pattern> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+
+    // Wildcard
+    if s == "_" { return Some(Pattern::Wildcard); }
+
+    // Or-pattern: `A | B | C`
+    if s.contains(" | ") {
+        let alts: Vec<Pattern> = s.split(" | ")
+            .filter_map(|p| parse_pattern_string(p.trim()))
+            .collect();
+        if alts.len() > 1 { return Some(Pattern::Or(alts)); }
+    }
+
+    // Tuple pattern: (a, b, c)
+    if s.starts_with('(') && s.ends_with(')') {
+        let inner = &s[1..s.len()-1];
+        let parts: Vec<Pattern> = inner.split(',')
+            .map(|p| parse_pattern_string(p.trim()).unwrap_or(Pattern::Ident(p.trim().to_string())))
+            .collect();
+        return Some(Pattern::Tuple(parts));
+    }
+
+    // Variant with data: Name(a, b) or Name(a)
+    if let Some(paren_idx) = s.find('(') {
+        if s.ends_with(')') && s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            let name = s[..paren_idx].to_string();
+            let inner = &s[paren_idx+1..s.len()-1];
+            let args: Vec<Pattern> = inner.split(',')
+                .map(|p| parse_pattern_string(p.trim()).unwrap_or(Pattern::Ident(p.trim().to_string())))
+                .collect();
+            return Some(Pattern::Variant(name, args));
+        }
+    }
+
+    // Struct pattern: Name { field, field2, .. }
+    if let Some(brace_idx) = s.find('{') {
+        if s.ends_with('}') && s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            let name = s[..brace_idx].trim().to_string();
+            let inner = &s[brace_idx+1..s.len()-1];
+            let mut fields: Vec<(String, Option<Pattern>)> = Vec::new();
+            let mut has_rest = false;
+            for part in inner.split(',') {
+                let part = part.trim();
+                if part == ".." { has_rest = true; continue; }
+                if part.is_empty() { continue; }
+                if let Some(colon_idx) = part.find(':') {
+                    let key = part[..colon_idx].trim().to_string();
+                    let val_pat = parse_pattern_string(part[colon_idx+1..].trim());
+                    fields.push((key, val_pat));
+                } else {
+                    fields.push((part.to_string(), None));
+                }
+            }
+            return Some(Pattern::Struct(name, fields, has_rest));
+        }
+    }
+
+    // Literal patterns: integers, strings, booleans
+    if s.parse::<i64>().is_ok() || s == "true" || s == "false" {
+        return Some(Pattern::Literal(s.to_string()));
+    }
+    if s.starts_with('"') && s.ends_with('"') {
+        return Some(Pattern::Literal(s.to_string()));
+    }
+
+    // Simple uppercase ident → unit variant; lowercase → binding
+    if s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) && !s.contains(' ') {
+        return Some(Pattern::Variant(s.to_string(), Vec::new()));
+    }
+
+    // Plain identifier binding
+    if s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Some(Pattern::Ident(s.to_string()));
+    }
+
+    None
 }
 
 #[cfg(test)]

@@ -1,0 +1,28 @@
+{
+  "context": "Billing",
+  "crate": "billing",
+  "deps": {
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "payment_gateway": {
+      "adapter": "StripeAdapter",
+      "env": [
+        "STRIPE_KEY"
+      ],
+      "trait": "PaymentGateway"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {}
+}

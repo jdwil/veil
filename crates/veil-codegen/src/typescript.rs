@@ -99,6 +99,15 @@ pub fn to_camel(s: &str) -> String {
     result
 }
 
+/// Format generic type parameters for TypeScript: `<T, U>` or empty string.
+fn generic_params_ts(params: &[String]) -> String {
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", params.join(", "))
+    }
+}
+
 /// Field type as TS string, using explicit type or inferring from name.
 fn field_type_ts(field: &Field) -> String {
     match &field.type_expr {
@@ -495,7 +504,8 @@ fn gen_types(modules: &[&Construct]) -> TsFile {
 
         for s in &structs {
             if s.layer_provided { continue; }
-            out.push_str(&format!("export interface {} {{\n", s.name));
+            let generics = generic_params_ts(&s.type_params);
+            out.push_str(&format!("export interface {}{} {{\n", s.name, generics));
             // Fields from root block or direct fields
             let fields = if !s.blocks.is_empty() {
                 s.blocks.iter()
@@ -514,13 +524,40 @@ fn gen_types(modules: &[&Construct]) -> TsFile {
 
         for e in &enums {
             if e.layer_provided { continue; }
-            if e.variants.is_empty() { continue; }
-            out.push_str(&format!("export type {} =\n", e.name));
-            let variants: Vec<String> = e.variants.iter()
-                .map(|v| format!("  | \"{}\"", v))
-                .collect();
-            out.push_str(&variants.join("\n"));
-            out.push_str(";\n\n");
+            if e.variants.is_empty() && e.rich_variants.is_empty() { continue; }
+            let generics = generic_params_ts(&e.type_params);
+
+            if !e.rich_variants.is_empty() {
+                // Discriminated union for variants with data
+                out.push_str(&format!("export type {}{} =\n", e.name, generics));
+                let variants: Vec<String> = e.rich_variants.iter()
+                    .map(|v| match v {
+                        EnumVariant::Unit(name) => format!("  | {{ type: \"{}\" }}", name),
+                        EnumVariant::Tuple(name, types) => {
+                            let fields = types.iter().enumerate()
+                                .map(|(i, t)| format!("field{}: {}", i, type_to_ts(t)))
+                                .collect::<Vec<_>>().join("; ");
+                            format!("  | {{ type: \"{}\"; {} }}", name, fields)
+                        }
+                        EnumVariant::Struct(name, fields) => {
+                            let fs = fields.iter()
+                                .map(|f| format!("{}: {}", to_camel(&f.name), type_to_ts(&f.type_expr)))
+                                .collect::<Vec<_>>().join("; ");
+                            format!("  | {{ type: \"{}\"; {} }}", name, fs)
+                        }
+                    })
+                    .collect();
+                out.push_str(&variants.join("\n"));
+                out.push_str(";\n\n");
+            } else {
+                // Simple string union for unit-only enums
+                out.push_str(&format!("export type {}{} =\n", e.name, generics));
+                let variants: Vec<String> = e.variants.iter()
+                    .map(|v| format!("  | \"{}\"", v))
+                    .collect();
+                out.push_str(&variants.join("\n"));
+                out.push_str(";\n\n");
+            }
         }
     }
 
@@ -546,7 +583,8 @@ fn gen_interfaces(modules: &[&Construct], solution: &Solution) -> TsFile {
     }
 
     for t in &all_traits {
-        out.push_str(&format!("export interface {} {{\n", t.name));
+        let generics = generic_params_ts(&t.type_params);
+        out.push_str(&format!("export interface {}{} {{\n", t.name, generics));
         for method in &t.methods {
             let params = method.params.iter()
                 .map(|p| format!("{}: {}", to_camel(&p.name), type_to_ts(&p.type_expr)))

@@ -403,7 +403,16 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 .unwrap_or_else(|| raw.strip_suffix('?').map(|s| s.to_string()).unwrap_or(raw));
             let mut out = format!("match {} {{\n", scrutinee_str);
             for arm in arms {
-                let pattern = normalize_match_pattern(&arm.pattern);
+                // Use structured pattern if available, fall back to string normalization
+                let pattern = if let Some(rich) = &arm.rich_pattern {
+                    pattern_to_rust(rich)
+                } else {
+                    normalize_match_pattern(&arm.pattern)
+                };
+                let guard_str = match &arm.guard {
+                    Some(g) => format!(" if {}", expr_to_rust(g, ctx)),
+                    None => String::new(),
+                };
                 let body_str = if arm.body.len() == 1 {
                     expr_to_rust(&arm.body[0], ctx)
                 } else {
@@ -412,7 +421,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         .collect::<Vec<_>>().join("\n");
                     format!("{{\n{}\n    }}", stmts)
                 };
-                out.push_str(&format!("        {} => {},\n", pattern, body_str));
+                out.push_str(&format!("        {}{} => {},\n", pattern, guard_str, body_str));
             }
             out.push_str("    }");
             out
