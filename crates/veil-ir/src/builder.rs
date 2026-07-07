@@ -356,6 +356,35 @@ impl IrBuilder {
                 }
             }
             Shape::Trait => {
+                // Emit each method as a child InterfaceMethod node (drillable).
+                for m in &c.methods {
+                    let params = m
+                        .params
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, type_to_display(&p.type_expr)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret = m
+                        .return_type
+                        .as_ref()
+                        .map(|t| format!(" -> {}", type_to_display(t)))
+                        .unwrap_or_default();
+                    let sig = format!("({}){}", params, ret);
+
+                    let method_id = self.graph.add_node(
+                        NodeKind::InterfaceMethod,
+                        m.name.clone(),
+                        m.span,
+                    );
+                    self.set_parent(method_id, id);
+                    self.set_property(method_id, "params", &format!("({})", params));
+                    self.set_property(method_id, "returns", &ret.trim_start_matches(" -> ").to_string());
+                    self.set_property(method_id, "signature", &sig);
+                    self.graph.add_edge(id, method_id, EdgeKind::Contains);
+                }
+
+                // Also keep a summary "methods" property for backward compat
+                // (other parts of the system may still read it).
                 let methods_str = c
                     .methods
                     .iter()
