@@ -162,12 +162,15 @@ crates/
   veil-parser/           — Lexer + Parser (comprehensive Rust expression coverage)
   veil-ir/               — AST, IR graph, builder, serializer, validator,
                            layer registry (with .stub parsing)
-  veil-codegen/          — IR → Rust code generation (expr translator + type inference)
-  veil-cli/              — CLI (lex, parse, check, gen, emit, stub-gen, serve)
+  veil-codegen/          — Multi-target code generation:
+                             rust.rs       — IR → Rust (primary target)
+                             typescript.rs — IR → TypeScript
+                             expr.rs       — Rust expression translator
+  veil-cli/              — CLI (lex, parse, check, gen --target, emit, stub-gen, serve)
 
 veil-viewer/             — Svelte visual editor
   src/lib/editors/       — Composable expression editing components:
-    ExprEditor.svelte    — Recursive editor for all 33 expression kinds
+    ExprEditor.svelte    — Recursive editor for all 34 expression kinds
     BlockEditor.svelte   — Reusable expression list (bodies, arms, etc.)
     ExprPicker.svelte    — Searchable dropdown to add expressions
     TypeEditor.svelte    — Recursive type annotation editor
@@ -185,14 +188,31 @@ VEIL core expressions are **universal programming primitives** — they map to
 both Rust and TypeScript (and potentially other targets). The AST is
 target-agnostic; only the codegen backend decides how to lower:
 
-- `Res!<T>` → Rust: `Result<T, DomainError>` / TypeScript: `Promise<T>` or thrown
-- `mut x = 0` → Rust: `let mut x = 0;` / TypeScript: `let x = 0;` (skip mut)
-- `await expr` → Rust: `expr.await` / TypeScript: `await expr`
-- `expr?` → Rust: `expr?` / TypeScript: unwrap/throw
-- `.clone()` in codegen → TypeScript: skip (reference semantics)
+| VEIL | Rust | TypeScript |
+|------|------|-----------|
+| `Res!<T>` | `Result<T, DomainError>` | `Promise<T>` |
+| `mut x = 0` | `let mut x = 0;` | `let x = 0;` |
+| `mut x: Int = 0` | `let mut x: i64 = 0;` | `let x: number = 0;` |
+| `await expr` | `expr.await` | `await expr` |
+| `expr?` | `expr?` | `await expr` (throws) |
+| `.clone()` | emitted as needed | skipped |
+| `List<T>` | `Vec<T>` | `T[]` |
+| `Opt<T>` | `Option<T>` | `T \| null` |
+| `Map<K,V>` | `HashMap<K, V>` | `Map<K, V>` |
+| struct | `pub struct` | `export interface` |
+| trait | `#[async_trait] pub trait` | `export interface` (async methods) |
+| enum (data) | `pub enum { Variant(T) }` | discriminated union |
 
 Rust-specific artifacts (Arc, Box, lifetimes, .await placement) are codegen
-concerns, not source-level. A TypeScript backend would read the same AST.
+concerns, not source-level. The TypeScript backend reads the same AST and
+produces typed interfaces, async service functions, and project scaffolding
+(`package.json`, `tsconfig.json`).
+
+**CLI usage:**
+```
+veil gen app.veil -o ./out            # default: Rust
+veil gen app.veil -o ./out -t ts      # TypeScript
+```
 
 ## Layer Stacking
 
@@ -219,14 +239,15 @@ accepted wherever a ddd `Saga` is allowed. Statements stack the same way
 ## Current State
 
 The zero-domain-knowledge invariant HOLDS across the whole pipeline —
-lexer, parser, IR builder, **codegen**, and **viewer**. Both example
-workspaces generate Rust that compiles. Implementation map:
+lexer, parser, IR builder, **codegen** (both Rust and TypeScript), and
+**viewer**. Both example workspaces generate Rust that compiles.
+Implementation map:
 
 - `veil-ir/src/layer.rs` — `LayerRegistry`: parses `.layer` files, resolves
   `mt` transitively, exposes constructs/statements/visuals/annotations.
   The 7 core shapes (`mod`, `struct`, `enum`, `trait`, `impl`, `fn`, `group`)
   and 2 statement shapes (`call`, `if`) are the ONLY vocabulary the engine
-  knows.
+  knows. `routing_traits()` identifies the Bus-like ports generically.
 - Lexer: layer keywords all lex as `Ident`; only core language/file/flow
   keywords are TokenKinds. Flow-modeling words (`step`, `par`) are NOT
   reserved — they lex as identifiers and are recognized contextually, so
@@ -234,10 +255,15 @@ workspaces generate Rust that compiles. Implementation map:
 - Parser: one parse function per core shape, dispatched by registry lookup.
   Named sub-blocks (`root`, `state`) come from `has` entries of the
   form `keyword: shape`. Layer statements parse into a generic `ActionExpr`,
-  and `Port.method` statements desugar into `call`s.
+  and `Port.method` statements desugar into `call`s. Rich enum variants
+  (`Variant(Type)`, struct variants) parsed into `EnumVariant`. Destructuring
+  patterns (`(a, b) = expr`) parsed into `LetPattern` with structured `Pattern`.
+  Match guards (`pattern if condition -> body`) supported.
 - AST: a single generic `Construct` stamped with its shape + layer subkind,
-  plus a top-level `Function` (for layer-declared code). No typed DDD structs,
-  no DDD expression variants.
+  plus a top-level `Function` (for layer-declared code). 34 expression
+  variants covering all Rust expression forms. `Pattern` enum for structured
+  destructuring. `EnumVariant` for data-carrying enum variants. Optional type
+  annotations on let bindings. Generic type parameters on constructs.
 - Builder/serializer/codegen: switch on shape only; subkind is metadata.
   Codegen emits **real behavior**, not stubs — aggregate methods, adapter
   impls, guards that enforce, and a JSON message Bus (see below).
@@ -248,7 +274,7 @@ workspaces generate Rust that compiles. Implementation map:
   layer visuals AND the available annotations arrive at runtime via
   `/api/palette`. It is an **editor**: `POST /api/edit` applies structured
   edits to the AST, re-serializes, validates, writes the file, and regenerates
-  — the "viewer IS the editor" loop.
+  — the "viewer IS the editor" loop. Dark/light mode toggle.
 
 ### Codegen decisions (all keep the invariant)
 

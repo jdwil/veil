@@ -125,13 +125,21 @@ backward compatibility but they should never be used in new code.
 
 ## What VEIL Generates vs What the Runtime Provides
 
-**VEIL generates:**
-- All domain types (structs, enums, value objects)
+**VEIL generates (Rust target — default):**
+- All domain types (structs, enums with data variants, value objects)
 - All trait definitions (ports)
 - All adapter implementations
 - All application services (async functions)
 - Deps struct (dependency injection container)
 - Workspace Cargo.toml with correct dependencies
+- manifest.json per context (deps, handlers, strategy)
+
+**VEIL generates (TypeScript target — `veil gen -t ts`):**
+- Typed interfaces for all structs (`export interface`)
+- Typed interfaces for all ports (async method signatures)
+- Async service functions
+- Discriminated unions for data-carrying enums
+- Project scaffolding (package.json, tsconfig.json)
 
 **The runtime provides:**
 - Concrete Bus implementation (InProcessBus, HttpBus, etc.)

@@ -138,6 +138,23 @@ enum CustomerStatus
   Pending -> Rejected
 ```
 
+Enums may also carry data — tuple variants and struct variants:
+```
+enum Message
+  Text(Str)
+  Image(Str, Int, Int)
+  Embed
+    url: Str
+    title: Str
+```
+
+- `Variant` alone — unit variant (or state-machine with `->` transitions)
+- `Variant(Type1, Type2)` — tuple variant
+- `Variant` + indented `field: Type` lines — struct variant
+
+State-machine enums (with transitions) and data-carrying enums are mutually
+exclusive per definition.
+
 ### `trait` — an interface
 A block of method signatures `name(params) -> Ret`.
 ```
@@ -253,7 +270,10 @@ not use them.
 - **`match scrutinee`** — with indented `pattern -> body` arms.
 - Or-patterns: `A | B -> body`
 - Match guards: `x if x > 5 -> body`
-- Pattern destructuring: `(a, b) = get_pair()`
+- Variant destructuring: `Some(val) -> use(val)`
+- Struct destructuring: `Customer { id, email, .. } -> use(id)`
+- Tuple destructuring in let: `(a, b) = get_pair()`
+- Wildcard: `_ -> default_case`
 
 **Expressions:**
 - **`expr?`** — try operator (propagate errors).
@@ -269,6 +289,9 @@ not use them.
 
 **Declarations:**
 - **`mut name = expr`** — mutable binding.
+- **`mut name: Type = expr`** — mutable binding with explicit type annotation.
+- **`(a, b) = expr`** — tuple destructuring (let pattern).
+- **`Name { field, .. } = expr`** — struct destructuring.
 - **`type X = Y`** — type alias.
 - **`const NAME = value`** — constant.
 - **`static [mut] NAME = value`** — static variable.
@@ -506,7 +529,7 @@ identifier / layer vocabulary):
 ### Source of truth
 - Core token list: `crates/veil-parser/src/lexer.rs` — `keyword_lookup`.
 - Parse behavior: `crates/veil-parser/src/parser.rs`.
-- Expression types: `crates/veil-ir/src/ast.rs` — `Expr` enum (33 variants).
+- Expression types: `crates/veil-ir/src/ast.rs` — `Expr` enum (34 variants).
 - Type system: `crates/veil-ir/src/ast.rs` — `TypeExpr` enum (13 variants).
 - Shapes, layer format, type mapping: `crates/veil-ir/src/layer.rs`,
   `crates/veil-codegen/src/rust.rs` (`type_to_rust`).
