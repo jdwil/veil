@@ -123,7 +123,7 @@
   .fields-editor { display: flex; flex-direction: column; gap: 4px; }
   .section-header { display: flex; align-items: center; justify-content: space-between; }
   .header-actions { display: flex; gap: 4px; align-items: center; }
-  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; }
+  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #737373; font-weight: 600; }
 
   .field-row { display: flex; gap: 4px; align-items: center; }
   .field-actions {
@@ -131,30 +131,30 @@
   }
   .field-row:hover .field-actions { opacity: 1; }
   .action-btn {
-    background: none; border: none; color: #64748b; font-size: 9px;
+    background: none; border: none; color: #737373; font-size: 9px;
     cursor: pointer; padding: 0 2px; line-height: 1;
   }
-  .action-btn:hover { color: #e2e8f0; }
+  .action-btn:hover { color: #e5e5e5; }
   .action-btn:disabled { opacity: 0.2; }
 
   .field-name {
     flex: 1; min-width: 60px;
-    background: rgba(0,0,0,0.3); border: 1px solid #2d2d44; border-radius: 4px;
-    padding: 5px 8px; font-size: 11px; color: #e2e8f0; outline: none;
+    background: rgba(0,0,0,0.3); border: 1px solid #2e2e2e; border-radius: 4px;
+    padding: 5px 8px; font-size: 11px; color: #e5e5e5; outline: none;
     font-family: 'JetBrains Mono', monospace;
   }
-  .field-name:focus { border-color: #6366f1; }
-  .field-colon { color: #64748b; font-size: 11px; }
+  .field-name:focus { border-color: #737373; }
+  .field-colon { color: #737373; font-size: 11px; }
   .field-type {
     width: 90px;
-    background: rgba(0,0,0,0.3); border: 1px solid #2d2d44; border-radius: 4px;
+    background: rgba(0,0,0,0.3); border: 1px solid #2e2e2e; border-radius: 4px;
     padding: 5px 4px; font-size: 10px; color: #67e8f9; outline: none; cursor: pointer;
   }
 
   .add-btn {
     font-size: 10px; padding: 3px 8px; border-radius: 4px;
     background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.3);
-    color: #a5b4fc; cursor: pointer;
+    color: #d4d4d4; cursor: pointer;
   }
   .add-btn:hover { background: rgba(99,102,241,0.2); }
   .toggle-btn {
@@ -163,9 +163,9 @@
   }
   .toggle-btn:hover { background: #334155; }
   .remove-btn {
-    background: none; border: none; color: #64748b; font-size: 11px;
+    background: none; border: none; color: #737373; font-size: 11px;
     cursor: pointer; padding: 2px 4px; border-radius: 3px;
   }
   .remove-btn:hover { color: #f87171; background: rgba(248,113,113,0.1); }
-  .empty-hint { font-size: 10px; color: #475569; font-style: italic; padding: 4px 0; }
+  .empty-hint { font-size: 10px; color: #525252; font-style: italic; padding: 4px 0; }
 </style>

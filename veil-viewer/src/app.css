@@ -1,13 +1,13 @@
 @import 'tailwindcss';
 
 :root {
-  --veil-bg: #0a0a0f;
-  --veil-surface: #1a1a2e;
-  --veil-accent: #6366f1;
-  --veil-accent-glow: rgba(99, 102, 241, 0.4);
-  --veil-text: #e2e8f0;
-  --veil-text-dim: #94a3b8;
-  --veil-border: #2d2d44;
+  --veil-bg: #0f0f0f;
+  --veil-surface: #1a1a1a;
+  --veil-accent: #737373;
+  --veil-accent-glow: rgba(115, 115, 115, 0.3);
+  --veil-text: #e5e5e5;
+  --veil-text-dim: #a3a3a3;
+  --veil-border: #2e2e2e;
 }
 
 html, body {
@@ -20,7 +20,7 @@ html, body {
   overflow: hidden;
 }
 
-/* Animated gradient background */
+/* Subtle gradient background — neutral tones only */
 body::before {
   content: '';
   position: fixed;
@@ -29,9 +29,9 @@ body::before {
   right: 0;
   bottom: 0;
   background:
-    radial-gradient(ellipse at 20% 50%, rgba(99, 102, 241, 0.08) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 20%, rgba(168, 85, 247, 0.06) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 80%, rgba(236, 72, 153, 0.04) 0%, transparent 50%);
+    radial-gradient(ellipse at 20% 50%, rgba(80, 80, 80, 0.05) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(60, 60, 60, 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(50, 50, 50, 0.03) 0%, transparent 50%);
   pointer-events: none;
   z-index: 0;
   animation: bgShift 20s ease-in-out infinite;

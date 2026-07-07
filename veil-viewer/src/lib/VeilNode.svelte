@@ -126,7 +126,7 @@
 <style>
   .veil-node {
     position: relative;
-    background: linear-gradient(145deg, rgba(26, 26, 46, 0.95), rgba(20, 20, 35, 0.98));
+    background: linear-gradient(145deg, rgba(26, 26, 26, 0.95), rgba(20, 20, 20, 0.98));
     border: 1.5px solid var(--node-color);
     border-radius: 14px;
     padding: 0;
@@ -174,17 +174,17 @@
 
   .veil-node.is-flow {
     border-width: 2px;
-    background: linear-gradient(145deg, rgba(30, 20, 10, 0.95), rgba(25, 15, 5, 0.98));
+    background: linear-gradient(145deg, rgba(30, 30, 30, 0.95), rgba(22, 22, 22, 0.98));
   }
 
   .veil-node.is-error {
     border-width: 2px;
-    background: linear-gradient(145deg, rgba(40, 15, 15, 0.95), rgba(30, 10, 10, 0.98));
+    background: linear-gradient(145deg, rgba(35, 20, 20, 0.95), rgba(25, 15, 15, 0.98));
   }
 
   .veil-node.is-group {
-    background: rgba(139, 92, 246, 0.04);
-    border: 2px dashed rgba(139, 92, 246, 0.4);
+    background: rgba(82, 82, 82, 0.06);
+    border: 2px dashed rgba(82, 82, 82, 0.4);
     border-radius: 16px;
     box-shadow: none;
     transform: none;
@@ -194,8 +194,8 @@
 
   .veil-node.is-group:hover {
     transform: none;
-    box-shadow: 0 0 20px rgba(139, 92, 246, 0.15);
-    border-color: rgba(139, 92, 246, 0.6);
+    box-shadow: 0 0 20px rgba(82, 82, 82, 0.15);
+    border-color: rgba(82, 82, 82, 0.6);
   }
 
   /* Glow pulse animation for events and flows */
@@ -244,7 +244,7 @@
   .expand-indicator {
     margin-left: auto;
     font-size: 12px;
-    color: #475569;
+    color: #525252;
     animation: bobble 2s ease-in-out infinite;
   }
 
@@ -268,7 +268,7 @@
     background: rgba(0, 0, 0, 0.2);
     padding: 4px 8px;
     border-radius: 4px;
-    color: #a5f3fc;
+    color: #d4d4d4;
   }
 
   .context-badge {
@@ -278,8 +278,8 @@
     padding: 2px 8px;
     margin-bottom: 4px;
     border-radius: 4px;
-    background: rgba(139, 92, 246, 0.12);
-    border: 1px solid rgba(139, 92, 246, 0.3);
+    background: rgba(82, 82, 82, 0.12);
+    border: 1px solid rgba(82, 82, 82, 0.3);
     width: fit-content;
   }
 
@@ -290,7 +290,7 @@
   .ctx-name {
     font-size: 10px;
     font-weight: 600;
-    color: #c4b5fd;
+    color: #a3a3a3;
   }
 
   .compensate-badge {
@@ -321,18 +321,18 @@
     gap: 4px;
     margin-top: 6px;
     padding: 2px 6px;
-    background: rgba(99, 102, 241, 0.08);
-    border: 1px solid rgba(99, 102, 241, 0.2);
+    background: rgba(82, 82, 82, 0.1);
+    border: 1px solid rgba(82, 82, 82, 0.2);
     border-radius: 4px;
     cursor: pointer;
-    color: #64748b;
+    color: #737373;
     font-size: 9px;
     transition: all 0.15s;
   }
 
   .details-toggle:hover {
-    background: rgba(99, 102, 241, 0.15);
-    color: #94a3b8;
+    background: rgba(82, 82, 82, 0.2);
+    color: #a3a3a3;
   }
 
   .toggle-icon {
@@ -347,12 +347,12 @@
     font-size: 10px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     line-height: 1.5;
-    color: #94a3b8;
+    color: #a3a3a3;
     word-break: break-all;
   }
 
   .detail-key {
-    color: #64748b;
+    color: #737373;
   }
 
   .detail-value {
@@ -371,8 +371,8 @@
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    background: rgba(99, 102, 241, 0.06);
-    border: 1px solid rgba(99, 102, 241, 0.15);
+    background: rgba(82, 82, 82, 0.06);
+    border: 1px solid rgba(82, 82, 82, 0.15);
     border-radius: 6px;
     font-size: 11px;
   }
@@ -382,7 +382,7 @@
   }
 
   .child-name {
-    color: #e2e8f0;
+    color: #e5e5e5;
     font-weight: 600;
   }
 
@@ -391,7 +391,7 @@
     padding: 2px 7px;
     border-radius: 6px;
     background: rgba(148, 163, 184, 0.12);
-    color: #94a3b8;
+    color: #a3a3a3;
     border: 1px solid rgba(148, 163, 184, 0.25);
     font-weight: 500;
     font-style: italic;
@@ -402,9 +402,9 @@
     font-size: 9px;
     padding: 2px 7px;
     border-radius: 6px;
-    background: rgba(99, 102, 241, 0.15);
-    color: #a5b4fc;
-    border: 1px solid rgba(99, 102, 241, 0.25);
+    background: rgba(82, 82, 82, 0.15);
+    color: #d4d4d4;
+    border: 1px solid rgba(82, 82, 82, 0.25);
     font-weight: 500;
     width: fit-content;
   }
@@ -414,7 +414,7 @@
     padding: 2px 7px;
     border-radius: 6px;
     background: rgba(168, 85, 247, 0.12);
-    color: #c4b5fd;
+    color: #a3a3a3;
     border: 1px solid rgba(168, 85, 247, 0.25);
     font-weight: 500;
   }

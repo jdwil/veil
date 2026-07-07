@@ -217,45 +217,45 @@
 
 <style>
   .expr-editor { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-  .nested { padding: 2px 4px; border-left: 2px solid rgba(99, 102, 241, 0.3); margin-left: 2px; }
+  .nested { padding: 2px 4px; border-left: 2px solid rgba(82, 82, 82, 0.3); margin-left: 2px; }
   .expr-content { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
 
   .collapsed-preview {
     background: #1e293b; border: 1px solid #334155; border-radius: 3px;
-    padding: 2px 6px; color: #94a3b8; font-size: 11px; cursor: pointer;
+    padding: 2px 6px; color: #a3a3a3; font-size: 11px; cursor: pointer;
     font-family: 'JetBrains Mono', monospace; display: inline-flex; gap: 4px;
   }
   .collapsed-preview:hover { background: #334155; }
-  .expand-icon { font-size: 8px; color: #64748b; }
+  .expand-icon { font-size: 8px; color: #737373; }
 
   .collapse-btn {
-    background: none; border: none; color: #64748b; font-size: 8px;
+    background: none; border: none; color: #737373; font-size: 8px;
     cursor: pointer; padding: 0 2px;
   }
 
   .inline-input {
     background: #0f172a; border: 1px solid #334155; border-radius: 3px;
-    color: #e2e8f0; padding: 2px 6px; font-size: 11px; min-width: 50px;
+    color: #e5e5e5; padding: 2px 6px; font-size: 11px; min-width: 50px;
     font-family: 'JetBrains Mono', monospace; outline: none;
   }
-  .inline-input:focus { border-color: #6366f1; }
+  .inline-input:focus { border-color: #737373; }
   .inline-input.sm { min-width: 35px; max-width: 80px; }
   .inline-input.num { max-width: 60px; }
   .inline-input.str { min-width: 80px; }
 
   .inline-select {
     background: #0f172a; border: 1px solid #334155; border-radius: 3px;
-    color: #e2e8f0; padding: 2px 4px; font-size: 11px;
+    color: #e5e5e5; padding: 2px 4px; font-size: 11px;
   }
 
   .op-select {
-    background: #1e293b; border: 1px solid #475569; border-radius: 3px;
+    background: #1e293b; border: 1px solid #525252; border-radius: 3px;
     color: #fbbf24; padding: 2px 4px; font-size: 11px; font-weight: 600;
   }
 
   .kw { color: #c084fc; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
   .dot, .comma, .eq, .arrow, .paren, .bracket, .pipe, .postfix {
-    color: #64748b; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: #737373; font-family: 'JetBrains Mono', monospace; font-size: 11px;
   }
   .string-quote { color: #4ade80; font-family: 'JetBrains Mono', monospace; }
 
@@ -275,5 +275,5 @@
   }
   .tiny-btn:hover { background: #2563eb; }
 
-  .fallback { color: #64748b; font-style: italic; font-size: 11px; }
+  .fallback { color: #737373; font-style: italic; font-size: 11px; }
 </style>

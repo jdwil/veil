@@ -565,9 +565,9 @@
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    background: rgba(99, 102, 241, 0.1);
+    background: rgba(82, 82, 82, 0.1);
     border-radius: 4px;
-    border-left: 2px solid #6366f1;
+    border-left: 2px solid #737373;
   }
 
   .method-icon {
@@ -577,7 +577,7 @@
   .method-sig {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
-    color: #c4b5fd;
+    color: #a3a3a3;
   }
     position: absolute;
     top: 12px;
@@ -586,7 +586,7 @@
     max-height: calc(100vh - 100px);
     overflow-y: auto;
     background: rgba(20, 20, 35, 0.98);
-    border: 1px solid #2d2d44;
+    border: 1px solid #2e2e2e;
     border-radius: 12px;
     backdrop-filter: blur(16px);
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
@@ -598,7 +598,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 16px;
-    border-bottom: 1px solid #2d2d44;
+    border-bottom: 1px solid #2e2e2e;
     position: sticky;
     top: 0;
     background: rgba(20, 20, 35, 0.98);
@@ -610,33 +610,33 @@
   .pe-kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 
   .pe-close {
-    background: none; border: none; color: #64748b; font-size: 14px;
+    background: none; border: none; color: #737373; font-size: 14px;
     cursor: pointer; padding: 4px 8px; border-radius: 4px;
   }
-  .pe-close:hover { color: #e2e8f0; background: rgba(255,255,255,0.05); }
+  .pe-close:hover { color: #e5e5e5; background: rgba(255,255,255,0.05); }
 
   .pe-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 14px; }
   .pe-label { display: flex; flex-direction: column; gap: 4px; }
-  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; }
+  .label-text { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #737373; font-weight: 600; }
 
-  .pe-note { font-size: 11px; color: #94a3b8; padding: 4px 2px; }
+  .pe-note { font-size: 11px; color: #a3a3a3; padding: 4px 2px; }
   .pe-note-error { color: #f87171; }
-  .pe-note-info { color: #7dd3fc; }
+  .pe-note-info { color: #d4d4d4; }
 
   .pe-input {
-    background: rgba(0,0,0,0.3); border: 1px solid #2d2d44; border-radius: 6px;
-    padding: 8px 10px; font-size: 13px; color: #e2e8f0; outline: none; transition: border-color 0.15s;
+    background: rgba(0,0,0,0.3); border: 1px solid #2e2e2e; border-radius: 6px;
+    padding: 8px 10px; font-size: 13px; color: #e5e5e5; outline: none; transition: border-color 0.15s;
     width: 100%; box-sizing: border-box;
   }
-  .pe-input:focus { border-color: #6366f1; }
-  .pe-input::placeholder { color: #475569; }
+  .pe-input:focus { border-color: #737373; }
+  .pe-input::placeholder { color: #525252; }
   .pe-input.small { padding: 6px 8px; font-size: 11px; flex: 1; }
 
   .pe-select {
-    background: rgba(0,0,0,0.3); border: 1px solid #2d2d44; border-radius: 6px;
-    padding: 6px 8px; font-size: 11px; color: #e2e8f0; outline: none; cursor: pointer; min-width: 70px;
+    background: rgba(0,0,0,0.3); border: 1px solid #2e2e2e; border-radius: 6px;
+    padding: 6px 8px; font-size: 11px; color: #e5e5e5; outline: none; cursor: pointer; min-width: 70px;
   }
-  .pe-select:focus { border-color: #6366f1; }
+  .pe-select:focus { border-color: #737373; }
 
   .pe-section { display: flex; flex-direction: column; gap: 6px; }
 
@@ -649,9 +649,9 @@
   }
   .child-icon { font-size: 12px; }
   .child-info { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-  .child-name { color: #e2e8f0; font-weight: 500; }
+  .child-name { color: #e5e5e5; font-weight: 500; }
   .child-sig { display: flex; flex-direction: column; gap: 1px; }
-  .sig-part { color: #64748b; font-size: 10px; font-family: monospace; word-break: break-all; }
+  .sig-part { color: #737373; font-size: 10px; font-family: monospace; word-break: break-all; }
 
   .props-list { display: flex; flex-direction: column; gap: 3px; }
   .prop-item {
@@ -660,7 +660,7 @@
     background: rgba(0,0,0,0.15);
     font-size: 11px;
   }
-  .prop-key { color: #64748b; font-family: monospace; }
+  .prop-key { color: #737373; font-family: monospace; }
   .prop-value { color: #cbd5e1; font-family: monospace; word-break: break-all; }
 
   .annotations-list { display: flex; flex-direction: column; gap: 2px; }
@@ -670,29 +670,29 @@
     padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background 0.15s;
   }
   .annotation-checkbox:hover { background: rgba(99,102,241,0.06); }
-  .annotation-checkbox input[type="checkbox"] { accent-color: #6366f1; width: 14px; height: 14px; cursor: pointer; }
-  .ann-name { font-size: 11px; font-weight: 600; color: #a5b4fc; font-family: monospace; }
-  .ann-desc { font-size: 9px; color: #475569; margin-left: auto; }
+  .annotation-checkbox input[type="checkbox"] { accent-color: #737373; width: 14px; height: 14px; cursor: pointer; }
+  .ann-name { font-size: 11px; font-weight: 600; color: #d4d4d4; font-family: monospace; }
+  .ann-desc { font-size: 9px; color: #525252; margin-left: auto; }
   .annotation-params {
     padding: 6px 8px 8px 30px; display: flex; flex-direction: column; gap: 5px;
     animation: slideDown 0.15s ease-out;
   }
   @keyframes slideDown { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
   .param-row { display: flex; align-items: center; gap: 6px; }
-  .param-label { font-size: 10px; color: #64748b; min-width: 50px; }
+  .param-label { font-size: 10px; color: #737373; min-width: 50px; }
   .expr-editor-container {
     padding: 4px 0;
   }
 
   .pe-hint {
     font-size: 11px;
-    color: #64748b;
+    color: #737373;
     margin: 0 0 8px 0;
   }
 
   .pe-empty {
     font-size: 11px;
-    color: #475569;
+    color: #525252;
     font-style: italic;
     margin: 0;
   }
@@ -700,7 +700,7 @@
   .impl-methods { display: flex; flex-direction: column; gap: 6px; }
   .impl-method-card {
     background: rgba(0,0,0,0.2);
-    border: 1px solid #2d2d44;
+    border: 1px solid #2e2e2e;
     border-radius: 8px;
     padding: 8px;
     display: flex;
@@ -715,7 +715,7 @@
   .impl-method-icon { font-size: 12px; }
   .impl-method-name {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11px; color: #a5b4fc; word-break: break-all;
+    font-size: 11px; color: #d4d4d4; word-break: break-all;
   }
   .impl-method-body {
     padding: 4px 8px;
@@ -734,7 +734,7 @@
     border-radius: 8px;
     background: rgba(168, 85, 247, 0.1);
     border: 1px solid rgba(168, 85, 247, 0.3);
-    color: #c4b5fd;
+    color: #a3a3a3;
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;

@@ -119,19 +119,19 @@
 <style>
   .construct-editor { display: flex; flex-direction: column; gap: 8px; }
   .ce-row { display: flex; align-items: center; gap: 6px; }
-  .ce-label { font-size: 10px; color: #64748b; text-transform: uppercase; min-width: 55px; }
+  .ce-label { font-size: 10px; color: #737373; text-transform: uppercase; min-width: 55px; }
   .ce-input {
     flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 4px;
-    padding: 5px 8px; font-size: 12px; color: #e2e8f0; outline: none;
+    padding: 5px 8px; font-size: 12px; color: #e5e5e5; outline: none;
     font-family: 'JetBrains Mono', monospace;
   }
   .ce-input.sm { max-width: 120px; }
-  .ce-input:focus { border-color: #6366f1; }
+  .ce-input:focus { border-color: #737373; }
   .ce-select {
     background: #0f172a; border: 1px solid #334155; border-radius: 4px;
-    padding: 5px 8px; font-size: 11px; color: #94a3b8; outline: none;
+    padding: 5px 8px; font-size: 11px; color: #a3a3a3; outline: none;
   }
-  .ce-angle { color: #64748b; font-size: 12px; }
+  .ce-angle { color: #737373; font-size: 12px; }
   .ce-section { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
-  .ce-section-label { font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 600; }
+  .ce-section-label { font-size: 10px; color: #737373; text-transform: uppercase; font-weight: 600; }
 </style>

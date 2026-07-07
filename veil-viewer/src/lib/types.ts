@@ -88,27 +88,27 @@ export interface PaletteEntry {
 
 // Visual config per node kind — CORE SHAPES ONLY.
 export const NODE_STYLES: Record<NodeKind, NodeStyle> = {
-  Solution: { color: '#6366f1', icon: '🏗️', label: 'Solution' },
-  Module: { color: '#8b5cf6', icon: '📦', label: 'Module' },
-  Group: { color: '#475569', icon: '📂', label: 'Group' },
-  Inputs: { color: '#22c55e', icon: '📥', label: 'Inputs' },
-  TypeDef: { color: '#14b8a6', icon: '📋', label: 'Type' },
-  Interface: { color: '#10b981', icon: '🔌', label: 'Interface' },
-  InterfaceMethod: { color: '#34d399', icon: '⚙️', label: 'Method' },
-  Implementation: { color: '#a855f7', icon: '🔗', label: 'Implementation' },
-  Flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
-  Step: { color: '#64748b', icon: '▶️', label: 'Step' },
-  ParallelGateway: { color: '#eab308', icon: '⑃', label: 'Parallel' },
+  Solution: { color: '#737373', icon: '🏗️', label: 'Solution' },
+  Module: { color: '#737373', icon: '📦', label: 'Module' },
+  Group: { color: '#525252', icon: '📂', label: 'Group' },
+  Inputs: { color: '#a3a3a3', icon: '📥', label: 'Inputs' },
+  TypeDef: { color: '#737373', icon: '📋', label: 'Type' },
+  Interface: { color: '#737373', icon: '🔌', label: 'Interface' },
+  InterfaceMethod: { color: '#a3a3a3', icon: '⚙️', label: 'Method' },
+  Implementation: { color: '#737373', icon: '🔗', label: 'Implementation' },
+  Flow: { color: '#a3a3a3', icon: '🌊', label: 'Flow' },
+  Step: { color: '#737373', icon: '▶️', label: 'Step' },
+  ParallelGateway: { color: '#a3a3a3', icon: '⑃', label: 'Parallel' },
   ErrorBoundary: { color: '#ef4444', icon: '🛡️', label: 'Error Boundary' },
-  Action: { color: '#10b981', icon: '▸', label: 'Action' },
-  MatchDecision: { color: '#8b5cf6', icon: '◆', label: 'Match' },
-  MatchArm: { color: '#64748b', icon: '→', label: 'Arm' },
+  Action: { color: '#737373', icon: '▸', label: 'Action' },
+  MatchDecision: { color: '#a3a3a3', icon: '◆', label: 'Match' },
+  MatchArm: { color: '#737373', icon: '→', label: 'Arm' },
 };
 
 // Core statement styles (call/assign are language-level, not layer-level).
 const CORE_ACTION_STYLES: Record<string, NodeStyle> = {
-  call: { color: '#10b981', icon: '📞', label: 'Call' },
-  assign: { color: '#6366f1', icon: '←', label: 'Assign' },
+  call: { color: '#737373', icon: '📞', label: 'Call' },
+  assign: { color: '#a3a3a3', icon: '←', label: 'Assign' },
 };
 
 // Runtime style registry, populated from /api/palette. Keyed by both the
@@ -127,7 +127,7 @@ export function setPaletteStyles(entries: PaletteEntry[]): void {
   for (const e of entries) {
     if (e.icon || e.color) {
       const style: NodeStyle = {
-        color: e.color || '#64748b',
+        color: e.color || '#737373',
         icon: e.icon || '•',
         label: e.label || e.name,
       };
@@ -158,5 +158,5 @@ export function getNodeStyle(kind: NodeKind, subkind?: string | null): NodeStyle
     if (paletteStyles[subkind]) return paletteStyles[subkind];
     if (CORE_ACTION_STYLES[subkind]) return CORE_ACTION_STYLES[subkind];
   }
-  return NODE_STYLES[kind] ?? { color: '#64748b', icon: '•', label: kind };
+  return NODE_STYLES[kind] ?? { color: '#737373', icon: '•', label: kind };
 }

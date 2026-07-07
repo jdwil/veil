@@ -277,7 +277,11 @@
     if (graph) computeView(graph, parent, palette);
   }
 
+  let computeInProgress = false;
   function computeView(graph: IrGraph, parentId: number | null, palette: any[] = []) {
+    if (computeInProgress) return;
+    computeInProgress = true;
+    try {
     let children = getChildren(graph, parentId);
 
     // Filter out layer-provided infrastructure unless toggled on
@@ -481,7 +485,7 @@
         animated: e.kind === 'SequenceFlow',
         style: getEdgeStyle(e.kind),
         label: e.kind === 'Implements' ? 'implements' : e.kind === 'SequenceFlow' ? '' : e.kind,
-        labelStyle: 'font-size: 10px; fill: #64748b;',
+        labelStyle: 'font-size: 10px; fill: #737373;',
       }));
 
     // Ghost nodes for cross-references
@@ -522,6 +526,7 @@
       nodes = layoutByType(allNodes);
     }
     edges = allEdges;
+  } finally { computeInProgress = false; }
   }
 
   /** Layout nodes in vertical columns grouped by subkind/kind. */
@@ -658,7 +663,7 @@
       source: connection.source,
       target: connection.target,
       animated: true,
-      style: 'stroke: #6366f1; stroke-width: 2;',
+      style: 'stroke: #737373; stroke-width: 2;',
     };
     edges = [...edges, newEdge];
   }

@@ -75,7 +75,7 @@
 
   .block-label {
     font-size: 10px;
-    color: #64748b;
+    color: #737373;
     text-transform: uppercase;
     font-weight: 600;
   }
@@ -105,13 +105,13 @@
   .action-btn {
     background: none;
     border: none;
-    color: #64748b;
+    color: #737373;
     font-size: 9px;
     cursor: pointer;
     padding: 0 2px;
     line-height: 1;
   }
-  .action-btn:hover { color: #e2e8f0; }
+  .action-btn:hover { color: #e5e5e5; }
   .action-btn.del:hover { color: #ef4444; }
   .action-btn:disabled { opacity: 0.2; cursor: default; }
 
