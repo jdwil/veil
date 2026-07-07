@@ -292,3 +292,82 @@ fn manifest_includes_layer_provided_deps_with_strategy() {
         grep(&out, "strategy")
     );
 }
+
+// ─── TypeScript codegen tests ────────────────────────────────────────────────
+
+fn generate_ts_example(src: &str) -> String {
+    let mut reg = veil_ir::LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        .expect("ddd layer should load");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate_ts(&sol, &reg);
+    project
+        .files
+        .iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn ts_struct_generates_interface() {
+    let out = generate_ts_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export interface Customer"), "struct not mapped to TS interface");
+    assert!(out.contains("id: string"), "UUID field not mapped to string");
+    assert!(out.contains("created: Date"), "DateTime field not mapped to Date");
+}
+
+#[test]
+fn ts_trait_generates_interface_with_async_methods() {
+    let out = generate_ts_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export interface CustomerRepo"), "trait not mapped to TS interface");
+    assert!(out.contains("save(c: Customer): Promise<void>"), "Res! not mapped to Promise<void>");
+    assert!(out.contains("find(id: string): Promise<Customer | null>"), "Res!<Opt<T>> not mapped to Promise<T | null>");
+}
+
+#[test]
+fn ts_generates_project_scaffolding() {
+    let out = generate_ts_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("package.json"), "package.json not generated");
+    assert!(out.contains("tsconfig.json"), "tsconfig.json not generated");
+    assert!(out.contains("\"typescript\": \"^5.4.0\""), "typescript dep not in package.json");
+    assert!(out.contains("export * from './types'"), "index.ts re-exports missing");
+}
+
+#[test]
+fn ts_type_mapping_covers_all_primitives() {
+    use veil_codegen::typescript::type_to_ts;
+    use veil_ir::ast::TypeExpr;
+
+    assert_eq!(type_to_ts(&TypeExpr::Named("Str".into())), "string");
+    assert_eq!(type_to_ts(&TypeExpr::Named("Int".into())), "number");
+    assert_eq!(type_to_ts(&TypeExpr::Named("F64".into())), "number");
+    assert_eq!(type_to_ts(&TypeExpr::Named("Bool".into())), "boolean");
+    assert_eq!(type_to_ts(&TypeExpr::Named("UUID".into())), "string");
+    assert_eq!(type_to_ts(&TypeExpr::Named("DateTime".into())), "Date");
+    assert_eq!(type_to_ts(&TypeExpr::Named("Json".into())), "Record<string, unknown>");
+    assert_eq!(type_to_ts(&TypeExpr::Named("Bytes".into())), "Uint8Array");
+
+    // Constructors
+    assert_eq!(type_to_ts(&TypeExpr::Result(None)), "Promise<void>");
+    assert_eq!(
+        type_to_ts(&TypeExpr::Result(Some(Box::new(TypeExpr::Named("Customer".into()))))),
+        "Promise<Customer>"
+    );
+    assert_eq!(
+        type_to_ts(&TypeExpr::Optional(Box::new(TypeExpr::Named("Str".into())))),
+        "string | null"
+    );
+    assert_eq!(
+        type_to_ts(&TypeExpr::List(Box::new(TypeExpr::Named("Int".into())))),
+        "number[]"
+    );
+    assert_eq!(
+        type_to_ts(&TypeExpr::Map(
+            Box::new(TypeExpr::Named("Str".into())),
+            Box::new(TypeExpr::Named("Int".into()))
+        )),
+        "Map<string, number>"
+    );
+}

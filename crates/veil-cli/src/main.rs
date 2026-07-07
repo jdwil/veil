@@ -35,13 +35,16 @@ enum Commands {
         /// Path to the .veil file
         file: PathBuf,
     },
-    /// Generate Rust code from a VEIL file
+    /// Generate code from a VEIL file
     Gen {
         /// Path to the .veil file
         file: PathBuf,
         /// Output directory
         #[arg(short, long, default_value = "./output")]
         output: PathBuf,
+        /// Target language (rust, typescript)
+        #[arg(short, long, default_value = "rust")]
+        target: String,
     },
     /// Start the visualization server
     Serve {
@@ -429,32 +432,49 @@ fn main() {
 
             println!("\n{}", serde_json::to_string_pretty(&graph).unwrap());
         }
-        Commands::Gen { file, output } => {
+        Commands::Gen { file, output, target } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let (sol, registry) = parse_solution_or_exit(&source, &file);
 
-            let project = veil_codegen::generate(&sol, &registry);
-            for file in &project.files {
-                let path = output.join(&file.path);
+            let codegen_target = veil_codegen::CodegenTarget::from_str(&target)
+                .unwrap_or_else(|| {
+                    eprintln!("Unknown target '{}'. Use: rust, typescript", target);
+                    std::process::exit(1);
+                });
+
+            let files = veil_codegen::generate_for_target(&sol, &registry, codegen_target);
+            for f in &files {
+                let path = output.join(&f.path);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).expect("Failed to create directory");
                 }
-                std::fs::write(&path, &file.content).expect("Failed to write file");
+                std::fs::write(&path, &f.content).expect("Failed to write file");
             }
 
-            // Run rustfmt on all generated .rs files for clean output
-            for file in &project.files {
-                if file.path.ends_with(".rs") {
-                    let path = output.join(&file.path);
-                    let _ = std::process::Command::new("rustfmt")
-                        .args(["--edition", "2024", &path.to_string_lossy()])
+            // Run formatters on generated files
+            match codegen_target {
+                veil_codegen::CodegenTarget::Rust => {
+                    for f in &files {
+                        if f.path.ends_with(".rs") {
+                            let path = output.join(&f.path);
+                            let _ = std::process::Command::new("rustfmt")
+                                .args(["--edition", "2024", &path.to_string_lossy()])
+                                .output();
+                        }
+                    }
+                }
+                veil_codegen::CodegenTarget::TypeScript => {
+                    // Optionally run prettier if available
+                    let _ = std::process::Command::new("npx")
+                        .args(["prettier", "--write", &output.to_string_lossy()])
                         .output();
                 }
             }
 
             println!(
-                "✓ Generated {} files in {}",
-                project.files.len(),
+                "✓ Generated {} files ({}) in {}",
+                files.len(),
+                target,
                 output.display()
             );
         }
