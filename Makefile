@@ -12,7 +12,7 @@
 VEIL_BIN    := target/release/veil
 RUNTIME_SRC := runtime/src/runtime.veil
 RUNTIME_OUT := runtime/generated
-STUB_DIR    := runtime/src
+STUB_DIR    := runtime/src/stubs
 
 # External crates that need stubs
 STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sqs \

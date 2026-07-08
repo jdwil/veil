@@ -472,10 +472,18 @@ impl LayerRegistry {
                 // Try to load as a layer (searches local → system → external)
                 let _ = reg.load_layer(name, dir);
 
-                // Also check for .stub files (local dir only for now)
+                // Also check for .stub files (local dir, then stubs/ subdir)
                 let stub_path = dir.join(format!("{}.stub", name));
-                if stub_path.exists() {
-                    if let Ok(stub_content) = std::fs::read_to_string(&stub_path) {
+                let stub_subdir_path = dir.join("stubs").join(format!("{}.stub", name));
+                let found_stub = if stub_path.exists() {
+                    Some(stub_path)
+                } else if stub_subdir_path.exists() {
+                    Some(stub_subdir_path)
+                } else {
+                    None
+                };
+                if let Some(path) = found_stub {
+                    if let Ok(stub_content) = std::fs::read_to_string(&path) {
                         if let Some(stub) = parse_stub_file(&stub_content) {
                             reg.stubs.push(stub);
                         }
