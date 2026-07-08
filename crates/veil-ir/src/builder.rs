@@ -312,6 +312,18 @@ impl IrBuilder {
                 if !fields_str.is_empty() {
                     self.set_property(id, "fields", &fields_str);
                 }
+                // Emit each field as a drillable child node.
+                for f in &all_fields {
+                    let field_id = self.graph.add_node(
+                        NodeKind::Field,
+                        format!("{}: {}", f.name, type_to_display(&f.type_expr)),
+                        c.span,
+                    );
+                    self.set_parent(field_id, id);
+                    self.set_property(field_id, "name", &f.name);
+                    self.set_property(field_id, "type", &type_to_display(&f.type_expr));
+                    self.graph.add_edge(id, field_id, EdgeKind::Contains);
+                }
                 // Enum-shaped named blocks (state machines) as properties.
                 for block in &c.blocks {
                     if block.shape == Shape::Enum {
