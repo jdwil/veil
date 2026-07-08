@@ -256,7 +256,8 @@ impl LayerRegistry {
             ("impl", "Impl", Shape::Impl, "🔗", "#a855f7", "Implementation", "any"),
             ("fn", "Fn", Shape::Fn, "⚡", "#f97316", "Function", "any"),
             ("flow", "Flow", Shape::Fn, "🌊", "#f97316", "Flow", "none"),
-            ("group", "Group", Shape::Group, "📂", "#475569", "Group", "any"),
+            ("group", "Group", Shape::Group, "📂", "#475569", "Group", "mod"),
+            ("step", "Step", Shape::Fn, "▶", "#3b82f6", "Step", "Flow"),
         ];
         for (kw, name, shape, icon, color, label, allowed) in core {
             reg.constructs.push(ConstructSpec {
@@ -1149,7 +1150,7 @@ pub struct PaletteEntry {
 pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
     let mut out = Vec::new();
     for c in &reg.constructs {
-        if c.layer == "core" && c.keyword != "flow" && c.keyword != "group" && c.keyword != "mod" {
+        if c.layer == "core" && c.keyword != "flow" && c.keyword != "group" && c.keyword != "mod" && c.keyword != "step" {
             // Core type primitives are implicit; keep the palette focused on
             // structural + layer vocabulary. mod/group/flow stay draggable.
             if reg.constructs.iter().any(|o| o.layer != "core") {

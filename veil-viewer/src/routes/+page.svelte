@@ -57,6 +57,7 @@
 
   // Derive the current context kind for palette filtering
   let currentContextKind = $state<string>('Solution');
+  let currentContextKindCore = $state<string>('Solution');
 
   // Scope variables computed inside computeView (was $derived, moved to avoid reactive loops)
   let scopeVars = $state<string[]>([]);
@@ -269,6 +270,7 @@
     const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
     // Update context kind for palette filtering (was a $derived, moved here to avoid reactive loops)
     currentContextKind = parentNode?.metadata.subkind ?? parentNode?.kind ?? 'Solution';
+    currentContextKindCore = parentNode?.kind ?? 'Solution';
     const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
     const modules = children.filter(c => c.kind === 'Module');
     // Any node with a reference line (`ref:*`, e.g. a saga's `contexts`) spans
@@ -704,7 +706,7 @@
       </div>
     {/if}
     <div class="main-layout">
-      <Palette contextKind={currentContextKind} activeGroup={activeTab} />
+      <Palette contextKind={currentContextKind} contextKindCore={currentContextKindCore} activeGroup={activeTab} />
       <div class="graph-wrapper">
         {#if tabs.length > 0}
           <div class="tab-bar">

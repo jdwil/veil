@@ -18,7 +18,7 @@
     name?: string;
   }
 
-  let { contextKind = 'Solution', activeGroup = null }: { contextKind?: NodeKind | null; activeGroup?: string | null } = $props();
+  let { contextKind = "Solution", contextKindCore = "Solution", activeGroup = null }: { contextKind?: NodeKind | null; contextKindCore?: string; activeGroup?: string | null } = $props();
 
   // Build palette items from API config, falling back to hardcoded if not loaded
   let items = $derived.by(() => {
@@ -32,7 +32,7 @@
       // Check if this construct is allowed in the current context
       let show = false;
       if (ck === 'Solution' && c.allowed_in === 'top') show = true;
-      else if (c.allowed_in === ck) {
+      else if (c.allowed_in === ck || c.allowed_in === contextKindCore) {
         // Check group match
         if (c.group && activeGroup) {
           show = c.group === activeGroup;
