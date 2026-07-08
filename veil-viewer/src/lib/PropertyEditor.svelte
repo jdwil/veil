@@ -47,14 +47,6 @@
 
   // Determine what kind of editor to show — driven by the core shape
   // (node kind), never by layer-specific subkind names.
-  let editorType = $derived.by(() => {
-    if (kind === 'Interface') return 'methods';
-    if (kind === 'TypeDef') return 'fields';
-    if (kind === 'Implementation') return 'adapter';
-    if (kind === 'Flow') return 'flow';
-    return 'generic';
-  });
-
   // Parse children into editable method structures (for Port/Interface)
   let methods = $derived.by(() => {
     // First try: parse from InterfaceMethod child nodes

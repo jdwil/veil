@@ -32,7 +32,7 @@
       // Check if this construct is allowed in the current context
       let show = false;
       if (ck === 'Solution' && c.allowed_in === 'top') show = true;
-      else if (c.allowed_in === ck || c.allowed_in === contextKindCore) {
+      else if (c.allowed_in === ck || c.allowed_in === contextKindCore || c.allowed_in.split(',').map(s => s.trim()).includes(ck) || c.allowed_in.split(',').map(s => s.trim()).includes(contextKindCore)) {
         // Check group match
         if (c.group && activeGroup) {
           show = c.group === activeGroup;

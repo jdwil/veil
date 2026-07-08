@@ -257,7 +257,7 @@ impl LayerRegistry {
             ("fn", "Fn", Shape::Fn, "⚡", "#f97316", "Function", "any"),
             ("flow", "Flow", Shape::Fn, "🌊", "#f97316", "Flow", "none"),
             ("group", "Group", Shape::Group, "📂", "#475569", "Group", "mod"),
-            ("step", "Step", Shape::Fn, "▶", "#3b82f6", "Step", "Flow"),
+            ("step", "Step", Shape::Fn, "▶", "#3b82f6", "Step", "Flow, InterfaceMethod"),
         ];
         for (kw, name, shape, icon, color, label, allowed) in core {
             reg.constructs.push(ConstructSpec {
