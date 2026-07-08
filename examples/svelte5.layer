@@ -1,0 +1,154 @@
+pkg svelte5 v1
+  desc "Svelte 5 component layer — runes-based reactivity, props, snippets"
+  author "VEIL"
+
+  # ─── Component Structure ────────────────────────────────────────────────
+
+  construct App
+    kw app
+    mt mod
+    au
+    desc "A Svelte 5 application — top-level container for pages and layouts"
+    cst
+      requires_groups pages, components, stores
+    visual
+      icon "🔶"
+      color "#ff3e00"
+      label "Svelte App"
+    in top
+
+  construct Page
+    kw page
+    mt struct
+    desc "A routed page component (+page.svelte)"
+    has
+      fn[]
+    visual
+      icon "📄"
+      color "#ff6b35"
+      label "Page"
+    ann
+      route: "URL route path" path
+      load: "Server-side load function"
+      guard: "Route guard condition" expr
+    in App
+    group pages
+
+  construct Layout
+    kw layout
+    mt struct
+    desc "A layout component (+layout.svelte) wrapping child routes"
+    has
+      fn[]
+    visual
+      icon "📐"
+      color "#e85d04"
+      label "Layout"
+    ann
+      route: "URL route prefix" path
+    in App
+    group pages
+
+  construct Component
+    kw comp
+    mt struct
+    desc "A reusable Svelte 5 component with typed props and reactive state"
+    has
+      props: struct
+      state: struct
+      derived: struct
+      fn[]
+      Snippet[]
+    visual
+      icon "🧩"
+      color "#ff3e00"
+      label "Component"
+    ann
+      bind: "Two-way bindable props" props
+      export: "Exported component API methods"
+    in App
+    group components
+
+  construct Snippet
+    kw snippet
+    mt fn
+    desc "A reusable template snippet ({#snippet name(params)})"
+    visual
+      icon "✂️"
+      color "#fb923c"
+      label "Snippet"
+    in Component
+    group components
+
+  # ─── Reactivity (Runes) ─────────────────────────────────────────────────
+
+  construct Store
+    kw store
+    mt struct
+    desc "A shared reactive store (module-level $state)"
+    has
+      state: struct
+      derived: struct
+      fn[]
+    visual
+      icon "🗂️"
+      color "#c2410c"
+      label "Store"
+    ann
+      persist: "Persist to localStorage/sessionStorage" key
+      ssr: "Safe for server-side rendering"
+    in App
+    group stores
+
+  # ─── Statements (Svelte-specific operations) ────────────────────────────
+
+  statement navigate
+    mt call
+    desc "Client-side navigation (goto)"
+    sem client_navigation
+    visual
+      icon "🧭"
+      color "#ff6b35"
+      label "Navigate"
+
+  statement invalidate
+    mt call
+    desc "Invalidate a load function to re-fetch data"
+    sem invalidate_load
+    visual
+      icon "🔄"
+      color "#e85d04"
+      label "Invalidate"
+
+  statement dispatch
+    mt call
+    desc "Dispatch a custom event from a component"
+    sem component_event
+    visual
+      icon "📡"
+      color "#fb923c"
+      label "Dispatch"
+
+  # ─── Declared infrastructure ────────────────────────────────────────────
+
+  declare
+    # Typed fetch wrapper for calling backend APIs (generated from expose blocks)
+    trait ApiClient
+      fetch(endpoint: Str, params: Json) -> Res!<Json>
+      mutate(endpoint: Str, body: Json) -> Res!<Json>
+
+    # Form handling
+    struct FormState<T>
+      data: T
+      errors: Map<Str, Str>
+      submitting: Bool
+      valid: Bool
+
+    # Navigation
+    fn goto(url: Str) -> Res!
+      navigate(url)
+      ret Ok
+
+    fn invalidateAll() -> Res!
+      invalidate("all")
+      ret Ok

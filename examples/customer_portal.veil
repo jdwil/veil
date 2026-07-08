@@ -1,0 +1,85 @@
+# Example: A simple Svelte 5 app using the svelte5 layer
+sol CustomerPortal
+  use svelte5
+
+  app Portal
+    group stores
+      store AuthStore
+        state
+          user: Opt<User>
+          token: Opt<Str>
+          loading: Bool
+        derived
+          isAuthenticated: Bool
+          displayName: Str
+        fn login(email: Str, password: Str) -> Res!
+          loading = true
+          resp = ApiClient.mutate("/auth/login", {email, password})
+          token = resp.token
+          user = resp.user
+          loading = false
+        fn logout() -> Res!
+          token = null
+          user = null
+          navigate("/login")
+
+      store CustomerStore
+        state
+          customers: List<Customer>
+          selected: Opt<Customer>
+          filter: Str
+        derived
+          filtered: List<Customer>
+          count: Int
+        fn loadAll() -> Res!
+          customers = ApiClient.fetch("/customers", {})
+        fn select(id: Str) -> Res!
+          selected = ApiClient.fetch("/customers/{id}", {})
+
+    group components
+      comp CustomerCard
+        props
+          customer: Customer
+          onSelect: Fn<Str>
+        state
+          expanded: Bool
+        fn toggle()
+          expanded = !expanded
+        fn handleClick()
+          onSelect(customer.id)
+
+      comp CustomerList
+        props
+          customers: List<Customer>
+          loading: Bool
+        state
+          searchTerm: Str
+        derived
+          filtered: List<Customer>
+        fn handleSearch(term: Str)
+          searchTerm = term
+
+      comp LoginForm
+        props
+          onSubmit: Fn<Str, Str>
+        state
+          email: Str
+          password: Str
+          error: Opt<Str>
+        fn submit() -> Res!
+          error = null
+          onSubmit(email, password)
+
+    group pages
+      page Dashboard
+        @route("/")
+        @guard(isAuthenticated)
+        fn load() -> Res!<Json>
+          customers = ApiClient.fetch("/customers", {})
+          ret {customers}
+
+      page Login
+        @route("/login")
+
+      layout Root
+        @route("/")
