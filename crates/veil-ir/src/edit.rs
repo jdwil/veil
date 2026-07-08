@@ -66,6 +66,8 @@ pub enum EditError {
     TargetNotFound(usize),
     /// The target construct's shape does not support this edit.
     ShapeMismatch { span_start: usize, expected: &'static str },
+    /// A construct with this name already exists in the parent.
+    DuplicateName(String),
 }
 
 impl std::fmt::Display for EditError {
@@ -74,6 +76,9 @@ impl std::fmt::Display for EditError {
             EditError::TargetNotFound(s) => write!(f, "no construct found at span {}", s),
             EditError::ShapeMismatch { span_start, expected } => {
                 write!(f, "construct at span {} is not {}", span_start, expected)
+            }
+            EditError::DuplicateName(name) => {
+                write!(f, "a construct named '{}' already exists in this scope", name)
             }
         }
     }
@@ -120,6 +125,10 @@ pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
                 span: Span::new(0, 0),
                 body: Vec::new(),
             });
+        }
+        // Reject duplicate: don't create if a child with the same name exists.
+        if parent.children.iter().any(|c| c.name == *name) {
+            return Err(EditError::DuplicateName(name.clone()));
         }
         parent.children.push(child);
         return Ok(());
