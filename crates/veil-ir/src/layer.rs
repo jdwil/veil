@@ -108,6 +108,9 @@ pub struct ConstructSpec {
     /// Named sub-blocks this construct may contain, from `contains` entries
     /// of the form `keyword: shape` (e.g. `root: struct`, `state: enum`).
     pub blocks: Vec<(String, Shape)>,
+    /// Keywords that expect a raw string literal (e.g. `template`, `style`).
+    /// Declared in the layer as `keyword: raw` in the `has` block.
+    pub raw_block_keywords: Vec<String>,
     pub constraints: Vec<String>,
     pub allowed_in: String,
     pub group: String,
@@ -265,6 +268,7 @@ impl LayerRegistry {
                 desc: String::new(),
                 contains: Vec::new(),
                 blocks: Vec::new(),
+                raw_block_keywords: Vec::new(),
                 constraints: Vec::new(),
                 allowed_in: allowed.to_string(),
                 group: String::new(),
@@ -869,6 +873,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 desc: String::new(),
                 contains: Vec::new(),
                 blocks: Vec::new(),
+                raw_block_keywords: Vec::new(),
                 constraints: Vec::new(),
                 allowed_in: String::new(),
                 group: String::new(),
@@ -957,7 +962,11 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                     let entry = trimmed.to_string();
                     // `keyword: shape` entries declare named sub-blocks.
                     if let Some((kw, shape_name)) = entry.split_once(':') {
-                        if let Some(shape) = Shape::from_name(shape_name.trim()) {
+                        let shape_str = shape_name.trim();
+                        if shape_str == "raw" {
+                            // Raw string block (e.g. template: raw, style: raw)
+                            c.raw_block_keywords.push(kw.trim().to_string());
+                        } else if let Some(shape) = Shape::from_name(shape_str) {
                             c.blocks.push((kw.trim().to_string(), shape));
                         }
                     }

@@ -158,6 +158,13 @@ pub struct Construct {
     pub return_type: Option<TypeExpr>,
     /// Named sub-blocks declared by the layer (`root: struct`, `state: enum`).
     pub blocks: Vec<NamedBlock>,
+    /// Raw string content blocks (e.g. `template`, `style`). Stored as-is,
+    /// emitted verbatim by target-specific codegen.
+    #[serde(default)]
+    pub raw_blocks: Vec<(String, String)>,  // (name, content)
+    /// Effect blocks — named reactive side-effects (e.g. Svelte 5 $effect).
+    #[serde(default)]
+    pub effects: Vec<EffectBlock>,
     /// Nested function definitions (business logic methods).
     pub fns: Vec<FnDef>,
 
@@ -208,6 +215,8 @@ impl Construct {
             fields: Vec::new(),
             return_type: None,
             blocks: Vec::new(),
+            raw_blocks: Vec::new(),
+            effects: Vec::new(),
             fns: Vec::new(),
             variants: Vec::new(),
             rich_variants: Vec::new(),
@@ -236,6 +245,16 @@ pub struct NamedBlock {
     pub fields: Vec<Field>,
     pub variants: Vec<String>,
     pub transitions: Vec<StateTransition>,
+    pub span: Span,
+}
+
+/// An effect block — a named reactive side-effect with an expression body.
+/// Svelte 5: `$effect(() => { ... })`. Can optionally have a cleanup body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectBlock {
+    pub name: String,
+    pub body: Vec<Expr>,
+    pub cleanup: Vec<Expr>,
     pub span: Span,
 }
 

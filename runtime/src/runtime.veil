@@ -278,16 +278,15 @@ sol VeilRuntime
           branch_info = MetadataStore.get_branch!(repo_id, branch)
           content_hash = branch_info.head_commit
           cached = MetadataStore.find_artifact_by_hash!(content_hash, target)
-          match cached
-            Some artifact -> ret artifact
-            None ->
-              # Compile and store
-              id = ArtifactId{value: content_hash}
-              now = Dt.now()
-              s3_key = f"artifacts/{content_hash}/{target}"
-              artifact = ArtifactMetadata{id, repo_id, branch, commit_hash: content_hash, content_hash, target, s3_key, size_bytes: 0, compiled_at: now}
-              MetadataStore.put_artifact!(artifact)
-              ret artifact
+          if cached.is_some()
+            ret cached.unwrap()
+          # Compile and store
+          id = ArtifactId{value: content_hash}
+          now = Dt.now()
+          s3_key = f"artifacts/{content_hash}/{target}"
+          artifact = ArtifactMetadata{id, repo_id, branch, commit_hash: content_hash, content_hash, target, s3_key, size_bytes: 0, compiled_at: now}
+          MetadataStore.put_artifact!(artifact)
+          ret artifact
 
       svc Deploy
         input
@@ -710,7 +709,7 @@ sol VeilRuntime
         handlers: Map<Str, HandlerDef>
 
       # ─── Auth Types ─────────────────────────────────────────────────────
-      val Principal
+      ent Principal
         id: Str
         roles: List<Str>
         claims: Map<Str, Str>
@@ -798,9 +797,11 @@ sol VeilRuntime
           mut vars = {}
           mut missing = []
           for var in required
-            match Env.get_opt(var)
-              Some val -> vars = vars.insert(var, val)
-              None -> missing = missing.push(var)
+            val = Env.get_opt(var)
+            if val.is_some()
+              vars = vars.insert(var, val.unwrap())
+            else
+              missing = missing.push(var)
           guard missing.is_empty(), f"missing env vars: {missing.join(\", \")}"
           ret EnvConfig{vars}
 
@@ -815,14 +816,12 @@ sol VeilRuntime
           for manifest in manifests
             contexts = contexts.push(manifest.context)
             factory = factories.find(|f| f.context_name() == manifest.context)
-            match factory
-              Some f ->
-                for handler_name in manifest.handlers.keys()
-                  handler = f.create_handler!(handler_name, env)
-                  match handler
-                    Some h -> handlers = handlers.insert(handler_name, h)
-                    None -> ()
-              None -> ()
+            if factory.is_some()
+              f = factory.unwrap()
+              for handler_name in manifest.handlers.keys()
+                handler = f.create_handler!(handler_name, env)
+                if handler.is_some()
+                  handlers = handlers.insert(handler_name, handler.unwrap())
           ret {handlers, contexts}
 
       svc RunSecurityScan
@@ -835,17 +834,17 @@ sol VeilRuntime
           if !config.skip_clippy
             clippy_out = Shell.run(f"cargo clippy --manifest-path {workspace_dir}/Cargo.toml -- -D warnings")
             if clippy_out.exit_code != 0
-              findings = findings.push(ScanFinding{scanner: "clippy", severity: Severity.Error, message: clippy_out.stderr, location: None, rule_id: None})
+              findings = findings.push(ScanFinding{scanner: "clippy", severity: Severity.Error, message: clippy_out.stderr, location: Opt.empty(), rule_id: Opt.empty()})
           # Audit
           if !config.skip_audit
             audit_out = Shell.run(f"cargo audit --file {workspace_dir}/Cargo.lock")
             if audit_out.exit_code != 0
-              findings = findings.push(ScanFinding{scanner: "cargo-audit", severity: Severity.Critical, message: audit_out.stdout, location: None, rule_id: None})
+              findings = findings.push(ScanFinding{scanner: "cargo-audit", severity: Severity.Critical, message: audit_out.stdout, location: Opt.empty(), rule_id: Opt.empty()})
           # Deny
           if !config.skip_deny
             deny_out = Shell.run(f"cargo deny --manifest-path {workspace_dir}/Cargo.toml check")
             if deny_out.exit_code != 0
-              findings = findings.push(ScanFinding{scanner: "cargo-deny", severity: Severity.Warning, message: deny_out.stdout, location: None, rule_id: None})
+              findings = findings.push(ScanFinding{scanner: "cargo-deny", severity: Severity.Warning, message: deny_out.stdout, location: Opt.empty(), rule_id: Opt.empty()})
           # Evaluate pass/fail
           max_severity = findings.max_by(|f| f.severity).unwrap_or(Severity.Info)
           passed = max_severity < config.fail_threshold

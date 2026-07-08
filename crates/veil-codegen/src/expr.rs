@@ -681,6 +681,60 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         );
     }
 
+    // Built-in type-level method translations.
+    // These are VEIL's short type names with associated methods that map
+    // to Rust idioms. No framework knowledge — just language primitives.
+    if !call.method.is_empty() {
+        let translated = match (call.target.as_str(), call.method.as_str()) {
+            ("Dt", "now") => Some("Utc::now()".to_string()),
+            ("Opt", "empty") => Some("None".to_string()),
+            ("Opt", "some") if call.args.len() == 1 => {
+                Some(format!("Some({})", expr_to_rust(&call.args[0], ctx)))
+            }
+            ("Env", "get_or") if call.args.len() == 2 => {
+                let var = expr_to_rust(&call.args[0], ctx);
+                let default = expr_to_rust(&call.args[1], ctx);
+                Some(format!("std::env::var({}).unwrap_or_else(|_| {}.to_string())", var, default))
+            }
+            ("Env", "get_opt") if call.args.len() == 1 => {
+                let var = expr_to_rust(&call.args[0], ctx);
+                Some(format!("std::env::var({}).ok()", var))
+            }
+            ("Json", "parse") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("serde_json::from_str(&{})?", arg))
+            }
+            ("Json", "stringify") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("serde_json::to_string(&{})?", arg))
+            }
+            ("Str", "from_bytes") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("String::from_utf8({})?", arg))
+            }
+            ("Fs", "read") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("std::fs::read_to_string(&{})?", arg))
+            }
+            ("Fs", "exists") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("std::path::Path::new(&{}).exists()", arg))
+            }
+            ("Fs", "list_dir") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("std::fs::read_dir(&{})?.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>()", arg))
+            }
+            ("Shell", "run") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("std::process::Command::new(\"sh\").args([&\"-c\", &{}]).output()?", arg))
+            }
+            _ => None,
+        };
+        if let Some(result) = translated {
+            return result;
+        }
+    }
+
     // Struct-shaped target with method "new" or empty → Type::new(args)
     // Handle dotted paths: `sqlx.Query` → check if `Query` is a known struct
     let effective_target = if call.target.contains('.') {

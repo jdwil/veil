@@ -313,6 +313,37 @@ impl<'a> Parser<'a> {
     // ─── Type parsing ─────────────────────────────────────────────────
 
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
+        // fn(A, B) -> C — function pointer type
+        if self.at(&TokenKind::Fn) {
+            self.advance(); // consume 'fn'
+            self.expect(&TokenKind::LParen)?;
+            let mut params = Vec::new();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                params.push(self.parse_type()?);
+                if self.at(&TokenKind::Comma) { self.advance(); }
+            }
+            self.expect(&TokenKind::RParen)?;
+            let ret = if self.at(&TokenKind::Arrow) {
+                self.advance();
+                Some(Box::new(self.parse_type()?))
+            } else {
+                None
+            };
+            return Ok(TypeExpr::FnPtr(params, ret));
+        }
+
+        // (A, B, C) — tuple type
+        if self.at(&TokenKind::LParen) {
+            self.advance();
+            let mut items = Vec::new();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                items.push(self.parse_type()?);
+                if self.at(&TokenKind::Comma) { self.advance(); }
+            }
+            self.expect(&TokenKind::RParen)?;
+            return Ok(TypeExpr::Tuple(items));
+        }
+
         let name = self.expect_ident()?;
 
         // Res! / Res!<T> syntax
@@ -1059,8 +1090,59 @@ impl<'a> Parser<'a> {
                     c.fns.push(self.parse_fn_def()?);
                     continue;
                 }
+                // Effect block: `effect <name>` + indented body
+                if self.at(&TokenKind::Ident) && self.current().text == "effect" {
+                    let effect_span = self.current().span;
+                    self.advance(); // consume 'effect'
+                    let effect_name = if self.at(&TokenKind::Ident) {
+                        self.advance().text
+                    } else {
+                        "unnamed".to_string()
+                    };
+                    let mut body = Vec::new();
+                    let mut cleanup = Vec::new();
+                    if self.at_block_start() {
+                        self.enter_block()?;
+                        let mut in_cleanup = false;
+                        loop {
+                            self.skip_newlines();
+                            if self.at_block_end() { break; }
+                            // Check for cleanup sub-block
+                            if self.at(&TokenKind::Ident) && self.current().text == "cleanup" {
+                                self.advance();
+                                in_cleanup = true;
+                                if self.at_block_start() {
+                                    self.enter_block()?;
+                                    loop {
+                                        self.skip_newlines();
+                                        if self.at_block_end() { break; }
+                                        cleanup.push(self.parse_expr()?);
+                                    }
+                                    self.exit_block();
+                                }
+                                continue;
+                            }
+                            if !in_cleanup {
+                                body.push(self.parse_expr()?);
+                            }
+                        }
+                        self.exit_block();
+                    }
+                    c.effects.push(EffectBlock { name: effect_name, body, cleanup, span: effect_span });
+                    continue;
+                }
                 // Named sub-block declared by the layer (`root: struct`, `state: enum`)
                 if let Some(word) = self.current_word().map(|s| s.to_string()) {
+                    // Raw string block (template, style, etc.)
+                    if spec.raw_block_keywords.contains(&word) {
+                        self.advance(); // consume the keyword
+                        if self.at(&TokenKind::StringLit) || self.at(&TokenKind::FStringLit) {
+                            let text = self.advance().text;
+                            let content = Self::extract_string_content(&text);
+                            c.raw_blocks.push((word, content));
+                        }
+                        continue;
+                    }
                     if !self.is_field_line() {
                         if let Some((kw, shape)) = spec
                             .blocks
@@ -2413,9 +2495,15 @@ impl<'a> Parser<'a> {
                 expr = Expr::FieldAccess(Box::new(expr), field);
             }
         }
-        // Additional postfix: ?, [index], as, ..
+        // Additional postfix: ?, [index], as, {struct_lit}, ..
         loop {
             match self.peek_kind().clone() {
+                TokenKind::LBrace if matches!(&expr, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase())) => {
+                    // Type{field: value, ...} → named struct literal
+                    let name = match &expr { Expr::Ident(n) => n.clone(), _ => unreachable!() };
+                    let fields = self.parse_brace_args()?;
+                    expr = Expr::StructLit(name, fields);
+                }
                 TokenKind::Question => { self.advance(); expr = Expr::Try(Box::new(expr)); }
                 TokenKind::LBracket => {
                     self.advance();

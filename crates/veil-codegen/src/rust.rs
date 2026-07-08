@@ -1229,6 +1229,15 @@ fn gen_impls(
                 for p in &mimpl.params {
                     ctx.locals.insert(p.clone());
                 }
+                // @env annotation fields are available as self.field in the body.
+                ctx.in_aggregate_fn = true;
+                for ann in &c.annotations {
+                    if ann.name == "env" {
+                        for arg in &ann.args {
+                            ctx.self_fields.insert(arg.to_lowercase());
+                        }
+                    }
+                }
                 // Seed name→shape and method returns from stubs too.
                 let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
                 ctx.method_returns = seeded.method_returns;
