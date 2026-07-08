@@ -2,6 +2,7 @@
 
 pub mod ast;
 pub mod builder;
+pub mod diagnostics;
 pub mod edit;
 pub mod ir;
 pub mod layer;

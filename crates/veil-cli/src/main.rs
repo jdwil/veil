@@ -640,6 +640,7 @@ fn main() {
 
                 let app = axum::Router::new()
                     .route("/api/ir", axum::routing::get(serve::get_ir))
+                    .route("/api/diagnostics", axum::routing::get(serve::get_diagnostics))
                     .route("/api/source", axum::routing::get(serve::get_source))
                     .route("/api/generated", axum::routing::get(serve::get_generated))
                     .route("/api/stubs", axum::routing::get(serve::get_stubs))

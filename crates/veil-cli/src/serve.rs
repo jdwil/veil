@@ -96,6 +96,14 @@ impl ServeState {
             .collect();
         serde_json::to_string(&files_map).map_err(|e| e.to_string())
     }
+
+    /// Run layer-driven diagnostics analysis on the IR graph.
+    fn diagnostics_json(&self, source: &str) -> Result<String, String> {
+        let sol = self.parse(source)?;
+        let graph = veil_ir::build_ir(&sol);
+        let diagnostics = veil_ir::diagnostics::analyze(&graph, &self.registry);
+        serde_json::to_string(&diagnostics).map_err(|e| e.to_string())
+    }
 }
 
 type SharedState = std::sync::Arc<ServeState>;
@@ -112,6 +120,15 @@ pub async fn get_ir(State(state): State<SharedState>) -> axum::response::Respons
     let entry = state.active_entry();
     let source = entry.source.lock().unwrap().clone();
     match state.ir_json(&source) {
+        Ok(json) => json_ok(json).into_response(),
+        Err(e) => server_error(e).into_response(),
+    }
+}
+
+pub async fn get_diagnostics(State(state): State<SharedState>) -> axum::response::Response {
+    let entry = state.active_entry();
+    let source = entry.source.lock().unwrap().clone();
+    match state.diagnostics_json(&source) {
         Ok(json) => json_ok(json).into_response(),
         Err(e) => server_error(e).into_response(),
     }

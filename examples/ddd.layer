@@ -124,6 +124,8 @@ pkg ddd v1
     mt trait
     in Context
     desc "Port — interface contract for external dependencies"
+    cst
+      requires_implementation
     visual
       icon "🔌"
       color "#10b981"
