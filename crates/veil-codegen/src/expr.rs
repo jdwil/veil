@@ -254,7 +254,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 // Shared saga state: read from the threaded JSON state.
                 format!("state[\"{}\"]", name)
             } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
-                format!("self.{}", to_snake(name))
+                format!("self.{}.clone()", to_snake(name))
             } else {
                 name.clone()
             }
@@ -264,6 +264,13 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             if let Expr::Ident(name) = base.as_ref() {
                 if ctx.state_locals.contains(name.as_str()) {
                     return format!("state[\"{}\"][\"{}\"]", name, field);
+                }
+                // Enum variant access: EnumName.Variant → EnumName::Variant
+                if matches!(ctx.name_to_shape.get(name.as_str()), Some(Shape::Enum)) {
+                    // Capitalize the variant name (field might be snake_case from parser)
+                    let variant = field.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+                        + &field[1..];
+                    return format!("{}::{}", name, variant);
                 }
             }
             // In the JSON-bus orchestrator, a field of a Bus-returned local is a
@@ -339,7 +346,22 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 // call whose target is Err.
                 Expr::Call(c) if c.target == "Err" && c.method.is_empty() => {
                     let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
-                    format!("return Err({})", if a.is_empty() { "DomainError::External(\"error\".to_string())".to_string() } else { a })
+                    if a.is_empty() {
+                        "return Err(DomainError::Validation(\"error\".to_string()))".to_string()
+                    } else if a.starts_with("DomainError::") {
+                        // Already a DomainError variant
+                        format!("return Err({})", a)
+                    } else {
+                        // Check if the argument is a simple identifier (likely a caught error variable)
+                        let is_simple_ident = c.args.len() == 1 && matches!(&c.args[0], Expr::Ident(_));
+                        if is_simple_ident {
+                            // Bare variable from a match arm — likely already DomainError
+                            format!("return Err({})", a)
+                        } else {
+                            // String expression — wrap in DomainError::Validation
+                            format!("return Err(DomainError::Validation({}))", a)
+                        }
+                    }
                 }
                 Expr::Call(c) if c.target == "Ok" && c.method.is_empty() => {
                     let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
@@ -396,7 +418,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::StructLit(name, fields) => {
             let fs = fields.iter().map(|(k, v)| {
                 let v_str = expr_to_rust(v, ctx);
-                if k == &v_str { k.clone() } else { format!("{}: {}", to_snake(k), v_str) }
+                // Clone ident values to prevent move issues when same var used in multiple fields
+                let cloned = match v {
+                    Expr::Ident(_) => format!("{}.clone()", v_str),
+                    _ => v_str.clone(),
+                };
+                if k == &v_str { format!("{}: {}.clone()", k, k) } else { format!("{}: {}", to_snake(k), cloned) }
             }).collect::<Vec<_>>().join(", ");
             format!("{} {{ {} }}", name, fs)
         }
@@ -407,7 +434,14 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let scrutinee_str = raw.strip_suffix(".await?")
                 .map(|s| format!("{}.await", s))
                 .unwrap_or_else(|| raw.strip_suffix('?').map(|s| s.to_string()).unwrap_or(raw));
-            let mut out = format!("match {} {{\n", scrutinee_str);
+            // If arms contain string literal patterns, add .as_str() for String scrutinees
+            let has_string_patterns = arms.iter().any(|a| a.pattern.starts_with('"'));
+            let scrutinee_final = if has_string_patterns {
+                format!("{}.as_str()", scrutinee_str)
+            } else {
+                scrutinee_str
+            };
+            let mut out = format!("match {} {{\n", scrutinee_final);
             for arm in arms {
                 // Use structured pattern if available, fall back to string normalization
                 let pattern = if let Some(rich) = &arm.rich_pattern {
@@ -607,7 +641,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // `.len() as i64`. The receiver/target is the list expression.
     let list_base = if let Some(recv) = &call.receiver {
         Some(expr_to_rust(recv, ctx))
-    } else if !call.target.is_empty() && call.method == "get" || (!call.target.is_empty() && call.method == "len") {
+    } else if !call.target.is_empty() && !ctx.is_trait_target(&call.target) && (call.method == "get" || call.method == "len") {
         Some(call.target.clone())
     } else {
         None
@@ -687,6 +721,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     if !call.method.is_empty() {
         let translated = match (call.target.as_str(), call.method.as_str()) {
             ("Dt", "now") => Some("Utc::now()".to_string()),
+            ("Uuid", "new_v4") => Some("Uuid::new_v4()".to_string()),
+            ("Map", "new") => Some("HashMap::new()".to_string()),
+            ("List", "new") => Some("Vec::new()".to_string()),
             ("Opt", "empty") => Some("None".to_string()),
             ("Opt", "some") if call.args.len() == 1 => {
                 Some(format!("Some({})", expr_to_rust(&call.args[0], ctx)))
@@ -1096,6 +1133,28 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
             for (_, v) in fields {
                 collect_deps_from_expr(v, ctx, deps);
             }
+        }
+        Expr::Match(scrutinee, arms) => {
+            collect_deps_from_expr(scrutinee, ctx, deps);
+            for arm in arms {
+                for expr in &arm.body {
+                    collect_deps_from_expr(expr, ctx, deps);
+                }
+            }
+        }
+        Expr::IfExpr(data) => {
+            collect_deps_from_expr(&data.condition, ctx, deps);
+            for expr in &data.then_body {
+                collect_deps_from_expr(expr, ctx, deps);
+            }
+            if let Some(eb) = &data.else_body {
+                for expr in eb {
+                    collect_deps_from_expr(expr, ctx, deps);
+                }
+            }
+        }
+        Expr::Return(inner) => {
+            collect_deps_from_expr(inner, ctx, deps);
         }
         _ => {}
     }

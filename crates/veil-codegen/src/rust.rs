@@ -613,7 +613,19 @@ fn gen_struct(c: &Construct) -> String {
         let init_fields = fields.iter().map(|f| {
             let snake = to_snake(&f.name);
             if f.name == "id" {
-                format!("{}: Uuid::new_v4()", snake)
+                // Use the field's declared type constructor if it's a custom wrapper type
+                let type_name = match &f.type_expr {
+                    TypeExpr::Named(n) if n != "UUID" && n != "Id" && n != "Uuid" && n != "Str" && n != "String" && n != "Int" => n.clone(),
+                    TypeExpr::Named(n) if n == "Str" || n == "String" => {
+                        return format!("{}: Uuid::new_v4().to_string()", snake);
+                    }
+                    _ => String::new(),
+                };
+                if type_name.is_empty() {
+                    format!("{}: Uuid::new_v4()", snake)
+                } else {
+                    format!("{}: {}::new(Uuid::new_v4().to_string())", snake, type_name)
+                }
             } else if auto_fields.contains(&f.name.as_str()) {
                 format!("{}: Utc::now()", snake)
             } else if scalar_default_fields.contains(&f.name) {
@@ -1133,7 +1145,7 @@ fn gen_impls(
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
-    out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
+    out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
 
     // Name→shape map so the body translator resolves calls correctly.
     let name_to_shape = build_name_to_shape(solution);
@@ -1176,7 +1188,12 @@ fn gen_impls(
             for ann in &c.annotations {
                 if ann.name == "env" {
                     for arg in &ann.args {
-                        out.push_str(&format!("    pub {}: String,\n", arg.to_lowercase()));
+                        // Use the short suffix (after last _) as the field name,
+                        // matching what the body references via self.field.
+                        // DDB_TABLE → table, AWS_REGION → region, S3_BUCKET → bucket
+                        let full = arg.to_lowercase();
+                        let field_name = full.rsplit('_').next().unwrap_or(&full);
+                        out.push_str(&format!("    pub {}: String,\n", field_name));
                     }
                 }
             }
@@ -1234,7 +1251,15 @@ fn gen_impls(
                 for ann in &c.annotations {
                     if ann.name == "env" {
                         for arg in &ann.args {
-                            ctx.self_fields.insert(arg.to_lowercase());
+                            let full = arg.to_lowercase();
+                            ctx.self_fields.insert(full.clone());
+                            // Also add the short suffix (after last underscore)
+                            // so `DDB_TABLE` makes `table` available as self.table
+                            if let Some(short) = full.rsplit('_').next() {
+                                if short != full {
+                                    ctx.self_fields.insert(short.to_string());
+                                }
+                            }
                         }
                     }
                 }
@@ -1366,6 +1391,17 @@ fn collect_effect_hooks(
                 let name = format!("{}_{}", to_snake(&call.target), to_snake(&call.method));
                 hooks.insert((name, call.args.len()));
             }
+            // Bare function calls: target is the function name, method is empty
+            if call.method.is_empty()
+                && call.receiver.is_none()
+                && !name_to_shape.contains_key(&call.target)
+                && !locals.contains(&call.target)
+                && !call.target.is_empty()
+                && call.target.chars().next().map_or(true, |c| c.is_lowercase())
+            {
+                let name = to_snake(&call.target);
+                hooks.insert((name, call.args.len()));
+            }
             if let Some(recv) = &call.receiver {
                 collect_effect_hooks(recv, name_to_shape, locals, hooks);
             }
@@ -1465,7 +1501,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     out.push_str("//! Application services and flow orchestrators.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse crate::domain::messages::*;\n");
-    out.push_str("use std::sync::Arc;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
+    out.push_str("use std::sync::Arc;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
 
     if flows.is_empty() {
         out.push_str("// No flows defined in this module.\n");
@@ -1598,7 +1634,17 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         // Infer the flow's return type from the returned expression, using a
         // pre-scan of step bodies so local bindings resolve. Falls back to
         // Result<(), _> when there's no return or the type is unknown.
-        let ret_type = infer_flow_return_type(return_expr, steps, &ctx, is_orchestrator);
+        // First check if the construct/flow has an explicit return_type declared.
+        let explicit_return = match flow {
+            FlowLike::Flow(_) => None,
+            FlowLike::Construct(c) => c.return_type.as_ref(),
+        };
+        let ret_type = if let Some(rt) = explicit_return {
+            let inner = type_to_rust(rt);
+            if inner.starts_with("Result<") { inner } else { format!("Result<{}, DomainError>", inner) }
+        } else {
+            infer_flow_return_type(return_expr, steps, &ctx, is_orchestrator)
+        };
 
         out.push_str(&format!(
             "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",

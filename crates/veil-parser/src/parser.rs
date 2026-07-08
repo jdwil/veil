@@ -1611,6 +1611,10 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 match self.peek_kind().clone() {
+                    TokenKind::Arrow => {
+                        self.advance();
+                        c.return_type = Some(self.parse_type()?);
+                    }
                     TokenKind::Input => {
                         self.advance();
                         c.inputs = self.parse_field_block()?;
@@ -2501,6 +2505,24 @@ impl<'a> Parser<'a> {
                 TokenKind::LBrace if matches!(&expr, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase())) => {
                     // Type{field: value, ...} → named struct literal
                     let name = match &expr { Expr::Ident(n) => n.clone(), _ => unreachable!() };
+                    let fields = self.parse_brace_args()?;
+                    expr = Expr::StructLit(name, fields);
+                }
+                TokenKind::LBrace if matches!(&expr, Expr::FieldAccess(base, _) if matches!(base.as_ref(), Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase()))) => {
+                    // Enum.Variant{field: value, ...} → named struct literal "Enum::Variant"
+                    let (base_name, variant) = match &expr {
+                        Expr::FieldAccess(base, field) => {
+                            match base.as_ref() {
+                                Expr::Ident(n) => (n.clone(), field.clone()),
+                                _ => unreachable!(),
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    // Capitalize the variant
+                    let variant_cap = variant.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+                        + &variant[1..];
+                    let name = format!("{}::{}", base_name, variant_cap);
                     let fields = self.parse_brace_args()?;
                     expr = Expr::StructLit(name, fields);
                 }
