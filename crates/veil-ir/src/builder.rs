@@ -464,6 +464,19 @@ impl IrBuilder {
                     self.graph.add_edge(id, inputs_id, EdgeKind::Contains);
                 }
                 self.build_steps(&c.steps, id);
+                // Emit a Return node showing the return type/expression.
+                let ret_label = if let Some(rt) = &c.return_type {
+                    type_to_display(rt)
+                } else {
+                    "void".to_string()
+                };
+                let ret_id = self.graph.add_node(NodeKind::Return, "Return".to_string(), c.span);
+                self.set_parent(ret_id, id);
+                self.set_property(ret_id, "type", &ret_label);
+                if let Some(expr) = &c.return_expr {
+                    self.set_property(ret_id, "expr", &expr_to_display(expr));
+                }
+                self.graph.add_edge(id, ret_id, EdgeKind::Contains);
             }
         }
     }
@@ -503,6 +516,11 @@ impl IrBuilder {
         }
 
         self.build_steps(&flow.steps, flow_id);
+        // Emit a Return node for the flow.
+        let ret_id = self.graph.add_node(NodeKind::Return, "Return".to_string(), flow.span);
+        self.set_parent(ret_id, flow_id);
+        self.set_property(ret_id, "type", "inferred");
+        self.graph.add_edge(flow_id, ret_id, EdgeKind::Contains);
     }
 
     fn build_steps(&mut self, steps: &[FlowStep], parent_id: NodeId) {

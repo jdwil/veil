@@ -31,6 +31,7 @@ export type NodeKind =
   | 'Module'
   | 'Group'
   | 'Inputs'
+  | 'Return'
   | 'TypeDef'
   | 'Interface'
   | 'InterfaceMethod'
@@ -92,6 +93,7 @@ export const NODE_STYLES: Record<NodeKind, NodeStyle> = {
   Module: { color: '#737373', icon: '📦', label: 'Module' },
   Group: { color: '#525252', icon: '📂', label: 'Group' },
   Inputs: { color: '#a3a3a3', icon: '📥', label: 'Inputs' },
+  Return: { color: '#a3a3a3', icon: '📤', label: 'Return' },
   TypeDef: { color: '#737373', icon: '📋', label: 'Type' },
   Interface: { color: '#737373', icon: '🔌', label: 'Interface' },
   InterfaceMethod: { color: '#a3a3a3', icon: '⚙️', label: 'Method' },
