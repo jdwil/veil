@@ -156,6 +156,7 @@ pkg ddd v1
     desc "Repository — persistence interface for an aggregate"
     cst
       crud_for_aggregate
+      requires_implementation
     visual
       icon "🗄️"
       color "#10b981"

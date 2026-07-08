@@ -332,61 +332,61 @@ pkg dlx_core
         created_on: Dt
         deleted_on: Opt<Dt>
 
-      port TenantRepo
+      repo TenantRepo
         find!(id: Id) -> Opt<Tenant>
         save!(tenant: Tenant)
         delete!(id: Id)
 
-      port UserRepo
+      repo UserRepo
         find!(id: Id) -> Opt<User>
         find_by_email!(email: Email) -> Opt<User>
         find_by_tenant!(tenant_id: Id) -> List<User>
         save!(user: User)
         delete!(id: Id)
 
-      port CohortRepo
+      repo CohortRepo
         find!(id: Id) -> Opt<Cohort>
         find_by_tenant!(tenant_id: Id) -> List<Cohort>
         find_by_slug!(slug: Str) -> Opt<Cohort>
         save!(cohort: Cohort)
         delete!(id: Id)
 
-      port CohortMemberRepo
+      repo CohortMemberRepo
         find!(id: Id) -> Opt<CohortMember>
         find_by_cohort!(cohort_id: Id) -> List<CohortMember>
         find_by_user!(user_id: Id) -> List<CohortMember>
         save!(member: CohortMember)
         delete!(id: Id)
 
-      port ListRepo
+      repo ListRepo
         find!(id: Id) -> Opt<List>
         find_by_cohort!(cohort_id: Id) -> List<List>
         save!(list: List)
         delete!(id: Id)
 
-      port SegmentRepo
+      repo SegmentRepo
         find!(id: Id) -> Opt<Segment>
         find_by_cohort!(cohort_id: Id) -> List<Segment>
         save!(segment: Segment)
         delete!(id: Id)
 
-      port RosterRepo
+      repo RosterRepo
         find!(id: Id) -> Opt<Roster>
         find_by_cohort!(cohort_id: Id) -> List<Roster>
         save!(roster: Roster)
         delete!(id: Id)
 
-      port ListMemberRepo
+      repo ListMemberRepo
         find_by_list!(list_id: Id) -> List<ListMember>
         add!(member: ListMember)
         remove!(id: Id)
 
-      port SegmentMemberRepo
+      repo SegmentMemberRepo
         find_by_segment!(segment_id: Id) -> List<SegmentMember>
         add!(member: SegmentMember)
         remove!(id: Id)
 
-      port RosterMemberRepo
+      repo RosterMemberRepo
         find_by_roster!(roster_id: Id) -> List<RosterMember>
         add!(member: RosterMember)
         remove!(id: Id)
