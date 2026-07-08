@@ -471,27 +471,33 @@ impl IrBuilder {
                 } else {
                     "void".to_string()
                 };
-                let ret_id = self.graph.add_node(NodeKind::Return, "Return".to_string(), c.span);
-                self.set_parent(ret_id, id);
-                self.set_property(ret_id, "type", &ret_label);
-                // Look for explicit ret expressions in the steps' bodies.
-                if let Some(expr) = &c.return_expr {
-                    self.set_property(ret_id, "expr", &expr_to_display(expr));
-                } else {
-                    // Scan steps for the last Expr::Return
-                    let mut ret_expr_str = String::new();
+                // Scan steps for ret expr before creating the node
+                let mut scanned_ret_expr = String::new();
+                if c.return_expr.is_none() {
                     for flow_step in &c.steps {
                         if let FlowStep::Step(step) = flow_step {
                             for expr in &step.body {
                                 if let Expr::Return(inner) = expr {
-                                    ret_expr_str = expr_to_display(inner);
+                                    scanned_ret_expr = expr_to_display(inner);
                                 }
                             }
                         }
                     }
-                    if !ret_expr_str.is_empty() {
-                        self.set_property(ret_id, "expr", &ret_expr_str);
-                    }
+                }
+                // Use a descriptive label: declared type > ret expr > void
+                let display_label = if ret_label != "void" {
+                    format!("→ {}", ret_label)
+                } else if !scanned_ret_expr.is_empty() {
+                    format!("→ {}", scanned_ret_expr)
+                } else {
+                    "→ void".to_string()
+                };
+                let ret_id = self.graph.add_node(NodeKind::Return, display_label, c.span);
+                self.set_parent(ret_id, id);
+                if let Some(expr) = &c.return_expr {
+                    self.set_property(ret_id, "expr", &expr_to_display(expr));
+                } else if !scanned_ret_expr.is_empty() {
+                    self.set_property(ret_id, "expr", &scanned_ret_expr);
                 }
                 self.graph.add_edge(id, ret_id, EdgeKind::Contains);
             }
