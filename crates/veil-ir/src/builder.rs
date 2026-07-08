@@ -398,6 +398,20 @@ impl IrBuilder {
                     self.set_property(method_id, "signature", &sig);
                     self.set_property(method_id, "abstract", "true");
                     self.graph.add_edge(id, method_id, EdgeKind::Contains);
+
+                    // Emit Inputs child node for the method parameters.
+                    if !m.params.is_empty() {
+                        let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), m.span);
+                        self.set_parent(inputs_id, method_id);
+                        self.set_property(inputs_id, "params", &params);
+                        self.graph.add_edge(method_id, inputs_id, EdgeKind::Contains);
+                    }
+
+                    // Emit Return child node for the return type.
+                    let ret_display = if ret.is_empty() { "→ void".to_string() } else { format!("→ {}", ret.trim_start_matches(" -> ")) };
+                    let ret_id = self.graph.add_node(NodeKind::Return, ret_display, m.span);
+                    self.set_parent(ret_id, method_id);
+                    self.graph.add_edge(method_id, ret_id, EdgeKind::Contains);
                 }
 
                 // Also keep a summary "methods" property for backward compat
@@ -455,6 +469,38 @@ impl IrBuilder {
                         self.set_property(method_id, "has_body", "true");
                     }
                     self.graph.add_edge(id, method_id, EdgeKind::Contains);
+
+                    // Emit Inputs child node for the method parameters.
+                    if !imp.params.is_empty() {
+                        let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), imp.span);
+                        self.set_parent(inputs_id, method_id);
+                        self.set_property(inputs_id, "params", &params_str);
+                        self.graph.add_edge(method_id, inputs_id, EdgeKind::Contains);
+                    }
+
+                    // Emit body expressions as Action child nodes.
+                    if !imp.body.is_empty() {
+                        self.build_step_body(&imp.body, method_id);
+                    }
+
+                    // Emit Return node — scan body for ret expressions.
+                    let mut ret_expr_str = String::new();
+                    for expr in &imp.body {
+                        if let Expr::Return(inner) = expr {
+                            ret_expr_str = expr_to_display(inner);
+                        }
+                    }
+                    let ret_display = if !ret_expr_str.is_empty() {
+                        format!("→ {}", ret_expr_str)
+                    } else {
+                        "→ void".to_string()
+                    };
+                    let ret_id = self.graph.add_node(NodeKind::Return, ret_display, imp.span);
+                    self.set_parent(ret_id, method_id);
+                    if !ret_expr_str.is_empty() {
+                        self.set_property(ret_id, "expr", &ret_expr_str);
+                    }
+                    self.graph.add_edge(method_id, ret_id, EdgeKind::Contains);
                 }
             }
             Shape::Fn => {
