@@ -16,10 +16,10 @@ sol WearTest
           created_on: Dt
 
       repo TestPlanRepo
-        find(id: Id) -> Opt<TestPlan>
-        find_by_cohort(cohort_id: Id) -> List<TestPlan>
-        save(plan: TestPlan) -> Res!
-        delete(id: Id) -> Res!
+        find!(id: Id) -> Opt<TestPlan>
+        find_by_cohort!(cohort_id: Id) -> List<TestPlan>
+        save!(plan: TestPlan)
+        delete!(id: Id)
 
     group application
       svc CreateTestPlan
@@ -29,207 +29,18 @@ sol WearTest
           name: Str
           description: Str
         step verify_cohort
-          CohortDTO = request GetCohort{id: cohort_id}
+          cohort: CohortDTO = request GetCohort{id: cohort_id}
           guard cohort.active == true, "cohort is not active"
-          cohort
         step create
-          plan = call TestPlan.new(id, cohort_id, name, description)
-          call TestPlanRepo.save(plan)
+          plan = TestPlan.new(id, cohort_id, name, description)
+          TestPlanRepo.save!(plan)
 
       svc GetTestPlanWithParticipants
         input
           plan_id: Id
         step load_plan
-          plan = call TestPlanRepo.find(plan_id)
+          plan = TestPlanRepo.find!(plan_id)
           guard plan != null, "test plan not found"
         step load_participants
-          request GetCohortMembers{cohort_id: plan.cohort_id}
+          members: List<CohortMemberDTO> = request GetCohortMembers{cohort_id: plan.cohort_id}
           ret {plan, members}
-          members
-
-    group infrastructure
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-      adapter TestPlanRepoAdapter for TestPlanRepo
-        impl find(id)
-        impl find_by_cohort(cohort_id)
-        impl save(plan)
-        impl delete(id)
-
-    group infrastructure
-
-    group infrastructure
-
-    group infrastructure
-
-
-
-
-
-
