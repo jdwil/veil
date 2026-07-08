@@ -571,3 +571,301 @@ sol VeilRuntime
           ret commits
 
     group infrastructure
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Daemon — WebSocket server with agent and direct tool-call modes
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ctx Daemon
+    group domain
+      val DaemonConfig
+        port: Int
+        work_dir: Str
+        s3_bucket: Opt<Str>
+        ddb_table: Opt<Str>
+        aws_region: Str
+        ecr_repository_prefix: Opt<Str>
+        llm_api_key: Opt<Str>
+        llm_model: Str
+
+      enum IncomingMessage
+        Agent
+          message: Str
+        Tool
+          tool: Str
+          args: Json
+
+      enum OutgoingMessage
+        Result
+          data: Json
+        AgentResponse
+          message: Str
+        Error
+          message: Str
+          code: Str
+        Ack
+          id: Opt<Str>
+
+    group application
+      svc LoadConfig
+        step execute
+          port = Env.get_or("VEIL_PORT", "8080").parse_int()
+          work_dir = Env.get_or("VEIL_WORK_DIR", "/tmp/veil-runtime")
+          s3_bucket = Env.get_opt("VEIL_S3_BUCKET")
+          ddb_table = Env.get_opt("VEIL_DDB_TABLE")
+          aws_region = Env.get_or("AWS_REGION", "us-east-1")
+          ecr_prefix = Env.get_opt("VEIL_ECR_PREFIX")
+          llm_api_key = Env.get_opt("OPENAI_API_KEY")
+          llm_model = Env.get_or("VEIL_LLM_MODEL", "gpt-4o")
+          ret DaemonConfig{port, work_dir, s3_bucket, ddb_table, aws_region, ecr_repository_prefix: ecr_prefix, llm_api_key, llm_model}
+
+      ws_handler HandleConnection
+        @path("/ws")
+        input
+          msg: Str
+        step handle
+          parsed = Json.parse(msg)
+          match parsed.mode
+            "agent" ->
+              response = invoke HandleAgentMessage{message: parsed.message}
+              send_ws Json.stringify(response)
+            "tool" ->
+              response = invoke HandleToolCall{tool: parsed.tool, args: parsed.args}
+              send_ws Json.stringify(response)
+            _ ->
+              error = OutgoingMessage.Error{message: "invalid mode", code: "INVALID_FORMAT"}
+              send_ws Json.stringify(error)
+
+      svc HandleAgentMessage
+        input
+          message: Str
+        step execute
+          # Placeholder — requires LLM API key
+          response = OutgoingMessage.AgentResponse{message: f"Agent mode received: '{message}'. Configure OPENAI_API_KEY to enable."}
+          ret response
+
+      svc HandleToolCall
+        input
+          tool: Str
+          args: Json
+        step execute
+          result = match tool
+            "create_repo" -> invoke CreateRepoTool{name: args.name, description: args.description}
+            "write_file" -> invoke WriteFileTool{repo_id: args.repo_id, branch: args.branch, path: args.path, content: args.content, message: args.message}
+            "read_file" -> invoke ReadFileTool{repo_id: args.repo_id, branch: args.branch, path: args.path}
+            "list_files" -> invoke ListFilesTool{repo_id: args.repo_id, branch: args.branch, prefix: args.prefix}
+            "create_branch" -> invoke CreateBranchTool{repo_id: args.repo_id, name: args.name, from_ref: args.from_ref}
+            "list_branches" -> invoke ListBranchesTool{repo_id: args.repo_id}
+            "diff" -> invoke DiffTool{repo_id: args.repo_id, from_ref: args.from_ref, to_ref: args.to_ref}
+            "compile" -> invoke CompileTool{repo_id: args.repo_id, branch: args.branch, target: args.target}
+            "deploy" -> invoke DeployTool{artifact_id: args.artifact_id, target: args.target, tag: args.tag}
+            "list_repos" -> invoke ListReposTool{}
+            "log" -> invoke LogTool{repo_id: args.repo_id, branch: args.branch, limit: args.limit}
+            _ -> ret OutgoingMessage.Error{message: f"unknown tool: {tool}", code: "UNKNOWN_TOOL"}
+          ret OutgoingMessage.Result{data: result}
+
+      http_route HealthCheck
+        @method("GET")
+        @path("/health")
+        step handle
+          ret {status: "healthy", service: "veil-runtime", version: "0.1.0"}
+
+    group infrastructure
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Exec — Application harness, Bus implementations, wiring, auth, security
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ctx Exec
+    group domain
+      # ─── Bus & Error Types ──────────────────────────────────────────────
+      enum DomainError
+        Validation(Str)
+        NotFound(Str)
+        Conflict(Str)
+        Internal(Str)
+
+      port Handler
+        handle!(payload: Str) -> Str
+
+      # ─── Manifest Types ─────────────────────────────────────────────────
+      val Dependency
+        trait_name: Str
+        adapter: Opt<Str>
+        provided_by: Opt<Str>
+        env: List<Str>
+
+      val HandlerInput
+        name: Str
+        type_desc: Str
+
+      val HandlerDef
+        function: Str
+        inputs: List<HandlerInput>
+
+      val Manifest
+        context: Str
+        crate_name: Str
+        deps: Map<Str, Dependency>
+        handlers: Map<Str, HandlerDef>
+
+      # ─── Auth Types ─────────────────────────────────────────────────────
+      val Principal
+        id: Str
+        roles: List<Str>
+        claims: Map<Str, Str>
+
+      enum AuthStrategy
+        Bus
+        External
+          provider_url: Str
+          client_id: Str
+
+      port AuthService
+        validate_token!(token: Str) -> Principal
+        check_permission!(principal: Principal, action: Str, resource: Str) -> Bool
+
+      # ─── Security Types ─────────────────────────────────────────────────
+      enum Severity
+        Info
+        Warning
+        Error
+        Critical
+
+      val ScanFinding
+        scanner: Str
+        severity: Severity
+        message: Str
+        location: Opt<Str>
+        rule_id: Opt<Str>
+
+      val ScanReport
+        scanned_at: Dt
+        passed: Bool
+        findings: List<ScanFinding>
+        summary: Map<Str, Int>
+
+      val ScanConfig
+        fail_threshold: Severity
+        skip_clippy: Bool
+        skip_audit: Bool
+        skip_deny: Bool
+        custom_rules: List<Str>
+
+      # ─── Wiring Types ───────────────────────────────────────────────────
+      val EnvConfig
+        vars: Map<Str, Str>
+
+      port HandlerFactory
+        create_handler!(message_name: Str, env: EnvConfig) -> Opt<Handler>
+        context_name!() -> Str
+
+    group application
+      svc ParseManifest
+        input
+          json: Str
+        step execute
+          manifest = Json.parse(json)
+          ret manifest
+
+      svc ReadAllManifests
+        input
+          workspace_dir: Str
+        step execute
+          # Scan crates/*/manifest.json
+          crates_dir = f"{workspace_dir}/crates"
+          entries = Fs.list_dir(crates_dir)
+          mut manifests = []
+          for entry in entries
+            manifest_path = f"{crates_dir}/{entry}/manifest.json"
+            if Fs.exists(manifest_path)
+              content = Fs.read(manifest_path)
+              manifest = invoke ParseManifest{json: content}
+              manifests = manifests.push(manifest)
+          ret manifests
+
+      svc LoadEnvConfig
+        input
+          manifests: List<Manifest>
+        step execute
+          # Collect all required env vars from manifests
+          mut required = []
+          for m in manifests
+            for dep in m.deps.values()
+              for var in dep.env
+                required = required.push(var)
+          # Load from environment
+          mut vars = {}
+          mut missing = []
+          for var in required
+            match Env.get_opt(var)
+              Some val -> vars = vars.insert(var, val)
+              None -> missing = missing.push(var)
+          guard missing.is_empty(), f"missing env vars: {missing.join(\", \")}"
+          ret EnvConfig{vars}
+
+      svc WireApplication
+        input
+          manifests: List<Manifest>
+          factories: List<HandlerFactory>
+          env: EnvConfig
+        step execute
+          mut handlers = {}
+          mut contexts = []
+          for manifest in manifests
+            contexts = contexts.push(manifest.context)
+            factory = factories.find(|f| f.context_name() == manifest.context)
+            match factory
+              Some f ->
+                for handler_name in manifest.handlers.keys()
+                  handler = f.create_handler!(handler_name, env)
+                  match handler
+                    Some h -> handlers = handlers.insert(handler_name, h)
+                    None -> ()
+              None -> ()
+          ret {handlers, contexts}
+
+      svc RunSecurityScan
+        input
+          workspace_dir: Str
+          config: ScanConfig
+        step execute
+          mut findings = []
+          # Clippy
+          if !config.skip_clippy
+            clippy_out = Shell.run(f"cargo clippy --manifest-path {workspace_dir}/Cargo.toml -- -D warnings")
+            if clippy_out.exit_code != 0
+              findings = findings.push(ScanFinding{scanner: "clippy", severity: Severity.Error, message: clippy_out.stderr, location: None, rule_id: None})
+          # Audit
+          if !config.skip_audit
+            audit_out = Shell.run(f"cargo audit --file {workspace_dir}/Cargo.lock")
+            if audit_out.exit_code != 0
+              findings = findings.push(ScanFinding{scanner: "cargo-audit", severity: Severity.Critical, message: audit_out.stdout, location: None, rule_id: None})
+          # Deny
+          if !config.skip_deny
+            deny_out = Shell.run(f"cargo deny --manifest-path {workspace_dir}/Cargo.toml check")
+            if deny_out.exit_code != 0
+              findings = findings.push(ScanFinding{scanner: "cargo-deny", severity: Severity.Warning, message: deny_out.stdout, location: None, rule_id: None})
+          # Evaluate pass/fail
+          max_severity = findings.max_by(|f| f.severity).unwrap_or(Severity.Info)
+          passed = max_severity < config.fail_threshold
+          now = Dt.now()
+          ret ScanReport{scanned_at: now, passed, findings, summary: {}}
+
+      svc StartHarness
+        input
+          port: Int
+          bus: Bus
+        step execute
+          # Build HTTP router with bus endpoints and health check
+          # Start listening on configured port
+          ret {port, status: "running"}
+
+    group infrastructure
+      adapter BusAuthAdapter for AuthService
+        impl validate_token(token)
+          result = invoke ValidateToken{token}
+          ret result
+        impl check_permission(principal, action, resource)
+          result = invoke CheckPermission{principal, action, resource}
+          ret result

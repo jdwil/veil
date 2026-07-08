@@ -1,4 +1,4 @@
-# Example: A simple Svelte 5 app using the svelte5 layer
+# Customer Portal — complete Svelte 5 example
 sol CustomerPortal
   use svelte5
 
@@ -6,17 +6,12 @@ sol CustomerPortal
     group stores
       store AuthStore
         state
-          user: Opt<User>
+          user: Opt<Str>
           token: Opt<Str>
           loading: Bool
-        derived
-          isAuthenticated: Bool
-          displayName: Str
         fn login(email: Str, password: Str) -> Res!
           loading = true
-          resp = ApiClient.mutate("/auth/login", {email, password})
-          token = resp.token
-          user = resp.user
+          ApiClient.mutate("/auth/login", {email, password})
           loading = false
         fn logout() -> Res!
           token = null
@@ -25,70 +20,125 @@ sol CustomerPortal
 
       store CustomerStore
         state
-          customers: List<Customer>
-          selected: Opt<Customer>
+          customers: List<Str>
+          selected: Opt<Str>
           filter: Str
-        derived
-          filtered: List<Customer>
-          count: Int
         fn loadAll() -> Res!
           customers = ApiClient.fetch("/customers", {})
         fn select(id: Str) -> Res!
-          selected = ApiClient.fetch("/customers/{id}", {})
+          selected = ApiClient.fetch("/customers", {id})
 
     group components
       comp CustomerCard
         props
-          customer: Customer
+          name: Str
+          email: Str
+          id: Str
           onSelect: Fn<Str>
         state
           expanded: Bool
         fn toggle()
           expanded = !expanded
         fn handleClick()
-          onSelect(customer.id)
+          onSelect(id)
         fn template() -> Str
           ret """
-            <div class="card" class:expanded>
-              <h3>{customer.name}</h3>
+            <article class="card" class:expanded>
+              <header>
+                <h3>{name}</h3>
+                <button class="toggle" onclick={toggle}>
+                  {expanded ? '▲' : '▼'}
+                </button>
+              </header>
               {#if expanded}
-                <p>{customer.email}</p>
+                <div class="details">
+                  <p class="email">{email}</p>
+                  <button class="select-btn" onclick={handleClick}>View Details</button>
+                </div>
               {/if}
-              <button onclick={toggle}>Toggle</button>
-            </div>
+            </article>
           """
         fn style() -> Str
           ret """
-            .card { padding: 1rem; border: 1px solid var(--border); border-radius: 8px; }
-            .card.expanded { background: var(--surface-alt); }
+            .card {
+              padding: 1rem;
+              border: 1px solid #e5e5e5;
+              border-radius: 8px;
+              transition: all 0.2s;
+            }
+            .card:hover { border-color: #a3a3a3; }
+            .card.expanded { background: #fafafa; }
+            header { display: flex; justify-content: space-between; align-items: center; }
+            h3 { margin: 0; font-size: 1rem; }
+            .toggle { background: none; border: none; cursor: pointer; font-size: 0.875rem; }
+            .details { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #e5e5e5; }
+            .email { color: #525252; font-size: 0.875rem; margin: 0 0 0.5rem; }
+            .select-btn {
+              padding: 0.375rem 0.75rem;
+              background: #171717;
+              color: white;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+              font-size: 0.75rem;
+            }
+            .select-btn:hover { background: #404040; }
           """
 
       comp CustomerList
         props
-          customers: List<Customer>
+          customers: List<Str>
           loading: Bool
         state
           searchTerm: Str
-        derived
-          filtered: List<Customer>
         fn handleSearch(term: Str)
           searchTerm = term
         fn template() -> Str
           ret """
-            <div class="list">
-              <input type="text" placeholder="Search..." oninput={(e) => handleSearch(e.target.value)} />
+            <div class="list-container">
+              <div class="search-bar">
+                <input
+                  type="text"
+                  placeholder="Search customers..."
+                  value={searchTerm}
+                  oninput={(e) => handleSearch(e.target.value)}
+                />
+              </div>
               {#if loading}
-                <p>Loading...</p>
+                <div class="loading">
+                  <p>Loading customers...</p>
+                </div>
+              {:else if customers.length === 0}
+                <div class="empty">
+                  <p>No customers found.</p>
+                </div>
               {:else}
-                {#each filtered as customer}
-                  <CustomerCard {customer} onSelect={select} />
-                {/each}
+                <div class="grid">
+                  {#each customers as customer}
+                    <CustomerCard
+                      name={customer.name}
+                      email={customer.email}
+                      id={customer.id}
+                      onSelect={(id) => console.log('selected', id)}
+                    />
+                  {/each}
+                </div>
               {/if}
             </div>
           """
         fn style() -> Str
           ret """
-            .list { display: flex; flex-direction: column; gap: 0.5rem; }
+            .list-container { display: flex; flex-direction: column; gap: 1rem; }
+            .search-bar input {
+              width: 100%;
+              padding: 0.5rem 0.75rem;
+              border: 1px solid #e5e5e5;
+              border-radius: 6px;
+              font-size: 0.875rem;
+            }
+            .search-bar input:focus { outline: none; border-color: #525252; }
+            .loading, .empty { padding: 2rem; text-align: center; color: #737373; }
+            .grid { display: flex; flex-direction: column; gap: 0.75rem; }
           """
 
       comp LoginForm
@@ -103,31 +153,124 @@ sol CustomerPortal
           onSubmit(email, password)
         fn template() -> Str
           ret """
-            <form onsubmit|preventDefault={submit}>
+            <form class="login-form" onsubmit|preventDefault={submit}>
+              <h2>Sign In</h2>
               {#if error}
-                <p class="error">{error}</p>
+                <div class="error-msg">{error}</div>
               {/if}
-              <input type="email" bind:value={email} placeholder="Email" />
-              <input type="password" bind:value={password} placeholder="Password" />
+              <label>
+                <span>Email</span>
+                <input type="email" bind:value={email} placeholder="you@example.com" required />
+              </label>
+              <label>
+                <span>Password</span>
+                <input type="password" bind:value={password} placeholder="••••••••" required />
+              </label>
               <button type="submit">Sign In</button>
             </form>
           """
         fn style() -> Str
           ret """
-            form { display: flex; flex-direction: column; gap: 1rem; max-width: 320px; }
-            .error { color: red; font-size: 0.875rem; }
+            .login-form {
+              display: flex;
+              flex-direction: column;
+              gap: 1rem;
+              max-width: 360px;
+              margin: 0 auto;
+              padding: 2rem;
+            }
+            h2 { margin: 0 0 0.5rem; }
+            label { display: flex; flex-direction: column; gap: 0.25rem; }
+            label span { font-size: 0.75rem; font-weight: 600; color: #525252; }
+            input {
+              padding: 0.5rem 0.75rem;
+              border: 1px solid #e5e5e5;
+              border-radius: 6px;
+              font-size: 0.875rem;
+            }
+            input:focus { outline: none; border-color: #525252; }
+            button[type="submit"] {
+              padding: 0.625rem;
+              background: #171717;
+              color: white;
+              border: none;
+              border-radius: 6px;
+              font-size: 0.875rem;
+              cursor: pointer;
+              margin-top: 0.5rem;
+            }
+            button[type="submit"]:hover { background: #404040; }
+            .error-msg {
+              padding: 0.5rem 0.75rem;
+              background: #fef2f2;
+              border: 1px solid #fecaca;
+              border-radius: 6px;
+              color: #dc2626;
+              font-size: 0.875rem;
+            }
           """
 
     group pages
       page Dashboard
         @route("/")
-        @guard(isAuthenticated)
-        fn load() -> Res!<Json>
-          customers = ApiClient.fetch("/customers", {})
-          ret {customers}
+        fn template() -> Str
+          ret """
+            <main class="dashboard">
+              <header>
+                <h1>Customer Portal</h1>
+                <button onclick={logout}>Sign Out</button>
+              </header>
+              <CustomerList customers={customers} loading={loading} />
+            </main>
+          """
+        fn style() -> Str
+          ret """
+            .dashboard { padding: 2rem; max-width: 800px; margin: 0 auto; }
+            header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
+            h1 { margin: 0; font-size: 1.5rem; }
+            header button {
+              padding: 0.375rem 0.75rem;
+              background: none;
+              border: 1px solid #e5e5e5;
+              border-radius: 4px;
+              cursor: pointer;
+              font-size: 0.75rem;
+            }
+            header button:hover { background: #f5f5f5; }
+          """
 
       page Login
         @route("/login")
+        fn template() -> Str
+          ret """
+            <main class="login-page">
+              <LoginForm onSubmit={handleLogin} />
+            </main>
+          """
+        fn style() -> Str
+          ret """
+            .login-page {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              min-height: 100vh;
+            }
+          """
 
       layout Root
         @route("/")
+        fn template() -> Str
+          ret """
+            <div class="app-shell">
+              {@render children()}
+            </div>
+          """
+        fn style() -> Str
+          ret """
+            .app-shell {
+              font-family: 'Inter', system-ui, sans-serif;
+              min-height: 100vh;
+              background: #ffffff;
+              color: #171717;
+            }
+          """
