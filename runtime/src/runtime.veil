@@ -9,6 +9,8 @@ sol VeilRuntime
   use schemars
   use sha2
   use zip
+  use aws_sdk_s3 as s3
+  use aws_sdk_dynamodb as ddb
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Storage — VCS, Registry, Compiler, Deployer
@@ -315,82 +317,104 @@ sol VeilRuntime
 
     group infrastructure
       adapter S3ObjectStorage for ObjectStorage
-        @env(AWS_REGION, BUCKET)
+        @env(BUCKET)
         impl put(key, data)
-          s3_put_object(bucket, key, data)
+          S3Client.new().put_object().bucket(bucket).key(key).body(data).send()
         impl get(key)
-          s3_get_object(bucket, key)
+          resp = S3Client.new().get_object().bucket(bucket).key(key).send()
+          ret resp.body.collect().into_bytes()
         impl delete(key)
-          s3_delete_object(bucket, key)
+          S3Client.new().delete_object().bucket(bucket).key(key).send()
         impl exists(key)
-          s3_head_object(bucket, key)
+          S3Client.new().head_object().bucket(bucket).key(key).send()
+          ret true
         impl list(prefix)
-          s3_list_objects(bucket, prefix)
+          resp = S3Client.new().list_objects_v2().bucket(bucket).prefix(prefix).send()
+          ret resp.contents.iter().map(|o| o.key.clone()).collect()
         impl size(key)
-          s3_head_object(bucket, key)
+          resp = S3Client.new().head_object().bucket(bucket).key(key).send()
+          ret resp.content_length
 
       adapter DdbMetadataStore for MetadataStore
-        @env(AWS_REGION, DDB_TABLE)
+        @env(TABLE)
         impl create_repo(metadata)
-          ddb_client.put_item(table, metadata)
+          DdbClient.new().put_item().table_name(table).item(metadata).send()
         impl get_repo(id)
-          ddb_client.get_item(table, {pk: f"REPO#{id.value}", sk: "META"})
+          resp = DdbClient.new().get_item().table_name(table).key(id).send()
+          ret resp.item
         impl list_repos()
-          ddb_client.query_items(table, {pk_prefix: "REPO#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl delete_repo(id)
-          ddb_client.delete_item(table, {pk: f"REPO#{id.value}", sk: "META"})
+          DdbClient.new().delete_item().table_name(table).key(id).send()
         impl put_branch(repo_id, branch)
-          ddb_client.put_item(table, {pk: f"REPO#{repo_id.value}", sk: f"BRANCH#{branch.name}"})
+          DdbClient.new().put_item().table_name(table).item(branch).send()
         impl get_branch(repo_id, name)
-          ddb_client.get_item(table, {pk: f"REPO#{repo_id.value}", sk: f"BRANCH#{name}"})
+          resp = DdbClient.new().get_item().table_name(table).key(name).send()
+          ret resp.item
         impl list_branches(repo_id)
-          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "BRANCH#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl delete_branch(repo_id, name)
-          ddb_client.delete_item(table, {pk: f"REPO#{repo_id.value}", sk: f"BRANCH#{name}"})
+          DdbClient.new().delete_item().table_name(table).key(name).send()
         impl put_tag(repo_id, tag)
-          ddb_client.put_item(table, {pk: f"REPO#{repo_id.value}", sk: f"TAG#{tag.name}"})
+          DdbClient.new().put_item().table_name(table).item(tag).send()
         impl get_tag(repo_id, name)
-          ddb_client.get_item(table, {pk: f"REPO#{repo_id.value}", sk: f"TAG#{name}"})
+          resp = DdbClient.new().get_item().table_name(table).key(name).send()
+          ret resp.item
         impl list_tags(repo_id)
-          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "TAG#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl delete_tag(repo_id, name)
-          ddb_client.delete_item(table, {pk: f"REPO#{repo_id.value}", sk: f"TAG#{name}"})
+          DdbClient.new().delete_item().table_name(table).key(name).send()
         impl put_commit(repo_id, commit)
-          ddb_client.put_item(table, {pk: f"REPO#{repo_id.value}", sk: f"COMMIT#{commit.hash}"})
+          DdbClient.new().put_item().table_name(table).item(commit).send()
         impl list_commits(repo_id, branch, limit, offset)
-          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "COMMIT#", limit, offset})
+          resp = DdbClient.new().query().table_name(table).limit(limit).send()
+          ret resp.items
         impl file_history(repo_id, path, limit)
-          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: f"FILE#{path}", limit})
+          resp = DdbClient.new().query().table_name(table).limit(limit).send()
+          ret resp.items
         impl put_artifact(artifact)
-          ddb_client.put_item(table, {pk: f"ARTIFACT#{artifact.id.value}", sk: "META"})
+          DdbClient.new().put_item().table_name(table).item(artifact).send()
         impl get_artifact(id)
-          ddb_client.get_item(table, {pk: f"ARTIFACT#{id.value}", sk: "META"})
+          resp = DdbClient.new().get_item().table_name(table).key(id).send()
+          ret resp.item
         impl find_artifact_by_hash(content_hash, target)
-          ddb_client.query_items(table, {index: "hash-target", pk: content_hash, sk: target})
+          resp = DdbClient.new().query().table_name(table).index_name("hash-target").send()
+          ret resp.items.first()
         impl list_artifacts(repo_id, branch)
-          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "ARTIFACT#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl put_deployment(record)
-          ddb_client.put_item(table, {pk: f"DEPLOY#{record.artifact_id.value}", sk: f"AT#{record.deployed_at}"})
+          DdbClient.new().put_item().table_name(table).item(record).send()
         impl list_deployments(artifact_id)
-          ddb_client.query_items(table, {pk: f"DEPLOY#{artifact_id.value}", sk_prefix: "AT#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl put_layer(layer)
-          ddb_client.put_item(table, {pk: f"LAYER#{layer.name}", sk: "META"})
+          DdbClient.new().put_item().table_name(table).item(layer).send()
         impl get_layer(name)
-          ddb_client.get_item(table, {pk: f"LAYER#{name}", sk: "META"})
+          resp = DdbClient.new().get_item().table_name(table).key(name).send()
+          ret resp.item
         impl list_layers()
-          ddb_client.query_items(table, {pk_prefix: "LAYER#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl put_stub(stub)
-          ddb_client.put_item(table, {pk: f"STUB#{stub.crate_name}", sk: "META"})
+          DdbClient.new().put_item().table_name(table).item(stub).send()
         impl get_stub(crate_name)
-          ddb_client.get_item(table, {pk: f"STUB#{crate_name}", sk: "META"})
+          resp = DdbClient.new().get_item().table_name(table).key(crate_name).send()
+          ret resp.item
         impl list_stubs()
-          ddb_client.query_items(table, {pk_prefix: "STUB#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl put_dependency(edge)
-          ddb_client.put_item(table, {pk: f"DEP#{edge.dependent.value}", sk: f"ON#{edge.dependency}"})
+          DdbClient.new().put_item().table_name(table).item(edge).send()
         impl get_dependencies(repo_id)
-          ddb_client.query_items(table, {pk: f"DEP#{repo_id.value}", sk_prefix: "ON#"})
+          resp = DdbClient.new().query().table_name(table).send()
+          ret resp.items
         impl get_dependents(dependency)
-          ddb_client.query_items(table, {index: "dep-reverse", pk: dependency})
+          resp = DdbClient.new().query().table_name(table).index_name("dep-reverse").send()
+          ret resp.items
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Tools — Rig SDK tool definitions for agent-callable operations

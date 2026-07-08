@@ -825,7 +825,12 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
         script.push('\n');
         for field in &derived.fields {
             let ty = field_type_ts(field);
-            script.push_str(&format!("  let {} = $derived<{}>(() => {{ /* TODO */ return undefined as any; }});\n", to_camel(&field.name), ty));
+            if let Some(expr) = &field.default_expr {
+                let expr_str = expr_to_ts(expr, 1);
+                script.push_str(&format!("  let {} = $derived(() => {});\n", to_camel(&field.name), expr_str));
+            } else {
+                script.push_str(&format!("  let {} = $derived<{}>(() => undefined as any);\n", to_camel(&field.name), ty));
+            }
         }
     }
 

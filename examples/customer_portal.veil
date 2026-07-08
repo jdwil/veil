@@ -92,6 +92,9 @@ sol CustomerPortal
           onSelect: fn(Str)
         state
           searchTerm: Str
+        derived
+          filtered: List<Str> = customers.filter(searchTerm)
+          count: Int = customers.length
         fn handleSearch(term: Str)
           searchTerm = term
         template """

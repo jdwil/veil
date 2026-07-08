@@ -418,9 +418,17 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let type_expr = self.parse_type()?;
+        // Optional default expression: `name: Type = expr`
+        let default_expr = if self.at(&TokenKind::Eq) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         Ok(Field {
             name,
             type_expr,
+            default_expr,
             span: start_span.merge(self.current().span),
         })
     }
@@ -437,14 +445,14 @@ impl<'a> Parser<'a> {
                 fields.push(Field {
                     name,
                     type_expr,
-                    span: start_span.merge(self.current().span),
+                    default_expr: None, span: start_span.merge(self.current().span),
                 });
             } else {
                 // Shorthand: type inferred from name later.
                 fields.push(Field {
                     name: name.clone(),
                     type_expr: TypeExpr::Named(name),
-                    span: start_span,
+                    default_expr: None, span: start_span,
                 });
             }
         }
@@ -763,7 +771,7 @@ impl<'a> Parser<'a> {
                                     .map(|rt| vec![Field {
                                         name: "result".to_string(),
                                         type_expr: rt,
-                                        span: construct.span,
+                                        default_expr: None, span: construct.span,
                                     }])
                                     .unwrap_or_default(),
                                 span: construct.span,
@@ -1341,14 +1349,14 @@ impl<'a> Parser<'a> {
                                     fields.push(Field {
                                         name: field_name,
                                         type_expr: ty,
-                                        span: trans_span,
+                                        default_expr: None, span: trans_span,
                                     });
                                 } else {
                                     // Bare field name — infer type
                                     fields.push(Field {
                                         name: field_name,
                                         type_expr: TypeExpr::Named(String::new()),
-                                        span: trans_span,
+                                        default_expr: None, span: trans_span,
                                     });
                                 }
                             } else {
@@ -1373,7 +1381,7 @@ impl<'a> Parser<'a> {
                                     fields.push(Field {
                                         name: field_name,
                                         type_expr: ty,
-                                        span: trans_span,
+                                        default_expr: None, span: trans_span,
                                     });
                                 }
                             }

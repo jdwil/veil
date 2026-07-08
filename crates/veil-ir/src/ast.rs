@@ -388,6 +388,11 @@ pub struct ErrorBoundary {
 pub struct Field {
     pub name: String,
     pub type_expr: TypeExpr,
+    /// Optional default/computed expression (e.g. `count: Int = 0` or
+    /// `filtered: List<T> = items.filter(predicate)`). The meaning is
+    /// determined by the layer and codegen target, not the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_expr: Option<Expr>,
     pub span: Span,
 }
 

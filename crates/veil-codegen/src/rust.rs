@@ -1271,6 +1271,7 @@ fn gen_impls(
                 let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
                 ctx.method_returns = seeded.method_returns;
                 ctx.struct_fields = seeded.struct_fields;
+                ctx.stub_type_crate = seeded.stub_type_crate;
 
                 for (i, expr) in mimpl.body.iter().enumerate() {
                     let is_last = i == mimpl.body.len() - 1;
@@ -1380,7 +1381,13 @@ fn build_name_to_shape(solution: &Solution, registry: &LayerRegistry) -> std::co
     // them as struct targets (generating Type::new() instead of type_new())
     for stub in &registry.stubs {
         for s in &stub.structs {
-            map.insert(s.name.clone(), Shape::Struct);
+            let type_name = if let Some(alias) = &stub.alias {
+                let cap_alias = alias.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default() + &alias[1..];
+                format!("{}{}", cap_alias, s.name)
+            } else {
+                s.name.clone()
+            };
+            map.insert(type_name, Shape::Struct);
         }
     }
     map

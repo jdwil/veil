@@ -466,9 +466,15 @@ impl LayerRegistry {
             .map_err(|e| format!("cannot read {}: {}", veil_path.display(), e))?;
         for line in content.lines() {
             let t = line.trim();
-            if let Some(name) = t.strip_prefix("use ") {
-                // Strip aliases: "use onboarding_kit as ok"
-                let name = name.split_whitespace().next().unwrap_or("");
+            if let Some(rest) = t.strip_prefix("use ") {
+                // Parse: "use <name>" or "use <name> as <alias>"
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                let name = parts.first().unwrap_or(&"");
+                let alias = if parts.len() >= 3 && parts[1] == "as" {
+                    Some(parts[2].to_string())
+                } else {
+                    None
+                };
 
                 // Try to load as a layer (searches local → system → external)
                 let _ = reg.load_layer(name, dir);
@@ -485,7 +491,8 @@ impl LayerRegistry {
                 };
                 if let Some(path) = found_stub {
                     if let Ok(stub_content) = std::fs::read_to_string(&path) {
-                        if let Some(stub) = parse_stub_file(&stub_content) {
+                        if let Some(mut stub) = parse_stub_file(&stub_content) {
+                            stub.alias = alias;
                             reg.stubs.push(stub);
                         }
                     }
@@ -644,6 +651,11 @@ pub struct StubCrate {
     pub name: String,
     /// The crate version (e.g. "0.12").
     pub version: String,
+    /// Optional alias from `use <crate> as <alias>`. When set, stub types are
+    /// registered with the alias prefix (e.g. `use aws-sdk-s3 as s3` makes
+    /// types accessible as `S3Client` → `aws_sdk_s3::Client`).
+    #[serde(default)]
+    pub alias: Option<String>,
     /// Struct declarations with their methods.
     pub structs: Vec<StubStruct>,
     /// Impl blocks (methods grouped by target type).

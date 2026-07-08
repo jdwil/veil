@@ -43,9 +43,10 @@ pub struct GenCtx {
     /// becomes `state["name"]`; an assignment writes `state["name"] = ...`. This
     /// lets independent step impls share results across steps.
     pub state_locals: HashSet<String>,
-    /// Maps stub struct names to their crate name (e.g. "Client" → "aws_sdk_s3")
-    /// so codegen can generate qualified paths like `aws_sdk_s3::Client::new()`.
-    pub stub_type_crate: HashMap<String, String>,
+    /// Maps stub struct names to (crate_name, original_type_name) so codegen
+    /// generates qualified paths like `aws_sdk_s3::Client::new()` when VEIL
+    /// writes `S3Client.new()` (aliased) or `Client.new()` (unaliased).
+    pub stub_type_crate: HashMap<String, (String, String)>,
 }
 
 impl GenCtx {
@@ -165,7 +166,14 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     // Register stub crate type information
     for stub in &registry.stubs {
         for s in &stub.structs {
-            // Register struct methods
+            // Compute the aliased name for this type
+            let type_name = if let Some(alias) = &stub.alias {
+                let cap_alias = alias.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default() + &alias[1..];
+                format!("{}{}", cap_alias, s.name)
+            } else {
+                s.name.clone()
+            };
+            // Register struct methods under the aliased name
             for method in &s.methods {
                 let ret = method.return_type.as_deref().unwrap_or("()");
                 let inner = if ret.starts_with("Res!<") {
@@ -176,14 +184,13 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     ret
                 };
                 ctx.method_returns.insert(
-                    (s.name.clone(), method.name.clone()),
+                    (type_name.clone(), method.name.clone()),
                     inner.to_string(),
                 );
             }
-            // Register as a known struct
-            ctx.name_to_shape.insert(s.name.clone(), Shape::Struct);
-            // Track which crate this type came from for qualified paths
-            ctx.stub_type_crate.insert(s.name.clone(), stub.name.replace('-', "_"));
+            // Register as a known struct with qualified crate path
+            ctx.name_to_shape.insert(type_name.clone(), Shape::Struct);
+            ctx.stub_type_crate.insert(type_name, (stub.name.replace('-', "_"), s.name.clone()));
         }
         for i in &stub.impls {
             for method in &i.methods {
@@ -788,8 +795,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     if ctx.is_struct_target(&effective_target) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
         // Qualify with crate path if type is from a stub
-        let qualified = if let Some(crate_name) = ctx.stub_type_crate.get(&effective_target) {
-            format!("{}::{}", crate_name, effective_target)
+        let qualified = if let Some((crate_name, original_name)) = ctx.stub_type_crate.get(&effective_target) {
+            format!("{}::{}", crate_name, original_name)
         } else {
             effective_target.clone()
         };
