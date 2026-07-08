@@ -1520,7 +1520,6 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     for s in &module_contents.structs {
         name_to_shape.insert(s.name.clone(), Shape::Struct);
     }
-    // Also include top-level constructs (like injected Bus)
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
             name_to_shape.insert(c.name.clone(), c.shape);
@@ -1532,6 +1531,20 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
                 }
             }
             index_children(c, &mut name_to_shape);
+        }
+    }
+    // Ensure layer-provided traits (Bus, SagaStep) are ALWAYS in the map.
+    // Layer `declare` blocks inject traits/structs into solutions but they
+    // don't appear in registry.constructs — scan declarations for trait names.
+    for decl in &registry.declarations {
+        for line in decl.lines() {
+            let t = line.trim();
+            if let Some(name) = t.strip_prefix("trait ") {
+                let name = name.split_whitespace().next().unwrap_or("");
+                if !name.is_empty() {
+                    name_to_shape.insert(name.to_string(), Shape::Trait);
+                }
+            }
         }
     }
 

@@ -142,7 +142,16 @@ pub fn parse_file_with_registry(
     };
 
     match result {
-        Ok(file) if parser.errors.is_empty() => Ok(file),
+        Ok(mut file) if parser.errors.is_empty() => {
+            // Inject layer declarations for solutions (Bus, SagaStep, etc.)
+            // Skip if this is the internal __decl__ wrapper to avoid infinite recursion.
+            if let VeilFile::Solution(ref mut sol) = file {
+                if sol.name != "__decl__" {
+                    inject_declarations(sol, &parser.registry);
+                }
+            }
+            Ok(file)
+        }
         Ok(_) => Err(parser.errors),
         Err(e) => {
             parser.errors.push(e);

@@ -399,7 +399,7 @@
 
         const tabEdges: Edge[] = graph.edges
           .filter(e => itemIds.has(e.from) && itemIds.has(e.to))
-          .filter(e => e.kind !== 'Contains')
+          .filter(e => e.kind !== 'Contains' && e.kind !== 'References')
           .map((e, i) => ({
             id: `e-${e.from}-${e.to}-${i}`,
             source: String(e.from),
@@ -603,6 +603,9 @@
     // Always update selection
     selectedNodeId.set(node.id);
 
+    // Show reference edges for the selected node, hide others
+    updateReferenceEdges(graph, node.id);
+
     // Double-click to drill down
     if (irNode && event instanceof MouseEvent && event.detail === 2) {
       const children = getChildren(graph, irNode.id);
@@ -610,6 +613,33 @@
         drillDown(irNode);
         selectedNodeId.set(null);
       }
+    }
+  }
+
+  /** Add/remove reference edges based on which node is selected */
+  function updateReferenceEdges(graph: IrGraph, selectedId: string | null) {
+    // Remove any existing reference edges
+    edges = edges.filter(e => !e.id.startsWith('ref-'));
+
+    if (!selectedId) return;
+
+    // Find reference edges that touch the selected node
+    const nodeId = Number(selectedId);
+    const visibleIds = new Set(nodes.map(n => Number(n.id)));
+    const refEdges: Edge[] = graph.edges
+      .filter(e => e.kind === 'References')
+      .filter(e => (e.from === nodeId || e.to === nodeId))
+      .filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))
+      .map((e, i) => ({
+        id: `ref-${e.from}-${e.to}-${i}`,
+        source: String(e.from),
+        target: String(e.to),
+        animated: false,
+        style: getEdgeStyle('References'),
+      }));
+
+    if (refEdges.length > 0) {
+      edges = [...edges, ...refEdges];
     }
   }
 
@@ -654,6 +684,8 @@
     // Only deselect, don't interfere with anything else
     if ($selectedNodeId) {
       selectedNodeId.set(null);
+      // Remove reference edges on deselect
+      updateReferenceEdges(get(irGraph)!, null);
     }
   }
 </script>
