@@ -39,6 +39,12 @@
   }
   refreshChildren();
 
+  // Re-fetch children when the selected node changes.
+  $effect(() => {
+    const _id = node.id; // track node.id
+    refreshChildren();
+  });
+
   // Determine what kind of editor to show — driven by the core shape
   // (node kind), never by layer-specific subkind names.
   let editorType = $derived.by(() => {
