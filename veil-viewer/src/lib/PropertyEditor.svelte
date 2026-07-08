@@ -350,7 +350,15 @@
           {#each node.data.properties as [key, value]}
             <div class="prop-item">
               <span class="prop-key">{key}:</span>
-              <span class="prop-value">{value}</span>
+              {#if value.includes(',') && value.length > 40}
+                <ul class="prop-field-list">
+                  {#each value.split(', ') as field}
+                    <li>{field}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <span class="prop-value">{value}</span>
+              {/if}
             </div>
           {/each}
         </div>
@@ -509,6 +517,19 @@
   }
   .prop-key { color: var(--veil-text-dim); font-family: monospace; }
   .prop-value { color: var(--veil-text); font-family: monospace; word-break: break-all; }
+  .prop-field-list {
+    list-style: none;
+    margin: 4px 0 0 0;
+    padding: 0;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--veil-text);
+  }
+  .prop-field-list li {
+    padding: 2px 0;
+    border-bottom: 1px solid var(--veil-border, #333);
+  }
+  .prop-field-list li:last-child { border-bottom: none; }
 
   .annotations-list { display: flex; flex-direction: column; gap: 2px; }
   .annotation-item { border-radius: 6px; overflow: hidden; }

@@ -48,7 +48,7 @@ enum Commands {
     },
     /// Start the visualization server
     Serve {
-        /// Path to the .veil file
+        /// Path to a .veil file or directory containing .veil files
         file: PathBuf,
         /// Port to serve on
         #[arg(short, long, default_value = "3001")]
@@ -534,17 +534,49 @@ fn main() {
             }
         }
         Commands::Serve { file, port } => {
-            let source = std::fs::read_to_string(&file).expect("Failed to read file");
-            let tokens = veil_parser::lex(&source);
-            let registry = registry_for(&file);
+            // Collect .veil files: single file or directory scan
+            let veil_files: Vec<PathBuf> = if file.is_dir() {
+                let mut found: Vec<PathBuf> = std::fs::read_dir(&file)
+                    .expect("Failed to read directory")
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| {
+                        entry.path().extension()
+                            .map(|ext| ext == "veil")
+                            .unwrap_or(false)
+                    })
+                    .map(|entry| entry.path())
+                    .collect();
+                found.sort();
+                if found.is_empty() {
+                    eprintln!("No .veil files found in {}", file.display());
+                    std::process::exit(1);
+                }
+                found
+            } else {
+                vec![file.clone()]
+            };
 
+            // Load and parse the first file to set up the registry
+            let first_file = &veil_files[0];
+            let first_source = std::fs::read_to_string(first_file).expect("Failed to read file");
+            let registry = registry_for(first_file);
+
+            // Load all files
+            let file_entries: Vec<(PathBuf, String, bool)> = veil_files.iter().map(|path| {
+                let source = std::fs::read_to_string(path).expect("Failed to read file");
+                let editable = !source.trim_start().starts_with("pkg ");
+                (path.clone(), source, editable)
+            }).collect();
+
+            let file_count = file_entries.len();
+
+            // Build IR from the first file for initial display
+            let tokens = veil_parser::lex(&first_source);
             let veil_file = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
                 Ok(f) => f,
                 Err(errors) => {
                     eprintln!("Parse errors:");
-                    for err in &errors {
-                        eprintln!("  {}", err);
-                    }
+                    for err in &errors { eprintln!("  {}", err); }
                     std::process::exit(1);
                 }
             };
@@ -561,9 +593,8 @@ fn main() {
                     veil_ir::build_ir(&sol)
                 }
                 veil_ir::VeilFile::Composition(comp) => {
-                    let search_dir = file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+                    let search_dir = first_file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
                     let search_paths = vec![search_dir];
-
                     let mut resolved = Vec::new();
                     let found = veil_ir::find_package_files(&comp.imports, &search_paths);
                     for result in found {
@@ -583,7 +614,6 @@ fn main() {
                             Err(e) => eprintln!("Warning: {}", e),
                         }
                     }
-
                     veil_ir::build_composition_ir(comp, &resolved)
                 }
             };
@@ -591,28 +621,17 @@ fn main() {
             let node_count = graph.nodes.len();
             let edge_count = graph.edges.len();
 
-            // Only .veil solutions (the common editing case) support write-back.
-            // Packages/compositions are served read-only.
-            let editable = matches!(&veil_file, veil_ir::VeilFile::Solution(_));
-
-            println!("✓ Serving VEIL IR ({} nodes, {} edges)", node_count, edge_count);
+            println!("✓ Serving {} file(s) ({} nodes, {} edges)", file_count, node_count, edge_count);
+            if file_count > 1 {
+                for (i, entry) in file_entries.iter().enumerate() {
+                    println!("  [{}] {}", i, entry.0.display());
+                }
+            }
             println!("  Layers: {}", registry.layers.join(", "));
             println!("  API: http://localhost:{}/api/ir", port);
-            println!("  Source: http://localhost:{}/api/source", port);
-            println!("  Palette: http://localhost:{}/api/palette", port);
-            if editable {
-                println!("  Edit: POST http://localhost:{}/api/edit (write-back enabled)", port);
-            }
+            println!("  Files: http://localhost:{}/api/files", port);
 
-            // Server state: the source of truth is the on-disk .veil source.
-            // Every GET re-derives IR/generated from it, and POST /api/edit
-            // applies a structured edit, writes the file, and rebuilds.
-            let state = std::sync::Arc::new(serve::ServeState::new(
-                file.clone(),
-                source.clone(),
-                registry.clone(),
-                editable,
-            ));
+            let state = std::sync::Arc::new(serve::ServeState::with_files(file_entries, registry.clone()));
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
@@ -624,6 +643,8 @@ fn main() {
                     .route("/api/source", axum::routing::get(serve::get_source))
                     .route("/api/generated", axum::routing::get(serve::get_generated))
                     .route("/api/stubs", axum::routing::get(serve::get_stubs))
+                    .route("/api/files", axum::routing::get(serve::get_files))
+                    .route("/api/files/select", axum::routing::post(serve::post_select_file))
                     .route("/api/edit", axum::routing::post(serve::post_edit))
                     .route("/api/palette", axum::routing::get({
                         let palette = palette_json.clone();

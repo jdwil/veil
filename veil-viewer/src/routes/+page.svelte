@@ -31,6 +31,9 @@
     selectedNodeId,
     paletteConfig,
     saveEdits,
+    availableFiles,
+    activeFileName,
+    selectFile,
   } from '$lib/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
 
@@ -659,6 +662,18 @@
   <!-- Top bar -->
   <div class="top-bar">
     <div class="breadcrumbs">
+      {#if $availableFiles.length > 1}
+        <select
+          class="file-selector"
+          value={$availableFiles.findIndex(f => f.active)}
+          onchange={(e) => selectFile(Number(e.target.value))}
+        >
+          {#each $availableFiles as file}
+            <option value={file.index}>{file.name}</option>
+          {/each}
+        </select>
+        <span class="breadcrumb-sep">›</span>
+      {/if}
       {#each $breadcrumbs as crumb, i}
         {#if i > 0}
           <span class="breadcrumb-sep">›</span>
@@ -805,6 +820,19 @@
     gap: 4px;
     overflow-x: auto;
   }
+
+  .file-selector {
+    background: var(--veil-input-bg);
+    border: 1px solid var(--veil-border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--veil-text);
+    cursor: pointer;
+    outline: none;
+  }
+  .file-selector:focus { border-color: var(--veil-accent); }
 
   .breadcrumb-item {
     background: none;

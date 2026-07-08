@@ -22,22 +22,53 @@ use veil_ir::{EditOp, LayerRegistry};
 
 /// Shared, mutable server state.
 pub struct ServeState {
-    pub file: PathBuf,
+    pub files: Vec<FileEntry>,
     pub registry: LayerRegistry,
-    pub editable: bool,
-    /// The current .veil source — the source of truth. Guarded so an edit is
-    /// atomic against concurrent reads.
+    pub active_file: Mutex<usize>,  // index into files
+}
+
+/// A loaded .veil file with its source and path.
+pub struct FileEntry {
+    pub path: PathBuf,
+    pub name: String,
     pub source: Mutex<String>,
+    pub editable: bool,
 }
 
 impl ServeState {
     pub fn new(file: PathBuf, source: String, registry: LayerRegistry, editable: bool) -> Self {
+        let name = file.file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         ServeState {
-            file,
+            files: vec![FileEntry {
+                path: file,
+                name,
+                source: Mutex::new(source),
+                editable,
+            }],
             registry,
-            editable,
-            source: Mutex::new(source),
+            active_file: Mutex::new(0),
         }
+    }
+
+    pub fn with_files(files: Vec<(PathBuf, String, bool)>, registry: LayerRegistry) -> Self {
+        let entries = files.into_iter().map(|(path, source, editable)| {
+            let name = path.file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            FileEntry { path, name, source: Mutex::new(source), editable }
+        }).collect();
+        ServeState {
+            files: entries,
+            registry,
+            active_file: Mutex::new(0),
+        }
+    }
+
+    fn active_entry(&self) -> &FileEntry {
+        let idx = *self.active_file.lock().unwrap();
+        &self.files[idx]
     }
 
     /// Parse the current source into a Solution using the server's registry.
@@ -78,7 +109,8 @@ fn server_error(msg: String) -> impl IntoResponse {
 }
 
 pub async fn get_ir(State(state): State<SharedState>) -> axum::response::Response {
-    let source = state.source.lock().unwrap().clone();
+    let entry = state.active_entry();
+    let source = entry.source.lock().unwrap().clone();
     match state.ir_json(&source) {
         Ok(json) => json_ok(json).into_response(),
         Err(e) => server_error(e).into_response(),
@@ -86,12 +118,14 @@ pub async fn get_ir(State(state): State<SharedState>) -> axum::response::Respons
 }
 
 pub async fn get_source(State(state): State<SharedState>) -> impl IntoResponse {
-    let source = state.source.lock().unwrap().clone();
+    let entry = state.active_entry();
+    let source = entry.source.lock().unwrap().clone();
     ([(header::CONTENT_TYPE, "text/plain")], source)
 }
 
 pub async fn get_generated(State(state): State<SharedState>) -> axum::response::Response {
-    let source = state.source.lock().unwrap().clone();
+    let entry = state.active_entry();
+    let source = entry.source.lock().unwrap().clone();
     match state.generated_json(&source) {
         Ok(json) => json_ok(json).into_response(),
         Err(e) => server_error(e).into_response(),
@@ -104,6 +138,47 @@ pub async fn get_stubs(State(state): State<SharedState>) -> axum::response::Resp
     match serde_json::to_string(&state.registry.stubs) {
         Ok(json) => json_ok(json).into_response(),
         Err(e) => server_error(e.to_string()).into_response(),
+    }
+}
+
+/// GET /api/files — list all loaded files with their names and active status.
+pub async fn get_files(State(state): State<SharedState>) -> axum::response::Response {
+    let active_idx = *state.active_file.lock().unwrap();
+    let files: Vec<serde_json::Value> = state.files.iter().enumerate().map(|(i, entry)| {
+        serde_json::json!({
+            "index": i,
+            "name": entry.name,
+            "path": entry.path.to_string_lossy(),
+            "editable": entry.editable,
+            "active": i == active_idx,
+        })
+    }).collect();
+    match serde_json::to_string(&files) {
+        Ok(json) => json_ok(json).into_response(),
+        Err(e) => server_error(e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/files/select — switch the active file by index.
+#[derive(Debug, Deserialize)]
+pub struct SelectFileRequest {
+    pub index: usize,
+}
+
+pub async fn post_select_file(
+    State(state): State<SharedState>,
+    Json(req): Json<SelectFileRequest>,
+) -> axum::response::Response {
+    if req.index >= state.files.len() {
+        return (StatusCode::BAD_REQUEST, "invalid file index".to_string()).into_response();
+    }
+    *state.active_file.lock().unwrap() = req.index;
+    // Return the IR for the newly selected file
+    let entry = &state.files[req.index];
+    let source = entry.source.lock().unwrap().clone();
+    match state.ir_json(&source) {
+        Ok(json) => json_ok(json).into_response(),
+        Err(e) => server_error(e).into_response(),
     }
 }
 
@@ -126,13 +201,14 @@ pub async fn post_edit(
     State(state): State<SharedState>,
     Json(req): Json<EditRequest>,
 ) -> axum::response::Response {
-    if !state.editable {
+    let entry = state.active_entry();
+    if !entry.editable {
         return (StatusCode::BAD_REQUEST, "this file is served read-only".to_string())
             .into_response();
     }
 
     // Lock for the whole edit so the write-back is atomic.
-    let mut guard = state.source.lock().unwrap();
+    let mut guard = entry.source.lock().unwrap();
 
     // 1. Parse current source into the AST.
     let mut sol = match state.parse(&guard) {
@@ -161,7 +237,7 @@ pub async fn post_edit(
     }
 
     // 5. Commit: write the file and update in-memory state.
-    if let Err(e) = std::fs::write(&state.file, &new_source) {
+    if let Err(e) = std::fs::write(&entry.path, &new_source) {
         return server_error(format!("failed to write file: {}", e)).into_response();
     }
     *guard = new_source.clone();

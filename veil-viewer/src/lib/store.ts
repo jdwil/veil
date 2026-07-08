@@ -16,6 +16,21 @@ const SOURCE_URL = `${API_BASE}/source`;
 const PALETTE_URL = `${API_BASE}/palette`;
 const EDIT_URL = `${API_BASE}/edit`;
 const STUBS_URL = `${API_BASE}/stubs`;
+const FILES_URL = `${API_BASE}/files`;
+const SELECT_FILE_URL = `${API_BASE}/files/select`;
+
+/** Loaded file metadata from the server. */
+export interface VeilFileInfo {
+  index: number;
+  name: string;
+  path: string;
+  editable: boolean;
+  active: boolean;
+}
+
+/** List of available files and the currently active one. */
+export const availableFiles = writable<VeilFileInfo[]>([]);
+export const activeFileName = writable<string>('');
 
 /** External crate stubs (from .stub files), for the External palette section. */
 export const stubs = writable<StubCrate[]>([]);
@@ -49,11 +64,12 @@ export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes, palRes, stubRes] = await Promise.all([
+    const [irRes, srcRes, palRes, stubRes, filesRes] = await Promise.all([
       fetch(API_URL),
       fetch(SOURCE_URL),
       fetch(PALETTE_URL),
       fetch(STUBS_URL).catch(() => null),
+      fetch(FILES_URL).catch(() => null),
     ]);
     if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
     const data: IrGraph = await irRes.json();
@@ -70,8 +86,15 @@ export async function fetchIr() {
     if (palRes.ok) {
       const palette: PaletteEntry[] = await palRes.json();
       paletteConfig.set(palette);
-      // Register layer visuals so getNodeStyle can resolve subkinds dynamically.
       setPaletteStyles(palette);
+    }
+
+    // Load file list
+    if (filesRes && filesRes.ok) {
+      const files: VeilFileInfo[] = await filesRes.json();
+      availableFiles.set(files);
+      const active = files.find(f => f.active);
+      if (active) activeFileName.set(active.name);
     }
 
     // Find root and determine entry point
@@ -107,6 +130,46 @@ export function navigateTo(id: number | null) {
     const idx = bc.findIndex(b => b.id === id);
     return idx >= 0 ? bc.slice(0, idx + 1) : bc;
   });
+}
+
+/** Switch to a different loaded file by index. Re-fetches IR from the server. */
+export async function selectFile(index: number) {
+  loading.set(true);
+  error.set(null);
+  try {
+    const res = await fetch(SELECT_FILE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index }),
+    });
+    if (!res.ok) throw new Error(`Failed to select file: HTTP ${res.status}`);
+    const data: IrGraph = await res.json();
+    irGraph.set(data);
+
+    // Refresh source
+    const srcRes = await fetch(SOURCE_URL);
+    if (srcRes.ok) veilSource.set(await srcRes.text());
+
+    // Update file list
+    const filesRes = await fetch(FILES_URL);
+    if (filesRes.ok) {
+      const files: VeilFileInfo[] = await filesRes.json();
+      availableFiles.set(files);
+      const active = files.find(f => f.active);
+      if (active) activeFileName.set(active.name);
+    }
+
+    // Reset navigation to root
+    const root = data.nodes.find(n => n.kind === 'Solution');
+    if (root) {
+      currentParent.set(root.id);
+      breadcrumbs.set([{ id: root.id, name: root.name }]);
+    }
+  } catch (e) {
+    error.set(e instanceof Error ? e.message : 'Failed to switch file');
+  } finally {
+    loading.set(false);
+  }
 }
 
 /** Get children of a given parent node */
