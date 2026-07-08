@@ -687,6 +687,8 @@ impl IrBuilder {
                     self.set_parent(id, step_id);
                     self.set_subkind(id, "call");
                     self.graph.add_edge(step_id, id, EdgeKind::Contains);
+                    // Store full expression for display in the property panel.
+                    self.set_property(id, "expr", &expr_to_display(expr));
                     let args_str = call.args.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
                     if !args_str.is_empty() {
                         self.set_property(id, "args", &args_str);
@@ -727,9 +729,10 @@ impl IrBuilder {
                 Expr::Assign(name, rhs) => {
                     let rhs_display = expr_to_display(rhs);
                     let label = format!("{} = {}", name, rhs_display);
-                    let id = self.graph.add_node(NodeKind::Action, label, Span::new(0, 0));
+                    let id = self.graph.add_node(NodeKind::Action, label.clone(), Span::new(0, 0));
                     self.set_parent(id, step_id);
                     self.set_subkind(id, "assign");
+                    self.set_property(id, "expr", &label);
                     self.graph.add_edge(step_id, id, EdgeKind::Contains);
 
                     if let Expr::Call(call) = rhs.as_ref() {
