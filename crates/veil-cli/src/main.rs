@@ -434,7 +434,16 @@ fn main() {
         }
         Commands::Gen { file, output, target } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
-            let (sol, registry) = parse_solution_or_exit(&source, &file);
+            let registry = registry_for(&file);
+            let tokens = veil_parser::lex(&source);
+            let veil_file = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
+                Ok(f) => f,
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors { eprintln!("  {}", err); }
+                    std::process::exit(1);
+                }
+            };
 
             let codegen_target = veil_codegen::CodegenTarget::from_str(&target)
                 .unwrap_or_else(|| {
@@ -442,7 +451,33 @@ fn main() {
                     std::process::exit(1);
                 });
 
-            let files = veil_codegen::generate_for_target(&sol, &registry, codegen_target);
+            let files = match &veil_file {
+                veil_ir::ast::VeilFile::Solution(sol) => {
+                    veil_codegen::generate_for_target(sol, &registry, codegen_target)
+                }
+                veil_ir::ast::VeilFile::Package(pkg) => {
+                    // Packages with expose blocks generate typed API clients (TS)
+                    // or Rust library crates
+                    match codegen_target {
+                        veil_codegen::CodegenTarget::TypeScript => {
+                            let project = veil_codegen::typescript::generate_api_client_from_package(pkg);
+                            project.files.into_iter()
+                                .map(|f| veil_codegen::GeneratedFile { path: f.path, content: f.content })
+                                .collect()
+                        }
+                        veil_codegen::CodegenTarget::Rust => {
+                            // For now, packages need a sol wrapper for Rust codegen
+                            eprintln!("Rust codegen for pkg files not yet supported. Wrap in a sol.");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Composition files do not generate code directly.");
+                    std::process::exit(1);
+                }
+            };
+
             for f in &files {
                 let path = output.join(&f.path);
                 if let Some(parent) = path.parent() {
