@@ -1048,7 +1048,7 @@ chrono.workspace = true
     // author declares any Bus/step params explicitly; a bare trait-typed
     // parameter is passed by shared reference.
     for f in functions {
-        let name_to_shape = build_name_to_shape(solution);
+        let name_to_shape = build_name_to_shape(solution, registry);
         let mut ctx = build_ctx_from_solution(solution, name_to_shape, registry);
         for p in &f.params {
             ctx.locals.insert(p.name.clone());
@@ -1148,7 +1148,7 @@ fn gen_impls(
     out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
 
     // Name→shape map so the body translator resolves calls correctly.
-    let name_to_shape = build_name_to_shape(solution);
+    let name_to_shape = build_name_to_shape(solution, registry);
 
     // Collect external-effect hooks (`target.method(...)` where target is not a
     // known construct/local) so we can emit compiling stub fns for them.
@@ -1353,7 +1353,7 @@ fn find_construct_by_name<'a>(solution: &'a Solution, name: &str) -> Option<&'a 
 
 /// Build a name→shape map from ALL constructs in the solution (top-level and
 /// nested), used by the expression translator for shape-driven call resolution.
-fn build_name_to_shape(solution: &Solution) -> std::collections::HashMap<String, Shape> {
+fn build_name_to_shape(solution: &Solution, registry: &LayerRegistry) -> std::collections::HashMap<String, Shape> {
     use std::collections::HashMap;
     fn index(c: &Construct, map: &mut HashMap<String, Shape>) {
         map.insert(c.name.clone(), c.shape);
@@ -1366,6 +1366,11 @@ fn build_name_to_shape(solution: &Solution) -> std::collections::HashMap<String,
         if let TopLevelItem::Construct(c) = item {
             index(c, &mut map);
         }
+    }
+    // Also include layer-defined constructs (from all loaded layers)
+    // so adapters can reference types like S3Client, DdbClient etc.
+    for spec in &registry.constructs {
+        map.insert(spec.name.clone(), spec.shape);
     }
     map
 }
