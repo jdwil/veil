@@ -43,6 +43,28 @@ pkg dlx_core
       permissions: Int
       date_joined: Dt
 
+    val ListDTO
+      id: Id
+      cohort_id: Id
+      name: Str
+      created_on: Dt
+
+    val SegmentDTO
+      id: Id
+      cohort_id: Id
+      name: Str
+      filter_criteria: Json
+      last_evaluated_on: Opt<Dt>
+      created_on: Dt
+
+    val RosterDTO
+      id: Id
+      cohort_id: Id
+      name: Str
+      start_time: Dt
+      end_time: Dt
+      created_on: Dt
+
     # Queries — read state, return DTOs
     qry GetTenant
       id: Id
@@ -72,6 +94,30 @@ pkg dlx_core
       user_id: Id
       -> List<CohortDTO>
 
+    qry GetListsByCohort
+      cohort_id: Id
+      -> List<ListDTO>
+
+    qry GetSegmentsByCohort
+      cohort_id: Id
+      -> List<SegmentDTO>
+
+    qry GetRostersByCohort
+      cohort_id: Id
+      -> List<RosterDTO>
+
+    qry GetListMembers
+      list_id: Id
+      -> List<CohortMemberDTO>
+
+    qry GetSegmentMembers
+      segment_id: Id
+      -> List<CohortMemberDTO>
+
+    qry GetRosterMembers
+      roster_id: Id
+      -> List<CohortMemberDTO>
+
     # Commands — mutate state, ID passed in, return success/failure
     cmd CreateTenant
       id: Id
@@ -100,6 +146,42 @@ pkg dlx_core
 
     cmd RemoveCohortMember
       cohort_id: Id
+      user_id: Id
+      -> Res!
+
+    cmd CreateList
+      id: Id
+      cohort_id: Id
+      name: Str
+      -> Res!
+
+    cmd CreateSegment
+      id: Id
+      cohort_id: Id
+      name: Str
+      view_id: Id
+      -> Res!
+
+    cmd CreateRoster
+      id: Id
+      cohort_id: Id
+      name: Str
+      start_time: Dt
+      end_time: Dt
+      -> Res!
+
+    cmd AddListMember
+      list_id: Id
+      user_id: Id
+      -> Res!
+
+    cmd AddSegmentMember
+      segment_id: Id
+      user_id: Id
+      -> Res!
+
+    cmd AddRosterMember
+      roster_id: Id
       user_id: Id
       -> Res!
 
@@ -193,6 +275,63 @@ pkg dlx_core
         updated_on: Dt
         deleted_on: Opt<Dt>
 
+      ent List
+        id: Id
+        cohort_id: Id
+        name: Str
+        created_on: Dt
+        updated_on: Dt
+        deleted_on: Opt<Dt>
+        tenant_id: Opt<Id>
+
+      ent Segment
+        id: Id
+        cohort_id: Id
+        name: Str
+        view_id: Id
+        evaluation_interval_hours: Int
+        last_evaluated_on: Opt<Dt>
+        last_evaluation_error: Opt<Str>
+        filter_criteria: Json
+        member_table_columns: Json
+        created_on: Dt
+        updated_on: Dt
+        deleted_on: Opt<Dt>
+        tenant_id: Opt<Id>
+
+      ent Roster
+        id: Id
+        cohort_id: Id
+        name: Str
+        start_time: Dt
+        end_time: Dt
+        created_on: Dt
+        updated_on: Dt
+        deleted_on: Opt<Dt>
+        tenant_id: Opt<Id>
+        @invariant(start_time < end_time)
+
+      ent ListMember
+        id: Id
+        list_id: Id
+        user_id: Id
+        created_on: Dt
+        deleted_on: Opt<Dt>
+
+      ent SegmentMember
+        id: Id
+        segment_id: Id
+        user_id: Id
+        created_on: Dt
+        deleted_on: Opt<Dt>
+
+      ent RosterMember
+        id: Id
+        roster_id: Id
+        user_id: Id
+        created_on: Dt
+        deleted_on: Opt<Dt>
+
       port TenantRepo
         find!(id: Id) -> Opt<Tenant>
         save!(tenant: Tenant)
@@ -219,6 +358,39 @@ pkg dlx_core
         save!(member: CohortMember)
         delete!(id: Id)
 
+      port ListRepo
+        find!(id: Id) -> Opt<List>
+        find_by_cohort!(cohort_id: Id) -> List<List>
+        save!(list: List)
+        delete!(id: Id)
+
+      port SegmentRepo
+        find!(id: Id) -> Opt<Segment>
+        find_by_cohort!(cohort_id: Id) -> List<Segment>
+        save!(segment: Segment)
+        delete!(id: Id)
+
+      port RosterRepo
+        find!(id: Id) -> Opt<Roster>
+        find_by_cohort!(cohort_id: Id) -> List<Roster>
+        save!(roster: Roster)
+        delete!(id: Id)
+
+      port ListMemberRepo
+        find_by_list!(list_id: Id) -> List<ListMember>
+        add!(member: ListMember)
+        remove!(id: Id)
+
+      port SegmentMemberRepo
+        find_by_segment!(segment_id: Id) -> List<SegmentMember>
+        add!(member: SegmentMember)
+        remove!(id: Id)
+
+      port RosterMemberRepo
+        find_by_roster!(roster_id: Id) -> List<RosterMember>
+        add!(member: RosterMember)
+        remove!(id: Id)
+
     group application
       svc HandleGetCohort
         input
@@ -241,6 +413,93 @@ pkg dlx_core
         step execute
           member = CohortMember.new(cohort_id, user_id)
           CohortMemberRepo.save!(member)
+
+      svc HandleGetListsByCohort
+        input
+          cohort_id: Id
+        step query
+          lists = ListRepo.find_by_cohort!(cohort_id)
+          ret lists
+
+      svc HandleGetSegmentsByCohort
+        input
+          cohort_id: Id
+        step query
+          segments = SegmentRepo.find_by_cohort!(cohort_id)
+          ret segments
+
+      svc HandleGetRostersByCohort
+        input
+          cohort_id: Id
+        step query
+          rosters = RosterRepo.find_by_cohort!(cohort_id)
+          ret rosters
+
+      svc HandleCreateList
+        input
+          id: Id
+          cohort_id: Id
+          name: Str
+        step execute
+          list = List.new(id, cohort_id, name)
+          ListRepo.save!(list)
+
+      svc HandleCreateSegment
+        input
+          id: Id
+          cohort_id: Id
+          name: Str
+          view_id: Id
+        step execute
+          segment = Segment.new(id, cohort_id, name, view_id)
+          SegmentRepo.save!(segment)
+
+      svc HandleCreateRoster
+        input
+          id: Id
+          cohort_id: Id
+          name: Str
+          start_time: Dt
+          end_time: Dt
+        step execute
+          roster = Roster.new(id, cohort_id, name, start_time, end_time)
+          RosterRepo.save!(roster)
+
+      svc HandleAddListMember
+        input
+          list_id: Id
+          user_id: Id
+        step validate
+          list = ListRepo.find!(list_id)
+          is_cohort_member = CohortMemberRepo.find_by_cohort!(list.cohort_id)
+          @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
+        step execute
+          member = ListMember.new(list_id, user_id)
+          ListMemberRepo.add!(member)
+
+      svc HandleAddSegmentMember
+        input
+          segment_id: Id
+          user_id: Id
+        step validate
+          segment = SegmentRepo.find!(segment_id)
+          is_cohort_member = CohortMemberRepo.find_by_cohort!(segment.cohort_id)
+          @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
+        step execute
+          member = SegmentMember.new(segment_id, user_id)
+          SegmentMemberRepo.add!(member)
+
+      svc HandleAddRosterMember
+        input
+          roster_id: Id
+          user_id: Id
+        step validate
+          roster = RosterRepo.find!(roster_id)
+          is_cohort_member = CohortMemberRepo.find_by_cohort!(roster.cohort_id)
+          @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
+        step execute
+          member = RosterMember.new(roster_id, user_id)
+          RosterMemberRepo.add!(member)
 
     group infrastructure
       adapter PgTenantRepo for TenantRepo
