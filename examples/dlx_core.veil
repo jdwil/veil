@@ -549,3 +549,63 @@ pkg dlx_core
           sqlx.Query.new("INSERT INTO cohort_members (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET updated_on = now()").bind(member.id).execute!(pool)
         impl delete(id)
           sqlx.Query.new("UPDATE cohort_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+      adapter PgListRepo for ListRepo
+        @env(DATABASE_URL)
+        impl find(id)
+          sqlx.Query.new("SELECT * FROM lists WHERE id = $1").bind(id).fetch_optional!(pool)
+        impl find_by_cohort(cohort_id)
+          sqlx.Query.new("SELECT * FROM lists WHERE cohort_id = $1").bind(cohort_id).fetch_all!(pool)
+        impl save(list)
+          sqlx.Query.new("INSERT INTO lists (id, cohort_id, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET name = $3, updated_on = now()").bind(list.id).bind(list.cohort_id).bind(list.name).execute!(pool)
+        impl delete(id)
+          sqlx.Query.new("UPDATE lists SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+      adapter PgSegmentRepo for SegmentRepo
+        @env(DATABASE_URL)
+        impl find(id)
+          sqlx.Query.new("SELECT * FROM segments WHERE id = $1").bind(id).fetch_optional!(pool)
+        impl find_by_cohort(cohort_id)
+          sqlx.Query.new("SELECT * FROM segments WHERE cohort_id = $1").bind(cohort_id).fetch_all!(pool)
+        impl save(segment)
+          sqlx.Query.new("INSERT INTO segments (id, cohort_id, name, view_id) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET name = $3, updated_on = now()").bind(segment.id).bind(segment.cohort_id).bind(segment.name).bind(segment.view_id).execute!(pool)
+        impl delete(id)
+          sqlx.Query.new("UPDATE segments SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+      adapter PgRosterRepo for RosterRepo
+        @env(DATABASE_URL)
+        impl find(id)
+          sqlx.Query.new("SELECT * FROM rosters WHERE id = $1").bind(id).fetch_optional!(pool)
+        impl find_by_cohort(cohort_id)
+          sqlx.Query.new("SELECT * FROM rosters WHERE cohort_id = $1").bind(cohort_id).fetch_all!(pool)
+        impl save(roster)
+          sqlx.Query.new("INSERT INTO rosters (id, cohort_id, name, start_time, end_time) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET name = $3, updated_on = now()").bind(roster.id).bind(roster.cohort_id).bind(roster.name).bind(roster.start_time).bind(roster.end_time).execute!(pool)
+        impl delete(id)
+          sqlx.Query.new("UPDATE rosters SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+      adapter PgListMemberRepo for ListMemberRepo
+        @env(DATABASE_URL)
+        impl find_by_list(list_id)
+          sqlx.Query.new("SELECT * FROM list_members WHERE list_id = $1").bind(list_id).fetch_all!(pool)
+        impl add(member)
+          sqlx.Query.new("INSERT INTO list_members (id, list_id, user_id) VALUES ($1, $2, $3)").bind(member.id).bind(member.list_id).bind(member.user_id).execute!(pool)
+        impl remove(id)
+          sqlx.Query.new("UPDATE list_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+      adapter PgSegmentMemberRepo for SegmentMemberRepo
+        @env(DATABASE_URL)
+        impl find_by_segment(segment_id)
+          sqlx.Query.new("SELECT * FROM segment_members WHERE segment_id = $1").bind(segment_id).fetch_all!(pool)
+        impl add(member)
+          sqlx.Query.new("INSERT INTO segment_members (id, segment_id, user_id) VALUES ($1, $2, $3)").bind(member.id).bind(member.segment_id).bind(member.user_id).execute!(pool)
+        impl remove(id)
+          sqlx.Query.new("UPDATE segment_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
+
+      adapter PgRosterMemberRepo for RosterMemberRepo
+        @env(DATABASE_URL)
+        impl find_by_roster(roster_id)
+          sqlx.Query.new("SELECT * FROM roster_members WHERE roster_id = $1").bind(roster_id).fetch_all!(pool)
+        impl add(member)
+          sqlx.Query.new("INSERT INTO roster_members (id, roster_id, user_id) VALUES ($1, $2, $3)").bind(member.id).bind(member.roster_id).bind(member.user_id).execute!(pool)
+        impl remove(id)
+          sqlx.Query.new("UPDATE roster_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
