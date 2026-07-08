@@ -237,6 +237,10 @@ uuid.workspace = true"#);
             cargo.push_str("chrono.workspace = true\ntracing.workspace = true\nserde_json.workspace = true\n");
             // Shared error types + Bus trait, defined once.
             cargo.push_str("veil_shared = { path = \"../veil_shared\" }\n");
+            // Stub crate dependencies
+            for stub in &registry.stubs {
+                cargo.push_str(&format!("{}.workspace = true\n", stub.name));
+            }
             cargo
         },
     });
@@ -1371,6 +1375,13 @@ fn build_name_to_shape(solution: &Solution, registry: &LayerRegistry) -> std::co
     // so adapters can reference types like S3Client, DdbClient etc.
     for spec in &registry.constructs {
         map.insert(spec.name.clone(), spec.shape);
+    }
+    // Also include stub-declared structs so adapter bodies recognize
+    // them as struct targets (generating Type::new() instead of type_new())
+    for stub in &registry.stubs {
+        for s in &stub.structs {
+            map.insert(s.name.clone(), Shape::Struct);
+        }
     }
     map
 }

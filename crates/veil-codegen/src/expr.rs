@@ -43,6 +43,9 @@ pub struct GenCtx {
     /// becomes `state["name"]`; an assignment writes `state["name"] = ...`. This
     /// lets independent step impls share results across steps.
     pub state_locals: HashSet<String>,
+    /// Maps stub struct names to their crate name (e.g. "Client" → "aws_sdk_s3")
+    /// so codegen can generate qualified paths like `aws_sdk_s3::Client::new()`.
+    pub stub_type_crate: HashMap<String, String>,
 }
 
 impl GenCtx {
@@ -60,6 +63,7 @@ impl GenCtx {
             routing_traits: HashSet::new(),
             async_fns: HashSet::new(),
             state_locals: HashSet::new(),
+            stub_type_crate: HashMap::new(),
         }
     }
 
@@ -178,6 +182,8 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             }
             // Register as a known struct
             ctx.name_to_shape.insert(s.name.clone(), Shape::Struct);
+            // Track which crate this type came from for qualified paths
+            ctx.stub_type_crate.insert(s.name.clone(), stub.name.replace('-', "_"));
         }
         for i in &stub.impls {
             for method in &i.methods {
@@ -781,6 +787,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     };
     if ctx.is_struct_target(&effective_target) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
+        // Qualify with crate path if type is from a stub
+        let qualified = if let Some(crate_name) = ctx.stub_type_crate.get(&effective_target) {
+            format!("{}::{}", crate_name, effective_target)
+        } else {
+            effective_target.clone()
+        };
         // Clone args to avoid move issues
         let cloned = call.args.iter()
             .map(|a| {
@@ -788,7 +800,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 match a { Expr::Ident(_) => format!("{}.clone()", s), _ => s }
             }).collect::<Vec<_>>().join(", ");
         if method == "new" {
-            return format!("{}::{}({})", effective_target, to_snake(method), cloned);
+            return format!("{}::{}({})", qualified, to_snake(method), cloned);
         }
         // Non-new method on a struct: check if first arg is the instance
         // e.g. call Email.validate(email) → email.validate()
@@ -976,6 +988,7 @@ impl GenCtx {
             routing_traits: self.routing_traits.clone(),
             async_fns: self.async_fns.clone(),
             state_locals: self.state_locals.clone(),
+            stub_type_crate: self.stub_type_crate.clone(),
         }
     }
 }
