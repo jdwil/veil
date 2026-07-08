@@ -399,3 +399,67 @@ sol TestApp
     // Unit variant still works
     assert!(out.contains("Empty,"), "unit variant missing:\n{}", grep(&out, "Empty"));
 }
+
+/// Integration test: generate Rust from all example .veil files and run cargo check.
+/// This ensures the codegen produces valid Rust that the compiler accepts.
+#[test]
+fn generated_examples_compile() {
+    use std::process::Command;
+
+    let examples = [
+        "customer_onboarding.veil",
+        "sales_crm.veil",
+        "hello_world.veil",
+    ];
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+
+    for example_name in &examples {
+        let example = base.join(example_name);
+        let source = std::fs::read_to_string(&example)
+            .unwrap_or_else(|_| panic!("failed to read {}", example.display()));
+        let mut reg = veil_ir::LayerRegistry::builtin();
+
+        // Load layers referenced by the file
+        for line in source.lines() {
+            let t = line.trim();
+            if let Some(name) = t.strip_prefix("use ") {
+                let name = name.split_whitespace().next().unwrap_or("");
+                let dir = example.parent().unwrap();
+                let _ = reg.load_layer(name, dir);
+            }
+        }
+
+        let tokens = veil_parser::lex(&source);
+        let sol = veil_parser::parse_with_registry(&tokens, reg.clone())
+            .unwrap_or_else(|e| panic!("{} failed to parse: {:?}", example.display(), e));
+        let project = veil_codegen::generate(&sol, &reg);
+
+        // Write to a temp directory
+        let tmp = std::env::temp_dir().join(format!("veil_compile_test_{}", example_name.replace('/', "_").replace('.', "_")));
+        let _ = std::fs::remove_dir_all(&tmp);
+        for f in &project.files {
+            let path = tmp.join(&f.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, &f.content).unwrap();
+        }
+
+        // Run cargo check
+        let output = Command::new("cargo")
+            .args(["check"])
+            .current_dir(&tmp)
+            .output()
+            .expect("failed to run cargo check");
+
+        assert!(
+            output.status.success(),
+            "{} generated code fails cargo check:\n{}",
+            example.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

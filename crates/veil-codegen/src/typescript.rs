@@ -450,7 +450,17 @@ fn unaryop_to_ts(op: &UnaryOp) -> &'static str {
 // ─── Project Generation ──────────────────────────────────────────────────────
 
 /// Generate a TypeScript project from a VEIL Solution AST.
+/// `used_packages` optionally provides expose blocks from packages the solution
+/// imports, enabling typed API client generation alongside the frontend code.
 pub fn generate_ts(solution: &Solution, _registry: &LayerRegistry) -> TsProject {
+    generate_ts_with_packages(solution, _registry, &[])
+}
+
+pub fn generate_ts_with_packages(
+    solution: &Solution,
+    _registry: &LayerRegistry,
+    used_packages: &[(String, ExposeBlock)],
+) -> TsProject {
     let mut files = Vec::new();
     let sol_name = to_camel(&solution.name);
 
@@ -474,6 +484,11 @@ pub fn generate_ts(solution: &Solution, _registry: &LayerRegistry) -> TsProject 
     // Generate Svelte component files for Component-shaped structs
     // (identified by subkind "Component" from the svelte5 layer)
     files.extend(gen_svelte_components(&modules));
+
+    // Generate typed API clients for any used packages with expose blocks
+    for (pkg_name, expose) in used_packages {
+        files.extend(generate_api_client(pkg_name, expose));
+    }
 
     // Generate index.ts (re-exports)
     files.push(gen_index(&sol_name));

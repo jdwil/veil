@@ -453,7 +453,30 @@ fn main() {
 
             let files = match &veil_file {
                 veil_ir::ast::VeilFile::Solution(sol) => {
-                    veil_codegen::generate_for_target(sol, &registry, codegen_target)
+                    // For TypeScript target: check if any used packages have expose blocks
+                    if codegen_target == veil_codegen::CodegenTarget::TypeScript {
+                        let dir = file.parent().unwrap_or(std::path::Path::new("."));
+                        let mut used_pkgs: Vec<(String, veil_ir::ast::ExposeBlock)> = Vec::new();
+                        for use_ref in &sol.uses {
+                            // Try loading the package file to find its expose block
+                            let pkg_path = dir.join(format!("{}.veil", use_ref.package_name));
+                            if pkg_path.exists() {
+                                if let Ok(pkg_source) = std::fs::read_to_string(&pkg_path) {
+                                    let pkg_tokens = veil_parser::lex(&pkg_source);
+                                    let pkg_reg = registry_for(&pkg_path);
+                                    if let Ok(veil_ir::ast::VeilFile::Package(pkg)) =
+                                        veil_parser::parse_file_with_registry(&pkg_tokens, pkg_reg) {
+                                        if let Some(expose) = pkg.expose {
+                                            used_pkgs.push((pkg.name, expose));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        veil_codegen::generate_for_target_with_packages(sol, &registry, codegen_target, &used_pkgs)
+                    } else {
+                        veil_codegen::generate_for_target(sol, &registry, codegen_target)
+                    }
                 }
                 veil_ir::ast::VeilFile::Package(pkg) => {
                     // Packages with expose blocks generate typed API clients (TS)

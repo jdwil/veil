@@ -56,3 +56,27 @@ pub fn generate_for_target(
         }
     }
 }
+
+/// Generate code for the specified target, with optional package expose blocks
+/// for typed API client generation (TS target).
+pub fn generate_for_target_with_packages(
+    solution: &Solution,
+    registry: &LayerRegistry,
+    target: CodegenTarget,
+    used_packages: &[(String, veil_ir::ast::ExposeBlock)],
+) -> Vec<GeneratedFile> {
+    match target {
+        CodegenTarget::Rust => {
+            let project = rust::generate(solution, registry);
+            project.files.into_iter()
+                .map(|f| GeneratedFile { path: f.path, content: f.content })
+                .collect()
+        }
+        CodegenTarget::TypeScript => {
+            let project = typescript::generate_ts_with_packages(solution, registry, used_packages);
+            project.files.into_iter()
+                .map(|f| GeneratedFile { path: f.path, content: f.content })
+                .collect()
+        }
+    }
+}

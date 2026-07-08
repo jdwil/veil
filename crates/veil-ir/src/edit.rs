@@ -40,6 +40,13 @@ pub enum EditOp {
         #[serde(default)]
         target: Option<String>,
     },
+    /// Replace the expression body of a fn-shaped construct or step.
+    /// `body` is a list of VEIL expression strings that will be parsed into
+    /// the target's body Vec<Expr>.
+    SetBody {
+        span_start: usize,
+        body: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +182,29 @@ pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
             Ok(())
         }
         EditOp::CreateConstruct { .. } => unreachable!("handled above"),
+        EditOp::SetBody { body, span_start } => {
+            // Store body as raw expression strings. The serializer will emit them
+            // as-is during re-serialization. For fn-shaped constructs, we replace
+            // the body with parsed Ident expressions (one per line) that the
+            // serializer renders back to the original text.
+            if target.shape != Shape::Fn {
+                return Err(EditError::ShapeMismatch { span_start: *span_start, expected: "a fn-shaped construct" });
+            }
+            // Convert string lines into Expr::Ident (used as opaque expression text
+            // that the serializer emits verbatim — the round-trip preserves source).
+            let exprs: Vec<crate::ast::Expr> = body.iter()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| crate::ast::Expr::Ident(l.trim().to_string()))
+                .collect();
+            if !target.fns.is_empty() {
+                target.fns[0].body = exprs;
+            } else if !target.steps.is_empty() {
+                if let Some(crate::ast::FlowStep::Step(s)) = target.steps.first_mut() {
+                    s.body = exprs;
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -184,7 +214,8 @@ impl EditOp {
             EditOp::Rename { span_start, .. }
             | EditOp::SetAnnotations { span_start, .. }
             | EditOp::SetFields { span_start, .. }
-            | EditOp::SetMethods { span_start, .. } => *span_start,
+            | EditOp::SetMethods { span_start, .. }
+            | EditOp::SetBody { span_start, .. } => *span_start,
             EditOp::CreateConstruct { parent_span, .. } => *parent_span,
         }
     }

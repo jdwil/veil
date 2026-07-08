@@ -133,16 +133,15 @@
 
 
   function handleBodyEdit(newExprs: Expr[]) {
-    // Convert exprs back to VEIL source for logging/eventual persistence
-    const veilSource = newExprs.map(e => exprToVeil(e)).join('\n');
-    console.log('[VEIL Edit] Step body changed:', {
-      nodeId: node.id,
-      nodeName: name,
-      exprCount: newExprs.length,
-      veilSource,
-    });
-    // TODO: When backend edit API is connected, send the edit operation here.
-    // For now, the edit is logged to console and visible in the code preview.
+    // Convert exprs back to VEIL source for persistence
+    const veilSource = newExprs.map(e => exprToVeil(e));
+    if (spanStart !== null) {
+      saveEdits([{
+        op: 'set_body',
+        span_start: spanStart,
+        body: veilSource,
+      } as any]);
+    }
   }
 
   function handleMethodsChange(newMethods: any[]) {
