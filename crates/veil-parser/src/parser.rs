@@ -225,6 +225,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Extract the text content from a string literal token (handles both
+    /// single-quoted "..." and triple-quoted """...""" forms).
+    fn extract_string_content(text: &str) -> String {
+        if text.starts_with("\"\"\"") {
+            let inner = &text[3..text.len() - 3];
+            inner.strip_prefix('\n').unwrap_or(inner).to_string()
+        } else {
+            text[1..text.len() - 1].to_string()
+        }
+    }
+
     fn skip_newlines(&mut self) {
         while self.at(&TokenKind::Newline) || self.at(&TokenKind::Comment) {
             self.advance();
@@ -533,7 +544,7 @@ impl<'a> Parser<'a> {
                         let key = self.advance().text;
                         let value = if self.at(&TokenKind::StringLit) {
                             let text = self.advance().text;
-                            text[1..text.len() - 1].to_string()
+                            Self::extract_string_content(&text)
                         } else if self.at(&TokenKind::Ident) {
                             self.advance().text
                         } else {
@@ -550,7 +561,7 @@ impl<'a> Parser<'a> {
                         self.advance();
                         let value = if self.at(&TokenKind::StringLit) {
                             let text = self.advance().text;
-                            text[1..text.len() - 1].to_string()
+                            Self::extract_string_content(&text)
                         } else {
                             String::new()
                         };
@@ -760,7 +771,7 @@ impl<'a> Parser<'a> {
                         self.advance();
                         if self.at(&TokenKind::StringLit) {
                             let text = self.advance().text;
-                            description = Some(text[1..text.len() - 1].to_string());
+                            description = Some(Self::extract_string_content(&text));
                         }
                     }
                     TokenKind::Input => {
@@ -2053,7 +2064,7 @@ impl<'a> Parser<'a> {
                     self.advance();
                     if self.at(&TokenKind::StringLit) {
                         let text = self.advance().text;
-                        action.message = Some(text[1..text.len() - 1].to_string());
+                        action.message = Some(Self::extract_string_content(&text));
                     }
                 }
             }
@@ -2266,7 +2277,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::StringLit => {
                 let text = self.advance().text;
-                Ok(Expr::StringLit(text[1..text.len() - 1].to_string()))
+                Ok(Expr::StringLit(Self::extract_string_content(&text)))
             }
             TokenKind::IntLit => {
                 let text = self.advance().text;

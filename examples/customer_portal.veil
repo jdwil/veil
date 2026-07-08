@@ -47,6 +47,21 @@ sol CustomerPortal
           expanded = !expanded
         fn handleClick()
           onSelect(customer.id)
+        fn template() -> Str
+          ret """
+            <div class="card" class:expanded>
+              <h3>{customer.name}</h3>
+              {#if expanded}
+                <p>{customer.email}</p>
+              {/if}
+              <button onclick={toggle}>Toggle</button>
+            </div>
+          """
+        fn style() -> Str
+          ret """
+            .card { padding: 1rem; border: 1px solid var(--border); border-radius: 8px; }
+            .card.expanded { background: var(--surface-alt); }
+          """
 
       comp CustomerList
         props
@@ -58,6 +73,23 @@ sol CustomerPortal
           filtered: List<Customer>
         fn handleSearch(term: Str)
           searchTerm = term
+        fn template() -> Str
+          ret """
+            <div class="list">
+              <input type="text" placeholder="Search..." oninput={(e) => handleSearch(e.target.value)} />
+              {#if loading}
+                <p>Loading...</p>
+              {:else}
+                {#each filtered as customer}
+                  <CustomerCard {customer} onSelect={select} />
+                {/each}
+              {/if}
+            </div>
+          """
+        fn style() -> Str
+          ret """
+            .list { display: flex; flex-direction: column; gap: 0.5rem; }
+          """
 
       comp LoginForm
         props
@@ -69,6 +101,22 @@ sol CustomerPortal
         fn submit() -> Res!
           error = null
           onSubmit(email, password)
+        fn template() -> Str
+          ret """
+            <form onsubmit|preventDefault={submit}>
+              {#if error}
+                <p class="error">{error}</p>
+              {/if}
+              <input type="email" bind:value={email} placeholder="Email" />
+              <input type="password" bind:value={password} placeholder="Password" />
+              <button type="submit">Sign In</button>
+            </form>
+          """
+        fn style() -> Str
+          ret """
+            form { display: flex; flex-direction: column; gap: 1rem; max-width: 320px; }
+            .error { color: red; font-size: 0.875rem; }
+          """
 
     group pages
       page Dashboard

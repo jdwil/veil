@@ -378,6 +378,30 @@ impl Lexer {
 
     fn lex_string(&mut self) {
         let start = self.pos;
+        // Check for triple-quote: """..."""
+        if self.pos + 2 < self.chars.len()
+            && self.chars[self.pos + 1] == '"'
+            && self.chars[self.pos + 2] == '"'
+        {
+            self.pos += 3; // skip opening """
+            // Consume until closing """
+            while self.pos + 2 < self.chars.len() {
+                if self.chars[self.pos] == '"'
+                    && self.chars[self.pos + 1] == '"'
+                    && self.chars[self.pos + 2] == '"'
+                {
+                    self.pos += 3; // skip closing """
+                    self.emit(TokenKind::StringLit, start, self.pos);
+                    return;
+                }
+                self.pos += 1;
+            }
+            // Unterminated triple-quote — consume to end
+            self.pos = self.chars.len();
+            self.emit(TokenKind::StringLit, start, self.pos);
+            return;
+        }
+        // Single-line string: "..."
         self.pos += 1; // skip opening "
         while self.pos < self.chars.len() && self.chars[self.pos] != '"' {
             if self.chars[self.pos] == '\\' {

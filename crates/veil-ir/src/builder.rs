@@ -465,6 +465,7 @@ impl IrBuilder {
                 }
                 self.build_steps(&c.steps, id);
                 // Emit a Return node showing the return type/expression.
+                // Check construct-level return type, or scan steps for ret exprs.
                 let ret_label = if let Some(rt) = &c.return_type {
                     type_to_display(rt)
                 } else {
@@ -473,8 +474,24 @@ impl IrBuilder {
                 let ret_id = self.graph.add_node(NodeKind::Return, "Return".to_string(), c.span);
                 self.set_parent(ret_id, id);
                 self.set_property(ret_id, "type", &ret_label);
+                // Look for explicit ret expressions in the steps' bodies.
                 if let Some(expr) = &c.return_expr {
                     self.set_property(ret_id, "expr", &expr_to_display(expr));
+                } else {
+                    // Scan steps for the last Expr::Return
+                    let mut ret_expr_str = String::new();
+                    for flow_step in &c.steps {
+                        if let FlowStep::Step(step) = flow_step {
+                            for expr in &step.body {
+                                if let Expr::Return(inner) = expr {
+                                    ret_expr_str = expr_to_display(inner);
+                                }
+                            }
+                        }
+                    }
+                    if !ret_expr_str.is_empty() {
+                        self.set_property(ret_id, "expr", &ret_expr_str);
+                    }
                 }
                 self.graph.add_edge(id, ret_id, EdgeKind::Contains);
             }
