@@ -1,0 +1,87 @@
+# Hello World — comprehensive example exercising a cross-section of VEIL
+sol HelloWorld
+  use ddd
+
+  lang
+    Greeting: A personalized welcome message
+    User: A registered system user
+
+  ctx Greetings
+    group domain
+      agg User
+        root
+          id: UUID
+          name: Str
+          email: Str
+          greeting_count: Int
+          active: Bool
+          created: DateTime
+        state UserStatus
+          Pending -> Active -> Suspended
+
+        evt UserGreeted
+          id: UUID
+          message: Str
+          at: DateTime
+
+        evt UserSuspended
+          id: UUID
+          reason: Str
+
+        fn greet(time_of_day: Str) -> Res!<Str>
+          @invariant(active == true)
+          greeting_count = greeting_count + 1
+          mut msg: Str = "Hello!"
+          emit UserGreeted{id, msg, now()}
+          ret msg
+
+        fn activate() -> Res!
+          @invariant(active == false)
+          active = true
+
+        fn suspend(reason: Str) -> Res!
+          @invariant(active == true)
+          active = false
+          emit UserSuspended{id, reason}
+
+      val Email
+        addr: Str
+
+      port UserRepo
+        save!(user: User)
+        find!(id: UUID) -> Opt<User>
+        find_by_email!(email: Str) -> Opt<User>
+        list_active() -> Res!<List<User>>
+        delete!(id: UUID)
+
+      port Notifier
+        send_email!(to: Str, subject: Str, body: Str)
+
+    group application
+      svc CreateUser
+        input
+          name: Str
+          email: Str
+        step validate
+          guard email != "", "email required"
+        step persist
+          user = User.new(name, email)
+          UserRepo.save(user)
+          dispatch UserGreeted{user.id, email, now()}
+        ret user.id
+
+      svc GreetUser
+        input
+          user_id: UUID
+          time_of_day: Str
+        step load
+          user = UserRepo.find(user_id)
+        step greet
+          user.greet(time_of_day)
+          Notifier.send_email(user.email, "Greeting sent!", time_of_day)
+
+    group infrastructure
+      adapter SmtpNotifier for Notifier
+        @env(SMTP_HOST, SMTP_PORT)
+        impl send_email(to, subject, body)
+          http.post("https://smtp.example.com/send", {to, subject, body})

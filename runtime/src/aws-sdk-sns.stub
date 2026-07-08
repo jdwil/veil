@@ -1,0 +1,2502 @@
+stub aws-sdk-sns 1.104.0
+
+  struct PublishBatchRequestEntry
+    fn id() -> Str
+    fn message() -> Str
+    fn subject() -> Opt<Str>
+    fn message_structure() -> Opt<Str>
+    fn message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_deduplication_id() -> Opt<Str>
+    fn message_group_id() -> Opt<Str>
+    fn builder() -> PublishBatchRequestEntryBuilder
+
+  struct PublishBatchInput
+    fn topic_arn() -> Opt<Str>
+    fn publish_batch_request_entries() -> Str
+    fn builder() -> PublishBatchInputBuilder
+
+  struct PublishBatchInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn publish_batch_request_entries(input: PublishBatchRequestEntry) -> Self
+    fn set_publish_batch_request_entries(input: Opt<List<PublishBatchRequestEntry>>) -> Self
+    fn get_publish_batch_request_entries() -> Opt<List<PublishBatchRequestEntry>>
+    fn build() -> Res!<PublishBatchInput>
+    fn send_with(client: Client) -> Res!<PublishBatchOutput>
+
+  struct PublishBatchResultEntry
+    fn id() -> Opt<Str>
+    fn message_id() -> Opt<Str>
+    fn sequence_number() -> Opt<Str>
+    fn builder() -> PublishBatchResultEntryBuilder
+
+  struct BatchResultErrorEntry
+    fn id() -> Str
+    fn code() -> Str
+    fn message() -> Opt<Str>
+    fn sender_fault() -> Bool
+    fn builder() -> BatchResultErrorEntryBuilder
+
+  struct PublishBatchOutputBuilder
+    fn successful(input: PublishBatchResultEntry) -> Self
+    fn set_successful(input: Opt<List<PublishBatchResultEntry>>) -> Self
+    fn get_successful() -> Opt<List<PublishBatchResultEntry>>
+    fn failed(input: BatchResultErrorEntry) -> Self
+    fn set_failed(input: Opt<List<BatchResultErrorEntry>>) -> Self
+    fn get_failed() -> Opt<List<BatchResultErrorEntry>>
+    fn build() -> PublishBatchOutput
+
+  struct PublishBatch
+    fn new() -> Self
+
+  struct PutDataProtectionPolicyInput
+    fn resource_arn() -> Opt<Str>
+    fn data_protection_policy() -> Opt<Str>
+    fn builder() -> PutDataProtectionPolicyInputBuilder
+
+  struct PutDataProtectionPolicyInputBuilder
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn data_protection_policy(input: Str) -> Self
+    fn set_data_protection_policy(input: Opt<Str>) -> Self
+    fn get_data_protection_policy() -> Opt<Str>
+    fn build() -> Res!<PutDataProtectionPolicyInput>
+    fn send_with(client: Client) -> Res!<PutDataProtectionPolicyOutput>
+
+  struct PutDataProtectionPolicyOutputBuilder
+    fn build() -> PutDataProtectionPolicyOutput
+
+  struct PutDataProtectionPolicy
+    fn new() -> Self
+
+  struct RemovePermissionInput
+    fn topic_arn() -> Opt<Str>
+    fn label() -> Opt<Str>
+    fn builder() -> RemovePermissionInputBuilder
+
+  struct RemovePermissionInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+    fn build() -> Res!<RemovePermissionInput>
+    fn send_with(client: Client) -> Res!<RemovePermissionOutput>
+
+  struct RemovePermissionOutputBuilder
+    fn build() -> RemovePermissionOutput
+
+  struct RemovePermission
+    fn new() -> Self
+
+  struct SetEndpointAttributesInput
+    fn endpoint_arn() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> SetEndpointAttributesInputBuilder
+
+  struct SetEndpointAttributesInputBuilder
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> Res!<SetEndpointAttributesInput>
+    fn send_with(client: Client) -> Res!<SetEndpointAttributesOutput>
+
+  struct SetEndpointAttributesOutputBuilder
+    fn build() -> SetEndpointAttributesOutput
+
+  struct SetEndpointAttributes
+    fn new() -> Self
+
+  struct SetPlatformApplicationAttributesInput
+    fn platform_application_arn() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> SetPlatformApplicationAttributesInputBuilder
+
+  struct SetPlatformApplicationAttributesInputBuilder
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> Res!<SetPlatformApplicationAttributesInput>
+    fn send_with(client: Client) -> Res!<SetPlatformApplicationAttributesOutput>
+
+  struct SetPlatformApplicationAttributesOutputBuilder
+    fn build() -> SetPlatformApplicationAttributesOutput
+
+  struct Unhandled
+
+  struct SetPlatformApplicationAttributes
+    fn new() -> Self
+
+  struct SetSmsAttributesInput
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> SetSmsAttributesInputBuilder
+
+  struct UnknownVariantError
+
+  struct SetSmsAttributesInputBuilder
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> Res!<SetSmsAttributesInput>
+    fn send_with(client: Client) -> Res!<SetSmsAttributesOutput>
+
+  struct SetSmsAttributesOutputBuilder
+    fn build() -> SetSmsAttributesOutput
+
+  struct SetSMSAttributes
+    fn new() -> Self
+
+  struct SetSubscriptionAttributesInput
+    fn subscription_arn() -> Opt<Str>
+    fn attribute_name() -> Opt<Str>
+    fn attribute_value() -> Opt<Str>
+    fn builder() -> SetSubscriptionAttributesInputBuilder
+
+  struct SetSubscriptionAttributesInputBuilder
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+    fn attribute_name(input: Str) -> Self
+    fn set_attribute_name(input: Opt<Str>) -> Self
+    fn get_attribute_name() -> Opt<Str>
+    fn attribute_value(input: Str) -> Self
+    fn set_attribute_value(input: Opt<Str>) -> Self
+    fn get_attribute_value() -> Opt<Str>
+    fn build() -> Res!<SetSubscriptionAttributesInput>
+    fn send_with(client: Client) -> Res!<SetSubscriptionAttributesOutput>
+
+  struct AuthorizationErrorException
+    fn message() -> Opt<Str>
+    fn builder() -> AuthorizationErrorExceptionBuilder
+
+  struct BatchEntryIdsNotDistinctException
+    fn message() -> Opt<Str>
+    fn builder() -> BatchEntryIdsNotDistinctExceptionBuilder
+
+  struct BatchRequestTooLongException
+    fn message() -> Opt<Str>
+    fn builder() -> BatchRequestTooLongExceptionBuilder
+
+  struct SetSubscriptionAttributesOutputBuilder
+    fn build() -> SetSubscriptionAttributesOutput
+
+  struct ConcurrentAccessException
+    fn message() -> Opt<Str>
+    fn builder() -> ConcurrentAccessExceptionBuilder
+
+  struct EmptyBatchRequestException
+    fn message() -> Opt<Str>
+    fn builder() -> EmptyBatchRequestExceptionBuilder
+
+  struct EndpointDisabledException
+    fn message() -> Opt<Str>
+    fn builder() -> EndpointDisabledExceptionBuilder
+
+  struct SetSubscriptionAttributes
+    fn new() -> Self
+
+  struct FilterPolicyLimitExceededException
+    fn message() -> Opt<Str>
+    fn builder() -> FilterPolicyLimitExceededExceptionBuilder
+
+  struct InternalErrorException
+    fn message() -> Opt<Str>
+    fn builder() -> InternalErrorExceptionBuilder
+
+  struct InvalidBatchEntryIdException
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidBatchEntryIdExceptionBuilder
+
+  struct SetTopicAttributesInput
+    fn topic_arn() -> Opt<Str>
+    fn attribute_name() -> Opt<Str>
+    fn attribute_value() -> Opt<Str>
+    fn builder() -> SetTopicAttributesInputBuilder
+
+  struct InvalidParameterException
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidParameterExceptionBuilder
+
+  struct SetTopicAttributesInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn attribute_name(input: Str) -> Self
+    fn set_attribute_name(input: Opt<Str>) -> Self
+    fn get_attribute_name() -> Opt<Str>
+    fn attribute_value(input: Str) -> Self
+    fn set_attribute_value(input: Opt<Str>) -> Self
+    fn get_attribute_value() -> Opt<Str>
+    fn build() -> Res!<SetTopicAttributesInput>
+    fn send_with(client: Client) -> Res!<SetTopicAttributesOutput>
+
+  struct InvalidParameterValueException
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidParameterValueExceptionBuilder
+
+  struct InvalidSecurityException
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidSecurityExceptionBuilder
+
+  struct SetTopicAttributesOutputBuilder
+    fn build() -> SetTopicAttributesOutput
+
+  struct InvalidStateException
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidStateExceptionBuilder
+
+  struct KmsAccessDeniedException
+    fn message() -> Opt<Str>
+    fn builder() -> KmsAccessDeniedExceptionBuilder
+
+  struct KmsDisabledException
+    fn message() -> Opt<Str>
+    fn builder() -> KmsDisabledExceptionBuilder
+
+  struct KmsInvalidStateException
+    fn message() -> Opt<Str>
+    fn builder() -> KmsInvalidStateExceptionBuilder
+
+  struct SetTopicAttributes
+    fn new() -> Self
+
+  struct KmsNotFoundException
+    fn message() -> Opt<Str>
+    fn builder() -> KmsNotFoundExceptionBuilder
+
+  struct KmsOptInRequired
+    fn message() -> Opt<Str>
+    fn builder() -> KmsOptInRequiredBuilder
+
+  struct KmsThrottlingException
+    fn message() -> Opt<Str>
+    fn builder() -> KmsThrottlingExceptionBuilder
+
+  struct SubscribeInput
+    fn topic_arn() -> Opt<Str>
+    fn protocol() -> Opt<Str>
+    fn endpoint() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn return_subscription_arn() -> Opt<Bool>
+    fn builder() -> SubscribeInputBuilder
+
+  struct SubscribeInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn protocol(input: Str) -> Self
+    fn set_protocol(input: Opt<Str>) -> Self
+    fn get_protocol() -> Opt<Str>
+    fn endpoint(input: Str) -> Self
+    fn set_endpoint(input: Opt<Str>) -> Self
+    fn get_endpoint() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn return_subscription_arn(input: Bool) -> Self
+    fn set_return_subscription_arn(input: Opt<Bool>) -> Self
+    fn get_return_subscription_arn() -> Opt<Bool>
+    fn build() -> Res!<SubscribeInput>
+    fn send_with(client: Client) -> Res!<SubscribeOutput>
+
+  struct NotFoundException
+    fn message() -> Opt<Str>
+    fn builder() -> NotFoundExceptionBuilder
+
+  struct Config
+    fn builder() -> Builder
+    fn to_builder() -> Builder
+    fn stalled_stream_protection() -> Opt<StalledStreamProtectionConfig>
+    fn http_client() -> Opt<SharedHttpClient>
+    fn auth_schemes() -> Str
+    fn auth_scheme_resolver() -> Opt<SharedAuthSchemeOptionResolver>
+    fn auth_scheme_preference() -> Opt<AuthSchemePreference>
+    fn endpoint_resolver() -> SharedEndpointResolver
+    fn retry_config() -> Opt<RetryConfig>
+    fn sleep_impl() -> Opt<SharedAsyncSleep>
+    fn timeout_config() -> Opt<TimeoutConfig>
+    fn retry_partition() -> Opt<RetryPartition>
+    fn identity_cache() -> Opt<SharedIdentityCache>
+    fn interceptors() -> Str
+    fn time_source() -> Opt<SharedTimeSource>
+    fn retry_classifiers() -> Str
+    fn app_name() -> Opt<AppName>
+    fn invocation_id_generator() -> Opt<SharedInvocationIdGenerator>
+    fn new(config: SdkConfig) -> Self
+    fn signing_name() -> Str
+    fn region() -> Opt<Region>
+    fn credentials_provider() -> Opt<SharedCredentialsProvider>
+
+  struct OptedOutException
+    fn message() -> Opt<Str>
+    fn builder() -> OptedOutExceptionBuilder
+
+  struct PlatformApplicationDisabledException
+    fn message() -> Opt<Str>
+    fn builder() -> PlatformApplicationDisabledExceptionBuilder
+
+  struct SubscribeOutputBuilder
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+    fn build() -> SubscribeOutput
+
+  struct ReplayLimitExceededException
+    fn message() -> Opt<Str>
+    fn builder() -> ReplayLimitExceededExceptionBuilder
+
+  struct ResourceNotFoundException
+    fn message() -> Opt<Str>
+    fn builder() -> ResourceNotFoundExceptionBuilder
+
+  struct StaleTagException
+    fn message() -> Opt<Str>
+    fn builder() -> StaleTagExceptionBuilder
+
+  struct SubscriptionLimitExceededException
+    fn message() -> Opt<Str>
+    fn builder() -> SubscriptionLimitExceededExceptionBuilder
+
+  struct Subscribe
+    fn new() -> Self
+
+  struct TagLimitExceededException
+    fn message() -> Opt<Str>
+    fn builder() -> TagLimitExceededExceptionBuilder
+
+  struct TagPolicyException
+    fn message() -> Opt<Str>
+    fn builder() -> TagPolicyExceptionBuilder
+
+  struct ThrottledException
+    fn message() -> Opt<Str>
+    fn builder() -> ThrottledExceptionBuilder
+
+  struct TagResourceInput
+    fn resource_arn() -> Opt<Str>
+    fn tags() -> Str
+    fn builder() -> TagResourceInputBuilder
+
+  struct TagResourceInputBuilder
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn tags(input: Tag) -> Self
+    fn set_tags(input: Opt<List<Tag>>) -> Self
+    fn get_tags() -> Opt<List<Tag>>
+    fn build() -> Res!<TagResourceInput>
+    fn send_with(client: Client) -> Res!<TagResourceOutput>
+
+  struct TooManyEntriesInBatchRequestException
+    fn message() -> Opt<Str>
+    fn builder() -> TooManyEntriesInBatchRequestExceptionBuilder
+
+  struct Client
+    fn add_permission() -> AddPermissionFluentBuilder
+    fn check_if_phone_number_is_opted_out() -> CheckIfPhoneNumberIsOptedOutFluentBuilder
+    fn confirm_subscription() -> ConfirmSubscriptionFluentBuilder
+    fn create_platform_application() -> CreatePlatformApplicationFluentBuilder
+    fn create_platform_endpoint() -> CreatePlatformEndpointFluentBuilder
+    fn create_sms_sandbox_phone_number() -> CreateSMSSandboxPhoneNumberFluentBuilder
+    fn create_topic() -> CreateTopicFluentBuilder
+    fn delete_endpoint() -> DeleteEndpointFluentBuilder
+    fn delete_platform_application() -> DeletePlatformApplicationFluentBuilder
+    fn delete_sms_sandbox_phone_number() -> DeleteSMSSandboxPhoneNumberFluentBuilder
+    fn delete_topic() -> DeleteTopicFluentBuilder
+    fn get_data_protection_policy() -> GetDataProtectionPolicyFluentBuilder
+    fn get_endpoint_attributes() -> GetEndpointAttributesFluentBuilder
+    fn get_platform_application_attributes() -> GetPlatformApplicationAttributesFluentBuilder
+    fn get_sms_attributes() -> GetSMSAttributesFluentBuilder
+    fn get_sms_sandbox_account_status() -> GetSMSSandboxAccountStatusFluentBuilder
+    fn get_subscription_attributes() -> GetSubscriptionAttributesFluentBuilder
+    fn get_topic_attributes() -> GetTopicAttributesFluentBuilder
+    fn list_endpoints_by_platform_application() -> ListEndpointsByPlatformApplicationFluentBuilder
+    fn list_origination_numbers() -> ListOriginationNumbersFluentBuilder
+    fn list_phone_numbers_opted_out() -> ListPhoneNumbersOptedOutFluentBuilder
+    fn list_platform_applications() -> ListPlatformApplicationsFluentBuilder
+    fn list_sms_sandbox_phone_numbers() -> ListSMSSandboxPhoneNumbersFluentBuilder
+    fn list_subscriptions() -> ListSubscriptionsFluentBuilder
+    fn list_subscriptions_by_topic() -> ListSubscriptionsByTopicFluentBuilder
+    fn list_tags_for_resource() -> ListTagsForResourceFluentBuilder
+    fn list_topics() -> ListTopicsFluentBuilder
+    fn opt_in_phone_number() -> OptInPhoneNumberFluentBuilder
+    fn publish() -> PublishFluentBuilder
+    fn publish_batch() -> PublishBatchFluentBuilder
+    fn put_data_protection_policy() -> PutDataProtectionPolicyFluentBuilder
+    fn remove_permission() -> RemovePermissionFluentBuilder
+    fn set_endpoint_attributes() -> SetEndpointAttributesFluentBuilder
+    fn set_platform_application_attributes() -> SetPlatformApplicationAttributesFluentBuilder
+    fn set_sms_attributes() -> SetSMSAttributesFluentBuilder
+    fn set_subscription_attributes() -> SetSubscriptionAttributesFluentBuilder
+    fn set_topic_attributes() -> SetTopicAttributesFluentBuilder
+    fn subscribe() -> SubscribeFluentBuilder
+    fn tag_resource() -> TagResourceFluentBuilder
+    fn unsubscribe() -> UnsubscribeFluentBuilder
+    fn untag_resource() -> UntagResourceFluentBuilder
+    fn verify_sms_sandbox_phone_number() -> VerifySMSSandboxPhoneNumberFluentBuilder
+    fn from_conf(conf: Config) -> Self
+    fn config() -> Config
+    fn new(sdk_config: SdkConfig) -> Self
+
+  struct TopicLimitExceededException
+    fn message() -> Opt<Str>
+    fn builder() -> TopicLimitExceededExceptionBuilder
+
+  struct UserErrorException
+    fn message() -> Opt<Str>
+    fn builder() -> UserErrorExceptionBuilder
+
+  struct TagResourceOutputBuilder
+    fn build() -> TagResourceOutput
+
+  struct ValidationException
+    fn message() -> Str
+    fn builder() -> ValidationExceptionBuilder
+
+  struct AddPermissionFluentBuilder
+    fn as_input() -> AddPermissionInputBuilder
+    fn send() -> Res!<AddPermissionOutput>
+    fn customize() -> CustomizableOperation<AddPermissionOutput, AddPermissionError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+    fn aws_account_id(input: Str) -> Self
+    fn set_aws_account_id(input: Opt<List<Str>>) -> Self
+    fn get_aws_account_id() -> Opt<List<Str>>
+    fn action_name(input: Str) -> Self
+    fn set_action_name(input: Opt<List<Str>>) -> Self
+    fn get_action_name() -> Opt<List<Str>>
+
+  struct VerificationException
+    fn status() -> Str
+    fn message() -> Str
+    fn builder() -> VerificationExceptionBuilder
+
+  struct TagResource
+    fn new() -> Self
+
+  struct UnsubscribeInput
+    fn subscription_arn() -> Opt<Str>
+    fn builder() -> UnsubscribeInputBuilder
+
+  struct UnsubscribeInputBuilder
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+    fn build() -> Res!<UnsubscribeInput>
+    fn send_with(client: Client) -> Res!<UnsubscribeOutput>
+
+  struct UnsubscribeOutputBuilder
+    fn build() -> UnsubscribeOutput
+
+  struct Unsubscribe
+    fn new() -> Self
+
+  struct UntagResourceInput
+    fn resource_arn() -> Opt<Str>
+    fn tag_keys() -> Str
+    fn builder() -> UntagResourceInputBuilder
+
+  struct UntagResourceInputBuilder
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn tag_keys(input: Str) -> Self
+    fn set_tag_keys(input: Opt<List<Str>>) -> Self
+    fn get_tag_keys() -> Opt<List<Str>>
+    fn build() -> Res!<UntagResourceInput>
+    fn send_with(client: Client) -> Res!<UntagResourceOutput>
+
+  struct UntagResourceOutputBuilder
+    fn build() -> UntagResourceOutput
+
+  struct UntagResource
+    fn new() -> Self
+
+  struct VerifySmsSandboxPhoneNumberInput
+    fn phone_number() -> Opt<Str>
+    fn one_time_password() -> Opt<Str>
+    fn builder() -> VerifySmsSandboxPhoneNumberInputBuilder
+
+  struct VerifySmsSandboxPhoneNumberInputBuilder
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn one_time_password(input: Str) -> Self
+    fn set_one_time_password(input: Opt<Str>) -> Self
+    fn get_one_time_password() -> Opt<Str>
+    fn build() -> Res!<VerifySmsSandboxPhoneNumberInput>
+    fn send_with(client: Client) -> Res!<VerifySmsSandboxPhoneNumberOutput>
+
+  struct VerifySmsSandboxPhoneNumberOutputBuilder
+    fn build() -> VerifySmsSandboxPhoneNumberOutput
+
+  struct VerifySMSSandboxPhoneNumber
+    fn new() -> Self
+
+  struct AddPermissionOutput
+    fn builder() -> AddPermissionOutputBuilder
+
+  struct UnknownVariantValue
+
+  struct BatchResultErrorEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn code(input: Str) -> Self
+    fn set_code(input: Opt<Str>) -> Self
+    fn get_code() -> Opt<Str>
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn sender_fault(input: Bool) -> Self
+    fn set_sender_fault(input: Opt<Bool>) -> Self
+    fn get_sender_fault() -> Opt<Bool>
+    fn build() -> Res!<BatchResultErrorEntry>
+
+  struct EndpointBuilder
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> Endpoint
+
+  struct CheckIfPhoneNumberIsOptedOutFluentBuilder
+    fn as_input() -> CheckIfPhoneNumberIsOptedOutInputBuilder
+    fn send() -> Res!<CheckIfPhoneNumberIsOptedOutOutput>
+    fn customize() -> CustomizableOperation<CheckIfPhoneNumberIsOptedOutOutput, CheckIfPhoneNumberIsOptedOutError, Self>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+
+  struct MessageAttributeValueBuilder
+    fn data_type(input: Str) -> Self
+    fn set_data_type(input: Opt<Str>) -> Self
+    fn get_data_type() -> Opt<Str>
+    fn string_value(input: Str) -> Self
+    fn set_string_value(input: Opt<Str>) -> Self
+    fn get_string_value() -> Opt<Str>
+    fn binary_value(input: Blob) -> Self
+    fn set_binary_value(input: Opt<Blob>) -> Self
+    fn get_binary_value() -> Opt<Blob>
+    fn build() -> Res!<MessageAttributeValue>
+
+  struct PhoneNumberInformationBuilder
+    fn created_at(input: DateTime) -> Self
+    fn set_created_at(input: Opt<DateTime>) -> Self
+    fn get_created_at() -> Opt<DateTime>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn status(input: Str) -> Self
+    fn set_status(input: Opt<Str>) -> Self
+    fn get_status() -> Opt<Str>
+    fn iso2_country_code(input: Str) -> Self
+    fn set_iso2_country_code(input: Opt<Str>) -> Self
+    fn get_iso2_country_code() -> Opt<Str>
+    fn route_type(input: RouteType) -> Self
+    fn set_route_type(input: Opt<RouteType>) -> Self
+    fn get_route_type() -> Opt<RouteType>
+    fn number_capabilities(input: NumberCapability) -> Self
+    fn set_number_capabilities(input: Opt<List<NumberCapability>>) -> Self
+    fn get_number_capabilities() -> Opt<List<NumberCapability>>
+    fn build() -> PhoneNumberInformation
+
+  struct PlatformApplicationBuilder
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> PlatformApplication
+
+  struct CheckIfPhoneNumberIsOptedOutOutput
+    fn is_opted_out() -> Bool
+    fn builder() -> CheckIfPhoneNumberIsOptedOutOutputBuilder
+
+  struct PublishBatchRequestEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn subject(input: Str) -> Self
+    fn set_subject(input: Opt<Str>) -> Self
+    fn get_subject() -> Opt<Str>
+    fn message_structure(input: Str) -> Self
+    fn set_message_structure(input: Opt<Str>) -> Self
+    fn get_message_structure() -> Opt<Str>
+    fn message_attributes(k: Str, v: MessageAttributeValue) -> Self
+    fn set_message_attributes(input: Opt<HashMap<Str, MessageAttributeValue>>) -> Self
+    fn get_message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_deduplication_id(input: Str) -> Self
+    fn set_message_deduplication_id(input: Opt<Str>) -> Self
+    fn get_message_deduplication_id() -> Opt<Str>
+    fn message_group_id(input: Str) -> Self
+    fn set_message_group_id(input: Opt<Str>) -> Self
+    fn get_message_group_id() -> Opt<Str>
+    fn build() -> Res!<PublishBatchRequestEntry>
+
+  struct PublishBatchResultEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn message_id(input: Str) -> Self
+    fn set_message_id(input: Opt<Str>) -> Self
+    fn get_message_id() -> Opt<Str>
+    fn sequence_number(input: Str) -> Self
+    fn set_sequence_number(input: Opt<Str>) -> Self
+    fn get_sequence_number() -> Opt<Str>
+    fn build() -> PublishBatchResultEntry
+
+  struct SmsSandboxPhoneNumberBuilder
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn status(input: SmsSandboxPhoneNumberVerificationStatus) -> Self
+    fn set_status(input: Opt<SmsSandboxPhoneNumberVerificationStatus>) -> Self
+    fn get_status() -> Opt<SmsSandboxPhoneNumberVerificationStatus>
+    fn build() -> SmsSandboxPhoneNumber
+
+  struct SubscriptionBuilder
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+    fn owner(input: Str) -> Self
+    fn set_owner(input: Opt<Str>) -> Self
+    fn get_owner() -> Opt<Str>
+    fn protocol(input: Str) -> Self
+    fn set_protocol(input: Opt<Str>) -> Self
+    fn get_protocol() -> Opt<Str>
+    fn endpoint(input: Str) -> Self
+    fn set_endpoint(input: Opt<Str>) -> Self
+    fn get_endpoint() -> Opt<Str>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn build() -> Subscription
+
+  struct ConfirmSubscriptionFluentBuilder
+    fn as_input() -> ConfirmSubscriptionInputBuilder
+    fn send() -> Res!<ConfirmSubscriptionOutput>
+    fn customize() -> CustomizableOperation<ConfirmSubscriptionOutput, ConfirmSubscriptionError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn token(input: Str) -> Self
+    fn set_token(input: Opt<Str>) -> Self
+    fn get_token() -> Opt<Str>
+    fn authenticate_on_unsubscribe(input: Str) -> Self
+    fn set_authenticate_on_unsubscribe(input: Opt<Str>) -> Self
+    fn get_authenticate_on_unsubscribe() -> Opt<Str>
+
+  struct TagBuilder
+    fn key(input: Str) -> Self
+    fn set_key(input: Opt<Str>) -> Self
+    fn get_key() -> Opt<Str>
+    fn value(input: Str) -> Self
+    fn set_value(input: Opt<Str>) -> Self
+    fn get_value() -> Opt<Str>
+    fn build() -> Res!<Tag>
+
+  struct TopicBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn build() -> Topic
+
+  struct AddPermissionInput
+    fn topic_arn() -> Opt<Str>
+    fn label() -> Opt<Str>
+    fn aws_account_id() -> Str
+    fn action_name() -> Str
+    fn builder() -> AddPermissionInputBuilder
+
+  struct AddPermissionInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+    fn aws_account_id(input: Str) -> Self
+    fn set_aws_account_id(input: Opt<List<Str>>) -> Self
+    fn get_aws_account_id() -> Opt<List<Str>>
+    fn action_name(input: Str) -> Self
+    fn set_action_name(input: Opt<List<Str>>) -> Self
+    fn get_action_name() -> Opt<List<Str>>
+    fn build() -> Res!<AddPermissionInput>
+    fn send_with(client: Client) -> Res!<AddPermissionOutput>
+
+  struct AuthorizationErrorExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> AuthorizationErrorException
+
+  struct BatchEntryIdsNotDistinctExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> BatchEntryIdsNotDistinctException
+
+  struct BatchRequestTooLongExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> BatchRequestTooLongException
+
+  struct ConcurrentAccessExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> ConcurrentAccessException
+
+  struct EmptyBatchRequestExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> EmptyBatchRequestException
+
+  struct EndpointDisabledExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> EndpointDisabledException
+
+  struct ConfirmSubscriptionOutput
+    fn subscription_arn() -> Opt<Str>
+    fn builder() -> ConfirmSubscriptionOutputBuilder
+
+  struct FilterPolicyLimitExceededExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> FilterPolicyLimitExceededException
+
+  struct InternalErrorExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InternalErrorException
+
+  struct InvalidBatchEntryIdExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidBatchEntryIdException
+
+  struct InvalidParameterExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidParameterException
+
+  struct AddPermissionOutputBuilder
+    fn build() -> AddPermissionOutput
+
+  struct InvalidParameterValueExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidParameterValueException
+
+  struct InvalidSecurityExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidSecurityException
+
+  struct CreatePlatformApplicationFluentBuilder
+    fn as_input() -> CreatePlatformApplicationInputBuilder
+    fn send() -> Res!<CreatePlatformApplicationOutput>
+    fn customize() -> CustomizableOperation<CreatePlatformApplicationOutput, CreatePlatformApplicationError, Self>
+    fn name(input: Str) -> Self
+    fn set_name(input: Opt<Str>) -> Self
+    fn get_name() -> Opt<Str>
+    fn platform(input: Str) -> Self
+    fn set_platform(input: Opt<Str>) -> Self
+    fn get_platform() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+
+  struct InvalidStateExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidStateException
+
+  struct KmsAccessDeniedExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsAccessDeniedException
+
+  struct KmsDisabledExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsDisabledException
+
+  struct KmsInvalidStateExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsInvalidStateException
+
+  struct KmsNotFoundExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsNotFoundException
+
+  struct KmsOptInRequiredBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsOptInRequired
+
+  struct KmsThrottlingExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsThrottlingException
+
+  struct NotFoundExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> NotFoundException
+
+  struct OptedOutExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> OptedOutException
+
+  struct CreatePlatformApplicationOutput
+    fn platform_application_arn() -> Opt<Str>
+    fn builder() -> CreatePlatformApplicationOutputBuilder
+
+  struct PlatformApplicationDisabledExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> PlatformApplicationDisabledException
+
+  struct ReplayLimitExceededExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> ReplayLimitExceededException
+
+  struct AddPermission
+    fn new() -> Self
+
+  struct ResourceNotFoundExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> ResourceNotFoundException
+
+  struct StaleTagExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> StaleTagException
+
+  struct SubscriptionLimitExceededExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> SubscriptionLimitExceededException
+
+  struct TagLimitExceededExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> TagLimitExceededException
+
+  struct CreatePlatformEndpointFluentBuilder
+    fn as_input() -> CreatePlatformEndpointInputBuilder
+    fn send() -> Res!<CreatePlatformEndpointOutput>
+    fn customize() -> CustomizableOperation<CreatePlatformEndpointOutput, CreatePlatformEndpointError, Self>
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn token(input: Str) -> Self
+    fn set_token(input: Opt<Str>) -> Self
+    fn get_token() -> Opt<Str>
+    fn custom_user_data(input: Str) -> Self
+    fn set_custom_user_data(input: Opt<Str>) -> Self
+    fn get_custom_user_data() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+
+  struct TagPolicyExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> TagPolicyException
+
+  struct ThrottledExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> ThrottledException
+
+  struct TooManyEntriesInBatchRequestExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> TooManyEntriesInBatchRequestException
+
+  struct TopicLimitExceededExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> TopicLimitExceededException
+
+  struct UserErrorExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> UserErrorException
+
+  struct ValidationExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> Res!<ValidationException>
+
+  struct VerificationExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn status(input: Str) -> Self
+    fn set_status(input: Opt<Str>) -> Self
+    fn get_status() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> Res!<VerificationException>
+
+  struct CheckIfPhoneNumberIsOptedOutInput
+    fn phone_number() -> Opt<Str>
+    fn builder() -> CheckIfPhoneNumberIsOptedOutInputBuilder
+
+  struct CheckIfPhoneNumberIsOptedOutInputBuilder
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn build() -> Res!<CheckIfPhoneNumberIsOptedOutInput>
+    fn send_with(client: Client) -> Res!<CheckIfPhoneNumberIsOptedOutOutput>
+
+  struct CreatePlatformEndpointOutput
+    fn endpoint_arn() -> Opt<Str>
+    fn builder() -> CreatePlatformEndpointOutputBuilder
+
+  struct CheckIfPhoneNumberIsOptedOutOutputBuilder
+    fn is_opted_out(input: Bool) -> Self
+    fn set_is_opted_out(input: Opt<Bool>) -> Self
+    fn get_is_opted_out() -> Opt<Bool>
+    fn build() -> CheckIfPhoneNumberIsOptedOutOutput
+
+  struct CreateSMSSandboxPhoneNumberFluentBuilder
+    fn as_input() -> CreateSmsSandboxPhoneNumberInputBuilder
+    fn send() -> Res!<CreateSmsSandboxPhoneNumberOutput>
+    fn customize() -> CustomizableOperation<CreateSmsSandboxPhoneNumberOutput, CreateSMSSandboxPhoneNumberError, Self>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn language_code(input: LanguageCodeString) -> Self
+    fn set_language_code(input: Opt<LanguageCodeString>) -> Self
+    fn get_language_code() -> Opt<LanguageCodeString>
+
+  struct CreateSmsSandboxPhoneNumberOutput
+    fn builder() -> CreateSmsSandboxPhoneNumberOutputBuilder
+
+  struct CreateTopicFluentBuilder
+    fn as_input() -> CreateTopicInputBuilder
+    fn send() -> Res!<CreateTopicOutput>
+    fn customize() -> CustomizableOperation<CreateTopicOutput, CreateTopicError, Self>
+    fn name(input: Str) -> Self
+    fn set_name(input: Opt<Str>) -> Self
+    fn get_name() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn tags(input: Tag) -> Self
+    fn set_tags(input: Opt<List<Tag>>) -> Self
+    fn get_tags() -> Opt<List<Tag>>
+    fn data_protection_policy(input: Str) -> Self
+    fn set_data_protection_policy(input: Opt<Str>) -> Self
+    fn get_data_protection_policy() -> Opt<Str>
+
+  struct CheckIfPhoneNumberIsOptedOut
+    fn new() -> Self
+
+  struct CreateTopicOutput
+    fn topic_arn() -> Opt<Str>
+    fn builder() -> CreateTopicOutputBuilder
+
+  struct ConfirmSubscriptionInput
+    fn topic_arn() -> Opt<Str>
+    fn token() -> Opt<Str>
+    fn authenticate_on_unsubscribe() -> Opt<Str>
+    fn builder() -> ConfirmSubscriptionInputBuilder
+
+  struct ConfirmSubscriptionInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn token(input: Str) -> Self
+    fn set_token(input: Opt<Str>) -> Self
+    fn get_token() -> Opt<Str>
+    fn authenticate_on_unsubscribe(input: Str) -> Self
+    fn set_authenticate_on_unsubscribe(input: Opt<Str>) -> Self
+    fn get_authenticate_on_unsubscribe() -> Opt<Str>
+    fn build() -> Res!<ConfirmSubscriptionInput>
+    fn send_with(client: Client) -> Res!<ConfirmSubscriptionOutput>
+
+  struct DeleteEndpointFluentBuilder
+    fn as_input() -> DeleteEndpointInputBuilder
+    fn send() -> Res!<DeleteEndpointOutput>
+    fn customize() -> CustomizableOperation<DeleteEndpointOutput, DeleteEndpointError, Self>
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+
+  struct DeleteEndpointOutput
+    fn builder() -> DeleteEndpointOutputBuilder
+
+  struct ConfirmSubscriptionOutputBuilder
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+    fn build() -> ConfirmSubscriptionOutput
+
+  struct DeletePlatformApplicationFluentBuilder
+    fn as_input() -> DeletePlatformApplicationInputBuilder
+    fn send() -> Res!<DeletePlatformApplicationOutput>
+    fn customize() -> CustomizableOperation<DeletePlatformApplicationOutput, DeletePlatformApplicationError, Self>
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+
+  struct DeletePlatformApplicationOutput
+    fn builder() -> DeletePlatformApplicationOutputBuilder
+
+  struct DeleteSMSSandboxPhoneNumberFluentBuilder
+    fn as_input() -> DeleteSmsSandboxPhoneNumberInputBuilder
+    fn send() -> Res!<DeleteSmsSandboxPhoneNumberOutput>
+    fn customize() -> CustomizableOperation<DeleteSmsSandboxPhoneNumberOutput, DeleteSMSSandboxPhoneNumberError, Self>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+
+  struct ConfirmSubscription
+    fn new() -> Self
+
+  struct DeleteSmsSandboxPhoneNumberOutput
+    fn builder() -> DeleteSmsSandboxPhoneNumberOutputBuilder
+
+  struct DeleteTopicFluentBuilder
+    fn as_input() -> DeleteTopicInputBuilder
+    fn send() -> Res!<DeleteTopicOutput>
+    fn customize() -> CustomizableOperation<DeleteTopicOutput, DeleteTopicError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+
+  struct DeleteTopicOutput
+    fn builder() -> DeleteTopicOutputBuilder
+
+  struct CreatePlatformApplicationInput
+    fn name() -> Opt<Str>
+    fn platform() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> CreatePlatformApplicationInputBuilder
+
+  struct CreatePlatformApplicationInputBuilder
+    fn name(input: Str) -> Self
+    fn set_name(input: Opt<Str>) -> Self
+    fn get_name() -> Opt<Str>
+    fn platform(input: Str) -> Self
+    fn set_platform(input: Opt<Str>) -> Self
+    fn get_platform() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> Res!<CreatePlatformApplicationInput>
+    fn send_with(client: Client) -> Res!<CreatePlatformApplicationOutput>
+
+  struct GetDataProtectionPolicyFluentBuilder
+    fn as_input() -> GetDataProtectionPolicyInputBuilder
+    fn send() -> Res!<GetDataProtectionPolicyOutput>
+    fn customize() -> CustomizableOperation<GetDataProtectionPolicyOutput, GetDataProtectionPolicyError, Self>
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+
+  struct GetDataProtectionPolicyOutput
+    fn data_protection_policy() -> Opt<Str>
+    fn builder() -> GetDataProtectionPolicyOutputBuilder
+
+  struct CreatePlatformApplicationOutputBuilder
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn build() -> CreatePlatformApplicationOutput
+
+  struct GetEndpointAttributesFluentBuilder
+    fn as_input() -> GetEndpointAttributesInputBuilder
+    fn send() -> Res!<GetEndpointAttributesOutput>
+    fn customize() -> CustomizableOperation<GetEndpointAttributesOutput, GetEndpointAttributesError, Self>
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+
+  struct GetEndpointAttributesOutput
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> GetEndpointAttributesOutputBuilder
+
+  struct CustomizableOperation
+    fn interceptor(interceptor: Str) -> Self
+    fn map_request(f: F) -> Self
+    fn mutate_request(f: F) -> Self
+    fn config_override(config_override: Str) -> Self
+    fn send() -> Res!<T>
+
+  struct GetPlatformApplicationAttributesFluentBuilder
+    fn as_input() -> GetPlatformApplicationAttributesInputBuilder
+    fn send() -> Res!<GetPlatformApplicationAttributesOutput>
+    fn customize() -> CustomizableOperation<GetPlatformApplicationAttributesOutput, GetPlatformApplicationAttributesError, Self>
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+
+  struct CreatePlatformApplication
+    fn new() -> Self
+
+  struct GetPlatformApplicationAttributesOutput
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> GetPlatformApplicationAttributesOutputBuilder
+
+  struct GetSMSAttributesFluentBuilder
+    fn as_input() -> GetSmsAttributesInputBuilder
+    fn send() -> Res!<GetSmsAttributesOutput>
+    fn customize() -> CustomizableOperation<GetSmsAttributesOutput, GetSMSAttributesError, Self>
+    fn attributes(input: Str) -> Self
+    fn set_attributes(input: Opt<List<Str>>) -> Self
+    fn get_attributes() -> Opt<List<Str>>
+
+  struct CreatePlatformEndpointInput
+    fn platform_application_arn() -> Opt<Str>
+    fn token() -> Opt<Str>
+    fn custom_user_data() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> CreatePlatformEndpointInputBuilder
+
+  struct GetSmsAttributesOutput
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> GetSmsAttributesOutputBuilder
+
+  struct CreatePlatformEndpointInputBuilder
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn token(input: Str) -> Self
+    fn set_token(input: Opt<Str>) -> Self
+    fn get_token() -> Opt<Str>
+    fn custom_user_data(input: Str) -> Self
+    fn set_custom_user_data(input: Opt<Str>) -> Self
+    fn get_custom_user_data() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> Res!<CreatePlatformEndpointInput>
+    fn send_with(client: Client) -> Res!<CreatePlatformEndpointOutput>
+
+  struct GetSMSSandboxAccountStatusFluentBuilder
+    fn as_input() -> GetSmsSandboxAccountStatusInputBuilder
+    fn send() -> Res!<GetSmsSandboxAccountStatusOutput>
+    fn customize() -> CustomizableOperation<GetSmsSandboxAccountStatusOutput, GetSMSSandboxAccountStatusError, Self>
+
+  struct GetSmsSandboxAccountStatusOutput
+    fn is_in_sandbox() -> Bool
+    fn builder() -> GetSmsSandboxAccountStatusOutputBuilder
+
+  struct CreatePlatformEndpointOutputBuilder
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+    fn build() -> CreatePlatformEndpointOutput
+
+  struct GetSubscriptionAttributesFluentBuilder
+    fn as_input() -> GetSubscriptionAttributesInputBuilder
+    fn send() -> Res!<GetSubscriptionAttributesOutput>
+    fn customize() -> CustomizableOperation<GetSubscriptionAttributesOutput, GetSubscriptionAttributesError, Self>
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+
+  struct GetSubscriptionAttributesOutput
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> GetSubscriptionAttributesOutputBuilder
+
+  struct CreatePlatformEndpoint
+    fn new() -> Self
+
+  struct GetTopicAttributesFluentBuilder
+    fn as_input() -> GetTopicAttributesInputBuilder
+    fn send() -> Res!<GetTopicAttributesOutput>
+    fn customize() -> CustomizableOperation<GetTopicAttributesOutput, GetTopicAttributesError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+
+  struct GetTopicAttributesOutput
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> GetTopicAttributesOutputBuilder
+
+  struct ListEndpointsByPlatformApplicationFluentBuilder
+    fn as_input() -> ListEndpointsByPlatformApplicationInputBuilder
+    fn send() -> Res!<ListEndpointsByPlatformApplicationOutput>
+    fn customize() -> CustomizableOperation<ListEndpointsByPlatformApplicationOutput, ListEndpointsByPlatformApplicationError, Self>
+    fn into_paginator() -> ListEndpointsByPlatformApplicationPaginator
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+
+  struct CreateSmsSandboxPhoneNumberInput
+    fn phone_number() -> Opt<Str>
+    fn language_code() -> Opt<LanguageCodeString>
+    fn builder() -> CreateSmsSandboxPhoneNumberInputBuilder
+
+  struct CreateSmsSandboxPhoneNumberInputBuilder
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn language_code(input: LanguageCodeString) -> Self
+    fn set_language_code(input: Opt<LanguageCodeString>) -> Self
+    fn get_language_code() -> Opt<LanguageCodeString>
+    fn build() -> Res!<CreateSmsSandboxPhoneNumberInput>
+    fn send_with(client: Client) -> Res!<CreateSmsSandboxPhoneNumberOutput>
+
+  struct ListEndpointsByPlatformApplicationOutput
+    fn endpoints() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListEndpointsByPlatformApplicationOutputBuilder
+
+  struct CreateSmsSandboxPhoneNumberOutputBuilder
+    fn build() -> CreateSmsSandboxPhoneNumberOutput
+
+  struct ListOriginationNumbersFluentBuilder
+    fn as_input() -> ListOriginationNumbersInputBuilder
+    fn send() -> Res!<ListOriginationNumbersOutput>
+    fn customize() -> CustomizableOperation<ListOriginationNumbersOutput, ListOriginationNumbersError, Self>
+    fn into_paginator() -> ListOriginationNumbersPaginator
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+
+  struct ListOriginationNumbersOutput
+    fn next_token() -> Opt<Str>
+    fn phone_numbers() -> Str
+    fn builder() -> ListOriginationNumbersOutputBuilder
+
+  struct CreateSMSSandboxPhoneNumber
+    fn new() -> Self
+
+  struct ListPhoneNumbersOptedOutFluentBuilder
+    fn as_input() -> ListPhoneNumbersOptedOutInputBuilder
+    fn send() -> Res!<ListPhoneNumbersOptedOutOutput>
+    fn customize() -> CustomizableOperation<ListPhoneNumbersOptedOutOutput, ListPhoneNumbersOptedOutError, Self>
+    fn into_paginator() -> ListPhoneNumbersOptedOutPaginator
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+
+  struct ListPhoneNumbersOptedOutOutput
+    fn phone_numbers() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListPhoneNumbersOptedOutOutputBuilder
+
+  struct Tag
+    fn key() -> Str
+    fn value() -> Str
+    fn builder() -> TagBuilder
+
+  struct CreateTopicInput
+    fn name() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn tags() -> Str
+    fn data_protection_policy() -> Opt<Str>
+    fn builder() -> CreateTopicInputBuilder
+
+  struct CreateTopicInputBuilder
+    fn name(input: Str) -> Self
+    fn set_name(input: Opt<Str>) -> Self
+    fn get_name() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn tags(input: Tag) -> Self
+    fn set_tags(input: Opt<List<Tag>>) -> Self
+    fn get_tags() -> Opt<List<Tag>>
+    fn data_protection_policy(input: Str) -> Self
+    fn set_data_protection_policy(input: Opt<Str>) -> Self
+    fn get_data_protection_policy() -> Opt<Str>
+    fn build() -> Res!<CreateTopicInput>
+    fn send_with(client: Client) -> Res!<CreateTopicOutput>
+
+  struct ListPlatformApplicationsFluentBuilder
+    fn as_input() -> ListPlatformApplicationsInputBuilder
+    fn send() -> Res!<ListPlatformApplicationsOutput>
+    fn customize() -> CustomizableOperation<ListPlatformApplicationsOutput, ListPlatformApplicationsError, Self>
+    fn into_paginator() -> ListPlatformApplicationsPaginator
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+
+  struct ListPlatformApplicationsOutput
+    fn platform_applications() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListPlatformApplicationsOutputBuilder
+
+  struct CreateTopicOutputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn build() -> CreateTopicOutput
+
+  struct ListSMSSandboxPhoneNumbersFluentBuilder
+    fn as_input() -> ListSmsSandboxPhoneNumbersInputBuilder
+    fn send() -> Res!<ListSmsSandboxPhoneNumbersOutput>
+    fn customize() -> CustomizableOperation<ListSmsSandboxPhoneNumbersOutput, ListSMSSandboxPhoneNumbersError, Self>
+    fn into_paginator() -> ListSmsSandboxPhoneNumbersPaginator
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+
+  struct CreateTopic
+    fn new() -> Self
+
+  struct ListSmsSandboxPhoneNumbersOutput
+    fn phone_numbers() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListSmsSandboxPhoneNumbersOutputBuilder
+
+  struct ListSubscriptionsFluentBuilder
+    fn as_input() -> ListSubscriptionsInputBuilder
+    fn send() -> Res!<ListSubscriptionsOutput>
+    fn customize() -> CustomizableOperation<ListSubscriptionsOutput, ListSubscriptionsError, Self>
+    fn into_paginator() -> ListSubscriptionsPaginator
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+
+  struct ListSubscriptionsOutput
+    fn subscriptions() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListSubscriptionsOutputBuilder
+
+  struct DeleteEndpointInput
+    fn endpoint_arn() -> Opt<Str>
+    fn builder() -> DeleteEndpointInputBuilder
+
+  struct DeleteEndpointInputBuilder
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+    fn build() -> Res!<DeleteEndpointInput>
+    fn send_with(client: Client) -> Res!<DeleteEndpointOutput>
+
+  struct ListSubscriptionsByTopicFluentBuilder
+    fn as_input() -> ListSubscriptionsByTopicInputBuilder
+    fn send() -> Res!<ListSubscriptionsByTopicOutput>
+    fn customize() -> CustomizableOperation<ListSubscriptionsByTopicOutput, ListSubscriptionsByTopicError, Self>
+    fn into_paginator() -> ListSubscriptionsByTopicPaginator
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+
+  struct DeleteEndpointOutputBuilder
+    fn build() -> DeleteEndpointOutput
+
+  struct ListSubscriptionsByTopicOutput
+    fn subscriptions() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListSubscriptionsByTopicOutputBuilder
+
+  struct DeleteEndpoint
+    fn new() -> Self
+
+  struct ListTagsForResourceFluentBuilder
+    fn as_input() -> ListTagsForResourceInputBuilder
+    fn send() -> Res!<ListTagsForResourceOutput>
+    fn customize() -> CustomizableOperation<ListTagsForResourceOutput, ListTagsForResourceError, Self>
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+
+  struct ListTagsForResourceOutput
+    fn tags() -> Str
+    fn builder() -> ListTagsForResourceOutputBuilder
+
+  struct ListTopicsFluentBuilder
+    fn as_input() -> ListTopicsInputBuilder
+    fn send() -> Res!<ListTopicsOutput>
+    fn customize() -> CustomizableOperation<ListTopicsOutput, ListTopicsError, Self>
+    fn into_paginator() -> ListTopicsPaginator
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+
+  struct DeletePlatformApplicationInput
+    fn platform_application_arn() -> Opt<Str>
+    fn builder() -> DeletePlatformApplicationInputBuilder
+
+  struct DeletePlatformApplicationInputBuilder
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn build() -> Res!<DeletePlatformApplicationInput>
+    fn send_with(client: Client) -> Res!<DeletePlatformApplicationOutput>
+
+  struct ListTopicsOutput
+    fn topics() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListTopicsOutputBuilder
+
+  struct DeletePlatformApplicationOutputBuilder
+    fn build() -> DeletePlatformApplicationOutput
+
+  struct OptInPhoneNumberFluentBuilder
+    fn as_input() -> OptInPhoneNumberInputBuilder
+    fn send() -> Res!<OptInPhoneNumberOutput>
+    fn customize() -> CustomizableOperation<OptInPhoneNumberOutput, OptInPhoneNumberError, Self>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+
+  struct OptInPhoneNumberOutput
+    fn builder() -> OptInPhoneNumberOutputBuilder
+
+  struct PublishFluentBuilder
+    fn as_input() -> PublishInputBuilder
+    fn send() -> Res!<PublishOutput>
+    fn customize() -> CustomizableOperation<PublishOutput, PublishError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn target_arn(input: Str) -> Self
+    fn set_target_arn(input: Opt<Str>) -> Self
+    fn get_target_arn() -> Opt<Str>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn subject(input: Str) -> Self
+    fn set_subject(input: Opt<Str>) -> Self
+    fn get_subject() -> Opt<Str>
+    fn message_structure(input: Str) -> Self
+    fn set_message_structure(input: Opt<Str>) -> Self
+    fn get_message_structure() -> Opt<Str>
+    fn message_attributes(k: Str, v: MessageAttributeValue) -> Self
+    fn set_message_attributes(input: Opt<HashMap<Str, MessageAttributeValue>>) -> Self
+    fn get_message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_deduplication_id(input: Str) -> Self
+    fn set_message_deduplication_id(input: Opt<Str>) -> Self
+    fn get_message_deduplication_id() -> Opt<Str>
+    fn message_group_id(input: Str) -> Self
+    fn set_message_group_id(input: Opt<Str>) -> Self
+    fn get_message_group_id() -> Opt<Str>
+
+  struct DeletePlatformApplication
+    fn new() -> Self
+
+  struct DeleteSmsSandboxPhoneNumberInput
+    fn phone_number() -> Opt<Str>
+    fn builder() -> DeleteSmsSandboxPhoneNumberInputBuilder
+
+  struct DeleteSmsSandboxPhoneNumberInputBuilder
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn build() -> Res!<DeleteSmsSandboxPhoneNumberInput>
+    fn send_with(client: Client) -> Res!<DeleteSmsSandboxPhoneNumberOutput>
+
+  struct DeleteSmsSandboxPhoneNumberOutputBuilder
+    fn build() -> DeleteSmsSandboxPhoneNumberOutput
+
+  struct PublishOutput
+    fn message_id() -> Opt<Str>
+    fn sequence_number() -> Opt<Str>
+    fn builder() -> PublishOutputBuilder
+
+  struct PublishBatchFluentBuilder
+    fn as_input() -> PublishBatchInputBuilder
+    fn send() -> Res!<PublishBatchOutput>
+    fn customize() -> CustomizableOperation<PublishBatchOutput, PublishBatchError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn publish_batch_request_entries(input: PublishBatchRequestEntry) -> Self
+    fn set_publish_batch_request_entries(input: Opt<List<PublishBatchRequestEntry>>) -> Self
+    fn get_publish_batch_request_entries() -> Opt<List<PublishBatchRequestEntry>>
+
+  struct DeleteSMSSandboxPhoneNumber
+    fn new() -> Self
+
+  struct PublishBatchOutput
+    fn successful() -> Str
+    fn failed() -> Str
+    fn builder() -> PublishBatchOutputBuilder
+
+  struct PutDataProtectionPolicyFluentBuilder
+    fn as_input() -> PutDataProtectionPolicyInputBuilder
+    fn send() -> Res!<PutDataProtectionPolicyOutput>
+    fn customize() -> CustomizableOperation<PutDataProtectionPolicyOutput, PutDataProtectionPolicyError, Self>
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn data_protection_policy(input: Str) -> Self
+    fn set_data_protection_policy(input: Opt<Str>) -> Self
+    fn get_data_protection_policy() -> Opt<Str>
+
+  struct DeleteTopicInput
+    fn topic_arn() -> Opt<Str>
+    fn builder() -> DeleteTopicInputBuilder
+
+  struct DeleteTopicInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn build() -> Res!<DeleteTopicInput>
+    fn send_with(client: Client) -> Res!<DeleteTopicOutput>
+
+  struct PutDataProtectionPolicyOutput
+    fn builder() -> PutDataProtectionPolicyOutputBuilder
+
+  struct DeleteTopicOutputBuilder
+    fn build() -> DeleteTopicOutput
+
+  struct RemovePermissionFluentBuilder
+    fn as_input() -> RemovePermissionInputBuilder
+    fn send() -> Res!<RemovePermissionOutput>
+    fn customize() -> CustomizableOperation<RemovePermissionOutput, RemovePermissionError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+
+  struct RemovePermissionOutput
+    fn builder() -> RemovePermissionOutputBuilder
+
+  struct SetEndpointAttributesFluentBuilder
+    fn as_input() -> SetEndpointAttributesInputBuilder
+    fn send() -> Res!<SetEndpointAttributesOutput>
+    fn customize() -> CustomizableOperation<SetEndpointAttributesOutput, SetEndpointAttributesError, Self>
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+
+  struct DeleteTopic
+    fn new() -> Self
+
+  struct SetEndpointAttributesOutput
+    fn builder() -> SetEndpointAttributesOutputBuilder
+
+  struct SetPlatformApplicationAttributesFluentBuilder
+    fn as_input() -> SetPlatformApplicationAttributesInputBuilder
+    fn send() -> Res!<SetPlatformApplicationAttributesOutput>
+    fn customize() -> CustomizableOperation<SetPlatformApplicationAttributesOutput, SetPlatformApplicationAttributesError, Self>
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+
+  struct GetDataProtectionPolicyInput
+    fn resource_arn() -> Opt<Str>
+    fn builder() -> GetDataProtectionPolicyInputBuilder
+
+  struct GetDataProtectionPolicyInputBuilder
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn build() -> Res!<GetDataProtectionPolicyInput>
+    fn send_with(client: Client) -> Res!<GetDataProtectionPolicyOutput>
+
+  struct SetPlatformApplicationAttributesOutput
+    fn builder() -> SetPlatformApplicationAttributesOutputBuilder
+
+  struct SetSMSAttributesFluentBuilder
+    fn as_input() -> SetSmsAttributesInputBuilder
+    fn send() -> Res!<SetSmsAttributesOutput>
+    fn customize() -> CustomizableOperation<SetSmsAttributesOutput, SetSMSAttributesError, Self>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+
+  struct GetDataProtectionPolicyOutputBuilder
+    fn data_protection_policy(input: Str) -> Self
+    fn set_data_protection_policy(input: Opt<Str>) -> Self
+    fn get_data_protection_policy() -> Opt<Str>
+    fn build() -> GetDataProtectionPolicyOutput
+
+  struct SetSmsAttributesOutput
+    fn builder() -> SetSmsAttributesOutputBuilder
+
+  struct SetSubscriptionAttributesFluentBuilder
+    fn as_input() -> SetSubscriptionAttributesInputBuilder
+    fn send() -> Res!<SetSubscriptionAttributesOutput>
+    fn customize() -> CustomizableOperation<SetSubscriptionAttributesOutput, SetSubscriptionAttributesError, Self>
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+    fn attribute_name(input: Str) -> Self
+    fn set_attribute_name(input: Opt<Str>) -> Self
+    fn get_attribute_name() -> Opt<Str>
+    fn attribute_value(input: Str) -> Self
+    fn set_attribute_value(input: Opt<Str>) -> Self
+    fn get_attribute_value() -> Opt<Str>
+
+  struct GetDataProtectionPolicy
+    fn new() -> Self
+
+  struct SetSubscriptionAttributesOutput
+    fn builder() -> SetSubscriptionAttributesOutputBuilder
+
+  struct SetTopicAttributesFluentBuilder
+    fn as_input() -> SetTopicAttributesInputBuilder
+    fn send() -> Res!<SetTopicAttributesOutput>
+    fn customize() -> CustomizableOperation<SetTopicAttributesOutput, SetTopicAttributesError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn attribute_name(input: Str) -> Self
+    fn set_attribute_name(input: Opt<Str>) -> Self
+    fn get_attribute_name() -> Opt<Str>
+    fn attribute_value(input: Str) -> Self
+    fn set_attribute_value(input: Opt<Str>) -> Self
+    fn get_attribute_value() -> Opt<Str>
+
+  struct GetEndpointAttributesInput
+    fn endpoint_arn() -> Opt<Str>
+    fn builder() -> GetEndpointAttributesInputBuilder
+
+  struct GetEndpointAttributesInputBuilder
+    fn endpoint_arn(input: Str) -> Self
+    fn set_endpoint_arn(input: Opt<Str>) -> Self
+    fn get_endpoint_arn() -> Opt<Str>
+    fn build() -> Res!<GetEndpointAttributesInput>
+    fn send_with(client: Client) -> Res!<GetEndpointAttributesOutput>
+
+  struct SetTopicAttributesOutput
+    fn builder() -> SetTopicAttributesOutputBuilder
+
+  struct GetEndpointAttributesOutputBuilder
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> GetEndpointAttributesOutput
+
+  struct SubscribeFluentBuilder
+    fn as_input() -> SubscribeInputBuilder
+    fn send() -> Res!<SubscribeOutput>
+    fn customize() -> CustomizableOperation<SubscribeOutput, SubscribeError, Self>
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn protocol(input: Str) -> Self
+    fn set_protocol(input: Opt<Str>) -> Self
+    fn get_protocol() -> Opt<Str>
+    fn endpoint(input: Str) -> Self
+    fn set_endpoint(input: Opt<Str>) -> Self
+    fn get_endpoint() -> Opt<Str>
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn return_subscription_arn(input: Bool) -> Self
+    fn set_return_subscription_arn(input: Opt<Bool>) -> Self
+    fn get_return_subscription_arn() -> Opt<Bool>
+
+  struct GetEndpointAttributes
+    fn new() -> Self
+
+  struct SubscribeOutput
+    fn subscription_arn() -> Opt<Str>
+    fn builder() -> SubscribeOutputBuilder
+
+  struct TagResourceFluentBuilder
+    fn as_input() -> TagResourceInputBuilder
+    fn send() -> Res!<TagResourceOutput>
+    fn customize() -> CustomizableOperation<TagResourceOutput, TagResourceError, Self>
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn tags(input: Tag) -> Self
+    fn set_tags(input: Opt<List<Tag>>) -> Self
+    fn get_tags() -> Opt<List<Tag>>
+
+  struct GetPlatformApplicationAttributesInput
+    fn platform_application_arn() -> Opt<Str>
+    fn builder() -> GetPlatformApplicationAttributesInputBuilder
+
+  struct GetPlatformApplicationAttributesInputBuilder
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn build() -> Res!<GetPlatformApplicationAttributesInput>
+    fn send_with(client: Client) -> Res!<GetPlatformApplicationAttributesOutput>
+
+  struct TagResourceOutput
+    fn builder() -> TagResourceOutputBuilder
+
+  struct UnsubscribeFluentBuilder
+    fn as_input() -> UnsubscribeInputBuilder
+    fn send() -> Res!<UnsubscribeOutput>
+    fn customize() -> CustomizableOperation<UnsubscribeOutput, UnsubscribeError, Self>
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+
+  struct GetPlatformApplicationAttributesOutputBuilder
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> GetPlatformApplicationAttributesOutput
+
+  struct UnsubscribeOutput
+    fn builder() -> UnsubscribeOutputBuilder
+
+  struct UntagResourceFluentBuilder
+    fn as_input() -> UntagResourceInputBuilder
+    fn send() -> Res!<UntagResourceOutput>
+    fn customize() -> CustomizableOperation<UntagResourceOutput, UntagResourceError, Self>
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn tag_keys(input: Str) -> Self
+    fn set_tag_keys(input: Opt<List<Str>>) -> Self
+    fn get_tag_keys() -> Opt<List<Str>>
+
+  struct UntagResourceOutput
+    fn builder() -> UntagResourceOutputBuilder
+
+  struct GetPlatformApplicationAttributes
+    fn new() -> Self
+
+  struct VerifySMSSandboxPhoneNumberFluentBuilder
+    fn as_input() -> VerifySmsSandboxPhoneNumberInputBuilder
+    fn send() -> Res!<VerifySmsSandboxPhoneNumberOutput>
+    fn customize() -> CustomizableOperation<VerifySmsSandboxPhoneNumberOutput, VerifySMSSandboxPhoneNumberError, Self>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn one_time_password(input: Str) -> Self
+    fn set_one_time_password(input: Opt<Str>) -> Self
+    fn get_one_time_password() -> Opt<Str>
+
+  struct VerifySmsSandboxPhoneNumberOutput
+    fn builder() -> VerifySmsSandboxPhoneNumberOutputBuilder
+
+  struct GetSmsAttributesInput
+    fn attributes() -> Str
+    fn builder() -> GetSmsAttributesInputBuilder
+
+  struct GetSmsAttributesInputBuilder
+    fn attributes(input: Str) -> Self
+    fn set_attributes(input: Opt<List<Str>>) -> Self
+    fn get_attributes() -> Opt<List<Str>>
+    fn build() -> Res!<GetSmsAttributesInput>
+    fn send_with(client: Client) -> Res!<GetSmsAttributesOutput>
+
+  struct GetSmsAttributesOutputBuilder
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> GetSmsAttributesOutput
+
+  struct GetSMSAttributes
+    fn new() -> Self
+
+  struct GetSmsSandboxAccountStatusInput
+    fn builder() -> GetSmsSandboxAccountStatusInputBuilder
+
+  struct GetSmsSandboxAccountStatusInputBuilder
+    fn build() -> Res!<GetSmsSandboxAccountStatusInput>
+    fn send_with(client: Client) -> Res!<GetSmsSandboxAccountStatusOutput>
+
+  struct GetSmsSandboxAccountStatusOutputBuilder
+    fn is_in_sandbox(input: Bool) -> Self
+    fn set_is_in_sandbox(input: Opt<Bool>) -> Self
+    fn get_is_in_sandbox() -> Opt<Bool>
+    fn build() -> GetSmsSandboxAccountStatusOutput
+
+  struct GetSMSSandboxAccountStatus
+    fn new() -> Self
+
+  struct Params
+    fn builder() -> ParamsBuilder
+    fn region() -> Opt<Str>
+    fn use_dual_stack() -> Opt<Bool>
+    fn use_fips() -> Opt<Bool>
+    fn endpoint() -> Opt<Str>
+    fn builder() -> ParamsBuilder
+    fn operation_name() -> Str
+
+  struct GetSubscriptionAttributesInput
+    fn subscription_arn() -> Opt<Str>
+    fn builder() -> GetSubscriptionAttributesInputBuilder
+
+  struct GetSubscriptionAttributesInputBuilder
+    fn subscription_arn(input: Str) -> Self
+    fn set_subscription_arn(input: Opt<Str>) -> Self
+    fn get_subscription_arn() -> Opt<Str>
+    fn build() -> Res!<GetSubscriptionAttributesInput>
+    fn send_with(client: Client) -> Res!<GetSubscriptionAttributesOutput>
+
+  struct DefaultResolver
+    fn new() -> Self
+
+  struct GetSubscriptionAttributesOutputBuilder
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> GetSubscriptionAttributesOutput
+
+  struct GetSubscriptionAttributes
+    fn new() -> Self
+
+  struct GetTopicAttributesInput
+    fn topic_arn() -> Opt<Str>
+    fn builder() -> GetTopicAttributesInputBuilder
+
+  struct GetTopicAttributesInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn build() -> Res!<GetTopicAttributesInput>
+    fn send_with(client: Client) -> Res!<GetTopicAttributesOutput>
+
+  struct GetTopicAttributesOutputBuilder
+    fn attributes(k: Str, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<Str, Str>>
+    fn build() -> GetTopicAttributesOutput
+
+  struct ParamsBuilder
+    fn build() -> Res!<Params>
+    fn region(value: Str) -> Self
+    fn set_region(param: Opt<Str>) -> Self
+    fn use_dual_stack(value: Str) -> Self
+    fn set_use_dual_stack(param: Opt<Bool>) -> Self
+    fn use_fips(value: Str) -> Self
+    fn set_use_fips(param: Opt<Bool>) -> Self
+    fn endpoint(value: Str) -> Self
+    fn set_endpoint(param: Opt<Str>) -> Self
+    fn operation_name(operation_name: Str) -> Self
+    fn set_operation_name(operation_name: Opt<Cow<Str>>) -> Self
+    fn build() -> Res!<Params>
+
+  struct GetTopicAttributes
+    fn new() -> Self
+
+  struct ListEndpointsByPlatformApplicationInput
+    fn platform_application_arn() -> Opt<Str>
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListEndpointsByPlatformApplicationInputBuilder
+
+  struct ListEndpointsByPlatformApplicationInputBuilder
+    fn platform_application_arn(input: Str) -> Self
+    fn set_platform_application_arn(input: Opt<Str>) -> Self
+    fn get_platform_application_arn() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListEndpointsByPlatformApplicationInput>
+    fn send_with(client: Client) -> Res!<ListEndpointsByPlatformApplicationOutput>
+
+  struct Endpoint
+    fn endpoint_arn() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> EndpointBuilder
+
+  struct ListEndpointsByPlatformApplicationOutputBuilder
+    fn endpoints(input: Endpoint) -> Self
+    fn set_endpoints(input: Opt<List<Endpoint>>) -> Self
+    fn get_endpoints() -> Opt<List<Endpoint>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> ListEndpointsByPlatformApplicationOutput
+
+  struct ListEndpointsByPlatformApplicationPaginator
+    fn items() -> ListEndpointsByPlatformApplicationPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListEndpointsByPlatformApplicationOutput>>
+
+  struct ListEndpointsByPlatformApplication
+    fn new() -> Self
+
+  struct ListEndpointsByPlatformApplicationPaginatorItems
+    fn send() -> PaginationStream<Res!<Endpoint>>
+
+  struct InvalidParams
+
+  struct ListOriginationNumbersInput
+    fn next_token() -> Opt<Str>
+    fn max_results() -> Opt<Int>
+    fn builder() -> ListOriginationNumbersInputBuilder
+
+  struct ListOriginationNumbersInputBuilder
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+    fn build() -> Res!<ListOriginationNumbersInput>
+    fn send_with(client: Client) -> Res!<ListOriginationNumbersOutput>
+
+  struct PhoneNumberInformation
+    fn created_at() -> Opt<DateTime>
+    fn phone_number() -> Opt<Str>
+    fn status() -> Opt<Str>
+    fn iso2_country_code() -> Opt<Str>
+    fn route_type() -> Opt<RouteType>
+    fn number_capabilities() -> Str
+    fn builder() -> PhoneNumberInformationBuilder
+
+  struct ListOriginationNumbersOutputBuilder
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn phone_numbers(input: PhoneNumberInformation) -> Self
+    fn set_phone_numbers(input: Opt<List<PhoneNumberInformation>>) -> Self
+    fn get_phone_numbers() -> Opt<List<PhoneNumberInformation>>
+    fn build() -> ListOriginationNumbersOutput
+
+  struct ListOriginationNumbersPaginator
+    fn page_size(limit: Int) -> Self
+    fn items() -> ListOriginationNumbersPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListOriginationNumbersOutput>>
+
+  struct ListOriginationNumbers
+    fn new() -> Self
+
+  struct ListOriginationNumbersPaginatorItems
+    fn send() -> PaginationStream<Res!<PhoneNumberInformation>>
+
+  struct ListPhoneNumbersOptedOutInput
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListPhoneNumbersOptedOutInputBuilder
+
+  struct ListPhoneNumbersOptedOutInputBuilder
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListPhoneNumbersOptedOutInput>
+    fn send_with(client: Client) -> Res!<ListPhoneNumbersOptedOutOutput>
+
+  struct ListPhoneNumbersOptedOutOutputBuilder
+    fn phone_numbers(input: Str) -> Self
+    fn set_phone_numbers(input: Opt<List<Str>>) -> Self
+    fn get_phone_numbers() -> Opt<List<Str>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> ListPhoneNumbersOptedOutOutput
+
+  struct ListPhoneNumbersOptedOutPaginator
+    fn items() -> ListPhoneNumbersOptedOutPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListPhoneNumbersOptedOutOutput>>
+
+  struct ListPhoneNumbersOptedOut
+    fn new() -> Self
+
+  struct ListPhoneNumbersOptedOutPaginatorItems
+    fn send() -> PaginationStream<Res!<Str>>
+
+  struct ListPlatformApplicationsInput
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListPlatformApplicationsInputBuilder
+
+  struct ListPlatformApplicationsInputBuilder
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListPlatformApplicationsInput>
+    fn send_with(client: Client) -> Res!<ListPlatformApplicationsOutput>
+
+  struct PlatformApplication
+    fn platform_application_arn() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<Str, Str>>
+    fn builder() -> PlatformApplicationBuilder
+
+  struct ListPlatformApplicationsOutputBuilder
+    fn platform_applications(input: PlatformApplication) -> Self
+    fn set_platform_applications(input: Opt<List<PlatformApplication>>) -> Self
+    fn get_platform_applications() -> Opt<List<PlatformApplication>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> ListPlatformApplicationsOutput
+
+  struct ListPlatformApplicationsPaginator
+    fn items() -> ListPlatformApplicationsPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListPlatformApplicationsOutput>>
+
+  struct ListPlatformApplications
+    fn new() -> Self
+
+  struct ListPlatformApplicationsPaginatorItems
+    fn send() -> PaginationStream<Res!<PlatformApplication>>
+
+  struct ListSmsSandboxPhoneNumbersInput
+    fn next_token() -> Opt<Str>
+    fn max_results() -> Opt<Int>
+    fn builder() -> ListSmsSandboxPhoneNumbersInputBuilder
+
+  struct ListSmsSandboxPhoneNumbersInputBuilder
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+    fn build() -> Res!<ListSmsSandboxPhoneNumbersInput>
+    fn send_with(client: Client) -> Res!<ListSmsSandboxPhoneNumbersOutput>
+
+  struct SmsSandboxPhoneNumber
+    fn phone_number() -> Opt<Str>
+    fn status() -> Opt<SmsSandboxPhoneNumberVerificationStatus>
+    fn builder() -> SmsSandboxPhoneNumberBuilder
+
+  struct ListSmsSandboxPhoneNumbersOutputBuilder
+    fn phone_numbers(input: SmsSandboxPhoneNumber) -> Self
+    fn set_phone_numbers(input: Opt<List<SmsSandboxPhoneNumber>>) -> Self
+    fn get_phone_numbers() -> Opt<List<SmsSandboxPhoneNumber>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListSmsSandboxPhoneNumbersOutput>
+
+  struct Params
+    fn builder() -> ParamsBuilder
+    fn region() -> Opt<Str>
+    fn use_dual_stack() -> Opt<Bool>
+    fn use_fips() -> Opt<Bool>
+    fn endpoint() -> Opt<Str>
+    fn builder() -> ParamsBuilder
+    fn operation_name() -> Str
+
+  struct Builder
+    fn new() -> Self
+    fn stalled_stream_protection(stalled_stream_protection_config: StalledStreamProtectionConfig) -> Self
+    fn set_stalled_stream_protection(stalled_stream_protection_config: Opt<StalledStreamProtectionConfig>) -> Self
+    fn http_client(http_client: Str) -> Self
+    fn set_http_client(http_client: Opt<SharedHttpClient>) -> Self
+    fn push_auth_scheme(auth_scheme: Str) -> Self
+    fn auth_scheme_resolver(auth_scheme_resolver: Str) -> Self
+    fn set_auth_scheme_resolver(auth_scheme_resolver: Str) -> Self
+    fn allow_no_auth() -> Self
+    fn set_allow_no_auth() -> Self
+    fn auth_scheme_preference(preference: Str) -> Self
+    fn set_auth_scheme_preference(preference: Opt<AuthSchemePreference>) -> Self
+    fn endpoint_resolver(endpoint_resolver: Str) -> Self
+    fn set_endpoint_resolver(endpoint_resolver: Opt<SharedEndpointResolver>) -> Self
+    fn retry_config(retry_config: RetryConfig) -> Self
+    fn set_retry_config(retry_config: Opt<RetryConfig>) -> Self
+    fn sleep_impl(sleep_impl: Str) -> Self
+    fn set_sleep_impl(sleep_impl: Opt<SharedAsyncSleep>) -> Self
+    fn timeout_config(timeout_config: TimeoutConfig) -> Self
+    fn set_timeout_config(timeout_config: Opt<TimeoutConfig>) -> Self
+    fn retry_partition(retry_partition: RetryPartition) -> Self
+    fn set_retry_partition(retry_partition: Opt<RetryPartition>) -> Self
+    fn identity_cache(identity_cache: Str) -> Self
+    fn set_identity_cache(identity_cache: Str) -> Self
+    fn interceptor(interceptor: Str) -> Self
+    fn push_interceptor(interceptor: SharedInterceptor) -> Self
+    fn set_interceptors(interceptors: Str) -> Self
+    fn time_source(time_source: Str) -> Self
+    fn set_time_source(time_source: Opt<SharedTimeSource>) -> Self
+    fn retry_classifier(retry_classifier: Str) -> Self
+    fn push_retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn set_retry_classifiers(retry_classifiers: Str) -> Self
+    fn app_name(app_name: AppName) -> Self
+    fn set_app_name(app_name: Opt<AppName>) -> Self
+    fn invocation_id_generator(gen: Str) -> Self
+    fn set_invocation_id_generator(gen: Opt<SharedInvocationIdGenerator>) -> Self
+    fn endpoint_url(endpoint_url: Str) -> Self
+    fn set_endpoint_url(endpoint_url: Opt<Str>) -> Self
+    fn use_dual_stack(use_dual_stack: Str) -> Self
+    fn set_use_dual_stack(use_dual_stack: Opt<Bool>) -> Self
+    fn use_fips(use_fips: Str) -> Self
+    fn set_use_fips(use_fips: Opt<Bool>) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn credentials_provider(credentials_provider: Str) -> Self
+    fn set_credentials_provider(credentials_provider: Opt<SharedCredentialsProvider>) -> Self
+    fn behavior_version(behavior_version: BehaviorVersion) -> Self
+    fn set_behavior_version(behavior_version: Opt<BehaviorVersion>) -> Self
+    fn behavior_version_latest() -> Self
+    fn build() -> Config
+
+  struct ListSmsSandboxPhoneNumbersPaginator
+    fn page_size(limit: Int) -> Self
+    fn items() -> ListSmsSandboxPhoneNumbersPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListSmsSandboxPhoneNumbersOutput>>
+
+  struct ListSMSSandboxPhoneNumbers
+    fn new() -> Self
+
+  struct ListSmsSandboxPhoneNumbersPaginatorItems
+    fn send() -> PaginationStream<Res!<SmsSandboxPhoneNumber>>
+
+  struct DefaultAuthSchemeResolver
+
+  struct ListSubscriptionsInput
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListSubscriptionsInputBuilder
+
+  struct ListSubscriptionsInputBuilder
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListSubscriptionsInput>
+    fn send_with(client: Client) -> Res!<ListSubscriptionsOutput>
+
+  struct Subscription
+    fn subscription_arn() -> Opt<Str>
+    fn owner() -> Opt<Str>
+    fn protocol() -> Opt<Str>
+    fn endpoint() -> Opt<Str>
+    fn topic_arn() -> Opt<Str>
+    fn builder() -> SubscriptionBuilder
+
+  struct ListSubscriptionsOutputBuilder
+    fn subscriptions(input: Subscription) -> Self
+    fn set_subscriptions(input: Opt<List<Subscription>>) -> Self
+    fn get_subscriptions() -> Opt<List<Subscription>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> ListSubscriptionsOutput
+
+  struct ListSubscriptionsPaginator
+    fn items() -> ListSubscriptionsPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListSubscriptionsOutput>>
+
+  struct ParamsBuilder
+    fn build() -> Res!<Params>
+    fn region(value: Str) -> Self
+    fn set_region(param: Opt<Str>) -> Self
+    fn use_dual_stack(value: Str) -> Self
+    fn set_use_dual_stack(param: Opt<Bool>) -> Self
+    fn use_fips(value: Str) -> Self
+    fn set_use_fips(param: Opt<Bool>) -> Self
+    fn endpoint(value: Str) -> Self
+    fn set_endpoint(param: Opt<Str>) -> Self
+    fn operation_name(operation_name: Str) -> Self
+    fn set_operation_name(operation_name: Opt<Cow<Str>>) -> Self
+    fn build() -> Res!<Params>
+
+  struct ListSubscriptions
+    fn new() -> Self
+
+  struct ListSubscriptionsPaginatorItems
+    fn send() -> PaginationStream<Res!<Subscription>>
+
+  struct ListSubscriptionsByTopicInput
+    fn topic_arn() -> Opt<Str>
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListSubscriptionsByTopicInputBuilder
+
+  struct ListSubscriptionsByTopicInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListSubscriptionsByTopicInput>
+    fn send_with(client: Client) -> Res!<ListSubscriptionsByTopicOutput>
+
+  struct ListSubscriptionsByTopicOutputBuilder
+    fn subscriptions(input: Subscription) -> Self
+    fn set_subscriptions(input: Opt<List<Subscription>>) -> Self
+    fn get_subscriptions() -> Opt<List<Subscription>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> ListSubscriptionsByTopicOutput
+
+  struct ListSubscriptionsByTopicPaginator
+    fn items() -> ListSubscriptionsByTopicPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListSubscriptionsByTopicOutput>>
+
+  struct BuildError
+
+  struct ListSubscriptionsByTopic
+    fn new() -> Self
+
+  struct ListSubscriptionsByTopicPaginatorItems
+    fn send() -> PaginationStream<Res!<Subscription>>
+
+  struct ListTagsForResourceInput
+    fn resource_arn() -> Opt<Str>
+    fn builder() -> ListTagsForResourceInputBuilder
+
+  struct ListTagsForResourceInputBuilder
+    fn resource_arn(input: Str) -> Self
+    fn set_resource_arn(input: Opt<Str>) -> Self
+    fn get_resource_arn() -> Opt<Str>
+    fn build() -> Res!<ListTagsForResourceInput>
+    fn send_with(client: Client) -> Res!<ListTagsForResourceOutput>
+
+  struct ListTagsForResourceOutputBuilder
+    fn tags(input: Tag) -> Self
+    fn set_tags(input: Opt<List<Tag>>) -> Self
+    fn get_tags() -> Opt<List<Tag>>
+    fn build() -> ListTagsForResourceOutput
+
+  struct ListTagsForResource
+    fn new() -> Self
+
+  struct ListTopicsInput
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListTopicsInputBuilder
+
+  struct ListTopicsInputBuilder
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListTopicsInput>
+    fn send_with(client: Client) -> Res!<ListTopicsOutput>
+
+  struct Topic
+    fn topic_arn() -> Opt<Str>
+    fn builder() -> TopicBuilder
+
+  struct ListTopicsOutputBuilder
+    fn topics(input: Topic) -> Self
+    fn set_topics(input: Opt<List<Topic>>) -> Self
+    fn get_topics() -> Opt<List<Topic>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> ListTopicsOutput
+
+  struct ListTopicsPaginator
+    fn items() -> ListTopicsPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListTopicsOutput>>
+
+  struct ListTopics
+    fn new() -> Self
+
+  struct ListTopicsPaginatorItems
+    fn send() -> PaginationStream<Res!<Topic>>
+
+  struct OptInPhoneNumberInput
+    fn phone_number() -> Opt<Str>
+    fn builder() -> OptInPhoneNumberInputBuilder
+
+  struct OptInPhoneNumberInputBuilder
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn build() -> Res!<OptInPhoneNumberInput>
+    fn send_with(client: Client) -> Res!<OptInPhoneNumberOutput>
+
+  struct OptInPhoneNumberOutputBuilder
+    fn build() -> OptInPhoneNumberOutput
+
+  struct OptInPhoneNumber
+    fn new() -> Self
+
+  struct MessageAttributeValue
+    fn data_type() -> Str
+    fn string_value() -> Opt<Str>
+    fn binary_value() -> Opt<Blob>
+    fn builder() -> MessageAttributeValueBuilder
+
+  struct PublishInput
+    fn topic_arn() -> Opt<Str>
+    fn target_arn() -> Opt<Str>
+    fn phone_number() -> Opt<Str>
+    fn message() -> Opt<Str>
+    fn subject() -> Opt<Str>
+    fn message_structure() -> Opt<Str>
+    fn message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_deduplication_id() -> Opt<Str>
+    fn message_group_id() -> Opt<Str>
+    fn builder() -> PublishInputBuilder
+
+  struct PublishInputBuilder
+    fn topic_arn(input: Str) -> Self
+    fn set_topic_arn(input: Opt<Str>) -> Self
+    fn get_topic_arn() -> Opt<Str>
+    fn target_arn(input: Str) -> Self
+    fn set_target_arn(input: Opt<Str>) -> Self
+    fn get_target_arn() -> Opt<Str>
+    fn phone_number(input: Str) -> Self
+    fn set_phone_number(input: Opt<Str>) -> Self
+    fn get_phone_number() -> Opt<Str>
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn subject(input: Str) -> Self
+    fn set_subject(input: Opt<Str>) -> Self
+    fn get_subject() -> Opt<Str>
+    fn message_structure(input: Str) -> Self
+    fn set_message_structure(input: Opt<Str>) -> Self
+    fn get_message_structure() -> Opt<Str>
+    fn message_attributes(k: Str, v: MessageAttributeValue) -> Self
+    fn set_message_attributes(input: Opt<HashMap<Str, MessageAttributeValue>>) -> Self
+    fn get_message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_deduplication_id(input: Str) -> Self
+    fn set_message_deduplication_id(input: Opt<Str>) -> Self
+    fn get_message_deduplication_id() -> Opt<Str>
+    fn message_group_id(input: Str) -> Self
+    fn set_message_group_id(input: Opt<Str>) -> Self
+    fn get_message_group_id() -> Opt<Str>
+    fn build() -> Res!<PublishInput>
+    fn send_with(client: Client) -> Res!<PublishOutput>
+
+  struct PublishOutputBuilder
+    fn message_id(input: Str) -> Self
+    fn set_message_id(input: Opt<Str>) -> Self
+    fn get_message_id() -> Opt<Str>
+    fn sequence_number(input: Str) -> Self
+    fn set_sequence_number(input: Opt<Str>) -> Self
+    fn get_sequence_number() -> Opt<Str>
+    fn build() -> PublishOutput
+
+  struct Publish
+    fn new() -> Self
+
+  trait CustomizableSend
+    fn send(config_override: Builder) -> Pin<Box<Str>>
+
+  trait ResolveEndpoint
+    fn resolve_endpoint(params: Params) -> EndpointFuture
+    fn into_shared_resolver() -> SharedEndpointResolver
+
+  trait ResolveAuthScheme
+    fn resolve_auth_scheme(params: Params, cfg: ConfigBag, runtime_components: RuntimeComponents) -> AuthSchemeOptionsFuture
+    fn into_shared_resolver() -> SharedAuthSchemeOptionResolver

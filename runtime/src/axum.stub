@@ -1,0 +1,360 @@
+stub axum 0.8.9
+
+  struct JsonDataError
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct JsonSyntaxError
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct MissingJsonContentType
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct MissingExtension
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct MissingPathParams
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct RawForm
+
+  struct InvalidFormContentType
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct FailedToDeserializeForm
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct FailedToDeserializeFormBody
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct FailedToDeserializeQueryString
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct AddExtension
+
+  struct MatchedPath
+    fn as_str() -> Str
+
+  struct MatchedPathMissing
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct NestedPath
+    fn as_str() -> Str
+
+  struct NestedPathRejection
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct WebSocketUpgrade
+    fn read_buffer_size(size: usize) -> Self
+    fn write_buffer_size(size: usize) -> Self
+    fn max_write_buffer_size(max: usize) -> Self
+    fn max_message_size(max: usize) -> Self
+    fn max_frame_size(max: usize) -> Self
+    fn accept_unmasked_frames(accept: Bool) -> Self
+    fn protocols(protocols: I) -> Self
+    fn requested_protocols() -> Str
+    fn set_selected_protocol(protocol: HeaderValue)
+    fn selected_protocol() -> Opt<HeaderValue>
+    fn on_failed_upgrade(callback: C) -> WebSocketUpgrade<C>
+    fn on_upgrade(callback: C) -> Response
+
+  struct MethodNotGet
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct MethodNotConnect
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct InvalidConnectionHeader
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct InvalidUpgradeHeader
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct InvalidProtocolPseudoheader
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct HandlerService
+    fn state() -> S
+    fn into_make_service() -> IntoMakeService<HandlerService<H, T, S>>
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<HandlerService<H, T, S>, C>
+
+  struct InvalidWebSocketVersionHeader
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct WebSocketKeyHeaderMissing
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct ConnectionNotUpgradable
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct IntoMakeService
+
+  struct MethodFilter
+    fn or(other: Self) -> Self
+
+  struct DefaultOnFailedUpgrade
+
+  struct WebSocket
+    fn recv() -> Opt<Res!<Message>>
+    fn send(msg: Message) -> Res!<Str>
+    fn protocol() -> Opt<HeaderValue>
+
+  struct Query
+    fn try_from_uri(value: Uri) -> Res!<Self>
+
+  struct Form
+
+  struct Utf8Bytes
+    fn from_static(str: Str) -> Self
+    fn as_str() -> Str
+
+  struct IntoMakeServiceWithConnectInfo
+
+  struct CloseFrame
+
+  struct OriginalUri
+
+  struct RawQuery
+
+  struct State
+
+  struct IntoServiceFuture
+
+  struct Json
+    fn from_bytes(bytes: Str) -> Res!<Self>
+
+  struct Layered
+
+  struct LayeredFuture
+
+  struct InfallibleRouteFuture
+
+  struct MethodRouter
+    fn on(filter: MethodFilter, handler: H) -> Self
+    fn connect(handler: H) -> Self
+    fn delete(handler: H) -> Self
+    fn get(handler: H) -> Self
+    fn head(handler: H) -> Self
+    fn options(handler: H) -> Self
+    fn patch(handler: H) -> Self
+    fn post(handler: H) -> Self
+    fn put(handler: H) -> Self
+    fn trace(handler: H) -> Self
+    fn fallback(handler: H) -> Self
+    fn into_make_service() -> IntoMakeService<Self>
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<Self, C>
+    fn new() -> Self
+    fn with_state(state: S) -> MethodRouter<S2, E>
+    fn on_service(filter: MethodFilter, svc: T) -> Self
+    fn connect_service(svc: T) -> Self
+    fn delete_service(svc: T) -> Self
+    fn get_service(svc: T) -> Self
+    fn head_service(svc: T) -> Self
+    fn options_service(svc: T) -> Self
+    fn patch_service(svc: T) -> Self
+    fn post_service(svc: T) -> Self
+    fn put_service(svc: T) -> Self
+    fn trace_service(svc: T) -> Self
+    fn fallback_service(svc: T) -> Self
+    fn layer(layer: L) -> MethodRouter<S, NewError>
+    fn route_layer(layer: L) -> MethodRouter<S, E>
+    fn merge(other: MethodRouter<S, E>) -> Self
+    fn handle_error(f: F) -> MethodRouter<S, Infallible>
+
+  struct FromExtractorLayer
+
+  struct FromExtractor
+
+  struct ResponseFuture
+
+  struct Extension
+
+  struct Next
+    fn run(req: Request) -> Response
+
+  struct FromFnLayer
+
+  struct FromFn
+
+  struct ResponseFuture
+
+  struct MapRequestLayer
+
+  struct MapRequest
+
+  struct Router
+    fn new() -> Self
+    fn without_v07_checks() -> Self
+    fn route(path: Str, method_router: MethodRouter<S>) -> Self
+    fn route_service(path: Str, service: T) -> Self
+    fn nest(path: Str, router: Router<S>) -> Self
+    fn nest_service(path: Str, service: T) -> Self
+    fn merge(other: R) -> Self
+    fn layer(layer: L) -> Router<S>
+    fn route_layer(layer: L) -> Self
+    fn has_routes() -> Bool
+    fn fallback(handler: H) -> Self
+    fn fallback_service(service: T) -> Self
+    fn method_not_allowed_fallback(handler: H) -> Self
+    fn reset_fallback() -> Self
+    fn with_state(state: S) -> Router<S2>
+    fn as_service() -> RouterAsService<B, S>
+    fn into_service() -> RouterIntoService<B, S>
+    fn into_make_service() -> IntoMakeService<Self>
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<Self, C>
+
+  struct ResponseFuture
+
+  struct ConnectInfo
+
+  struct HandleError
+    fn new(inner: S, f: F) -> Self
+
+  struct MapResponseLayer
+
+  struct MapResponse
+
+  struct HandleErrorFuture
+
+  struct ResponseFuture
+
+  struct ResponseAxumBodyLayer
+
+  struct ResponseAxumBody
+
+  struct ResponseAxumBodyFuture
+
+  struct Redirect
+    fn to(uri: Str) -> Self
+    fn temporary(uri: Str) -> Self
+    fn permanent(uri: Str) -> Self
+    fn status_code() -> StatusCode
+    fn location() -> Str
+
+  struct Sse
+    fn new(stream: S) -> Self
+    fn keep_alive(keep_alive: KeepAlive) -> Sse<KeepAliveStream<S>>
+
+  struct Event
+    fn into_data_writer() -> EventDataWriter
+    fn data(data: T) -> Self
+    fn json_data(data: T) -> Res!<Self>
+    fn comment(comment: T) -> Event
+    fn event(event: T) -> Event
+    fn retry(duration: Duration) -> Event
+    fn id(id: T) -> Event
+
+  struct KeepAlive
+    fn new() -> Self
+    fn interval(time: Duration) -> Self
+    fn text(text: I) -> Self
+    fn event(event: Event) -> Self
+
+  struct KeepAliveStream
+
+  struct EventDataWriter
+    fn into_event() -> Event
+
+  struct HandleErrorLayer
+    fn new(f: F) -> Self
+
+  struct Html
+
+  struct NoContent
+
+  struct IntoMakeServiceFuture
+
+  struct RouteFuture
+
+  struct Route
+
+  struct NoMatchingMethodFilter
+
+  struct RouterAsService
+
+  struct RouterIntoService
+
+  struct ServeFuture
+
+  struct Serve
+    fn with_graceful_shutdown(signal: F) -> WithGracefulShutdown<L, M, S, F>
+    fn local_addr() -> Res!<Str>
+
+  struct WithGracefulShutdown
+    fn local_addr() -> Res!<Str>
+
+  struct ResponseFuture
+
+  struct IncomingStream
+    fn io() -> Str
+    fn remote_addr() -> Str
+
+  struct TapIo
+
+  struct MockConnectInfo
+
+  struct Path
+
+  struct FailedToDeserializePathParams
+    fn kind() -> ErrorKind
+    fn into_kind() -> ErrorKind
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  struct RawPathParams
+    fn iter() -> RawPathParamsIter
+
+  struct RawPathParamsIter
+
+  struct InvalidUtf8InPathParam
+    fn body_text() -> Str
+    fn status() -> StatusCode
+
+  trait ServiceExt
+    fn into_make_service() -> IntoMakeService<Self>
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<Self, C>
+    fn handle_error(f: F) -> HandleError<Self, F, T>
+
+  trait OnFailedUpgrade
+    fn call(error: Error)
+
+  trait Handler
+    fn call(req: Request, state: S) -> Str
+    fn layer(layer: L) -> Layered<L, Self, T, S>
+    fn with_state(state: S) -> HandlerService<Self, T, S>
+
+  trait HandlerWithoutStateExt
+    fn into_service() -> HandlerService<Self, T, Str>
+    fn into_make_service() -> IntoMakeService<HandlerService<Self, T, Str>>
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<HandlerService<Self, T, Str>, C>
+
+  trait IntoMapRequestResult
+    fn into_map_request_result() -> Res!<Request<B>>
+
+  trait ListenerExt
+    fn tap_io(tap_fn: F) -> TapIo<Self, F>
+
+  trait Connected
+    fn connect_info(stream: T) -> Self
+
+  trait Listener
+    fn accept() -> Str
+    fn local_addr() -> Res!<Str>

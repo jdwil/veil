@@ -1,0 +1,2472 @@
+stub rig-core 0.36.0
+
+  struct NoToolConfig
+
+  struct ApiVersion
+
+  struct BilledUnits
+
+  struct ChatChoice
+
+  struct ChatApiErrorResponse
+    fn error_message() -> Str
+
+  struct WithBuilderTools
+
+  struct Choice
+
+  struct CompletionTokensDetails
+
+  struct PromptTokensDetails
+
+  struct Function
+
+  struct StreamingDelta
+
+  struct AzureOpenAIClientParams
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct Choice
+
+  struct BearerAuth
+
+  struct Function
+
+  struct GeminiApiKey
+
+  struct ApiErrorResponse
+    fn message() -> Str
+
+  struct GenerationConfig
+    fn is_empty() -> Bool
+
+  struct AdditionalParameters
+    fn with_config(cfg: GenerationConfig) -> Self
+    fn with_params(params: Value) -> Self
+    fn to_json() -> Value
+
+  struct ContentCandidate
+
+  struct PromptFeedback
+
+  struct SafetyRating
+
+  struct CitationMetadata
+
+  struct LogprobsResult
+
+  struct Nothing
+
+  struct Blob
+
+  struct FunctionResponse
+
+  struct FileData
+
+  struct ExecutableCode
+
+  struct CodeExecutionResult
+
+  struct FunctionResponsePart
+
+  struct FunctionResponseInlineData
+
+  struct OllamaApiKey
+
+  struct GenerateContentRequest
+
+  struct CitationSource
+
+  struct TopCandidate
+
+  struct LogProbCandidate
+
+  struct Schema
+
+  struct ThinkingConfig
+
+  struct ImageConfig
+
+  struct ToolConfig
+
+  struct SafetySetting
+
+  struct FunctionDeclaration
+
+  struct CodeExecution
+
+  struct AnthropicKey
+
+  struct GenerationConfig
+    fn is_empty() -> Bool
+
+  struct AdditionalParameters
+    fn with_config(cfg: GenerationConfig) -> Self
+    fn with_params(params: Value) -> Self
+    fn to_json() -> Value
+
+  struct GoogleSearchExchange
+    fn queries() -> List<Str>
+    fn result_items() -> List<GoogleSearchResult>
+
+  struct GoogleSearchCallContent
+
+  struct GoogleSearchResultContent
+
+  struct GoogleSearchResult
+
+  struct UrlContextExchange
+    fn urls() -> List<Str>
+    fn result_items() -> List<UrlContextResult>
+
+  struct UrlContextCallContent
+
+  struct UrlContextResultContent
+
+  struct UrlContextResult
+
+  struct CodeExecutionExchange
+    fn code_snippets() -> List<Str>
+    fn outputs() -> List<Str>
+
+  struct CodeExecutionCallContent
+
+  struct CodeExecutionResultContent
+
+  struct ClientBuilder
+    fn api_key(api_key: Str) -> ClientBuilder<Ext, ApiKey, H>
+    fn base_url(base_url: S) -> Self
+    fn http_client(http_client: U) -> ClientBuilder<Ext, ApiKey, U>
+    fn http_headers(headers: HeaderMap) -> Self
+    fn ext() -> Ext
+    fn get_base_url() -> Str
+    fn build() -> Res!<Client<Str, H>>
+    fn anthropic_version(anthropic_version: Str) -> Self
+    fn anthropic_betas(anthropic_betas: Str) -> Self
+    fn anthropic_beta(anthropic_beta: Str) -> Self
+    fn api_version(api_version: Str) -> Self
+    fn azure_endpoint(endpoint: Str) -> ClientBuilder<H>
+    fn oauth() -> ClientBuilder<ChatGPTBuilder, ChatGPTAuth, H>
+    fn on_device_code(handler: F) -> Self
+    fn token_dir(path: Str) -> Self
+    fn auth_file(path: Str) -> Self
+    fn default_instructions(instructions: Str) -> Self
+    fn originator(originator: Str) -> Self
+    fn user_agent(user_agent: Str) -> Self
+    fn github_access_token(access_token: Str) -> ClientBuilder<CopilotBuilder, CopilotAuth, H>
+    fn oauth() -> ClientBuilder<CopilotBuilder, CopilotAuth, H>
+    fn on_device_code(handler: F) -> Self
+    fn token_dir(path: Str) -> Self
+    fn access_token_file(path: Str) -> Self
+    fn api_key_file(path: Str) -> Self
+    fn fine_tune_api_key(fine_tune_api_key: S) -> Self
+    fn subprovider(subprovider: SubProvider) -> Self
+    fn global() -> Self
+    fn china() -> Self
+    fn global() -> Self
+    fn china() -> Self
+    fn anthropic_version(anthropic_version: Str) -> Self
+    fn anthropic_betas(anthropic_betas: Str) -> Self
+    fn anthropic_beta(anthropic_beta: Str) -> Self
+    fn global() -> Self
+    fn china() -> Self
+    fn global() -> Self
+    fn anthropic_version(anthropic_version: Str) -> Self
+    fn anthropic_betas(anthropic_betas: Str) -> Self
+    fn anthropic_beta(anthropic_beta: Str) -> Self
+    fn anthropic_version(anthropic_version: Str) -> Self
+    fn anthropic_betas(anthropic_betas: Str) -> Self
+    fn anthropic_beta(anthropic_beta: Str) -> Self
+    fn general() -> Self
+    fn coding() -> Self
+    fn general() -> Self
+    fn anthropic_version(anthropic_version: Str) -> Self
+    fn anthropic_betas(anthropic_betas: Str) -> Self
+    fn anthropic_beta(anthropic_beta: Str) -> Self
+
+  struct Annotation
+
+  struct Missing
+
+  struct Citation
+
+  struct TextContent
+    fn citations() -> List<Citation>
+    fn with_inline_citations() -> Str
+
+  struct ChatGPTExt
+
+  struct ImageContent
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct AudioContent
+
+  struct CohereExt
+
+  struct DocumentContent
+
+  struct CopilotExt
+
+  struct VideoContent
+
+  struct CreateInteractionRequest
+
+  struct ThoughtContent
+
+  struct Interaction
+    fn google_search_exchanges() -> List<GoogleSearchExchange>
+    fn google_search_call_contents() -> List<GoogleSearchCallContent>
+    fn google_search_result_contents() -> List<GoogleSearchResultContent>
+    fn google_search_queries() -> List<Str>
+    fn google_search_results() -> List<GoogleSearchResult>
+    fn url_context_exchanges() -> List<UrlContextExchange>
+    fn url_context_call_contents() -> List<UrlContextCallContent>
+    fn url_context_result_contents() -> List<UrlContextResultContent>
+    fn url_context_urls() -> List<Str>
+    fn url_context_results() -> List<UrlContextResult>
+    fn code_execution_exchanges() -> List<CodeExecutionExchange>
+    fn code_execution_call_contents() -> List<CodeExecutionCallContent>
+    fn code_execution_result_contents() -> List<CodeExecutionResultContent>
+    fn code_execution_snippets() -> List<Str>
+    fn code_execution_outputs() -> List<Str>
+    fn text_with_inline_citations() -> Opt<Str>
+    fn is_terminal() -> Bool
+    fn is_completed() -> Bool
+
+  struct FunctionCallContent
+
+  struct LlamafileExt
+
+  struct FunctionResultContent
+
+  struct MiraExt
+
+  struct CodeExecutionCallArguments
+
+  struct AgentBuilder
+    fn name(name: Str) -> Self
+    fn description(description: Str) -> Self
+    fn preamble(preamble: Str) -> Self
+    fn without_preamble() -> Self
+    fn append_preamble(doc: Str) -> Self
+    fn context(doc: Str) -> Self
+    fn dynamic_context(sample: usize, dynamic_context: Str) -> Self
+    fn tool_choice(tool_choice: ToolChoice) -> Self
+    fn default_max_turns(default_max_turns: usize) -> Self
+    fn temperature(temperature: F64) -> Self
+    fn max_tokens(max_tokens: Int) -> Self
+    fn additional_params(params: Value) -> Self
+    fn output_schema() -> Self
+    fn output_schema_raw(schema: Schema) -> Self
+    fn new(model: M) -> Self
+    fn tool_server_handle(handle: ToolServerHandle) -> AgentBuilder<M, P, WithToolServerHandle>
+    fn tool(tool: Str) -> AgentBuilder<M, P, WithBuilderTools>
+    fn tools(tools: List<Box<Str>>) -> AgentBuilder<M, P, WithBuilderTools>
+    fn dynamic_tools(sample: usize, dynamic_tools: Str, toolset: ToolSet) -> AgentBuilder<M, P, WithBuilderTools>
+    fn hook(hook: P2) -> AgentBuilder<M, P2, NoToolConfig>
+    fn build() -> Agent<M, P>
+    fn build() -> Agent<M, P>
+    fn tool(tool: Str) -> Self
+    fn tools(tools: List<Box<Str>>) -> Self
+    fn dynamic_tools(sample: usize, dynamic_tools: Str, toolset: ToolSet) -> Self
+    fn build() -> Agent<M, P>
+
+  struct OpenAICompletionsExt
+
+  struct UrlContextCallArguments
+
+  struct GoogleSearchCallArguments
+
+  struct McpServerToolCallContent
+
+  struct MultipartForm
+    fn new() -> Self
+    fn part(part: Part) -> Self
+    fn text(name: Str, value: Str) -> Self
+    fn file(name: Str, filename: Str, content_type: Mime, data: Str) -> Self
+    fn boundary(boundary: Str) -> Self
+    fn parts() -> Str
+    fn encode() -> Str
+
+  struct McpServerToolResultContent
+
+  struct FileSearchResult
+
+  struct AzureExt
+
+  struct FileSearchResultContent
+
+  struct GaladrielExt
+
+  struct GroqExt
+
+  struct HuggingFaceExt
+
+  struct HyperbolicExt
+
+  struct MiniMaxExt
+
+  struct MiniMaxAnthropicExt
+
+  struct SpeechConfig
+
+  struct MoonshotExt
+
+  struct MoonshotAnthropicExt
+
+  struct PerplexityExt
+
+  struct ToolChoiceConfig
+
+  struct VoyageExt
+
+  struct XAiExt
+
+  struct XiaomiMimoAnthropicExt
+
+  struct AllowedTools
+
+  struct ZAiExt
+
+  struct ZAiAnthropicExt
+
+  struct FunctionTool
+
+  struct ComputerUseTool
+
+  struct McpServerTool
+
+  struct FileSearchTool
+
+  struct AnthropicBuilder
+
+  struct ErrorEvent
+
+  struct AzureExtBuilder
+
+  struct ChatGPTBuilder
+
+  struct TextDelta
+
+  struct ImageDelta
+
+  struct AudioDelta
+
+  struct DocumentDelta
+
+  struct VideoDelta
+
+  struct ThoughtSummaryDelta
+
+  struct ThoughtSignatureDelta
+
+  struct FunctionCallDelta
+
+  struct FunctionResultDelta
+
+  struct CodeExecutionCallDelta
+
+  struct CodeExecutionResultDelta
+
+  struct UrlContextCallDelta
+
+  struct UrlContextResultDelta
+
+  struct GoogleSearchCallDelta
+
+  struct CohereBuilder
+
+  struct GoogleSearchResultDelta
+
+  struct McpServerToolCallDelta
+
+  struct McpServerToolResultDelta
+
+  struct FileSearchResultDelta
+
+  struct CopilotBuilder
+
+  struct DeepSeekExtBuilder
+
+  struct GaladrielBuilder
+
+  struct GeminiBuilder
+
+  struct GeminiInteractionsBuilder
+
+  struct GroqBuilder
+
+  struct HuggingFaceBuilder
+
+  struct HyperbolicBuilder
+
+  struct LlamafileBuilder
+
+  struct MiniMaxBuilder
+
+  struct MiniMaxAnthropicBuilder
+
+  struct MiraBuilder
+
+  struct MistralBuilder
+
+  struct MoonshotBuilder
+
+  struct MoonshotAnthropicBuilder
+
+  struct OllamaBuilder
+
+  struct OpenAIResponsesExtBuilder
+
+  struct OpenAICompletionsExtBuilder
+
+  struct OpenRouterExtBuilder
+
+  struct PerplexityBuilder
+
+  struct TogetherExtBuilder
+
+  struct TogetherExt
+
+  struct VoyageBuilder
+
+  struct StreamGenerateContentResponse
+
+  struct XAiExtBuilder
+
+  struct XiaomiMimoBuilder
+
+  struct XiaomiMimoAnthropicBuilder
+
+  struct ZAiBuilder
+
+  struct ZAiAnthropicBuilder
+
+  struct ToolServerHandle
+    fn add_tool(tool: Str) -> Res!<Str>
+    fn append_toolset(toolset: ToolSet) -> Res!<Str>
+    fn remove_tool(tool_name: Str) -> Res!<Str>
+    fn call_tool(tool_name: Str, args: Str) -> Res!<Str>
+    fn get_tool_defs(prompt: Opt<Str>) -> Res!<List<ToolDefinition>>
+
+  struct GroqAdditionalParameters
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct TranscriptionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct ResponsesCompletionModel
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_tool(tool: Str) -> Self
+    fn with_tools(tools: I) -> Self
+    fn stream(completion_request: CompletionRequest) -> Res!<StreamingCompletionResponse<StreamingCompletionResponse>>
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct ImageUrl
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct ToolSet
+    fn from_tools(tools: List<Str>) -> Self
+    fn from_tools_boxed(tools: List<Box<Str>>) -> Self
+    fn builder() -> ToolSetBuilder
+    fn contains(toolname: Str) -> Bool
+    fn add_tool(tool: Str)
+    fn add_tool_boxed(tool: Box<Str>)
+    fn delete_tool(tool_name: Str)
+    fn add_tools(toolset: ToolSet)
+    fn get_tool_definitions() -> Res!<List<ToolDefinition>>
+    fn call(toolname: Str, args: Str) -> Res!<Str>
+    fn documents() -> Res!<List<Document>>
+    fn schemas() -> Res!<List<ToolSchema>>
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct TranscriptionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct InteractionsCompletionModel
+    fn new(client: InteractionsClient<T>, model: Str) -> Self
+    fn with_model(client: InteractionsClient<T>, model: Str) -> Self
+    fn generate_content_api() -> CompletionModel<T>
+    fn create_interaction(completion_request: CompletionRequest) -> Res!<Interaction>
+    fn get_interaction(interaction_id: Str) -> Res!<Interaction>
+    fn stream_interaction_events(completion_request: CompletionRequest) -> Res!<InteractionEventStream>
+    fn stream_interaction_events_by_id(interaction_id: Str, last_event_id: Opt<Str>) -> Res!<InteractionEventStream>
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct Choice
+
+  struct TranscriptionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct TranscriptionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct Agent
+
+  struct TranscriptionResponse
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct EmbeddingData
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct Choice
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct TranscriptionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct TranscriptionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct ChatChoice
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct EmbeddingModel
+    fn new(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, input_type: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: Opt<usize>) -> Self
+    fn new(client: Client<H>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_encoding_format(client: Client<T>, model: Str, ndims: usize, encoding_format: EncodingFormat) -> Self
+    fn encoding_format(encoding_format: EncodingFormat) -> Self
+    fn user(user: Str) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn new(client: Client<T>, model: Str, ndims: usize) -> Self
+    fn with_model(client: Client<T>, model: Str, ndims: usize) -> Self
+
+  struct CompletionModel
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<H>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn with_tool_result_array_content() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_model(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn with_strict_tools() -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+    fn new(client: Client<T>, model: Str) -> Self
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct ApiErrorResponse
+    fn message() -> Str
+
+  struct AssistantContent
+
+  struct Choice
+
+  struct Function
+
+  struct ToolResultContent
+
+  struct EmbeddingData
+
+  struct EmbeddingResponse
+
+  struct TranscriptionUsage
+
+  struct SegmentChunk
+
+  struct MistralTranscriptionResponse
+
+  struct EmbeddingResponse
+
+  struct Function
+
+  struct SystemContent
+
+  struct AssistantContent
+
+  struct ImageUrl
+
+  struct DeviceCodePrompt
+
+  struct DeviceCodePrompt
+
+  struct SystemContent
+
+  struct AudioAssistant
+
+  struct ImageUrl
+
+  struct InputAudio
+
+  struct ToolResultContent
+
+  struct Function
+
+  struct FunctionDefinition
+
+  struct OneOrMany
+    fn first() -> T
+    fn first_ref() -> T
+    fn first_mut() -> T
+    fn last() -> T
+    fn last_ref() -> T
+    fn last_mut() -> T
+    fn rest() -> List<T>
+    fn push(item: T)
+    fn insert(index: usize, item: T)
+    fn len() -> usize
+    fn is_empty() -> Bool
+    fn one(item: T) -> Self
+    fn many(items: I) -> Res!<Self>
+    fn merge(one_or_many_items: I) -> Res!<Self>
+    fn iter() -> Iter<T>
+    fn iter_mut() -> IterMut<T>
+
+  struct Choice
+
+  struct PromptTokensDetails
+
+  struct Document
+
+  struct CompletionRequest
+    fn with_structured_outputs(schema_name: S, schema: Value) -> Self
+    fn with_reasoning(reasoning: Reasoning) -> Self
+    fn with_tool(tool: Str) -> Self
+    fn with_tools(tools: I) -> Self
+    fn output_schema_name() -> Opt<Str>
+    fn normalized_documents() -> Opt<Message>
+    fn with_provider_tool(tool: ProviderToolDefinition) -> Self
+    fn with_provider_tools(tools: List<ProviderToolDefinition>) -> Self
+
+  struct OpenAIRequestParams
+
+  struct EmbeddingData
+
+  struct EmbeddingResponse
+
+  struct ResponseChunk
+
+  struct ItemChunk
+
+  struct Image
+    fn try_into_url() -> Res!<Str>
+
+  struct Audio
+
+  struct Document
+
+  struct StreamingItemDoneOutput
+
+  struct ContentPartChunk
+
+  struct DeltaTextChunk
+
+  struct OutputTextChunk
+
+  struct RefusalTextChunk
+
+  struct DeltaTextChunkWithItemId
+
+  struct ArgsTextChunk
+
+  struct SummaryPartChunk
+
+  struct SummaryTextChunk
+
+  struct ToolCall
+    fn new(id: Str, function: ToolFunction) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct ToolResult
+
+  struct Message
+
+  struct Message
+
+  struct Content
+
+  struct Turn
+
+  struct AdditionalParameters
+    fn with_config(cfg: GenerationConfig) -> Self
+    fn with_params(params: Value) -> Self
+    fn to_json() -> Value
+
+  struct CompletionRequest
+    fn with_structured_outputs(schema_name: S, schema: Value) -> Self
+    fn with_reasoning(reasoning: Reasoning) -> Self
+    fn with_tool(tool: Str) -> Self
+    fn with_tools(tools: I) -> Self
+    fn output_schema_name() -> Opt<Str>
+    fn normalized_documents() -> Opt<Message>
+    fn with_provider_tool(tool: ProviderToolDefinition) -> Self
+    fn with_provider_tools(tools: List<ProviderToolDefinition>) -> Self
+
+  struct Reasoning
+    fn new() -> Self
+    fn with_effort(reasoning_effort: ReasoningEffort) -> Self
+    fn with_summary_level(reasoning_summary_level: ReasoningSummaryLevel) -> Self
+    fn new(input: Str) -> Self
+    fn new_with_signature(input: Str, signature: Opt<Str>) -> Self
+    fn optional_id(id: Opt<Str>) -> Self
+    fn with_id(id: Str) -> Self
+    fn multi(input: List<Str>) -> Self
+    fn redacted(data: Str) -> Self
+    fn encrypted(data: Str) -> Self
+    fn summaries(input: List<Str>) -> Self
+    fn display_text() -> Str
+    fn first_text() -> Opt<Str>
+    fn first_signature() -> Opt<Str>
+    fn encrypted_content() -> Opt<Str>
+
+  struct RawMessage
+
+  struct OpenAIReasoning
+
+  struct OutputFunctionCall
+
+  struct ToolResult
+
+  struct InputItem
+    fn system_message(content: Str) -> Self
+
+  struct InputTokensDetails
+
+  struct OutputTokensDetails
+
+  struct Message
+
+  struct IncompleteDetailsReason
+
+  struct ResponseError
+
+  struct Video
+
+  struct TextConfig
+
+  struct StructuredOutputsInput
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct OutputMessage
+
+  struct OutputReasoning
+
+  struct Part
+    fn text(name: Str, value: Str) -> Self
+    fn bytes(name: Str, data: Str) -> Self
+    fn filename(filename: Str) -> Self
+    fn content_type(content_type: Mime) -> Self
+    fn name() -> Str
+    fn get_filename() -> Opt<Str>
+    fn get_content_type() -> Opt<Mime>
+
+  struct Reasoning
+    fn new() -> Self
+    fn with_effort(reasoning_effort: ReasoningEffort) -> Self
+    fn with_summary_level(reasoning_summary_level: ReasoningSummaryLevel) -> Self
+    fn new(input: Str) -> Self
+    fn new_with_signature(input: Str, signature: Opt<Str>) -> Self
+    fn optional_id(id: Opt<Str>) -> Self
+    fn with_id(id: Str) -> Self
+    fn multi(input: List<Str>) -> Self
+    fn redacted(data: Str) -> Self
+    fn encrypted(data: Str) -> Self
+    fn summaries(input: List<Str>) -> Self
+    fn display_text() -> Str
+    fn first_text() -> Opt<Str>
+    fn first_signature() -> Opt<Str>
+    fn encrypted_content() -> Opt<Str>
+
+  struct ProviderSortConfig
+    fn new(by: ProviderSortStrategy) -> Self
+    fn partition(partition: SortPartition) -> Self
+
+  struct PercentileThresholds
+    fn new() -> Self
+    fn p50(value: F64) -> Self
+    fn p75(value: F64) -> Self
+    fn p90(value: F64) -> Self
+    fn p99(value: F64) -> Self
+
+  struct MaxPrice
+    fn new() -> Self
+    fn prompt(price: F64) -> Self
+    fn completion(price: F64) -> Self
+    fn request(price: F64) -> Self
+    fn image(price: F64) -> Self
+
+  struct ProviderPreferences
+    fn new() -> Self
+    fn order(providers: Str) -> Self
+    fn only(providers: Str) -> Self
+    fn ignore(providers: Str) -> Self
+    fn allow_fallbacks(allow: Bool) -> Self
+    fn require_parameters(require: Bool) -> Self
+    fn data_collection(policy: DataCollection) -> Self
+    fn zdr(enable: Bool) -> Self
+    fn sort(sort: Str) -> Self
+    fn preferred_min_throughput(threshold: ThroughputThreshold) -> Self
+    fn preferred_max_latency(threshold: LatencyThreshold) -> Self
+    fn max_price(price: MaxPrice) -> Self
+    fn quantizations(quantizations: Str) -> Self
+    fn zero_data_retention() -> Self
+    fn fastest() -> Self
+    fn cheapest() -> Self
+    fn lowest_latency() -> Self
+    fn to_json() -> Value
+
+  struct Choice
+
+  struct ImageUrl
+
+  struct FileContent
+
+  struct VideoUrlContent
+
+  struct OpenRouterRequestParams
+
+  struct EmbeddingData
+
+  struct EmbeddingResponse
+
+  struct Choice
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct Delta
+
+  struct EmbeddingResponse
+
+  struct EmbeddingData
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct EmbeddingData
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct EmbeddingResponse
+
+  struct ToolFunction
+    fn new(name: Str, arguments: Value) -> Self
+
+  struct ToolCall
+    fn new(id: Str, function: ToolFunction) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct FunctionCall
+
+  struct ToolCall
+    fn new(id: Str, function: ToolFunction) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct ToolCall
+    fn new(id: Str, function: ToolFunction) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct CompletionRequestBuilder
+    fn new(model: M, prompt: Str) -> Self
+    fn preamble(preamble: Str) -> Self
+    fn model(model: Str) -> Self
+    fn model_opt(model: Opt<Str>) -> Self
+    fn without_preamble() -> Self
+    fn message(message: Message) -> Self
+    fn messages(messages: Str) -> Self
+    fn document(document: Document) -> Self
+    fn documents(documents: Str) -> Self
+    fn tool(tool: ToolDefinition) -> Self
+    fn tools(tools: List<ToolDefinition>) -> Self
+    fn provider_tool(tool: ProviderToolDefinition) -> Self
+    fn provider_tools(tools: List<ProviderToolDefinition>) -> Self
+    fn additional_params(additional_params: Value) -> Self
+    fn additional_params_opt(additional_params: Opt<Value>) -> Self
+    fn temperature(temperature: F64) -> Self
+    fn temperature_opt(temperature: Opt<F64>) -> Self
+    fn max_tokens(max_tokens: Int) -> Self
+    fn max_tokens_opt(max_tokens: Opt<Int>) -> Self
+    fn tool_choice(tool_choice: ToolChoice) -> Self
+    fn output_schema(schema: Schema) -> Self
+    fn output_schema_opt(schema: Opt<Schema>) -> Self
+    fn build() -> CompletionRequest
+    fn send() -> Res!<CompletionResponse<Str>>
+    fn stream() -> Res!<StreamingCompletionResponse<Str>>
+
+  struct ToolCall
+    fn new(id: Str, function: ToolFunction) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct PauseControl
+    fn new() -> Self
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct ToolCall
+    fn new(id: Str, function: ToolFunction) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct RawStreamingToolCall
+    fn empty() -> Self
+    fn new(id: Str, name: Str, arguments: Value) -> Self
+    fn with_internal_call_id(internal_call_id: Str) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct ToolServer
+    fn new() -> Self
+    fn tool(tool: Str) -> Self
+    fn dynamic_tools(sample: usize, dynamic_tools: Str, toolset: ToolSet) -> Self
+    fn run() -> ToolServerHandle
+
+  struct ThinkError
+
+  struct ThinkArgs
+
+  struct ThinkTool
+
+  struct VectorSearchRequest
+    fn builder() -> VectorSearchRequestBuilder<Filter>
+    fn query() -> Str
+    fn samples() -> Int
+    fn threshold() -> Opt<F64>
+    fn filter() -> Opt<Filter>
+    fn map_filter(f: F) -> VectorSearchRequest<T>
+    fn try_map_filter(f: F) -> Res!<VectorSearchRequest<T>>
+
+  struct VectorStoreOutput
+
+  struct Function
+
+  struct ToolSetBuilder
+    fn static_tool(tool: Str) -> Self
+    fn dynamic_tool(tool: Str) -> Self
+    fn build() -> ToolSet
+
+  struct PromptRequest
+    fn from_agent(agent: Agent<M, P>, prompt: Str) -> Self
+    fn extended_details() -> PromptRequest<Extended, M, P>
+    fn max_turns(depth: usize) -> Self
+    fn with_tool_concurrency(concurrency: usize) -> Self
+    fn with_history(history: I) -> Self
+    fn with_hook(hook: P2) -> PromptRequest<S, M, P2>
+
+  struct Standard
+
+  struct TranscriptionRequestBuilder
+    fn new(model: M) -> Self
+    fn filename(filename: Opt<Str>) -> Self
+    fn data(data: List<Int>) -> TranscriptionRequestBuilder<M, Provided<List<Int>>>
+    fn load_file(path: P) -> Res!<TranscriptionRequestBuilder<M, Provided<List<Int>>>>
+    fn language(language: Str) -> Self
+    fn prompt(prompt: Str) -> Self
+    fn temperature(temperature: F64) -> Self
+    fn additional_params(additional_params: Value) -> Self
+    fn additional_params_opt(additional_params: Opt<Value>) -> Self
+    fn build() -> TranscriptionRequest
+    fn send() -> Res!<TranscriptionResponse<Str>>
+
+  struct InMemoryVectorStore
+    fn builder() -> InMemoryVectorStoreBuilder<D>
+    fn from_documents(documents: Str) -> Self
+    fn from_documents_with_ids(documents: Str) -> Self
+    fn from_documents_with_id_f(documents: Str, f: Str) -> Self
+    fn add_documents(documents: Str)
+    fn add_documents_with_ids(documents: Str)
+    fn add_documents_with_id_f(documents: List<Str>, f: Str)
+    fn get_document(id: Str) -> Res!<Opt<T>>
+    fn index(model: M) -> InMemoryVectorIndex<M, D>
+    fn iter() -> Str
+    fn len() -> usize
+    fn is_empty() -> Bool
+
+  struct InMemoryVectorStoreBuilder
+    fn new() -> Self
+    fn index_strategy(index_strategy: IndexStrategy) -> Self
+    fn documents(documents: Str) -> Self
+    fn documents_with_ids(documents: Str) -> Self
+    fn documents_with_id_f(documents: Str, f: Str) -> Self
+    fn build() -> InMemoryVectorStore<D>
+
+  struct InMemoryVectorIndex
+    fn new(model: M, store: InMemoryVectorStore<D>) -> Self
+    fn iter() -> Str
+    fn len() -> usize
+    fn is_empty() -> Bool
+
+  struct LSH
+    fn new(dim: usize, num_tables: usize, num_hyperplanes: usize) -> Self
+    fn hash(vector: Str, table_idx: usize) -> Int
+
+  struct LSHIndex
+    fn new(dim: usize, num_tables: usize, num_hyperplanes: usize) -> Self
+    fn insert(id: Str, embedding: Str)
+    fn query(embedding: Str) -> List<Str>
+    fn clear()
+
+  struct VectorSearchRequestBuilder
+    fn query(query: T) -> VectorSearchRequestBuilder<F, Provided<Str>, S>
+    fn samples(samples: Int) -> VectorSearchRequestBuilder<F, Q, Provided<Int>>
+    fn threshold(threshold: F64) -> Self
+    fn additional_params(params: Value) -> Res!<Self>
+    fn filter(filter: F) -> Self
+    fn build() -> VectorSearchRequest<F>
+
+  struct StreamingPromptRequest
+    fn new(agent: Arc<Agent<M>>, prompt: Str) -> StreamingPromptRequest<M, Str>
+    fn from_agent(agent: Agent<M, P2>, prompt: Str) -> StreamingPromptRequest<M, P2>
+    fn multi_turn(turns: usize) -> Self
+    fn with_history(history: I) -> Self
+    fn with_hook(hook: P2) -> StreamingPromptRequest<M, P2>
+
+  struct TypedPromptRequest
+    fn from_agent(agent: Agent<M, P>, prompt: Str) -> Self
+    fn extended_details() -> TypedPromptRequest<T, Extended, M, P>
+    fn max_turns(depth: usize) -> Self
+    fn with_tool_concurrency(concurrency: usize) -> Self
+    fn with_history(history: I) -> Self
+    fn with_hook(hook: P2) -> TypedPromptRequest<T, S, M, P2>
+
+  struct AgentToolArgs
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct ApiErrorResponse
+    fn message() -> Str
+
+  struct Document
+
+  struct Tool
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct Tool
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct ResponsesToolDefinition
+    fn function(name: Str, description: Str, parameters: Value) -> Self
+    fn hosted(kind: Str) -> Self
+    fn web_search() -> Self
+    fn file_search() -> Self
+    fn computer_use() -> Self
+    fn with_config(key: Str, value: Value) -> Self
+
+  struct ProviderToolDefinition
+    fn new(kind: Str) -> Self
+    fn with_config(key: Str, value: Value) -> Self
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct ChatCompletionResponse
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct GenerateContentResponse
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct CompletionResponse
+    fn message() -> Res!<Str>
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct PartialUsage
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct UsageMetadata
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct InteractionUsage
+
+  struct PartialUsage
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct ResponsesUsage
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct StreamingCompletionResponse
+    fn stream(inner: StreamingResult<R>) -> StreamingCompletionResponse<R>
+    fn cancel()
+    fn pause()
+    fn resume()
+    fn is_paused() -> Bool
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct CompletionRequest
+    fn with_structured_outputs(schema_name: S, schema: Value) -> Self
+    fn with_reasoning(reasoning: Reasoning) -> Self
+    fn with_tool(tool: Str) -> Self
+    fn with_tools(tools: I) -> Self
+    fn output_schema_name() -> Opt<Str>
+    fn normalized_documents() -> Opt<Message>
+    fn with_provider_tool(tool: ProviderToolDefinition) -> Self
+    fn with_provider_tools(tools: List<ProviderToolDefinition>) -> Self
+
+  struct EmbedError
+    fn new(error: E) -> Self
+
+  struct Embedding
+
+  struct FinalResponse
+    fn empty() -> Self
+    fn response() -> Str
+    fn usage() -> Usage
+    fn history() -> Opt<Str>
+
+  struct Usage
+    fn new() -> Self
+    fn new() -> Self
+
+  struct TextEmbedder
+    fn embed(text: Str)
+
+  struct ToolSchema
+    fn try_from(tool: Str) -> Res!<Self>
+
+  struct ApiErrorResponse
+    fn message() -> Str
+
+  struct ApiErrorResponse
+    fn message() -> Str
+
+  struct ExtractionResponse
+
+  struct Extractor
+    fn extract(text: Str) -> Res!<T>
+    fn extract_with_chat_history(text: Str, chat_history: List<Message>) -> Res!<T>
+    fn extract_with_usage(text: Str) -> Res!<ExtractionResponse<T>>
+    fn extract_with_chat_history_with_usage(text: Str, chat_history: List<Message>) -> Res!<ExtractionResponse<T>>
+    fn get_inner() -> Agent<M>
+    fn into_inner() -> Agent<M>
+
+  struct Part
+    fn text(name: Str, value: Str) -> Self
+    fn bytes(name: Str, data: Str) -> Self
+    fn filename(filename: Str) -> Self
+    fn content_type(content_type: Mime) -> Self
+    fn name() -> Str
+    fn get_filename() -> Opt<Str>
+    fn get_content_type() -> Opt<Mime>
+
+  struct ExponentialBackoff
+    fn new(start: Duration, factor: F64, max_duration: Opt<Duration>, max_retries: Opt<usize>) -> Self
+
+  struct Constant
+    fn new(delay: Duration, max_retries: Opt<usize>) -> Self
+
+  struct Never
+
+  struct GenericEventSource
+    fn new(client: HttpClient, req: Request<RequestBody>) -> Self
+    fn with_retry_policy(client: HttpClient, req: Request<RequestBody>, retry_policy: R) -> GenericEventSource<HttpClient, RequestBody, R>
+    fn allow_missing_content_type() -> Self
+    fn last_event_id() -> Opt<Str>
+    fn close()
+
+  struct NoBody
+
+  struct ChatImpl
+
+  struct AgentImpl
+
+  struct ChatBotBuilder
+    fn new() -> Self
+    fn agent(agent: Agent<M>) -> ChatBotBuilder<Provided<AgentImpl<M>>>
+    fn chat(chatbot: T) -> ChatBotBuilder<Provided<ChatImpl<T>>>
+    fn build() -> ChatBot<ChatImpl<T>>
+    fn max_turns(max_turns: usize) -> Self
+    fn show_usage() -> Self
+    fn build() -> ChatBot<AgentImpl<M>>
+
+  struct Provided
+
+  struct ChatBot
+    fn run() -> Res!<Str>
+
+  struct FileLoader
+    fn read() -> FileLoader<Res!<Str>>
+    fn read_with_path() -> FileLoader<Res!<Str>>
+    fn read() -> FileLoader<Res!<Str>>
+    fn read_with_path() -> FileLoader<Res!<Str>>
+    fn ignore_errors() -> FileLoader<T>
+    fn with_glob(pattern: Str) -> Res!<FileLoader<Res!<PathBuf>>>
+    fn with_dir(directory: Str) -> Res!<FileLoader<Res!<PathBuf>>>
+    fn from_bytes(bytes: List<Int>) -> FileLoader<List<Int>>
+    fn from_bytes_multi(bytes_vec: List<List<Int>>) -> FileLoader<List<Int>>
+    fn read() -> FileLoader<Res!<Str>>
+    fn read_with_path() -> FileLoader<Res!<Str>>
+
+  struct IntoIter
+
+  struct Model
+    fn new(id: Str, name: Str) -> Self
+    fn from_id(id: Str) -> Self
+    fn display_name() -> Str
+
+  struct EmptyListError
+
+  struct Iter
+
+  struct IterMut
+
+  struct IntoIter
+
+  struct Lookup
+
+  struct Prompt
+
+  struct Extract
+
+  struct Sequential
+
+  struct Map
+
+  struct Then
+
+  struct Passthrough
+
+  struct MapOk
+
+  struct MapErr
+
+  struct AndThen
+
+  struct OrElse
+
+  struct TrySequential
+
+  struct Parallel
+    fn new(op1: Op1, op2: Op2) -> Self
+
+  struct Extended
+
+  struct PipelineBuilder
+    fn map(f: F) -> Map<F, Input>
+    fn then(f: F) -> Then<F, Input>
+    fn chain(op: T) -> T
+    fn lookup(index: I, n: usize) -> Lookup<I, Input, Output>
+    fn prompt(agent: P) -> Prompt<P, Input>
+    fn extract(extractor: Extractor<M, Output>) -> Extract<M, Input, Output>
+
+  struct ToolDefinition
+    fn with_strict() -> Self
+
+  struct PromptResponse
+    fn new(output: Str, usage: Usage) -> Self
+    fn with_messages(messages: List<Message>) -> Self
+
+  struct TypedPromptResponse
+    fn new(output: T, usage: Usage) -> Self
+
+  struct Metadata
+
+  struct WithToolServerHandle
+
+  struct AnthropicRequestParams
+
+  struct JSONLDecoder
+    fn new(stream: S) -> Self
+
+  struct LineDecoder
+    fn new() -> Self
+    fn decode(chunk: Str) -> List<Str>
+    fn flush() -> List<Str>
+
+  struct ServerSentEvent
+
+  struct SSEDecoder
+    fn new() -> Self
+    fn decode(line: Str) -> Opt<ServerSentEvent>
+
+  struct MessageStart
+
+  struct MessageDelta
+
+  struct EmbeddingData
+
+  struct EmbeddingResponse
+
+  struct Text
+    fn text() -> Str
+
+  struct TranscriptionResponse
+
+  struct TranscriptionRequest
+
+  struct TranscriptionResponse
+
+  struct ExtractorBuilder
+    fn new(model: M) -> Self
+    fn preamble(preamble: Str) -> Self
+    fn context(doc: Str) -> Self
+    fn additional_params(params: Value) -> Self
+    fn max_tokens(max_tokens: Int) -> Self
+    fn retries(retries: Int) -> Self
+    fn tool_choice(choice: ToolChoice) -> Self
+    fn build() -> Extractor<M, T>
+    fn dynamic_context(sample: usize, dynamic_context: Str) -> Self
+
+  struct Capable
+
+  struct Client
+    fn new(api_key: Str) -> Res!<Self>
+    fn base_url() -> Str
+    fn headers() -> HeaderMap
+    fn ext() -> Ext
+    fn with_ext(new_ext: NewExt) -> Client<NewExt, H>
+    fn builder() -> ClientBuilder<Str, Missing, Client>
+    fn post(path: S) -> Res!<Builder>
+    fn post_sse(path: S) -> Res!<Builder>
+    fn get_sse(path: S) -> Res!<Builder>
+    fn get(path: S) -> Res!<Builder>
+    fn authorize() -> Res!<Str>
+    fn embeddings(model: Str, input_type: Str) -> EmbeddingsBuilder<EmbeddingModel<T>, D>
+    fn embedding_model(model: Str, input_type: Str) -> EmbeddingModel<T>
+    fn embedding_model_with_ndims(model: Str, input_type: Str, ndims: usize) -> EmbeddingModel<T>
+    fn authorize() -> Res!<Str>
+    fn interactions_api() -> InteractionsClient<H>
+    fn generate_content_api() -> Client<H>
+    fn create_interaction(request: CreateInteractionRequest) -> Res!<Interaction>
+    fn get_interaction(interaction_id: Str) -> Res!<Interaction>
+    fn stream_interaction_events(request: CreateInteractionRequest) -> Res!<InteractionEventStream>
+    fn stream_interaction_events_by_id(interaction_id: Str, last_event_id: Opt<Str>) -> Res!<InteractionEventStream>
+    fn from_url(base_url: Str) -> ProviderClientResult<Self>
+    fn list_models() -> Res!<List<Str>>
+    fn extractor(model: Str) -> ExtractorBuilder<ResponsesCompletionModel<H>, U>
+    fn completions_api() -> CompletionsClient<H>
+    fn extractor(model: Str) -> ExtractorBuilder<CompletionModel<H>, U>
+    fn responses_api() -> Client<H>
+
+  struct EmbeddingsBuilder
+    fn new(model: M) -> Self
+    fn document(document: T) -> Res!<Self>
+    fn documents(documents: Str) -> Res!<Self>
+    fn build() -> Res!<List<Str>>
+
+  struct ApiErrorResponse
+    fn message() -> Str
+
+  struct ModelList
+    fn new(data: List<Model>) -> Self
+    fn is_empty() -> Bool
+    fn len() -> usize
+    fn iter() -> Iter<Model>
+
+  struct Citation
+
+  struct ToolCall
+    fn new(id: Str, function: ToolFunction) -> Self
+    fn with_call_id(call_id: Str) -> Self
+    fn with_signature(signature: Opt<Str>) -> Self
+    fn with_additional_params(additional_params: Opt<Value>) -> Self
+
+  struct BilledUnits
+
+  struct Tokens
+
+  struct AnthropicExt
+
+  struct AnthropicModelLister
+
+  struct DeepSeekExt
+
+  struct DeepSeekModelLister
+
+  struct GeminiExt
+
+  struct ToolCallFunction
+
+  struct GeminiModelLister
+
+  struct GeminiInteractionsExt
+
+  struct GeminiInteractionsModelLister
+
+  struct MistralExt
+
+  struct MistralModelLister
+
+  struct Function
+
+  struct OllamaExt
+
+  struct OllamaModelLister
+
+  struct OpenAIResponsesExt
+
+  struct OpenAIModelLister
+
+  struct OpenRouterExt
+
+  struct ImageUrl
+
+  struct OpenRouterModelLister
+
+  struct XiaomiMimoExt
+
+  struct XiaomiMimoModelLister
+
+  struct Meta
+
+  struct EmbeddingResponse
+
+  trait VerifyClient
+    fn verify() -> Str
+
+  trait DebugExt
+    fn fields() -> Str
+
+  trait Provider
+    fn build_uri(base_url: Str, path: Str, _transport: Transport) -> Str
+    fn with_custom(req: Builder) -> Res!<Builder>
+
+  trait ProviderClient
+    fn from_env() -> Res!<Self>
+    fn from_val(input: Str) -> Res!<Self>
+
+  trait ApiKey
+    fn into_header() -> Opt<Res!<Str>>
+
+  trait ProviderBuilder
+    fn build(builder: ClientBuilder<Self, Str, H>) -> Res!<Str>
+    fn finish(builder: ClientBuilder<Self, Str, H>) -> Res!<ClientBuilder<Self, Str, H>>
+
+  trait CompletionModel
+    fn make(client: Str, model: Str) -> Self
+    fn completion(request: CompletionRequest) -> Str
+    fn stream(request: CompletionRequest) -> Str
+    fn completion_request(prompt: Str) -> CompletionRequestBuilder<Self>
+
+  trait PromptHook
+    fn on_completion_call(_prompt: Message, _history: Str) -> Str
+    fn on_completion_response(_prompt: Message, _response: CompletionResponse<Str>) -> Str
+    fn on_tool_call(_tool_name: Str, _tool_call_id: Opt<Str>, _internal_call_id: Str, _args: Str) -> Str
+    fn on_tool_result(_tool_name: Str, _tool_call_id: Opt<Str>, _internal_call_id: Str, _args: Str, _result: Str) -> Str
+    fn on_text_delta(_text_delta: Str, _aggregated_text: Str) -> Str
+    fn on_tool_call_delta(_tool_call_id: Str, _internal_call_id: Str, _tool_name: Opt<Str>, _tool_call_delta: Str) -> Str
+    fn on_stream_completion_response_finish(_prompt: Message, _response: Str) -> Str
+
+  trait VectorStoreIndexDyn
+    fn top_n(req: VectorSearchRequest<Filter<Value>>) -> WasmBoxedFuture<TopNResults>
+    fn top_n_ids(req: VectorSearchRequest<Filter<Value>>) -> WasmBoxedFuture<Res!<List<Str>>>
+
+  trait Tool
+    fn name() -> Str
+    fn definition(_prompt: Str) -> Str
+    fn call(args: Str) -> Str
+
+  trait ToolDyn
+    fn name() -> Str
+    fn definition(prompt: Str) -> WasmBoxedFuture<ToolDefinition>
+    fn call(args: Str) -> WasmBoxedFuture<Res!<Str>>
+
+  trait ConvertMessage
+    fn convert_from_message(message: Message) -> Res!<List<Self>>
+
+  trait ProviderRequestExt
+    fn get_input_messages() -> List<Str>
+    fn get_system_prompt() -> Opt<Str>
+    fn get_model_name() -> Str
+    fn get_prompt() -> Opt<Str>
+
+  trait Completion
+    fn completion(prompt: Str, chat_history: I) -> Str
+
+  trait SearchFilter
+    fn eq(key: Str, value: Str) -> Self
+    fn gt(key: Str, value: Str) -> Self
+    fn lt(key: Str, value: Str) -> Self
+    fn and(rhs: Self) -> Self
+    fn or(rhs: Self) -> Self
+
+  trait Transcription
+    fn transcription(filename: Str, data: Str) -> Str
+
+  trait Prompt
+    fn prompt(prompt: Str) -> Str
+
+  trait InsertDocuments
+    fn insert_documents(documents: List<Str>) -> Str
+
+  trait Chat
+    fn chat(prompt: Str, chat_history: I) -> Str
+
+  trait SpanCombinator
+    fn record_token_usage(usage: U)
+    fn record_response_metadata(response: R)
+    fn record_model_input(messages: T)
+    fn record_model_output(messages: T)
+
+  trait StreamingCompletion
+    fn stream_completion(prompt: Str, chat_history: I) -> Str
+
+  trait GetTokenUsage
+    fn token_usage() -> Opt<Usage>
+
+  trait StreamingPrompt
+    fn stream_prompt(prompt: Str) -> StreamingPromptRequest<M, Str>
+
+  trait StreamingChat
+    fn stream_chat(prompt: Str, chat_history: I) -> StreamingPromptRequest<M, Str>
+
+  trait TypedPrompt
+    fn prompt_typed(prompt: Str) -> Str
+
+  trait MimeType
+    fn from_mime_type(mime_type: Str) -> Opt<Self>
+    fn to_mime_type() -> Str
+
+  trait ImageEmbeddingModel
+    fn ndims() -> usize
+    fn embed_images(images: Str) -> Str
+    fn embed_image(bytes: Str) -> Str
+
+  trait VectorDistance
+    fn dot_product(other: Self) -> F64
+    fn cosine_similarity(other: Self, normalized: Bool) -> F64
+    fn angular_distance(other: Self, normalized: Bool) -> F64
+    fn euclidean_distance(other: Self) -> F64
+    fn manhattan_distance(other: Self) -> F64
+    fn chebyshev_distance(other: Self) -> F64
+
+  trait ToolEmbeddingDyn
+    fn context() -> Res!<Value>
+    fn embedding_docs() -> List<Str>
+
+  trait ToolEmbedding
+    fn embedding_docs() -> List<Str>
+    fn context() -> Str
+    fn init(state: Str, context: Str) -> Res!<Self>
+
+  trait RetryPolicy
+    fn retry(error: Error, last_retry: Opt<Str>) -> Opt<Duration>
+    fn set_reconnection_time(duration: Duration)
+
+  trait Op
+    fn call(input: Str) -> Str
+    fn batch_call(n: usize, input: I) -> Str
+    fn map(f: F) -> Sequential<Self, Map<F, Str>>
+    fn then(f: F) -> Sequential<Self, Then<F, Str>>
+    fn chain(op: T) -> Sequential<Self, T>
+    fn lookup(index: I, n: usize) -> Sequential<Self, Lookup<I, Str, Input>>
+    fn prompt(prompt: P) -> Sequential<Self, Prompt<P, Str>>
+
+  trait TryOp
+    fn try_call(input: Str) -> Str
+    fn try_batch_call(n: usize, input: I) -> Str
+    fn map_ok(f: F) -> MapOk<Self, Map<F, Str>>
+    fn map_err(f: F) -> MapErr<Self, Map<F, Str>>
+    fn and_then(f: F) -> AndThen<Self, Then<F, Str>>
+    fn or_else(f: F) -> OrElse<Self, Then<F, Str>>
+    fn chain_ok(op: T) -> TrySequential<Self, T>
+
+  trait VectorStoreIndex
+    fn top_n(req: VectorSearchRequest<Str>) -> Str
+    fn top_n_ids(req: VectorSearchRequest<Str>) -> Str
+
+  trait AnthropicCompatibleProvider
+    fn default_max_tokens(model: Str) -> Opt<Int>
+
+  trait ProviderResponseExt
+    fn get_response_id() -> Opt<Str>
+    fn get_response_model_name() -> Opt<Str>
+    fn get_output_messages() -> List<Str>
+    fn get_text_response() -> Opt<Str>
+    fn get_usage() -> Opt<Str>
+
+  trait CompletionClient
+    fn completion_model(model: Str) -> Str
+    fn agent(model: Str) -> AgentBuilder<Str>
+    fn extractor(model: Str) -> ExtractorBuilder<Str, T>
+
+  trait EmbeddingModel
+    fn make(client: Str, model: Str, dims: Opt<usize>) -> Self
+    fn ndims() -> usize
+    fn embed_texts(texts: Str) -> Str
+    fn embed_text(text: Str) -> Str
+
+  trait EmbeddingsClient
+    fn embedding_model(model: Str) -> Str
+    fn embedding_model_with_ndims(model: Str, ndims: usize) -> Str
+    fn embeddings(model: Str) -> EmbeddingsBuilder<Str, D>
+    fn embeddings_with_ndims(model: Str, ndims: usize) -> EmbeddingsBuilder<Str, D>
+
+  trait Embed
+    fn embed(embedder: TextEmbedder) -> Res!<Str>
+
+  trait ModelListingClient
+    fn list_models() -> Str
+
+  trait ModelLister
+    fn new(client: Str) -> Self
+    fn list_all() -> Str
+
+  trait HttpClientExt
+    fn send(req: Request<T>) -> Str
+    fn send_multipart(req: Request<MultipartForm>) -> Str
+    fn send_streaming(req: Request<T>) -> Str
+
+  trait TranscriptionModel
+    fn make(client: Str, model: Str) -> Self
+    fn transcription(request: TranscriptionRequest) -> Str
+    fn transcription_request() -> TranscriptionRequestBuilder<Self, Missing>
+
+  trait TranscriptionClient
+    fn transcription_model(model: Str) -> Str

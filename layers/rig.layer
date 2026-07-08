@@ -1,0 +1,58 @@
+pkg rig v1
+  desc "AI agent and tool abstractions — Rig SDK patterns"
+  author "VEIL"
+
+  # ─── Tool Constructs ────────────────────────────────────────────────────
+
+  construct Tool
+    kw tool
+    mt fn
+    desc "An AI-callable tool with typed args, schema, and async execution"
+    has
+      fn[]
+    visual
+      icon "🔧"
+      color "#10b981"
+      label "Tool"
+    ann
+      desc: "Tool description shown to the LLM" value
+    group tools
+
+  construct Agent
+    kw agent
+    mt fn
+    desc "An LLM agent with a preamble, model, and registered tools"
+    visual
+      icon "🤖"
+      color "#6366f1"
+      label "Agent"
+    ann
+      model: "LLM model identifier" value
+      preamble: "System prompt for the agent" value
+    group agents
+
+  construct ToolSet
+    kw tool_set
+    mt group
+    desc "Organizational container for related tools"
+    contains
+      Tool[]
+      Agent[]
+    visual
+      icon "🧰"
+      color "#059669"
+      label "Tool Set"
+    group tools
+
+  # ─── Declared types ─────────────────────────────────────────────────────
+
+  declare
+    enum ToolError
+      ToolCallError(Str)
+      InvalidArgs(Str)
+      Internal(Str)
+
+    struct ToolDefinition
+      name: Str
+      description: Str
+      parameters: Json

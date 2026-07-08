@@ -1,0 +1,137 @@
+pkg aws_storage v1
+  desc "AWS storage primitives — S3 object storage and DynamoDB metadata"
+  author "VEIL"
+
+  # ─── S3 Constructs ──────────────────────────────────────────────────────
+
+  construct S3Client
+    kw s3_client
+    mt struct
+    desc "Configured AWS S3 client instance"
+    visual
+      icon "☁️"
+      color "#f97316"
+      label "S3 Client"
+    ann
+      region: "AWS region" value
+      bucket_name: "Default bucket name" value
+    group aws_s3
+
+  construct Bucket
+    kw bucket
+    mt struct
+    desc "S3 bucket configuration — name, region, key prefix"
+    visual
+      icon "🪣"
+      color "#fb923c"
+      label "S3 Bucket"
+    ann
+      region: "AWS region for this bucket" value
+      bucket_name: "Bucket name" value
+      prefix: "Key prefix for all objects" value
+    group aws_s3
+
+  # ─── DynamoDB Constructs ────────────────────────────────────────────────
+
+  construct DdbClient
+    kw ddb_client
+    mt struct
+    desc "Configured AWS DynamoDB client instance"
+    visual
+      icon "🗃️"
+      color "#8b5cf6"
+      label "DynamoDB Client"
+    ann
+      region: "AWS region" value
+      table_name: "Default table name" value
+    group aws_ddb
+
+  construct Table
+    kw table
+    mt struct
+    desc "DynamoDB table configuration — name, key schema"
+    visual
+      icon "📊"
+      color "#a78bfa"
+      label "DynamoDB Table"
+    ann
+      table_name: "Table name" value
+      partition_key: "Partition key attribute name" value
+      sort_key: "Sort key attribute name" value
+    group aws_ddb
+
+  # ─── S3 Statements ─────────────────────────────────────────────────────
+
+  statement put_object
+    mt call
+    desc "Put an object into S3"
+    sem s3_write_object
+    visual
+      icon "⬆️"
+      color "#f97316"
+      label "Put Object"
+
+  statement get_object
+    mt call
+    desc "Get an object from S3"
+    sem s3_read_object
+    visual
+      icon "⬇️"
+      color "#f97316"
+      label "Get Object"
+
+  statement delete_object
+    mt call
+    desc "Delete an object from S3"
+    sem s3_delete_object
+    visual
+      icon "🗑️"
+      color "#f97316"
+      label "Delete Object"
+
+  statement list_objects
+    mt call
+    desc "List objects in an S3 prefix"
+    sem s3_list_objects
+    visual
+      icon "📋"
+      color "#f97316"
+      label "List Objects"
+
+  # ─── DynamoDB Statements ────────────────────────────────────────────────
+
+  statement put_item
+    mt call
+    desc "Put an item into a DynamoDB table"
+    sem ddb_write_item
+    visual
+      icon "⬆️"
+      color "#8b5cf6"
+      label "Put Item"
+
+  statement get_item
+    mt call
+    desc "Get an item from a DynamoDB table by key"
+    sem ddb_read_item
+    visual
+      icon "⬇️"
+      color "#8b5cf6"
+      label "Get Item"
+
+  statement delete_item
+    mt call
+    desc "Delete an item from a DynamoDB table"
+    sem ddb_delete_item
+    visual
+      icon "🗑️"
+      color "#8b5cf6"
+      label "Delete Item"
+
+  statement query_items
+    mt call
+    desc "Query items from a DynamoDB table"
+    sem ddb_query_items
+    visual
+      icon "🔍"
+      color "#8b5cf6"
+      label "Query Items"

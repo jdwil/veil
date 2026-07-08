@@ -1,0 +1,185 @@
+stub zip 2.4.2
+
+  struct ExtendedTimestamp
+    fn try_from_reader(reader: R, len: Int) -> ZipResult<Self>
+    fn mod_time() -> Opt<Int>
+    fn ac_time() -> Opt<Int>
+    fn cr_time() -> Opt<Int>
+
+  struct Ntfs
+    fn try_from_reader(reader: R, len: Int) -> ZipResult<Self>
+    fn mtime() -> Int
+    fn atime() -> Int
+    fn ctime() -> Int
+
+  struct UnicodeExtraField
+    fn unwrap_valid(ascii_field: Str) -> ZipResult<Box<Str>>
+
+  struct LocalHeaderVersion
+
+  struct CentralHeaderVersion
+
+  struct Config
+
+  struct ZipStreamReader
+    fn new(reader: R) -> Self
+    fn visit(visitor: V) -> ZipResult<Str>
+    fn extract(directory: P) -> ZipResult<Str>
+
+  struct ZipFile
+    fn version_made_by() -> Str
+    fn name() -> Str
+    fn name_raw() -> Str
+    fn sanitized_name() -> PathBuf
+    fn mangled_name() -> PathBuf
+    fn enclosed_name() -> Opt<PathBuf>
+    fn comment() -> Str
+    fn compression() -> CompressionMethod
+    fn encrypted() -> Bool
+    fn compressed_size() -> Int
+    fn size() -> Int
+    fn last_modified() -> Opt<DateTime>
+    fn is_dir() -> Bool
+    fn is_symlink() -> Bool
+    fn is_file() -> Bool
+    fn unix_mode() -> Opt<Int>
+    fn crc32() -> Int
+    fn extra_data() -> Opt<Str>
+    fn data_start() -> Int
+    fn header_start() -> Int
+    fn central_header_start() -> Int
+    fn options() -> SimpleFileOptions
+    fn extra_data_fields() -> Str
+
+  struct ZipStreamFileMetadata
+    fn name() -> Str
+    fn name_raw() -> Str
+    fn mangled_name() -> PathBuf
+    fn enclosed_name() -> Opt<PathBuf>
+    fn is_dir() -> Bool
+    fn is_file() -> Bool
+    fn comment() -> Str
+    fn unix_mode() -> Opt<Int>
+
+  struct ZipArchive
+    fn decompressed_size() -> Opt<u128>
+    fn get_aes_verification_key_and_salt(file_number: usize) -> ZipResult<Opt<AesInfo>>
+    fn new(reader: R) -> ZipResult<ZipArchive<R>>
+    fn with_config(config: Config, reader: R) -> ZipResult<ZipArchive<R>>
+    fn extract(directory: P) -> ZipResult<Str>
+    fn extract_unwrapped_root_dir(directory: P, root_dir_filter: Str) -> ZipResult<Str>
+    fn len() -> usize
+    fn central_directory_start() -> Int
+    fn is_empty() -> Bool
+    fn offset() -> Int
+    fn comment() -> Str
+    fn zip64_comment() -> Opt<Str>
+    fn file_names() -> Str
+    fn by_name_decrypt(name: Str, password: Str) -> ZipResult<ZipFile>
+    fn by_name(name: Str) -> ZipResult<ZipFile>
+    fn index_for_name(name: Str) -> Opt<usize>
+    fn index_for_path(path: T) -> Opt<usize>
+    fn name_for_index(index: usize) -> Opt<Str>
+    fn by_name_seek(name: Str) -> ZipResult<ZipFileSeek<R>>
+    fn by_index_seek(index: usize) -> ZipResult<ZipFileSeek<R>>
+    fn by_index_decrypt(file_number: usize, password: Str) -> ZipResult<ZipFile>
+    fn by_index(file_number: usize) -> ZipResult<ZipFile>
+    fn by_index_raw(file_number: usize) -> ZipResult<ZipFile>
+    fn root_dir(filter: Str) -> ZipResult<Opt<PathBuf>>
+    fn into_inner() -> R
+
+  struct AesInfo
+
+  struct ZipFileSeek
+
+  struct DateTime
+    fn default_for_write() -> Self
+    fn from_msdos_unchecked(datepart: Int, timepart: Int) -> DateTime
+    fn try_from_msdos(datepart: Int, timepart: Int) -> Res!<DateTime>
+    fn from_date_and_time(year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int) -> Res!<DateTime>
+    fn is_valid() -> Bool
+    fn from_time(dt: OffsetDateTime) -> Res!<DateTime>
+    fn timepart() -> Int
+    fn datepart() -> Int
+    fn to_time() -> Res!<OffsetDateTime>
+    fn year() -> Int
+    fn month() -> Int
+    fn day() -> Int
+    fn hour() -> Int
+    fn minute() -> Int
+    fn second() -> Int
+
+  struct ZipFileData
+
+  struct DateTimeRangeError
+
+  struct FileOptions
+    fn compression_method(method: CompressionMethod) -> Self
+    fn compression_level(level: Opt<Int>) -> Self
+    fn last_modified_time(mod_time: DateTime) -> Self
+    fn unix_permissions(mode: Int) -> Self
+    fn large_file(large: Bool) -> Self
+    fn with_aes_encryption(mode: AesMode, password: Str) -> FileOptions<T>
+    fn with_zopfli_buffer(size: Opt<usize>) -> Self
+    fn get_compression_level() -> Opt<Int>
+    fn with_alignment(alignment: Int) -> Self
+    fn add_extra_data(header_id: Int, data: Box<Str>, central_only: Bool) -> ZipResult<Str>
+    fn clear_extra_data() -> Self
+
+  struct ZipWriter
+    fn new_append(readwriter: A) -> ZipResult<ZipWriter<A>>
+    fn new_append_with_config(config: Config, readwriter: A) -> ZipResult<ZipWriter<A>>
+    fn set_flush_on_finish_file(flush_on_finish_file: Bool)
+    fn deep_copy_file(src_name: Str, dest_name: Str) -> ZipResult<Str>
+    fn deep_copy_file_from_path(src_path: T, dest_path: U) -> ZipResult<Str>
+    fn finish_into_readable() -> ZipResult<ZipArchive<A>>
+    fn new(inner: W) -> ZipWriter<W>
+    fn is_writing_file() -> Bool
+    fn set_comment(comment: S)
+    fn set_raw_comment(comment: Box<Str>)
+    fn get_comment() -> Res!<Str>
+    fn get_raw_comment() -> Str
+    fn set_zip64_comment(comment: Opt<S>)
+    fn set_raw_zip64_comment(comment: Opt<Box<Str>>)
+    fn get_zip64_comment() -> Opt<Res!<Str>>
+    fn get_raw_zip64_comment() -> Opt<Str>
+    fn set_file_metadata(length: Int, crc32: Int) -> ZipResult<Str>
+    fn abort_file() -> ZipResult<Str>
+    fn start_file(name: S, options: FileOptions<T>) -> ZipResult<Str>
+    fn merge_archive(source: ZipArchive<R>) -> ZipResult<Str>
+    fn start_file_from_path(path: P, options: FileOptions<E>) -> ZipResult<Str>
+    fn raw_copy_file_rename(file: ZipFile, name: S) -> ZipResult<Str>
+    fn raw_copy_file_to_path(file: ZipFile, path: P) -> ZipResult<Str>
+    fn raw_copy_file(file: ZipFile) -> ZipResult<Str>
+    fn raw_copy_file_touch(file: ZipFile, last_modified_time: DateTime, unix_mode: Opt<Int>) -> ZipResult<Str>
+    fn add_directory(name: S, options: FileOptions<T>) -> ZipResult<Str>
+    fn add_directory_from_path(path: P, options: FileOptions<T>) -> ZipResult<Str>
+    fn finish() -> ZipResult<W>
+    fn add_symlink(name: N, target: T, options: FileOptions<E>) -> ZipResult<Str>
+    fn add_symlink_from_path(path: P, target: T, options: FileOptions<E>) -> ZipResult<Str>
+    fn shallow_copy_file(src_name: Str, dest_name: Str) -> ZipResult<Str>
+    fn shallow_copy_file_from_path(src_path: T, dest_path: U) -> ZipResult<Str>
+
+  struct ExtendedFileOptions
+    fn add_extra_data(header_id: Int, data: Box<Str>, central_only: Bool) -> ZipResult<Str>
+
+  trait ZipStreamVisitor
+    fn visit_file(file: ZipFile) -> ZipResult<Str>
+    fn visit_additional_metadata(metadata: ZipStreamFileMetadata) -> ZipResult<Str>
+
+  trait LittleEndianReadExt
+    fn read_u16_le() -> Res!<Int>
+    fn read_u32_le() -> Res!<Int>
+    fn read_u64_le() -> Res!<Int>
+
+  trait HasZipMetadata
+    fn get_metadata() -> ZipFileData
+
+  trait LittleEndianWriteExt
+    fn write_u16_le(input: Int) -> Res!<Str>
+    fn write_u32_le(input: Int) -> Res!<Str>
+    fn write_u64_le(input: Int) -> Res!<Str>
+    fn write_u128_le(input: u128) -> Res!<Str>
+
+  trait FileOptionsExt
+    fn with_deprecated_encryption(password: Str) -> Self

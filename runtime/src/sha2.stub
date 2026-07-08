@@ -1,0 +1,5 @@
+stub sha2 0.10.9
+
+  struct Sha256VarCore
+
+  struct Sha512VarCore

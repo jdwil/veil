@@ -38,6 +38,7 @@ pub enum TokenKind {
 
     // ─── CORE: Literals ───────────────────────────────────────────────
     StringLit,
+    FStringLit,
     IntLit,
     FloatLit,
     True,
@@ -283,7 +284,14 @@ impl Lexer {
                     self.pos += 1;
                 }
                 c if c.is_ascii_digit() => self.lex_number(),
-                c if is_ident_start(c) => self.lex_ident_or_keyword(),
+                c if is_ident_start(c) => {
+                    // f"..." is a string interpolation literal, not an ident
+                    if c == 'f' && self.peek() == Some('"') {
+                        self.lex_fstring();
+                    } else {
+                        self.lex_ident_or_keyword();
+                    }
+                }
                 _ => {
                     // Skip unknown characters
                     self.pos += 1;
@@ -413,6 +421,23 @@ impl Lexer {
             self.pos += 1; // skip closing "
         }
         self.emit(TokenKind::StringLit, start, self.pos);
+    }
+
+    /// Lex an f-string: f"Hello {name}!" → FStringLit token (including f prefix)
+    fn lex_fstring(&mut self) {
+        let start = self.pos;
+        self.pos += 1; // skip 'f'
+        self.pos += 1; // skip opening "
+        while self.pos < self.chars.len() && self.chars[self.pos] != '"' {
+            if self.chars[self.pos] == '\\' {
+                self.pos += 1; // skip escape
+            }
+            self.pos += 1;
+        }
+        if self.pos < self.chars.len() {
+            self.pos += 1; // skip closing "
+        }
+        self.emit(TokenKind::FStringLit, start, self.pos);
     }
 
     fn lex_number(&mut self) {

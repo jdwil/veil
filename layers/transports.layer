@@ -1,0 +1,76 @@
+pkg transports v1
+  desc "Network transport abstractions — HTTP endpoints, WebSocket handlers, daemons"
+  author "VEIL"
+
+  # ─── Server Constructs ──────────────────────────────────────────────────
+
+  construct Daemon
+    kw daemon
+    mt mod
+    au
+    desc "A network daemon — top-level server container with routes and handlers"
+    visual
+      icon "🌐"
+      color "#0891b2"
+      label "Daemon"
+    ann
+      port: "TCP port to listen on" value
+      cors: "CORS configuration" value
+    in top
+
+  construct HttpRoute
+    kw http_route
+    mt fn
+    desc "An HTTP endpoint — handles a specific method + path combination"
+    visual
+      icon "🔀"
+      color "#3b82f6"
+      label "HTTP Route"
+    ann
+      method: "HTTP method (GET, POST, PUT, DELETE, PATCH)" value
+      path: "URL path pattern" value
+    group routes
+
+  construct WsHandler
+    kw ws_handler
+    mt fn
+    desc "WebSocket connection handler — manages the message loop for a connection"
+    visual
+      icon "🔌"
+      color "#8b5cf6"
+      label "WebSocket Handler"
+    ann
+      path: "WebSocket upgrade path" value
+    group routes
+
+  construct Middleware
+    kw middleware
+    mt fn
+    desc "Request/response middleware — intercepts and transforms requests"
+    visual
+      icon "🛡️"
+      color "#f59e0b"
+      label "Middleware"
+    ann
+      order: "Execution order (lower = earlier)" value
+    group middleware
+
+  # ─── Statements ─────────────────────────────────────────────────────────
+
+  statement send_ws
+    mt call
+    desc "Send a message to a WebSocket client"
+    sem ws_send_message
+    visual
+      icon "📤"
+      color "#8b5cf6"
+      label "Send WS"
+
+  statement broadcast
+    mt call
+    desc "Broadcast a message to all connected WebSocket clients"
+    sem ws_broadcast_all
+    visual
+      icon "📡"
+      color "#8b5cf6"
+      label "Broadcast"

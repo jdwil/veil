@@ -1401,8 +1401,12 @@ impl<'a> Parser<'a> {
         }
 
         // If ! shorthand was used and no explicit return type, default to Res!
-        if implicit_result && return_type.is_none() {
-            return_type = Some(TypeExpr::Result(None));
+        // If ! was used WITH an explicit return type, wrap it: Res!<T>
+        if implicit_result {
+            match return_type {
+                None => return_type = Some(TypeExpr::Result(None)),
+                Some(t) => return_type = Some(TypeExpr::Result(Some(Box::new(t)))),
+            }
         }
 
         Ok(Method {
@@ -2279,6 +2283,14 @@ impl<'a> Parser<'a> {
                 let text = self.advance().text;
                 Ok(Expr::StringLit(Self::extract_string_content(&text)))
             }
+            TokenKind::FStringLit => {
+                let text = self.advance().text;
+                // Parse f"...{expr}..." into StringInterp parts
+                // Text is f"content" — strip f and quotes
+                let inner = &text[2..text.len() - 1];
+                let parts = parse_fstring_parts(inner);
+                Ok(Expr::StringInterp(parts))
+            }
             TokenKind::IntLit => {
                 let text = self.advance().text;
                 Ok(Expr::IntLit(text.parse::<i64>().unwrap_or(0)))
@@ -2842,6 +2854,61 @@ fn flatten_dotted_path(base: &Expr, last: &str) -> Option<String> {
     parts.reverse();
     parts.push(last.to_string());
     Some(parts.join("."))
+}
+
+/// Parse f-string content into StringPart segments.
+/// "Hello {name}, you have {count} items" → [Lit("Hello "), Expr(name), Lit(", you have "), Expr(count), Lit(" items")]
+fn parse_fstring_parts(s: &str) -> Vec<StringPart> {
+    let mut parts = Vec::new();
+    let mut current_lit = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] != '{' {
+            // Start of expression
+            if !current_lit.is_empty() {
+                parts.push(StringPart::Literal(current_lit.clone()));
+                current_lit.clear();
+            }
+            i += 1; // skip {
+            let mut expr_text = String::new();
+            let mut depth = 1;
+            while i < chars.len() && depth > 0 {
+                if chars[i] == '{' { depth += 1; }
+                if chars[i] == '}' { depth -= 1; if depth == 0 { break; } }
+                expr_text.push(chars[i]);
+                i += 1;
+            }
+            i += 1; // skip closing }
+            // Parse the expression text into an Expr
+            let expr = if expr_text.contains('.') {
+                // Field access: obj.field
+                let dot_parts: Vec<&str> = expr_text.split('.').collect();
+                let mut expr = Expr::Ident(dot_parts[0].to_string());
+                for field in &dot_parts[1..] {
+                    expr = Expr::FieldAccess(Box::new(expr), field.to_string());
+                }
+                expr
+            } else if expr_text.contains('(') {
+                // Function call — simplified, just use as ident for now
+                Expr::Ident(expr_text)
+            } else {
+                Expr::Ident(expr_text)
+            };
+            parts.push(StringPart::Expr(expr));
+        } else if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '{' {
+            // Escaped {{ → literal {
+            current_lit.push('{');
+            i += 2;
+        } else {
+            current_lit.push(chars[i]);
+            i += 1;
+        }
+    }
+    if !current_lit.is_empty() {
+        parts.push(StringPart::Literal(current_lit));
+    }
+    parts
 }
 
 /// Parse a pattern string into a structured Pattern for common cases.

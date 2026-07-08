@@ -1,0 +1,73 @@
+stub tempfile 3.27.0
+
+  struct NamedTempFile
+    fn new() -> Res!<NamedTempFile>
+    fn new_in(dir: P) -> Res!<NamedTempFile>
+    fn with_suffix(suffix: S) -> Res!<NamedTempFile>
+    fn with_suffix_in(suffix: S, dir: P) -> Res!<NamedTempFile>
+    fn with_prefix(prefix: S) -> Res!<NamedTempFile>
+    fn with_prefix_in(prefix: S, dir: P) -> Res!<NamedTempFile>
+    fn path() -> Path
+    fn close() -> Res!<Str>
+    fn persist(new_path: P) -> Res!<F>
+    fn persist_noclobber(new_path: P) -> Res!<F>
+    fn keep() -> Res!<Str>
+    fn disable_cleanup(disable_cleanup: Bool)
+    fn as_file() -> F
+    fn as_file_mut() -> F
+    fn into_file() -> F
+    fn into_temp_path() -> TempPath
+    fn into_parts() -> Str
+    fn from_parts(file: F, path: TempPath) -> Self
+    fn reopen() -> Res!<File>
+
+  struct PersistError
+
+  struct SpooledTempFile
+    fn new(max_size: usize) -> SpooledTempFile
+    fn new_in(max_size: usize, dir: P) -> SpooledTempFile
+    fn is_rolled() -> Bool
+    fn roll() -> Res!<Str>
+    fn set_len(size: Int) -> Res!<Str>
+    fn into_inner() -> SpooledData
+    fn into_file() -> Res!<File>
+
+  struct Builder
+    fn new() -> Self
+    fn prefix(prefix: S) -> Self
+    fn suffix(suffix: S) -> Self
+    fn rand_bytes(rand: usize) -> Self
+    fn append(append: Bool) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn disable_cleanup(disable_cleanup: Bool) -> Self
+    fn keep(keep: Bool) -> Self
+    fn tempfile() -> Res!<NamedTempFile>
+    fn tempfile_in(dir: P) -> Res!<NamedTempFile>
+    fn tempdir() -> Res!<TempDir>
+    fn tempdir_in(dir: P) -> Res!<TempDir>
+    fn make(f: F) -> Res!<NamedTempFile<R>>
+    fn make_in(dir: P, f: F) -> Res!<NamedTempFile<R>>
+
+  struct TempDir
+    fn new() -> Res!<TempDir>
+    fn new_in(dir: P) -> Res!<TempDir>
+    fn with_prefix(prefix: S) -> Res!<TempDir>
+    fn with_suffix(suffix: S) -> Res!<TempDir>
+    fn with_suffix_in(suffix: S, dir: P) -> Res!<TempDir>
+    fn with_prefix_in(prefix: S, dir: P) -> Res!<TempDir>
+    fn path() -> Path
+    fn into_path() -> PathBuf
+    fn keep() -> PathBuf
+    fn disable_cleanup(disable_cleanup: Bool)
+    fn close() -> Res!<Str>
+
+  struct TempPath
+    fn close() -> Res!<Str>
+    fn persist(new_path: P) -> Res!<Str>
+    fn persist_noclobber(new_path: P) -> Res!<Str>
+    fn keep() -> Res!<PathBuf>
+    fn disable_cleanup(disable_cleanup: Bool)
+    fn from_path(path: Str) -> Self
+    fn try_from_path(path: Str) -> Res!<Self>
+
+  struct PathPersistError

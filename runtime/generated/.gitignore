@@ -1,0 +1,4 @@
+# Generated code — do not commit
+# Regenerate with: make gen-runtime
+*
+!.gitignore

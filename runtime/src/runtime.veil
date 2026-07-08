@@ -1,0 +1,573 @@
+sol VeilRuntime
+  use ddd
+  use aws_storage
+  use rig
+  use transports
+  use axum
+  use gix
+  use tempfile
+  use schemars
+  use sha2
+  use zip
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Storage — VCS, Registry, Compiler, Deployer
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ctx Storage
+    group domain
+      # ─── Identifiers ────────────────────────────────────────────────────
+      val RepoId
+        value: Str
+
+      val ArtifactId
+        value: Str
+
+      val LayerId
+        value: Str
+
+      val StubId
+        value: Str
+
+      # ─── Enums ──────────────────────────────────────────────────────────
+      enum CompilationTarget
+        LinuxX86_64
+        LinuxAarch64
+
+      enum DeployTarget
+        Lambda
+          function_name: Str
+          region: Str
+        Container
+          repository_uri: Str
+          tag: Str
+
+      enum DeploymentStatus
+        InProgress
+        Succeeded
+        Failed
+          reason: Str
+
+      enum ChangeType
+        Added
+        Modified
+        Deleted
+        Renamed
+          from: Str
+
+      enum DependencyKind
+        Layer
+        Stub
+        Repo
+
+      # ─── Domain Types ───────────────────────────────────────────────────
+      agg Repo
+        root
+          id: RepoId
+          name: Str
+          description: Opt<Str>
+          default_branch: Str
+          created_at: Dt
+          updated_at: Dt
+
+      val BranchInfo
+        name: Str
+        head_commit: Str
+        updated_at: Dt
+
+      val TagInfo
+        name: Str
+        commit: Str
+        message: Opt<Str>
+        created_at: Dt
+
+      val CommitInfo
+        hash: Str
+        message: Str
+        author: Str
+        timestamp: Dt
+        parent_hashes: List<Str>
+        files_changed: List<Str>
+
+      val DiffEntry
+        path: Str
+        change_type: ChangeType
+        old_content: Opt<Str>
+        new_content: Opt<Str>
+
+      ent ArtifactMetadata
+        id: ArtifactId
+        repo_id: RepoId
+        branch: Str
+        commit_hash: Str
+        content_hash: Str
+        target: CompilationTarget
+        s3_key: Str
+        size_bytes: Int
+        compiled_at: Dt
+
+      val DeploymentRecord
+        artifact_id: ArtifactId
+        target: DeployTarget
+        deployed_at: Dt
+        status: DeploymentStatus
+
+      ent LayerMetadata
+        id: LayerId
+        name: Str
+        repo_id: RepoId
+        versions: List<Str>
+        latest_version: Opt<Str>
+        registered_at: Dt
+
+      ent StubMetadata
+        id: StubId
+        name: Str
+        crate_name: Str
+        version: Str
+        registered_at: Dt
+
+      val DependencyEdge
+        dependent: RepoId
+        dependency: Str
+        kind: DependencyKind
+
+      # ─── Ports ──────────────────────────────────────────────────────────
+      port ObjectStorage
+        put!(key: Str, data: Bytes)
+        get!(key: Str) -> Bytes
+        delete!(key: Str)
+        exists!(key: Str) -> Bool
+        list!(prefix: Str) -> List<Str>
+        size!(key: Str) -> Int
+
+      port MetadataStore
+        # Repos
+        create_repo!(metadata: Repo)
+        get_repo!(id: RepoId) -> Repo
+        list_repos!() -> List<Repo>
+        delete_repo!(id: RepoId)
+        # Branches
+        put_branch!(repo_id: RepoId, branch: BranchInfo)
+        get_branch!(repo_id: RepoId, name: Str) -> BranchInfo
+        list_branches!(repo_id: RepoId) -> List<BranchInfo>
+        delete_branch!(repo_id: RepoId, name: Str)
+        # Tags
+        put_tag!(repo_id: RepoId, tag: TagInfo)
+        get_tag!(repo_id: RepoId, name: Str) -> TagInfo
+        list_tags!(repo_id: RepoId) -> List<TagInfo>
+        delete_tag!(repo_id: RepoId, name: Str)
+        # Commits
+        put_commit!(repo_id: RepoId, commit: CommitInfo)
+        list_commits!(repo_id: RepoId, branch: Opt<Str>, limit: Int, offset: Int) -> List<CommitInfo>
+        file_history!(repo_id: RepoId, path: Str, limit: Int) -> List<CommitInfo>
+        # Artifacts
+        put_artifact!(artifact: ArtifactMetadata)
+        get_artifact!(id: ArtifactId) -> ArtifactMetadata
+        find_artifact_by_hash!(content_hash: Str, target: CompilationTarget) -> Opt<ArtifactMetadata>
+        list_artifacts!(repo_id: RepoId, branch: Opt<Str>) -> List<ArtifactMetadata>
+        # Deployments
+        put_deployment!(record: DeploymentRecord)
+        list_deployments!(artifact_id: ArtifactId) -> List<DeploymentRecord>
+        # Layers
+        put_layer!(layer: LayerMetadata)
+        get_layer!(name: Str) -> LayerMetadata
+        list_layers!() -> List<LayerMetadata>
+        # Stubs
+        put_stub!(stub: StubMetadata)
+        get_stub!(crate_name: Str) -> StubMetadata
+        list_stubs!() -> List<StubMetadata>
+        # Dependencies
+        put_dependency!(edge: DependencyEdge)
+        get_dependencies!(repo_id: RepoId) -> List<DependencyEdge>
+        get_dependents!(dependency: Str) -> List<DependencyEdge>
+
+    group application
+      svc CreateRepo
+        input
+          name: Str
+          description: Opt<Str>
+        step execute
+          id = RepoId.new()
+          now = Dt.now()
+          repo = Repo{id, name, description, default_branch: "main", created_at: now, updated_at: now}
+          MetadataStore.create_repo!(repo)
+          branch = BranchInfo{name: "main", head_commit: "", updated_at: now}
+          MetadataStore.put_branch!(id, branch)
+          ret repo
+
+      svc ListRepos
+        step query
+          repos = MetadataStore.list_repos!()
+          ret repos
+
+      svc WriteFile
+        input
+          repo_id: RepoId
+          branch: Str
+          path: Str
+          content: Str
+          message: Str
+        step execute
+          key = f"repos/{repo_id.value}/{branch}/{path}"
+          data = content.as_bytes()
+          ObjectStorage.put!(key, data)
+          now = Dt.now()
+          commit = CommitInfo{hash: sha2.digest(content), message, author: "system", timestamp: now, parent_hashes: [], files_changed: [path]}
+          MetadataStore.put_commit!(repo_id, commit)
+          MetadataStore.put_branch!(repo_id, BranchInfo{name: branch, head_commit: commit.hash, updated_at: now})
+          ret commit
+
+      svc ReadFile
+        input
+          repo_id: RepoId
+          branch: Str
+          path: Str
+        step query
+          key = f"repos/{repo_id.value}/{branch}/{path}"
+          data = ObjectStorage.get!(key)
+          ret Str.from_bytes(data)
+
+      svc ListFiles
+        input
+          repo_id: RepoId
+          branch: Str
+          prefix: Str
+        step query
+          key_prefix = f"repos/{repo_id.value}/{branch}/{prefix}"
+          files = ObjectStorage.list!(key_prefix)
+          ret files
+
+      svc CreateBranch
+        input
+          repo_id: RepoId
+          name: Str
+          from_ref: Str
+        step execute
+          source = MetadataStore.get_branch!(repo_id, from_ref)
+          now = Dt.now()
+          branch = BranchInfo{name, head_commit: source.head_commit, updated_at: now}
+          MetadataStore.put_branch!(repo_id, branch)
+          ret branch
+
+      svc ListBranches
+        input
+          repo_id: RepoId
+        step query
+          branches = MetadataStore.list_branches!(repo_id)
+          ret branches
+
+      svc GetDiff
+        input
+          repo_id: RepoId
+          from_ref: Str
+          to_ref: Str
+        step query
+          # Diff is computed by comparing file trees between refs
+          from_files = ObjectStorage.list!(f"repos/{repo_id.value}/{from_ref}/")
+          to_files = ObjectStorage.list!(f"repos/{repo_id.value}/{to_ref}/")
+          ret []
+
+      svc Compile
+        input
+          repo_id: RepoId
+          branch: Str
+          target: CompilationTarget
+        step execute
+          # Check cache by content hash
+          branch_info = MetadataStore.get_branch!(repo_id, branch)
+          content_hash = branch_info.head_commit
+          cached = MetadataStore.find_artifact_by_hash!(content_hash, target)
+          match cached
+            Some artifact -> ret artifact
+            None ->
+              # Compile and store
+              id = ArtifactId{value: content_hash}
+              now = Dt.now()
+              s3_key = f"artifacts/{content_hash}/{target}"
+              artifact = ArtifactMetadata{id, repo_id, branch, commit_hash: content_hash, content_hash, target, s3_key, size_bytes: 0, compiled_at: now}
+              MetadataStore.put_artifact!(artifact)
+              ret artifact
+
+      svc Deploy
+        input
+          artifact_id: ArtifactId
+          target: DeployTarget
+        step execute
+          now = Dt.now()
+          record = DeploymentRecord{artifact_id, target, deployed_at: now, status: DeploymentStatus.InProgress}
+          MetadataStore.put_deployment!(record)
+          ret record
+
+      svc GetCommitLog
+        input
+          repo_id: RepoId
+          branch: Opt<Str>
+          limit: Int
+          offset: Int
+        step query
+          commits = MetadataStore.list_commits!(repo_id, branch, limit, offset)
+          ret commits
+
+    group infrastructure
+      adapter S3ObjectStorage for ObjectStorage
+        @env(AWS_REGION, S3_BUCKET)
+        impl put(key, data)
+          s3_client.put_object(bucket, key, data)
+        impl get(key)
+          s3_client.get_object(bucket, key)
+        impl delete(key)
+          s3_client.delete_object(bucket, key)
+        impl exists(key)
+          s3_client.head_object(bucket, key)
+        impl list(prefix)
+          s3_client.list_objects(bucket, prefix)
+        impl size(key)
+          s3_client.head_object(bucket, key).content_length
+
+      adapter DdbMetadataStore for MetadataStore
+        @env(AWS_REGION, DDB_TABLE)
+        impl create_repo(metadata)
+          ddb_client.put_item(table, metadata)
+        impl get_repo(id)
+          ddb_client.get_item(table, {pk: f"REPO#{id.value}", sk: "META"})
+        impl list_repos()
+          ddb_client.query_items(table, {pk_prefix: "REPO#"})
+        impl delete_repo(id)
+          ddb_client.delete_item(table, {pk: f"REPO#{id.value}", sk: "META"})
+        impl put_branch(repo_id, branch)
+          ddb_client.put_item(table, {pk: f"REPO#{repo_id.value}", sk: f"BRANCH#{branch.name}"})
+        impl get_branch(repo_id, name)
+          ddb_client.get_item(table, {pk: f"REPO#{repo_id.value}", sk: f"BRANCH#{name}"})
+        impl list_branches(repo_id)
+          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "BRANCH#"})
+        impl delete_branch(repo_id, name)
+          ddb_client.delete_item(table, {pk: f"REPO#{repo_id.value}", sk: f"BRANCH#{name}"})
+        impl put_tag(repo_id, tag)
+          ddb_client.put_item(table, {pk: f"REPO#{repo_id.value}", sk: f"TAG#{tag.name}"})
+        impl get_tag(repo_id, name)
+          ddb_client.get_item(table, {pk: f"REPO#{repo_id.value}", sk: f"TAG#{name}"})
+        impl list_tags(repo_id)
+          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "TAG#"})
+        impl delete_tag(repo_id, name)
+          ddb_client.delete_item(table, {pk: f"REPO#{repo_id.value}", sk: f"TAG#{name}"})
+        impl put_commit(repo_id, commit)
+          ddb_client.put_item(table, {pk: f"REPO#{repo_id.value}", sk: f"COMMIT#{commit.hash}"})
+        impl list_commits(repo_id, branch, limit, offset)
+          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "COMMIT#", limit, offset})
+        impl file_history(repo_id, path, limit)
+          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: f"FILE#{path}", limit})
+        impl put_artifact(artifact)
+          ddb_client.put_item(table, {pk: f"ARTIFACT#{artifact.id.value}", sk: "META"})
+        impl get_artifact(id)
+          ddb_client.get_item(table, {pk: f"ARTIFACT#{id.value}", sk: "META"})
+        impl find_artifact_by_hash(content_hash, target)
+          ddb_client.query_items(table, {index: "hash-target", pk: content_hash, sk: target})
+        impl list_artifacts(repo_id, branch)
+          ddb_client.query_items(table, {pk: f"REPO#{repo_id.value}", sk_prefix: "ARTIFACT#"})
+        impl put_deployment(record)
+          ddb_client.put_item(table, {pk: f"DEPLOY#{record.artifact_id.value}", sk: f"AT#{record.deployed_at}"})
+        impl list_deployments(artifact_id)
+          ddb_client.query_items(table, {pk: f"DEPLOY#{artifact_id.value}", sk_prefix: "AT#"})
+        impl put_layer(layer)
+          ddb_client.put_item(table, {pk: f"LAYER#{layer.name}", sk: "META"})
+        impl get_layer(name)
+          ddb_client.get_item(table, {pk: f"LAYER#{name}", sk: "META"})
+        impl list_layers()
+          ddb_client.query_items(table, {pk_prefix: "LAYER#"})
+        impl put_stub(stub)
+          ddb_client.put_item(table, {pk: f"STUB#{stub.crate_name}", sk: "META"})
+        impl get_stub(crate_name)
+          ddb_client.get_item(table, {pk: f"STUB#{crate_name}", sk: "META"})
+        impl list_stubs()
+          ddb_client.query_items(table, {pk_prefix: "STUB#"})
+        impl put_dependency(edge)
+          ddb_client.put_item(table, {pk: f"DEP#{edge.dependent.value}", sk: f"ON#{edge.dependency}"})
+        impl get_dependencies(repo_id)
+          ddb_client.query_items(table, {pk: f"DEP#{repo_id.value}", sk_prefix: "ON#"})
+        impl get_dependents(dependency)
+          ddb_client.query_items(table, {index: "dep-reverse", pk: dependency})
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Tools — Rig SDK tool definitions for agent-callable operations
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ctx Tools
+    group domain
+      val CreateRepoArgs
+        name: Str
+        description: Opt<Str>
+
+      val WriteFileArgs
+        repo_id: Str
+        branch: Str
+        path: Str
+        content: Str
+        message: Str
+
+      val ReadFileArgs
+        repo_id: Str
+        branch: Str
+        path: Str
+
+      val ListFilesArgs
+        repo_id: Str
+        branch: Str
+        prefix: Opt<Str>
+
+      val CreateBranchArgs
+        repo_id: Str
+        name: Str
+        from_ref: Str
+
+      val ListBranchesArgs
+        repo_id: Str
+
+      val DiffArgs
+        repo_id: Str
+        from_ref: Str
+        to_ref: Str
+
+      val CompileArgs
+        repo_id: Str
+        branch: Str
+        target: Str
+
+      val DeployArgs
+        artifact_id: Str
+        target: Str
+        tag: Opt<Str>
+
+      val ListReposArgs
+
+      val LogArgs
+        repo_id: Str
+        branch: Opt<Str>
+        limit: Opt<Int>
+
+    group application
+      tool CreateRepoTool
+        @desc("Create a new VEIL repository")
+        input
+          name: Str
+          description: Opt<Str>
+        step execute
+          result = invoke CreateRepo{name, description}
+          ret result
+
+      tool WriteFileTool
+        @desc("Write a file to a VEIL repository and commit the change")
+        input
+          repo_id: Str
+          branch: Str
+          path: Str
+          content: Str
+          message: Str
+        step execute
+          id = RepoId{value: repo_id}
+          result = invoke WriteFile{repo_id: id, branch, path, content, message}
+          ret result
+
+      tool ReadFileTool
+        @desc("Read a file from a VEIL repository")
+        input
+          repo_id: Str
+          branch: Str
+          path: Str
+        step execute
+          id = RepoId{value: repo_id}
+          result = invoke ReadFile{repo_id: id, branch, path}
+          ret {content: result, path}
+
+      tool ListFilesTool
+        @desc("List files in a VEIL repository")
+        input
+          repo_id: Str
+          branch: Str
+          prefix: Opt<Str>
+        step execute
+          id = RepoId{value: repo_id}
+          p = prefix.unwrap_or("")
+          files = invoke ListFiles{repo_id: id, branch, prefix: p}
+          ret {files}
+
+      tool CreateBranchTool
+        @desc("Create a new branch in a VEIL repository")
+        input
+          repo_id: Str
+          name: Str
+          from_ref: Str
+        step execute
+          id = RepoId{value: repo_id}
+          branch = invoke CreateBranch{repo_id: id, name, from_ref}
+          ret branch
+
+      tool ListBranchesTool
+        @desc("List all branches in a VEIL repository")
+        input
+          repo_id: Str
+        step execute
+          id = RepoId{value: repo_id}
+          branches = invoke ListBranches{repo_id: id}
+          ret branches
+
+      tool DiffTool
+        @desc("Get the diff between two refs in a VEIL repository")
+        input
+          repo_id: Str
+          from_ref: Str
+          to_ref: Str
+        step execute
+          id = RepoId{value: repo_id}
+          diff = invoke GetDiff{repo_id: id, from_ref, to_ref}
+          ret diff
+
+      tool CompileTool
+        @desc("Compile a VEIL project. Produces a binary cached by content hash.")
+        input
+          repo_id: Str
+          branch: Str
+          target: Str
+        step execute
+          id = RepoId{value: repo_id}
+          t = match target
+            "x86_64" -> CompilationTarget.LinuxX86_64
+            "aarch64" -> CompilationTarget.LinuxAarch64
+            _ -> ret Err(f"invalid target: {target}")
+          result = invoke Compile{repo_id: id, branch, target: t}
+          ret {artifact_id: result.id.value, content_hash: result.content_hash, target: result.target, size_bytes: result.size_bytes}
+
+      tool DeployTool
+        @desc("Deploy a compiled VEIL artifact to Lambda or as a container image")
+        input
+          artifact_id: Str
+          target: Str
+          tag: Opt<Str>
+        step execute
+          aid = ArtifactId{value: artifact_id}
+          dt = match target
+            "lambda" -> DeployTarget.Lambda{function_name: artifact_id, region: "us-east-1"}
+            "container" -> DeployTarget.Container{repository_uri: artifact_id, tag: tag.unwrap_or("latest")}
+            _ -> ret Err(f"invalid target: {target}")
+          result = invoke Deploy{artifact_id: aid, target: dt}
+          ret result
+
+      tool ListReposTool
+        @desc("List all VEIL repositories")
+        step execute
+          repos = invoke ListRepos{}
+          ret repos
+
+      tool LogTool
+        @desc("Get commit history for a VEIL repository")
+        input
+          repo_id: Str
+          branch: Opt<Str>
+          limit: Opt<Int>
+        step execute
+          id = RepoId{value: repo_id}
+          l = limit.unwrap_or(20)
+          commits = invoke GetCommitLog{repo_id: id, branch, limit: l, offset: 0}
+          ret commits
+
+    group infrastructure

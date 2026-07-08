@@ -1,0 +1,9 @@
+stub tokio-tungstenite 0.26.2
+
+  struct WebSocketStream
+    fn from_raw_socket(stream: S, role: Role, config: Opt<WebSocketConfig>) -> Self
+    fn from_partially_read(stream: S, part: List<Int>, role: Role, config: Opt<WebSocketConfig>) -> Self
+    fn get_ref() -> S
+    fn get_mut() -> S
+    fn get_config() -> WebSocketConfig
+    fn close(msg: Opt<CloseFrame>) -> Res!<Str>

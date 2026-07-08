@@ -1,0 +1,68 @@
+stub schemars 1.2.1
+
+  struct SchemaGenerator
+    fn new(settings: SchemaSettings) -> SchemaGenerator
+    fn settings() -> SchemaSettings
+    fn subschema_for() -> Schema
+    fn definitions() -> JsonMap<Str, Value>
+    fn definitions_mut() -> JsonMap<Str, Value>
+    fn take_definitions(apply_transforms: Bool) -> JsonMap<Str, Value>
+    fn transforms_mut() -> Str
+    fn root_schema_for() -> Schema
+    fn into_root_schema_for() -> Schema
+    fn root_schema_for_value(value: T) -> Res!<Schema>
+    fn into_root_schema_for_value(value: T) -> Res!<Schema>
+    fn contract() -> Contract
+
+  struct SchemaSettings
+    fn draft07() -> SchemaSettings
+    fn draft2019_09() -> SchemaSettings
+    fn draft2020_12() -> SchemaSettings
+    fn openapi3() -> SchemaSettings
+    fn with(configure_fn: Str) -> Self
+    fn with_transform(transform: Str) -> Self
+    fn into_generator() -> SchemaGenerator
+    fn for_deserialize() -> Self
+    fn for_serialize() -> Self
+
+  struct Schema
+    fn new_ref(reference: Str) -> Self
+    fn as_value() -> Value
+    fn as_bool() -> Opt<Bool>
+    fn as_object() -> Opt<Map<Str, Value>>
+    fn as_object_mut() -> Opt<Map<Str, Value>>
+    fn to_value() -> Value
+    fn ensure_object() -> Map<Str, Value>
+    fn insert(k: Str, v: Value) -> Opt<Value>
+    fn get(key: Q) -> Opt<Value>
+    fn get_mut(key: Q) -> Opt<Value>
+    fn pointer(pointer: Str) -> Opt<Value>
+    fn pointer_mut(pointer: Str) -> Opt<Value>
+    fn remove(key: Q) -> Opt<Value>
+
+  struct RecursiveTransform
+
+  struct ReplaceBoolSchemas
+
+  struct RemoveRefSiblings
+
+  struct SetSingleExample
+
+  struct ReplaceConstValue
+
+  struct ReplacePrefixItems
+
+  struct AddNullable
+
+  struct ReplaceUnevaluatedProperties
+
+  struct RestrictFormats
+
+  trait JsonSchema
+    fn inline_schema() -> Bool
+    fn schema_name() -> Cow<Str>
+    fn schema_id() -> Cow<Str>
+    fn json_schema(generator: SchemaGenerator) -> Schema
+
+  trait Transform
+    fn transform(schema: Schema)

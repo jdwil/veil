@@ -1,0 +1,1801 @@
+stub aws-sdk-sqs 1.102.0
+
+  struct InvalidMessageContentsBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidMessageContents
+
+  struct BatchEntryIdsNotDistinct
+    fn message() -> Opt<Str>
+    fn builder() -> BatchEntryIdsNotDistinctBuilder
+
+  struct BatchRequestTooLong
+    fn message() -> Opt<Str>
+    fn builder() -> BatchRequestTooLongBuilder
+
+  struct EmptyBatchRequest
+    fn message() -> Opt<Str>
+    fn builder() -> EmptyBatchRequestBuilder
+
+  struct InvalidSecurityBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidSecurity
+
+  struct InvalidAddress
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidAddressBuilder
+
+  struct InvalidAttributeName
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidAttributeNameBuilder
+
+  struct KmsAccessDeniedBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsAccessDenied
+
+  struct InvalidAttributeValue
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidAttributeValueBuilder
+
+  struct InvalidBatchEntryId
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidBatchEntryIdBuilder
+
+  struct InvalidIdFormat
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidIdFormatBuilder
+
+  struct KmsDisabledBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsDisabled
+
+  struct InvalidMessageContents
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidMessageContentsBuilder
+
+  struct InvalidSecurity
+    fn message() -> Opt<Str>
+    fn builder() -> InvalidSecurityBuilder
+
+  struct KmsAccessDenied
+    fn message() -> Opt<Str>
+    fn builder() -> KmsAccessDeniedBuilder
+
+  struct KmsInvalidKeyUsageBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsInvalidKeyUsage
+
+  struct KmsDisabled
+    fn message() -> Opt<Str>
+    fn builder() -> KmsDisabledBuilder
+
+  struct KmsInvalidKeyUsage
+    fn message() -> Opt<Str>
+    fn builder() -> KmsInvalidKeyUsageBuilder
+
+  struct KmsInvalidState
+    fn message() -> Opt<Str>
+    fn builder() -> KmsInvalidStateBuilder
+
+  struct KmsInvalidStateBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsInvalidState
+
+  struct KmsNotFound
+    fn message() -> Opt<Str>
+    fn builder() -> KmsNotFoundBuilder
+
+  struct KmsOptInRequired
+    fn message() -> Opt<Str>
+    fn builder() -> KmsOptInRequiredBuilder
+
+  struct Config
+    fn builder() -> Builder
+    fn to_builder() -> Builder
+    fn stalled_stream_protection() -> Opt<StalledStreamProtectionConfig>
+    fn http_client() -> Opt<SharedHttpClient>
+    fn auth_schemes() -> Str
+    fn auth_scheme_resolver() -> Opt<SharedAuthSchemeOptionResolver>
+    fn auth_scheme_preference() -> Opt<AuthSchemePreference>
+    fn endpoint_resolver() -> SharedEndpointResolver
+    fn retry_config() -> Opt<RetryConfig>
+    fn sleep_impl() -> Opt<SharedAsyncSleep>
+    fn timeout_config() -> Opt<TimeoutConfig>
+    fn retry_partition() -> Opt<RetryPartition>
+    fn identity_cache() -> Opt<SharedIdentityCache>
+    fn interceptors() -> Str
+    fn time_source() -> Opt<SharedTimeSource>
+    fn retry_classifiers() -> Str
+    fn app_name() -> Opt<AppName>
+    fn invocation_id_generator() -> Opt<SharedInvocationIdGenerator>
+    fn new(config: SdkConfig) -> Self
+    fn signing_name() -> Str
+    fn region() -> Opt<Region>
+    fn credentials_provider() -> Opt<SharedCredentialsProvider>
+
+  struct KmsNotFoundBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsNotFound
+
+  struct KmsThrottled
+    fn message() -> Opt<Str>
+    fn builder() -> KmsThrottledBuilder
+
+  struct MessageNotInflight
+    fn message() -> Opt<Str>
+    fn builder() -> MessageNotInflightBuilder
+
+  struct OverLimit
+    fn message() -> Opt<Str>
+    fn builder() -> OverLimitBuilder
+
+  struct KmsOptInRequiredBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsOptInRequired
+
+  struct PurgeQueueInProgress
+    fn message() -> Opt<Str>
+    fn builder() -> PurgeQueueInProgressBuilder
+
+  struct QueueDeletedRecently
+    fn message() -> Opt<Str>
+    fn builder() -> QueueDeletedRecentlyBuilder
+
+  struct QueueDoesNotExist
+    fn message() -> Opt<Str>
+    fn builder() -> QueueDoesNotExistBuilder
+
+  struct KmsThrottledBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> KmsThrottled
+
+  struct QueueNameExists
+    fn message() -> Opt<Str>
+    fn builder() -> QueueNameExistsBuilder
+
+  struct ReceiptHandleIsInvalid
+    fn message() -> Opt<Str>
+    fn builder() -> ReceiptHandleIsInvalidBuilder
+
+  struct RequestThrottled
+    fn message() -> Opt<Str>
+    fn builder() -> RequestThrottledBuilder
+
+  struct MessageNotInflightBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> MessageNotInflight
+
+  struct ResourceNotFoundException
+    fn message() -> Opt<Str>
+    fn builder() -> ResourceNotFoundExceptionBuilder
+
+  struct Client
+    fn add_permission() -> AddPermissionFluentBuilder
+    fn cancel_message_move_task() -> CancelMessageMoveTaskFluentBuilder
+    fn change_message_visibility() -> ChangeMessageVisibilityFluentBuilder
+    fn change_message_visibility_batch() -> ChangeMessageVisibilityBatchFluentBuilder
+    fn create_queue() -> CreateQueueFluentBuilder
+    fn delete_message() -> DeleteMessageFluentBuilder
+    fn delete_message_batch() -> DeleteMessageBatchFluentBuilder
+    fn delete_queue() -> DeleteQueueFluentBuilder
+    fn get_queue_attributes() -> GetQueueAttributesFluentBuilder
+    fn get_queue_url() -> GetQueueUrlFluentBuilder
+    fn list_dead_letter_source_queues() -> ListDeadLetterSourceQueuesFluentBuilder
+    fn list_message_move_tasks() -> ListMessageMoveTasksFluentBuilder
+    fn list_queue_tags() -> ListQueueTagsFluentBuilder
+    fn list_queues() -> ListQueuesFluentBuilder
+    fn purge_queue() -> PurgeQueueFluentBuilder
+    fn receive_message() -> ReceiveMessageFluentBuilder
+    fn remove_permission() -> RemovePermissionFluentBuilder
+    fn send_message() -> SendMessageFluentBuilder
+    fn send_message_batch() -> SendMessageBatchFluentBuilder
+    fn set_queue_attributes() -> SetQueueAttributesFluentBuilder
+    fn start_message_move_task() -> StartMessageMoveTaskFluentBuilder
+    fn tag_queue() -> TagQueueFluentBuilder
+    fn untag_queue() -> UntagQueueFluentBuilder
+    fn from_conf(conf: Config) -> Self
+    fn config() -> Config
+    fn new(sdk_config: SdkConfig) -> Self
+
+  struct TooManyEntriesInBatchRequest
+    fn message() -> Opt<Str>
+    fn builder() -> TooManyEntriesInBatchRequestBuilder
+
+  struct OverLimitBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> OverLimit
+
+  struct UnsupportedOperation
+    fn message() -> Opt<Str>
+    fn builder() -> UnsupportedOperationBuilder
+
+  struct AddPermissionFluentBuilder
+    fn as_input() -> AddPermissionInputBuilder
+    fn send() -> Res!<AddPermissionOutput>
+    fn customize() -> CustomizableOperation<AddPermissionOutput, AddPermissionError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+    fn aws_account_ids(input: Str) -> Self
+    fn set_aws_account_ids(input: Opt<List<Str>>) -> Self
+    fn get_aws_account_ids() -> Opt<List<Str>>
+    fn actions(input: Str) -> Self
+    fn set_actions(input: Opt<List<Str>>) -> Self
+    fn get_actions() -> Opt<List<Str>>
+
+  struct PurgeQueueInProgressBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> PurgeQueueInProgress
+
+  struct QueueDeletedRecentlyBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> QueueDeletedRecently
+
+  struct QueueDoesNotExistBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> QueueDoesNotExist
+
+  struct QueueNameExistsBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> QueueNameExists
+
+  struct ReceiptHandleIsInvalidBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> ReceiptHandleIsInvalid
+
+  struct RequestThrottledBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> RequestThrottled
+
+  struct ResourceNotFoundExceptionBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> ResourceNotFoundException
+
+  struct TooManyEntriesInBatchRequestBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> TooManyEntriesInBatchRequest
+
+  struct UnsupportedOperationBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> UnsupportedOperation
+
+  struct AddPermissionOutput
+    fn builder() -> AddPermissionOutputBuilder
+
+  struct CancelMessageMoveTaskFluentBuilder
+    fn as_input() -> CancelMessageMoveTaskInputBuilder
+    fn send() -> Res!<CancelMessageMoveTaskOutput>
+    fn customize() -> CustomizableOperation<CancelMessageMoveTaskOutput, CancelMessageMoveTaskError, Self>
+    fn task_handle(input: Str) -> Self
+    fn set_task_handle(input: Opt<Str>) -> Self
+    fn get_task_handle() -> Opt<Str>
+
+  struct AddPermissionInput
+    fn queue_url() -> Opt<Str>
+    fn label() -> Opt<Str>
+    fn aws_account_ids() -> Str
+    fn actions() -> Str
+    fn builder() -> AddPermissionInputBuilder
+
+  struct AddPermissionInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+    fn aws_account_ids(input: Str) -> Self
+    fn set_aws_account_ids(input: Opt<List<Str>>) -> Self
+    fn get_aws_account_ids() -> Opt<List<Str>>
+    fn actions(input: Str) -> Self
+    fn set_actions(input: Opt<List<Str>>) -> Self
+    fn get_actions() -> Opt<List<Str>>
+    fn build() -> Res!<AddPermissionInput>
+    fn send_with(client: Client) -> Res!<AddPermissionOutput>
+
+  struct CancelMessageMoveTaskOutput
+    fn approximate_number_of_messages_moved() -> Int
+    fn builder() -> CancelMessageMoveTaskOutputBuilder
+
+  struct ChangeMessageVisibilityFluentBuilder
+    fn as_input() -> ChangeMessageVisibilityInputBuilder
+    fn send() -> Res!<ChangeMessageVisibilityOutput>
+    fn customize() -> CustomizableOperation<ChangeMessageVisibilityOutput, ChangeMessageVisibilityError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn receipt_handle(input: Str) -> Self
+    fn set_receipt_handle(input: Opt<Str>) -> Self
+    fn get_receipt_handle() -> Opt<Str>
+    fn visibility_timeout(input: Int) -> Self
+    fn set_visibility_timeout(input: Opt<Int>) -> Self
+    fn get_visibility_timeout() -> Opt<Int>
+
+  struct AddPermissionOutputBuilder
+    fn build() -> AddPermissionOutput
+
+  struct ChangeMessageVisibilityOutput
+    fn builder() -> ChangeMessageVisibilityOutputBuilder
+
+  struct ChangeMessageVisibilityBatchFluentBuilder
+    fn as_input() -> ChangeMessageVisibilityBatchInputBuilder
+    fn send() -> Res!<ChangeMessageVisibilityBatchOutput>
+    fn customize() -> CustomizableOperation<ChangeMessageVisibilityBatchOutput, ChangeMessageVisibilityBatchError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn entries(input: ChangeMessageVisibilityBatchRequestEntry) -> Self
+    fn set_entries(input: Opt<List<ChangeMessageVisibilityBatchRequestEntry>>) -> Self
+    fn get_entries() -> Opt<List<ChangeMessageVisibilityBatchRequestEntry>>
+
+  struct AddPermission
+    fn new() -> Self
+
+  struct ChangeMessageVisibilityBatchOutput
+    fn successful() -> Str
+    fn failed() -> Str
+    fn builder() -> ChangeMessageVisibilityBatchOutputBuilder
+
+  struct CreateQueueFluentBuilder
+    fn as_input() -> CreateQueueInputBuilder
+    fn send() -> Res!<CreateQueueOutput>
+    fn customize() -> CustomizableOperation<CreateQueueOutput, CreateQueueError, Self>
+    fn queue_name(input: Str) -> Self
+    fn set_queue_name(input: Opt<Str>) -> Self
+    fn get_queue_name() -> Opt<Str>
+    fn attributes(k: QueueAttributeName, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<QueueAttributeName, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+    fn tags(k: Str, v: Str) -> Self
+    fn set_tags(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_tags() -> Opt<HashMap<Str, Str>>
+
+  struct CancelMessageMoveTaskInput
+    fn task_handle() -> Opt<Str>
+    fn builder() -> CancelMessageMoveTaskInputBuilder
+
+  struct CancelMessageMoveTaskInputBuilder
+    fn task_handle(input: Str) -> Self
+    fn set_task_handle(input: Opt<Str>) -> Self
+    fn get_task_handle() -> Opt<Str>
+    fn build() -> Res!<CancelMessageMoveTaskInput>
+    fn send_with(client: Client) -> Res!<CancelMessageMoveTaskOutput>
+
+  struct CreateQueueOutput
+    fn queue_url() -> Opt<Str>
+    fn builder() -> CreateQueueOutputBuilder
+
+  struct CancelMessageMoveTaskOutputBuilder
+    fn approximate_number_of_messages_moved(input: Int) -> Self
+    fn set_approximate_number_of_messages_moved(input: Opt<Int>) -> Self
+    fn get_approximate_number_of_messages_moved() -> Opt<Int>
+    fn build() -> CancelMessageMoveTaskOutput
+
+  struct DeleteMessageFluentBuilder
+    fn as_input() -> DeleteMessageInputBuilder
+    fn send() -> Res!<DeleteMessageOutput>
+    fn customize() -> CustomizableOperation<DeleteMessageOutput, DeleteMessageError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn receipt_handle(input: Str) -> Self
+    fn set_receipt_handle(input: Opt<Str>) -> Self
+    fn get_receipt_handle() -> Opt<Str>
+
+  struct DeleteMessageOutput
+    fn builder() -> DeleteMessageOutputBuilder
+
+  struct CancelMessageMoveTask
+    fn new() -> Self
+
+  struct DeleteMessageBatchFluentBuilder
+    fn as_input() -> DeleteMessageBatchInputBuilder
+    fn send() -> Res!<DeleteMessageBatchOutput>
+    fn customize() -> CustomizableOperation<DeleteMessageBatchOutput, DeleteMessageBatchError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn entries(input: DeleteMessageBatchRequestEntry) -> Self
+    fn set_entries(input: Opt<List<DeleteMessageBatchRequestEntry>>) -> Self
+    fn get_entries() -> Opt<List<DeleteMessageBatchRequestEntry>>
+
+  struct DeleteMessageBatchOutput
+    fn successful() -> Str
+    fn failed() -> Str
+    fn builder() -> DeleteMessageBatchOutputBuilder
+
+  struct ChangeMessageVisibilityInput
+    fn queue_url() -> Opt<Str>
+    fn receipt_handle() -> Opt<Str>
+    fn visibility_timeout() -> Opt<Int>
+    fn builder() -> ChangeMessageVisibilityInputBuilder
+
+  struct ChangeMessageVisibilityInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn receipt_handle(input: Str) -> Self
+    fn set_receipt_handle(input: Opt<Str>) -> Self
+    fn get_receipt_handle() -> Opt<Str>
+    fn visibility_timeout(input: Int) -> Self
+    fn set_visibility_timeout(input: Opt<Int>) -> Self
+    fn get_visibility_timeout() -> Opt<Int>
+    fn build() -> Res!<ChangeMessageVisibilityInput>
+    fn send_with(client: Client) -> Res!<ChangeMessageVisibilityOutput>
+
+  struct DeleteQueueFluentBuilder
+    fn as_input() -> DeleteQueueInputBuilder
+    fn send() -> Res!<DeleteQueueOutput>
+    fn customize() -> CustomizableOperation<DeleteQueueOutput, DeleteQueueError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+
+  struct DeleteQueueOutput
+    fn builder() -> DeleteQueueOutputBuilder
+
+  struct ChangeMessageVisibilityOutputBuilder
+    fn build() -> ChangeMessageVisibilityOutput
+
+  struct GetQueueAttributesFluentBuilder
+    fn as_input() -> GetQueueAttributesInputBuilder
+    fn send() -> Res!<GetQueueAttributesOutput>
+    fn customize() -> CustomizableOperation<GetQueueAttributesOutput, GetQueueAttributesError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn attribute_names(input: QueueAttributeName) -> Self
+    fn set_attribute_names(input: Opt<List<QueueAttributeName>>) -> Self
+    fn get_attribute_names() -> Opt<List<QueueAttributeName>>
+
+  struct GetQueueAttributesOutput
+    fn attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+    fn builder() -> GetQueueAttributesOutputBuilder
+
+  struct ChangeMessageVisibility
+    fn new() -> Self
+
+  struct GetQueueUrlFluentBuilder
+    fn as_input() -> GetQueueUrlInputBuilder
+    fn send() -> Res!<GetQueueUrlOutput>
+    fn customize() -> CustomizableOperation<GetQueueUrlOutput, GetQueueUrlError, Self>
+    fn queue_name(input: Str) -> Self
+    fn set_queue_name(input: Opt<Str>) -> Self
+    fn get_queue_name() -> Opt<Str>
+    fn queue_owner_aws_account_id(input: Str) -> Self
+    fn set_queue_owner_aws_account_id(input: Opt<Str>) -> Self
+    fn get_queue_owner_aws_account_id() -> Opt<Str>
+
+  struct GetQueueUrlOutput
+    fn queue_url() -> Opt<Str>
+    fn builder() -> GetQueueUrlOutputBuilder
+
+  struct ChangeMessageVisibilityBatchRequestEntry
+    fn id() -> Str
+    fn receipt_handle() -> Str
+    fn visibility_timeout() -> Opt<Int>
+    fn builder() -> ChangeMessageVisibilityBatchRequestEntryBuilder
+
+  struct ChangeMessageVisibilityBatchInput
+    fn queue_url() -> Opt<Str>
+    fn entries() -> Str
+    fn builder() -> ChangeMessageVisibilityBatchInputBuilder
+
+  struct ChangeMessageVisibilityBatchInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn entries(input: ChangeMessageVisibilityBatchRequestEntry) -> Self
+    fn set_entries(input: Opt<List<ChangeMessageVisibilityBatchRequestEntry>>) -> Self
+    fn get_entries() -> Opt<List<ChangeMessageVisibilityBatchRequestEntry>>
+    fn build() -> Res!<ChangeMessageVisibilityBatchInput>
+    fn send_with(client: Client) -> Res!<ChangeMessageVisibilityBatchOutput>
+
+  struct ListDeadLetterSourceQueuesFluentBuilder
+    fn as_input() -> ListDeadLetterSourceQueuesInputBuilder
+    fn send() -> Res!<ListDeadLetterSourceQueuesOutput>
+    fn customize() -> CustomizableOperation<ListDeadLetterSourceQueuesOutput, ListDeadLetterSourceQueuesError, Self>
+    fn into_paginator() -> ListDeadLetterSourceQueuesPaginator
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+
+  struct ChangeMessageVisibilityBatchResultEntry
+    fn id() -> Str
+    fn builder() -> ChangeMessageVisibilityBatchResultEntryBuilder
+
+  struct BatchResultErrorEntry
+    fn id() -> Str
+    fn sender_fault() -> Bool
+    fn code() -> Str
+    fn message() -> Opt<Str>
+    fn builder() -> BatchResultErrorEntryBuilder
+
+  struct ChangeMessageVisibilityBatchOutputBuilder
+    fn successful(input: ChangeMessageVisibilityBatchResultEntry) -> Self
+    fn set_successful(input: Opt<List<ChangeMessageVisibilityBatchResultEntry>>) -> Self
+    fn get_successful() -> Opt<List<ChangeMessageVisibilityBatchResultEntry>>
+    fn failed(input: BatchResultErrorEntry) -> Self
+    fn set_failed(input: Opt<List<BatchResultErrorEntry>>) -> Self
+    fn get_failed() -> Opt<List<BatchResultErrorEntry>>
+    fn build() -> Res!<ChangeMessageVisibilityBatchOutput>
+
+  struct ListDeadLetterSourceQueuesOutput
+    fn queue_urls() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListDeadLetterSourceQueuesOutputBuilder
+
+  struct ListMessageMoveTasksFluentBuilder
+    fn as_input() -> ListMessageMoveTasksInputBuilder
+    fn send() -> Res!<ListMessageMoveTasksOutput>
+    fn customize() -> CustomizableOperation<ListMessageMoveTasksOutput, ListMessageMoveTasksError, Self>
+    fn source_arn(input: Str) -> Self
+    fn set_source_arn(input: Opt<Str>) -> Self
+    fn get_source_arn() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+
+  struct ChangeMessageVisibilityBatch
+    fn new() -> Self
+
+  struct ListMessageMoveTasksOutput
+    fn results() -> Str
+    fn builder() -> ListMessageMoveTasksOutputBuilder
+
+  struct CustomizableOperation
+    fn interceptor(interceptor: Str) -> Self
+    fn map_request(f: F) -> Self
+    fn mutate_request(f: F) -> Self
+    fn config_override(config_override: Str) -> Self
+    fn send() -> Res!<T>
+
+  struct ListQueueTagsFluentBuilder
+    fn as_input() -> ListQueueTagsInputBuilder
+    fn send() -> Res!<ListQueueTagsOutput>
+    fn customize() -> CustomizableOperation<ListQueueTagsOutput, ListQueueTagsError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+
+  struct ListQueueTagsOutput
+    fn tags() -> Opt<HashMap<Str, Str>>
+    fn builder() -> ListQueueTagsOutputBuilder
+
+  struct CreateQueueInput
+    fn queue_name() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+    fn tags() -> Opt<HashMap<Str, Str>>
+    fn builder() -> CreateQueueInputBuilder
+
+  struct CreateQueueInputBuilder
+    fn queue_name(input: Str) -> Self
+    fn set_queue_name(input: Opt<Str>) -> Self
+    fn get_queue_name() -> Opt<Str>
+    fn attributes(k: QueueAttributeName, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<QueueAttributeName, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+    fn tags(k: Str, v: Str) -> Self
+    fn set_tags(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_tags() -> Opt<HashMap<Str, Str>>
+    fn build() -> Res!<CreateQueueInput>
+    fn send_with(client: Client) -> Res!<CreateQueueOutput>
+
+  struct ListQueuesFluentBuilder
+    fn as_input() -> ListQueuesInputBuilder
+    fn send() -> Res!<ListQueuesOutput>
+    fn customize() -> CustomizableOperation<ListQueuesOutput, ListQueuesError, Self>
+    fn into_paginator() -> ListQueuesPaginator
+    fn queue_name_prefix(input: Str) -> Self
+    fn set_queue_name_prefix(input: Opt<Str>) -> Self
+    fn get_queue_name_prefix() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+
+  struct CreateQueueOutputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn build() -> CreateQueueOutput
+
+  struct ListQueuesOutput
+    fn queue_urls() -> Str
+    fn next_token() -> Opt<Str>
+    fn builder() -> ListQueuesOutputBuilder
+
+  struct PurgeQueueFluentBuilder
+    fn as_input() -> PurgeQueueInputBuilder
+    fn send() -> Res!<PurgeQueueOutput>
+    fn customize() -> CustomizableOperation<PurgeQueueOutput, PurgeQueueError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+
+  struct CreateQueue
+    fn new() -> Self
+
+  struct PurgeQueueOutput
+    fn builder() -> PurgeQueueOutputBuilder
+
+  struct ReceiveMessageFluentBuilder
+    fn as_input() -> ReceiveMessageInputBuilder
+    fn send() -> Res!<ReceiveMessageOutput>
+    fn customize() -> CustomizableOperation<ReceiveMessageOutput, ReceiveMessageError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn attribute_names(input: QueueAttributeName) -> Self
+    fn set_attribute_names(input: Opt<List<QueueAttributeName>>) -> Self
+    fn get_attribute_names() -> Opt<List<QueueAttributeName>>
+    fn message_system_attribute_names(input: MessageSystemAttributeName) -> Self
+    fn set_message_system_attribute_names(input: Opt<List<MessageSystemAttributeName>>) -> Self
+    fn get_message_system_attribute_names() -> Opt<List<MessageSystemAttributeName>>
+    fn message_attribute_names(input: Str) -> Self
+    fn set_message_attribute_names(input: Opt<List<Str>>) -> Self
+    fn get_message_attribute_names() -> Opt<List<Str>>
+    fn max_number_of_messages(input: Int) -> Self
+    fn set_max_number_of_messages(input: Opt<Int>) -> Self
+    fn get_max_number_of_messages() -> Opt<Int>
+    fn visibility_timeout(input: Int) -> Self
+    fn set_visibility_timeout(input: Opt<Int>) -> Self
+    fn get_visibility_timeout() -> Opt<Int>
+    fn wait_time_seconds(input: Int) -> Self
+    fn set_wait_time_seconds(input: Opt<Int>) -> Self
+    fn get_wait_time_seconds() -> Opt<Int>
+    fn receive_request_attempt_id(input: Str) -> Self
+    fn set_receive_request_attempt_id(input: Opt<Str>) -> Self
+    fn get_receive_request_attempt_id() -> Opt<Str>
+
+  struct DeleteMessageInput
+    fn queue_url() -> Opt<Str>
+    fn receipt_handle() -> Opt<Str>
+    fn builder() -> DeleteMessageInputBuilder
+
+  struct DeleteMessageInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn receipt_handle(input: Str) -> Self
+    fn set_receipt_handle(input: Opt<Str>) -> Self
+    fn get_receipt_handle() -> Opt<Str>
+    fn build() -> Res!<DeleteMessageInput>
+    fn send_with(client: Client) -> Res!<DeleteMessageOutput>
+
+  struct DeleteMessageOutputBuilder
+    fn build() -> DeleteMessageOutput
+
+  struct ReceiveMessageOutput
+    fn messages() -> Str
+    fn builder() -> ReceiveMessageOutputBuilder
+
+  struct RemovePermissionFluentBuilder
+    fn as_input() -> RemovePermissionInputBuilder
+    fn send() -> Res!<RemovePermissionOutput>
+    fn customize() -> CustomizableOperation<RemovePermissionOutput, RemovePermissionError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+
+  struct DeleteMessage
+    fn new() -> Self
+
+  struct RemovePermissionOutput
+    fn builder() -> RemovePermissionOutputBuilder
+
+  struct SendMessageFluentBuilder
+    fn as_input() -> SendMessageInputBuilder
+    fn send() -> Res!<SendMessageOutput>
+    fn customize() -> CustomizableOperation<SendMessageOutput, SendMessageError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn message_body(input: Str) -> Self
+    fn set_message_body(input: Opt<Str>) -> Self
+    fn get_message_body() -> Opt<Str>
+    fn delay_seconds(input: Int) -> Self
+    fn set_delay_seconds(input: Opt<Int>) -> Self
+    fn get_delay_seconds() -> Opt<Int>
+    fn message_attributes(k: Str, v: MessageAttributeValue) -> Self
+    fn set_message_attributes(input: Opt<HashMap<Str, MessageAttributeValue>>) -> Self
+    fn get_message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_system_attributes(k: MessageSystemAttributeNameForSends, v: MessageSystemAttributeValue) -> Self
+    fn set_message_system_attributes(input: Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>) -> Self
+    fn get_message_system_attributes() -> Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>
+    fn message_deduplication_id(input: Str) -> Self
+    fn set_message_deduplication_id(input: Opt<Str>) -> Self
+    fn get_message_deduplication_id() -> Opt<Str>
+    fn message_group_id(input: Str) -> Self
+    fn set_message_group_id(input: Opt<Str>) -> Self
+    fn get_message_group_id() -> Opt<Str>
+
+  struct DeleteMessageBatchRequestEntry
+    fn id() -> Str
+    fn receipt_handle() -> Str
+    fn builder() -> DeleteMessageBatchRequestEntryBuilder
+
+  struct DeleteMessageBatchInput
+    fn queue_url() -> Opt<Str>
+    fn entries() -> Str
+    fn builder() -> DeleteMessageBatchInputBuilder
+
+  struct DeleteMessageBatchInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn entries(input: DeleteMessageBatchRequestEntry) -> Self
+    fn set_entries(input: Opt<List<DeleteMessageBatchRequestEntry>>) -> Self
+    fn get_entries() -> Opt<List<DeleteMessageBatchRequestEntry>>
+    fn build() -> Res!<DeleteMessageBatchInput>
+    fn send_with(client: Client) -> Res!<DeleteMessageBatchOutput>
+
+  struct DeleteMessageBatchResultEntry
+    fn id() -> Str
+    fn builder() -> DeleteMessageBatchResultEntryBuilder
+
+  struct DeleteMessageBatchOutputBuilder
+    fn successful(input: DeleteMessageBatchResultEntry) -> Self
+    fn set_successful(input: Opt<List<DeleteMessageBatchResultEntry>>) -> Self
+    fn get_successful() -> Opt<List<DeleteMessageBatchResultEntry>>
+    fn failed(input: BatchResultErrorEntry) -> Self
+    fn set_failed(input: Opt<List<BatchResultErrorEntry>>) -> Self
+    fn get_failed() -> Opt<List<BatchResultErrorEntry>>
+    fn build() -> Res!<DeleteMessageBatchOutput>
+
+  struct SendMessageOutput
+    fn md5_of_message_body() -> Opt<Str>
+    fn md5_of_message_attributes() -> Opt<Str>
+    fn md5_of_message_system_attributes() -> Opt<Str>
+    fn message_id() -> Opt<Str>
+    fn sequence_number() -> Opt<Str>
+    fn builder() -> SendMessageOutputBuilder
+
+  struct DeleteMessageBatch
+    fn new() -> Self
+
+  struct SendMessageBatchFluentBuilder
+    fn as_input() -> SendMessageBatchInputBuilder
+    fn send() -> Res!<SendMessageBatchOutput>
+    fn customize() -> CustomizableOperation<SendMessageBatchOutput, SendMessageBatchError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn entries(input: SendMessageBatchRequestEntry) -> Self
+    fn set_entries(input: Opt<List<SendMessageBatchRequestEntry>>) -> Self
+    fn get_entries() -> Opt<List<SendMessageBatchRequestEntry>>
+
+  struct SendMessageBatchOutput
+    fn successful() -> Str
+    fn failed() -> Str
+    fn builder() -> SendMessageBatchOutputBuilder
+
+  struct DeleteQueueInput
+    fn queue_url() -> Opt<Str>
+    fn builder() -> DeleteQueueInputBuilder
+
+  struct DeleteQueueInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn build() -> Res!<DeleteQueueInput>
+    fn send_with(client: Client) -> Res!<DeleteQueueOutput>
+
+  struct SetQueueAttributesFluentBuilder
+    fn as_input() -> SetQueueAttributesInputBuilder
+    fn send() -> Res!<SetQueueAttributesOutput>
+    fn customize() -> CustomizableOperation<SetQueueAttributesOutput, SetQueueAttributesError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn attributes(k: QueueAttributeName, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<QueueAttributeName, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+
+  struct SetQueueAttributesOutput
+    fn builder() -> SetQueueAttributesOutputBuilder
+
+  struct DeleteQueueOutputBuilder
+    fn build() -> DeleteQueueOutput
+
+  struct StartMessageMoveTaskFluentBuilder
+    fn as_input() -> StartMessageMoveTaskInputBuilder
+    fn send() -> Res!<StartMessageMoveTaskOutput>
+    fn customize() -> CustomizableOperation<StartMessageMoveTaskOutput, StartMessageMoveTaskError, Self>
+    fn source_arn(input: Str) -> Self
+    fn set_source_arn(input: Opt<Str>) -> Self
+    fn get_source_arn() -> Opt<Str>
+    fn destination_arn(input: Str) -> Self
+    fn set_destination_arn(input: Opt<Str>) -> Self
+    fn get_destination_arn() -> Opt<Str>
+    fn max_number_of_messages_per_second(input: Int) -> Self
+    fn set_max_number_of_messages_per_second(input: Opt<Int>) -> Self
+    fn get_max_number_of_messages_per_second() -> Opt<Int>
+
+  struct DeleteQueue
+    fn new() -> Self
+
+  struct StartMessageMoveTaskOutput
+    fn task_handle() -> Opt<Str>
+    fn builder() -> StartMessageMoveTaskOutputBuilder
+
+  struct TagQueueFluentBuilder
+    fn as_input() -> TagQueueInputBuilder
+    fn send() -> Res!<TagQueueOutput>
+    fn customize() -> CustomizableOperation<TagQueueOutput, TagQueueError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn tags(k: Str, v: Str) -> Self
+    fn set_tags(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_tags() -> Opt<HashMap<Str, Str>>
+
+  struct GetQueueAttributesInput
+    fn queue_url() -> Opt<Str>
+    fn attribute_names() -> Str
+    fn builder() -> GetQueueAttributesInputBuilder
+
+  struct GetQueueAttributesInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn attribute_names(input: QueueAttributeName) -> Self
+    fn set_attribute_names(input: Opt<List<QueueAttributeName>>) -> Self
+    fn get_attribute_names() -> Opt<List<QueueAttributeName>>
+    fn build() -> Res!<GetQueueAttributesInput>
+    fn send_with(client: Client) -> Res!<GetQueueAttributesOutput>
+
+  struct TagQueueOutput
+    fn builder() -> TagQueueOutputBuilder
+
+  struct UntagQueueFluentBuilder
+    fn as_input() -> UntagQueueInputBuilder
+    fn send() -> Res!<UntagQueueOutput>
+    fn customize() -> CustomizableOperation<UntagQueueOutput, UntagQueueError, Self>
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn tag_keys(input: Str) -> Self
+    fn set_tag_keys(input: Opt<List<Str>>) -> Self
+    fn get_tag_keys() -> Opt<List<Str>>
+
+  struct GetQueueAttributesOutputBuilder
+    fn attributes(k: QueueAttributeName, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<QueueAttributeName, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+    fn build() -> GetQueueAttributesOutput
+
+  struct UntagQueueOutput
+    fn builder() -> UntagQueueOutputBuilder
+
+  struct GetQueueAttributes
+    fn new() -> Self
+
+  struct GetQueueUrlInput
+    fn queue_name() -> Opt<Str>
+    fn queue_owner_aws_account_id() -> Opt<Str>
+    fn builder() -> GetQueueUrlInputBuilder
+
+  struct GetQueueUrlInputBuilder
+    fn queue_name(input: Str) -> Self
+    fn set_queue_name(input: Opt<Str>) -> Self
+    fn get_queue_name() -> Opt<Str>
+    fn queue_owner_aws_account_id(input: Str) -> Self
+    fn set_queue_owner_aws_account_id(input: Opt<Str>) -> Self
+    fn get_queue_owner_aws_account_id() -> Opt<Str>
+    fn build() -> Res!<GetQueueUrlInput>
+    fn send_with(client: Client) -> Res!<GetQueueUrlOutput>
+
+  struct GetQueueUrlOutputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn build() -> GetQueueUrlOutput
+
+  struct GetQueueUrl
+    fn new() -> Self
+
+  struct ListDeadLetterSourceQueuesInput
+    fn queue_url() -> Opt<Str>
+    fn next_token() -> Opt<Str>
+    fn max_results() -> Opt<Int>
+    fn builder() -> ListDeadLetterSourceQueuesInputBuilder
+
+  struct ListDeadLetterSourceQueuesInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+    fn build() -> Res!<ListDeadLetterSourceQueuesInput>
+    fn send_with(client: Client) -> Res!<ListDeadLetterSourceQueuesOutput>
+
+  struct Params
+    fn builder() -> ParamsBuilder
+    fn region() -> Opt<Str>
+    fn use_dual_stack() -> Opt<Bool>
+    fn use_fips() -> Opt<Bool>
+    fn endpoint() -> Opt<Str>
+    fn builder() -> ParamsBuilder
+    fn operation_name() -> Str
+
+  struct ListDeadLetterSourceQueuesOutputBuilder
+    fn queue_urls(input: Str) -> Self
+    fn set_queue_urls(input: Opt<List<Str>>) -> Self
+    fn get_queue_urls() -> Opt<List<Str>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> Res!<ListDeadLetterSourceQueuesOutput>
+
+  struct DefaultResolver
+    fn new() -> Self
+
+  struct ListDeadLetterSourceQueuesPaginator
+    fn page_size(limit: Int) -> Self
+    fn items() -> ListDeadLetterSourceQueuesPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListDeadLetterSourceQueuesOutput>>
+
+  struct ListDeadLetterSourceQueues
+    fn new() -> Self
+
+  struct ListDeadLetterSourceQueuesPaginatorItems
+    fn send() -> PaginationStream<Res!<Str>>
+
+  struct ListMessageMoveTasksInput
+    fn source_arn() -> Opt<Str>
+    fn max_results() -> Opt<Int>
+    fn builder() -> ListMessageMoveTasksInputBuilder
+
+  struct ListMessageMoveTasksInputBuilder
+    fn source_arn(input: Str) -> Self
+    fn set_source_arn(input: Opt<Str>) -> Self
+    fn get_source_arn() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+    fn build() -> Res!<ListMessageMoveTasksInput>
+    fn send_with(client: Client) -> Res!<ListMessageMoveTasksOutput>
+
+  struct ListMessageMoveTasksResultEntry
+    fn task_handle() -> Opt<Str>
+    fn status() -> Opt<Str>
+    fn source_arn() -> Opt<Str>
+    fn destination_arn() -> Opt<Str>
+    fn max_number_of_messages_per_second() -> Opt<Int>
+    fn approximate_number_of_messages_moved() -> Int
+    fn approximate_number_of_messages_to_move() -> Opt<Int>
+    fn failure_reason() -> Opt<Str>
+    fn started_timestamp() -> Int
+    fn builder() -> ListMessageMoveTasksResultEntryBuilder
+
+  struct ListMessageMoveTasksOutputBuilder
+    fn results(input: ListMessageMoveTasksResultEntry) -> Self
+    fn set_results(input: Opt<List<ListMessageMoveTasksResultEntry>>) -> Self
+    fn get_results() -> Opt<List<ListMessageMoveTasksResultEntry>>
+    fn build() -> ListMessageMoveTasksOutput
+
+  struct ParamsBuilder
+    fn build() -> Res!<Params>
+    fn region(value: Str) -> Self
+    fn set_region(param: Opt<Str>) -> Self
+    fn use_dual_stack(value: Str) -> Self
+    fn set_use_dual_stack(param: Opt<Bool>) -> Self
+    fn use_fips(value: Str) -> Self
+    fn set_use_fips(param: Opt<Bool>) -> Self
+    fn endpoint(value: Str) -> Self
+    fn set_endpoint(param: Opt<Str>) -> Self
+    fn operation_name(operation_name: Str) -> Self
+    fn set_operation_name(operation_name: Opt<Cow<Str>>) -> Self
+    fn build() -> Res!<Params>
+
+  struct ListMessageMoveTasks
+    fn new() -> Self
+
+  struct ListQueueTagsInput
+    fn queue_url() -> Opt<Str>
+    fn builder() -> ListQueueTagsInputBuilder
+
+  struct ListQueueTagsInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn build() -> Res!<ListQueueTagsInput>
+    fn send_with(client: Client) -> Res!<ListQueueTagsOutput>
+
+  struct ListQueueTagsOutputBuilder
+    fn tags(k: Str, v: Str) -> Self
+    fn set_tags(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_tags() -> Opt<HashMap<Str, Str>>
+    fn build() -> ListQueueTagsOutput
+
+  struct ListQueueTags
+    fn new() -> Self
+
+  struct InvalidParams
+
+  struct ListQueuesInput
+    fn queue_name_prefix() -> Opt<Str>
+    fn next_token() -> Opt<Str>
+    fn max_results() -> Opt<Int>
+    fn builder() -> ListQueuesInputBuilder
+
+  struct ListQueuesInputBuilder
+    fn queue_name_prefix(input: Str) -> Self
+    fn set_queue_name_prefix(input: Opt<Str>) -> Self
+    fn get_queue_name_prefix() -> Opt<Str>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn max_results(input: Int) -> Self
+    fn set_max_results(input: Opt<Int>) -> Self
+    fn get_max_results() -> Opt<Int>
+    fn build() -> Res!<ListQueuesInput>
+    fn send_with(client: Client) -> Res!<ListQueuesOutput>
+
+  struct ListQueuesOutputBuilder
+    fn queue_urls(input: Str) -> Self
+    fn set_queue_urls(input: Opt<List<Str>>) -> Self
+    fn get_queue_urls() -> Opt<List<Str>>
+    fn next_token(input: Str) -> Self
+    fn set_next_token(input: Opt<Str>) -> Self
+    fn get_next_token() -> Opt<Str>
+    fn build() -> ListQueuesOutput
+
+  struct ListQueuesPaginator
+    fn page_size(limit: Int) -> Self
+    fn items() -> ListQueuesPaginatorItems
+    fn stop_on_duplicate_token(stop_on_duplicate_token: Bool) -> Self
+    fn send() -> PaginationStream<Res!<ListQueuesOutput>>
+
+  struct ListQueues
+    fn new() -> Self
+
+  struct ListQueuesPaginatorItems
+    fn send() -> PaginationStream<Res!<Str>>
+
+  struct PurgeQueueInput
+    fn queue_url() -> Opt<Str>
+    fn builder() -> PurgeQueueInputBuilder
+
+  struct PurgeQueueInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn build() -> Res!<PurgeQueueInput>
+    fn send_with(client: Client) -> Res!<PurgeQueueOutput>
+
+  struct PurgeQueueOutputBuilder
+    fn build() -> PurgeQueueOutput
+
+  struct PurgeQueue
+    fn new() -> Self
+
+  struct ReceiveMessageInput
+    fn queue_url() -> Opt<Str>
+    fn attribute_names() -> Str
+    fn message_system_attribute_names() -> Str
+    fn message_attribute_names() -> Str
+    fn max_number_of_messages() -> Opt<Int>
+    fn visibility_timeout() -> Opt<Int>
+    fn wait_time_seconds() -> Opt<Int>
+    fn receive_request_attempt_id() -> Opt<Str>
+    fn builder() -> ReceiveMessageInputBuilder
+
+  struct ReceiveMessageInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn attribute_names(input: QueueAttributeName) -> Self
+    fn set_attribute_names(input: Opt<List<QueueAttributeName>>) -> Self
+    fn get_attribute_names() -> Opt<List<QueueAttributeName>>
+    fn message_system_attribute_names(input: MessageSystemAttributeName) -> Self
+    fn set_message_system_attribute_names(input: Opt<List<MessageSystemAttributeName>>) -> Self
+    fn get_message_system_attribute_names() -> Opt<List<MessageSystemAttributeName>>
+    fn message_attribute_names(input: Str) -> Self
+    fn set_message_attribute_names(input: Opt<List<Str>>) -> Self
+    fn get_message_attribute_names() -> Opt<List<Str>>
+    fn max_number_of_messages(input: Int) -> Self
+    fn set_max_number_of_messages(input: Opt<Int>) -> Self
+    fn get_max_number_of_messages() -> Opt<Int>
+    fn visibility_timeout(input: Int) -> Self
+    fn set_visibility_timeout(input: Opt<Int>) -> Self
+    fn get_visibility_timeout() -> Opt<Int>
+    fn wait_time_seconds(input: Int) -> Self
+    fn set_wait_time_seconds(input: Opt<Int>) -> Self
+    fn get_wait_time_seconds() -> Opt<Int>
+    fn receive_request_attempt_id(input: Str) -> Self
+    fn set_receive_request_attempt_id(input: Opt<Str>) -> Self
+    fn get_receive_request_attempt_id() -> Opt<Str>
+    fn build() -> Res!<ReceiveMessageInput>
+    fn send_with(client: Client) -> Res!<ReceiveMessageOutput>
+
+  struct Message
+    fn message_id() -> Opt<Str>
+    fn receipt_handle() -> Opt<Str>
+    fn md5_of_body() -> Opt<Str>
+    fn body() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<MessageSystemAttributeName, Str>>
+    fn md5_of_message_attributes() -> Opt<Str>
+    fn message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn builder() -> MessageBuilder
+
+  struct ReceiveMessageOutputBuilder
+    fn messages(input: Message) -> Self
+    fn set_messages(input: Opt<List<Message>>) -> Self
+    fn get_messages() -> Opt<List<Message>>
+    fn build() -> ReceiveMessageOutput
+
+  struct ReceiveMessage
+    fn new() -> Self
+
+  struct RemovePermissionInput
+    fn queue_url() -> Opt<Str>
+    fn label() -> Opt<Str>
+    fn builder() -> RemovePermissionInputBuilder
+
+  struct RemovePermissionInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn label(input: Str) -> Self
+    fn set_label(input: Opt<Str>) -> Self
+    fn get_label() -> Opt<Str>
+    fn build() -> Res!<RemovePermissionInput>
+    fn send_with(client: Client) -> Res!<RemovePermissionOutput>
+
+  struct Builder
+    fn new() -> Self
+    fn stalled_stream_protection(stalled_stream_protection_config: StalledStreamProtectionConfig) -> Self
+    fn set_stalled_stream_protection(stalled_stream_protection_config: Opt<StalledStreamProtectionConfig>) -> Self
+    fn http_client(http_client: Str) -> Self
+    fn set_http_client(http_client: Opt<SharedHttpClient>) -> Self
+    fn push_auth_scheme(auth_scheme: Str) -> Self
+    fn auth_scheme_resolver(auth_scheme_resolver: Str) -> Self
+    fn set_auth_scheme_resolver(auth_scheme_resolver: Str) -> Self
+    fn allow_no_auth() -> Self
+    fn set_allow_no_auth() -> Self
+    fn auth_scheme_preference(preference: Str) -> Self
+    fn set_auth_scheme_preference(preference: Opt<AuthSchemePreference>) -> Self
+    fn endpoint_resolver(endpoint_resolver: Str) -> Self
+    fn set_endpoint_resolver(endpoint_resolver: Opt<SharedEndpointResolver>) -> Self
+    fn retry_config(retry_config: RetryConfig) -> Self
+    fn set_retry_config(retry_config: Opt<RetryConfig>) -> Self
+    fn sleep_impl(sleep_impl: Str) -> Self
+    fn set_sleep_impl(sleep_impl: Opt<SharedAsyncSleep>) -> Self
+    fn timeout_config(timeout_config: TimeoutConfig) -> Self
+    fn set_timeout_config(timeout_config: Opt<TimeoutConfig>) -> Self
+    fn retry_partition(retry_partition: RetryPartition) -> Self
+    fn set_retry_partition(retry_partition: Opt<RetryPartition>) -> Self
+    fn identity_cache(identity_cache: Str) -> Self
+    fn set_identity_cache(identity_cache: Str) -> Self
+    fn interceptor(interceptor: Str) -> Self
+    fn push_interceptor(interceptor: SharedInterceptor) -> Self
+    fn set_interceptors(interceptors: Str) -> Self
+    fn time_source(time_source: Str) -> Self
+    fn set_time_source(time_source: Opt<SharedTimeSource>) -> Self
+    fn retry_classifier(retry_classifier: Str) -> Self
+    fn push_retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn set_retry_classifiers(retry_classifiers: Str) -> Self
+    fn app_name(app_name: AppName) -> Self
+    fn set_app_name(app_name: Opt<AppName>) -> Self
+    fn invocation_id_generator(gen: Str) -> Self
+    fn set_invocation_id_generator(gen: Opt<SharedInvocationIdGenerator>) -> Self
+    fn endpoint_url(endpoint_url: Str) -> Self
+    fn set_endpoint_url(endpoint_url: Opt<Str>) -> Self
+    fn use_dual_stack(use_dual_stack: Str) -> Self
+    fn set_use_dual_stack(use_dual_stack: Opt<Bool>) -> Self
+    fn use_fips(use_fips: Str) -> Self
+    fn set_use_fips(use_fips: Opt<Bool>) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn credentials_provider(credentials_provider: Str) -> Self
+    fn set_credentials_provider(credentials_provider: Opt<SharedCredentialsProvider>) -> Self
+    fn behavior_version(behavior_version: BehaviorVersion) -> Self
+    fn set_behavior_version(behavior_version: Opt<BehaviorVersion>) -> Self
+    fn behavior_version_latest() -> Self
+    fn build() -> Config
+
+  struct RemovePermissionOutputBuilder
+    fn build() -> RemovePermissionOutput
+
+  struct RemovePermission
+    fn new() -> Self
+
+  struct Params
+    fn builder() -> ParamsBuilder
+    fn region() -> Opt<Str>
+    fn use_dual_stack() -> Opt<Bool>
+    fn use_fips() -> Opt<Bool>
+    fn endpoint() -> Opt<Str>
+    fn builder() -> ParamsBuilder
+    fn operation_name() -> Str
+
+  struct MessageAttributeValue
+    fn string_value() -> Opt<Str>
+    fn binary_value() -> Opt<Blob>
+    fn string_list_values() -> Str
+    fn binary_list_values() -> Str
+    fn data_type() -> Str
+    fn builder() -> MessageAttributeValueBuilder
+
+  struct MessageSystemAttributeValue
+    fn string_value() -> Opt<Str>
+    fn binary_value() -> Opt<Blob>
+    fn string_list_values() -> Str
+    fn binary_list_values() -> Str
+    fn data_type() -> Str
+    fn builder() -> MessageSystemAttributeValueBuilder
+
+  struct SendMessageInput
+    fn queue_url() -> Opt<Str>
+    fn message_body() -> Opt<Str>
+    fn delay_seconds() -> Opt<Int>
+    fn message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_system_attributes() -> Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>
+    fn message_deduplication_id() -> Opt<Str>
+    fn message_group_id() -> Opt<Str>
+    fn builder() -> SendMessageInputBuilder
+
+  struct SendMessageInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn message_body(input: Str) -> Self
+    fn set_message_body(input: Opt<Str>) -> Self
+    fn get_message_body() -> Opt<Str>
+    fn delay_seconds(input: Int) -> Self
+    fn set_delay_seconds(input: Opt<Int>) -> Self
+    fn get_delay_seconds() -> Opt<Int>
+    fn message_attributes(k: Str, v: MessageAttributeValue) -> Self
+    fn set_message_attributes(input: Opt<HashMap<Str, MessageAttributeValue>>) -> Self
+    fn get_message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_system_attributes(k: MessageSystemAttributeNameForSends, v: MessageSystemAttributeValue) -> Self
+    fn set_message_system_attributes(input: Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>) -> Self
+    fn get_message_system_attributes() -> Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>
+    fn message_deduplication_id(input: Str) -> Self
+    fn set_message_deduplication_id(input: Opt<Str>) -> Self
+    fn get_message_deduplication_id() -> Opt<Str>
+    fn message_group_id(input: Str) -> Self
+    fn set_message_group_id(input: Opt<Str>) -> Self
+    fn get_message_group_id() -> Opt<Str>
+    fn build() -> Res!<SendMessageInput>
+    fn send_with(client: Client) -> Res!<SendMessageOutput>
+
+  struct DefaultAuthSchemeResolver
+
+  struct SendMessageOutputBuilder
+    fn md5_of_message_body(input: Str) -> Self
+    fn set_md5_of_message_body(input: Opt<Str>) -> Self
+    fn get_md5_of_message_body() -> Opt<Str>
+    fn md5_of_message_attributes(input: Str) -> Self
+    fn set_md5_of_message_attributes(input: Opt<Str>) -> Self
+    fn get_md5_of_message_attributes() -> Opt<Str>
+    fn md5_of_message_system_attributes(input: Str) -> Self
+    fn set_md5_of_message_system_attributes(input: Opt<Str>) -> Self
+    fn get_md5_of_message_system_attributes() -> Opt<Str>
+    fn message_id(input: Str) -> Self
+    fn set_message_id(input: Opt<Str>) -> Self
+    fn get_message_id() -> Opt<Str>
+    fn sequence_number(input: Str) -> Self
+    fn set_sequence_number(input: Opt<Str>) -> Self
+    fn get_sequence_number() -> Opt<Str>
+    fn build() -> SendMessageOutput
+
+  struct SendMessage
+    fn new() -> Self
+
+  struct ParamsBuilder
+    fn build() -> Res!<Params>
+    fn region(value: Str) -> Self
+    fn set_region(param: Opt<Str>) -> Self
+    fn use_dual_stack(value: Str) -> Self
+    fn set_use_dual_stack(param: Opt<Bool>) -> Self
+    fn use_fips(value: Str) -> Self
+    fn set_use_fips(param: Opt<Bool>) -> Self
+    fn endpoint(value: Str) -> Self
+    fn set_endpoint(param: Opt<Str>) -> Self
+    fn operation_name(operation_name: Str) -> Self
+    fn set_operation_name(operation_name: Opt<Cow<Str>>) -> Self
+    fn build() -> Res!<Params>
+
+  struct SendMessageBatchRequestEntry
+    fn id() -> Str
+    fn message_body() -> Str
+    fn delay_seconds() -> Opt<Int>
+    fn message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_system_attributes() -> Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>
+    fn message_deduplication_id() -> Opt<Str>
+    fn message_group_id() -> Opt<Str>
+    fn builder() -> SendMessageBatchRequestEntryBuilder
+
+  struct SendMessageBatchInput
+    fn queue_url() -> Opt<Str>
+    fn entries() -> Str
+    fn builder() -> SendMessageBatchInputBuilder
+
+  struct SendMessageBatchInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn entries(input: SendMessageBatchRequestEntry) -> Self
+    fn set_entries(input: Opt<List<SendMessageBatchRequestEntry>>) -> Self
+    fn get_entries() -> Opt<List<SendMessageBatchRequestEntry>>
+    fn build() -> Res!<SendMessageBatchInput>
+    fn send_with(client: Client) -> Res!<SendMessageBatchOutput>
+
+  struct SendMessageBatchResultEntry
+    fn id() -> Str
+    fn message_id() -> Str
+    fn md5_of_message_body() -> Str
+    fn md5_of_message_attributes() -> Opt<Str>
+    fn md5_of_message_system_attributes() -> Opt<Str>
+    fn sequence_number() -> Opt<Str>
+    fn builder() -> SendMessageBatchResultEntryBuilder
+
+  struct SendMessageBatchOutputBuilder
+    fn successful(input: SendMessageBatchResultEntry) -> Self
+    fn set_successful(input: Opt<List<SendMessageBatchResultEntry>>) -> Self
+    fn get_successful() -> Opt<List<SendMessageBatchResultEntry>>
+    fn failed(input: BatchResultErrorEntry) -> Self
+    fn set_failed(input: Opt<List<BatchResultErrorEntry>>) -> Self
+    fn get_failed() -> Opt<List<BatchResultErrorEntry>>
+    fn build() -> Res!<SendMessageBatchOutput>
+
+  struct SendMessageBatch
+    fn new() -> Self
+
+  struct BuildError
+
+  struct SetQueueAttributesInput
+    fn queue_url() -> Opt<Str>
+    fn attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+    fn builder() -> SetQueueAttributesInputBuilder
+
+  struct SetQueueAttributesInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn attributes(k: QueueAttributeName, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<QueueAttributeName, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<QueueAttributeName, Str>>
+    fn build() -> Res!<SetQueueAttributesInput>
+    fn send_with(client: Client) -> Res!<SetQueueAttributesOutput>
+
+  struct SetQueueAttributesOutputBuilder
+    fn build() -> SetQueueAttributesOutput
+
+  struct SetQueueAttributes
+    fn new() -> Self
+
+  struct StartMessageMoveTaskInput
+    fn source_arn() -> Opt<Str>
+    fn destination_arn() -> Opt<Str>
+    fn max_number_of_messages_per_second() -> Opt<Int>
+    fn builder() -> StartMessageMoveTaskInputBuilder
+
+  struct StartMessageMoveTaskInputBuilder
+    fn source_arn(input: Str) -> Self
+    fn set_source_arn(input: Opt<Str>) -> Self
+    fn get_source_arn() -> Opt<Str>
+    fn destination_arn(input: Str) -> Self
+    fn set_destination_arn(input: Opt<Str>) -> Self
+    fn get_destination_arn() -> Opt<Str>
+    fn max_number_of_messages_per_second(input: Int) -> Self
+    fn set_max_number_of_messages_per_second(input: Opt<Int>) -> Self
+    fn get_max_number_of_messages_per_second() -> Opt<Int>
+    fn build() -> Res!<StartMessageMoveTaskInput>
+    fn send_with(client: Client) -> Res!<StartMessageMoveTaskOutput>
+
+  struct StartMessageMoveTaskOutputBuilder
+    fn task_handle(input: Str) -> Self
+    fn set_task_handle(input: Opt<Str>) -> Self
+    fn get_task_handle() -> Opt<Str>
+    fn build() -> StartMessageMoveTaskOutput
+
+  struct StartMessageMoveTask
+    fn new() -> Self
+
+  struct TagQueueInput
+    fn queue_url() -> Opt<Str>
+    fn tags() -> Opt<HashMap<Str, Str>>
+    fn builder() -> TagQueueInputBuilder
+
+  struct TagQueueInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn tags(k: Str, v: Str) -> Self
+    fn set_tags(input: Opt<HashMap<Str, Str>>) -> Self
+    fn get_tags() -> Opt<HashMap<Str, Str>>
+    fn build() -> Res!<TagQueueInput>
+    fn send_with(client: Client) -> Res!<TagQueueOutput>
+
+  struct TagQueueOutputBuilder
+    fn build() -> TagQueueOutput
+
+  struct TagQueue
+    fn new() -> Self
+
+  struct UntagQueueInput
+    fn queue_url() -> Opt<Str>
+    fn tag_keys() -> Str
+    fn builder() -> UntagQueueInputBuilder
+
+  struct UntagQueueInputBuilder
+    fn queue_url(input: Str) -> Self
+    fn set_queue_url(input: Opt<Str>) -> Self
+    fn get_queue_url() -> Opt<Str>
+    fn tag_keys(input: Str) -> Self
+    fn set_tag_keys(input: Opt<List<Str>>) -> Self
+    fn get_tag_keys() -> Opt<List<Str>>
+    fn build() -> Res!<UntagQueueInput>
+    fn send_with(client: Client) -> Res!<UntagQueueOutput>
+
+  struct UntagQueueOutputBuilder
+    fn build() -> UntagQueueOutput
+
+  struct UntagQueue
+    fn new() -> Self
+
+  struct UnknownVariantValue
+
+  struct BatchResultErrorEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn sender_fault(input: Bool) -> Self
+    fn set_sender_fault(input: Opt<Bool>) -> Self
+    fn get_sender_fault() -> Opt<Bool>
+    fn code(input: Str) -> Self
+    fn set_code(input: Opt<Str>) -> Self
+    fn get_code() -> Opt<Str>
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn build() -> Res!<BatchResultErrorEntry>
+
+  struct ChangeMessageVisibilityBatchRequestEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn receipt_handle(input: Str) -> Self
+    fn set_receipt_handle(input: Opt<Str>) -> Self
+    fn get_receipt_handle() -> Opt<Str>
+    fn visibility_timeout(input: Int) -> Self
+    fn set_visibility_timeout(input: Opt<Int>) -> Self
+    fn get_visibility_timeout() -> Opt<Int>
+    fn build() -> Res!<ChangeMessageVisibilityBatchRequestEntry>
+
+  struct ChangeMessageVisibilityBatchResultEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn build() -> Res!<ChangeMessageVisibilityBatchResultEntry>
+
+  struct DeleteMessageBatchRequestEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn receipt_handle(input: Str) -> Self
+    fn set_receipt_handle(input: Opt<Str>) -> Self
+    fn get_receipt_handle() -> Opt<Str>
+    fn build() -> Res!<DeleteMessageBatchRequestEntry>
+
+  struct DeleteMessageBatchResultEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn build() -> Res!<DeleteMessageBatchResultEntry>
+
+  struct ListMessageMoveTasksResultEntryBuilder
+    fn task_handle(input: Str) -> Self
+    fn set_task_handle(input: Opt<Str>) -> Self
+    fn get_task_handle() -> Opt<Str>
+    fn status(input: Str) -> Self
+    fn set_status(input: Opt<Str>) -> Self
+    fn get_status() -> Opt<Str>
+    fn source_arn(input: Str) -> Self
+    fn set_source_arn(input: Opt<Str>) -> Self
+    fn get_source_arn() -> Opt<Str>
+    fn destination_arn(input: Str) -> Self
+    fn set_destination_arn(input: Opt<Str>) -> Self
+    fn get_destination_arn() -> Opt<Str>
+    fn max_number_of_messages_per_second(input: Int) -> Self
+    fn set_max_number_of_messages_per_second(input: Opt<Int>) -> Self
+    fn get_max_number_of_messages_per_second() -> Opt<Int>
+    fn approximate_number_of_messages_moved(input: Int) -> Self
+    fn set_approximate_number_of_messages_moved(input: Opt<Int>) -> Self
+    fn get_approximate_number_of_messages_moved() -> Opt<Int>
+    fn approximate_number_of_messages_to_move(input: Int) -> Self
+    fn set_approximate_number_of_messages_to_move(input: Opt<Int>) -> Self
+    fn get_approximate_number_of_messages_to_move() -> Opt<Int>
+    fn failure_reason(input: Str) -> Self
+    fn set_failure_reason(input: Opt<Str>) -> Self
+    fn get_failure_reason() -> Opt<Str>
+    fn started_timestamp(input: Int) -> Self
+    fn set_started_timestamp(input: Opt<Int>) -> Self
+    fn get_started_timestamp() -> Opt<Int>
+    fn build() -> ListMessageMoveTasksResultEntry
+
+  struct MessageBuilder
+    fn message_id(input: Str) -> Self
+    fn set_message_id(input: Opt<Str>) -> Self
+    fn get_message_id() -> Opt<Str>
+    fn receipt_handle(input: Str) -> Self
+    fn set_receipt_handle(input: Opt<Str>) -> Self
+    fn get_receipt_handle() -> Opt<Str>
+    fn md5_of_body(input: Str) -> Self
+    fn set_md5_of_body(input: Opt<Str>) -> Self
+    fn get_md5_of_body() -> Opt<Str>
+    fn body(input: Str) -> Self
+    fn set_body(input: Opt<Str>) -> Self
+    fn get_body() -> Opt<Str>
+    fn attributes(k: MessageSystemAttributeName, v: Str) -> Self
+    fn set_attributes(input: Opt<HashMap<MessageSystemAttributeName, Str>>) -> Self
+    fn get_attributes() -> Opt<HashMap<MessageSystemAttributeName, Str>>
+    fn md5_of_message_attributes(input: Str) -> Self
+    fn set_md5_of_message_attributes(input: Opt<Str>) -> Self
+    fn get_md5_of_message_attributes() -> Opt<Str>
+    fn message_attributes(k: Str, v: MessageAttributeValue) -> Self
+    fn set_message_attributes(input: Opt<HashMap<Str, MessageAttributeValue>>) -> Self
+    fn get_message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn build() -> Message
+
+  struct MessageAttributeValueBuilder
+    fn string_value(input: Str) -> Self
+    fn set_string_value(input: Opt<Str>) -> Self
+    fn get_string_value() -> Opt<Str>
+    fn binary_value(input: Blob) -> Self
+    fn set_binary_value(input: Opt<Blob>) -> Self
+    fn get_binary_value() -> Opt<Blob>
+    fn string_list_values(input: Str) -> Self
+    fn set_string_list_values(input: Opt<List<Str>>) -> Self
+    fn get_string_list_values() -> Opt<List<Str>>
+    fn binary_list_values(input: Blob) -> Self
+    fn set_binary_list_values(input: Opt<List<Blob>>) -> Self
+    fn get_binary_list_values() -> Opt<List<Blob>>
+    fn data_type(input: Str) -> Self
+    fn set_data_type(input: Opt<Str>) -> Self
+    fn get_data_type() -> Opt<Str>
+    fn build() -> Res!<MessageAttributeValue>
+
+  struct MessageSystemAttributeValueBuilder
+    fn string_value(input: Str) -> Self
+    fn set_string_value(input: Opt<Str>) -> Self
+    fn get_string_value() -> Opt<Str>
+    fn binary_value(input: Blob) -> Self
+    fn set_binary_value(input: Opt<Blob>) -> Self
+    fn get_binary_value() -> Opt<Blob>
+    fn string_list_values(input: Str) -> Self
+    fn set_string_list_values(input: Opt<List<Str>>) -> Self
+    fn get_string_list_values() -> Opt<List<Str>>
+    fn binary_list_values(input: Blob) -> Self
+    fn set_binary_list_values(input: Opt<List<Blob>>) -> Self
+    fn get_binary_list_values() -> Opt<List<Blob>>
+    fn data_type(input: Str) -> Self
+    fn set_data_type(input: Opt<Str>) -> Self
+    fn get_data_type() -> Opt<Str>
+    fn build() -> Res!<MessageSystemAttributeValue>
+
+  struct SendMessageBatchRequestEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn message_body(input: Str) -> Self
+    fn set_message_body(input: Opt<Str>) -> Self
+    fn get_message_body() -> Opt<Str>
+    fn delay_seconds(input: Int) -> Self
+    fn set_delay_seconds(input: Opt<Int>) -> Self
+    fn get_delay_seconds() -> Opt<Int>
+    fn message_attributes(k: Str, v: MessageAttributeValue) -> Self
+    fn set_message_attributes(input: Opt<HashMap<Str, MessageAttributeValue>>) -> Self
+    fn get_message_attributes() -> Opt<HashMap<Str, MessageAttributeValue>>
+    fn message_system_attributes(k: MessageSystemAttributeNameForSends, v: MessageSystemAttributeValue) -> Self
+    fn set_message_system_attributes(input: Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>) -> Self
+    fn get_message_system_attributes() -> Opt<HashMap<MessageSystemAttributeNameForSends, MessageSystemAttributeValue>>
+    fn message_deduplication_id(input: Str) -> Self
+    fn set_message_deduplication_id(input: Opt<Str>) -> Self
+    fn get_message_deduplication_id() -> Opt<Str>
+    fn message_group_id(input: Str) -> Self
+    fn set_message_group_id(input: Opt<Str>) -> Self
+    fn get_message_group_id() -> Opt<Str>
+    fn build() -> Res!<SendMessageBatchRequestEntry>
+
+  struct SendMessageBatchResultEntryBuilder
+    fn id(input: Str) -> Self
+    fn set_id(input: Opt<Str>) -> Self
+    fn get_id() -> Opt<Str>
+    fn message_id(input: Str) -> Self
+    fn set_message_id(input: Opt<Str>) -> Self
+    fn get_message_id() -> Opt<Str>
+    fn md5_of_message_body(input: Str) -> Self
+    fn set_md5_of_message_body(input: Opt<Str>) -> Self
+    fn get_md5_of_message_body() -> Opt<Str>
+    fn md5_of_message_attributes(input: Str) -> Self
+    fn set_md5_of_message_attributes(input: Opt<Str>) -> Self
+    fn get_md5_of_message_attributes() -> Opt<Str>
+    fn md5_of_message_system_attributes(input: Str) -> Self
+    fn set_md5_of_message_system_attributes(input: Opt<Str>) -> Self
+    fn get_md5_of_message_system_attributes() -> Opt<Str>
+    fn sequence_number(input: Str) -> Self
+    fn set_sequence_number(input: Opt<Str>) -> Self
+    fn get_sequence_number() -> Opt<Str>
+    fn build() -> Res!<SendMessageBatchResultEntry>
+
+  struct BatchEntryIdsNotDistinctBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> BatchEntryIdsNotDistinct
+
+  struct BatchRequestTooLongBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> BatchRequestTooLong
+
+  struct EmptyBatchRequestBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> EmptyBatchRequest
+
+  struct Unhandled
+
+  struct InvalidAddressBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidAddress
+
+  struct InvalidAttributeNameBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidAttributeName
+
+  struct UnknownVariantError
+
+  struct InvalidAttributeValueBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidAttributeValue
+
+  struct InvalidBatchEntryIdBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidBatchEntryId
+
+  struct InvalidIdFormatBuilder
+    fn message(input: Str) -> Self
+    fn set_message(input: Opt<Str>) -> Self
+    fn get_message() -> Opt<Str>
+    fn meta(meta: ErrorMetadata) -> Self
+    fn set_meta(meta: Opt<ErrorMetadata>) -> Self
+    fn build() -> InvalidIdFormat
+
+  trait CustomizableSend
+    fn send(config_override: Builder) -> Pin<Box<Str>>
+
+  trait ResolveEndpoint
+    fn resolve_endpoint(params: Params) -> EndpointFuture
+    fn into_shared_resolver() -> SharedEndpointResolver
+
+  trait ResolveAuthScheme
+    fn resolve_auth_scheme(params: Params, cfg: ConfigBag, runtime_components: RuntimeComponents) -> AuthSchemeOptionsFuture
+    fn into_shared_resolver() -> SharedAuthSchemeOptionResolver

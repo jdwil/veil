@@ -1,0 +1,1599 @@
+stub gix 0.70.0
+
+  struct Prepare
+    fn receive(progress: P, should_interrupt: AtomicBool) -> Res!<Outcome>
+    fn ref_map() -> RefMap
+    fn with_dry_run(enabled: Bool) -> Self
+    fn with_write_packed_refs_only(enabled: Bool) -> Self
+    fn with_reflog_message(reflog_message: RefLogMessage) -> Self
+    fn with_shallow(shallow: Shallow) -> Self
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
+  struct Negotiate
+
+  struct Update
+
+  struct Outcome
+    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
+  struct Submodule
+    fn status(ignore: Ignore, check_dirty: Bool) -> Res!<Status>
+    fn status_opts(ignore: Ignore, check_dirty: Bool, adjust_options: Str) -> Res!<Status>
+    fn name() -> BStr
+    fn path() -> Res!<Cow<BStr>>
+    fn url() -> Res!<Url>
+    fn update() -> Res!<Opt<Update>>
+    fn branch() -> Res!<Opt<Branch>>
+    fn fetch_recurse() -> Res!<Opt<FetchRecurse>>
+    fn ignore() -> Res!<Opt<Ignore>>
+    fn shallow() -> Res!<Opt<Bool>>
+    fn is_active() -> Res!<Bool>
+    fn index_id() -> Res!<Opt<ObjectId>>
+    fn head_id() -> Res!<Opt<ObjectId>>
+    fn git_dir() -> PathBuf
+    fn work_dir() -> Res!<PathBuf>
+    fn git_dir_try_old_form() -> Res!<PathBuf>
+    fn state() -> Res!<State>
+    fn open() -> Res!<Opt<Repository>>
+
+  struct Proxy
+    fn base() -> Res!<PathBuf>
+    fn git_dir() -> Path
+    fn id() -> BStr
+    fn is_locked() -> Bool
+    fn lock_reason() -> Opt<BString>
+    fn into_repo_with_possibly_inaccessible_worktree() -> Res!<Repository>
+    fn into_repo() -> Res!<Repository>
+
+  struct Read
+    fn new(read: R) -> Self
+    fn into_inner() -> R
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Outcome
+    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
+  struct BuiltinSubmoduleStatus
+    fn new(repo: ThreadSafeRepository, mode: Submodule) -> Res!<Self>
+
+  struct Outcome
+    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
+  struct Iter
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn peeled() -> Res!<Self>
+    fn new(inner: I, make_err: EFN) -> Self
+    fn into_inner() -> I
+    fn inner() -> I
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+
+  struct Iter
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn peeled() -> Res!<Self>
+    fn new(inner: I, make_err: EFN) -> Self
+    fn into_inner() -> I
+    fn inner() -> I
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+
+  struct PrepareFetch
+    fn configure_connection(f: Str) -> Self
+    fn with_fetch_options(opts: Options) -> Self
+    fn fetch_only(progress: P, should_interrupt: AtomicBool) -> Res!<Str>
+    fn fetch_then_checkout(progress: P, should_interrupt: AtomicBool) -> Res!<Str>
+    fn configure_remote(f: Str) -> Self
+    fn with_remote_name(name: Str) -> Res!<Self>
+    fn with_shallow(shallow: Shallow) -> Self
+    fn with_in_memory_config_overrides(values: Str) -> Self
+    fn with_ref_name(name: Opt<Name>) -> Res!<Self>
+    fn persist() -> Repository
+    fn new(url: Url, path: Str, kind: Kind, create_opts: Options, open_opts: Options) -> Res!<Self>
+
+  struct PrepareCheckout
+    fn main_worktree(progress: P, should_interrupt: AtomicBool) -> Res!<Str>
+    fn repo() -> Repository
+    fn persist() -> Repository
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Connection
+    fn with_credentials(helper: Str) -> Self
+    fn with_transport_options(config: Box<Str>) -> Self
+    fn set_credentials(helper: Str) -> Self
+    fn set_transport_options(config: Box<Str>) -> Self
+    fn configured_credentials(url: Url) -> Res!<AuthenticateFn>
+    fn remote() -> Remote
+    fn transport_mut() -> T
+    fn ref_map(progress: Str, options: Options) -> Res!<Str>
+    fn prepare_fetch(progress: Str, options: Options) -> Res!<Prepare<T>>
+
+  struct PathspecDetached
+    fn pattern_matching_relative_path(relative_path: Str, is_dir: Opt<Bool>) -> Opt<Match>
+    fn is_included(relative_path: Str, is_dir: Opt<Bool>) -> Bool
+
+  struct Status
+    fn is_dirty() -> Opt<Bool>
+
+  struct State
+
+  struct Repository
+    fn attributes(index: State, attributes_source: Source, ignore_source: Source, exclude_overrides: Opt<Search>) -> Res!<AttributeStack>
+    fn attributes_only(index: State, attributes_source: Source) -> Res!<AttributeStack>
+    fn excludes(index: State, overrides: Opt<Search>, source: Source) -> Res!<AttributeStack>
+    fn object_cache_size(bytes: Str)
+    fn object_cache_size_if_unset(bytes: usize)
+    fn compute_object_cache_size_for_tree_diffs(index: State) -> usize
+    fn with_object_memory() -> Self
+    fn branch_names() -> BTreeSet<Str>
+    fn branch_remote_ref_name(name: FullNameRef, direction: Direction) -> Opt<Res!<Cow<FullNameRef>>>
+    fn branch_remote_tracking_ref_name(name: FullNameRef, direction: Direction) -> Opt<Res!<Cow<FullNameRef>>>
+    fn upstream_branch_and_remote_for_tracking_branch(tracking_branch: FullNameRef) -> Res!<Opt<Str>>
+    fn branch_remote_name(short_branch_name: Str, direction: Direction) -> Opt<Name>
+    fn branch_remote(short_branch_name: Str, direction: Direction) -> Opt<Res!<Remote>>
+    fn remote_names() -> Names
+    fn remote_default_name(direction: Direction) -> Opt<Cow<BStr>>
+    fn transport_options(url: Str, remote_name: Opt<BStr>) -> Res!<Opt<Box<Str>>>
+    fn config_snapshot() -> Snapshot
+    fn config_snapshot_mut() -> SnapshotMut
+    fn filesystem_options() -> Res!<Capabilities>
+    fn stat_options() -> Res!<Options>
+    fn open_options() -> Options
+    fn ssh_connect_options() -> Res!<Options>
+    fn command_context() -> Res!<Context>
+    fn object_hash() -> Kind
+    fn diff_algorithm() -> Res!<Algorithm>
+    fn diff_resource_cache(mode: Mode, worktree_roots: WorktreeRoots) -> Res!<Platform>
+    fn diff_tree_to_tree(old_tree: Str, new_tree: Str, options: Str) -> Res!<List<ChangeDetached>>
+    fn diff_resource_cache_for_tree_diff() -> Res!<Platform>
+    fn dirwalk_options() -> Res!<Options>
+    fn dirwalk(index: State, patterns: Str, should_interrupt: AtomicBool, options: Options, delegate: Str) -> Res!<Outcome>
+    fn dirwalk_iter(index: Str, patterns: Str, should_interrupt: OwnedOrStaticAtomicBool, options: Options) -> Res!<Iter>
+    fn filter_pipeline(tree_if_bare: Opt<ObjectId>) -> Res!<Str>
+    fn empty_reusable_buffer() -> Buffer
+    fn set_freelist(list: Opt<List<List<Int>>>) -> Opt<List<List<Int>>>
+    fn without_freelist() -> Self
+    fn revision_graph(cache: Opt<Graph>) -> Graph<T>
+    fn commit_graph() -> Res!<Graph>
+    fn commit_graph_if_enabled() -> Res!<Opt<Graph>>
+    fn committer() -> Opt<Res!<SignatureRef>>
+    fn author() -> Opt<Res!<SignatureRef>>
+    fn open_index() -> Res!<File>
+    fn index() -> Res!<Index>
+    fn index_or_empty() -> Res!<Index>
+    fn try_index() -> Res!<Opt<Index>>
+    fn index_or_load_from_head() -> Res!<IndexPersistedOrInMemory>
+    fn index_or_load_from_head_or_empty() -> Res!<IndexPersistedOrInMemory>
+    fn index_from_tree(tree: oid) -> Res!<File>
+    fn into_sync() -> ThreadSafeRepository
+    fn git_dir() -> Path
+    fn git_dir_trust() -> Trust
+    fn current_dir() -> Path
+    fn common_dir() -> Path
+    fn index_path() -> PathBuf
+    fn modules_path() -> Opt<PathBuf>
+    fn path() -> Path
+    fn work_dir() -> Opt<Path>
+    fn install_dir() -> Res!<PathBuf>
+    fn prefix() -> Res!<Opt<Path>>
+    fn kind() -> Kind
+    fn open_mailmap() -> Snapshot
+    fn open_mailmap_into(target: Snapshot) -> Res!<Str>
+    fn find_object(id: Str) -> Res!<Object>
+    fn find_commit(id: Str) -> Res!<Commit>
+    fn find_tree(id: Str) -> Res!<Tree>
+    fn find_tag(id: Str) -> Res!<Tag>
+    fn find_blob(id: Str) -> Res!<Blob>
+    fn find_header(id: Str) -> Res!<Header>
+    fn has_object(id: Str) -> Bool
+    fn try_find_header(id: Str) -> Res!<Opt<Header>>
+    fn try_find_object(id: Str) -> Res!<Opt<Object>>
+    fn write_object(object: Str) -> Res!<Id>
+    fn write_blob(bytes: Str) -> Res!<Id>
+    fn write_blob_stream(bytes: Str) -> Res!<Id>
+    fn tag(name: Str, target: Str, target_kind: Kind, tagger: Opt<SignatureRef>, message: Str, constraint: PreviousValue) -> Res!<Reference>
+    fn commit_as(committer: Str, author: Str, reference: Name, message: Str, tree: Str, parents: Str) -> Res!<Id>
+    fn commit(reference: Name, message: Str, tree: Str, parents: Str) -> Res!<Id>
+    fn empty_tree() -> Tree
+    fn empty_blob() -> Blob
+    fn pathspec(empty_patterns_match_prefix: Bool, patterns: Str, inherit_ignore_case: Bool, index: State, attributes_source: Source) -> Res!<Pathspec>
+    fn pathspec_defaults() -> Res!<Defaults>
+    fn pathspec_defaults_inherit_ignore_case(inherit_ignore_case: Bool) -> Res!<Defaults>
+    fn tag_reference(name: Str, target: Str, constraint: PreviousValue) -> Res!<Reference>
+    fn namespace() -> Opt<Namespace>
+    fn clear_namespace() -> Opt<Namespace>
+    fn set_namespace(namespace: Name) -> Res!<Opt<Namespace>>
+    fn reference(name: Name, target: Str, constraint: PreviousValue, log_message: Str) -> Res!<Reference>
+    fn edit_reference(edit: RefEdit) -> Res!<List<RefEdit>>
+    fn edit_references(edits: Str) -> Res!<List<RefEdit>>
+    fn head() -> Res!<Head>
+    fn head_id() -> Res!<Id>
+    fn head_name() -> Res!<Opt<FullName>>
+    fn head_ref() -> Res!<Opt<Reference>>
+    fn head_commit() -> Res!<Commit>
+    fn head_tree_id() -> Res!<Id>
+    fn head_tree() -> Res!<Tree>
+    fn find_reference(name: Name) -> Res!<Reference>
+    fn references() -> Res!<Platform>
+    fn try_find_reference(name: Name) -> Res!<Opt<Reference>>
+    fn remote_at(url: Url) -> Res!<Remote>
+    fn remote_at_without_url_rewrite(url: Url) -> Res!<Remote>
+    fn find_remote(name_or_url: Str) -> Res!<Remote>
+    fn find_default_remote(direction: Direction) -> Opt<Res!<Remote>>
+    fn try_find_remote(name_or_url: Str) -> Opt<Res!<Remote>>
+    fn find_fetch_remote(name_or_url: Opt<BStr>) -> Res!<Remote>
+    fn try_find_remote_without_url_rewrite(name_or_url: Str) -> Opt<Res!<Remote>>
+    fn rev_parse(spec: Str) -> Res!<Spec>
+    fn rev_parse_single(spec: Str) -> Res!<Id>
+    fn merge_base(one: Str, two: Str) -> Res!<Id>
+    fn merge_base_with_graph(one: Str, two: Str, graph: Graph<Commit<Flags>>) -> Res!<Id>
+    fn merge_bases_many_with_graph(one: Str, others: Str, graph: Graph<Commit<Flags>>) -> Res!<List<Id>>
+    fn merge_base_octopus_with_graph(commits: Str, graph: Graph<Commit<Flags>>) -> Res!<Id>
+    fn merge_base_octopus(commits: Str) -> Res!<Id>
+    fn rev_walk(tips: Str) -> Platform
+    fn is_shallow() -> Bool
+    fn shallow_commits() -> Res!<Opt<Commits>>
+    fn shallow_file() -> PathBuf
+    fn state() -> Opt<InProgress>
+    fn open_modules_file() -> Res!<Opt<File>>
+    fn modules() -> Res!<Opt<ModulesSnapshot>>
+    fn submodules() -> Res!<Opt<Str>>
+    fn worktrees() -> Res!<List<Proxy>>
+    fn main_repo() -> Res!<Repository>
+    fn worktree() -> Opt<Worktree>
+    fn is_bare() -> Bool
+    fn worktree_stream(id: Str) -> Res!<Str>
+    fn worktree_archive(stream: Stream, out: Str, blobs: Str, should_interrupt: AtomicBool, options: Options) -> Res!<Str>
+    fn is_dirty() -> Res!<Bool>
+    fn index_worktree_status(index: State, patterns: Str, delegate: Str, compare: Str, submodule: Str, progress: Str, should_interrupt: AtomicBool, options: Options) -> Res!<Outcome>
+    fn tree_index_status(tree_id: oid, worktree_index: State, pathspec: Opt<Pathspec>, renames: TrackRenames, cb: Str) -> Res!<Outcome>
+    fn status(progress: P) -> Res!<Platform<P>>
+
+  struct Id
+    fn object() -> Res!<Object>
+    fn header() -> Res!<Header>
+    fn try_object() -> Res!<Opt<Object>>
+    fn try_header() -> Res!<Opt<Header>>
+    fn shorten() -> Res!<Prefix>
+    fn shorten_or_id() -> Prefix
+    fn detach() -> ObjectId
+    fn ancestors() -> Platform
+
+  struct Reference
+    fn remote_name(direction: Direction) -> Opt<Name>
+    fn remote(direction: Direction) -> Opt<Res!<Remote>>
+    fn remote_ref_name(direction: Direction) -> Opt<Res!<Cow<FullNameRef>>>
+    fn remote_tracking_ref_name(direction: Direction) -> Opt<Res!<Cow<FullNameRef>>>
+    fn log_iter() -> Platform
+    fn log_exists() -> Bool
+    fn set_target_id(id: Str, reflog_message: Str) -> Res!<Str>
+    fn delete() -> Res!<Str>
+    fn try_id() -> Opt<Id>
+    fn id() -> Id
+    fn target() -> TargetRef
+    fn name() -> FullNameRef
+    fn detach() -> Reference
+    fn peel_to_id_in_place() -> Res!<Id>
+    fn peel_to_id_in_place_packed(packed: Opt<Buffer>) -> Res!<Id>
+    fn into_fully_peeled_id() -> Res!<Id>
+    fn peel_to_kind(kind: Kind) -> Res!<Object>
+    fn peel_to_commit() -> Res!<Commit>
+    fn peel_to_tag() -> Res!<Tag>
+    fn peel_to_tree() -> Res!<Tree>
+    fn peel_to_blob() -> Res!<Blob>
+    fn peel_to_kind_packed(kind: Kind, packed: Opt<Buffer>) -> Res!<Object>
+    fn follow_to_object() -> Res!<Id>
+    fn follow_to_object_packed(packed: Opt<Buffer>) -> Res!<Id>
+    fn follow() -> Opt<Res!<Reference>>
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Spec
+    fn from_bstr(spec: Str, repo: Repository, opts: Options) -> Res!<Self>
+    fn from_id(id: Id) -> Self
+    fn detach() -> Spec
+    fn into_references() -> Str
+    fn path_and_mode() -> Opt<Str>
+    fn first_reference() -> Opt<Reference>
+    fn second_reference() -> Opt<Reference>
+    fn single() -> Opt<Id>
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Outcome
+    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
+  struct EntryRef
+    fn mode() -> EntryMode
+    fn filename() -> BStr
+    fn id() -> Id
+    fn oid() -> oid
+    fn object() -> Res!<Object>
+    fn object_id() -> ObjectId
+    fn detach() -> EntryRef
+
+  struct Resolution
+    fn format() -> Res!<Format>
+    fn format_with_dirty_suffix(dirty_suffix: Str) -> Res!<Format>
+
+  struct Entry
+    fn mode() -> EntryMode
+    fn filename() -> BStr
+    fn id() -> Id
+    fn object() -> Res!<Object>
+    fn oid() -> oid
+    fn object_id() -> ObjectId
+    fn detach() -> Entry
+
+  struct Deregister
+    fn deregister() -> Res!<Str>
+    fn with_reset(toggle: Bool) -> Self
+    fn auto_deregister() -> AutoDeregister
+
+  struct Item
+
+  struct Outcome
+    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
+  struct Worktree
+    fn open_index() -> Res!<File>
+    fn index() -> Res!<Index>
+    fn excludes(overrides: Opt<Search>) -> Res!<AttributeStack>
+    fn attributes(overrides: Opt<Search>) -> Res!<AttributeStack>
+    fn attributes_only() -> Res!<AttributeStack>
+    fn pathspec(patterns: Str) -> Res!<Pathspec>
+    fn base() -> Path
+    fn is_main() -> Bool
+    fn is_locked() -> Bool
+    fn lock_reason() -> Opt<BString>
+    fn id() -> Opt<BStr>
+    fn dot_git_exists() -> Bool
+
+  struct AttributeStack
+    fn new(stack: Stack, repo: Repository) -> Self
+    fn detach() -> Stack
+    fn at_path(relative: Str, mode: Opt<Mode>) -> Res!<Platform>
+    fn at_entry(relative: Str, mode: Opt<Mode>) -> Res!<Platform>
+
+  struct Pathspec
+    fn new(repo: Repository, empty_patterns_match_prefix: Bool, patterns: Str, inherit_ignore_case: Bool, make_attributes: Str) -> Res!<Self>
+    fn into_parts() -> Str
+    fn detach() -> Res!<PathspecDetached>
+    fn attributes() -> Opt<Stack>
+    fn search() -> Search
+    fn pattern_matching_relative_path(relative_path: Str, is_dir: Opt<Bool>) -> Opt<Match>
+    fn is_included(relative_path: Str, is_dir: Opt<Bool>) -> Bool
+    fn index_entries_with_paths(index: State) -> Opt<Str>
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
+  struct Head
+    fn into_remote(direction: Direction) -> Opt<Res!<Remote>>
+    fn log_iter() -> Platform
+    fn prior_checked_out_branches() -> Res!<Opt<List<Str>>>
+    fn into_peeled_id() -> Res!<Id>
+    fn into_peeled_object() -> Res!<Object>
+    fn try_into_peeled_id() -> Res!<Opt<Id>>
+    fn try_peel_to_id_in_place() -> Res!<Opt<Id>>
+    fn peel_to_object_in_place() -> Res!<Object>
+    fn peel_to_commit_in_place() -> Res!<Commit>
+    fn name() -> FullNameRef
+    fn referent_name() -> Opt<FullNameRef>
+    fn is_detached() -> Bool
+    fn is_unborn() -> Bool
+    fn id() -> Opt<Id>
+    fn try_into_referent() -> Opt<Reference>
+
+  struct Stats
+
+  struct Remote
+    fn push_url(url: Url) -> Res!<Self>
+    fn push_url_without_url_rewrite(url: Url) -> Res!<Self>
+    fn with_fetch_tags(tags: Tags) -> Self
+    fn with_refspecs(specs: Str, direction: Direction) -> Res!<Self>
+    fn to_connection_with_transport(transport: T) -> Connection<T>
+    fn connect(direction: Direction) -> Res!<Connection<Box<Str>>>
+    fn sanitized_url_and_version(direction: Direction) -> Res!<Str>
+    fn save_to(config: File) -> Res!<Str>
+    fn save_as_to(name: Str, config: File) -> Res!<Str>
+    fn name() -> Opt<Name>
+    fn repo() -> Repository
+    fn refspecs(direction: Direction) -> Str
+    fn fetch_tags() -> Tags
+    fn url(direction: Direction) -> Opt<Url>
+    fn rewrite_urls() -> Res!<Self>
+    fn replace_refspecs(specs: Str, direction: Direction) -> Res!<Str>
+
+  struct BreadthFirstPresets
+    fn files() -> Res!<List<Entry>>
+
+  struct Object
+    fn peel_to_kind(kind: Kind) -> Res!<Self>
+    fn peel_to_tree() -> Res!<Tree>
+    fn peel_to_commit() -> Res!<Commit>
+    fn peel_tags_to_end() -> Res!<Self>
+    fn into_blob() -> Blob
+    fn into_tree() -> Tree
+    fn into_commit() -> Commit
+    fn into_tag() -> Tag
+    fn try_into_commit() -> Res!<Commit>
+    fn try_into_tag() -> Res!<Tag>
+    fn try_into_tree() -> Res!<Tree>
+    fn try_into_blob() -> Res!<Blob>
+    fn detached() -> ObjectDetached
+    fn detach() -> ObjectDetached
+    fn to_commit_ref() -> CommitRef
+    fn try_to_commit_ref() -> Res!<CommitRef>
+    fn to_commit_ref_iter() -> CommitRefIter
+    fn try_to_commit_ref_iter() -> Opt<CommitRefIter>
+    fn to_tag_ref_iter() -> TagRefIter
+    fn try_to_tag_ref_iter() -> Opt<TagRefIter>
+    fn to_tag_ref() -> TagRef
+    fn try_to_tag_ref() -> Res!<TagRef>
+    fn id() -> Id
+
+  struct Commit
+    fn detached() -> ObjectDetached
+    fn detach() -> ObjectDetached
+    fn take_data() -> List<Int>
+    fn short_id() -> Res!<Prefix>
+    fn message() -> Res!<MessageRef>
+    fn message_raw() -> Res!<BStr>
+    fn message_raw_sloppy() -> BStr
+    fn time() -> Res!<Time>
+    fn decode() -> Res!<CommitRef>
+    fn iter() -> CommitRefIter
+    fn author() -> Res!<SignatureRef>
+    fn committer() -> Res!<SignatureRef>
+    fn parent_ids() -> Str
+    fn tree() -> Res!<Tree>
+    fn tree_id() -> Res!<Id>
+    fn id() -> Id
+    fn ancestors() -> Platform
+    fn describe() -> Platform
+    fn signature() -> Res!<Opt<Str>>
+
+  struct Iter
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn peeled() -> Res!<Self>
+    fn new(inner: I, make_err: EFN) -> Self
+    fn into_inner() -> I
+    fn inner() -> I
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
+  struct ObjectDetached
+    fn attach(repo: Repository) -> Object
+
+  struct Tree
+    fn changes() -> Res!<Platform>
+    fn traverse() -> Platform
+    fn iter() -> Str
+    fn from_data(id: Str, data: List<Int>, repo: Repository) -> Self
+    fn id() -> Id
+    fn decode() -> Res!<TreeRef>
+    fn find_entry(name: Str) -> Opt<EntryRef>
+    fn lookup_entry(path: I) -> Res!<Opt<Entry>>
+    fn peel_to_entry(path: I) -> Res!<Opt<Entry>>
+    fn lookup_entry_by_path(relative_path: Str) -> Res!<Opt<Entry>>
+    fn peel_to_entry_by_path(relative_path: Str) -> Res!<Opt<Entry>>
+    fn detached() -> ObjectDetached
+    fn detach() -> ObjectDetached
+    fn take_data() -> List<Int>
+    fn sections() -> Str
+
+  struct Blob
+    fn detached() -> ObjectDetached
+    fn detach() -> ObjectDetached
+    fn take_data() -> List<Int>
+
+  struct Tag
+    fn decode() -> Res!<TagRef>
+    fn target_id() -> Res!<Id>
+    fn tagger() -> Res!<Opt<SignatureRef>>
+    fn detached() -> ObjectDetached
+    fn detach() -> ObjectDetached
+    fn take_data() -> List<Int>
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Config
+    fn all() -> Self
+    fn isolated() -> Self
+
+  struct Attributes
+    fn all() -> Self
+    fn isolated() -> Self
+
+  struct Environment
+    fn all() -> Self
+    fn isolated() -> Self
+
+  struct Permissions
+    fn secure() -> Self
+    fn all() -> Self
+    fn isolated() -> Self
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
+  struct Tree
+    fn changes() -> Res!<Platform>
+    fn traverse() -> Platform
+    fn iter() -> Str
+    fn from_data(id: Str, data: List<Int>, repo: Repository) -> Self
+    fn id() -> Id
+    fn decode() -> Res!<TreeRef>
+    fn find_entry(name: Str) -> Opt<EntryRef>
+    fn lookup_entry(path: I) -> Res!<Opt<Entry>>
+    fn peel_to_entry(path: I) -> Res!<Opt<Entry>>
+    fn lookup_entry_by_path(relative_path: Str) -> Res!<Opt<Entry>>
+    fn peel_to_entry_by_path(relative_path: Str) -> Res!<Opt<Entry>>
+    fn detached() -> ObjectDetached
+    fn detach() -> ObjectDetached
+    fn take_data() -> List<Int>
+    fn sections() -> Str
+
+  struct Author
+
+  struct Branch
+
+  struct Checkout
+
+  struct Clone
+
+  struct Committer
+
+  struct Core
+
+  struct Credential
+
+  struct Diff
+
+  struct Extensions
+
+  struct Fetch
+
+  struct Gitoxide
+
+  struct Http
+
+  struct Index
+
+  struct Init
+
+  struct Mailmap
+
+  struct Merge
+
+  struct Pack
+
+  struct Protocol
+
+  struct Push
+
+  struct Remote
+    fn push_url(url: Url) -> Res!<Self>
+    fn push_url_without_url_rewrite(url: Url) -> Res!<Self>
+    fn with_fetch_tags(tags: Tags) -> Self
+    fn with_refspecs(specs: Str, direction: Direction) -> Res!<Self>
+    fn to_connection_with_transport(transport: T) -> Connection<T>
+    fn connect(direction: Direction) -> Res!<Connection<Box<Str>>>
+    fn sanitized_url_and_version(direction: Direction) -> Res!<Str>
+    fn save_to(config: File) -> Res!<Str>
+    fn save_as_to(name: Str, config: File) -> Res!<Str>
+    fn name() -> Opt<Name>
+    fn repo() -> Repository
+    fn refspecs(direction: Direction) -> Str
+    fn fetch_tags() -> Tags
+    fn url(direction: Direction) -> Opt<Url>
+    fn rewrite_urls() -> Res!<Self>
+    fn replace_refspecs(specs: Str, direction: Direction) -> Res!<Str>
+
+  struct Safe
+    fn directory_filter(meta: Metadata) -> Bool
+
+  struct Ssh
+
+  struct Status
+    fn is_dirty() -> Opt<Bool>
+
+  struct User
+
+  struct Url
+
+  struct FullNameRef
+
+  struct Any
+    fn try_into_fullrefname(value: Cow<BStr>) -> Res!<Cow<FullNameRef>>
+    fn try_from_workers(value: Res!<Int>) -> Res!<usize>
+    fn try_into_encodings(value: Opt<Cow<BStr>>) -> Res!<List<Encoding>>
+    fn try_into_eol(value: Cow<BStr>) -> Res!<Mode>
+    fn try_into_safecrlf(value: Cow<BStr>) -> Res!<CrlfRoundTripCheck>
+    fn try_into_autocrlf(value: Cow<BStr>) -> Res!<AutoCrlf>
+    fn try_into_object_kind_hint(value: Cow<BStr>) -> Res!<Opt<ObjectKindHint>>
+    fn try_into_ref_updates(value: Opt<Res!<Bool>>) -> Res!<Opt<WriteReflog>>
+    fn try_into_checkstat(value: Cow<BStr>) -> Res!<Bool>
+    fn try_into_abbreviation(hex_len_str: Cow<BStr>, object_hash: Kind) -> Res!<Opt<usize>>
+    fn try_into_algorithm(name: Cow<BStr>) -> Res!<Algorithm>
+    fn try_into_binary(value: Opt<Cow<BStr>>) -> Res!<Opt<Bool>>
+    fn new_renames(name: Str, section: Str) -> Self
+    fn try_into_renames(value: Res!<Bool>) -> Res!<Tracking>
+    fn try_into_object_format(value: Cow<BStr>) -> Res!<Kind>
+    fn try_into_negotiation_algorithm(name: Cow<BStr>) -> Res!<Algorithm>
+    fn try_into_recurse_submodules(value: Res!<Bool>) -> Res!<FetchRecurse>
+    fn try_into_refs_namespace(name: Cow<BStr>) -> Res!<Namespace>
+    fn new_ssl_version(name: Str, section: Str) -> Self
+    fn new_proxy_auth_method(name: Str, section: Str) -> Self
+    fn try_into_extra_header(values: List<Cow<BStr>>) -> Res!<List<Str>>
+    fn try_into_index_threads(value: Cow<BStr>) -> Res!<usize>
+    fn try_into_index_version(value: Res!<Int>) -> Res!<Version>
+    fn try_into_allow(value: Cow<BStr>, scheme: Opt<Str>) -> Res!<Allow>
+    fn try_into_protocol_version(value: Opt<Res!<Int>>) -> Res!<Protocol>
+    fn try_into_default(value: Cow<BStr>) -> Res!<Default>
+    fn try_into_tag_opt(value: Cow<BStr>) -> Res!<Tags>
+    fn try_into_variant(value: Cow<BStr>) -> Res!<Opt<ProgramKind>>
+    fn try_into_show_untracked_files(value: Cow<BStr>) -> Res!<UntrackedFiles>
+    fn new_duration(name: Str, section: Str) -> Self
+    fn try_into_duration(value: Res!<Int>) -> Res!<Duration>
+    fn new_lock_timeout(name: Str, section: Str) -> Self
+    fn try_into_lock_timeout(value: Res!<Int>) -> Res!<Fail>
+    fn new_push_refspec(name: Str, section: Str) -> Self
+    fn new_fetch_refspec(name: Str, section: Str) -> Self
+    fn new_url(name: Str, section: Str) -> Self
+    fn try_into_url(value: Cow<BStr>) -> Res!<Url>
+    fn new_unsigned_integer(name: Str, section: Str) -> Self
+    fn try_into_usize(value: Res!<Int>) -> Res!<usize>
+    fn try_into_u64(value: Res!<Int>) -> Res!<Int>
+    fn try_into_u32(value: Res!<Int>) -> Res!<Int>
+    fn new_time(name: Str, section: Str) -> Self
+    fn try_into_time(value: Cow<BStr>, now: Opt<SystemTime>) -> Res!<Time>
+    fn new_boolean(name: Str, section: Str) -> Self
+    fn enrich_error(value: Res!<Bool>) -> Res!<Bool>
+    fn new_remote_name(name: Str, section: Str) -> Self
+    fn try_into_symbolic_name(name: Cow<BStr>) -> Res!<BString>
+    fn new(name: Str, section: Str) -> Self
+    fn new_with_validate(name: Str, section: Str, validate: T) -> Self
+    fn with_subsection_requirement(requirement: Opt<SubSectionRequirement>) -> Self
+    fn with_environment_override(var: Str) -> Self
+    fn with_fallback(key: Str) -> Self
+    fn with_note(message: Str) -> Self
+    fn with_deviation(message: Str) -> Self
+    fn try_into_refspec(value: Cow<BStr>, op: Operation) -> Res!<RefSpec>
+    fn try_into_string(value: Cow<BStr>) -> Res!<Str>
+    fn new_string(name: Str, section: Str) -> Self
+    fn new_program(name: Str, section: Str) -> Self
+    fn new_executable(name: Str, section: Str) -> Self
+    fn new_path(name: Str, section: Str) -> Self
+
+  struct Workers
+
+  struct SafeCrlf
+
+  struct AutoCrlf
+
+  struct Eol
+
+  struct CheckRoundTripEncoding
+
+  struct Disambiguate
+
+  struct LogAllRefUpdates
+
+  struct CheckStat
+
+  struct Abbrev
+
+  struct UrlParameter
+
+  struct Algorithm
+
+  struct Renames
+
+  struct Binary
+
+  struct ObjectFormat
+
+  struct NegotiationAlgorithm
+
+  struct RecurseSubmodules
+
+  struct Core
+
+  struct RefsNamespace
+
+  struct Http
+
+  struct Https
+
+  struct Allow
+
+  struct ProtocolFromUser
+
+  struct Author
+
+  struct User
+
+  struct Ssh
+
+  struct Objects
+
+  struct Committer
+
+  struct Credentials
+
+  struct Commit
+    fn detached() -> ObjectDetached
+    fn detach() -> ObjectDetached
+    fn take_data() -> List<Int>
+    fn short_id() -> Res!<Prefix>
+    fn message() -> Res!<MessageRef>
+    fn message_raw() -> Res!<BStr>
+    fn message_raw_sloppy() -> BStr
+    fn time() -> Res!<Time>
+    fn decode() -> Res!<CommitRef>
+    fn iter() -> CommitRefIter
+    fn author() -> Res!<SignatureRef>
+    fn committer() -> Res!<SignatureRef>
+    fn parent_ids() -> Str
+    fn tree() -> Res!<Tree>
+    fn tree_id() -> Res!<Id>
+    fn id() -> Id
+    fn ancestors() -> Platform
+    fn describe() -> Platform
+    fn signature() -> Res!<Opt<Str>>
+
+  struct SslVersion
+
+  struct ProxyAuthMethod
+
+  struct Version
+
+  struct ExtraHeader
+
+  struct FollowRedirects
+
+  struct IndexThreads
+
+  struct IndexVersion
+
+  struct Allow
+
+  struct Version
+
+  struct NameParameter
+
+  struct Default
+
+  struct TagOpt
+
+  struct Variant
+
+  struct ShowUntrackedFiles
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
+  struct Iter
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn peeled() -> Res!<Self>
+    fn new(inner: I, make_err: EFN) -> Self
+    fn into_inner() -> I
+    fn inner() -> I
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+
+  struct All
+
+  struct Time
+
+  struct UnsignedInteger
+
+  struct Boolean
+
+  struct RemoteName
+
+  struct Program
+
+  struct Executable
+
+  struct Url
+
+  struct PushRefSpec
+
+  struct FetchRefSpec
+
+  struct LockTimeout
+
+  struct DurationInMilliseconds
+
+  struct String
+
+  struct Path
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct AutoDeregister
+
+  struct Snapshot
+    fn boolean(key: Str) -> Opt<Bool>
+    fn try_boolean(key: Str) -> Opt<Res!<Bool>>
+    fn integer(key: Str) -> Opt<Int>
+    fn try_integer(key: Str) -> Opt<Res!<Int>>
+    fn string(key: Str) -> Opt<Cow<BStr>>
+    fn trusted_path(key: Str) -> Opt<Res!<Cow<Path>>>
+    fn trusted_program(key: Str) -> Opt<Cow<OsStr>>
+    fn plumbing() -> File
+    fn credential_helpers(url: Url) -> Res!<Str>
+
+  struct SnapshotMut
+    fn append_config(values: Str, source: Source) -> Res!<Self>
+    fn commit() -> Res!<Repository>
+    fn set_value(key: Str, new_value: Str) -> Res!<Opt<BString>>
+    fn set_subsection_value(key: Str, subsection: Str, new_value: Str) -> Res!<Opt<BString>>
+    fn commit_auto_rollback() -> Res!<CommitAutoRollback>
+    fn forget() -> File
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct CommitAutoRollback
+    fn rollback() -> Res!<Repository>
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Outcome
+    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
+  struct Iter
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+    fn peeled() -> Res!<Self>
+    fn new(inner: I, make_err: EFN) -> Self
+    fn into_inner() -> I
+    fn inner() -> I
+    fn outcome_mut() -> Opt<Outcome>
+    fn into_outcome() -> Opt<Outcome>
+
+  struct Pipeline
+    fn options(repo: Repository) -> Res!<Options>
+    fn new(repo: Repository, cache: Stack) -> Res!<Self>
+    fn into_parts() -> Str
+    fn convert_to_git(src: R, rela_path: Path, index: State) -> Res!<ToGitOutcome<R>>
+    fn convert_to_worktree(src: Str, rela_path: BStr, can_delay: Delay) -> Res!<ToWorktreeOutcome>
+    fn driver_context_mut() -> Context
+
+  struct Buffer
+
+  struct Walk
+
+  struct Info
+    fn id() -> Id
+    fn object() -> Res!<Commit>
+    fn parent_ids() -> Str
+    fn commit_time() -> SecondsSinceUnixEpoch
+    fn new(info: Info, repo: Repository) -> Self
+    fn detach() -> Info
+
+  struct ThreadSafeRepository
+    fn to_thread_local() -> Repository
+    fn path() -> Path
+    fn git_dir() -> Path
+    fn work_dir() -> Opt<Path>
+    fn objects_dir() -> Path
+    fn open(path: Str) -> Res!<Self>
+    fn open_opts(path: Str, options: Options) -> Res!<Self>
+    fn open_with_environment_overrides(fallback_directory: Str, trust_map: Mapping<Options>) -> Res!<Self>
+    fn init(directory: Str, kind: Kind, options: Options) -> Res!<Self>
+    fn init_opts(directory: Str, kind: Kind, create_options: Options, open_options: Options) -> Res!<Self>
+    fn discover(directory: Str) -> Res!<Self>
+    fn discover_opts(directory: Str, options: Options, trust_map: Mapping<Options>) -> Res!<Self>
+    fn discover_with_environment_overrides(directory: Str) -> Res!<Self>
+    fn discover_with_environment_overrides_opts(directory: Str, options: Options, trust_map: Mapping<Options>) -> Res!<Self>
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+
+  struct Pathspec
+    fn new(repo: Repository, empty_patterns_match_prefix: Bool, patterns: Str, inherit_ignore_case: Bool, make_attributes: Str) -> Res!<Self>
+    fn into_parts() -> Str
+    fn detach() -> Res!<PathspecDetached>
+    fn attributes() -> Opt<Stack>
+    fn search() -> Search
+    fn pattern_matching_relative_path(relative_path: Str, is_dir: Opt<Bool>) -> Opt<Match>
+    fn is_included(relative_path: Str, is_dir: Opt<Bool>) -> Bool
+    fn index_entries_with_paths(index: State) -> Opt<Str>
+
+  trait ObjectIdExt
+    fn ancestors(find: Find) -> Simple<Find, Str>
+    fn attach(repo: Repository) -> Id
+
+  trait ReferenceExt
+    fn attach(repo: Repository) -> Reference
+
+  trait RevSpecExt
+    fn attach(repo: Repository) -> Spec
+
+  trait TreeIterExt
+    fn traverse(state: StateMut, objects: Find, delegate: V) -> Res!<Str>
+
+  trait TreeEntryRefExt
+    fn attach(repo: Repository) -> EntryRef
+
+  trait TreeEntryExt
+    fn attach(repo: Repository) -> Entry
+
+  trait TreeDiffChangeExt
+    fn attach(old_repo: Repository, new_repo: Repository) -> Change
+
+  trait Section
+    fn name() -> Str
+    fn keys() -> Str
+    fn sub_sections() -> Str
+    fn parent() -> Opt<Str>
+
+  trait Validate
+    fn validate(value: BStr) -> Res!<Str>
+
+  trait Key
+    fn name() -> Str
+    fn validate(value: BStr) -> Res!<Str>
+    fn section() -> Str
+    fn subsection_requirement() -> Opt<SubSectionRequirement>
+    fn link() -> Opt<Link>
+    fn note() -> Opt<Note>
+    fn environment_override() -> Opt<Str>
+    fn the_environment_override() -> Str
+    fn logical_name() -> Str
+    fn full_name(subsection: Opt<BStr>) -> Res!<BString>
+    fn validated_assignment(value: BStr) -> Res!<BString>
+    fn validated_assignment_fmt(value: Str) -> Res!<BString>
+    fn validated_assignment_with_subsection(value: BStr, subsection: BStr) -> Res!<BString>

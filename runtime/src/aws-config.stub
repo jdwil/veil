@@ -1,0 +1,1512 @@
+stub aws-config 1.8.18
+
+  struct ImdsCredentialsProvider
+    fn builder() -> Builder
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct ImdsRegionProvider
+    fn builder() -> Builder
+    fn region() -> Opt<Region>
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct ProvideRegion
+    fn new(future: Str) -> Self
+    fn ready(region: Opt<Region>) -> Self
+
+  struct CredentialsProviderChain
+    fn first_try(name: Str, provider: Str) -> Self
+    fn or_else(name: Str, provider: Str) -> Self
+    fn or_default_provider() -> Self
+    fn default_provider() -> Self
+
+  struct RegionProviderChain
+    fn region() -> Opt<Region>
+    fn first_try(provider: Str) -> Self
+    fn or_else(fallback: Str) -> Self
+    fn default_provider() -> Self
+    fn or_default_provider() -> Self
+
+  struct TokenProviderChain
+    fn first_try(name: Str, provider: Str) -> Self
+    fn or_else(name: Str, provider: Str) -> Self
+    fn or_default_provider() -> Self
+    fn default_provider() -> Self
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct ConfigLoader
+    fn behavior_version(behavior_version: BehaviorVersion) -> Self
+    fn region(region: Str) -> Self
+    fn retry_config(retry_config: RetryConfig) -> Self
+    fn timeout_config(timeout_config: TimeoutConfig) -> Self
+    fn sleep_impl(sleep: Str) -> Self
+    fn time_source(time_source: Str) -> Self
+    fn http_client(http_client: Str) -> Self
+    fn protocol(protocol: Str) -> Self
+    fn auth_scheme_preference(auth_scheme_preference: Str) -> Self
+    fn sigv4a_signing_region_set(sigv4a_signing_region_set: Str) -> Self
+    fn identity_cache(identity_cache: Str) -> Self
+    fn credentials_provider(credentials_provider: Str) -> Self
+    fn no_credentials() -> Self
+    fn test_credentials() -> Self
+    fn empty_test_environment() -> Self
+    fn token_provider(token_provider: Str) -> Self
+    fn app_name(app_name: AppName) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn account_id_endpoint_mode(account_id_endpoint_mode: AccountIdEndpointMode) -> Self
+    fn endpoint_url(endpoint_url: Str) -> Self
+    fn use_fips(use_fips: Bool) -> Self
+    fn use_dual_stack(use_dual_stack: Bool) -> Self
+    fn disable_request_compression(disable_request_compression: Bool) -> Self
+    fn request_min_compression_size_bytes(size: Int) -> Self
+    fn stalled_stream_protection(stalled_stream_protection_config: StalledStreamProtectionConfig) -> Self
+    fn request_checksum_calculation(request_checksum_calculation: RequestChecksumCalculation) -> Self
+    fn response_checksum_validation(response_checksum_validation: ResponseChecksumValidation) -> Self
+    fn load() -> SdkConfig
+
+  struct ProfileFileTokenProvider
+    fn builder() -> Builder
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct ProviderConfig
+    fn without_region() -> Self
+    fn empty() -> Self
+    fn with_default_region() -> Self
+    fn with_region(region: Opt<Region>) -> Self
+    fn with_use_fips(use_fips: Opt<Bool>) -> Self
+    fn with_use_dual_stack(use_dual_stack: Opt<Bool>) -> Self
+    fn with_behavior_version(behavior_version: Opt<BehaviorVersion>) -> Self
+    fn load_default_region() -> Self
+    fn with_time_source(time_source: Str) -> Self
+    fn with_http_client(http_client: Str) -> Self
+    fn with_sleep_impl(sleep_impl: Str) -> Self
+    fn with_retry_config(retry_config: RetryConfig) -> Self
+
+  struct RetryConfigError
+
+  struct SsoCredentialsProvider
+    fn builder() -> Builder
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct SsoTokenProvider
+    fn builder() -> Builder
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct AssumeRoleProvider
+    fn builder(role: Str) -> AssumeRoleProviderBuilder
+
+  struct AssumeRoleProviderBuilder
+    fn new(role: Str) -> Self
+    fn external_id(id: Str) -> Self
+    fn session_name(name: Str) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn session_length(length: Duration) -> Self
+    fn region(region: Region) -> Self
+    fn tags(tags: Str) -> Self
+    fn configure(conf: SdkConfig) -> Self
+    fn build() -> AssumeRoleProvider
+    fn build_from_provider(provider: Str) -> AssumeRoleProvider
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct WebIdentityTokenCredentialsProvider
+    fn builder() -> Builder
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct StaticConfiguration
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct EnvironmentVariableCredentialsProvider
+    fn new() -> Self
+
+  struct ProfileFileCredentialsProvider
+    fn builder() -> Builder
+
+  struct DefaultCredentialsChain
+    fn builder() -> Builder
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct Client
+    fn builder() -> Builder
+    fn get(path: Str) -> Res!<SensitiveString>
+
+  struct DefaultTokenChain
+    fn builder() -> Builder
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct EcsCredentialsProvider
+    fn builder() -> Builder
+    fn credentials() -> Res
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct InvalidFullUriError
+
+  struct FailedToLoadToken
+    fn is_dispatch_failure() -> Bool
+
+  struct ErrorResponse
+    fn response() -> HttpResponse
+
+  struct IoError
+
+  struct Unexpected
+
+  struct InvalidEndpointMode
+
+  struct BuildError
+
+  struct EnvironmentVariableRegionProvider
+    fn new() -> Self
+
+  struct ProfileFileRegionProvider
+    fn new() -> Self
+    fn builder() -> Builder
+
+  struct TokenError
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct DefaultRegionChain
+    fn region() -> Opt<Region>
+    fn builder() -> Builder
+
+  struct SensitiveString
+
+  struct Builder
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn profile(profile: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn build() -> ImdsCredentialsProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn imds_client(imds_client: Client) -> Self
+    fn build() -> ImdsRegionProvider
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn with_custom_provider(name: Str, provider: Str) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileCredentialsProvider
+    fn configure(config: ProviderConfig) -> Self
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileRegionProvider
+    fn profile_name(profile_name: Str) -> Self
+    fn profile_files(profile_files: ProfileFiles) -> Self
+    fn build() -> ProfileFileTokenProvider
+    fn configure(configuration: ProviderConfig) -> Self
+    fn profile_name(name: Str) -> Self
+    fn retry_config() -> RetryConfig
+    fn new() -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn account_id(account_id: Str) -> Self
+    fn set_account_id(account_id: Opt<Str>) -> Self
+    fn region(region: Region) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn role_name(role_name: Str) -> Self
+    fn set_role_name(role_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn build() -> SsoCredentialsProvider
+    fn new() -> Self
+    fn configure(sdk_config: SdkConfig) -> Self
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Region>) -> Self
+    fn session_name(session_name: Str) -> Self
+    fn set_session_name(session_name: Opt<Str>) -> Self
+    fn start_url(start_url: Str) -> Self
+    fn set_start_url(start_url: Opt<Str>) -> Self
+    fn build() -> SsoTokenProvider
+    fn profile_name(name: Str) -> Self
+    fn app_name() -> Opt<AppName>
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn static_configuration(config: StaticConfiguration) -> Self
+    fn policy(policy: Str) -> Self
+    fn policy_arns(policy_arns: List<Str>) -> Self
+    fn build() -> WebIdentityTokenCredentialsProvider
+    fn configure(_configuration: ProviderConfig) -> Self
+    fn timeout_config() -> TimeoutConfig
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn with_custom_credential_source(name: Str, provider: Str) -> Self
+    fn profile_name(name: Str) -> Self
+    fn imds_client(client: Client) -> Self
+    fn configure(config: ProviderConfig) -> Self
+    fn build() -> DefaultCredentialsChain
+    fn region(region: Str) -> Self
+    fn set_region(region: Opt<Str>) -> Self
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultTokenChain
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn dns(dns: Str) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn build() -> EcsCredentialsProvider
+    fn max_attempts(max_attempts: Int) -> Self
+    fn configure(provider_config: ProviderConfig) -> Self
+    fn endpoint(endpoint: Str) -> Res!<Self>
+    fn endpoint_mode(mode: EndpointMode) -> Self
+    fn token_ttl(ttl: Duration) -> Self
+    fn connect_timeout(timeout: Duration) -> Self
+    fn read_timeout(timeout: Duration) -> Self
+    fn operation_timeout(timeout: Duration) -> Self
+    fn operation_attempt_timeout(timeout: Duration) -> Self
+    fn retry_classifier(retry_classifier: SharedRetryClassifier) -> Self
+    fn build() -> Client
+    fn profile_name(name: Str) -> Self
+    fn build() -> DefaultRegionChain
+
+  struct CredentialProcessProvider
+    fn new(command: Str) -> Self
+
+  struct ImdsResponseRetryClassifier
+    fn with_retry_connect_timeouts(retry_connect_timeouts: Bool) -> Self
+
+  trait ProvideRegion
+    fn region() -> ProvideRegion

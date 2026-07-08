@@ -592,8 +592,18 @@ fn gen_struct(c: &Construct) -> String {
                 }).map(|f| f.name.clone())
             }).collect();
 
+        // Fields with scalar defaults (Int→0, Bool→false, F64→0.0) are auto-initialized
+        let scalar_default_fields: std::collections::HashSet<String> = fields.iter()
+            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if n == "Int" || n == "Bool" || n == "F64"))
+            .map(|f| f.name.clone())
+            .collect();
+
         let user_fields: Vec<&&Field> = fields.iter()
-            .filter(|f| !auto_fields.contains(&f.name.as_str()) && !enum_field_names.contains(&f.name))
+            .filter(|f| {
+                !auto_fields.contains(&f.name.as_str())
+                && !enum_field_names.contains(&f.name)
+                && !scalar_default_fields.contains(&f.name)
+            })
             .collect();
 
         let params_str = user_fields.iter()
@@ -606,6 +616,14 @@ fn gen_struct(c: &Construct) -> String {
                 format!("{}: Uuid::new_v4()", snake)
             } else if auto_fields.contains(&f.name.as_str()) {
                 format!("{}: Utc::now()", snake)
+            } else if scalar_default_fields.contains(&f.name) {
+                // Scalar defaults: Int→0, Bool→false, F64→0.0
+                let default = match &f.type_expr {
+                    TypeExpr::Named(n) if n == "Bool" => "false",
+                    TypeExpr::Named(n) if n == "F64" => "0.0",
+                    _ => "0", // Int and anything else numeric
+                };
+                format!("{}: {}", snake, default)
             } else if enum_field_names.contains(&f.name) {
                 // Use first variant of the enum
                 let first_variant = c.blocks.iter()
@@ -678,9 +696,22 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
             .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
             .collect::<Vec<_>>().join(", ");
 
+        // Determine the return type: if the function has an explicit return type,
+        // use it. Otherwise default to Vec<Events> for event-collecting methods.
+        let has_explicit_return = func.return_type.as_ref()
+            .map(|t| !matches!(t, TypeExpr::Result(None)))
+            .unwrap_or(false);
+        let return_type_str = if has_explicit_return {
+            func.return_type.as_ref()
+                .map(|t| type_to_rust(t))
+                .unwrap_or_else(|| format!("Result<Vec<{}>, DomainError>", event_enum_name))
+        } else {
+            format!("Result<Vec<{}>, DomainError>", event_enum_name)
+        };
+
         out.push_str(&format!(
-            "    pub fn {}(&mut self, {}) -> Result<Vec<{}>, DomainError> {{\n",
-            to_snake(&func.name), params_str, event_enum_name
+            "    pub fn {}(&mut self, {}) -> {} {{\n",
+            to_snake(&func.name), params_str, return_type_str
         ));
 
         // @invariant annotation → guard
@@ -707,6 +738,7 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
             ctx.locals.insert(p.name.clone());
         }
 
+        let mut has_explicit_ret = false;
         for expr in &func.body {
             match expr {
                 Expr::Assign(field, rhs) | Expr::MutAssign(field, rhs, _) if field_names.contains(field) => {
@@ -751,12 +783,18 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
                     ));
                 }
                 other => {
+                    if matches!(other, Expr::Return(_)) {
+                        has_explicit_ret = true;
+                    }
                     out.push_str(&format!("        {};\n", expr_to_rust(other, &ctx)));
                 }
             }
         }
 
-        out.push_str("        Ok(events)\n");
+        // Only append Ok(events) if the method doesn't have an explicit return value
+        if !has_explicit_ret && !has_explicit_return {
+            out.push_str("        Ok(events)\n");
+        }
         out.push_str("    }\n\n");
     }
 
@@ -795,6 +833,11 @@ fn translate_emit_field(
     match expr {
         Expr::Ident(name) if self_fields.contains(name.as_str()) => {
             format!("self.{}", to_snake(name))
+        }
+        Expr::Ident(name) => {
+            // Local variables need .clone() to avoid move issues when
+            // the value is also used after the emit (e.g. in a return).
+            format!("{}.clone()", to_snake(name))
         }
         Expr::Call(call) if call.target == "now" && call.method.is_empty() => {
             "Utc::now()".to_string()

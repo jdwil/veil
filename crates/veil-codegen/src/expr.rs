@@ -313,7 +313,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 // Already-declared local (e.g. a `mut` var) → reassignment, no `let`.
                 format!("{} = {}", name, rhs_str)
             } else {
-                format!("let {} = {}", name, rhs_str)
+                format!("let mut {} = {}", name, rhs_str)
             }
         }
         Expr::MutAssign(name, rhs, ty_ann) => {
@@ -323,7 +323,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 None => format!("let mut {} = {}", name, rhs_str),
             }
         }
-        Expr::StringLit(s) => format!("\"{}\"", s),
+        Expr::StringLit(s) => format!("\"{}\".to_string()", s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
         Expr::BoolLit(b) => b.to_string(),
@@ -660,7 +660,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if ctx.routing_traits.contains(&call.target) {
             return format!("{}.{}({}).await?", ctx.bus_ref, to_snake(method), final_args);
         }
-        return format!("deps.{}.{}({}).await?", dep_name, to_snake(method), final_args);
+        // Check if this method returns Option<T> — if so, unwrap with .ok_or(NotFound)?
+        let returns_option = ctx.method_returns.get(&(call.target.clone(), call.method.clone()))
+            .map(|t| t.starts_with("Option<"))
+            .unwrap_or(false);
+        let opt_suffix = if returns_option { ".ok_or(DomainError::NotFound)?" } else { "" };
+        return format!("deps.{}.{}({}).await?{}", dep_name, to_snake(method), final_args, opt_suffix);
     }
 
     // In an orchestrator, ANY call to another context (struct construction,
@@ -720,11 +725,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             }
             // Known concrete method (e.g. aggregate fn) — call with ?
             if ctx.method_returns.contains_key(&(type_name.to_string(), call.method.clone())) {
-                return format!("{}.{}({})?", call.target, method, args_str);
+                let cloned_args = clone_args(&call.args, ctx);
+                return format!("{}.{}({})?", call.target, method, cloned_args);
             }
         }
-        // Unknown method on local — call without ? (might be a field accessor or infallible)
-        return format!("{}.{}({})", call.target, method, args_str);
+        // Unknown method on local — clone args to avoid move issues
+        return format!("{}.{}({})", call.target, method, clone_args(&call.args, ctx));
     }
     if call.method.is_empty() {
         // Bare call: now() → Utc::now(), others → as-is (cloning value args so

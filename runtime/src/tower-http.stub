@@ -1,0 +1,164 @@
+stub tower-http 0.6.11
+
+  struct GrpcErrorsAsFailures
+    fn new() -> Self
+    fn with_success(code: GrpcCode) -> Self
+    fn make_classifier() -> SharedClassifier<Self>
+
+  struct SharedClassifier
+    fn new(classifier: C) -> Self
+
+  struct GrpcEosErrorsAsFailures
+
+  struct MapFailureClass
+
+  struct StatusInRangeAsFailures
+    fn new(range: RangeInclusive<Int>) -> Self
+    fn new_for_client_and_server_errors() -> Self
+    fn into_make_classifier() -> SharedClassifier<Self>
+
+  struct NeverClassifyEos
+
+  struct FilterCredentials
+    fn new() -> Self
+    fn block_cross_origin(enable: Bool) -> Self
+    fn block_any() -> Self
+    fn block_none() -> Self
+    fn remove_blocklisted(enable: Bool) -> Self
+    fn remove_all() -> Self
+    fn remove_none() -> Self
+
+  struct ServerErrorsAsFailures
+    fn new() -> Self
+    fn make_classifier() -> SharedClassifier<Self>
+
+  struct Limited
+    fn new(max: usize) -> Self
+
+  struct RedirectFn
+
+  struct Or
+
+  struct SameOrigin
+    fn new() -> Self
+
+  struct FollowRedirect
+    fn new(inner: S) -> Self
+    fn layer() -> FollowRedirectLayer
+    fn with_policy(inner: S, policy: P) -> Self
+    fn layer_with_policy(policy: P) -> FollowRedirectLayer<P>
+    fn get_ref() -> S
+    fn get_mut() -> S
+    fn into_inner() -> S
+
+  struct FollowRedirectLayer
+    fn new() -> Self
+    fn with_policy(policy: P) -> Self
+
+  struct ResponseFuture
+
+  struct RequestUri
+
+  struct And
+
+  struct AllowCredentials
+    fn yes() -> Self
+    fn predicate(f: F) -> Self
+
+  struct AllowHeaders
+    fn any() -> Self
+    fn list(headers: I) -> Self
+    fn mirror_request() -> Self
+
+  struct Any
+
+  struct AllowMethods
+    fn any() -> Self
+    fn exact(method: Method) -> Self
+    fn list(methods: I) -> Self
+    fn mirror_request() -> Self
+
+  struct AllowOrigin
+    fn any() -> Self
+    fn exact(origin: HeaderValue) -> Self
+    fn list(origins: I) -> Self
+    fn predicate(f: F) -> Self
+    fn async_predicate(f: F) -> Self
+    fn mirror_request() -> Self
+
+  struct AllowPrivateNetwork
+    fn yes() -> Self
+    fn predicate(f: F) -> Self
+
+  struct ExposeHeaders
+    fn any() -> Self
+    fn list(headers: I) -> Self
+
+  struct Attempt
+    fn status() -> StatusCode
+    fn method() -> Method
+    fn location() -> Uri
+    fn previous_method() -> Method
+    fn previous() -> Uri
+
+  struct MaxAge
+    fn exact(max_age: Duration) -> Self
+    fn dynamic(f: F) -> Self
+
+  struct Vary
+    fn list(headers: I) -> Self
+
+  struct Cors
+    fn new(inner: S) -> Self
+    fn permissive(inner: S) -> Self
+    fn very_permissive(inner: S) -> Self
+    fn get_ref() -> S
+    fn get_mut() -> S
+    fn into_inner() -> S
+    fn layer() -> CorsLayer
+    fn allow_credentials(allow_credentials: T) -> Self
+    fn allow_headers(headers: T) -> Self
+    fn max_age(max_age: T) -> Self
+    fn allow_methods(methods: T) -> Self
+    fn allow_origin(origin: T) -> Self
+    fn expose_headers(headers: T) -> Self
+    fn allow_private_network(allow_private_network: T) -> Self
+
+  struct CorsLayer
+    fn new() -> Self
+    fn permissive() -> Self
+    fn very_permissive() -> Self
+    fn allow_credentials(allow_credentials: T) -> Self
+    fn allow_headers(headers: T) -> Self
+    fn max_age(max_age: T) -> Self
+    fn allow_methods(methods: T) -> Self
+    fn allow_origin(origin: T) -> Self
+    fn expose_headers(headers: T) -> Self
+    fn allow_private_network(allow_private_network: T) -> Self
+    fn vary(headers: T) -> Self
+
+  struct CloneBodyFn
+
+  struct ResponseFuture
+
+  trait MakeClassifier
+    fn make_classifier(req: Request<B>) -> Str
+
+  trait ClassifyResponse
+    fn classify_response(res: Response<B>) -> ClassifiedResponse<Str, Str>
+    fn classify_error(error: E) -> Str
+    fn map_failure_class(f: F) -> MapFailureClass<Self, F>
+
+  trait ClassifyEos
+    fn classify_eos(trailers: Opt<HeaderMap>) -> Res!<Str>
+    fn classify_error(error: E) -> Str
+    fn map_failure_class(f: F) -> MapFailureClass<Self, F>
+
+  trait PolicyExt
+    fn and(other: P) -> And<Self, P>
+    fn or(other: P) -> Or<Self, P>
+
+  trait Policy
+    fn redirect(attempt: Attempt) -> Res!<Action>
+    fn on_request(_request: Request<B>)
+    fn clone_body(_body: B) -> Opt<B>
