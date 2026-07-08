@@ -497,10 +497,12 @@
     const allEdges = [...flowEdges, ...ghostEdges];
 
     const direction = parentNode?.kind === 'Flow' || parentNode?.kind === 'ParallelGateway'
+      || parentNode?.kind === 'InterfaceMethod'
       ? 'LR' : 'TB';
 
     const isFlowView = parentNode?.kind === 'Flow'
-      || parentNode?.kind === 'ParallelGateway' || parentNode?.kind === 'Step';
+      || parentNode?.kind === 'ParallelGateway' || parentNode?.kind === 'Step'
+      || parentNode?.kind === 'InterfaceMethod';
 
     if (isFlowView) {
       nodes = layoutNodes(allNodes, allEdges, direction);
