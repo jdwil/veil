@@ -9,11 +9,13 @@ export const loading = writable(true);
 export const error = writable<string | null>(null);
 export const selectedNodeId = writable<string | null>(null);
 export const paletteConfig = writable<any[]>([]);
+export const diagnostics = writable<any[]>([]);
 
 const API_BASE = 'http://localhost:3001/api';
 const API_URL = `${API_BASE}/ir`;
 const SOURCE_URL = `${API_BASE}/source`;
 const PALETTE_URL = `${API_BASE}/palette`;
+const DIAGNOSTICS_URL = `${API_BASE}/diagnostics`;
 const EDIT_URL = `${API_BASE}/edit`;
 const STUBS_URL = `${API_BASE}/stubs`;
 const FILES_URL = `${API_BASE}/files`;
@@ -64,12 +66,13 @@ export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes, palRes, stubRes, filesRes] = await Promise.all([
+    const [irRes, srcRes, palRes, stubRes, filesRes, diagRes] = await Promise.all([
       fetch(API_URL),
       fetch(SOURCE_URL),
       fetch(PALETTE_URL),
       fetch(STUBS_URL).catch(() => null),
       fetch(FILES_URL).catch(() => null),
+      fetch(DIAGNOSTICS_URL).catch(() => null),
     ]);
     if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
     const data: IrGraph = await irRes.json();
@@ -77,6 +80,10 @@ export async function fetchIr() {
 
     if (stubRes && stubRes.ok) {
       stubs.set(await stubRes.json());
+    }
+
+    if (diagRes && diagRes.ok) {
+      diagnostics.set(await diagRes.json());
     }
 
     if (srcRes.ok) {

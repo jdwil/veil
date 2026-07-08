@@ -16,6 +16,7 @@
   import VeilNode from '$lib/VeilNode.svelte';
   import Palette from '$lib/Palette.svelte';
   import PropertyEditor from '$lib/PropertyEditor.svelte';
+  import DiagnosticsPanel from '$lib/DiagnosticsPanel.svelte';
   import CodePreview from '$lib/CodePreview.svelte';
   import { layoutNodes } from '$lib/layout';
   import {
@@ -799,6 +800,7 @@
           </div>
         {/if}
         <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+        <DiagnosticsPanel />
         
         {#key flowKey}
         <SvelteFlow
