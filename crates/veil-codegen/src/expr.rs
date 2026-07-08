@@ -824,6 +824,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         return format!("{}::{}({})", effective_target, to_snake(method), args_str);
     }
 
+    // Self field target (adapter bodies) → self.target.method(args)
+    if ctx.in_aggregate_fn && ctx.self_fields.contains(&call.target) {
+        let method = to_snake(&call.method);
+        return format!("self.{}.{}({})", to_snake(&call.target), method, clone_args(&call.args, ctx));
+    }
+
     // Local variable target → target.method(args)?
     if ctx.is_local(&call.target) {
         let method = to_snake(&call.method);
