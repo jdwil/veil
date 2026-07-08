@@ -118,31 +118,6 @@
       {/each}
     {/if}
 
-    <!-- External crate APIs (from .stub files) — UX-006. -->
-    {#if $stubs.length > 0}
-      <div class="palette-category">
-        <span class="category-label">External</span>
-        {#each $stubs as stub}
-          <div class="stub-crate">
-            <span class="stub-name">{stub.name}<span class="stub-version">{stub.version}</span></span>
-            {#each stub.structs as s}
-              <div class="stub-struct" title={s.methods.map(stubSig).join('\n')}>
-                <span class="stub-icon">📚</span>
-                <span class="stub-struct-name">{s.name}</span>
-                <span class="stub-method-count">{s.methods.length} methods</span>
-              </div>
-            {/each}
-            {#each stub.impls as im}
-              <div class="stub-struct" title={im.methods.map(stubSig).join('\n')}>
-                <span class="stub-icon">🔧</span>
-                <span class="stub-struct-name">{im.target}</span>
-                <span class="stub-method-count">{im.methods.length} fns</span>
-              </div>
-            {/each}
-          </div>
-        {/each}
-      </div>
-    {/if}
   </div>
 </aside>
 
