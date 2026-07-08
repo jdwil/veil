@@ -623,6 +623,12 @@
 
     if (!selectedId) return;
 
+    // Build a position lookup from visible nodes
+    const nodePositions = new Map<string, { x: number; y: number }>();
+    for (const n of nodes) {
+      nodePositions.set(n.id, n.position);
+    }
+
     // Find reference edges that touch the selected node
     const nodeId = Number(selectedId);
     const visibleIds = new Set(nodes.map(n => Number(n.id)));
@@ -630,13 +636,35 @@
       .filter(e => e.kind === 'References')
       .filter(e => (e.from === nodeId || e.to === nodeId))
       .filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))
-      .map((e, i) => ({
-        id: `ref-${e.from}-${e.to}-${i}`,
-        source: String(e.from),
-        target: String(e.to),
-        animated: false,
-        style: getEdgeStyle('References'),
-      }));
+      .map((e, i) => {
+        const sourcePos = nodePositions.get(String(e.from));
+        const targetPos = nodePositions.get(String(e.to));
+        // Determine shortest path handles based on relative position
+        let sourceHandle = 'bottom';
+        let targetHandle = 'top';
+        if (sourcePos && targetPos) {
+          const dx = targetPos.x - sourcePos.x;
+          const dy = targetPos.y - sourcePos.y;
+          if (Math.abs(dx) > Math.abs(dy)) {
+            // Horizontal relationship dominates
+            sourceHandle = dx > 0 ? 'right' : 'left';
+            targetHandle = dx > 0 ? 'left' : 'right';
+          } else {
+            // Vertical relationship dominates
+            sourceHandle = dy > 0 ? 'bottom' : 'top';
+            targetHandle = dy > 0 ? 'top' : 'bottom';
+          }
+        }
+        return {
+          id: `ref-${e.from}-${e.to}-${i}`,
+          source: String(e.from),
+          target: String(e.to),
+          sourceHandle,
+          targetHandle,
+          animated: false,
+          style: getEdgeStyle('References'),
+        };
+      });
 
     if (refEdges.length > 0) {
       edges = [...edges, ...refEdges];
