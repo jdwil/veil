@@ -568,6 +568,8 @@
     switch (kind) {
       case 'Implements':
         return 'stroke: var(--veil-text-secondary); stroke-width: 2; stroke-dasharray: 6 3;';
+      case 'References':
+        return 'stroke: #60a5fa; stroke-width: 1.5; stroke-dasharray: 4 2;';
       case 'SequenceFlow':
         return 'stroke: var(--veil-text-dim); stroke-width: 2;';
       case 'Calls':

@@ -14,6 +14,7 @@ pub fn build_ir(solution: &Solution) -> IrGraph {
     let mut builder = IrBuilder::new();
     builder.build_solution(solution);
     builder.resolve_impl_bindings();
+    builder.resolve_references();
     builder.graph
 }
 
@@ -803,6 +804,74 @@ impl IrBuilder {
                         .properties
                         .push(("via".to_string(), impl_name.clone()));
                 }
+            }
+        }
+    }
+
+    /// Detect FK-style references between constructs.
+    /// When a TypeDef node has a field like `cohort_id: Id`, look for a construct
+    /// named "Cohort" and emit a References edge from this node to that target.
+    fn resolve_references(&mut self) {
+        let mut ref_edges: Vec<(NodeId, NodeId)> = Vec::new();
+
+        // Collect all construct names (TypeDef, Module, Flow, Interface) and their IDs.
+        let constructs: Vec<(NodeId, String)> = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::TypeDef | NodeKind::Module | NodeKind::Flow))
+            .map(|n| (n.id, n.name.clone()))
+            .collect();
+
+        // For each TypeDef node, look at its "fields" property for `xxx_id` patterns.
+        for node in &self.graph.nodes {
+            if node.kind != NodeKind::TypeDef {
+                continue;
+            }
+            let fields_str = node
+                .metadata
+                .properties
+                .iter()
+                .find(|(k, _)| k == "fields")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+
+            // Parse field names: "cohort_id: Id, name: Str, ..." -> extract "cohort_id"
+            for field in fields_str.split(", ") {
+                let field_name = field.split(':').next().unwrap_or("").trim();
+                if !field_name.ends_with("_id") || field_name == "id" {
+                    continue;
+                }
+                // Strip "_id" suffix and convert to PascalCase to match construct names.
+                let ref_name = field_name.trim_end_matches("_id");
+                let pascal = ref_name
+                    .split('_')
+                    .map(|part| {
+                        let mut c = part.chars();
+                        match c.next() {
+                            Some(first) => first.to_uppercase().to_string() + c.as_str(),
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<String>();
+
+                // Find the target construct.
+                if let Some((target_id, _)) = constructs.iter().find(|(_, name)| *name == pascal) {
+                    // Don't add self-references or duplicate edges.
+                    if *target_id != node.id {
+                        ref_edges.push((node.id, *target_id));
+                    }
+                }
+            }
+        }
+
+        for (from, to) in ref_edges {
+            // Avoid duplicate edges.
+            let exists = self.graph.edges.iter().any(|e| {
+                e.from == from && e.to == to && e.kind == EdgeKind::References
+            });
+            if !exists {
+                self.graph.add_edge(from, to, EdgeKind::References);
             }
         }
     }
