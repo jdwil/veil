@@ -4,7 +4,7 @@ import type { Node, Edge } from '@xyflow/svelte';
 const elk = new ELK();
 
 const DEFAULT_NODE_WIDTH = 260;
-const DEFAULT_NODE_HEIGHT = 80;
+const DEFAULT_NODE_HEIGHT = 120;
 
 /**
  * Lay out nodes using ELK.js for flow-type views (services, steps, methods).
