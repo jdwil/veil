@@ -49,6 +49,8 @@
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
   let showLayerProvided = $state(false);
+  // DOM reference for node measurement — ELK needs real rendered sizes
+  let graphContainerEl: HTMLElement | null = $state(null);
   let theme = $state<'dark' | 'light'>(
     (typeof localStorage !== 'undefined' && localStorage.getItem('veil-theme') as 'dark' | 'light') || 'dark'
   );
@@ -328,7 +330,7 @@
       }
     }
 
-    nodes = await layoutByType(solNodes);
+    nodes = await layoutByType(solNodes, graphContainerEl);
     edges = solEdges;
     tabs = [];
     activeTab = null;
@@ -409,12 +411,12 @@
             style: getEdgeStyle(e.kind),
           }));
 
-        nodes = await layoutByType(tabNodes);
+        nodes = await layoutByType(tabNodes, graphContainerEl);
         edges = tabEdges;
         return;
       }
       // Active tab is an expected group with no content yet — show empty canvas
-      nodes = await layoutByType([]);
+      nodes = await layoutByType([], graphContainerEl);
       edges = [];
       return;
     } else {
@@ -505,9 +507,9 @@
       || parentNode?.kind === 'InterfaceMethod';
 
     if (isFlowView) {
-      nodes = await layoutNodes(allNodes, allEdges, direction);
+      nodes = await layoutNodes(allNodes, allEdges, direction, graphContainerEl);
     } else {
-      nodes = await layoutByType(allNodes);
+      nodes = await layoutByType(allNodes, graphContainerEl);
     }
     edges = allEdges;
   }
@@ -747,7 +749,7 @@
             {/each}
           </div>
         {/if}
-        <div class="graph-container" ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+        <div class="graph-container" bind:this={graphContainerEl} ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
         <DiagnosticsPanel />
         
         {#key flowKey}
