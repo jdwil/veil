@@ -59,24 +59,46 @@ export async function layoutNodes(
 
 /**
  * Lay out nodes using ELK.js for non-flow views (domain groups, bounded contexts).
- * Groups nodes by type and arranges them in a clean grid with proper spacing.
+ * Groups nodes by type and arranges them in columns with proper spacing.
  */
 export async function layoutByType(nodes: Node[]): Promise<Node[]> {
   if (nodes.length === 0) return [];
 
-  // For non-flow views, use a box layout that respects node sizes
+  // Group nodes by their display type (subkind or kind) for partitioning
+  const groups: Record<string, Node[]> = {};
+  for (const node of nodes) {
+    const type = String(node.data.subkind ?? node.data.kind ?? 'Other');
+    if (!groups[type]) groups[type] = [];
+    groups[type].push(node);
+  }
+
+  // Assign partition indices so ELK groups same-type nodes together
+  let partitionIndex = 0;
+  const partitionedChildren: any[] = [];
+  for (const [_, groupNodes] of Object.entries(groups)) {
+    for (const node of groupNodes) {
+      partitionedChildren.push({
+        id: node.id,
+        width: DEFAULT_NODE_WIDTH,
+        height: DEFAULT_NODE_HEIGHT,
+        layoutOptions: {
+          'elk.partitioning.partition': String(partitionIndex),
+        },
+      });
+    }
+    partitionIndex++;
+  }
+
   const elkGraph = {
     id: 'root',
     layoutOptions: {
-      'elk.algorithm': 'rectpacking',
+      'elk.algorithm': 'layered',
+      'elk.direction': 'RIGHT',
       'elk.spacing.nodeNode': '40',
-      'elk.rectpacking.desiredRowCount': String(Math.ceil(Math.sqrt(nodes.length))),
+      'elk.layered.spacing.nodeNodeBetweenLayers': '80',
+      'elk.partitioning.activate': 'true',
     },
-    children: nodes.map((node) => ({
-      id: node.id,
-      width: DEFAULT_NODE_WIDTH,
-      height: DEFAULT_NODE_HEIGHT,
-    })),
+    children: partitionedChildren,
     edges: [] as any[],
   };
 
@@ -93,7 +115,7 @@ export async function layoutByType(nodes: Node[]): Promise<Node[]> {
       position: positionMap.get(node.id) ?? node.position,
     }));
   } catch (err) {
-    console.error('ELK rectpacking failed, falling back to grid:', err);
+    console.error('ELK partitioned layout failed, falling back to grid:', err);
     return fallbackGrid(nodes);
   }
 }
