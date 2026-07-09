@@ -422,6 +422,22 @@ fn main() {
             if !registry.codegen_templates.is_empty() {
                 let total_rules: usize = registry.codegen_templates.iter().map(|t| t.rules.len()).sum();
                 println!("  Codegen: {} template(s), {} rule(s)", registry.codegen_templates.len(), total_rules);
+                // Execute templates and show output summary
+                let output = veil_codegen::execute_templates(&sol, &registry, "rust");
+                if !output.files.is_empty() {
+                    for f in &output.files {
+                        println!("  Generated: {} ({} bytes)", f.path, f.content.len());
+                        println!("--- {} ---\n{}\n---", f.path, f.content);
+                    }
+                }
+                if !output.sections.is_empty() {
+                    for (name, contributions) in &output.sections {
+                        println!("  Section '{}': {} contribution(s)", name, contributions.len());
+                        for c in contributions {
+                            println!("--- section:{} (priority:{}, from:{}) ---\n{}\n---", name, c.priority, c.source_layer, c.content);
+                        }
+                    }
+                }
             }
 
             let errors = veil_ir::validate::validate_solution(&sol, &registry);

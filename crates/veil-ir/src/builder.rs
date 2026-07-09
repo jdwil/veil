@@ -18,7 +18,7 @@ pub fn build_ir(solution: &Solution) -> IrGraph {
     builder.graph
 }
 
-fn type_to_display(ty: &TypeExpr) -> String {
+pub fn type_to_display(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Named(n) => n.clone(),
         TypeExpr::Generic(name, args) => {

@@ -15,7 +15,7 @@ pub use ast::*;
 pub use builder::build_ir;
 pub use edit::{apply_edits, EditOp, EditError};
 pub use ir::*;
-pub use layer::{ConstructSpec, LayerRegistry, Shape, StatementSpec, StmtShape, palette_from_registry};
+pub use layer::{CodegenRule, CodegenTemplate, ConstructSpec, LayerRegistry, Shape, StatementSpec, StmtShape, palette_from_registry};
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;

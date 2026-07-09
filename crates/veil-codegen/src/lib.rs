@@ -4,9 +4,11 @@
 
 pub mod expr;
 pub mod rust;
+pub mod template;
 pub mod typescript;
 
 pub use rust::generate;
+pub use template::execute_templates;
 pub use typescript::generate_ts;
 
 use veil_ir::ast::Solution;
