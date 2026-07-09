@@ -158,6 +158,7 @@ pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
                 return Err(EditError::ShapeMismatch { span_start: *span_start, expected: "a struct-shaped construct" });
             }
             target.fields = fields.iter().map(|f| Field {
+                annotations: Vec::new(),
                 name: f.name.clone(),
                 type_expr: parse_type_str(&f.type_str),
                 default_expr: None,

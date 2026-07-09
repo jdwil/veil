@@ -514,12 +514,29 @@ impl IrBuilder {
                     let inputs_str = c
                         .inputs
                         .iter()
-                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                        .map(|f| {
+                            let prefix = if f.annotations.iter().any(|a| a.name == "dep") {
+                                "@dep "
+                            } else {
+                                ""
+                            };
+                            format!("{}{}: {}", prefix, f.name, type_to_display(&f.type_expr))
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), c.span);
                     self.set_parent(inputs_id, id);
                     self.set_property(inputs_id, "params", &inputs_str);
+                    // Set dep_params property listing @dep-annotated inputs
+                    let dep_params: Vec<String> = c
+                        .inputs
+                        .iter()
+                        .filter(|f| f.annotations.iter().any(|a| a.name == "dep"))
+                        .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                        .collect();
+                    if !dep_params.is_empty() {
+                        self.set_property(inputs_id, "dep_params", &dep_params.join(", "));
+                    }
                     self.graph.add_edge(id, inputs_id, EdgeKind::Contains);
                 }
                 self.build_steps(&c.steps, id);
@@ -578,12 +595,29 @@ impl IrBuilder {
             let inputs_str = flow
                 .inputs
                 .iter()
-                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                .map(|f| {
+                    let prefix = if f.annotations.iter().any(|a| a.name == "dep") {
+                        "@dep "
+                    } else {
+                        ""
+                    };
+                    format!("{}{}: {}", prefix, f.name, type_to_display(&f.type_expr))
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), flow.span);
             self.set_parent(inputs_id, flow_id);
             self.set_property(inputs_id, "params", &inputs_str);
+            // Set dep_params property listing @dep-annotated inputs
+            let dep_params: Vec<String> = flow
+                .inputs
+                .iter()
+                .filter(|f| f.annotations.iter().any(|a| a.name == "dep"))
+                .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
+                .collect();
+            if !dep_params.is_empty() {
+                self.set_property(inputs_id, "dep_params", &dep_params.join(", "));
+            }
             self.graph.add_edge(flow_id, inputs_id, EdgeKind::Contains);
         }
 

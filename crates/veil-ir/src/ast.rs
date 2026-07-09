@@ -386,6 +386,8 @@ pub struct ErrorBoundary {
 /// A field definition (name: Type).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Field {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
     pub name: String,
     pub type_expr: TypeExpr,
     /// Optional default/computed expression (e.g. `count: Int = 0` or

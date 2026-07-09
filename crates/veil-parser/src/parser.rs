@@ -414,6 +414,7 @@ impl<'a> Parser<'a> {
 
     /// Parse a field like "name: Type".
     fn parse_field(&mut self) -> Result<Field, ParseError> {
+        let field_annotations = self.parse_annotations();
         let start_span = self.current().span;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
@@ -426,6 +427,7 @@ impl<'a> Parser<'a> {
             None
         };
         Ok(Field {
+                    annotations: field_annotations,
             name,
             type_expr,
             default_expr,
@@ -443,6 +445,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let type_expr = self.parse_type()?;
                 fields.push(Field {
+                    annotations: Vec::new(),
                     name,
                     type_expr,
                     default_expr: None, span: start_span.merge(self.current().span),
@@ -450,6 +453,7 @@ impl<'a> Parser<'a> {
             } else {
                 // Shorthand: type inferred from name later.
                 fields.push(Field {
+                    annotations: Vec::new(),
                     name: name.clone(),
                     type_expr: TypeExpr::Named(name),
                     default_expr: None, span: start_span,
@@ -769,6 +773,7 @@ impl<'a> Parser<'a> {
                                 inputs: construct.fields.clone(),
                                 outputs: construct.return_type
                                     .map(|rt| vec![Field {
+                    annotations: Vec::new(),
                                         name: "result".to_string(),
                                         type_expr: rt,
                                         default_expr: None, span: construct.span,
@@ -887,7 +892,7 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
-                if self.at(&TokenKind::Ident) {
+                if self.at(&TokenKind::Ident) || self.at(&TokenKind::Annotation) {
                     fields.push(self.parse_field()?);
                 } else {
                     self.advance();
@@ -1347,6 +1352,7 @@ impl<'a> Parser<'a> {
                                     self.advance();
                                     let ty = self.parse_type()?;
                                     fields.push(Field {
+                    annotations: Vec::new(),
                                         name: field_name,
                                         type_expr: ty,
                                         default_expr: None, span: trans_span,
@@ -1354,6 +1360,7 @@ impl<'a> Parser<'a> {
                                 } else {
                                     // Bare field name — infer type
                                     fields.push(Field {
+                    annotations: Vec::new(),
                                         name: field_name,
                                         type_expr: TypeExpr::Named(String::new()),
                                         default_expr: None, span: trans_span,
@@ -1379,6 +1386,7 @@ impl<'a> Parser<'a> {
                                     self.advance();
                                     let ty = self.parse_type()?;
                                     fields.push(Field {
+                    annotations: Vec::new(),
                                         name: field_name,
                                         type_expr: ty,
                                         default_expr: None, span: trans_span,
