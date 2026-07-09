@@ -54,7 +54,7 @@ pkg base v1
       icon "📦"
       color "#8b5cf6"
       label "Module"
-    in top
+    in none
 
   construct group
     mt primitive
