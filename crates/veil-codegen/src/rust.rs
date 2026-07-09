@@ -1341,10 +1341,13 @@ fn gen_impls(
                             // If the expression calls an external-effect stub,
                             // it returns () which won't match the expected type.
                             // Use todo!() to defer to real implementation.
+                            // Also use todo!() for complex chains (SDK calls with .await)
+                            // that return SDK-specific types not matching our domain.
                             let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
-                            if uses_effect {
-                                out.push_str(&format!("        {}; // effect stub (void)\n", rust_expr));
-                                out.push_str(&format!("        todo!(\"implement {} — effect stub returns no value\")\n", mimpl.method_name));
+                            let is_sdk_chain = rust_expr.contains(".await");
+                            if uses_effect || is_sdk_chain {
+                                out.push_str(&format!("        {};\n", rust_expr));
+                                out.push_str(&format!("        todo!(\"implement {} — deserialize SDK response to domain type\")\n", mimpl.method_name));
                             } else {
                                 out.push_str(&format!("        Ok({})\n", rust_expr));
                             }

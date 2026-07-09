@@ -1,7 +1,5 @@
 sol VeilRuntime
   use ddd
-  use di
-  use rust
   use aws_storage
   use rig
   use transports
@@ -323,104 +321,81 @@ sol VeilRuntime
         @field(client: S3Client)
         @env(BUCKET)
         impl put(key, data)
-          client.put_object().bucket(bucket).key(key).body(data).send().await.unwrap()
+          client.put_object().bucket(bucket).key(key).send().await.unwrap()
         impl get(key)
-          resp = client.get_object().bucket(bucket).key(key).send().await.unwrap()
-          bytes = resp.body.collect().await.unwrap()
-          bytes.into_bytes()
+          client.get_object().bucket(bucket).key(key).send().await.unwrap()
         impl delete(key)
           client.delete_object().bucket(bucket).key(key).send().await.unwrap()
         impl exists(key)
           client.head_object().bucket(bucket).key(key).send().await.unwrap()
-          true
         impl list(prefix)
-          resp = client.list_objects_v2().bucket(bucket).prefix(prefix).send().await.unwrap()
-          resp.contents().iter().map(|o| o.key().unwrap().to_string()).collect().await.unwrap()
+          client.list_objects_v2().bucket(bucket).prefix(prefix).send().await.unwrap()
         impl size(key)
-          resp = client.head_object().bucket(bucket).key(key).send().await.unwrap()
-          resp.content_length().unwrap_or(0)
+          client.head_object().bucket(bucket).key(key).send().await.unwrap()
 
       adapter DdbMetadataStore for MetadataStore
         @field(client: DdbClient)
         @env(TABLE)
         impl create_repo(metadata)
-          client.put_item().table_name(table).item("data", metadata).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl get_repo(id)
-          resp = client.get_item().table_name(table).key("pk", id.value).send().await.unwrap()
-          resp.item().unwrap()
+          client.get_item().table_name(table).send().await.unwrap()
         impl list_repos()
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl delete_repo(id)
-          client.delete_item().table_name(table).key("pk", id.value).send().await.unwrap()
+          client.delete_item().table_name(table).send().await.unwrap()
         impl put_branch(repo_id, branch)
-          client.put_item().table_name(table).item("data", branch).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl get_branch(repo_id, name)
-          resp = client.get_item().table_name(table).key("pk", name).send().await.unwrap()
-          resp.item().unwrap()
+          client.get_item().table_name(table).send().await.unwrap()
         impl list_branches(repo_id)
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl delete_branch(repo_id, name)
-          client.delete_item().table_name(table).key("pk", name).send().await.unwrap()
+          client.delete_item().table_name(table).send().await.unwrap()
         impl put_tag(repo_id, tag)
-          client.put_item().table_name(table).item("data", tag).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl get_tag(repo_id, name)
-          resp = client.get_item().table_name(table).key("pk", name).send().await.unwrap()
-          resp.item().unwrap()
+          client.get_item().table_name(table).send().await.unwrap()
         impl list_tags(repo_id)
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl delete_tag(repo_id, name)
-          client.delete_item().table_name(table).key("pk", name).send().await.unwrap()
+          client.delete_item().table_name(table).send().await.unwrap()
         impl put_commit(repo_id, commit)
-          client.put_item().table_name(table).item("data", commit).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl list_commits(repo_id, branch, limit, offset)
-          resp = client.query().table_name(table).limit(limit).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl file_history(repo_id, path, limit)
-          resp = client.query().table_name(table).limit(limit).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl put_artifact(artifact)
-          client.put_item().table_name(table).item("data", artifact).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl get_artifact(id)
-          resp = client.get_item().table_name(table).key("pk", id.value).send().await.unwrap()
-          resp.item().unwrap()
+          client.get_item().table_name(table).send().await.unwrap()
         impl find_artifact_by_hash(content_hash, target)
-          resp = client.query().table_name(table).index_name("hash-target").send().await.unwrap()
-          resp.items().first()
+          client.query().table_name(table).send().await.unwrap()
         impl list_artifacts(repo_id, branch)
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl put_deployment(record)
-          client.put_item().table_name(table).item("data", record).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl list_deployments(artifact_id)
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl put_layer(layer)
-          client.put_item().table_name(table).item("data", layer).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl get_layer(name)
-          resp = client.get_item().table_name(table).key("pk", name).send().await.unwrap()
-          resp.item().unwrap()
+          client.get_item().table_name(table).send().await.unwrap()
         impl list_layers()
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl put_stub(stub)
-          client.put_item().table_name(table).item("data", stub).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl get_stub(crate_name)
-          resp = client.get_item().table_name(table).key("pk", crate_name).send().await.unwrap()
-          resp.item().unwrap()
+          client.get_item().table_name(table).send().await.unwrap()
         impl list_stubs()
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl put_dependency(edge)
-          client.put_item().table_name(table).item("data", edge).send().await.unwrap()
+          client.put_item().table_name(table).send().await.unwrap()
         impl get_dependencies(repo_id)
-          resp = client.query().table_name(table).send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
         impl get_dependents(dependency)
-          resp = client.query().table_name(table).index_name("dep-reverse").send().await.unwrap()
-          resp.items()
+          client.query().table_name(table).send().await.unwrap()
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Tools — Rig SDK tool definitions for agent-callable operations
@@ -724,10 +699,6 @@ sol VeilRuntime
         handlers: Map<Str, HandlerDef>
 
       # ─── Auth Types ─────────────────────────────────────────────────────
-      ent Principal
-        id: Str
-        roles: List<Str>
-        claims: Map<Str, Str>
 
       enum AuthStrategy
         Bus
@@ -735,9 +706,6 @@ sol VeilRuntime
           provider_url: Str
           client_id: Str
 
-      port AuthService
-        validate_token!(token: Str) -> Principal
-        check_permission!(principal: Principal, action: Str, resource: Str) -> Bool
 
       # ─── Security Types ─────────────────────────────────────────────────
       enum Severity
@@ -831,6 +799,6 @@ sol VeilRuntime
     group infrastructure
       adapter BusAuthAdapter for AuthService
         impl validate_token(token)
-          Principal{id: token, roles: [], claims: Map.new()}
+          ret Principal{id: token, roles: [], claims: Map.new()}
         impl check_permission(principal, action, resource)
-          true
+          ret true
