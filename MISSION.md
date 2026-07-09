@@ -143,13 +143,26 @@ files) and uses it for:
 
 ## Layer-Driven Codegen Templates
 
-Code generation in VEIL is **layer-driven** — each layer declares how its
-patterns transform into target code via codegen template blocks. The engine
-itself contains no domain-specific generation logic.
+Code generation in VEIL uses a **hybrid architecture**: each language target
+has a compiler backend (`lang.rs`) for expression translation, type mapping,
+and project layout, plus an emission policy layer (`lang.layer`) for
+target-specific opinions and conventions.
 
-### How It Works
+Domain layers (`di.layer`, `ddd.layer`, etc.) add their own `codegen <target>`
+blocks that **augment** the compiler backend's output with pattern-specific
+code — they don't replace it.
 
-A `.layer` file includes `codegen <target>` blocks that define templates:
+### The Split
+
+| Component | What it does | Changes when... |
+|-----------|--------------|-----------------|
+| `rust.rs` (engine) | Expressions, types, project layout, builtins | Rust language evolves |
+| `rust.layer` (layer) | Derives, conventions, smart constructors | Project preferences change |
+| `di.layer` (layer) | `@dep` constructors, `@main` composition | DI approach changes |
+
+### How Templates Work
+
+A `.layer` file includes `codegen <target>` blocks that declare templates:
 
 ```
 layer di
@@ -229,14 +242,19 @@ contributors are not called in a custom main.
        |
    Analyze (diagnostics, dep graph resolution)
        |
-   Codegen (layer templates + resolved IR -> target code)
+   Codegen:
+     1. lang.rs compiler backend (expressions, types, layout)
+     2. Layer templates execute against IR (augment output)
+     3. Sections compose (multiple @main contributors → one main())
        |
-   Output (including composed main)
+   Output (target files)
 ```
 
-The codegen phase receives the full `Solution` and `LayerRegistry`. It
-executes each layer's templates against the IR, composes section outputs,
-and emits the final files. No domain knowledge lives in the engine.
+The codegen phase receives the full `Solution` and `LayerRegistry`. The
+compiler backend (`rust.rs`) handles core shape emission and project structure.
+Layer templates then execute, adding domain-specific code (DI wiring, pattern
+implementations). Section contributions are composed by priority. The result
+is the final target files.
 
 ## File Structure
 

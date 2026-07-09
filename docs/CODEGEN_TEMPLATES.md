@@ -3,24 +3,56 @@
 ## Overview
 
 The codegen template DSL allows `.layer` files to declare how their patterns
-transform into target language code. This keeps all domain-specific code
-generation logic in layers, maintaining the zero-domain-knowledge invariant
-of the core engine.
+transform into target language code. Templates handle **domain-specific** and
+**opinionated** code generation; the core compiler backend handles expression
+translation, type mapping, and project layout.
+
+## Architecture: The Hybrid Model
+
+Each language target has two components:
+
+| Component | Location | Responsibility |
+|-----------|----------|----------------|
+| `lang.rs` | Engine (`veil-codegen/src/`) | Compiler backend: expression translation, type mapping, project/workspace layout, built-in emitters |
+| `lang.layer` | Layer file (`layers/`) | Emission policy: derives, conventions, decorators, target-specific templates that call builtins |
+
+Additionally, domain layers (`di.layer`, `ddd.layer`, etc.) add their own
+`codegen <target>` blocks that augment the output with domain-specific patterns.
+
+### What lives where
+
+| Concern | Location | Reason |
+|---------|----------|--------|
+| `Expr` → target syntax | `lang.rs` | Complex compilation logic, ~1200 lines of expression routing |
+| Type mapping | `lang.rs` | Target-specific type system knowledge |
+| Project/workspace layout | `lang.rs` | Structural orchestration (which files, imports, module system) |
+| Built-in emitters (`emit_struct`, etc.) | `lang.rs` | Heavy lifting that templates call into |
+| `#[derive(...)]` macros on structs | `rust.layer` | Opinionated convention, easily changed |
+| Smart constructor patterns | `rust.layer` | Team-specific preference |
+| `@dep` constructor generation | `di.layer` | Domain pattern |
+| `@main` section composition | `di.layer` | Domain pattern |
+| SwiftUI view emission | `swiftui.layer` | Target-specific UI framework |
+
+### The Critical Invariant
+
+The invariant is **zero domain knowledge in the engine**, not zero target
+knowledge. The engine CAN know what Rust/TypeScript/Swift syntax looks like
+(that's its job as a compiler backend). It CANNOT know what `@dep`, `ctx`,
+`agg`, or `dispatch` mean — those come exclusively from layers.
 
 ## Motivation
 
-Without the template DSL, adding a new language target or domain pattern
-requires modifying Rust source code in `veil-codegen`. This violates the
-invariant and prevents community-driven layers from shipping their own
-code generation.
-
-With the template DSL:
-- `base.layer` defines how core shapes (struct, trait, impl, fn) emit
+The template DSL enables:
+- `rust.layer` defines Rust-specific opinions (derives, async patterns)
 - `ddd.layer` defines how DDD patterns emit (adapters, ports, services)
 - `di.layer` defines how DI patterns emit (constructors, wiring, main)
 - `swiftui.layer` defines how UI patterns emit SwiftUI code
 - `jetpack.layer` defines how UI patterns emit Jetpack Compose code
 - Community layers can ship their own codegen without engine changes
+
+Adding a new **language target** requires a `lang.rs` (compiler backend) plus
+a `lang.layer` (emission policy). Adding a new **domain pattern** requires
+only a layer file with `codegen` blocks — no engine changes.
 
 ## Syntax
 
