@@ -312,12 +312,10 @@
 
     <!-- Implement button: shown on trait-shaped nodes that have a paired impl construct -->
 
-    <!-- Expression Editor for flow/step bodies (any node with Action/Step children) -->
-    {#if kind === 'Step' || kind === 'Action' || kind === 'Flow' || kind === 'InterfaceMethod'}
+    <!-- Expression Editor for flow/step bodies (container nodes with Action/Step children) -->
+    {#if kind === 'Step' || kind === 'Flow' || kind === 'InterfaceMethod'}
       <div class="pe-section">
-        <span class="label-text">
-          {kind === 'Step' ? 'Step Body' : kind === 'Action' ? 'Expression' : 'Body'}
-        </span>
+        <span class="label-text">Body</span>
         <div class="expr-editor-container">
           {#if children.length > 0}
             {@const bodyExprs = irChildrenToExprs(children)}
