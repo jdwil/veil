@@ -1384,10 +1384,10 @@ fn gen_impls(
                                 }).unwrap_or_default();
                                 out.push_str(&format!("        todo!(\"SQL: {}\")\n", sql_hint.replace('"', "'")));
                             } else if uses_effect {
-                                out.push_str(&format!("        {};\\n", rust_expr));
+                                out.push_str(&format!("        {};\n", rust_expr));
                                 out.push_str("        Ok(())\n");
                             } else {
-                                out.push_str(&format!("        {};\\n", rust_expr));
+                                out.push_str(&format!("        {};\n", rust_expr));
                                 out.push_str("        Ok(())\n");
                             }
                         } else if ret_rust.starts_with("Result<") {
@@ -1639,16 +1639,7 @@ fn infer_flow_return_type(
     let inner = crate::expr::infer_return_expr_type(ret, &ctx);
     match inner {
         Some(t) if !t.is_empty() && t != "()" => format!("Result<{}, DomainError>", t),
-        // Fallback: handler returns data but we can't infer the exact type.
-        // Use serde_json::Value which works for any serializable return.
-        _ => {
-            // Check if the ret expression is a non-trivial ident (not a keyword)
-            if matches!(ret, Expr::Ident(n) if n != "Ok" && n != "Err" && !n.is_empty()) {
-                "Result<serde_json::Value, DomainError>".to_string()
-            } else {
-                "Result<(), DomainError>".to_string()
-            }
-        }
+        _ => "Result<(), DomainError>".to_string(),
     }
 }
 

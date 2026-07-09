@@ -382,13 +382,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 }
                 _ => {
                     let val = expr_to_rust(inner, ctx);
-                    // If the value is a simple local variable, wrap in serde_json::to_value
-                    // for Result<serde_json::Value, _> return type compatibility.
-                    if matches!(inner.as_ref(), Expr::Ident(_) | Expr::FieldAccess(_, _)) {
-                        format!("return Ok(serde_json::to_value({}).map_err(|e| DomainError::External(e.to_string()))?)", val)
-                    } else {
-                        format!("return Ok({})", val)
-                    }
+                    format!("return Ok({})", val)
                 }
             }
         }
