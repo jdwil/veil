@@ -1591,7 +1591,22 @@ fn infer_flow_return_type(
     base_ctx: &crate::expr::GenCtx,
     is_orchestrator: bool,
 ) -> String {
-    let Some(ret) = return_expr else {
+    // If there's an explicit top-level return expression, use it.
+    // Otherwise, scan step bodies for `ret` (Expr::Return) statements.
+    let ret: Option<&Expr> = return_expr.or_else(|| {
+        for step in steps {
+            if let FlowStep::Step(s) = step {
+                for expr in &s.body {
+                    if let Expr::Return(inner) = expr {
+                        return Some(inner.as_ref());
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    let Some(ret) = ret else {
         return "Result<(), DomainError>".to_string();
     };
 
