@@ -1165,7 +1165,7 @@ fn gen_impls(
     solution: &Solution,
     registry: &LayerRegistry,
 ) -> GeneratedFile {
-    use crate::expr::{build_ctx_from_solution, expr_to_rust, GenCtx};
+    use crate::expr::{build_ctx_from_solution, expr_to_rust, stmt_to_rust, GenCtx};
 
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");
@@ -1325,8 +1325,12 @@ fn gen_impls(
                 ctx.stub_type_crate = seeded.stub_type_crate;
 
                 for (i, expr) in mimpl.body.iter().enumerate() {
+                    // Track local assignments so subsequent expressions resolve correctly
+                    if let Expr::Assign(name, _) | Expr::MutAssign(name, _, _) = expr {
+                        ctx.locals.insert(name.clone());
+                    }
                     let is_last = i == mimpl.body.len() - 1;
-                    let rust_expr = expr_to_rust(expr, &ctx);
+                    let rust_expr = stmt_to_rust(expr, &mut ctx);
                     if is_last {
                         // Last expression is the return value
                         if ret_rust == "Result<(), DomainError>" {

@@ -485,7 +485,7 @@ pkg dlx_core
         step validate
           list = list_repo.find!(list_id)
           is_cohort_member = cohort_member_repo.find_by_cohort!(list.cohort_id)
-          @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
+          guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = ListMember.new(list_id, user_id)
           list_member_repo.add!(member)
@@ -500,7 +500,7 @@ pkg dlx_core
         step validate
           segment = segment_repo.find!(segment_id)
           is_cohort_member = cohort_member_repo.find_by_cohort!(segment.cohort_id)
-          @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
+          guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = SegmentMember.new(segment_id, user_id)
           segment_member_repo.add!(member)
@@ -515,7 +515,7 @@ pkg dlx_core
         step validate
           roster = roster_repo.find!(roster_id)
           is_cohort_member = cohort_member_repo.find_by_cohort!(roster.cohort_id)
-          @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
+          guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = RosterMember.new(roster_id, user_id)
           roster_member_repo.add!(member)
