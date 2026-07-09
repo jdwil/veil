@@ -1221,6 +1221,27 @@ fn gen_impls(
                         out.push_str(&format!("    pub {}: String,\n", field_name));
                     }
                 }
+                if ann.name == "field" {
+                    // @field(name: Type) — generates a typed struct field.
+                    // The type is resolved via stub_type_crate for qualified paths.
+                    for arg in &ann.args {
+                        // Parse "name: Type" or just "name" (defaults to String)
+                        if let Some((fname, ftype)) = arg.split_once(':') {
+                            let fname = fname.trim();
+                            let ftype = ftype.trim();
+                            // Check if type is from a stub (aliased)
+                            let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
+                            let qualified_type = if let Some((crate_name, original_name)) = seeded.stub_type_crate.get(ftype) {
+                                format!("{}::{}", crate_name, original_name)
+                            } else {
+                                ftype.to_string()
+                            };
+                            out.push_str(&format!("    pub {}: {},\n", fname, qualified_type));
+                        } else {
+                            out.push_str(&format!("    pub {}: String,\n", arg.to_lowercase()));
+                        }
+                    }
+                }
             }
             out.push_str("}\n\n");
 
@@ -1285,6 +1306,15 @@ fn gen_impls(
                                     ctx.self_fields.insert(short.to_string());
                                 }
                             }
+                        }
+                    }
+                }
+                // @field annotation typed fields are also available as self.field
+                for ann in &c.annotations {
+                    if ann.name == "field" {
+                        for arg in &ann.args {
+                            let fname = arg.split(':').next().unwrap_or(arg).trim().to_lowercase();
+                            ctx.self_fields.insert(fname);
                         }
                     }
                 }

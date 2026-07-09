@@ -318,7 +318,8 @@ sol VeilRuntime
 
     group infrastructure
       adapter S3ObjectStorage for ObjectStorage
-        @env(BUCKET, CLIENT)
+        @field(client: S3Client)
+        @env(BUCKET)
         impl put(key, data)
           await client.put_object().bucket(bucket).key(key).body(data).send()
         impl get(key)
@@ -338,7 +339,8 @@ sol VeilRuntime
           ret resp.content_length().unwrap_or(0)
 
       adapter DdbMetadataStore for MetadataStore
-        @env(TABLE, CLIENT)
+        @field(client: DdbClient)
+        @env(TABLE)
         impl create_repo(metadata)
           await client.put_item().table_name(table).item(metadata).send()
         impl get_repo(id)
