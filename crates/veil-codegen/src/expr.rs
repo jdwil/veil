@@ -807,6 +807,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 match a { Expr::Ident(_) => format!("{}.clone()", s), _ => s }
             }).collect::<Vec<_>>().join(", ");
         if method == "new" {
+            // sqlx::Query::new(sql) → sqlx::query(sql) — sqlx uses free fns, not constructors
+            if qualified == "sqlx::Query" {
+                return format!("sqlx::query({})", cloned);
+            }
             return format!("{}::{}({})", qualified, to_snake(method), cloned);
         }
         // Non-new method on a struct: check if first arg is the instance

@@ -1,4 +1,4 @@
-stub sqlx-core 0.8.6
+stub sqlx 0.8.6
 
   struct Text
     fn into_inner() -> T

@@ -179,9 +179,17 @@ fn gen_workspace_toml(sol: &Solution, registry: &LayerRegistry) -> GeneratedFile
 
     let mut extra_deps = String::new();
     for stub in &registry.stubs {
-        extra_deps.push_str(&format!(
-            "{} = \"{}\"\n", stub.name, stub.version
-        ));
+        if stub.name == "sqlx" {
+            // sqlx needs runtime and driver features
+            extra_deps.push_str(&format!(
+                "sqlx = {{ version = \"{}\", features = [\"runtime-tokio\", \"postgres\", \"uuid\", \"chrono\", \"json\"] }}\n",
+                stub.version
+            ));
+        } else {
+            extra_deps.push_str(&format!(
+                "{} = \"{}\"\n", stub.name, stub.version
+            ));
+        }
     }
 
     let content = format!(
@@ -1172,7 +1180,16 @@ fn gen_impls(
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
-    out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
+    out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n");
+
+    // Add sqlx import if any adapter uses DATABASE_URL (i.e., is a sqlx adapter)
+    let uses_sqlx = impls.iter().any(|c| c.annotations.iter().any(|a| {
+        a.name == "env" && a.args.iter().any(|arg| arg.contains("DATABASE"))
+    }));
+    if uses_sqlx {
+        out.push_str("use sqlx::PgPool;\n");
+    }
+    out.push('\n');
 
     // Name→shape map so the body translator resolves calls correctly.
     let name_to_shape = build_name_to_shape(solution, registry);
@@ -1215,12 +1232,17 @@ fn gen_impls(
             for ann in &c.annotations {
                 if ann.name == "env" {
                     for arg in &ann.args {
-                        // Use the short suffix (after last _) as the field name,
-                        // matching what the body references via self.field.
-                        // DDB_TABLE → table, AWS_REGION → region, S3_BUCKET → bucket
-                        let full = arg.to_lowercase();
-                        let field_name = full.rsplit('_').next().unwrap_or(&full);
-                        out.push_str(&format!("    pub {}: String,\n", field_name));
+                        if arg.contains("DATABASE") {
+                            // DATABASE_URL → pool: PgPool (the adapter holds a connection pool)
+                            out.push_str("    pub pool: PgPool,\n");
+                        } else {
+                            // Use the short suffix (after last _) as the field name,
+                            // matching what the body references via self.field.
+                            // DDB_TABLE → table, AWS_REGION → region, S3_BUCKET → bucket
+                            let full = arg.to_lowercase();
+                            let field_name = full.rsplit('_').next().unwrap_or(&full);
+                            out.push_str(&format!("    pub {}: String,\n", field_name));
+                        }
                     }
                 }
                 if ann.name == "field" {
@@ -1307,6 +1329,10 @@ fn gen_impls(
                                 if short != full {
                                     ctx.self_fields.insert(short.to_string());
                                 }
+                            }
+                            // DATABASE_URL → make `pool` available as self.pool
+                            if arg.contains("DATABASE") {
+                                ctx.self_fields.insert("pool".to_string());
                             }
                         }
                     }
