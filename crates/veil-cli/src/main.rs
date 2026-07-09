@@ -419,6 +419,10 @@ fn main() {
             println!("  Layers: {}", registry.layers.join(", "));
             println!("  Nodes: {}", graph.nodes.len());
             println!("  Edges: {}", graph.edges.len());
+            if !registry.codegen_templates.is_empty() {
+                let total_rules: usize = registry.codegen_templates.iter().map(|t| t.rules.len()).sum();
+                println!("  Codegen: {} template(s), {} rule(s)", registry.codegen_templates.len(), total_rules);
+            }
 
             let errors = veil_ir::validate::validate_solution(&sol, &registry);
             if errors.is_empty() {

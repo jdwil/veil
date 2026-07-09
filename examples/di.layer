@@ -75,3 +75,27 @@ layer di
 
   # Every @dep field must have a reachable @pvd fn with matching type
   # (enforced by diagnostics, not by the engine)
+
+  # ─── Codegen Templates ──────────────────────────────────────────────
+
+  codegen rust
+    match struct where has_annotation("dep")
+      emit """
+        impl {{name}} {
+            pub fn new({{for field in dep_fields}}{{field.name}}: {{field.type}}{{sep ", "}}{{end}}) -> Self {
+                Self { {{for field in dep_fields}}{{field.name}}{{sep ", "}}{{end}} }
+            }
+        }
+      """
+
+    match fn where has_annotation("main")
+      emit_to "main" priority 50
+      emit """
+        // — {{name}} —
+        {{for step in steps}}
+        // step: {{step.name}}
+        {{for action in step.actions}}
+        {{emit_action(action)}}
+        {{end}}
+        {{end}}
+      """

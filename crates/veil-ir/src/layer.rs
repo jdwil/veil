@@ -189,6 +189,37 @@ pub struct StatementSpec {
     pub visual: Visual,
 }
 
+// ─── Codegen Template Types ──────────────────────────────────────────────────
+
+/// A codegen template block declared in a `.layer` file.
+/// Each template targets a language and matches IR patterns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodegenTemplate {
+    /// Target language (e.g., "rust", "typescript", "swift", "kotlin")
+    pub target: String,
+    /// Layer that defined this template
+    pub layer: String,
+    /// Match rules and their emit bodies
+    pub rules: Vec<CodegenRule>,
+}
+
+/// A single match/emit rule within a codegen block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodegenRule {
+    /// The shape to match (e.g., "struct", "fn", "impl", "trait")
+    pub match_shape: String,
+    /// The where condition (e.g., "has_annotation(\"dep\")")
+    pub condition: String,
+    /// The template body to emit
+    pub emit_body: String,
+    /// Optional named section to emit into (for composition)
+    pub emit_to: Option<String>,
+    /// Priority for section ordering (lower = earlier, default 100)
+    pub priority: u32,
+}
+
+// ─── LayerRegistry ───────────────────────────────────────────────────────────
+
 /// The resolved vocabulary for a compilation: built-in core constructs plus
 /// everything from the loaded (possibly stacked) layers.
 pub struct LayerRegistry {
@@ -198,6 +229,8 @@ pub struct LayerRegistry {
     pub layers: Vec<String>,
     /// Raw VEIL source blocks to inject into solutions using this registry.
     pub declarations: Vec<String>,
+    /// Codegen templates declared by loaded layers.
+    pub codegen_templates: Vec<CodegenTemplate>,
     /// Loaded third-party crate stubs.
     pub stubs: Vec<StubCrate>,
     /// External layer resolver — called when a layer isn't found locally or in system.
@@ -212,6 +245,7 @@ impl Default for LayerRegistry {
             statements: Vec::new(),
             layers: Vec::new(),
             declarations: Vec::new(),
+            codegen_templates: Vec::new(),
             stubs: Vec::new(),
             external_resolver: None,
         }
@@ -225,6 +259,7 @@ impl Clone for LayerRegistry {
             statements: self.statements.clone(),
             layers: self.layers.clone(),
             declarations: self.declarations.clone(),
+            codegen_templates: self.codegen_templates.clone(),
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
         }
@@ -550,6 +585,11 @@ impl LayerRegistry {
             }
         }
 
+        // Accumulate codegen templates.
+        for tpl in raw.codegen_templates {
+            self.codegen_templates.push(tpl);
+        }
+
         Ok(())
     }
 }
@@ -787,6 +827,8 @@ struct RawLayer {
     /// Raw VEIL source blocks declared by this layer (e.g. `port Bus ...`).
     /// Each entry is one top-level construct declaration, dedented for parsing.
     declarations: Vec<String>,
+    /// Codegen template blocks declared by this layer.
+    codegen_templates: Vec<CodegenTemplate>,
 }
 
 fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
@@ -812,6 +854,12 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
     let mut in_declare = false;
     let mut declare_base_indent: usize = 0;
     let mut current_decl_lines: Vec<String> = Vec::new();
+    // Codegen block parsing state
+    let mut codegen_templates: Vec<CodegenTemplate> = Vec::new();
+    let mut in_codegen = false;
+    let mut codegen_target: String = String::new();
+    let mut codegen_base_indent: usize = 0;
+    let mut codegen_lines: Vec<String> = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -876,6 +924,48 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                     trimmed
                 };
                 current_decl_lines.push(dedented.to_string());
+                continue;
+            }
+        }
+
+        // Handle `codegen <target>` blocks: accumulate raw template text
+        if trimmed.starts_with("codegen ") && indent <= 2 {
+            // Flush any previous codegen block
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            // Flush any previous construct/statement
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            codegen_target = trimmed.strip_prefix("codegen ").unwrap().trim().to_string();
+            in_codegen = true;
+            codegen_base_indent = indent + 2; // rules inside codegen are at +2
+            section = Section::None;
+            continue;
+        }
+
+        if in_codegen {
+            // If we hit something at the same or lesser indent as codegen, we're leaving it
+            if indent <= 2 && !trimmed.is_empty() {
+                // Flush current codegen block
+                if !codegen_lines.is_empty() {
+                    let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                    codegen_templates.push(template);
+                    codegen_lines.clear();
+                }
+                in_codegen = false;
+                // Fall through to normal parsing of this line
+            } else {
+                // Accumulate codegen lines (dedented)
+                let dedented = if line.len() > codegen_base_indent {
+                    &line[codegen_base_indent..]
+                } else {
+                    trimmed
+                };
+                codegen_lines.push(dedented.to_string());
                 continue;
             }
         }
@@ -1113,7 +1203,14 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             Item::Statement(s) => statements.push(s),
         }
     }
-    RawLayer { constructs, statements, declarations }
+
+    // Flush any trailing codegen block
+    if in_codegen && !codegen_lines.is_empty() {
+        let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+        codegen_templates.push(template);
+    }
+
+    RawLayer { constructs, statements, declarations, codegen_templates }
 }
 
 fn unquote(s: &str) -> String {
@@ -1122,6 +1219,105 @@ fn unquote(s: &str) -> String {
         s[1..s.len() - 1].to_string()
     } else {
         s.to_string()
+    }
+}
+
+/// Parse accumulated codegen block lines into a CodegenTemplate.
+/// Lines are already dedented relative to the `codegen <target>` block.
+///
+/// Expected format (each line at this level):
+///   match <shape> where <condition>
+///     emit_to "<section>" priority <n>   (optional)
+///     emit """
+///       <template body>
+///     """
+fn parse_codegen_block(target: &str, lines: &[String], layer_name: &str) -> CodegenTemplate {
+    let mut rules: Vec<CodegenRule> = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim();
+
+        // Look for `match <shape> where <condition>` or `match <shape>`
+        if line.starts_with("match ") {
+            let rest = &line[6..]; // after "match "
+            let (match_shape, condition) = if let Some(idx) = rest.find(" where ") {
+                (rest[..idx].trim().to_string(), rest[idx + 7..].trim().to_string())
+            } else {
+                (rest.trim().to_string(), String::new())
+            };
+
+            // Parse the rule body (emit_to, emit)
+            let mut emit_to: Option<String> = None;
+            let mut priority: u32 = 100;
+            let mut emit_body = String::new();
+
+            i += 1;
+            while i < lines.len() {
+                let rule_line = lines[i].trim();
+
+                if rule_line.starts_with("match ") || rule_line.is_empty() && i + 1 < lines.len() && lines[i + 1].trim().starts_with("match ") {
+                    break; // next rule
+                }
+
+                if rule_line.starts_with("emit_to ") {
+                    // Parse: emit_to "section" priority N
+                    let et_rest = &rule_line[8..];
+                    if let Some(section_end) = et_rest.find('"') {
+                        let after_first_quote = &et_rest[section_end + 1..];
+                        if let Some(second_quote) = after_first_quote.find('"') {
+                            let section_name = after_first_quote[..second_quote].to_string();
+                            emit_to = Some(section_name);
+                            // Check for priority
+                            let after_section = &after_first_quote[second_quote + 1..];
+                            if let Some(prio_idx) = after_section.find("priority") {
+                                let prio_str = after_section[prio_idx + 8..].trim();
+                                priority = prio_str.parse().unwrap_or(100);
+                            }
+                        }
+                    } else if let Some(start) = et_rest.find('"') {
+                        // Simple: emit_to "section"
+                        let after = &et_rest[start + 1..];
+                        if let Some(end) = after.find('"') {
+                            emit_to = Some(after[..end].to_string());
+                        }
+                    }
+                    i += 1;
+                } else if rule_line.starts_with("emit \"\"\"") || rule_line == "emit" {
+                    // Multi-line emit block — collect until closing """
+                    i += 1;
+                    let mut body_lines: Vec<&str> = Vec::new();
+                    while i < lines.len() {
+                        let el = lines[i].trim_end();
+                        if el.trim() == "\"\"\"" {
+                            break;
+                        }
+                        body_lines.push(el);
+                        i += 1;
+                    }
+                    emit_body = body_lines.join("\n");
+                    i += 1; // skip closing """
+                } else {
+                    i += 1;
+                }
+            }
+
+            rules.push(CodegenRule {
+                match_shape,
+                condition,
+                emit_body,
+                emit_to,
+                priority,
+            });
+        } else {
+            i += 1;
+        }
+    }
+
+    CodegenTemplate {
+        target: target.to_string(),
+        layer: layer_name.to_string(),
+        rules,
     }
 }
 
