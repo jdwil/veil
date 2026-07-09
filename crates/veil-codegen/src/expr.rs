@@ -380,7 +380,16 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
                     format!("return Ok({})", if a.is_empty() { "()".to_string() } else { a })
                 }
-                _ => format!("return Ok({})", expr_to_rust(inner, ctx)),
+                _ => {
+                    let val = expr_to_rust(inner, ctx);
+                    // If the value is a simple local variable, wrap in serde_json::to_value
+                    // for Result<serde_json::Value, _> return type compatibility.
+                    if matches!(inner.as_ref(), Expr::Ident(_) | Expr::FieldAccess(_, _)) {
+                        format!("return Ok(serde_json::to_value({}).map_err(|e| DomainError::External(e.to_string()))?)", val)
+                    } else {
+                        format!("return Ok({})", val)
+                    }
+                }
             }
         }
         Expr::Await(inner) => {
@@ -854,7 +863,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!("{}.{}({})?", call.target, method, cloned_args);
             }
         }
-        // Unknown method on local — clone args to avoid move issues
+        // Unknown method on local — clone args to avoid move issues.
+        // Collection predicate methods need .iter() prefix in Rust.
+        let iter_methods = ["any", "all", "find", "filter", "map", "for_each", "count", "flat_map"];
+        if iter_methods.contains(&method.as_str()) {
+            return format!("{}.iter().{}({})", call.target, method, clone_args(&call.args, ctx));
+        }
         return format!("{}.{}({})", call.target, method, clone_args(&call.args, ctx));
     }
     if call.method.is_empty() {
@@ -902,11 +916,19 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
             match a.condition.as_deref() {
                 // Fallible-call guard (`guard call X.method(...)`): the call
                 // returns a Result that must be Ok — propagate its error as a
-                // domain validation error.
-                Some(cond @ Expr::Call(_)) | Some(cond @ Expr::Await(_)) => {
+                // domain validation error. Only for port/trait calls (not local predicates).
+                Some(cond @ Expr::Call(c)) if ctx.name_to_shape.get(&c.target) == Some(&Shape::Trait) => {
                     let call_str = expr_to_rust(cond, ctx);
                     // translate_call may already append `?`; strip it so our
                     // map_err drives the propagation.
+                    let base = call_str.strip_suffix('?').unwrap_or(&call_str);
+                    format!(
+                        "{}.map_err(|_| DomainError::Validation(\"{}\".to_string()))?",
+                        base, msg_escaped
+                    )
+                }
+                Some(cond @ Expr::Await(_)) => {
+                    let call_str = expr_to_rust(cond, ctx);
                     let base = call_str.strip_suffix('?').unwrap_or(&call_str);
                     format!(
                         "{}.map_err(|_| DomainError::Validation(\"{}\".to_string()))?",

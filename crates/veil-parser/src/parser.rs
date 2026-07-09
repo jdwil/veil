@@ -2136,6 +2136,17 @@ impl<'a> Parser<'a> {
 
         let lhs = self.parse_primary()?;
 
+        // Arrow closure sugar: `name -> expr` or `(a, b) -> expr`
+        // This handles the common lambda pattern in predicate arguments.
+        if self.at(&TokenKind::Arrow) {
+            if let Expr::Ident(name) = &lhs {
+                let param = name.clone();
+                self.advance(); // consume ->
+                let body_expr = self.parse_expr()?;
+                return Ok(Expr::Closure { params: vec![param], body: vec![body_expr] });
+            }
+        }
+
         // Assignment: name = expr (only if LHS is a simple ident)
         if self.at(&TokenKind::Eq) {
             if let Expr::Ident(name) = &lhs {
@@ -2500,6 +2511,13 @@ impl<'a> Parser<'a> {
                 && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
             if is_bang_call {
                 self.advance(); // consume !
+            }
+
+            // Handle method?(args) — ? before ( means a query/predicate method call
+            let is_question_call = self.at(&TokenKind::Question)
+                && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
+            if is_question_call {
+                self.advance(); // consume ?
             }
 
             if self.at(&TokenKind::LParen) {

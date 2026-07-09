@@ -614,7 +614,11 @@ fn gen_struct(c: &Construct) -> String {
         ));
     } else if !fields.is_empty() {
         // Generate a smart constructor — auto-defaulting id, timestamps, and enum-state fields
-        let auto_fields = ["id", "created", "updated", "created_at", "updated_at"];
+        let auto_fields = ["id", "created", "updated", "created_at", "updated_at", "created_on", "updated_on", "deleted_on", "date_joined"];
+
+        // id is special: it's auto-generated in the constructor body (Uuid::new_v4())
+        // but if explicitly passed by caller, it's a parameter too.
+        // For entities/aggregates, we generate id internally — callers pass it separately.
         // Enum-typed fields (like status) get their first variant as default
         let enum_field_names: std::collections::HashSet<String> = c.blocks.iter()
             .filter(|b| b.shape == Shape::Enum)
@@ -627,9 +631,9 @@ fn gen_struct(c: &Construct) -> String {
                 }).map(|f| f.name.clone())
             }).collect();
 
-        // Fields with scalar defaults (Int→0, Bool→false, F64→0.0) are auto-initialized
+        // Fields with scalar defaults (Int→0, Bool→false, F64→0.0, Json→{}) are auto-initialized
         let scalar_default_fields: std::collections::HashSet<String> = fields.iter()
-            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if n == "Int" || n == "Bool" || n == "F64"))
+            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if n == "Int" || n == "Bool" || n == "F64" || n == "Json"))
             .map(|f| f.name.clone())
             .collect();
 
@@ -638,6 +642,9 @@ fn gen_struct(c: &Construct) -> String {
                 !auto_fields.contains(&f.name.as_str())
                 && !enum_field_names.contains(&f.name)
                 && !scalar_default_fields.contains(&f.name)
+                // Optional fields default to None — exclude from constructor params
+                && !matches!(&f.type_expr, TypeExpr::Optional(_))
+                && !matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option")
             })
             .collect();
 
@@ -648,26 +655,23 @@ fn gen_struct(c: &Construct) -> String {
         let init_fields = fields.iter().map(|f| {
             let snake = to_snake(&f.name);
             if f.name == "id" {
-                // Use the field's declared type constructor if it's a custom wrapper type
-                let type_name = match &f.type_expr {
-                    TypeExpr::Named(n) if n != "UUID" && n != "Id" && n != "Uuid" && n != "Str" && n != "String" && n != "Int" => n.clone(),
-                    TypeExpr::Named(n) if n == "Str" || n == "String" => {
-                        return format!("{}: Uuid::new_v4().to_string()", snake);
-                    }
-                    _ => String::new(),
-                };
-                if type_name.is_empty() {
-                    format!("{}: Uuid::new_v4()", snake)
-                } else {
-                    format!("{}: {}::new(Uuid::new_v4().to_string())", snake, type_name)
-                }
+                format!("{}: Uuid::new_v4()", snake)
             } else if auto_fields.contains(&f.name.as_str()) {
-                format!("{}: Utc::now()", snake)
+                // Timestamp fields: use Utc::now() for non-optional, None for optional
+                let is_optional = matches!(&f.type_expr,
+                    TypeExpr::Generic(name, _) if name == "Opt" || name == "Option")
+                    || matches!(&f.type_expr, TypeExpr::Optional(_));
+                if is_optional {
+                    format!("{}: None", snake)
+                } else {
+                    format!("{}: Utc::now()", snake)
+                }
             } else if scalar_default_fields.contains(&f.name) {
-                // Scalar defaults: Int→0, Bool→false, F64→0.0
+                // Scalar defaults: Int→0, Bool→false, F64→0.0, Json→{}
                 let default = match &f.type_expr {
                     TypeExpr::Named(n) if n == "Bool" => "false",
                     TypeExpr::Named(n) if n == "F64" => "0.0",
+                    TypeExpr::Named(n) if n == "Json" => "serde_json::json!({})",
                     _ => "0", // Int and anything else numeric
                 };
                 format!("{}: {}", snake, default)
@@ -686,6 +690,9 @@ fn gen_struct(c: &Construct) -> String {
                     })
                     .unwrap_or_else(|| format!("Default::default()"));
                 format!("{}: {}", snake, first_variant)
+            } else if matches!(&f.type_expr, TypeExpr::Optional(_)) || matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option") {
+                // Optional fields default to None
+                format!("{}: None", snake)
             } else {
                 snake
             }
@@ -1632,7 +1639,16 @@ fn infer_flow_return_type(
     let inner = crate::expr::infer_return_expr_type(ret, &ctx);
     match inner {
         Some(t) if !t.is_empty() && t != "()" => format!("Result<{}, DomainError>", t),
-        _ => "Result<(), DomainError>".to_string(),
+        // Fallback: handler returns data but we can't infer the exact type.
+        // Use serde_json::Value which works for any serializable return.
+        _ => {
+            // Check if the ret expression is a non-trivial ident (not a keyword)
+            if matches!(ret, Expr::Ident(n) if n != "Ok" && n != "Err" && !n.is_empty()) {
+                "Result<serde_json::Value, DomainError>".to_string()
+            } else {
+                "Result<(), DomainError>".to_string()
+            }
+        }
     }
 }
 
