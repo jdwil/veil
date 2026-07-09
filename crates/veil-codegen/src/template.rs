@@ -168,19 +168,18 @@ fn render_template(construct: &Construct, rule: &CodegenRule) -> String {
     output = output.replace("{{name}}", &construct.name);
 
     // Handle {{for field in dep_fields}}...{{end}}
+    // If the struct has @dep, ALL its fields are injectable dependencies.
     if output.contains("{{for field in dep_fields}}") {
-        let dep_fields: Vec<&veil_ir::ast::Field> = construct
-            .fields
-            .iter()
-            .filter(|f| {
-                construct.annotations.iter().any(|a| a.name == "dep")
-            })
-            .collect();
+        let dep_fields: Vec<&Field> = if construct.annotations.iter().any(|a| a.name == "dep") {
+            construct.fields.iter().collect()
+        } else {
+            Vec::new()
+        };
 
         output = expand_for_loop(&output, "field", "dep_fields", &dep_fields, |field, var| {
             match var {
                 "field.name" => field.name.clone(),
-                "field.type" => veil_ir::builder::type_to_display(&field.type_expr),
+                "field.type" => type_to_display(&field.type_expr),
                 _ => format!("{{{{{}}}}}",var),
             }
         });
@@ -188,12 +187,12 @@ fn render_template(construct: &Construct, rule: &CodegenRule) -> String {
 
     // Handle {{for field in fields}}...{{end}}
     if output.contains("{{for field in fields}}") {
-        let fields: Vec<&veil_ir::ast::Field> = construct.fields.iter().collect();
+        let fields: Vec<&Field> = construct.fields.iter().collect();
 
         output = expand_for_loop(&output, "field", "fields", &fields, |field, var| {
             match var {
                 "field.name" => field.name.clone(),
-                "field.type" => veil_ir::builder::type_to_display(&field.type_expr),
+                "field.type" => type_to_display(&field.type_expr),
                 _ => format!("{{{{{}}}}}", var),
             }
         });
@@ -201,7 +200,7 @@ fn render_template(construct: &Construct, rule: &CodegenRule) -> String {
 
     // Handle {{for step in steps}}...{{end}}
     if output.contains("{{for step in steps}}") {
-        let steps: Vec<&veil_ir::ast::FlowStep> = construct.steps.iter().collect();
+        let steps: Vec<&FlowStep> = construct.steps.iter().collect();
 
         output = expand_step_loop(&output, &steps);
     }
@@ -210,6 +209,7 @@ fn render_template(construct: &Construct, rule: &CodegenRule) -> String {
 }
 
 /// Expand a {{for item in collection}}...{{end}} loop.
+/// Handles multiple occurrences of the same loop in the template.
 fn expand_for_loop<T, F>(
     template: &str,
     item_name: &str,
@@ -222,52 +222,55 @@ where
 {
     let start_tag = format!("{{{{for {} in {}}}}}", item_name, collection_name);
     let end_tag = "{{end}}";
+    let mut result = template.to_string();
 
-    let Some(start_idx) = template.find(&start_tag) else {
-        return template.to_string();
-    };
-    let after_start = start_idx + start_tag.len();
+    // Keep expanding until no more instances of this loop exist
+    while let Some(start_idx) = result.find(&start_tag) {
+        let after_start = start_idx + start_tag.len();
 
-    let Some(end_idx) = template[after_start..].find(end_tag) else {
-        return template.to_string();
-    };
-    let end_abs = after_start + end_idx;
+        let Some(end_idx) = result[after_start..].find(end_tag) else {
+            break;
+        };
+        let end_abs = after_start + end_idx;
 
-    let before = &template[..start_idx];
-    let body = &template[after_start..end_abs];
-    let after = &template[end_abs + end_tag.len()..];
+        let before = &result[..start_idx];
+        let body = &result[after_start..end_abs];
+        let after = &result[end_abs + end_tag.len()..];
 
-    // Check for separator
-    let (body_clean, separator) = if let Some(sep_idx) = body.find("{{sep ") {
-        let sep_end = body[sep_idx..].find("}}").unwrap_or(body.len()) + sep_idx + 2;
-        let sep_str = extract_quoted_value(&body[sep_idx..sep_end], "sep ").unwrap_or_default();
-        let clean_body = format!("{}{}", &body[..sep_idx], &body[sep_end..]);
-        (clean_body, sep_str)
-    } else {
-        (body.to_string(), String::new())
-    };
+        // Check for separator
+        let (body_clean, separator) = if let Some(sep_idx) = body.find("{{sep ") {
+            let sep_end = body[sep_idx..].find("}}").unwrap_or(body.len()) + sep_idx + 2;
+            let sep_str = extract_quoted_value(&body[sep_idx..sep_end], "sep ").unwrap_or_default();
+            let clean_body = format!("{}{}", &body[..sep_idx], &body[sep_end..]);
+            (clean_body, sep_str)
+        } else {
+            (body.to_string(), String::new())
+        };
 
-    let expanded: Vec<String> = items
-        .iter()
-        .map(|item| {
-            let mut result = body_clean.clone();
-            // Replace all {{item_name.prop}} patterns
-            let prefix = format!("{{{{{}.", item_name);
-            while let Some(var_start) = result.find(&prefix) {
-                let var_end = result[var_start..].find("}}").unwrap_or(result.len()) + var_start;
-                let var_name = &result[var_start + 2..var_end];
-                let replacement = resolver(item, var_name);
-                result = format!("{}{}{}", &result[..var_start], replacement, &result[var_end + 2..]);
-            }
-            result
-        })
-        .collect();
+        let expanded: Vec<String> = items
+            .iter()
+            .map(|item| {
+                let mut item_result = body_clean.clone();
+                // Replace all {{item_name.prop}} patterns
+                let prefix = format!("{{{{{}.", item_name);
+                while let Some(var_start) = item_result.find(&prefix) {
+                    let var_end = item_result[var_start..].find("}}").unwrap_or(item_result.len()) + var_start;
+                    let var_name = &item_result[var_start + 2..var_end].to_string();
+                    let replacement = resolver(item, var_name);
+                    item_result = format!("{}{}{}", &item_result[..var_start], replacement, &item_result[var_end + 2..]);
+                }
+                item_result
+            })
+            .collect();
 
-    format!("{}{}{}", before, expanded.join(&separator), after)
+        result = format!("{}{}{}", before, expanded.join(&separator), after);
+    }
+
+    result
 }
 
 /// Expand step loops with nested action iteration.
-fn expand_step_loop(template: &str, steps: &[&veil_ir::ast::FlowStep]) -> String {
+fn expand_step_loop(template: &str, steps: &[&FlowStep]) -> String {
     let start_tag = "{{for step in steps}}";
     let end_tag = "{{end}}";
 
@@ -277,10 +280,25 @@ fn expand_step_loop(template: &str, steps: &[&veil_ir::ast::FlowStep]) -> String
     let after_start = start_idx + start_tag.len();
 
     // Find the OUTERMOST end tag for the step loop
-    let Some(end_idx) = template[after_start..].find(end_tag) else {
-        return template.to_string();
-    };
-    let end_abs = after_start + end_idx;
+    // We need to skip inner {{end}} tags (from nested for loops)
+    let mut depth = 1;
+    let mut search_pos = after_start;
+    let mut end_abs = template.len();
+    while search_pos < template.len() {
+        if template[search_pos..].starts_with("{{for ") {
+            depth += 1;
+            search_pos += 6;
+        } else if template[search_pos..].starts_with("{{end}}") {
+            depth -= 1;
+            if depth == 0 {
+                end_abs = search_pos;
+                break;
+            }
+            search_pos += 7;
+        } else {
+            search_pos += 1;
+        }
+    }
 
     let before = &template[..start_idx];
     let body = &template[after_start..end_abs];
@@ -290,7 +308,7 @@ fn expand_step_loop(template: &str, steps: &[&veil_ir::ast::FlowStep]) -> String
         .iter()
         .filter_map(|step| {
             match step {
-                veil_ir::ast::FlowStep::Step(s) => {
+                FlowStep::Step(s) => {
                     let mut result = body.to_string();
                     result = result.replace("{{step.name}}", &s.name);
 
@@ -303,13 +321,13 @@ fn expand_step_loop(template: &str, steps: &[&veil_ir::ast::FlowStep]) -> String
                             if let Some(ae_idx) = result[as_after..].find(action_end) {
                                 let ae_abs = as_after + ae_idx;
                                 let action_body = result[as_after..ae_abs].to_string();
-                                let action_after = &result[ae_abs + action_end.len()..].to_string();
-                                let action_before = &result[..as_idx].to_string();
+                                let action_after = result[ae_abs + action_end.len()..].to_string();
+                                let action_before = result[..as_idx].to_string();
 
                                 let actions_expanded: Vec<String> = s.body.iter().map(|expr| {
                                     let mut ab = action_body.clone();
-                                    let expr_display = veil_ir::builder::expr_to_display(expr);
-                                    ab = ab.replace("{{emit_action(action)}}", &format!("    {};", expr_display));
+                                    let expr_display = expr_to_display(expr);
+                                    ab = ab.replace("{{emit_action(action)}}", &format!("    let {};", expr_display));
                                     ab
                                 }).collect();
 
