@@ -1,0 +1,77 @@
+layer di
+  use base
+
+  # ─── Dependency Injection Layer ─────────────────────────────────────
+  # Provides three annotations for expressing DI relationships:
+  #   @dep   — on struct fields: "I need this injected"
+  #   @pvd   — on fns: "I can create/satisfy this type"
+  #   @main  — on fns: "my steps contribute to the generated main()"
+  #
+  # The engine/viewer knows nothing about DI. It just sees annotations
+  # on constructs. The codegen reads these annotations + the full IR
+  # to resolve the dependency graph and emit the composition root.
+
+  # ─── Annotations ────────────────────────────────────────────────────
+
+  # @dep — marks a struct field as an injected dependency.
+  # The field's type declares WHAT is needed.
+  # Example:
+  #   struct PgTenantRepo
+  #     @dep
+  #     pool: Pool
+  #
+  construct DepField
+    kw dep
+    mt struct
+    desc "Dependency — a struct field that is injected, not self-constructed"
+    ann
+      dep: "Injected dependency" field
+    visual
+      icon "💉"
+      color "#8b5cf6"
+      label "Dependency"
+
+  # @pvd — marks a fn as a provider/factory for a given type.
+  # The annotation value is the type it satisfies.
+  # Example:
+  #   fn create_pg_pool(url: Str) -> PgPool
+  #     @pvd Pool
+  #
+  construct Provider
+    kw pvd
+    mt fn
+    desc "Provider — a fn that can construct/satisfy a dependency type"
+    ann
+      pvd: "Type this fn provides" type
+    visual
+      icon "🏭"
+      color "#f59e0b"
+      label "Provider"
+
+  # @main — marks a fn whose steps contribute to the generated main().
+  # Multiple @main fns are composed in dependency order.
+  # Example:
+  #   fn bootstrap() -> AppContext
+  #     @main
+  #     step resolve
+  #       url = env!("DATABASE_URL")
+  #       pool = create_pg_pool(url)
+  #     step build
+  #       tenant_repo = PgTenantRepo.new(pool)
+  #       ret AppContext.new(tenant_repo)
+  #
+  construct MainContributor
+    kw main
+    mt fn
+    desc "Main contributor — steps are composed into the generated main()"
+    ann
+      main: "Contributes to generated main" flag
+    visual
+      icon "🚀"
+      color "#10b981"
+      label "Main"
+
+  # ─── Constraints ────────────────────────────────────────────────────
+
+  # Every @dep field must have a reachable @pvd fn with matching type
+  # (enforced by diagnostics, not by the engine)

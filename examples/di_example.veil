@@ -1,0 +1,73 @@
+pkg di_example
+  use base
+  use di
+
+  # ─── Traits (interfaces) ────────────────────────────────────────────
+
+  trait Pool
+    query!(sql: Str, args: List<Any>) -> Res!<List<Row>>
+    execute!(sql: Str, args: List<Any>) -> Res!
+    fetch_optional!(sql: Str, args: List<Any>) -> Res!<Opt<Row>>
+
+  trait TenantRepo
+    find!(id: Id) -> Opt<Tenant>
+    save!(tenant: Tenant)
+    delete!(id: Id)
+
+  # ─── Domain types ───────────────────────────────────────────────────
+
+  struct Tenant
+    id: Id
+    name: Str
+    created_on: Dt
+
+  # ─── Concrete pool implementation ───────────────────────────────────
+
+  struct PgPool
+    url: Str
+    max_connections: Int
+
+  impl PgPoolImpl for Pool
+    impl query(sql, args)
+      # native sqlx query
+    impl execute(sql, args)
+      # native sqlx execute
+    impl fetch_optional(sql, args)
+      # native sqlx fetch_optional
+
+  # ─── Provider — knows how to construct a PgPool ─────────────────────
+  # @pvd Pool means "I satisfy the Pool dependency"
+
+  fn create_pg_pool
+    @pvd Pool
+    input
+      url: Str
+    step init
+      pool = PgPool.connect!(url)
+      ret pool
+
+  # ─── Consumer — declares what it needs via @dep ─────────────────────
+
+  struct PgTenantRepo
+    @dep
+    pool: Pool
+
+  impl PgTenantRepoImpl for TenantRepo
+    impl find(id)
+      self.pool.fetch_optional!("SELECT * FROM tenants WHERE id = $1", [id])
+    impl save(tenant)
+      self.pool.execute!("INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = $2", [tenant.id, tenant.name])
+    impl delete(id)
+      self.pool.execute!("UPDATE tenants SET deleted_on = now() WHERE id = $1", [id])
+
+  # ─── Composition root — contributes to generated main() ─────────────
+  # @main means "my steps get composed into main in dep order"
+
+  fn bootstrap
+    @main
+    step resolve
+      url = env!("DATABASE_URL")
+    step build
+      pool = create_pg_pool(url)
+      tenant_repo = PgTenantRepo.new(pool)
+      ret tenant_repo
