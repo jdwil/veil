@@ -141,6 +141,103 @@ files) and uses it for:
 - Property editor labels **and available annotations** (declared per construct
   in the layer's `ann` block)
 
+## Layer-Driven Codegen Templates
+
+Code generation in VEIL is **layer-driven** — each layer declares how its
+patterns transform into target code via codegen template blocks. The engine
+itself contains no domain-specific generation logic.
+
+### How It Works
+
+A `.layer` file includes `codegen <target>` blocks that define templates:
+
+```
+layer di
+  codegen rust
+    match struct where has_annotation("dep")
+      emit """
+        impl {{name}} {
+            pub fn new({{for field in dep_fields}}{{field.name}}: {{field.type}}{{sep ", "}}{{end}}) -> Self {
+                Self { {{for field in dep_fields}}{{field.name}}{{sep ", "}}{{end}} }
+            }
+        }
+      """
+
+    match fn where has_annotation("main")
+      emit_to "main" priority 50
+      emit """
+        {{for step in steps}}{{for action in step.actions}}
+        {{emit_action(action)}}
+        {{end}}{{end}}
+      """
+```
+
+### Key Concepts
+
+| Concept | Purpose |
+|---------|---------|
+| `codegen <target>` | Block scoped to a target language (rust, typescript, swift, kotlin) |
+| `match <kind> where <condition>` | Pattern matching against the IR |
+| `emit """..."""` | Template literal with interpolation |
+| `{{for x in collection}}` | Iteration over IR elements |
+| `{{name}}`, `{{field.type}}` | Access to node properties |
+| `emit_to "section"` | Contribute output to a named composable section |
+| `priority <n>` | Ordering when multiple templates target the same section |
+| `emit_action(action)` | Call into base codegen's built-in emitters |
+
+### Multi-Target Support
+
+The same layer can provide templates for multiple targets:
+
+```
+layer ui
+  codegen swift
+    match struct where subkind == "Screen"
+      emit """
+        struct {{name}}: View { ... }
+      """
+
+  codegen kotlin
+    match struct where subkind == "Screen"
+      emit """
+        @Composable fun {{name}}() { ... }
+      """
+```
+
+This enables: write domain logic once in VEIL, layers define the mapping,
+same source produces Swift, Kotlin, Rust, or TypeScript output depending on
+the target.
+
+### Composition
+
+Multiple layers can contribute to the same output sections. For example,
+`di.layer` contributes dependency wiring to "main", while `http.layer`
+contributes server startup. The engine composes them by priority order.
+
+If a programmer writes their own `main` fn in the `.veil` source, the
+auto-generated main is suppressed. Diagnostics warn if required `@main`
+contributors are not called in a custom main.
+
+### The Pipeline
+
+```
+.veil source + .layer files
+       |
+   Parse (Solution/AST)
+       |
+   Build IR (nodes, edges, metadata)
+       |
+   Analyze (diagnostics, dep graph resolution)
+       |
+   Codegen (layer templates + resolved IR -> target code)
+       |
+   Output (including composed main)
+```
+
+The codegen phase receives the full `Solution` and `LayerRegistry`. It
+executes each layer's templates against the IR, composes section outputs,
+and emits the final files. No domain knowledge lives in the engine.
+
 ## File Structure
 
 ```
