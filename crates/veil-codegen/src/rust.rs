@@ -91,6 +91,27 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         ));
     }
 
+    // ─── Layer Template Augmentation ─────────────────────────────────────
+    // Execute any codegen templates from loaded layers (di.layer, rust.layer, etc.)
+    // Template output augments the backend's output — it doesn't replace it.
+    let template_output = crate::template::execute_templates(solution, registry, "rust");
+
+    // If there's a composed "main" section from @main contributors, add it
+    if let Some(main_content) = crate::template::compose_main_section(&template_output, "rust") {
+        files.push(GeneratedFile {
+            path: "src/main.rs".to_string(),
+            content: main_content,
+        });
+    }
+
+    // Add template-generated files
+    for tpl_file in template_output.files {
+        files.push(GeneratedFile {
+            path: tpl_file.path,
+            content: tpl_file.content,
+        });
+    }
+
     GeneratedProject { files }
 }
 

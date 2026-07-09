@@ -1,0 +1,37 @@
+layer rust
+  use base
+
+  # ─── Rust Emission Policy ───────────────────────────────────────────
+  # Defines Rust-specific conventions and opinions for code generation.
+  # The heavy lifting (expression translation, type mapping, project
+  # layout) lives in rust.rs. This layer handles the "opinionated
+  # surface" — things teams might want to customize.
+
+  # ─── Codegen Templates ──────────────────────────────────────────────
+
+  codegen rust
+    # Structs with @dep annotation get a constructor (DI pattern)
+    # This is actually defined in di.layer — included here as reference.
+    # di.layer's templates take precedence for @dep structs.
+
+    # Default struct derives — applied to all struct-shaped constructs.
+    # The rust.rs backend emits the struct body; this adds derives.
+    match struct
+      emit_to "derives" priority 100
+      emit """
+        #[derive(Debug, Clone)]
+      """
+
+    # Trait-shaped constructs get async_trait
+    match trait
+      emit_to "trait_attrs" priority 100
+      emit """
+        #[async_trait::async_trait]
+      """
+
+    # Fn-shaped constructs default to async
+    match fn
+      emit_to "fn_attrs" priority 100
+      emit """
+        async
+      """

@@ -1,6 +1,7 @@
 pkg di_example
   use base
   use di
+  use rust
 
   # ─── Traits (interfaces) ────────────────────────────────────────────
 
