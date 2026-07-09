@@ -396,44 +396,50 @@ pkg dlx_core
       svc HandleGetCohort
         input
           id: Id
+          @dep cohort_repo: CohortRepo
         step query
-          cohort = CohortRepo.find!(id)
+          cohort = cohort_repo.find!(id)
           ret cohort
 
       svc HandleGetCohortMembers
         input
           cohort_id: Id
+          @dep cohort_member_repo: CohortMemberRepo
         step query
-          members = CohortMemberRepo.find_by_cohort!(cohort_id)
+          members = cohort_member_repo.find_by_cohort!(cohort_id)
           ret members
 
       svc HandleAddCohortMember
         input
           cohort_id: Id
           user_id: Id
+          @dep cohort_member_repo: CohortMemberRepo
         step execute
           member = CohortMember.new(cohort_id, user_id)
-          CohortMemberRepo.save!(member)
+          cohort_member_repo.save!(member)
 
       svc HandleGetListsByCohort
         input
           cohort_id: Id
+          @dep list_repo: ListRepo
         step query
-          lists = ListRepo.find_by_cohort!(cohort_id)
+          lists = list_repo.find_by_cohort!(cohort_id)
           ret lists
 
       svc HandleGetSegmentsByCohort
         input
           cohort_id: Id
+          @dep segment_repo: SegmentRepo
         step query
-          segments = SegmentRepo.find_by_cohort!(cohort_id)
+          segments = segment_repo.find_by_cohort!(cohort_id)
           ret segments
 
       svc HandleGetRostersByCohort
         input
           cohort_id: Id
+          @dep roster_repo: RosterRepo
         step query
-          rosters = RosterRepo.find_by_cohort!(cohort_id)
+          rosters = roster_repo.find_by_cohort!(cohort_id)
           ret rosters
 
       svc HandleCreateList
@@ -441,9 +447,10 @@ pkg dlx_core
           id: Id
           cohort_id: Id
           name: Str
+          @dep list_repo: ListRepo
         step execute
           list = List.new(id, cohort_id, name)
-          ListRepo.save!(list)
+          list_repo.save!(list)
 
       svc HandleCreateSegment
         input
@@ -451,9 +458,10 @@ pkg dlx_core
           cohort_id: Id
           name: Str
           view_id: Id
+          @dep segment_repo: SegmentRepo
         step execute
           segment = Segment.new(id, cohort_id, name, view_id)
-          SegmentRepo.save!(segment)
+          segment_repo.save!(segment)
 
       svc HandleCreateRoster
         input
@@ -462,45 +470,55 @@ pkg dlx_core
           name: Str
           start_time: Dt
           end_time: Dt
+          @dep roster_repo: RosterRepo
         step execute
           roster = Roster.new(id, cohort_id, name, start_time, end_time)
-          RosterRepo.save!(roster)
+          roster_repo.save!(roster)
 
       svc HandleAddListMember
         input
           list_id: Id
           user_id: Id
+          @dep list_repo: ListRepo
+          @dep cohort_member_repo: CohortMemberRepo
+          @dep list_member_repo: ListMemberRepo
         step validate
-          list = ListRepo.find!(list_id)
-          is_cohort_member = CohortMemberRepo.find_by_cohort!(list.cohort_id)
+          list = list_repo.find!(list_id)
+          is_cohort_member = cohort_member_repo.find_by_cohort!(list.cohort_id)
           @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = ListMember.new(list_id, user_id)
-          ListMemberRepo.add!(member)
+          list_member_repo.add!(member)
 
       svc HandleAddSegmentMember
         input
           segment_id: Id
           user_id: Id
+          @dep segment_repo: SegmentRepo
+          @dep cohort_member_repo: CohortMemberRepo
+          @dep segment_member_repo: SegmentMemberRepo
         step validate
-          segment = SegmentRepo.find!(segment_id)
-          is_cohort_member = CohortMemberRepo.find_by_cohort!(segment.cohort_id)
+          segment = segment_repo.find!(segment_id)
+          is_cohort_member = cohort_member_repo.find_by_cohort!(segment.cohort_id)
           @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = SegmentMember.new(segment_id, user_id)
-          SegmentMemberRepo.add!(member)
+          segment_member_repo.add!(member)
 
       svc HandleAddRosterMember
         input
           roster_id: Id
           user_id: Id
+          @dep roster_repo: RosterRepo
+          @dep cohort_member_repo: CohortMemberRepo
+          @dep roster_member_repo: RosterMemberRepo
         step validate
-          roster = RosterRepo.find!(roster_id)
-          is_cohort_member = CohortMemberRepo.find_by_cohort!(roster.cohort_id)
+          roster = roster_repo.find!(roster_id)
+          is_cohort_member = cohort_member_repo.find_by_cohort!(roster.cohort_id)
           @guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = RosterMember.new(roster_id, user_id)
-          RosterMemberRepo.add!(member)
+          roster_member_repo.add!(member)
 
     group infrastructure
       adapter PgTenantRepo for TenantRepo
