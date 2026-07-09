@@ -1325,12 +1325,12 @@ fn gen_impls(
                 ctx.stub_type_crate = seeded.stub_type_crate;
 
                 for (i, expr) in mimpl.body.iter().enumerate() {
-                    // Track local assignments so subsequent expressions resolve correctly
+                    let is_last = i == mimpl.body.len() - 1;
+                    let rust_expr = expr_to_rust(expr, &ctx);
+                    // Track local assignments AFTER translation so first use gets 'let mut'
                     if let Expr::Assign(name, _) | Expr::MutAssign(name, _, _) = expr {
                         ctx.locals.insert(name.clone());
                     }
-                    let is_last = i == mimpl.body.len() - 1;
-                    let rust_expr = stmt_to_rust(expr, &mut ctx);
                     if is_last {
                         // Last expression is the return value
                         if ret_rust == "Result<(), DomainError>" {

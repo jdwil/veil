@@ -1,5 +1,7 @@
 sol VeilRuntime
   use ddd
+  use di
+  use rust
   use aws_storage
   use rig
   use transports
