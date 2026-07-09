@@ -1,5 +1,6 @@
 pkg dlx_core
   use ddd
+  use di
   use sqlx
 
   # ─── Public API ─────────────────────────────────────────────────────────
