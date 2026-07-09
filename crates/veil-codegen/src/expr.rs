@@ -708,7 +708,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             return format!("{}.{}({}).await?", ctx.bus_ref, to_snake(method), final_args);
         }
         // Check if this method returns Option<T> — if so, unwrap with .ok_or(NotFound)?
+        // Try both the dep field name and PascalCase trait name as keys
+        let target_pascal = call.target.split('_')
+            .map(|s| { let mut c = s.chars(); match c.next() { None => String::new(), Some(f) => f.to_uppercase().collect::<String>() + c.as_str() } })
+            .collect::<String>();
         let returns_option = ctx.method_returns.get(&(call.target.clone(), call.method.clone()))
+            .or_else(|| ctx.method_returns.get(&(target_pascal, call.method.clone())))
             .map(|t| t.starts_with("Option<"))
             .unwrap_or(false);
         let opt_suffix = if returns_option { ".ok_or(DomainError::NotFound)?" } else { "" };

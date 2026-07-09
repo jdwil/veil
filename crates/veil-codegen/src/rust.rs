@@ -1363,19 +1363,38 @@ fn gen_impls(
                         // Last expression is the return value
                         if ret_rust == "Result<(), DomainError>" {
                             // Void result — execute the expression, then Ok(())
-                            out.push_str(&format!("        {};\n", rust_expr));
-                            out.push_str("        Ok(())\n");
-                        } else if ret_rust.starts_with("Result<") {
-                            // If the expression calls an external-effect stub,
-                            // it returns () which won't match the expected type.
-                            // Use todo!() to defer to real implementation.
-                            // Also use todo!() for complex chains (SDK calls with .await)
-                            // that return SDK-specific types not matching our domain.
+                            // Detect if the expression involves an external SDK/stub call
+                            let uses_stub = ctx.stub_type_crate.values()
+                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()));
                             let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
-                            let is_sdk_chain = rust_expr.contains(".await");
-                            if uses_effect || is_sdk_chain {
-                                out.push_str(&format!("        {};\n", rust_expr));
-                                out.push_str(&format!("        todo!(\"implement {} — deserialize SDK response to domain type\")\n", mimpl.method_name));
+                            if uses_stub {
+                                // Adapter calls external SDK (sqlx, etc.) — emit todo!
+                                // to avoid type mismatches. The SQL intent is in manifest.json.
+                                let sql_hint = mimpl.body.iter().find_map(|e| {
+                                    if let Expr::Call(c) = e { c.args.first().and_then(|a| {
+                                        if let Expr::StringLit(s) = a { Some(s.clone()) } else { None }
+                                    }) } else { None }
+                                }).unwrap_or_default();
+                                out.push_str(&format!("        todo!(\"SQL: {}\")\n", sql_hint.replace('"', "'")));
+                            } else if uses_effect {
+                                out.push_str(&format!("        {};\\n", rust_expr));
+                                out.push_str("        Ok(())\n");
+                            } else {
+                                out.push_str(&format!("        {};\\n", rust_expr));
+                                out.push_str("        Ok(())\n");
+                            }
+                        } else if ret_rust.starts_with("Result<") {
+                            // Non-void result with possible SDK call
+                            let uses_stub = ctx.stub_type_crate.values()
+                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()));
+                            let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
+                            if uses_stub || uses_effect {
+                                let sql_hint = mimpl.body.iter().find_map(|e| {
+                                    if let Expr::Call(c) = e { c.args.first().and_then(|a| {
+                                        if let Expr::StringLit(s) = a { Some(s.clone()) } else { None }
+                                    }) } else { None }
+                                }).unwrap_or_default();
+                                out.push_str(&format!("        todo!(\"SQL: {}\")\n", sql_hint.replace('"', "'")));
                             } else {
                                 out.push_str(&format!("        Ok({})\n", rust_expr));
                             }
@@ -1610,7 +1629,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     out.push_str("//! Application services and flow orchestrators.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse crate::domain::messages::*;\n");
-    out.push_str("use std::sync::Arc;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n\n");
+    out.push_str("use std::sync::Arc;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\n\n");
 
     if flows.is_empty() {
         out.push_str("// No flows defined in this module.\n");
@@ -1688,6 +1707,20 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             FlowLike::Construct(c) => &c.steps,
         };
         all_deps.extend(collect_deps(steps, &base_ctx));
+
+        // Also collect @dep annotated inputs as dependencies
+        let inputs = match flow {
+            FlowLike::Flow(f) => &f.inputs,
+            FlowLike::Construct(c) => &c.inputs,
+        };
+        for field in inputs {
+            if field.annotations.iter().any(|a| a.name == "dep") {
+                // The type_expr of a @dep field is the trait name
+                if let TypeExpr::Named(type_name) = &field.type_expr {
+                    all_deps.insert(type_name.clone());
+                }
+            }
+        }
     }
 
     // Emit the Deps struct
@@ -1729,19 +1762,31 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
 
         let params = inputs
             .iter()
+            .filter(|f| !f.annotations.iter().any(|a| a.name == "dep"))
             .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
             .collect::<Vec<_>>()
             .join(",\n    ");
 
-        // Determine if we need deps parameter
+        // Determine if we need deps parameter — include @dep annotated inputs
+        let dep_inputs: Vec<&Field> = inputs.iter()
+            .filter(|f| f.annotations.iter().any(|a| a.name == "dep"))
+            .collect();
         let flow_deps = collect_deps(steps, &base_ctx);
-        let deps_param = if !flow_deps.is_empty() { "deps: &Deps, " } else { "" };
+        let has_deps = !flow_deps.is_empty() || !dep_inputs.is_empty();
+        let deps_param = if has_deps { "deps: &Deps, " } else { "" };
 
         // Build context for this flow
         let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
         ctx.is_orchestrator = is_orchestrator;
         // Register inputs as locals, with their declared types for inference.
+        // Skip @dep annotated inputs — they're accessed via deps.x, not as locals.
         for input in inputs {
+            if input.annotations.iter().any(|a| a.name == "dep") {
+                // Register the dep field name (e.g. "cohort_repo") as a Trait in name_to_shape
+                // so the expression translator routes calls through deps.x.method().await?
+                ctx.name_to_shape.insert(input.name.clone(), Shape::Trait);
+                continue;
+            }
             ctx.locals.insert(input.name.clone());
             ctx.local_types.insert(input.name.clone(), type_to_rust(&input.type_expr));
         }
