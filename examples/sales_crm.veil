@@ -1,4 +1,4 @@
-sol SalesCRM
+pkg SalesCRM
   use crm
 
   # CRM vocabulary (pipeline, lead, signal, move, integration, connector,

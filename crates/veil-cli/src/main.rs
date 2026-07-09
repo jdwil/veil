@@ -499,8 +499,7 @@ fn main() {
                     }
                 }
                 veil_ir::ast::VeilFile::Package(pkg) => {
-                    // Packages with expose blocks generate typed API clients (TS)
-                    // or Rust library crates
+                    // Packages generate typed API clients (TS) or full Rust crates
                     match codegen_target {
                         veil_codegen::CodegenTarget::TypeScript => {
                             let project = veil_codegen::typescript::generate_api_client_from_package(pkg);
@@ -509,9 +508,14 @@ fn main() {
                                 .collect()
                         }
                         veil_codegen::CodegenTarget::Rust => {
-                            // For now, packages need a sol wrapper for Rust codegen
-                            eprintln!("Rust codegen for pkg files not yet supported. Wrap in a sol.");
-                            std::process::exit(1);
+                            // Convert Package to Solution for Rust codegen
+                            let sol = &veil_ir::ast::Solution {
+                                name: pkg.name.clone(),
+                                span: pkg.span,
+                                uses: pkg.uses.clone(),
+                                items: pkg.items.clone(),
+                            };
+                            veil_codegen::generate_for_target(sol, &registry, codegen_target)
                         }
                     }
                 }

@@ -436,7 +436,9 @@ fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     for e in &contents.enums {
         defined_types.push(e.name.clone());
     }
+    // Traits (ports/repos) are defined in ports/mod.rs — exclude them from stubs.
     for t in &contents.traits {
+        defined_types.push(t.name.clone());
         for method in &t.methods {
             for param in &method.params {
                 collect_type_refs(&param.type_expr, &mut referenced);
@@ -464,7 +466,7 @@ fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
 
     let builtin = [
         "Str", "Int", "F64", "Bool", "Bytes", "UUID", "Id", "DateTime", "Dt", "List", "Map", "Set", "Opt",
-        "Res", "String",
+        "Res", "String", "Json",
     ];
     let undefined: Vec<String> = referenced
         .iter()

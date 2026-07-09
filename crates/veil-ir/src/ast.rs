@@ -25,6 +25,9 @@ pub struct Package {
     pub version: Option<String>,
     pub span: Span,
     pub metadata: Vec<PackageMeta>,
+    /// Layer/package references (`use ddd`).
+    #[serde(default)]
+    pub uses: Vec<UseImport>,
     pub items: Vec<TopLevelItem>,
     pub expose: Option<ExposeBlock>,
 }

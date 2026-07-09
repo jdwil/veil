@@ -1,4 +1,4 @@
-sol CustomerOnboarding
+pkg CustomerOnboarding
   use ddd
 
   lang

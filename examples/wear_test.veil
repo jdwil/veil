@@ -1,4 +1,4 @@
-sol WearTest
+pkg WearTest
   use ddd
   use dlx_core
 

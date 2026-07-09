@@ -1,5 +1,5 @@
 # Hello World — comprehensive example exercising a cross-section of VEIL
-sol HelloWorld
+pkg HelloWorld
   use ddd
 
   lang

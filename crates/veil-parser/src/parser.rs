@@ -48,7 +48,7 @@ pub fn parse_with_registry(
         VeilFile::Package(pkg) => Solution {
             name: pkg.name,
             span: pkg.span,
-            uses: Vec::new(),
+            uses: pkg.uses,
             items: pkg.items,
         },
         VeilFile::Composition(comp) => Solution {
@@ -87,6 +87,7 @@ fn inject_declarations(sol: &mut Solution, registry: &LayerRegistry) {
         if let Ok(decl_sol) = parse_file_with_registry(&tokens, registry.clone()) {
             let items = match decl_sol {
                 VeilFile::Solution(s) => s.items,
+                VeilFile::Package(p) => p.items,
                 _ => continue,
             };
             for mut item in items {
@@ -137,18 +138,31 @@ pub fn parse_file_with_registry(
 
     let result = match parser.peek_kind().clone() {
         TokenKind::Pkg => parser.parse_package().map(VeilFile::Package),
+        TokenKind::Sol => parser.parse_package().map(VeilFile::Package), // sol is a deprecated alias for pkg
         TokenKind::Use => parser.parse_composition().map(VeilFile::Composition),
         _ => parser.parse_solution().map(VeilFile::Solution),
     };
 
     match result {
         Ok(mut file) if parser.errors.is_empty() => {
-            // Inject layer declarations for solutions (Bus, SagaStep, etc.)
+            // Inject layer declarations (Bus, SagaStep, etc.)
             // Skip if this is the internal __decl__ wrapper to avoid infinite recursion.
-            if let VeilFile::Solution(ref mut sol) = file {
-                if sol.name != "__decl__" {
+            match &mut file {
+                VeilFile::Solution(sol) if sol.name != "__decl__" => {
                     inject_declarations(sol, &parser.registry);
                 }
+                VeilFile::Package(pkg) if pkg.name != "__decl__" => {
+                    // Inject into Package by converting temporarily
+                    let mut sol = Solution {
+                        name: pkg.name.clone(),
+                        span: pkg.span,
+                        uses: pkg.uses.clone(),
+                        items: std::mem::take(&mut pkg.items),
+                    };
+                    inject_declarations(&mut sol, &parser.registry);
+                    pkg.items = sol.items;
+                }
+                _ => {}
             }
             Ok(file)
         }
@@ -566,7 +580,12 @@ impl<'a> Parser<'a> {
 
     fn parse_package(&mut self) -> Result<Package, ParseError> {
         let start_span = self.current().span;
-        self.expect(&TokenKind::Pkg)?;
+        // Accept both `pkg` and `sol` (sol is deprecated alias)
+        if self.at(&TokenKind::Sol) {
+            self.advance();
+        } else {
+            self.expect(&TokenKind::Pkg)?;
+        }
         let name = self.expect_ident()?;
 
         let version = if self.at(&TokenKind::Ident) {
@@ -576,6 +595,7 @@ impl<'a> Parser<'a> {
         };
 
         let mut metadata = Vec::new();
+        let mut uses = Vec::new();
         let mut items = Vec::new();
         let mut expose = None;
 
@@ -624,7 +644,7 @@ impl<'a> Parser<'a> {
                         });
                     }
                     TokenKind::Use => {
-                        let _ = self.parse_use_import()?;
+                        uses.push(self.parse_use_import()?);
                     }
                     TokenKind::Lang => {
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
@@ -650,6 +670,7 @@ impl<'a> Parser<'a> {
             version,
             span: start_span.merge(self.current().span),
             metadata,
+            uses,
             items,
             expose,
         })
