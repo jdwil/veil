@@ -124,6 +124,8 @@ pkg ddd v1
     mt trait
     in Context
     desc "Port — interface contract for external dependencies"
+    cst
+      requires_implementation
     visual
       icon "🔌"
       color "#10b981"
@@ -154,6 +156,7 @@ pkg ddd v1
     desc "Repository — persistence interface for an aggregate"
     cst
       crud_for_aggregate
+      requires_implementation
     visual
       icon "🗄️"
       color "#10b981"
@@ -173,6 +176,20 @@ pkg ddd v1
       trace: "Add distributed tracing" method
       timeout: "Service-level timeout" ms
     group domain
+
+  construct ApplicationService
+    kw handler
+    mt fn
+    in Context
+    desc "Application Service — use case handler that orchestrates domain objects to fulfill commands"
+    visual
+      icon "📡"
+      color "#6366f1"
+      label "Application Service"
+    ann
+      trace: "Add distributed tracing" method
+      timeout: "Service-level timeout" ms
+    group application
 
   construct Saga
     kw saga
@@ -250,6 +267,21 @@ pkg ddd v1
       dispatch(evt: Json) -> Res!
       invoke(cmd: Json) -> Res!<Json>
       request(qry: Json) -> Res!<Json>
+
+    # ─── Auth service (runtime-injected authentication & authorization) ─────
+    # The runtime provides the concrete implementation: Cognito, Auth0, custom
+    # RBAC, or a BusAuthAdapter that delegates to a VEIL-authored auth context.
+    # Domain code calls these methods via the Deps struct like any other port.
+    # @strategy selects the runtime adapter (e.g. cognito, auth0, bus).
+    @strategy(bus)
+    trait AuthService
+      validate_token(token: Str) -> Res!<Principal>
+      check_permission(principal: Principal, permission: Str) -> Res!<Bool>
+
+    struct Principal
+      id: Str
+      roles: List<Str>
+      claims: Map<Str, Str>
 
     # ─── Saga runtime (the transactional coordinator), written in VEIL ─────
     # A saga step is a unit of work with a compensating action. Steps share a

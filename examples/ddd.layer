@@ -177,6 +177,20 @@ pkg ddd v1
       timeout: "Service-level timeout" ms
     group domain
 
+  construct ApplicationService
+    kw handler
+    mt fn
+    in Context
+    desc "Application Service — use case handler that orchestrates domain objects to fulfill commands"
+    visual
+      icon "📡"
+      color "#6366f1"
+      label "Application Service"
+    ann
+      trace: "Add distributed tracing" method
+      timeout: "Service-level timeout" ms
+    group application
+
   construct Saga
     kw saga
     mt fn

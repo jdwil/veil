@@ -393,7 +393,7 @@ pkg dlx_core
         remove!(id: Id)
 
     group application
-      svc HandleGetCohort
+      handler HandleGetCohort
         input
           id: Id
           @dep cohort_repo: CohortRepo
@@ -401,7 +401,7 @@ pkg dlx_core
           cohort = cohort_repo.find!(id)
           ret cohort
 
-      svc HandleGetCohortMembers
+      handler HandleGetCohortMembers
         input
           cohort_id: Id
           @dep cohort_member_repo: CohortMemberRepo
@@ -409,7 +409,7 @@ pkg dlx_core
           members = cohort_member_repo.find_by_cohort!(cohort_id)
           ret members
 
-      svc HandleAddCohortMember
+      handler HandleAddCohortMember
         input
           cohort_id: Id
           user_id: Id
@@ -418,7 +418,7 @@ pkg dlx_core
           member = CohortMember.new(cohort_id, user_id)
           cohort_member_repo.save!(member)
 
-      svc HandleGetListsByCohort
+      handler HandleGetListsByCohort
         input
           cohort_id: Id
           @dep list_repo: ListRepo
@@ -426,7 +426,7 @@ pkg dlx_core
           lists = list_repo.find_by_cohort!(cohort_id)
           ret lists
 
-      svc HandleGetSegmentsByCohort
+      handler HandleGetSegmentsByCohort
         input
           cohort_id: Id
           @dep segment_repo: SegmentRepo
@@ -434,7 +434,7 @@ pkg dlx_core
           segments = segment_repo.find_by_cohort!(cohort_id)
           ret segments
 
-      svc HandleGetRostersByCohort
+      handler HandleGetRostersByCohort
         input
           cohort_id: Id
           @dep roster_repo: RosterRepo
@@ -442,7 +442,7 @@ pkg dlx_core
           rosters = roster_repo.find_by_cohort!(cohort_id)
           ret rosters
 
-      svc HandleCreateList
+      handler HandleCreateList
         input
           id: Id
           cohort_id: Id
@@ -452,7 +452,7 @@ pkg dlx_core
           list = List.new(id, cohort_id, name)
           list_repo.save!(list)
 
-      svc HandleCreateSegment
+      handler HandleCreateSegment
         input
           id: Id
           cohort_id: Id
@@ -463,7 +463,7 @@ pkg dlx_core
           segment = Segment.new(id, cohort_id, name, view_id)
           segment_repo.save!(segment)
 
-      svc HandleCreateRoster
+      handler HandleCreateRoster
         input
           id: Id
           cohort_id: Id
@@ -475,7 +475,7 @@ pkg dlx_core
           roster = Roster.new(id, cohort_id, name, start_time, end_time)
           roster_repo.save!(roster)
 
-      svc HandleAddListMember
+      handler HandleAddListMember
         input
           list_id: Id
           user_id: Id
@@ -490,7 +490,7 @@ pkg dlx_core
           member = ListMember.new(list_id, user_id)
           list_member_repo.add!(member)
 
-      svc HandleAddSegmentMember
+      handler HandleAddSegmentMember
         input
           segment_id: Id
           user_id: Id
@@ -505,7 +505,7 @@ pkg dlx_core
           member = SegmentMember.new(segment_id, user_id)
           segment_member_repo.add!(member)
 
-      svc HandleAddRosterMember
+      handler HandleAddRosterMember
         input
           roster_id: Id
           user_id: Id
