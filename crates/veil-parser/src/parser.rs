@@ -2464,6 +2464,14 @@ impl<'a> Parser<'a> {
     fn parse_postfix(&mut self, mut expr: Expr, start_span: Span) -> Result<Expr, ParseError> {
         while self.at(&TokenKind::Dot) {
             self.advance(); // consume '.'
+
+            // .await — postfix await (like Rust's expr.await)
+            if self.at(&TokenKind::Await) {
+                self.advance();
+                expr = Expr::Await(Box::new(expr));
+                continue;
+            }
+
             let field = self.expect_ident()?;
 
             // Handle method!(args) — the ! is part of the method name (fallible shorthand)
