@@ -103,20 +103,20 @@ serve serve-examples: veil viewer-install
 	@echo "  Frontend: http://localhost:$(VIEWER_PORT)  (veil-viewer)"
 	@echo "  Open:     http://localhost:$(VIEWER_PORT)"
 	@echo "  Agent:    VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)  model=$(VEIL_MODEL_NAME)"
-	@if [ "$(VEIL_MODEL_PROVIDER)" = "ollama" ]; then \
-		if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then \
-			echo "  Ollama:   up at :11434"; \
-		else \
-			echo "  Ollama:   WARN not reachable at :11434 (start ollama or use VEIL_MODEL_PROVIDER=echo)"; \
-		fi; \
-	fi
 	@if [ "$(VEIL_MODEL_PROVIDER)" = "acp" ] || [ "$(VEIL_MODEL_PROVIDER)" = "kiro" ]; then \
 		echo "  ACP:      $(VEIL_ACP_COMMAND) $(VEIL_ACP_ARGS)"; \
 		echo "  ACP cwd:  $(VEIL_ACP_CWD)"; \
 		if command -v $(VEIL_ACP_COMMAND) >/dev/null 2>&1; then \
 			echo "  ACP bin:  ok ($$(command -v $(VEIL_ACP_COMMAND)))"; \
 		else \
-			echo "  ACP bin:  WARN $(VEIL_ACP_COMMAND) not on PATH — install Kiro CLI"; \
+			echo "  ACP bin:  WARN $(VEIL_ACP_COMMAND) not on PATH — install Kiro CLI + kiro-cli login"; \
+		fi; \
+	fi
+	@if [ "$(VEIL_MODEL_PROVIDER)" = "ollama" ]; then \
+		if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then \
+			echo "  Ollama:   up at :11434"; \
+		else \
+			echo "  Ollama:   WARN not reachable at :11434 (start ollama or use VEIL_MODEL_PROVIDER=acp)"; \
 		fi; \
 	fi
 	@echo "  Stop:     Ctrl-C  or  make serve-stop"
@@ -156,6 +156,9 @@ serve-api: veil
 	fi
 	@echo "API only: http://localhost:$(PORT)  (Ctrl-C to stop)"
 	@echo "  Agent: VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)  model=$(VEIL_MODEL_NAME)"
+	@if [ "$(VEIL_MODEL_PROVIDER)" = "acp" ] || [ "$(VEIL_MODEL_PROVIDER)" = "kiro" ]; then \
+		echo "  ACP:    $(VEIL_ACP_COMMAND) $(VEIL_ACP_ARGS)  (cwd=$(VEIL_ACP_CWD))"; \
+	fi
 	$(VEIL_BIN) serve $(EXAMPLES) -p $(PORT)
 
 # Viewer only (expects veil serve already on PORT)
