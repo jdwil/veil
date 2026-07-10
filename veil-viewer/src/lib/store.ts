@@ -8,6 +8,27 @@ export const currentParent = writable<number | null>(null);
 export const breadcrumbs = writable<{ id: number | null; name: string }[]>([]);
 export const loading = writable(true);
 export const error = writable<string | null>(null);
+/** Bumped after IR load so the canvas always re-runs computeView (even if parent id is unchanged). */
+export const viewRevision = writable(0);
+
+/** Monotonic generation — cancels stale fetchIr/selectFile races. */
+let loadGeneration = 0;
+
+const FETCH_MS = 20_000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  ms = FETCH_MS
+): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
 export const selectedNodeId = writable<string | null>(null);
 export const paletteConfig = writable<any[]>([]);
 /** Layer-driven views / nest rules from GET /api/presentation (LAY-002/003). */
@@ -109,7 +130,9 @@ export async function fetchCheck(target?: string): Promise<CheckResponse | null>
     unsub();
   }
   try {
-    const res = await fetch(`${CHECK_URL}?target=${encodeURIComponent(t || 'rust')}`);
+    const res = await fetchWithTimeout(
+      `${CHECK_URL}?target=${encodeURIComponent(t || 'rust')}`
+    );
     if (!res.ok && res.status !== 422) return null;
     const data: CheckResponse = await res.json();
     diagnostics.set(data.diagnostics ?? []);
@@ -121,80 +144,122 @@ export async function fetchCheck(target?: string): Promise<CheckResponse | null>
   }
 }
 
+function applyRootNavigation(data: IrGraph) {
+  const root = data.nodes.find((n) => n.kind === 'Solution');
+  if (!root) {
+    currentParent.set(null);
+    breadcrumbs.set([]);
+    viewRevision.update((n) => n + 1);
+    return;
+  }
+  const rootChildren = data.nodes.filter((n) => n.metadata.parent === root.id);
+  const flows = rootChildren.filter((n) => n.kind === 'Flow');
+  const nonFlows = rootChildren.filter((n) => n.kind !== 'Flow');
+
+  let targetId = root.id;
+  let crumb = { id: root.id, name: root.name };
+  if (
+    flows.length === 1 &&
+    nonFlows.every((n) => n.metadata.annotations.includes('📦 package'))
+  ) {
+    targetId = flows[0].id;
+    crumb = { id: flows[0].id, name: flows[0].name };
+  }
+
+  // Force subscriber fire even when parent id is unchanged across files
+  // (both packages use node id 1 for Solution).
+  currentParent.set(null);
+  breadcrumbs.set([]);
+  currentParent.set(targetId);
+  breadcrumbs.set([crumb]);
+  viewRevision.update((n) => n + 1);
+}
+
+/** Core IR + panels load (no loading flag). Returns false if superseded. */
+async function loadActiveFile(gen: number): Promise<boolean> {
+  const [irRes, srcRes, palRes, presRes, stubRes, filesRes] = await Promise.all([
+    fetchWithTimeout(API_URL),
+    fetchWithTimeout(SOURCE_URL),
+    fetchWithTimeout(PALETTE_URL),
+    fetchWithTimeout(PRESENTATION_URL).catch(() => null),
+    fetchWithTimeout(STUBS_URL).catch(() => null),
+    fetchWithTimeout(FILES_URL).catch(() => null),
+  ]);
+  if (gen !== loadGeneration) return false;
+
+  if (!irRes.ok) {
+    const body = await irRes.text().catch(() => '');
+    const detail = body.trim().slice(0, 400);
+    throw new Error(
+      detail ? `HTTP ${irRes.status}: ${detail}` : `HTTP ${irRes.status}`
+    );
+  }
+  const data: IrGraph = await irRes.json();
+  if (gen !== loadGeneration) return false;
+
+  irGraph.set(data);
+  selectedNodeId.set(null);
+
+  if (stubRes && stubRes.ok) {
+    stubs.set(await stubRes.json());
+  }
+
+  // Check in background — don't block canvas paint on large packages
+  void fetchCheck();
+
+  if (srcRes.ok) {
+    veilSource.set(await srcRes.text());
+  }
+
+  if (palRes.ok) {
+    const palette: PaletteEntry[] = await palRes.json();
+    paletteConfig.set(palette);
+    setPaletteStyles(palette);
+  }
+
+  if (presRes && presRes.ok) {
+    presentationModel.set(await presRes.json());
+  } else {
+    presentationModel.set(null);
+  }
+
+  if (filesRes && filesRes.ok) {
+    const files: VeilFileInfo[] = await filesRes.json();
+    availableFiles.set(files);
+    const active = files.find((f) => f.active);
+    if (active) activeFileName.set(active.name);
+  }
+
+  // Generated code is optional (can be slow); don't block UI
+  void fetchWithTimeout(`${API_BASE}/generated`)
+    .then(async (r) => {
+      if (gen !== loadGeneration || !r.ok) return;
+      generatedCode.set(await r.json());
+    })
+    .catch(() => {});
+
+  applyRootNavigation(data);
+  return true;
+}
+
 export async function fetchIr() {
+  const gen = ++loadGeneration;
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes, palRes, presRes, stubRes, filesRes] = await Promise.all([
-      fetch(API_URL),
-      fetch(SOURCE_URL),
-      fetch(PALETTE_URL),
-      fetch(PRESENTATION_URL).catch(() => null),
-      fetch(STUBS_URL).catch(() => null),
-      fetch(FILES_URL).catch(() => null),
-    ]);
-    if (!irRes.ok) {
-      const body = await irRes.text().catch(() => '');
-      const detail = body.trim().slice(0, 400);
-      throw new Error(
-        detail
-          ? `HTTP ${irRes.status}: ${detail}`
-          : `HTTP ${irRes.status}`
-      );
-    }
-    const data: IrGraph = await irRes.json();
-    irGraph.set(data);
-
-    if (stubRes && stubRes.ok) {
-      stubs.set(await stubRes.json());
-    }
-
-    // Full dual-loop check (CHK-007)
-    await fetchCheck();
-
-    if (srcRes.ok) {
-      veilSource.set(await srcRes.text());
-    }
-
-    if (palRes.ok) {
-      const palette: PaletteEntry[] = await palRes.json();
-      paletteConfig.set(palette);
-      setPaletteStyles(palette);
-    }
-
-    if (presRes && presRes.ok) {
-      presentationModel.set(await presRes.json());
-    } else {
-      presentationModel.set(null);
-    }
-
-    // Load file list
-    if (filesRes && filesRes.ok) {
-      const files: VeilFileInfo[] = await filesRes.json();
-      availableFiles.set(files);
-      const active = files.find(f => f.active);
-      if (active) activeFileName.set(active.name);
-    }
-
-    // Find root and determine entry point
-    const root = data.nodes.find(n => n.kind === 'Solution');
-    if (root) {
-      const rootChildren = data.nodes.filter(n => n.metadata.parent === root.id);
-      const flows = rootChildren.filter(n => n.kind === 'Flow');
-      const nonFlows = rootChildren.filter(n => n.kind !== 'Flow');
-
-      if (flows.length === 1 && nonFlows.every(n => n.metadata.annotations.includes('📦 package'))) {
-        currentParent.set(flows[0].id);
-        breadcrumbs.set([{ id: flows[0].id, name: flows[0].name }]);
-      } else {
-        currentParent.set(root.id);
-        breadcrumbs.set([{ id: root.id, name: root.name }]);
-      }
-    }
+    await loadActiveFile(gen);
   } catch (e) {
-    error.set(e instanceof Error ? e.message : 'Failed to fetch IR');
+    if (gen === loadGeneration) {
+      const msg =
+        e instanceof Error
+          ? e.name === 'AbortError'
+            ? `Timed out talking to API at ${API_BASE} (is veil serve running?)`
+            : e.message
+          : 'Failed to fetch IR';
+      error.set(msg);
+    }
   } finally {
-    loading.set(false);
+    if (gen === loadGeneration) loading.set(false);
   }
 }
 
@@ -213,65 +278,40 @@ export function navigateTo(id: number | null) {
 
 /** Switch to a different loaded file by index. Re-fetches IR + all panels (UX-011). */
 export async function selectFile(index: number) {
+  const gen = ++loadGeneration;
   loading.set(true);
   error.set(null);
   try {
-    const res = await fetch(SELECT_FILE_URL, {
+    const res = await fetchWithTimeout(SELECT_FILE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ index }),
     });
-    if (!res.ok) throw new Error(`Failed to select file: HTTP ${res.status}`);
-    const data: IrGraph = await res.json();
-    irGraph.set(data);
-
-    // Parallel refresh of all file-scoped panels
-    const [srcRes, filesRes, palRes, genRes, presRes] = await Promise.all([
-      fetch(SOURCE_URL),
-      fetch(FILES_URL),
-      fetch(PALETTE_URL),
-      fetch(`${API_BASE}/generated`).catch(() => null),
-      fetch(PRESENTATION_URL).catch(() => null),
-    ]);
-
-    if (srcRes.ok) veilSource.set(await srcRes.text());
-
-    if (filesRes.ok) {
-      const files: VeilFileInfo[] = await filesRes.json();
-      availableFiles.set(files);
-      const active = files.find((f) => f.active);
-      if (active) activeFileName.set(active.name);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const detail = body.trim().slice(0, 400);
+      throw new Error(
+        detail
+          ? `Failed to select file: HTTP ${res.status}: ${detail}`
+          : `Failed to select file: HTTP ${res.status}`
+      );
     }
-
-    if (palRes.ok) {
-      const palette: PaletteEntry[] = await palRes.json();
-      paletteConfig.set(palette);
-      setPaletteStyles(palette);
-    }
-
-    if (genRes && genRes.ok) {
-      generatedCode.set(await genRes.json());
-    }
-
-    if (presRes && presRes.ok) {
-      presentationModel.set(await presRes.json());
-    } else {
-      presentationModel.set(null);
-    }
-
-    await fetchCheck();
-
-    // Reset navigation to root of new file
-    const root = data.nodes.find((n) => n.kind === 'Solution');
-    if (root) {
-      currentParent.set(root.id);
-      breadcrumbs.set([{ id: root.id, name: root.name }]);
-    }
-    selectedNodeId.set(null);
+    // Body is IR for the new active file — discard; loadActiveFile re-fetches consistently.
+    await res.text().catch(() => '');
+    if (gen !== loadGeneration) return;
+    await loadActiveFile(gen);
   } catch (e) {
-    error.set(e instanceof Error ? e.message : 'Failed to switch file');
+    if (gen === loadGeneration) {
+      const msg =
+        e instanceof Error
+          ? e.name === 'AbortError'
+            ? `Timed out selecting file (API ${API_BASE})`
+            : e.message
+          : 'Failed to switch file';
+      error.set(msg);
+    }
   } finally {
-    loading.set(false);
+    if (gen === loadGeneration) loading.set(false);
   }
 }
 

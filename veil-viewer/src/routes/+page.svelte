@@ -41,6 +41,7 @@
     activeFileName,
     selectFile,
     diagnostics,
+    viewRevision,
   } from '$lib/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
   import {
@@ -307,27 +308,34 @@
   }
 
   onMount(() => {
-    fetchIr().then(() => {
-      const graph = get(irGraph);
-      if (graph) computeView(graph, get(currentParent), get(paletteConfig));
-    });
-
     // Apply saved theme on mount
     document.documentElement.setAttribute('data-theme', theme);
 
-    // No irGraph subscription — computeView is called explicitly by
-    // fetchIr (on load) and handleImplement (on save).
-    // This prevents any auto-triggered computeView → nodes assignment
-    // that could loop with xyflow's bind:nodes write-back.
+    // Parent drill / file switch → recompute canvas.
+    // Skip parent=null (used only as a force-refresh sentinel before set to root).
     const unsubParent = currentParent.subscribe((parent) => {
+      if (parent == null) return;
       const graph = get(irGraph);
       if (!graph) return;
       const palette = get(paletteConfig);
-      computeView(graph, parent, palette);
+      void computeView(graph, parent, palette);
     });
+
+    // viewRevision bumps after every successful load so computeView runs even
+    // when Solution node id is unchanged across packages (always id 1).
+    const unsubRev = viewRevision.subscribe((rev) => {
+      if (rev === 0) return;
+      const graph = get(irGraph);
+      const parent = get(currentParent);
+      if (!graph || parent == null) return;
+      void computeView(graph, parent, get(paletteConfig));
+    });
+
+    void fetchIr();
 
     return () => {
       unsubParent();
+      unsubRev();
     };
   });
 
@@ -976,10 +984,14 @@
         <select
           class="file-selector"
           value={$availableFiles.findIndex(f => f.active)}
-          onchange={(e) => selectFile(Number(e.target.value))}
+          onchange={(e) => {
+            const idx = Number((e.currentTarget as HTMLSelectElement).value);
+            if (!Number.isFinite(idx)) return;
+            void selectFile(idx);
+          }}
         >
           {#each $availableFiles as file}
-            <option value={file.index}>{file.name}</option>
+            <option value={file.index}>{file.name}{file.active ? ' ●' : ''}</option>
           {/each}
         </select>
         <span class="breadcrumb-sep">›</span>
@@ -1024,9 +1036,10 @@
       <p class="error-title">⚠️ Connection Error</p>
       <p class="error-msg">{$error}</p>
       <p class="error-hint">
-        Run: <code>cargo run -- serve examples/customer_onboarding.veil</code>
+        Run: <code>make serve-examples</code>
+        (API <code>:3001</code> + viewer <code>:5173</code>)
       </p>
-      <button class="retry-btn" onclick={() => fetchIr()}>Retry</button>
+      <button class="retry-btn" onclick={() => void fetchIr()}>Retry</button>
     </div>
   <!-- Scope panel — shows variables available at current level -->
   {:else}
