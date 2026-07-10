@@ -1,0 +1,41 @@
+[package]
+name = "veil-runtime-bootstrap"
+version = "0.1.0"
+edition = "2024"
+description = "Stage-0 bootstrap for veil-runtime — the minimal composition root"
+
+[[bin]]
+name = "veil-runtime"
+path = "src/main.rs"
+
+[dependencies]
+# Generated crates (path deps resolve after veil gen)
+veil_shared = { path = "../generated/crates/veil_shared" }
+storage = { path = "../generated/crates/storage" }
+tools = { path = "../generated/crates/tools" }
+daemon = { path = "../generated/crates/daemon" }
+exec = { path = "../generated/crates/exec" }
+
+# Infrastructure
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+async-trait = "0.1"
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Deployment targets (feature-gated)
+[features]
+default = ["local"]
+local = []
+lambda = ["lambda_http"]
+container = []
+
+[dependencies.lambda_http]
+version = "0.13"
+optional = true
+
+[workspace]
