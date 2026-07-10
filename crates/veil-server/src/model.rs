@@ -1,19 +1,22 @@
-//! ModelProvider port + adapters (AGT-003).
+//! Model providers via the **Rig** SDK (AGT-003).
 //!
-//! No provider-specific types leak outside this module. Built-in agent may
-//! call [`complete`] with the configured provider.
+//! All LLM access goes through Rig. Configure with env vars — no engine/domain
+//! knowledge of vendors.
 
 use async_trait::async_trait;
+use rig_core::client::{CompletionClient, Nothing, ProviderClient};
+use rig_core::completion::Prompt;
+use rig_core::providers::{ollama, openai};
 use serde::{Deserialize, Serialize};
 
-/// One chat message for the model port.
+/// One chat message for the model port (UI / session history).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
 }
 
-/// Portable completion request.
+/// Portable completion request (non-agent path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompleteRequest {
     pub messages: Vec<ChatMessage>,
@@ -21,7 +24,7 @@ pub struct CompleteRequest {
     pub max_tokens: Option<u32>,
 }
 
-/// Portable completion response (non-streaming MVP).
+/// Portable completion response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompleteResponse {
     pub content: String,
@@ -29,19 +32,23 @@ pub struct CompleteResponse {
     pub provider: String,
 }
 
-/// Pluggable model backend (Zed-like port).
-#[async_trait]
-pub trait ModelProvider: Send + Sync {
-    fn name(&self) -> &str;
-    async fn list_models(&self) -> Result<Vec<String>, String>;
-    async fn complete(&self, req: CompleteRequest) -> Result<CompleteResponse, String>;
+/// Which Rig backend to use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderKind {
+    /// No network — local guidance text.
+    Echo,
+    /// OpenAI or any OpenAI-compatible base URL (Rig openai client).
+    OpenAi,
+    /// Local/remote Ollama (Rig ollama client).
+    Ollama,
+    /// Amazon Bedrock — reserved; use OpenAI-compatible gateway or future rig feature.
+    Bedrock,
 }
 
-/// Config from env (AGT-003 / AGT-012 lite).
+/// Config from env (AGT-003 / AGT-012).
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
-    /// `echo` | `openai` | `bedrock` (bedrock MVP returns clear not-configured error)
-    pub kind: String,
+    pub kind: ProviderKind,
     pub model: String,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -50,11 +57,28 @@ pub struct ModelConfig {
 
 impl ModelConfig {
     pub fn from_env() -> Self {
+        let kind_raw = std::env::var("VEIL_MODEL_PROVIDER")
+            .unwrap_or_else(|_| "echo".into())
+            .to_lowercase();
+        let kind = match kind_raw.as_str() {
+            "openai" | "openai-compatible" => ProviderKind::OpenAi,
+            "ollama" => ProviderKind::Ollama,
+            "bedrock" => ProviderKind::Bedrock,
+            "echo" | "heuristic" | "" => ProviderKind::Echo,
+            other => {
+                tracing::warn!(provider = %other, "unknown VEIL_MODEL_PROVIDER; using echo");
+                ProviderKind::Echo
+            }
+        };
+        let default_model = match kind {
+            ProviderKind::Ollama => "llama3.2".to_string(),
+            ProviderKind::OpenAi => "gpt-4o-mini".to_string(),
+            ProviderKind::Bedrock => "anthropic.claude-3-sonnet".to_string(),
+            ProviderKind::Echo => "echo".to_string(),
+        };
         Self {
-            kind: std::env::var("VEIL_MODEL_PROVIDER")
-                .unwrap_or_else(|_| "echo".into())
-                .to_lowercase(),
-            model: std::env::var("VEIL_MODEL_NAME").unwrap_or_else(|_| "default".into()),
+            kind,
+            model: std::env::var("VEIL_MODEL_NAME").unwrap_or(default_model),
             base_url: std::env::var("VEIL_MODEL_BASE_URL").ok(),
             api_key: std::env::var("VEIL_MODEL_API_KEY")
                 .ok()
@@ -65,22 +89,29 @@ impl ModelConfig {
         }
     }
 
-    pub fn build_provider(&self) -> Box<dyn ModelProvider> {
-        match self.kind.as_str() {
-            "openai" | "openai-compatible" => Box::new(OpenAiCompatibleProvider {
-                config: self.clone(),
-            }),
-            "bedrock" => Box::new(BedrockProvider {
-                config: self.clone(),
-            }),
-            _ => Box::new(EchoProvider {
-                model: self.model.clone(),
-            }),
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            ProviderKind::Echo => "echo",
+            ProviderKind::OpenAi => "openai",
+            ProviderKind::Ollama => "ollama",
+            ProviderKind::Bedrock => "bedrock",
         }
+    }
+
+    /// Whether this config can run a full Rig agent with tools.
+    pub fn supports_rig_agent(&self) -> bool {
+        matches!(self.kind, ProviderKind::OpenAi | ProviderKind::Ollama)
     }
 }
 
-/// Default / offline provider — echoes last user message with guidance.
+/// Pluggable port (thin over Rig) for simple completions and listing.
+#[async_trait]
+pub trait ModelProvider: Send + Sync {
+    fn name(&self) -> &str;
+    async fn list_models(&self) -> Result<Vec<String>, String>;
+    async fn complete(&self, req: CompleteRequest) -> Result<CompleteResponse, String>;
+}
+
 pub struct EchoProvider {
     pub model: String,
 }
@@ -103,8 +134,9 @@ impl ModelProvider for EchoProvider {
             .unwrap_or("");
         Ok(CompleteResponse {
             content: format!(
-                "[echo model] Understood: {:?}\nUse built-in tools: check | outline | rename A to B.\nSet VEIL_MODEL_PROVIDER=openai and VEIL_MODEL_API_KEY for real completions.",
-                last
+                "[echo / offline] Understood: {last:?}\n\
+                 Tools (heuristic or Rig when configured): check · outline · rename.\n\
+                 Set VEIL_MODEL_PROVIDER=openai|ollama and credentials for Rig-backed agents."
             ),
             model: self.model.clone(),
             provider: "echo".into(),
@@ -112,91 +144,158 @@ impl ModelProvider for EchoProvider {
     }
 }
 
-/// OpenAI-compatible chat completions (`/v1/chat/completions`).
-pub struct OpenAiCompatibleProvider {
-    pub config: ModelConfig,
-}
-
-#[async_trait]
-impl ModelProvider for OpenAiCompatibleProvider {
-    fn name(&self) -> &str {
-        "openai-compatible"
-    }
-    async fn list_models(&self) -> Result<Vec<String>, String> {
-        Ok(vec![self.config.model.clone()])
-    }
-    async fn complete(&self, req: CompleteRequest) -> Result<CompleteResponse, String> {
-        let key = self
-            .config
-            .api_key
-            .as_ref()
-            .ok_or_else(|| "VEIL_MODEL_API_KEY / OPENAI_API_KEY not set".to_string())?;
-        let base = self
-            .config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.openai.com/v1".into());
-        let url = format!(
-            "{}/chat/completions",
-            base.trim_end_matches('/')
-        );
-        let model = req
-            .model
-            .clone()
-            .unwrap_or_else(|| self.config.model.clone());
-        let body = serde_json::json!({
-            "model": model,
-            "messages": req.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-            })).collect::<Vec<_>>(),
-            "max_tokens": req.max_tokens.unwrap_or(1024),
-        });
-        // Minimal HTTP via std; avoid new deps — use reqwest if available, else clear error.
-        // Workspace may not have reqwest; use ureq-less manual note:
-        Err(format!(
-            "openai-compatible provider configured (url={url}, model={model}, key_len={}). \
-             HTTP client wiring: use VEIL_MODEL_PROVIDER=echo for local, or add reqwest in a follow-up. body_preview={}",
-            key.len(),
-            body.to_string().chars().take(120).collect::<String>()
-        ))
-    }
-}
-
-/// Amazon Bedrock proof-of-port (adapter stub with honest error until AWS SDK wired).
-pub struct BedrockProvider {
-    pub config: ModelConfig,
-}
-
-#[async_trait]
-impl ModelProvider for BedrockProvider {
-    fn name(&self) -> &str {
-        "bedrock"
-    }
-    async fn list_models(&self) -> Result<Vec<String>, String> {
-        Ok(vec![self.config.model.clone()])
-    }
-    async fn complete(&self, req: CompleteRequest) -> Result<CompleteResponse, String> {
-        let region = self
-            .config
-            .region
-            .clone()
-            .unwrap_or_else(|| "us-east-1".into());
-        let model = req
-            .model
-            .clone()
-            .unwrap_or_else(|| self.config.model.clone());
-        Err(format!(
-            "bedrock adapter port is registered (region={region}, model={model}) but AWS SDK is not linked in this MVP. \
-             Configure VEIL_MODEL_PROVIDER=openai for OpenAI-compatible, or echo for offline. \
-             Adding aws-sdk-bedrockruntime is the next adapter step — no engine/domain changes required."
-        ))
-    }
-}
-
-/// Shared helper: complete with env-configured provider.
+/// Complete with env-configured Rig provider (single-shot prompt, no tools).
 pub async fn complete_with_env(req: CompleteRequest) -> Result<CompleteResponse, String> {
     let cfg = ModelConfig::from_env();
-    let provider = cfg.build_provider();
-    provider.complete(req).await
+    match cfg.kind {
+        ProviderKind::Echo => {
+            EchoProvider {
+                model: cfg.model.clone(),
+            }
+            .complete(req)
+            .await
+        }
+        ProviderKind::OpenAi => complete_openai(&cfg, req).await,
+        ProviderKind::Ollama => complete_ollama(&cfg, req).await,
+        ProviderKind::Bedrock => Err(format!(
+            "bedrock via Rig: use an OpenAI-compatible Bedrock gateway \
+             (VEIL_MODEL_PROVIDER=openai + VEIL_MODEL_BASE_URL) or set ollama. region={}",
+            cfg.region.as_deref().unwrap_or("us-east-1")
+        )),
+    }
+}
+
+async fn complete_openai(
+    cfg: &ModelConfig,
+    req: CompleteRequest,
+) -> Result<CompleteResponse, String> {
+    let model_name = req.model.clone().unwrap_or_else(|| cfg.model.clone());
+    let client = if let Some(base) = &cfg.base_url {
+        let key = cfg
+            .api_key
+            .clone()
+            .unwrap_or_else(|| "not-needed".into());
+        openai::Client::builder()
+            .api_key(&key)
+            .base_url(base)
+            .build()
+            .map_err(|e| e.to_string())?
+    } else {
+        openai::Client::from_env().map_err(|e| e.to_string())?
+    };
+    let agent = client.agent(&model_name).build();
+    // Flatten messages into a single prompt (agent history later).
+    let prompt = flatten_messages(&req.messages);
+    let content = agent.prompt(prompt).await.map_err(|e| e.to_string())?;
+    Ok(CompleteResponse {
+        content,
+        model: model_name,
+        provider: "openai".into(),
+    })
+}
+
+fn ollama_client(cfg: &ModelConfig) -> Result<ollama::Client, String> {
+    // Local Ollama needs no API key. Custom base URL uses builder with empty key.
+    if let Some(base) = &cfg.base_url {
+        ollama::Client::builder()
+            .api_key("")
+            .base_url(base)
+            .build()
+            .map_err(|e| e.to_string())
+    } else {
+        ollama::Client::new(Nothing).map_err(|e| e.to_string())
+    }
+}
+
+async fn complete_ollama(
+    cfg: &ModelConfig,
+    req: CompleteRequest,
+) -> Result<CompleteResponse, String> {
+    let model_name = req.model.clone().unwrap_or_else(|| cfg.model.clone());
+    let client = ollama_client(cfg)?;
+    let agent = client.agent(&model_name).build();
+    let prompt = flatten_messages(&req.messages);
+    let content = agent.prompt(prompt).await.map_err(|e| e.to_string())?;
+    Ok(CompleteResponse {
+        content,
+        model: model_name,
+        provider: "ollama".into(),
+    })
+}
+
+fn flatten_messages(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .map(|m| format!("{}: {}", m.role, m.content))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Build a Rig agent with VEIL tools attached (AGT-006).
+pub async fn prompt_with_tools(
+    cfg: &ModelConfig,
+    preamble: &str,
+    user_prompt: &str,
+    ws: crate::rig_tools::Workspace,
+) -> Result<String, String> {
+    use crate::rig_tools::{CheckTool, OutlineTool, ReadSourceTool, RenameTool};
+
+    match cfg.kind {
+        ProviderKind::OpenAi => {
+            let client = if let Some(base) = &cfg.base_url {
+                let key = cfg
+                    .api_key
+                    .clone()
+                    .unwrap_or_else(|| "not-needed".into());
+                openai::Client::builder()
+                    .api_key(&key)
+                    .base_url(base)
+                    .build()
+                    .map_err(|e| e.to_string())?
+            } else {
+                openai::Client::from_env().map_err(|e| e.to_string())?
+            };
+            let agent = client
+                .agent(&cfg.model)
+                .preamble(preamble)
+                .tool(CheckTool { ws: ws.clone() })
+                .tool(OutlineTool { ws: ws.clone() })
+                .tool(ReadSourceTool { ws: ws.clone() })
+                .tool(RenameTool { ws: ws.clone() })
+                .build();
+            agent.prompt(user_prompt).await.map_err(|e| e.to_string())
+        }
+        ProviderKind::Ollama => {
+            let client = ollama_client(cfg)?;
+            let agent = client
+                .agent(&cfg.model)
+                .preamble(preamble)
+                .tool(CheckTool { ws: ws.clone() })
+                .tool(OutlineTool { ws: ws.clone() })
+                .tool(ReadSourceTool { ws: ws.clone() })
+                .tool(RenameTool { ws: ws.clone() })
+                .build();
+            agent.prompt(user_prompt).await.map_err(|e| e.to_string())
+        }
+        ProviderKind::Echo | ProviderKind::Bedrock => Err(
+            "Rig tool agent requires VEIL_MODEL_PROVIDER=openai or ollama".into(),
+        ),
+    }
+}
+
+pub fn list_provider_info() -> serde_json::Value {
+    let cfg = ModelConfig::from_env();
+    serde_json::json!({
+        "provider": cfg.kind_name(),
+        "models": [cfg.model],
+        "rig": true,
+        "supports_tools": cfg.supports_rig_agent(),
+        "config": {
+            "kind": cfg.kind_name(),
+            "model": cfg.model,
+            "base_url": cfg.base_url,
+            "region": cfg.region,
+            "has_api_key": cfg.api_key.is_some(),
+        }
+    })
 }

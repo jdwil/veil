@@ -36,6 +36,9 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Agentic LLM stack (AGT-*)
+rig-core = "0.39"
+
 # Internal
 veil-parser = { path = "crates/veil-parser" }
 veil-ir = { path = "crates/veil-ir" }

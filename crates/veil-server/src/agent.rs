@@ -1,21 +1,21 @@
 //! Built-in agent vertical slice (AGT-001 / AGT-005 / AGT-006).
 //!
-//! MVP: host-owned tool loop with a heuristic model (no vendor lock-in).
-//! Tools are ports over [`SourceProvider`] + check/edit pipeline — not
-//! filesystem-only hacks.
+//! **Agentic execution uses the [Rig](https://rig.rs) SDK** when
+//! `VEIL_MODEL_PROVIDER` is `openai` or `ollama`. Tools are typed Rig
+//! [`Tool`](rig_core::tool::Tool)s over the VEIL check/edit pipeline.
 //!
-//! Optional: set `VEIL_AGENT_MODEL=echo` (default) or later wire a real
-//! `ModelProvider` adapter (AGT-003).
+//! Without a model provider, a small heuristic path remains for offline use
+//! (`check` / `outline` / `rename`).
 
 use serde::{Deserialize, Serialize};
-use veil_ir::{apply_edits_with, check_solution, EditOp, LayerRegistry};
+use veil_ir::LayerRegistry;
 
 use crate::provider::SourceProvider;
+use crate::rig_tools::{self, Workspace};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTurnRequest {
     pub prompt: String,
-    /// Optional cancel token id (MVP: ignored; reserved for AGT-001 cancel).
     #[serde(default)]
     pub turn_id: Option<String>,
 }
@@ -40,9 +40,12 @@ pub struct AgentTurnResponse {
     pub source_changed: bool,
     pub ok: bool,
     pub error: Option<String>,
+    /// Which backend handled the turn (`rig-openai`, `rig-ollama`, `heuristic`).
+    #[serde(default)]
+    pub backend: String,
 }
 
-/// Run one agent turn against the active source (AGT-006 built-in loop).
+/// Run one agent turn against the active source.
 pub async fn run_turn<P: SourceProvider>(
     provider: &P,
     req: AgentTurnRequest,
@@ -57,13 +60,13 @@ pub async fn run_turn<P: SourceProvider>(
             turn_id,
             messages: vec![AgentMessage {
                 role: "assistant".into(),
-                content: "Send a non-empty prompt. Try: `check`, `outline`, or `rename X to Y`."
-                    .into(),
+                content: "Send a non-empty prompt. With Rig (openai/ollama): free-form + tools. Offline: `check`, `outline`, `rename X to Y`.".into(),
             }],
             tool_calls: vec![],
             source_changed: false,
             ok: true,
             error: None,
+            backend: "none".into(),
         };
     }
 
@@ -71,8 +74,6 @@ pub async fn run_turn<P: SourceProvider>(
         role: "user".into(),
         content: prompt.to_string(),
     }];
-    let mut tool_calls = Vec::new();
-    let mut source_changed = false;
 
     let source = match provider.read_source("").await {
         Ok(s) => s,
@@ -80,25 +81,109 @@ pub async fn run_turn<P: SourceProvider>(
             return AgentTurnResponse {
                 turn_id,
                 messages,
-                tool_calls,
+                tool_calls: vec![],
                 source_changed: false,
                 ok: false,
                 error: Some(e),
+                backend: "error".into(),
             };
         }
     };
-    let registry = provider.registry();
+    let registry = provider.registry().clone();
+    let confirm = std::env::var("VEIL_AGENT_CONFIRM_WRITES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
+    let cfg = crate::model::ModelConfig::from_env();
+
+    // Prefer Rig agent loop with tools when provider supports it.
+    if cfg.supports_rig_agent() {
+        let ws = Workspace::new(source.clone(), registry.clone(), confirm);
+        let outline = rig_tools::run_outline(&source, &registry);
+        let preamble = format!(
+            "You are the VEIL IDE built-in agent (Rig SDK).\n\
+             Edit VEIL structure safely using tools — prefer rename_construct over inventing source.\n\
+             After edits, call veil_check. Prefer veil_outline over dumping generated code.\n\
+             Current package outline:\n{outline}\n"
+        );
+        match crate::model::prompt_with_tools(&cfg, &preamble, prompt, ws.clone()).await {
+            Ok(content) => {
+                let tool_calls = ws.take_log();
+                let source_changed = ws.changed();
+                if source_changed {
+                    let new_src = ws.source_snapshot();
+                    if let Err(e) = provider.write_source("", &new_src).await {
+                        return AgentTurnResponse {
+                            turn_id,
+                            messages,
+                            tool_calls,
+                            source_changed: false,
+                            ok: false,
+                            error: Some(e),
+                            backend: format!("rig-{}", cfg.kind_name()),
+                        };
+                    }
+                }
+                messages.push(AgentMessage {
+                    role: "assistant".into(),
+                    content,
+                });
+                return AgentTurnResponse {
+                    turn_id,
+                    messages,
+                    tool_calls,
+                    source_changed,
+                    ok: true,
+                    error: None,
+                    backend: format!("rig-{}", cfg.kind_name()),
+                };
+            }
+            Err(e) => {
+                // Fall through to heuristic with error note
+                messages.push(AgentMessage {
+                    role: "assistant".into(),
+                    content: format!(
+                        "Rig agent error ({provider}): {e}\nFalling back to heuristic tools.",
+                        provider = cfg.kind_name()
+                    ),
+                });
+            }
+        }
+    }
+
+    // Heuristic offline path (no Rig model) — same tools, host-dispatched.
+    heuristic_turn(
+        provider,
+        turn_id,
+        prompt,
+        source,
+        &registry,
+        confirm,
+        messages,
+    )
+    .await
+}
+
+async fn heuristic_turn<P: SourceProvider>(
+    provider: &P,
+    turn_id: String,
+    prompt: &str,
+    source: String,
+    registry: &LayerRegistry,
+    confirm: bool,
+    mut messages: Vec<AgentMessage>,
+) -> AgentTurnResponse {
+    let mut tool_calls = Vec::new();
     let lower = prompt.to_lowercase();
+
     if lower == "check" || lower.starts_with("check ") || lower.contains("run check") {
         tool_calls.push(AgentToolCall {
-            name: "run_check".into(),
+            name: "veil_check".into(),
             detail: "target=rust".into(),
         });
-        let reply = tool_check(&source, registry);
         messages.push(AgentMessage {
             role: "assistant".into(),
-            content: reply,
+            content: rig_tools::run_check(&source, registry),
         });
         return AgentTurnResponse {
             turn_id,
@@ -107,18 +192,18 @@ pub async fn run_turn<P: SourceProvider>(
             source_changed: false,
             ok: true,
             error: None,
+            backend: "heuristic".into(),
         };
     }
 
     if lower == "outline" || lower.starts_with("outline") || lower.contains("show structure") {
         tool_calls.push(AgentToolCall {
-            name: "get_context".into(),
+            name: "veil_outline".into(),
             detail: "outline".into(),
         });
-        let reply = tool_outline(&source, registry);
         messages.push(AgentMessage {
             role: "assistant".into(),
-            content: reply,
+            content: rig_tools::run_outline(&source, registry),
         });
         return AgentTurnResponse {
             turn_id,
@@ -127,21 +212,16 @@ pub async fn run_turn<P: SourceProvider>(
             source_changed: false,
             ok: true,
             error: None,
+            backend: "heuristic".into(),
         };
     }
 
-    // rename Old to New  /  rename Old -> New
     if let Some((from, to)) = parse_rename(prompt) {
-        // AGT-009: optional confirm mode — refuse write until user re-prompts with "confirm rename"
-        let confirm_mode = std::env::var("VEIL_AGENT_CONFIRM_WRITES")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if confirm_mode && !prompt.to_lowercase().contains("confirm") {
+        if confirm && !lower.contains("confirm") {
             messages.push(AgentMessage {
                 role: "assistant".into(),
                 content: format!(
-                    "Permission: write would rename '{}' → '{}'. Re-send as `confirm rename {} to {}` to apply (VEIL_AGENT_CONFIRM_WRITES).",
-                    from, to, from, to
+                    "Permission: write would rename '{from}' → '{to}'. Re-send as `confirm rename {from} to {to}` (VEIL_AGENT_CONFIRM_WRITES)."
                 ),
             });
             return AgentTurnResponse {
@@ -154,18 +234,15 @@ pub async fn run_turn<P: SourceProvider>(
                 source_changed: false,
                 ok: true,
                 error: None,
+                backend: "heuristic".into(),
             };
         }
         tool_calls.push(AgentToolCall {
-            name: "read_source".into(),
-            detail: "active".into(),
+            name: "rename_construct".into(),
+            detail: format!("{from} → {to}"),
         });
-        match tool_rename(&source, registry, &from, &to) {
+        match rig_tools::apply_rename(&source, registry, &from, &to) {
             Ok((new_src, summary)) => {
-                tool_calls.push(AgentToolCall {
-                    name: "apply_edit".into(),
-                    detail: format!("rename {} → {}", from, to),
-                });
                 if let Err(e) = provider.write_source("", &new_src).await {
                     return AgentTurnResponse {
                         turn_id,
@@ -174,31 +251,32 @@ pub async fn run_turn<P: SourceProvider>(
                         source_changed: false,
                         ok: false,
                         error: Some(e),
+                        backend: "heuristic".into(),
                     };
                 }
-                source_changed = true;
                 tool_calls.push(AgentToolCall {
-                    name: "run_check".into(),
+                    name: "veil_check".into(),
                     detail: "post-edit".into(),
                 });
-                let check = tool_check(&new_src, registry);
+                let check = rig_tools::run_check(&new_src, registry);
                 messages.push(AgentMessage {
                     role: "assistant".into(),
-                    content: format!("{}\n\n{}", summary, check),
+                    content: format!("{summary}\n\n{check}"),
                 });
                 return AgentTurnResponse {
                     turn_id,
                     messages,
                     tool_calls,
-                    source_changed,
+                    source_changed: true,
                     ok: true,
                     error: None,
+                    backend: "heuristic".into(),
                 };
             }
             Err(e) => {
                 messages.push(AgentMessage {
                     role: "assistant".into(),
-                    content: format!("Could not rename: {}", e),
+                    content: format!("Could not rename: {e}"),
                 });
                 return AgentTurnResponse {
                     turn_id,
@@ -207,153 +285,63 @@ pub async fn run_turn<P: SourceProvider>(
                     source_changed: false,
                     ok: false,
                     error: Some(e),
+                    backend: "heuristic".into(),
                 };
             }
         }
     }
 
-    // Default: try ModelProvider (AGT-003), fall back to heuristic help + context
-    tool_calls.push(AgentToolCall {
-        name: "read_source".into(),
-        detail: format!("{} bytes", source.len()),
-    });
-    tool_calls.push(AgentToolCall {
-        name: "get_context".into(),
-        detail: "outline".into(),
-    });
-    let outline = tool_outline(&source, registry);
-    let check = tool_check(&source, registry);
-
-    let model_reply = crate::model::complete_with_env(crate::model::CompleteRequest {
-        messages: vec![
-            crate::model::ChatMessage {
-                role: "system".into(),
-                content: format!(
-                    "You are the VEIL built-in agent. Tools available to the host: check, outline, rename. Package outline:\n{}\n\n{}",
-                    outline, check
-                ),
-            },
-            crate::model::ChatMessage {
-                role: "user".into(),
-                content: prompt.to_string(),
-            },
-        ],
-        model: None,
-        max_tokens: Some(512),
-    })
-    .await;
-
-    let content = match model_reply {
-        Ok(r) => format!(
-            "[{}/{}]\n{}\n\n—\nHeuristic tools still work: `check` · `outline` · `rename A to B`",
-            r.provider, r.model, r.content
-        ),
-        Err(e) => format!(
-            "Built-in agent (heuristic). ModelProvider note: {}\n\nI can:\n\
-             • `check` — dual-loop check\n\
-             • `outline` — constructs\n\
-             • `rename Old to New` — EditOp rename + check\n\n\
-             Context:\n{}\n\n{}",
-            e, outline, check
-        ),
-    };
+    // Default help
+    let outline = rig_tools::run_outline(&source, registry);
+    let check = rig_tools::run_check(&source, registry);
     messages.push(AgentMessage {
         role: "assistant".into(),
-        content,
+        content: format!(
+            "Offline heuristic agent (set VEIL_MODEL_PROVIDER=openai|ollama for Rig tools).\n\
+             Commands: `check` · `outline` · `rename Old to New`\n\n\
+             Context:\n{outline}\n\n{check}"
+        ),
     });
     AgentTurnResponse {
         turn_id,
         messages,
-        tool_calls,
+        tool_calls: vec![
+            AgentToolCall {
+                name: "veil_outline".into(),
+                detail: "context".into(),
+            },
+            AgentToolCall {
+                name: "veil_check".into(),
+                detail: "context".into(),
+            },
+        ],
         source_changed: false,
         ok: true,
         error: None,
+        backend: "heuristic".into(),
     }
 }
 
 fn chrono_like_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let ms = SystemTime::now()
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("{ms}")
-}
-
-fn parse_source(source: &str, registry: &LayerRegistry) -> Result<veil_ir::Solution, String> {
-    let tokens = veil_parser::lex(source);
-    veil_parser::parse_with_registry(&tokens, registry.clone())
-        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
-}
-
-fn tool_check(source: &str, registry: &LayerRegistry) -> String {
-    match parse_source(source, registry) {
-        Ok(sol) => {
-            let result = check_solution(&sol, registry);
-            let errs = result.error_count();
-            let warns = result.warning_count();
-            let mut lines = vec![format!(
-                "check: {} error(s), {} warning(s) — {}",
-                errs,
-                warns,
-                if result.has_errors() { "FAIL" } else { "OK" }
-            )];
-            for d in result.diagnostics.iter().take(12) {
-                lines.push(format!(
-                    "  [{:?}] {}{}",
-                    d.severity,
-                    d.message,
-                    d.node_name
-                        .as_ref()
-                        .map(|n| format!(" ({})", n))
-                        .unwrap_or_default()
-                ));
-            }
-            if result.diagnostics.len() > 12 {
-                lines.push(format!("  … +{} more", result.diagnostics.len() - 12));
-            }
-            lines.join("\n")
-        }
-        Err(e) => format!("parse error: {}", e),
-    }
-}
-
-fn tool_outline(source: &str, registry: &LayerRegistry) -> String {
-    match parse_source(source, registry) {
-        Ok(sol) => {
-            let graph = veil_ir::build_ir_with_registry(&sol, Some(registry));
-            let mut lines = vec!["outline:".to_string()];
-            for n in graph.nodes.iter().filter(|n| {
-                !matches!(
-                    n.kind,
-                    veil_ir::NodeKind::Solution
-                        | veil_ir::NodeKind::Action
-                        | veil_ir::NodeKind::Inputs
-                        | veil_ir::NodeKind::Return
-                        | veil_ir::NodeKind::Field
-                )
-            }) {
-                let sk = n.metadata.subkind.as_deref().unwrap_or("");
-                lines.push(format!(
-                    "  - {:?} {} {}",
-                    n.kind,
-                    if sk.is_empty() { "" } else { sk },
-                    n.name
-                ));
-            }
-            lines.join("\n")
-        }
-        Err(e) => format!("parse error: {}", e),
-    }
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_else(|_| "0".into())
 }
 
 fn parse_rename(prompt: &str) -> Option<(String, String)> {
     let p = prompt.trim();
     let lower = p.to_lowercase();
-    if !lower.starts_with("rename ") {
+    let rest = if let Some(r) = lower.strip_prefix("confirm rename ") {
+        // keep original casing from prompt after "confirm rename "
+        &p[prompt.len() - r.len()..]
+    } else if lower.starts_with("rename ") {
+        &p["rename ".len()..]
+    } else {
         return None;
-    }
-    let rest = p["rename ".len()..].trim();
+    };
+    let rest = rest.trim();
     if let Some((a, b)) = rest.split_once(" to ") {
         let from = a.trim().to_string();
         let to = b.trim().to_string();
@@ -369,34 +357,4 @@ fn parse_rename(prompt: &str) -> Option<(String, String)> {
         }
     }
     None
-}
-
-fn tool_rename(
-    source: &str,
-    registry: &LayerRegistry,
-    from: &str,
-    to: &str,
-) -> Result<(String, String), String> {
-    let sol = parse_source(source, registry)?;
-    let graph = veil_ir::build_ir_with_registry(&sol, Some(registry));
-    let node = graph
-        .nodes
-        .iter()
-        .find(|n| n.name == from)
-        .ok_or_else(|| format!("no construct named '{}'", from))?;
-    let span_start = node.span.start;
-    let ops = vec![EditOp::Rename {
-        span_start,
-        name: to.to_string(),
-    }];
-    let mut sol2 = sol;
-    apply_edits_with(&mut sol2, &ops, |s| {
-        veil_parser::parse_expr_str(s, registry).map_err(|e| e.to_string())
-    })
-    .map_err(|e| e.to_string())?;
-    let new_src = veil_ir::serialize_solution(&sol2);
-    Ok((
-        new_src,
-        format!("Renamed '{}' → '{}' via EditOp::Rename.", from, to),
-    ))
 }

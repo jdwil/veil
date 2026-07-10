@@ -161,10 +161,9 @@ agent tools: check, outline, rename; cancel via AbortController; refresh on
 **Mission impact:** “Extremely flexible model support” — ports/adapters, not
 hardcoded clients in the UI.
 
-**Done notes:** `ModelProvider` + `EchoProvider`, `OpenAiCompatibleProvider`,
-`BedrockProvider` (port registered; AWS SDK follow-up). Env:
-`VEIL_MODEL_PROVIDER`, `VEIL_MODEL_NAME`, `VEIL_MODEL_API_KEY`,
-`VEIL_MODEL_BASE_URL`, `VEIL_MODEL_REGION`. `GET /api/models`.
+**Done notes:** **Rig SDK** (`rig-core`) is the LLM stack. Providers:
+`echo`, `openai` (Rig), `ollama` (Rig); Bedrock via OpenAI-compatible gateway.
+Env: `VEIL_MODEL_*` / `OPENAI_*`. `GET /api/models` reports `"rig": true`.
 
 ---
 

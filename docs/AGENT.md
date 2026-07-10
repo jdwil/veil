@@ -1,41 +1,47 @@
-# In-IDE agent & model providers
+# In-IDE agent & Rig SDK
+
+Agentic work in VEIL is built on **[Rig](https://rig.rs)** (`rig-core`).
 
 ## Built-in agent (AGT-001 / AGT-006)
 
-Toolbar **Agent** panel → `POST /api/agent/turn` with `{ "prompt": "…" }`.
+Toolbar **Agent** → `POST /api/agent/turn` with `{ "prompt": "…" }`.
 
-Heuristic tools (always available):
+### Backends
 
-| Prompt | Behavior |
-|--------|----------|
-| `check` | Full check pipeline |
-| `outline` | Construct outline |
-| `rename Old to New` | `EditOp::Rename` + write + check |
+| `VEIL_MODEL_PROVIDER` | Behavior |
+|----------------------|----------|
+| `echo` (default) | Offline heuristic: `check` · `outline` · `rename A to B` |
+| `openai` | **Rig** OpenAI (or compatible) agent **with tools** |
+| `ollama` | **Rig** Ollama agent **with tools** (local default) |
+| `bedrock` | Use OpenAI-compatible Bedrock gateway via `openai` + `VEIL_MODEL_BASE_URL` |
 
-Other prompts call the configured **ModelProvider**, then show tool guidance.
+### Rig tools (typed `rig_core::tool::Tool`)
 
-## ModelProvider (AGT-003)
+| Tool | Purpose |
+|------|---------|
+| `veil_check` | Dual-loop check pipeline |
+| `veil_outline` | Compact IR topology |
+| `read_source` | Active `.veil` text (truncated) |
+| `rename_construct` | Structured `EditOp::Rename` |
 
-Env configuration (no engine/domain changes to add adapters):
+Tools mutate an in-memory workspace; the host persists via `SourceProvider` when
+`source_changed` is true.
+
+### Env
 
 | Variable | Meaning |
 |----------|---------|
-| `VEIL_MODEL_PROVIDER` | `echo` (default), `openai`, `bedrock` |
-| `VEIL_MODEL_NAME` | Model id |
-| `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | Credentials |
-| `VEIL_MODEL_BASE_URL` | OpenAI-compatible base (default `https://api.openai.com/v1`) |
-| `VEIL_MODEL_REGION` / `AWS_REGION` | Bedrock region |
+| `VEIL_MODEL_PROVIDER` | `echo` \| `openai` \| `ollama` |
+| `VEIL_MODEL_NAME` | Model id (defaults: `gpt-4o-mini`, `llama3.2`) |
+| `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | OpenAI credentials |
+| `VEIL_MODEL_BASE_URL` / `OPENAI_BASE_URL` | Compatible base URL |
+| `VEIL_AGENT_CONFIRM_WRITES=1` | Require `confirmed` on renames |
 
-- **echo** — offline; returns guidance text  
-- **openai** — OpenAI-compatible port (HTTP body prepared; wire reqwest next)  
-- **bedrock** — port registered; honest error until AWS SDK linked  
-
-List config: `GET /api/models`.
+`GET /api/models` — provider + config (+ `"rig": true`).
 
 ## Source port (AGT-004 / AGT-005)
 
 Agent tools use `SourceProvider` (`FilesystemProvider` for `veil serve`).
-Writes go through the same path as the IDE.
 
 ## Live sync (AGT-002)
 
@@ -46,7 +52,13 @@ trigger client `fetchIr()`.
 
 | Mode | Env | Behavior |
 |------|-----|----------|
-| Auto-apply (default local) | unset | Renames write immediately; tool log in panel |
-| Confirm writes | `VEIL_AGENT_CONFIRM_WRITES=1` | Rename requires `confirm rename A to B` |
+| Auto-apply (default) | unset | Renames apply when tools run |
+| Confirm writes | `VEIL_AGENT_CONFIRM_WRITES=1` | Rename needs `confirmed=true` / `confirm rename …` |
 
-All tool calls are returned in the turn response for human review.
+Tool calls are returned in the turn response for review. Use **Review changes**
+(UX-021) for structural diff.
+
+## VEIL `rig` layer
+
+`layers/rig.layer` defines `tool` / `agent` / `tool_set` constructs for
+authoring agent apps *in VEIL*. The IDE agent itself is host-side Rig Rust.

@@ -83,8 +83,8 @@
   {#if open}
     <div class="agent-panel">
       <div class="agent-head">
-        <span class="title">Built-in agent</span>
-        <span class="hint">check · outline · rename A to B</span>
+        <span class="title">Built-in agent (Rig)</span>
+        <span class="hint">openai/ollama tools · offline: check · outline · rename</span>
       </div>
       <div class="thread">
         {#each history as m}
