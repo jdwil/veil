@@ -103,6 +103,7 @@ pkg svelte5 v1
       role leaf
       nestable_in routes under Page
       nestable_in routes under Layout
+      lens integration
 
   construct Snippet
     kw snippet
@@ -136,6 +137,7 @@ pkg svelte5 v1
     group stores
     present
       role leaf
+      lens integration
 
   # ─── Statements (Svelte-specific operations) ────────────────────────────
 

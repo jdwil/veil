@@ -75,7 +75,7 @@ open and navigate**. Not Rust-only.
 
 ## UX-022: Criticality lens
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** reviewer  
 **I want** high-risk nodes emphasized  
 **So that** I spend time on guards, compensate paths, adapters, and escape hatches
@@ -88,6 +88,10 @@ open and navigate**. Not Rust-only.
 - Node badges/colors for critical without hardcoding DDD keywords where possible
   (use shape + sub-blocks + diagnostics)
 - Count in toolbar: “N critical items”
+
+**Done notes:** LAY-009 — presentation `lens critical` + escape/error diags;
+toolbar filter + count; node badge. Statement-level guard/compensate still via
+diagnostics / compensate badge.
 
 ---
 

@@ -172,6 +172,10 @@ pkg ddd v1
       color "#10b981"
       label "Port"
     group domain
+    present
+      role leaf
+      lens integration
+      lens critical
 
   construct Adapter
     kw adapter
@@ -189,6 +193,10 @@ pkg ddd v1
     group infrastructure
     tgt Port, Repository
     dg infrastructure
+    present
+      role leaf
+      lens integration
+      lens critical
 
   construct Repository
     kw repo
@@ -252,6 +260,10 @@ pkg ddd v1
     runtime run_saga SagaStep
       compensate -> compensate
     in Orchestrator
+    present
+      role container
+      lens critical
+      lens integration
 
   # Statement extensions (built on top of core statement shapes)
   statement emit

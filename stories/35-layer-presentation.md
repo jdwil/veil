@@ -314,7 +314,7 @@ MVP layouts (implement + document):
 
 ## LAY-009: Layer-declared review lenses
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** reviewer  
 **I want** criticality / focus lenses driven by layer tags  
 **So that** “what matters” is paradigm-defined, not hardcoded in the viewer
@@ -329,6 +329,14 @@ MVP layouts (implement + document):
 - functional/other layer can choose a different set
 
 **Depends:** LAY-002, related UX-022  
+**Done notes:**
+
+- `veil-viewer/src/lib/lenses.ts` — critical = presentation `lens critical` OR
+  escape/error diagnostics (no keyword hardcoding)
+- Toolbar: **Critical only** + count; node `!` badge / glow when critical
+- ddd: Event, Port, Adapter, Saga tagged; svelte5 uses `integration` on Component/Store
+- UX-022 MVP satisfied for construct-level criticality
+
 **Mission impact:** Dual-loop review stays layer-honest.
 
 ---

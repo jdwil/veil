@@ -36,6 +36,7 @@
     availableFiles,
     activeFileName,
     selectFile,
+    diagnostics,
   } from '$lib/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
   import {
@@ -49,6 +50,7 @@
     resolveCreateParentSpan,
     uniqueConstructName,
   } from '$lib/createPlacement';
+  import { isCriticalNode, countCritical } from '$lib/lenses';
 
   const nodeTypes: NodeTypes = {
     veil: VeilNode as any,
@@ -64,6 +66,8 @@
   let hostViews = $state<ViewSpec[]>([]);
   let activeViewId = $state<string | null>(null);
   let showLayerProvided = $state(false);
+  /** LAY-009 / UX-022: filter canvas to presentation lens `critical` + escape diags. */
+  let showCriticalOnly = $state(false);
   // DOM reference for node measurement — ELK needs real rendered sizes
   let graphContainerEl: HTMLElement | null = $state(null);
   let theme = $state<'dark' | 'light'>(
@@ -346,7 +350,13 @@
     items: IrNode[],
     visibleIds: Set<number>
   ): Node[] {
-    return items.map((child) => {
+    const pres = get(presentationModel);
+    const diags = get(diagnostics);
+    let list = items;
+    if (showCriticalOnly) {
+      list = items.filter((c) => isCriticalNode(c, pres, diags));
+    }
+    return list.map((child) => {
       const childChildren = getChildren(graph, child.id);
       const refs = getCrossRefs(graph, child.id, visibleIds);
       let inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = [];
@@ -359,6 +369,7 @@
         }));
         hasChildren = false;
       }
+      const critical = isCriticalNode(child, pres, diags);
       return {
         id: String(child.id),
         type: 'veil',
@@ -374,9 +385,17 @@
           properties: child.metadata.properties,
           inlineChildren,
           refs,
+          critical,
         },
       };
     });
+  }
+
+  function criticalCountLabel(): string {
+    const g = get(irGraph);
+    if (!g) return '0 critical';
+    const n = countCritical(g, get(presentationModel), get(diagnostics));
+    return `${n} critical`;
   }
 
   function edgesAmong(graph: IrGraph, visibleIds: Set<number>): Edge[] {
@@ -915,6 +934,11 @@
       <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
       <span>Show infrastructure</span>
     </label>
+    <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
+      <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
+      <span>Critical only</span>
+      <span class="critical-count">{criticalCountLabel()}</span>
+    </label>
     <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
       {theme === 'dark' ? '☀️' : '🌙'}
     </button>
@@ -1146,6 +1170,12 @@
     background: var(--veil-accent-hover);
     color: var(--veil-text);
     border-color: rgba(115, 115, 115, 0.35);
+  }
+
+  .critical-count {
+    font-size: 10px;
+    opacity: 0.75;
+    margin-left: 2px;
   }
 
   .tab-bar {

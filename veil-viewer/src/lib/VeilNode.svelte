@@ -24,6 +24,7 @@
   const hasCompensate = annotations.includes('has_compensate');
   const isGroup = data.isGroup ?? false;
   const isAbstract = properties.some(([k, v]) => k === 'abstract' && v === 'true');
+  const isCritical = data.critical ?? false;
 </script>
 
 <div
@@ -33,6 +34,7 @@
   class:is-flow={kind === 'Flow'}
   class:is-error={kind === 'ErrorBoundary'}
   class:is-group={isGroup}
+  class:is-critical={isCritical}
   style="--node-color: {style.color}"
 >
   <Handle type="target" position={Position.Top} id="top" />
@@ -49,6 +51,9 @@
     <div class="node-header">
       <span class="node-icon">{style.icon}</span>
       <span class="node-kind">{style.label}</span>
+      {#if isCritical}
+        <span class="critical-badge" title="Critical (layer lens or diagnostic)">!</span>
+      {/if}
       {#if hasCompensate}
         <span class="compensate-badge" title="Has compensation (rollback)">↩</span>
       {/if}
@@ -301,7 +306,21 @@
     font-size: 12px;
     color: var(--veil-text-secondary);
     margin-left: auto;
-    title: "Has compensation";
+  }
+
+  .critical-badge {
+    font-size: 10px;
+    font-weight: 800;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.15);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    border-radius: 4px;
+    padding: 0 4px;
+    margin-left: auto;
+  }
+
+  .veil-node.is-critical {
+    box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.35), 0 0 12px rgba(251, 191, 36, 0.12);
   }
 
   .node-badges {
