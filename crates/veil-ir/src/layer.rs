@@ -1001,20 +1001,23 @@ fn parse_stub_method(line: &str) -> StubMethod {
 
 /// Parse a `.layer` file into raw (shape-unresolved) specs.
 
-struct RawLayer {
-    name: String,
-    constructs: Vec<ConstructSpec>,
-    statements: Vec<StatementSpec>,
+/// Raw layer parse result (IDE / check / graph).
+#[derive(Debug, Clone)]
+pub struct RawLayer {
+    pub name: String,
+    pub constructs: Vec<ConstructSpec>,
+    pub statements: Vec<StatementSpec>,
     /// Raw VEIL source blocks declared by this layer (e.g. `port Bus ...`).
     /// Each entry is one top-level construct declaration, dedented for parsing.
-    declarations: Vec<String>,
+    pub declarations: Vec<String>,
     /// LLM prompt text for this layer (RAG context for code-generating agents).
-    prompt: Option<String>,
+    pub prompt: Option<String>,
     /// Codegen template blocks declared by this layer.
-    codegen_templates: Vec<CodegenTemplate>,
+    pub codegen_templates: Vec<CodegenTemplate>,
 }
 
-fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, String> {
+/// Parse a `.layer` file (public for IDE / check; DSL-003).
+pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, String> {
     #[derive(PartialEq)]
     enum Section {
         None,

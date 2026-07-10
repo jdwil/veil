@@ -9,6 +9,7 @@ pub mod edit;
 pub mod escape;
 pub mod ir;
 pub mod layer;
+pub mod layer_graph;
 pub mod names;
 pub mod presentation;
 pub mod project;
@@ -30,9 +31,10 @@ pub use escape::{
 pub use edit::{apply_edit, apply_edit_with, apply_edits, apply_edits_with, EditError, EditOp};
 pub use ir::*;
 pub use layer::{
-    palette_from_registry, CodegenRule, CodegenTemplate, ConstructSpec, ConstructorPolicy,
-    LayerRegistry, Shape, StatementSpec, StmtShape,
+    palette_from_registry, parse_layer_file, CodegenRule, CodegenTemplate, ConstructSpec,
+    ConstructorPolicy, LayerRegistry, RawLayer, Shape, StatementSpec, StmtShape,
 };
+pub use layer_graph::{build_layer_ir, check_layer, layer_prompt};
 pub use presentation::{
     presentation_from_registry, ConstructPresentation, HostPresentation, NestRule, NestableHint,
     PresentationModel, ViewSpec,
