@@ -2,27 +2,115 @@
 
 ## Purpose
 
-VEIL is a token-efficient, indentation-based DSL designed for AI-generated applications. It compiles to Rust and renders as an interactive visual editor in Svelte. The viewer IS the editor — users never see raw code. They interact with nodes, drag/drop, property panels, and tabs.
+VEIL is a **token-efficient, indentation-based intermediate language** for
+software that agents author and humans oversee. It compiles to real target
+languages (Rust today; TypeScript/Svelte and others on the roadmap) and
+presents as an interactive structural viewer/editor.
+
+VEIL is not low-code and not “just another LLM prompt format.” It is a stable
+IR with:
+
+- a small, fixed core grammar
+- **layers** that teach domain and platform vocabulary at runtime
+- **codegen backends** that lower to real projects
+- a **visual surface** for human review of structure and critical logic
+
+The long-term aim is **expressiveness parity**: any program expressible in
+major application languages (Rust, TypeScript/Svelte, Swift, Kotlin, …) can
+be represented in VEIL and lowered with preserved semantics. That is
+*expressiveness* parity — not keyword-for-keyword clones of each host
+language.
+
+## Product Intent
+
+| Role | Responsibility |
+|------|----------------|
+| **Agents** (primary authors) | Write `.veil` quickly and cheaply in tokens |
+| **Humans** (primary reviewers) | Approve structure and critical bodies without line-by-line LoC review |
+| **Engine** | Parse, check, lower — with **zero domain knowledge** |
+| **Layers** | Domain/platform vocabulary, visuals, prompts, codegen opinions |
+| **Runtime** | Wire generated artifacts (Bus, adapters, deploy topology) |
+
+### Dual feedback loops (both first-class)
+
+| Loop | Actor | Must be fast and honest |
+|------|-------|-------------------------|
+| **Machine** | Agent | `parse → check (types, constraints, target capabilities) → codegen → (optional) target compile` |
+| **Human** | Reviewer | Topology graph + critical expression bodies (guards, saga steps, adapters, risky paths) |
+
+Graphics alone do not speed agents. **Diagnostics and deterministic codegen**
+are half the product. Canvas review is the other half.
+
+### Human review depth
+
+Humans should typically review:
+
+1. **Topology** — packages, modules/contexts, groups, constructs, ports, wiring, expose contracts, annotations
+2. **Critical bodies** — guards, orchestration steps, adapter implementations, other high-risk expressions
+
+They should **not** need to read every expression or all generated target code
+for routine approval. Generated code remains available when drilling down
+(performance, odd bugs, distrust). Success is *rarely* needing it, not
+*never*.
+
+Viewer UX prioritizes **read, navigate, restructure, and diff** of topology
+and critical bodies. Dense expression editing may stay text or hybrid;
+full click-to-build of every expression kind is not the primary human path.
+
+## Expressiveness Parity
+
+| Meaning | Status |
+|---------|--------|
+| **Expressiveness parity** — any program representable in core IR + layers; backends preserve semantics | **Mission** |
+| **Surface syntax parity** — every host-language keyword has a VEIL twin | **Rejected** (explodes the core; kills the small-engine story) |
+| **Idiomatic output parity** — generated code always looks hand-written | **Per-target quality bar**, not a blocker |
+
+Escape hatches (raw template/style blocks, untyped `Json` boundaries, stub-only
+calls, FFI) are **temporary debt** with a retirement plan — not a permanent
+second language. Agents will dump complexity into them unless the system
+surfaces that debt in diagnostics and review.
+
+Platform and framework APIs (Svelte, SwiftUI, AWS, …) live in **layers and
+stubs**, never in the engine core.
+
+### Semantic substrate (direction)
+
+Today the core is a rich expression AST with Rust as the primary lowering
+target. Full multi-target parity requires an honest **semantic IR** backends
+interpret, including axes such as:
+
+- errors / effects (`Res!`, throws, result types)
+- async model
+- ownership / sharing (capabilities, not forced Rust lifetimes in source)
+- concurrency bounds
+- modules, packages, visibility
+
+Each backend should declare a **capability matrix**. Unsupported constructs
+fail at **check time** with actionable diagnostics — never silent wrong
+codegen.
 
 ## Core Architecture
 
-VEIL has three layers:
+VEIL has three authoring layers:
 
-1. **Core Language** — every Rust primitive: struct, enum, fn, trait, impl, mod,
-   if/else, match, for, while, loop, break, continue, closures, let/mut, return,
-   await, try(?), cast, index, range, arrays, tuples, operators, and literals.
-2. **Abstraction Layers** (`.layer` files) — teach the system new domain-specific constructs
-3. **Application Code** (`.veil` files) — written using vocabulary from the referenced layers
+1. **Core language** — fixed primitives: the 7 construct shapes, 2 statement
+   shapes, and universal expression forms (control flow, calls, match,
+   closures, await, try, casts, collections, operators, literals, …).
+2. **Abstraction layers** (`.layer` files) — teach domain- or
+   platform-specific constructs, statements, visuals, prompts, and codegen.
+3. **Application code** (`.veil` files) — written with vocabulary from
+   referenced layers.
 
 Additionally:
-- **`.stub` files** declare external Rust crate APIs so adapters can call them
-  with full type inference. Generated automatically via `veil stub-gen <crate>`.
-- The **viewer IS the editor** — every expression, type, and construct is
-  editable through composable visual form components. No raw code editing.
 
-## How Layers Work
+- **`.stub` files** declare external crate/SDK APIs for type inference and
+  codegen deps (`veil stub-gen <crate>`).
+- The **viewer is the structural editor** — layer-driven palette, node graph,
+  property panels; source text remains the agent-native authoring form.
 
-A `.layer` file defines constructs that map to core primitives. For example, `ddd.layer` defines domain-driven design constructs:
+### How layers work
+
+A `.layer` file defines constructs that map to core primitives:
 
 ```
 pkg ddd v1
@@ -68,17 +156,36 @@ pkg MyApp
         find(id: UUID) -> Res!<Opt<Customer>>
 ```
 
+Opinionated stacks (e.g. DDD + Bus + CQRS in `ddd.layer`) are **blessed
+paths**, not core law. The engine stays integration-agnostic; other layers
+(plain HTTP, local libraries, UI frameworks) must remain first-class.
+
 ## The Critical Invariant
 
-**The VEIL system (lexer, parser, IR builder, codegen, viewer) must contain ZERO domain-specific knowledge.** All domain concepts come exclusively from `.layer` files loaded at runtime.
+**The VEIL engine (lexer, parser, IR builder, check, codegen, viewer chrome)
+must contain ZERO domain-specific knowledge.** All domain and platform
+concepts come exclusively from `.layer` files loaded at runtime.
 
 This means:
-- The parser does NOT know what "ctx", "agg", "port" mean — it reads the layer file to learn that "ctx" maps to "mod" (a module-shaped construct with children), "agg" maps to "struct" (a struct-shaped construct with fields), etc.
-- The builder does NOT hardcode subkind strings like "Context" or "Aggregate" — it reads the construct name from the layer schema
-- The codegen does NOT have DDD-specific generation — it generates code based on the `mt` category (mod → module, struct → struct, trait → trait, etc.)
-- The viewer does NOT hardcode icons, colors, or labels — it reads visual metadata from the layer file via an API
 
-If someone creates a `crud.layer` or `ecs.layer` or `microservices.layer`, the system should work WITHOUT changing any Rust code or viewer code.
+- The parser does NOT know what `ctx`, `agg`, or `port` mean — it looks up
+  the layer schema (`mt`, `has`, …).
+- The builder does NOT hardcode subkind strings like `"Aggregate"`.
+- Codegen does NOT special-case DDD — it lowers by **shape** and executes
+  **layer-declared** templates/policies.
+- The viewer does NOT hardcode icons, colors, labels, or available
+  annotations — those arrive via `/api/palette` from layers.
+
+If someone creates `crud.layer`, `ecs.layer`, or `swiftui.layer`, the system
+works **without** engine or viewer code changes.
+
+### Invariant hygiene
+
+Engine-level heuristics that encode policy by magic names (e.g. treating
+annotation `dep` specially, field-name smart-constructor defaults, Bus-shaped
+routing assumptions) are **invariant debt**. Prefer declaring them in
+`di.layer` / `rust.layer` (or equivalent) so the engine only *executes*
+rules. Do not grow new magic as targets and frameworks expand.
 
 ## Construct Categories
 
@@ -87,45 +194,43 @@ Every layer construct maps to exactly one core primitive via `mt`:
 | maps_to | Parse shape | Contains |
 |---------|-------------|----------|
 | `mod`   | Block of child constructs and groups | Other constructs, groups |
-| `struct` | Named type with fields | Fields (name: type), nested `fn` methods, named sub-blocks |
-| `enum` | Named set of variants, optionally with transitions | Variants; `A -> B` records state transitions |
+| `struct` | Named type with fields | Fields, nested `fn` methods, named sub-blocks |
+| `enum` | Variants, optionally with transitions | Variants; `A -> B` state transitions |
 | `trait` | Interface with method signatures | Methods |
-| `impl` | Implementation binding to a trait | Method implementations (expression bodies) |
-| `fn` | Flow/function with inputs and steps, or a code function with an expression body | Input block, step/par blocks, or a raw body |
+| `impl` | Implementation binding to a trait | Method bodies |
+| `fn` | Flow/function with inputs and steps, or expression body | `input`, `step`/`par`, or raw body |
 | `group` | Visual/organizational container | Child constructs |
 
-The parser only needs to understand these **7 shapes**. When it encounters a
-keyword, it looks up which shape to use from the loaded layer schema. A
-`mt` may also name another construct (by keyword or name), and shapes
-resolve transitively — see Layer Stacking.
+The parser understands these **7 shapes** only. A `mt` may name another
+construct; shapes resolve transitively (see Layer Stacking). Full parity
+deepens the *semantics* of these shapes — it does not add a new shape per
+paradigm.
 
-The full language reference (every core keyword, operator, type form, and the
-`.layer`/`.stub` formats) lives in [`docs/LANGUAGE.md`](docs/LANGUAGE.md).
-
-Architecture decisions, CQRS patterns, and deployment model are in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Language reference: [`docs/LANGUAGE.md`](docs/LANGUAGE.md).  
+Architecture / deploy: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).  
+Codegen templates: [`docs/CODEGEN_TEMPLATES.md`](docs/CODEGEN_TEMPLATES.md).  
+Layer prompts for agents: [`docs/LAYER_PROMPTS.md`](docs/LAYER_PROMPTS.md).
 
 ## Statement Types (inside `fn`-mapped constructs)
 
-The engine knows only **2 statement shapes**: `call` (an invocation) and `if`
-(a conditional/guard). Every domain statement is layer-defined and maps to one
-of them. In `ddd.layer`, for example:
+The engine knows only **2 statement shapes**: `call` and `if`. Every domain
+verb is layer-defined and maps to one of them. Example from `ddd.layer`:
 
-- Bare invocations — `Target.method(args)` (no keyword needed)
-- `dispatch` — `maps_to Bus.dispatch` (fire-and-forget event)
-- `invoke` — `maps_to Bus.invoke` (command)
-- `request` — `maps_to Bus.request` (inter-context query)
+- Bare invocations — `Target.method(args)`
+- `dispatch` — `maps_to Bus.dispatch`
+- `invoke` — `maps_to Bus.invoke`
+- `request` — `maps_to Bus.request`
 - `emit` — aggregate-local event collection (`maps_to call`)
-- `guard` — `maps_to if` (validation/precondition)
+- `guard` — `maps_to if`
 
-A statement whose `mt` names `Port.method` **desugars** at parse time into
-a call on that port, so `dispatch Evt{...}` becomes a `Bus.dispatch(...)`
-call while the source and viewer keep the `dispatch` sugar (via
-`CallExpr.sugar`). None of these keywords are hardcoded in the engine.
+A statement whose `mt` names `Port.method` **desugars** at parse time into a
+call on that port (`dispatch Evt{...}` → `Bus.dispatch(...)`) while source
+and viewer keep the sugar via `CallExpr.sugar`. None of these keywords are
+hardcoded in the engine.
 
-## Visual Metadata
+## Visual Metadata and Review Surface
 
-Each construct in a `.layer` file declares its visual representation:
+Each construct declares presentation in its layer:
 
 ```
 visual
@@ -134,208 +239,80 @@ visual
   label "Bounded Context"
 ```
 
-The viewer reads this from the `/api/palette` endpoint (which parses the layer
-files) and uses it for:
-- Node styling (background color, icon)
-- Palette sidebar (what constructs are available to drag onto the canvas)
-- Property editor labels **and available annotations** (declared per construct
-  in the layer's `ann` block)
+The viewer uses `/api/palette` for:
 
-## Layer-Driven Codegen Templates
+- Node styling (color, icon)
+- Palette of available constructs/statements
+- Property labels and **layer-declared annotations**
 
-Code generation in VEIL uses a **hybrid architecture**: each language target
-has a compiler backend (`lang.rs`) for expression translation, type mapping,
-and project layout, plus an emission policy layer (`lang.layer`) for
-target-specific opinions and conventions.
+Edits go through structured APIs (`POST /api/edit`): update AST →
+re-serialize → validate → write → regenerate. Round-trips must stay
+deterministic; noisy pretty-print churn breaks trust for agents and humans.
 
-Domain layers (`di.layer`, `ddd.layer`, etc.) add their own `codegen <target>`
-blocks that **augment** the compiler backend's output with pattern-specific
-code — they don't replace it.
+## Layer-Driven Codegen (Hybrid Model)
 
-### The Split
+| Component | Responsibility |
+|-----------|----------------|
+| `lang.rs` (engine backend) | Expressions, types, project layout, builtins |
+| `lang.layer` (emission policy) | Derives, conventions, target opinions |
+| Domain/platform layers | Pattern-specific augmentation (`@dep`, `@main`, UI emit, …) |
 
-| Component | What it does | Changes when... |
-|-----------|--------------|-----------------|
-| `rust.rs` (engine) | Expressions, types, project layout, builtins | Rust language evolves |
-| `rust.layer` (layer) | Derives, conventions, smart constructors | Project preferences change |
-| `di.layer` (layer) | `@dep` constructors, `@main` composition | DI approach changes |
-
-### How Templates Work
-
-A `.layer` file includes `codegen <target>` blocks that declare templates:
-
-```
-layer di
-  codegen rust
-    match struct where has_annotation("dep")
-      emit """
-        impl {{name}} {
-            pub fn new({{for field in dep_fields}}{{field.name}}: {{field.type}}{{sep ", "}}{{end}}) -> Self {
-                Self { {{for field in dep_fields}}{{field.name}}{{sep ", "}}{{end}} }
-            }
-        }
-      """
-
-    match fn where has_annotation("main")
-      emit_to "main" priority 50
-      emit """
-        {{for step in steps}}{{for action in step.actions}}
-        {{emit_action(action)}}
-        {{end}}{{end}}
-      """
-```
-
-### Key Concepts
-
-| Concept | Purpose |
-|---------|---------|
-| `codegen <target>` | Block scoped to a target language (rust, typescript, swift, kotlin) |
-| `match <kind> where <condition>` | Pattern matching against the IR |
-| `emit """..."""` | Template literal with interpolation |
-| `{{for x in collection}}` | Iteration over IR elements |
-| `{{name}}`, `{{field.type}}` | Access to node properties |
-| `emit_to "section"` | Contribute output to a named composable section |
-| `priority <n>` | Ordering when multiple templates target the same section |
-| `emit_action(action)` | Call into base codegen's built-in emitters |
-
-### Multi-Target Support
-
-The same layer can provide templates for multiple targets:
-
-```
-layer ui
-  codegen swift
-    match struct where subkind == "Screen"
-      emit """
-        struct {{name}}: View { ... }
-      """
-
-  codegen kotlin
-    match struct where subkind == "Screen"
-      emit """
-        @Composable fun {{name}}() { ... }
-      """
-```
-
-This enables: write domain logic once in VEIL, layers define the mapping,
-same source produces Swift, Kotlin, Rust, or TypeScript output depending on
-the target.
-
-### Composition
-
-Multiple layers can contribute to the same output sections. For example,
-`di.layer` contributes dependency wiring to "main", while `http.layer`
-contributes server startup. The engine composes them by priority order.
-
-If a programmer writes their own `main` fn in the `.veil` source, the
-auto-generated main is suppressed. Diagnostics warn if required `@main`
-contributors are not called in a custom main.
-
-### The Pipeline
+The engine **may** know target-language reality (that is its job). It
+**must not** know what `@dep`, `ctx`, or `dispatch` mean — those come from
+layers.
 
 ```
 .veil source + .layer files
        |
    Parse (Package AST)
        |
-   Build IR (nodes, edges, metadata)
+   Build IR
        |
-   Analyze (diagnostics, dep graph resolution)
+   Analyze / check (diagnostics, constraints, capabilities)
        |
    Codegen:
-     1. lang.rs compiler backend (expressions, types, layout)
-     2. Layer templates execute against IR (augment output)
-     3. Sections compose (multiple @main contributors → one main())
+     1. lang.rs backend (core shapes → target)
+     2. Layer templates (augment)
+     3. Section composition (e.g. multiple @main contributors)
        |
    Output (target files + manifest.json for runtime)
 ```
 
-The codegen phase receives the full AST and `LayerRegistry`. The
-compiler backend (`rust.rs`) handles core shape emission and project structure.
-Layer templates then execute, adding domain-specific code (DI wiring, pattern
-implementations). Section contributions are composed by priority. The result
-is the final target files plus a `manifest.json` that describes the module's
-wiring requirements for veil-runtime (deps, handlers, env vars).
+Templates use `codegen <target>`, `match`/`where`, `emit`, `emit_to`, and
+`priority`. Prefer declarative hooks and strong builtins over turning the
+template DSL into a third programming language. Details:
+[`docs/CODEGEN_TEMPLATES.md`](docs/CODEGEN_TEMPLATES.md).
 
-## File Structure
+### Multi-target
 
-```
-docs/
-  LANGUAGE.md            — Complete language reference (keywords, types, formats)
+The same VEIL program can lower to multiple backends. Today Rust is primary
+and TypeScript is available; Swift/Kotlin and richer Svelte emission are
+roadmap. Idiomatic quality is pursued per target; **semantic honesty**
+(capability checks) always outranks pretty output.
 
-examples/
-  base.layer             — Core primitives layer
-  ddd.layer              — DDD abstraction layer (Bus, SagaStep + run_saga, ...)
-  crm.layer              — Stacks on ddd.layer (proof of composability)
-  functional.layer       — FP abstractions (pure, adt, pipe, typeclasses, effects)
-  customer_onboarding.veil — Example app using the DDD layer
-  sales_crm.veil         — Example app using the CRM layer
-  reqwest.stub           — Example external-crate stub
-
-stories/                 — User stories for UX features
-
-crates/
-  veil-parser/           — Lexer + Parser (comprehensive Rust expression coverage)
-  veil-ir/               — AST, IR graph, builder, serializer, validator,
-                           layer registry (with .stub parsing)
-  veil-codegen/          — Multi-target code generation:
-                             rust.rs       — IR → Rust (primary target)
-                             typescript.rs — IR → TypeScript
-                             expr.rs       — Rust expression translator
-  veil-cli/              — CLI (lex, parse, check, gen --target, emit, stub-gen, serve)
-
-veil-viewer/             — Svelte visual editor
-  src/lib/editors/       — Composable expression editing components:
-    ExprEditor.svelte    — Recursive editor for all 34 expression kinds
-    BlockEditor.svelte   — Reusable expression list (bodies, arms, etc.)
-    ExprPicker.svelte    — Searchable dropdown to add expressions
-    TypeEditor.svelte    — Recursive type annotation editor
-    EnumEditor.svelte    — Variant + transition editor
-    ConstructEditor.svelte — Unified construct editor (dispatches by shape)
-    AnnotationEditor.svelte — @annotation toggle + param editor
-    expr-types.ts        — Full Expr/TypeExpr type system for the UI
-    ir-convert.ts        — IR nodes → Expr trees for editing
-    expr-serialize.ts    — Expr trees → VEIL source text
-```
-
-## Transpilation Design
-
-VEIL core expressions are **universal programming primitives** — they map to
-both Rust and TypeScript (and potentially other targets). The AST is
-target-agnostic; only the codegen backend decides how to lower:
-
-| VEIL | Rust | TypeScript |
-|------|------|-----------|
-| `Res!<T>` | `Result<T, DomainError>` | `Promise<T>` |
-| `mut x = 0` | `let mut x = 0;` | `let x = 0;` |
-| `mut x: Int = 0` | `let mut x: i64 = 0;` | `let x: number = 0;` |
-| `await expr` | `expr.await` | `await expr` |
-| `expr?` | `expr?` | `await expr` (throws) |
-| `.clone()` | emitted as needed | skipped |
-| `List<T>` | `Vec<T>` | `T[]` |
-| `Opt<T>` | `Option<T>` | `T \| null` |
-| `Map<K,V>` | `HashMap<K, V>` | `Map<K, V>` |
-| struct | `pub struct` | `export interface` |
-| trait | `#[async_trait] pub trait` | `export interface` (async methods) |
-| enum (data) | `pub enum { Variant(T) }` | discriminated union |
-
-Rust-specific artifacts (Arc, Box, lifetimes, .await placement) are codegen
-concerns, not source-level. The TypeScript backend reads the same AST and
-produces typed interfaces, async service functions, and project scaffolding
-(`package.json`, `tsconfig.json`).
-
-**CLI usage:**
 ```
 veil gen app.veil -o ./out            # default: Rust
 veil gen app.veil -o ./out -t ts      # TypeScript
 ```
 
+Illustrative mappings (not the full semantic model):
+
+| VEIL | Rust | TypeScript |
+|------|------|------------|
+| `Res!<T>` | `Result<T, DomainError>` | `Promise<T>` |
+| `await expr` | `expr.await` | `await expr` |
+| `expr?` | `expr?` | `await expr` (throws) |
+| `List<T>` | `Vec<T>` | `T[]` |
+| `Opt<T>` | `Option<T>` | `T \| null` |
+| struct / trait / enum | `struct` / `trait` / `enum` | interfaces / unions |
+
+Target-specific artifacts (Arc, Box, lifetimes, package layout) are codegen
+concerns, not VEIL source concerns.
+
 ## Layer Stacking
 
-Layers compose: a construct's `mt` may name a core shape OR another
-construct from any loaded layer (by keyword or name). A layer declares its
-dependencies with `use` lines, and the `LayerRegistry` resolves `mt`
-chains transitively at load time:
+Layers compose: `mt` may name a core shape or another construct. Dependencies
+use `use`; `LayerRegistry` resolves chains transitively:
 
 ```
 # crm.layer
@@ -347,100 +324,120 @@ pkg crm v1
     mt agg          # lead -> agg -> struct
 ```
 
-Constraint checks (`only Saga`, `has` allow-lists) follow the same
-chain via an is-a relation, so a crm `Playbook` (playbook → saga) is
-accepted wherever a ddd `Saga` is allowed. Statements stack the same way
-(`notify` → `dispatch` → `call`).
+Constraints (`only Saga`, `has` allow-lists) follow the same is-a chain.
+Statements stack (`notify` → `dispatch` → `call`).
+
+## Design Laws
+
+1. **Zero domain knowledge in the engine** — permanent.
+2. **Agents author; humans review topology + critical bodies.**
+3. **Dual loops** — machine check and human structure are both product
+   requirements.
+4. **Expressiveness parity** — semantic, not keyword cloning.
+5. **Token efficiency** — terse forms are the standard; verbose forms are
+   compatibility only.
+6. **Terseness never outranks diagnostics** — bare-field inference and sugar
+   must not produce silent wrongness; strict check is the agent default.
+7. **Escape hatches are debt** — visible in review/diagnostics; burn down
+   over time.
+8. **Layers own vocabulary, visuals, prompts, and pattern codegen.**
+9. **Blessed paths ≠ core** — `ddd`/`di` are defaults for service apps, not
+   the only legal architecture.
+10. **No silent miscompile** — unsupported target features fail at check.
+
+## File Structure
+
+```
+docs/
+  LANGUAGE.md            — Complete language reference
+  ARCHITECTURE.md        — Packages, CQRS, Bus, manifest, deploy
+  CODEGEN_TEMPLATES.md   — Template DSL and hybrid codegen
+  LAYER_PROMPTS.md       — How to write layer prompt sections for agents
+
+examples/                — Layers, apps, stubs (composability proofs)
+layers/                  — System layers (base, ddd, di, rust, svelte5, …)
+stories/                 — Living backlog (dual-loop, invariant debt, runtime, parity)
+
+crates/
+  veil-parser/           — Lexer + parser
+  veil-ir/               — AST, IR, builder, serializer, validator, layers, stubs
+  veil-codegen/          — Multi-target generation (rust, typescript, templates)
+  veil-cli/              — lex, parse, check, gen, emit, stub-gen, serve
+  veil-server/           — Editor/API server
+
+veil-viewer/             — Svelte structural viewer/editor
+runtime/                 — Runtime harness and larger self-hosted examples
+```
 
 ## Current State
 
-The zero-domain-knowledge invariant HOLDS across the whole pipeline —
-lexer, parser, IR builder, **codegen** (both Rust and TypeScript), and
-**viewer**. All example workspaces generate Rust that compiles cleanly.
+The zero-domain-knowledge invariant **holds** across the pipeline in spirit
+and for layer vocabulary; watch invariant debt (engine heuristics) as the
+system grows. Example workspaces generate Rust that compiles cleanly.
+TypeScript generation and a Svelte 5 layer exist; full UI/structure parity
+and additional backends are incomplete.
 
-**File types:** The only top-level keyword is `pkg`. The `sol` keyword is
-accepted as a deprecated alias (produces identical output). There is no
-separate "solution" vs "package" distinction — `pkg` is the unit of domain
-modeling, and deployment topology is determined by the manifest + runtime.
+**File types:** top-level unit is `pkg` (`sol` is a deprecated alias).
+Deployment topology is manifest + runtime, not a separate “solution” kind.
 
-Implementation map:
+Implementation map (summary):
 
-- `veil-ir/src/layer.rs` — `LayerRegistry`: parses `.layer` files, resolves
-  `mt` transitively, exposes constructs/statements/visuals/annotations.
-  The 7 core shapes (`mod`, `struct`, `enum`, `trait`, `impl`, `fn`, `group`)
-  and 2 statement shapes (`call`, `if`) are the ONLY vocabulary the engine
-  knows. `routing_traits()` identifies the Bus-like ports generically.
-- Lexer: layer keywords all lex as `Ident`; only core language/file/flow
-  keywords are TokenKinds. Flow-modeling words (`step`, `par`) are NOT
-  reserved — they lex as identifiers and are recognized contextually, so
-  they can be used as variable names.
-- Parser: one parse function per core shape, dispatched by registry lookup.
-  Named sub-blocks (`root`, `state`) come from `has` entries of the
-  form `keyword: shape`. Layer statements parse into a generic `ActionExpr`,
-  and `Port.method` statements desugar into `call`s. Rich enum variants
-  (`Variant(Type)`, struct variants) parsed into `EnumVariant`. Destructuring
-  patterns (`(a, b) = expr`) parsed into `LetPattern` with structured `Pattern`.
-  Match guards (`pattern if condition -> body`) supported.
-- AST: a single generic `Construct` stamped with its shape + layer subkind,
-  plus a top-level `Function` (for layer-declared code). 34 expression
-  variants covering all Rust expression forms. `Pattern` enum for structured
-  destructuring. `EnumVariant` for data-carrying enum variants. Optional type
-  annotations on let bindings. Generic type parameters on constructs.
-- Builder/serializer/codegen: switch on shape only; subkind is metadata.
-  Codegen emits **real behavior**, not stubs — aggregate methods, adapter
-  impls, guards that enforce, and a JSON message Bus (see below).
-- Validation: generic constraint grammar (`only X`, `deny X`,
-  `must_have <block>`, `requires_groups`); unknown constraint words are
-  semantic hints, skipped by the structural validator.
-- Viewer: fully layer-driven. `NODE_STYLES` covers core shapes only; all
-  layer visuals AND the available annotations arrive at runtime via
-  `/api/palette`. It is an **editor**: `POST /api/edit` applies structured
-  edits to the AST, re-serializes, validates, writes the file, and regenerates
-  — the "viewer IS the editor" loop. Dark/light mode toggle.
+- `LayerRegistry` — parse layers, transitive `mt`, constructs/statements/
+  visuals/annotations/prompts/stubs; engine vocabulary is 7 shapes + 2
+  statement shapes only.
+- Lexer — layer words are `Ident`; only core keywords are reserved. `step` /
+  `par` are contextual, not reserved.
+- Parser — one function per core shape; named sub-blocks from `has`;
+  layer statements → `ActionExpr` with Port.method desugar; rich enums,
+  patterns, match guards.
+- AST — generic `Construct` (shape + subkind); ~34 expression variants;
+  patterns; optional type annotations; generics on constructs.
+- Check/validate — generic constraint grammar; expand toward types,
+  unresolved calls, and target capabilities (agent loop).
+- Codegen — shape-only switches; real behavior (not empty stubs); layer
+  templates augment; `manifest.json` for runtime wiring.
+- Viewer — layer-driven palette and styles; structured edit API; dual-mode
+  chrome. Invest next in topology/critical-body **review** quality.
 
-### Codegen decisions (all keep the invariant)
+### Notable codegen behaviors (keep invariant pressure high)
 
-- **`@dep` annotation routing.** When a `fn`-shaped construct's input field
-  carries an annotation whose name is `dep` (defined by a layer, e.g.
-  `di.layer`), the engine excludes it from the generated function's parameter
-  list. Instead, all `@dep`-annotated fields are collected into a generated
-  `Deps` struct and calls to those fields route through `deps.field.method().await?`.
-  The engine recognizes this pattern generically via the field's annotation +
-  its type resolving to `Shape::Trait`.
+- **`@dep` routing** — fields annotated `dep` (layer-defined) collect into a
+  generated `Deps` struct; calls route through deps. Prefer making this
+  fully layer-policy-driven over engine magic.
+- **Smart constructors** — defaults from types/names (`Opt` → `None`,
+  timestamps, scalars, `id`). Treat name heuristics as policy debt to move
+  into layers where possible.
+- **JSON message Bus** — cross-context payloads as `Json` so crates do not
+  share domain types; `veil_shared` holds Bus/error shared surface when
+  using that pattern.
+- **Sagas in the layer** — `runtime` bindings + `declare`d coordinators in
+  VEIL; engine has zero saga control-flow knowledge.
+- **Layer-declared code** — `declare` blocks inject real shared functions/
+  traits (e.g. saga runner) authored in VEIL.
+- **Composability proof** — `examples/crm.layer` on `ddd.layer` and
+  `examples/sales_crm.veil` generate compiling Rust with no engine changes.
 
-- **Smart constructors for struct-shaped constructs.** The codegen's `new()`
-  generator applies generic heuristics to determine which fields become
-  parameters vs auto-defaulted:
-  - Fields whose type is `Optional` or `Opt<T>` default to `None`
-  - Fields named after common timestamps (`created_on`, `updated_on`, etc.) default to `Utc::now()` or `None` if optional
-  - Fields typed `Int`, `Bool`, `F64` get scalar defaults (0, false, 0.0)
-  - Fields typed `Json` default to `{}`
-  - The `id` field is always a parameter; the expression translator auto-inserts
-    `Uuid::new_v4()` when the caller omits it
-  - Constructs with `@invariant` annotations return `Result<Self, ValidationError>`
-  These heuristics are engine-level (driven by type names and field names),
-  not domain-specific. Any layer's struct-shaped constructs benefit from them.
+## Strategic Sequencing
 
-- **JSON message Bus.** Cross-context calls route through a `Bus` whose payloads
-  are `Json` (`serde_json::Value`), so an orchestrator crate never depends on
-  another context's concrete types. `Bus`, `DomainError`, and shared traits
-  live in a single generated `veil_shared` crate that every context re-exports.
-- **Sagas are defined in the layer, not the engine.** A layer construct may
-  declare a `runtime` binding (`runtime run_saga SagaStep` +
-  `compensate -> compensate`). Codegen then lowers each authored `step` into a
-  generated `struct` + `impl SagaStep` (action from the body, compensate from
-  the sub-block, Bus injected, inputs captured as fields), collects them into a
-  `Vec<Box<dyn SagaStep>>`, and calls the layer-declared coordinator. The
-  coordinator (`run_saga`/`unwind` — forward-run, then reverse-unwind on
-  failure, threading a shared JSON `state` so later steps see earlier results)
-  is written in **VEIL in `ddd.layer`'s `declare` block**. `rust.rs` contains
-  zero saga control flow.
-- **Layer-declared code.** A `fn` with a body in a layer's `declare` block
-  generates a real function in `veil_shared`. This — plus first-class trait
-  objects (`List<Trait>` → `Vec<Box<dyn Trait>>`) — is what lets the saga
-  runtime be authored entirely in VEIL.
+Not a sprint plan — product order of operations:
 
-- Proof of composability: `examples/crm.layer` stacks on `ddd.layer`
-  (`pipeline→ctx→mod`, `lead→agg→struct`, `notify→dispatch→call`) and
-  `examples/sales_crm.veil` parses, validates, and generates compiling Rust
-  without any engine changes.
+1. **Dual-loop excellence on the current surface** — world-class `check` +
+   deterministic codegen; topology and critical-body review UX; Rust primary,
+   TS/Svelte secondary with honest capabilities.
+2. **Semantic IR hardening** — effects, errors, async, ownership
+   capabilities; purge engine domain heuristics into layers.
+3. **Parity by program class** — portable application logic → services/
+   adapters → structured UI (retire raw templates) → more backends →
+   library-quality modules.
+4. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
+   surface in real trees (`examples/`, `runtime/`).
+
+## Success Measures
+
+- Agent tokens (or steps) per feature vs raw target languages
+- Human time-to-approve a structural change without opening generated LoC
+- Share of reviews completed at topology + critical bodies only
+- Agent fix-cycle time under `veil check` / compile feedback
+- Compile/success rate of agent-authored VEIL
+- Escape-hatch surface area trend (should fall over time)
+- Target capability violations caught at check (not in production)
