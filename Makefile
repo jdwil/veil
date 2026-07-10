@@ -131,6 +131,7 @@ serve-api: veil
 		exit 1; \
 	fi
 	@echo "API only: http://localhost:$(PORT)  (Ctrl-C to stop)"
+	@echo "  Agent: VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)  model=$(VEIL_MODEL_NAME)"
 	$(VEIL_BIN) serve $(EXAMPLES) -p $(PORT)
 
 # Viewer only (expects veil serve already on PORT)
