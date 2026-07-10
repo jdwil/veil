@@ -1,12 +1,13 @@
 //! Source provider abstraction — the storage backend for the dev server.
 
 pub mod filesystem;
+pub mod remote;
 
 use async_trait::async_trait;
 use veil_ir::LayerRegistry;
 
 /// Metadata about a loaded file.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileInfo {
     pub index: usize,
     pub name: String,

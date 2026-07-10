@@ -128,7 +128,7 @@ engine has no Lambda hardcode. LocalStack path = env override later.
 
 ## RT-015: S3 / DynamoDB adapters (AWS path only)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** AWS deployer  
 **I want** real S3/DDB adapters for pre-prod testing  
 **So that** I can LocalStack or AWS-integration-test before deploy
@@ -139,6 +139,11 @@ engine has no Lambda hardcode. LocalStack path = env override later.
 - Feature/env selection: `VEIL_STORAGE=s3` etc.
 - Does not replace local fs+sqlite defaults
 - GEN-002 fixed so bodies are not `todo!("SQL: …")`
+
+**Done notes:** `S3ObjectStore` + `ObjectStorage` port (`VEIL_STORAGE=s3`);
+`DdbMetaStore` config + honest `NotImplemented` ops (`VEIL_META=ddb`);
+`docs/STORAGE.md`. Local fs remains default. GEN-002 SQL bodies addressed
+earlier (sqlx stubs / no SQL-todo).
 
 ---
 

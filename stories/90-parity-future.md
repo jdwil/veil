@@ -47,7 +47,7 @@ sequencing phases 2–4).
 
 ## PAR-003: Effects / error model as first-class IR
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** multi-target author  
 **I want** `Res!` / fallibility modeled independently of Rust `Result`  
 **So that** TS/Swift/Kotlin lowerings stay honest
@@ -58,11 +58,14 @@ sequencing phases 2–4).
 - Lowerings documented per target
 - Tests for `?`, `Res!`, and non-fallible functions
 
+**Done notes:** `docs/EFFECTS.md` — `TypeExpr::Result` / `Res!` as axis; per-target
+lowerings; Swift/Kotlin type-map unit tests; pure_lib non-fallible path.
+
 ---
 
 ## PAR-004: Ownership capabilities (optional annotations)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** author targeting Rust and GC languages  
 **I want** optional sharing/ownership marks only where needed  
 **So that** VEIL source is not full of Rust lifetimes
@@ -73,11 +76,14 @@ sequencing phases 2–4).
 - Rust backend inserts Arc/clone per policy; TS ignores
 - No requirement to write lifetimes in `.veil`
 
+**Done notes:** `docs/OWNERSHIP.md` — implicit owned default; no lifetimes in
+source; `@shared` deferred optional syntax; GC targets ignore.
+
 ---
 
 ## PAR-005: Swift backend spike
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** mobile platform stakeholder  
 **I want** a minimal Swift lowering for core shapes  
 **So that** parity roadmap is grounded
@@ -88,18 +94,24 @@ sequencing phases 2–4).
 - Lower struct/enum/fn subset for a tiny example
 - Does not claim production readiness
 
+**Done notes:** `veil_codegen::swift` + `CodegenTarget::Swift`; sparse
+`supported_features`; bodies `fatalError`; example via `pure_lib.veil`.
+
 ---
 
 ## PAR-006: Kotlin backend spike
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **Same shape as PAR-005 for Kotlin/Jetpack subset.**
+
+**Done notes:** `veil_codegen::kotlin` + `CodegenTarget::Kotlin`; sparse
+capabilities; bodies `TODO`; pure_lib lowers data class + enum + fn sigs.
 
 ---
 
 ## PAR-007: Structured UI IR (retire raw templates)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** UI reviewer  
 **I want** view trees as structured VEIL nodes  
 **So that** critical UI is not trapped in raw strings
@@ -114,11 +126,15 @@ sequencing phases 2–4).
 
 **Depends:** GEN-004
 
+**Done notes:** Design `docs/UI_IR.md` (view/el/when/list + escape hatch +
+Svelte path). Layer constructs + Svelte emit are follow-up implementation;
+`template` remains debt-flagged (CHK-006).
+
 ---
 
 ## PAR-008: Library-quality portable modules
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** author of shared libraries (not only services)  
 **I want** packages without Bus/CQRS assumptions to codegen cleanly  
 **So that** “any program” includes portable libs
@@ -131,11 +147,14 @@ sequencing phases 2–4).
 
 **Depends:** INV-003
 
+**Done notes:** `examples/pure_lib.veil` — gen rust/ts/swift/kotlin without Bus;
+expose story in LANGUAGE + package `expose` when API clients needed.
+
 ---
 
 ## PAR-009: Agent prompt assembly from layers
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** agent runtime  
 **I want** `veil prompt` (or API) to concatenate layer `prompt` sections +
   compact construct lists  
@@ -148,11 +167,14 @@ sequencing phases 2–4).
 - Token-budget option (truncate with markers)
 - Used by runtime agent path when that exists
 
+**Done notes:** `veil prompt <file> [--max-tokens N]`; also `GET /api/context`
+(AGT-011). Docs: `docs/AGENT.md`.
+
 ---
 
 ## PAR-010: Success metrics instrumentation
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** product owner  
 **I want** measurable hooks for MISSION success metrics  
 **So that** we know if dual-loop investment works
@@ -163,3 +185,5 @@ sequencing phases 2–4).
 - Optional JSON report for CI dashboards
 - Document how to measure human time-to-approve manually (checklist)
   until IDE telemetry exists
+
+**Done notes:** `veil check --json` + duration in human path; `docs/METRICS.md`.

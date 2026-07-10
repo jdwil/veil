@@ -62,6 +62,17 @@ enum Commands {
         /// Print escape-hatch debt count summary (always on when any escape diags exist; force with this flag)
         #[arg(long)]
         escape_summary: bool,
+        /// Emit machine-readable JSON report (PAR-010 metrics)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Assemble layer prompts + construct outline for agents (PAR-009)
+    Prompt {
+        /// Path to the .veil file
+        file: PathBuf,
+        /// Max approximate tokens (chars/4); 0 = unlimited
+        #[arg(long, default_value = "0")]
+        max_tokens: usize,
     },
     /// Generate code from a VEIL file
     Gen {
@@ -492,6 +503,50 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Prompt { file, max_tokens } => {
+            let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let (sol, registry) = parse_solution_or_exit(&source, &file);
+            let mut parts: Vec<String> = Vec::new();
+            // Layer prompts in load order (PAR-009)
+            for (layer, text) in &registry.prompts {
+                parts.push(format!("# Layer prompt: {layer}\n{text}"));
+            }
+            // Compact construct outline
+            let graph = veil_ir::build_ir_with_registry(&sol, Some(&registry));
+            let mut outline = vec![format!("# Package {}\nconstructs:", sol.name)];
+            for n in &graph.nodes {
+                if matches!(
+                    n.kind,
+                    veil_ir::NodeKind::Solution
+                        | veil_ir::NodeKind::Action
+                        | veil_ir::NodeKind::Field
+                        | veil_ir::NodeKind::Inputs
+                        | veil_ir::NodeKind::Return
+                ) {
+                    continue;
+                }
+                let sk = n.metadata.subkind.as_deref().unwrap_or("");
+                outline.push(format!("- {:?} {} {}", n.kind, sk, n.name));
+            }
+            parts.push(outline.join("\n"));
+            // Constraints from palette (layer vocabulary)
+            let palette = veil_ir::palette_from_registry(&registry);
+            let mut vocab = vec!["# Vocabulary (keywords):".to_string()];
+            for e in palette.iter().take(80) {
+                vocab.push(format!("- {} ({})", e.keyword, e.name));
+            }
+            parts.push(vocab.join("\n"));
+
+            let mut text = parts.join("\n\n---\n\n");
+            if max_tokens > 0 {
+                let max_chars = max_tokens.saturating_mul(4);
+                if text.len() > max_chars {
+                    text.truncate(max_chars);
+                    text.push_str("\n\n…[truncated for token budget]…\n");
+                }
+            }
+            println!("{text}");
+        }
         Commands::Lex { file } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let tokens = veil_parser::lex(&source);
@@ -513,6 +568,7 @@ fn main() {
             list_capabilities,
             deny_escape_hatches,
             escape_summary,
+            json,
         } => {
             let codegen_target = veil_codegen::CodegenTarget::from_str(&target).unwrap_or_else(|| {
                 eprintln!(
@@ -531,6 +587,7 @@ fn main() {
             let file_display = file.display().to_string();
             let (sol, registry) = parse_solution_or_exit(&source, &file);
 
+            let started = std::time::Instant::now();
             let mut result = veil_ir::check_solution(&sol, &registry);
 
             // Target capability matrix (CHK-005)
@@ -552,6 +609,44 @@ fn main() {
             }
 
             veil_ir::sort_diagnostics(&mut result.diagnostics);
+            let duration_ms = started.elapsed().as_millis();
+
+            let hatch_counts =
+                veil_ir::EscapeHatchSummary::from_diagnostics(&result.diagnostics);
+
+            if json {
+                // PAR-010: machine-readable metrics for CI dashboards
+                let report = serde_json::json!({
+                    "file": file_display,
+                    "package": sol.name,
+                    "target": target,
+                    "layers": registry.layers,
+                    "ok": !result.has_errors(),
+                    "error_count": result.error_count(),
+                    "warning_count": result.warning_count(),
+                    "node_count": result.graph.nodes.len(),
+                    "edge_count": result.graph.edges.len(),
+                    "duration_ms": duration_ms,
+                    "escape_hatch": {
+                        "raw_surface": hatch_counts.raw_surface,
+                        "empty_adapter": hatch_counts.empty_adapter,
+                        "external_call": hatch_counts.external_call,
+                        "json_boundary": hatch_counts.json_boundary,
+                        "total": hatch_counts.total(),
+                    },
+                    "diagnostics": result.diagnostics.iter().map(|d| serde_json::json!({
+                        "severity": format!("{:?}", d.severity),
+                        "code": d.code,
+                        "message": d.message,
+                        "node_name": d.node_name,
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                if result.has_errors() {
+                    std::process::exit(1);
+                }
+                return;
+            }
 
             // Compact summary header
             eprintln!(
@@ -570,6 +665,8 @@ fn main() {
                 let tpl_target = match codegen_target {
                     veil_codegen::CodegenTarget::Rust => "rust",
                     veil_codegen::CodegenTarget::TypeScript => "typescript",
+                    veil_codegen::CodegenTarget::Swift => "swift",
+                    veil_codegen::CodegenTarget::Kotlin => "kotlin",
                 };
                 let output = veil_codegen::execute_templates(&sol, &registry, tpl_target);
                 for f in &output.files {
@@ -586,14 +683,12 @@ fn main() {
                 }
             }
 
-            let hatch_counts =
-                veil_ir::EscapeHatchSummary::from_diagnostics(&result.diagnostics);
-
             if result.diagnostics.is_empty() {
                 eprintln!(
-                    "ok — {} node(s), {} edge(s), 0 diagnostics",
+                    "ok — {} node(s), {} edge(s), 0 diagnostics ({} ms)",
                     result.graph.nodes.len(),
-                    result.graph.edges.len()
+                    result.graph.edges.len(),
+                    duration_ms
                 );
             } else {
                 for d in &result.diagnostics {
@@ -601,9 +696,10 @@ fn main() {
                     println!("{}: {}", file_display, veil_ir::format_diagnostic_line(d));
                 }
                 eprintln!(
-                    "{} error(s), {} warning(s)",
+                    "{} error(s), {} warning(s) ({} ms)",
                     result.error_count(),
-                    result.warning_count()
+                    result.warning_count(),
+                    duration_ms
                 );
             }
 
@@ -635,7 +731,10 @@ fn main() {
 
             let codegen_target = veil_codegen::CodegenTarget::from_str(&target)
                 .unwrap_or_else(|| {
-                    eprintln!("Unknown target '{}'. Use: rust, typescript", target);
+                    eprintln!(
+                        "Unknown target '{}'. Use: rust, typescript, swift, kotlin",
+                        target
+                    );
                     std::process::exit(1);
                 });
 
@@ -667,7 +766,7 @@ fn main() {
                     }
                 }
                 veil_ir::ast::VeilFile::Package(pkg) => {
-                    // Packages generate typed API clients (TS) or full Rust crates
+                    // Packages generate typed API clients (TS) or full crates / spike sources
                     match codegen_target {
                         veil_codegen::CodegenTarget::TypeScript => {
                             let project = veil_codegen::typescript::generate_api_client_from_package(pkg);
@@ -675,8 +774,10 @@ fn main() {
                                 .map(|f| veil_codegen::GeneratedFile { path: f.path, content: f.content })
                                 .collect()
                         }
-                        veil_codegen::CodegenTarget::Rust => {
-                            // Convert Package to Solution for Rust codegen
+                        veil_codegen::CodegenTarget::Rust
+                        | veil_codegen::CodegenTarget::Swift
+                        | veil_codegen::CodegenTarget::Kotlin => {
+                            // Convert Package to Solution for target codegen
                             let sol = &veil_ir::ast::Solution {
                                 name: pkg.name.clone(),
                                 span: pkg.span,
@@ -702,7 +803,7 @@ fn main() {
                 std::fs::write(&path, &f.content).expect("Failed to write file");
             }
 
-            // Run formatters on generated files
+            // Run formatters on generated files (spikes skip formatters)
             match codegen_target {
                 veil_codegen::CodegenTarget::Rust => {
                     for f in &files {
@@ -720,6 +821,7 @@ fn main() {
                         .args(["prettier", "--write", &output.to_string_lossy()])
                         .output();
                 }
+                veil_codegen::CodegenTarget::Swift | veil_codegen::CodegenTarget::Kotlin => {}
             }
 
             println!(
@@ -851,7 +953,31 @@ fn main() {
             println!("  API: http://localhost:{}/api/ir", port);
             println!("  Files: http://localhost:{}/api/files", port);
 
-            let provider = veil_server::FilesystemProvider::with_files(file_entries, registry.clone());
+            // AGT-010: proxy to remote serve when VEIL_REMOTE_URL is set.
+            if let Ok(remote) = std::env::var("VEIL_REMOTE_URL") {
+                println!("  Remote SourceStore: {remote}");
+                println!("  (local paths ignored; IDE talks to remote package)");
+                let provider = match veil_server::RemoteHttpProvider::from_env(registry.clone()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Remote provider error: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let app = veil_server::build_router(provider);
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async move {
+                    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+                        .await
+                        .unwrap();
+                    println!("  Listening on port {port} (remote mode)");
+                    axum::serve(listener, app).await.unwrap();
+                });
+                return;
+            }
+
+            let provider =
+                veil_server::FilesystemProvider::with_files(file_entries, registry.clone());
             let app = veil_server::build_router(provider);
 
             let rt = tokio::runtime::Runtime::new().unwrap();

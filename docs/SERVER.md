@@ -34,13 +34,14 @@ See `is_veil_source_editable` in `veil-cli`.
 |--------|------|---------|
 | GET | `/api/ir` | IR graph JSON for the active file |
 | GET | `/api/source` | Raw active `.veil` source |
+| POST | `/api/source` | Full-file write (parse+check first; AGT-010 remote) |
 | GET | `/api/generated` | Generated code map (path → text) |
 | GET | `/api/palette` | Construct + statement palette from layers |
 | GET | `/api/presentation` | Layer presentation model (views, nest, layout) |
 | GET | `/api/context` | Agent context pack (outline + presentation) |
 | GET | `/api/stubs` | Loaded external crate stubs |
 | GET | `/api/diagnostics` | Diagnostics array (compat; same pipeline as check) |
-| GET/POST | `/api/check` | Full check pipeline (`?target=rust\|typescript`) |
+| GET/POST | `/api/check` | Full check pipeline (`?target=rust\|typescript\|swift\|kotlin`) |
 | GET | `/api/files` | Loaded files (`index`, `name`, `path`, `editable`, `active`) |
 | POST | `/api/files/select` | `{ "index": N }` — set active file |
 | POST | `/api/edit` | `{ "ops": [ EditOp, … ] }` — structured edit |
@@ -49,6 +50,24 @@ See `is_veil_source_editable` in `veil-cli`.
 | GET | `/api/agent/tools` | Rig tool JSON schemas (MCP bridge discovery) |
 | GET | `/api/models` | Configured model provider (Rig) |
 | GET | `/api/events` | SSE revision heartbeat for live sync (AGT-002) |
+
+## Remote SourceStore (AGT-010)
+
+```bash
+# On host with package files:
+veil serve path/to/pkg.veil -p 3001
+
+# On IDE/agent machine (no LocalFs for package):
+VEIL_REMOTE_URL=http://host:3001 veil serve -p 3002
+```
+
+`RemoteHttpProvider` proxies `/api/files`, `/api/source` (GET/POST), and file
+select to the remote serve. Layers still resolve from the client registry /
+layer path. Live sync (`/api/events`) remains on the host the IDE connects to;
+tunnel or reverse-proxy as needed.
+
+Authn for multi-user cloud remains a platform concern (deploy auth in front of
+serve); this path is the **MVP network SourceStore** without browser LocalFs.
 
 ## Viewer assumptions
 

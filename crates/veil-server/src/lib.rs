@@ -24,6 +24,7 @@ pub mod rig_tools;
 
 pub use provider::{SourceProvider, FileInfo};
 pub use provider::filesystem::FilesystemProvider;
+pub use provider::remote::RemoteHttpProvider;
 pub use api::build_router;
 pub use agent::{run_turn, AgentTurnRequest, AgentTurnResponse};
 pub use model::{

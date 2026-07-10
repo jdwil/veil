@@ -1,0 +1,31 @@
+# PAR-008 — portable library package (no Bus / CQRS).
+#   veil gen examples/pure_lib.veil -o /tmp/pure_lib -t rust
+#   veil gen examples/pure_lib.veil -o /tmp/pure_lib_ts -t typescript
+#   veil gen examples/pure_lib.veil -o /tmp/pure_lib_sw -t swift
+#   veil check examples/pure_lib.veil --json
+#   veil prompt examples/pure_lib.veil --max-tokens 400
+#
+# Export story: optional `expose` block on packages for typed API clients
+# (TS). Pure libs without expose still generate types/fns for rust/swift/kotlin.
+
+pkg PureLib
+  use base
+  use rust
+
+  # Free algorithms / types at package level (not ctx/mod forced)
+  struct Point
+    x: Int
+    y: Int
+
+  enum Axis
+    X
+    Y
+
+  fn manhattan(a: Point, b: Point) -> Int
+    dx = a.x - b.x
+    dy = a.y - b.y
+    # abs not builtin — return sum of squares style proxy for demo
+    ret dx * dx + dy * dy
+
+  fn origin() -> Point
+    ret Point{x: 0, y: 0}

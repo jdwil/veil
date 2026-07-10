@@ -14,16 +14,26 @@ Wired into `veil check -t <target>` and multi-target debt warnings.
 
 ## Snapshot (honest defaults)
 
-| Feature | Rust | TypeScript |
-|---------|------|------------|
-| RangeExpr | yes | gated |
-| Closures | yes | partial |
-| MatchExpr | yes | yes |
-| AwaitExpr | yes | yes |
-| TryOperator | yes | yes |
-| EmptyAdapterBody | warn/escape | — |
-| EmptyUiTemplate | — | allowed shell |
-| ImplBlocks | yes | n/a |
-| RawBlocks | escape debt | escape debt |
+| Feature | Rust | TypeScript | Swift (spike) | Kotlin (spike) |
+|---------|------|------------|---------------|----------------|
+| RangeExpr | yes | gated | no | no |
+| Closures | yes | partial | no | no |
+| MatchExpr | yes | yes | yes* | yes* |
+| AwaitExpr | yes | yes | no | yes* |
+| TryOperator | yes | yes | yes* | yes* |
+| EmptyAdapterBody | warn/escape | — | no | no |
+| EmptyUiTemplate | — | allowed shell | no | no |
+| ImplBlocks | yes | n/a | no | no |
+| RawBlocks | escape debt | escape debt | no | no |
+
+\*Spike claims type-level support; **fn bodies are not lowered** (`fatalError` /
+`TODO`). Struct/enum/fn signatures only — not production.
 
 Exact sets live in code — this table is orientation only.
+
+### CLI targets
+
+```bash
+veil gen pkg.veil -t rust|typescript|swift|kotlin -o OUT
+veil check pkg.veil -t swift   # fails closed on unsupported features
+```

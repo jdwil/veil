@@ -4,7 +4,9 @@
 
 pub mod capabilities;
 pub mod expr;
+pub mod kotlin;
 pub mod rust;
+pub mod swift;
 pub mod template;
 pub mod typescript;
 
@@ -23,6 +25,10 @@ use veil_ir::layer::LayerRegistry;
 pub enum CodegenTarget {
     Rust,
     TypeScript,
+    /// PAR-005 spike — not production
+    Swift,
+    /// PAR-006 spike — not production
+    Kotlin,
 }
 
 impl CodegenTarget {
@@ -30,6 +36,8 @@ impl CodegenTarget {
         match s.to_lowercase().as_str() {
             "rust" | "rs" => Some(Self::Rust),
             "typescript" | "ts" => Some(Self::TypeScript),
+            "swift" => Some(Self::Swift),
+            "kotlin" | "kt" => Some(Self::Kotlin),
             _ => None,
         }
     }
@@ -60,6 +68,18 @@ pub fn generate_for_target(
                 .map(|f| GeneratedFile { path: f.path, content: f.content })
                 .collect()
         }
+        CodegenTarget::Swift => {
+            let project = swift::generate_swift(solution, registry);
+            project.files.into_iter()
+                .map(|f| GeneratedFile { path: f.path, content: f.content })
+                .collect()
+        }
+        CodegenTarget::Kotlin => {
+            let project = kotlin::generate_kotlin(solution, registry);
+            project.files.into_iter()
+                .map(|f| GeneratedFile { path: f.path, content: f.content })
+                .collect()
+        }
     }
 }
 
@@ -84,5 +104,6 @@ pub fn generate_for_target_with_packages(
                 .map(|f| GeneratedFile { path: f.path, content: f.content })
                 .collect()
         }
+        other => generate_for_target(solution, registry, other),
     }
 }

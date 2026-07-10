@@ -139,6 +139,9 @@ fn supported_features(target: CodegenTarget) -> HashSet<Feature> {
             // EmptyUiTemplate NOT supported as complete
             // EmptyAdapterBody N/A-ish
         ]),
+        // PAR-005/006 spikes: intentionally sparse — most features fail closed.
+        CodegenTarget::Swift => crate::swift::swift_supported_features(),
+        CodegenTarget::Kotlin => crate::kotlin::kotlin_supported_features(),
     }
 }
 
@@ -146,6 +149,8 @@ fn target_name(target: CodegenTarget) -> &'static str {
     match target {
         CodegenTarget::Rust => "rust",
         CodegenTarget::TypeScript => "typescript",
+        CodegenTarget::Swift => "swift",
+        CodegenTarget::Kotlin => "kotlin",
     }
 }
 

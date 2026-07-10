@@ -1,10 +1,18 @@
-//! Local-first platform adapters (RT-010 / RT-011 / RT-012).
+//! Local-first platform adapters (RT-010 / RT-011 / RT-012 / RT-015 ports).
 //!
 //! Default when `VEIL_STORAGE=fs` or no cloud credentials.
+//! - Object: `VEIL_STORAGE=fs|s3` (s3 needs `VEIL_S3_ENDPOINT` + bucket)
+//! - Meta: `VEIL_META=fs|ddb` (ddb is honest `not_implemented` until AWS SDK)
 
+mod ddb;
 mod meta;
+mod object;
+mod s3;
 
+pub use ddb::DdbMetaStore;
 pub use meta::FileMetaStore;
+pub use object::ObjectStorage;
+pub use s3::S3ObjectStore;
 
 use std::fs;
 use std::io;
@@ -21,6 +29,45 @@ pub enum StorageError {
     NotFound(String),
     #[error("invalid key: {0}")]
     InvalidKey(String),
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
+    #[error("cloud config: {0}")]
+    Config(String),
+    #[error("http: {0}")]
+    Http(String),
+}
+
+/// Build object storage from `VEIL_STORAGE` env (default `fs`).
+pub fn object_store_from_env() -> Result<Box<dyn ObjectStorage>, StorageError> {
+    let mode = std::env::var("VEIL_STORAGE").unwrap_or_else(|_| "fs".into());
+    match mode.to_lowercase().as_str() {
+        "fs" | "file" | "local" => Ok(Box::new(FsObjectStore::default_local()?)),
+        "s3" => Ok(Box::new(S3ObjectStore::from_env()?)),
+        other => Err(StorageError::Config(format!(
+            "unknown VEIL_STORAGE={other} (use fs or s3)"
+        ))),
+    }
+}
+
+/// Build metadata store from `VEIL_META` env (default `fs`).
+///
+/// `ddb` returns a configured `DdbMetaStore` whose operations fail with
+/// `NotImplemented` until the AWS SDK path lands — never a silent no-op.
+pub fn meta_store_mode_from_env() -> Result<MetaStoreKind, StorageError> {
+    let mode = std::env::var("VEIL_META").unwrap_or_else(|_| "fs".into());
+    match mode.to_lowercase().as_str() {
+        "fs" | "file" | "local" => Ok(MetaStoreKind::File(FileMetaStore::default_local()?)),
+        "ddb" | "dynamodb" => Ok(MetaStoreKind::Ddb(DdbMetaStore::from_env()?)),
+        other => Err(StorageError::Config(format!(
+            "unknown VEIL_META={other} (use fs or ddb)"
+        ))),
+    }
+}
+
+/// Selected metadata backend (RT-011 / RT-015).
+pub enum MetaStoreKind {
+    File(FileMetaStore),
+    Ddb(DdbMetaStore),
 }
 
 /// Filesystem-backed object storage (RT-010).
@@ -159,5 +206,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FsObjectStore::open(dir.path()).unwrap();
         assert!(store.put("../x", b"no").is_err());
+    }
+
+    #[test]
+    fn ddb_ops_are_not_implemented() {
+        let ddb = DdbMetaStore::new("veil-meta-test", "us-east-1", None);
+        let err = ddb.get_bytes("repo", "1").unwrap_err();
+        assert!(matches!(err, StorageError::NotImplemented(_)));
+        assert!(ddb.put_bytes("repo", "1", b"{}").is_err());
+        assert!(ddb.list_ids("repo").is_err());
     }
 }

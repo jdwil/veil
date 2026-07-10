@@ -329,7 +329,7 @@ for structural diff. Path allowlist / plan-only remaining polish.
 
 ## AGT-010: Remote / multi-user agent sessions (platform)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** user of deployed veil-runtime  
 **I want** agent sessions against remote SourceStore  
 **So that** cloud-hosted packages are editable via the same IDE UX
@@ -342,6 +342,10 @@ for structural diff. Path allowlist / plan-only remaining polish.
 - Does not require LocalFs on the browser machine for package files
 
 **Depends:** RT harness + storage adapters, AGT-001–005
+
+**Done notes:** `RemoteHttpProvider` + `VEIL_REMOTE_URL` on `veil serve`;
+`POST /api/source` full-file write with parse+check; docs SERVER/AGENT.
+Multi-user auth = deploy reverse-proxy (not engine). Live sync via host SSE.
 
 ---
 

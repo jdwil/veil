@@ -43,6 +43,18 @@ Tools mutate an in-memory workspace; the host persists via `SourceProvider` when
 
 Agent tools use `SourceProvider` (`FilesystemProvider` for `veil serve`).
 
+## Remote sessions (AGT-010)
+
+Set `VEIL_REMOTE_URL` so local `veil serve` uses `RemoteHttpProvider` — same
+agent tools and edit path, package source on the remote host. See
+`docs/SERVER.md` (Remote SourceStore).
+
+## Context pack (AGT-011 / PAR-009)
+
+- Server: `GET /api/context`
+- CLI: `veil prompt path/to.veil [--max-tokens N]` — layer prompts + construct
+  outline + vocabulary for agent assembly
+
 ## Live sync (AGT-002)
 
 `GET /api/events` — SSE revision heartbeat. Agent turns with `source_changed`

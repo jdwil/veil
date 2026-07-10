@@ -41,7 +41,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
 
     Router::new()
         .route("/api/ir", get(get_ir::<P>))
-        .route("/api/source", get(get_source::<P>))
+        .route("/api/source", get(get_source::<P>).post(post_source::<P>))
         .route("/api/generated", get(get_generated::<P>))
         .route("/api/palette", get(get_palette::<P>))
         .route("/api/presentation", get(get_presentation::<P>))
@@ -96,6 +96,37 @@ async fn get_ir<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> ax
 async fn get_source<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
     match state.read_source("").await {
         Ok(source) => ([(header::CONTENT_TYPE, "text/plain")], source).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// AGT-010: full-file write for remote SourceStore clients.
+async fn post_source<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    body: String,
+) -> axum::response::Response {
+    if !state.is_editable("") {
+        return (StatusCode::FORBIDDEN, "file is read-only").into_response();
+    }
+    // Parse + check before write (same integrity bar as edits)
+    match parse_source(&body, state.registry()) {
+        Ok(sol) => {
+            let check = veil_ir::check_solution(&sol, state.registry());
+            if check.has_errors() {
+                let msg = check
+                    .diagnostics
+                    .iter()
+                    .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+                    .map(veil_ir::format_diagnostic_line)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return (StatusCode::BAD_REQUEST, format!("validation failed: {msg}")).into_response();
+            }
+        }
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("parse error: {e}")).into_response(),
+    }
+    match state.write_source("", &body).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
