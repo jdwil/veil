@@ -64,3 +64,35 @@ pkg base v1
       color "#475569"
       label "Group"
     in mod
+
+  prompt
+    You are writing VEIL code using the base layer primitives.
+
+    ## Overview
+    The base layer provides the core language primitives that all other layers build
+    upon. You rarely use these directly — domain layers (ddd, functional, etc.)
+    provide higher-level vocabulary. Use base constructs only when no domain layer
+    provides a suitable abstraction.
+
+    ## Constructs
+    - `struct` — product type with named fields
+    - `enum` — sum type with variants (optionally data-carrying)
+    - `fn` — function with parameters, return type, and body
+    - `trait` — interface / contract with method signatures
+    - `impl` — implementation of a trait for a struct
+    - `mod` — module / namespace boundary
+    - `group` — visual/organizational container (no codegen effect)
+
+    ## Constraints
+    - You SHOULD prefer domain-layer constructs over raw base primitives because
+      they carry semantic meaning that enables better codegen and visualization.
+    - You MUST NOT use `mod` directly when a domain layer provides a container
+      (e.g., use `ctx` from ddd.layer instead of raw `mod`).
+    - You MUST place constructs inside appropriate containers — `group` for
+      organization, `mod` for namespace boundaries.
+
+    ## Common Mistakes
+    - Wrong: Using `struct` when modeling a DDD aggregate (use `agg` instead).
+    - Wrong: Using `fn` for a service handler (use `handler` or `svc` from ddd.layer).
+    - Right: Use base primitives for utility types, pure helpers, or when no
+      domain layer applies.

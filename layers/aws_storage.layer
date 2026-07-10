@@ -135,3 +135,49 @@ pkg aws_storage v1
       icon "🔍"
       color "#8b5cf6"
       label "Query Items"
+
+  prompt
+    You are writing VEIL code using the AWS Storage layer.
+
+    ## Overview
+    This layer provides S3 and DynamoDB constructs for modeling cloud storage.
+    Use it for file/object storage (S3) and metadata/document storage (DynamoDB).
+    These are infrastructure-level constructs — they belong in the infrastructure
+    group of a bounded context.
+
+    ## Constructs
+    - `s3_client` (struct) — configured S3 client with region and default bucket
+    - `bucket` (struct) — S3 bucket configuration (name, region, key prefix)
+    - `ddb_client` (struct) — configured DynamoDB client with region and table
+    - `table` (struct) — DynamoDB table definition with key schema
+
+    ## Constraints
+    - You MUST annotate clients with `@region` because AWS SDK requires explicit
+      region configuration.
+    - You MUST declare `@bucket_name` or `@table_name` because operations need
+      to target a specific resource.
+    - You SHOULD use `@prefix` on buckets to namespace objects because it
+      enables multi-tenant isolation without separate buckets.
+    - You MUST NOT reference S3/DDB constructs from domain or application groups
+      because storage is an infrastructure concern — expose it through a port.
+
+    ## Patterns
+    ```
+    group infrastructure
+      s3_client DocumentStore
+        @region("us-east-1")
+        @bucket_name("my-app-documents")
+        @prefix("tenants/{tenant_id}/")
+
+      adapter S3DocumentRepo for DocumentRepo
+        @env(AWS_REGION)
+        impl upload(key, data)
+          s3.put_object!(bucket_name, key, data)
+        impl download(key)
+          s3.get_object!(bucket_name, key)
+    ```
+
+    ## Common Mistakes
+    - Wrong: Accessing S3 directly from a handler — use a port/adapter pattern.
+    - Wrong: Hardcoding bucket names — use @env for configuration.
+    - Right: Define a port in domain, implement with S3 adapter in infrastructure.

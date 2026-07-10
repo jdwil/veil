@@ -56,3 +56,49 @@ pkg rig v1
       name: Str
       description: Str
       parameters: Json
+
+  prompt
+    You are writing VEIL code using the Rig layer (AI agent/tool abstractions).
+
+    ## Overview
+    This layer provides constructs for defining AI-callable tools and LLM agents
+    following the Rig SDK patterns. Tools are typed async functions with JSON
+    schema descriptions. Agents combine a model, system prompt, and tool set.
+
+    ## Constructs
+    - `tool` (fn) — an AI-callable function with typed args and description
+    - `agent` (fn) — an LLM agent with preamble, model, and tools
+    - `tool_set` (group) — organizational container for related tools/agents
+
+    ## Constraints
+    - You MUST annotate every tool with `@desc("...")` because the LLM uses
+      this description to decide when to call the tool.
+    - You MUST annotate agents with `@model("...")` and `@preamble("...")`
+      because these configure the underlying LLM.
+    - You SHOULD group related tools into a `tool_set` because agents
+      register entire sets, not individual tools.
+    - You MUST NOT perform side effects in tool argument validation because
+      the schema is evaluated before execution.
+
+    ## Patterns
+    ```
+    tool_set WeatherTools
+      tool GetWeather
+        @desc("Get current weather for a city")
+        input
+          city: Str
+          units: Str
+        step execute
+          response = weather_api.get!(city, units)
+          ret response
+
+      agent WeatherAssistant
+        @model("gpt-4")
+        @preamble("You help users check weather conditions.")
+    ```
+
+    ## Common Mistakes
+    - Wrong: Tool without @desc — the LLM won't know when to call it.
+    - Wrong: Complex business logic inside a tool — tools should be thin
+      wrappers that call domain services.
+    - Right: Tools delegate to domain handlers, agents compose tools.

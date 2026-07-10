@@ -259,3 +259,67 @@ pkg functional v1
 
     pure flip(f: fn(A, B) -> C) -> fn(B, A) -> C
       |b, a| f(a, b)
+
+  prompt
+    You are writing VEIL code using the functional programming layer.
+
+    ## Overview
+    This layer provides FP abstractions: pure functions, algebraic data types,
+    typeclasses, effect tracking, and composition operators. Use it for
+    computation-heavy domains where referential transparency, composability,
+    and explicit effect management matter.
+
+    ## Constructs
+    - `pure` (fn) — a pure function. MUST NOT call traits or perform effects.
+    - `adt` (enum) — algebraic data type / tagged union with data variants.
+    - `rec` (struct) — immutable record / product type.
+    - `class` (trait) — typeclass defining behavior over a type parameter.
+    - `instance` (impl) — typeclass instance for a specific type.
+    - `newtype` (struct) — zero-cost wrapper for type safety.
+    - `effect` (trait) — declares a side-effect capability.
+    - `handler` (impl) — interprets/handles an effect.
+    - `pipe` (fn) — a composition pipeline of pure transformations.
+    - `module` (mod) — namespace container.
+
+    ## Statements
+    - `|>` — pipe a value through a function: `x |> f |> g` = `g(f(x))`
+    - `map` — apply function over a container's inner value
+    - `filter` — keep elements matching a predicate
+    - `fold` — reduce a collection with an accumulator
+    - `flat_map` — monadic bind (map then flatten)
+    - `perform` — invoke an effectful operation
+
+    ## Constraints
+    - You MUST NOT call trait methods or perform side effects inside `pure`
+      functions because the compiler enforces referential transparency.
+    - You SHOULD use `adt` instead of `enum` when variants carry data because
+      it enables derive annotations (functor, foldable, traversable).
+    - You MUST use `perform` to invoke effects because it makes effect
+      requirements explicit in the type signature.
+    - You SHOULD prefer `|>` pipelines over nested function calls because
+      they read left-to-right and compose cleanly.
+
+    ## Patterns
+    ```
+    pure transform_name(name: Str) -> Str
+      name |> trim |> capitalize
+
+    adt Result<T, E>
+      Ok(T)
+      Err(E)
+
+    class Functor<F>
+      map(f: fn(A) -> B, fa: F<A>) -> F<B>
+
+    instance Functor<Maybe>
+      map(f, ma)
+        match ma
+          Just a -> Just(f(a))
+          Nothing -> Nothing
+    ```
+
+    ## Common Mistakes
+    - Wrong: Using `fn` for a pure computation — use `pure` so the constraint
+      checker enforces no side effects.
+    - Wrong: Calling a repo or HTTP client inside a `pure` function.
+    - Right: Separate pure logic from effects using `perform` and effect handlers.

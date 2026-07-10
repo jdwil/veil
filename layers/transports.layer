@@ -74,3 +74,66 @@ pkg transports v1
       icon "📡"
       color "#8b5cf6"
       label "Broadcast"
+
+  prompt
+    You are writing VEIL code using the transports layer.
+
+    ## Overview
+    This layer provides HTTP endpoint and WebSocket handler constructs for
+    defining network-facing APIs. Use it to expose domain services over HTTP
+    or real-time WebSocket connections. Endpoints are thin routing layers —
+    business logic belongs in application handlers, not here.
+
+    ## Constructs
+    - `daemon` (mod) — top-level server container with routes and middleware
+    - `http_route` (fn) — a single HTTP endpoint (method + path + handler)
+    - `ws_handler` (fn) — WebSocket connection handler (message loop)
+    - `middleware` (fn) — request/response interceptor
+
+    ## Statements
+    - `send_ws` — send a message to a WebSocket client
+    - `broadcast` — broadcast to all connected WebSocket clients
+
+    ## Constraints
+    - You MUST annotate http_route with `@method` and `@path` because the
+      runtime uses them for route registration.
+    - You MUST NOT put business logic directly in endpoints because they are
+      thin adapters that delegate to application-layer handlers.
+    - You SHOULD use typed request/response structs because they enable
+      automatic OpenAPI documentation generation.
+    - You MUST declare middleware execution order with `@order` because
+      middleware runs in priority order (lower = earlier).
+
+    ## Patterns
+    ```
+    daemon Api
+      @port(3000)
+
+      group routes
+        http_route GetUser
+          @method(GET)
+          @path("/users/{id}")
+          input
+            id: Id
+            @dep handler: HandleGetUser
+          step handle
+            result = handler.execute!(id)
+            ret result
+
+      group middleware
+        middleware AuthCheck
+          @order(10)
+          input
+            request: Request
+          step check
+            token = request.header("Authorization")
+            guard(token.is_some?(), "Unauthorized")
+    ```
+
+    ## Common Mistakes
+    - Wrong: SQL queries or repo calls in an http_route body.
+      Right: Delegate to an application handler via @dep.
+    - Wrong: Forgetting @method and @path on http_route.
+      Right: Both are required — the runtime cannot route without them.
+    - Wrong: WebSocket state management in global variables.
+      Right: Use the ws_handler's connection-scoped state.

@@ -99,3 +99,46 @@ layer di
         {{end}}
         {{end}}
       """
+
+  prompt
+    You are writing VEIL code using the DI (Dependency Injection) layer.
+
+    ## Overview
+    This layer provides annotations for expressing dependency relationships. It
+    works WITH other layers (especially ddd.layer) — you annotate fields with @dep
+    to declare what needs injecting, mark functions with @pvd to declare providers,
+    and mark bootstrap functions with @main to contribute to the composition root.
+
+    ## Annotations
+    - `@dep` — on a handler/struct input field: "this dependency is injected"
+    - `@pvd` — on a fn: "this function creates/satisfies a dependency type"
+    - `@main` — on a fn: "my steps contribute to the generated main()"
+
+    ## Constraints
+    - You MUST annotate handler inputs that reference ports/traits with `@dep`
+      because the codegen uses this to build the Deps struct and route calls
+      through `deps.field.method().await?`.
+    - You MUST NOT construct adapter instances directly in handler bodies because
+      the DI container manages lifecycle, and tests require mock injection.
+    - You SHOULD declare `@pvd` functions for each adapter so the composition
+      root can be auto-generated from the dependency graph.
+    - You MUST NOT have circular dependencies between @dep fields because the
+      DI container cannot resolve cycles.
+
+    ## Patterns
+    ```
+    handler HandleGetUser
+      input
+        id: Id
+        @dep user_repo: UserRepo
+      step query
+        user = user_repo.find!(id)
+        ret user
+    ```
+
+    ## Common Mistakes
+    - Wrong: `user_repo: UserRepo` without @dep — becomes a regular parameter,
+      not an injected dependency.
+    - Wrong: Constructing `PgUserRepo.new(pool)` inside a handler — breaks
+      testability and lifecycle management.
+    - Right: Always use `@dep` for ports/traits, let the DI container wire them.

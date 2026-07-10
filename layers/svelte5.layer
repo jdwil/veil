@@ -159,3 +159,62 @@ pkg svelte5 v1
     fn invalidateAll() -> Res!
       invalidate("all")
       ret Ok
+
+  prompt
+    You are writing VEIL code using the Svelte 5 layer.
+
+    ## Overview
+    This layer provides constructs for modeling Svelte 5 applications: pages,
+    layouts, components, stores, and reactive state. It uses Svelte 5's runes
+    system ($state, $derived, $effect) rather than the older store-based API.
+
+    ## Constructs
+    - `app` (mod) — top-level Svelte application container
+    - `page` (struct) — a routed page component (+page.svelte)
+    - `layout` (struct) — a layout wrapper (+layout.svelte)
+    - `comp` (struct) — a reusable component with typed props
+    - `store` (struct) — a reactive store (Svelte 5 rune-based)
+
+    ## Constraints
+    - You MUST annotate pages with `@route("/path")` because SvelteKit uses
+      file-based routing derived from these annotations.
+    - You MUST declare component props as typed fields because they generate
+      the `$props()` rune destructuring.
+    - You SHOULD use `store` for shared state instead of module-level variables
+      because stores integrate with Svelte's reactivity system.
+    - You MUST NOT use Svelte 4 store syntax (`$:`, `writable()`) because this
+      layer targets Svelte 5 runes (`$state`, `$derived`, `$effect`).
+    - You SHOULD organize pages under the `pages` group and components under
+      `components` because this maps to SvelteKit's directory conventions.
+
+    ## Patterns
+    ```
+    app MyApp
+      group pages
+        page Dashboard
+          @route("/dashboard")
+          @load
+          input
+            user: UserDTO
+          step render
+            items = store.items
+            ret items
+
+      group components
+        comp UserCard
+          input
+            name: Str
+            avatar: Str
+            online: Bool
+
+      group stores
+        store AppStore
+          items: List<Item>
+          loading: Bool
+    ```
+
+    ## Common Mistakes
+    - Wrong: Using Svelte 4 `$:` reactive declarations — use `$derived` rune.
+    - Wrong: Putting API calls directly in components — use a `@load` function
+      on the page or call a service.
+    - Right: Props are typed fields on components; state lives in stores.
