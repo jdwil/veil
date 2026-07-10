@@ -49,6 +49,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | [80-runtime-platform.md](80-runtime-platform.md) | Local platform (fs+sqlite) + pluggable cloud |
 | [90-parity-future.md](90-parity-future.md) | Expressiveness parity roadmap |
 | [100-ide-agent.md](100-ide-agent.md) | In-IDE agent, models, ACP/MCP, SourceStore tools |
+| [110-layer-dsl-ide.md](110-layer-dsl-ide.md) | **Layer / team-DSL IDE** — full-capability language designer loop |
 
 ## Suggested first slice (P0)
 
