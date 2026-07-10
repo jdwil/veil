@@ -79,7 +79,7 @@ impl AgentTurnResponse {
 
 /// Run one agent turn against the active source.
 pub async fn run_turn<P: SourceProvider>(
-    provider: &P,
+    provider: std::sync::Arc<P>,
     req: AgentTurnRequest,
 ) -> AgentTurnResponse {
     let turn_id = req
@@ -113,10 +113,10 @@ pub async fn run_turn<P: SourceProvider>(
         content: prompt.to_string(),
     }];
 
-    let loaded = provider.list_files().await;
+    let loaded = provider.as_ref().list_files().await;
     let allowlist = crate::safety::allowlist_from_env(&loaded);
 
-    let source = match provider.read_source("").await {
+    let source = match provider.as_ref().read_source("").await {
         Ok(s) => s,
         Err(e) => {
             return AgentTurnResponse {
@@ -136,7 +136,7 @@ pub async fn run_turn<P: SourceProvider>(
             };
         }
     };
-    let registry = provider.registry();
+    let registry = provider.as_ref().registry();
     let confirm = std::env::var("VEIL_AGENT_CONFIRM_WRITES")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -149,6 +149,84 @@ pub async fn run_turn<P: SourceProvider>(
     let preamble_pack = crate::agent_context::assemble_preamble(&source, &registry);
 
     let cfg = crate::model::ModelConfig::from_env();
+
+    // ── ACP external agent (Kiro, etc.) ───────────────────────────────────
+    if cfg.supports_acp() {
+        let active_name = loaded
+            .iter()
+            .find(|f| f.active)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| "active.veil".into());
+        let composed = format!(
+            "{}\n\n# User request\n{}\n\n# Active VEIL file: `{active_name}`\n\
+             Prefer editing this file with your tools. After edits, the IDE reloads from disk.\n",
+            preamble_pack.text, prompt
+        );
+        // ACP is sync (stdio) — run on blocking pool so we don't stall the runtime.
+        let acp_result = tokio::task::spawn_blocking(move || crate::acp::prompt_acp(&composed))
+            .await
+            .map_err(|e| e.to_string());
+        match acp_result {
+            Ok(Ok(turn)) => {
+                // External agent may have written workspace files — reload cache.
+                let reloaded = provider.as_ref().reload_from_disk().await.unwrap_or(0);
+                let source_changed = reloaded > 0;
+                let mut content = turn.text;
+                if reloaded > 0 {
+                    content.push_str(&format!(
+                        "\n\n---\nVEIL reloaded {reloaded} file(s) from disk after ACP turn."
+                    ));
+                }
+                if let Some(ref w) = preamble_pack.warning {
+                    content = format!("{w}\n\n{content}");
+                }
+                messages.push(AgentMessage {
+                    role: "assistant".into(),
+                    content,
+                });
+                let mut tool_calls: Vec<AgentToolCall> = turn
+                    .tool_hints
+                    .into_iter()
+                    .map(|n| AgentToolCall {
+                        name: n,
+                        detail: "acp".into(),
+                    })
+                    .collect();
+                if tool_calls.is_empty() {
+                    tool_calls.push(AgentToolCall {
+                        name: "acp_session".into(),
+                        detail: turn.session_id.clone(),
+                    });
+                }
+                return AgentTurnResponse {
+                    turn_id,
+                    messages,
+                    tool_calls,
+                    source_changed,
+                    ok: true,
+                    error: None,
+                    backend: "acp-kiro".into(),
+                    plan: None,
+                    context_truncated: preamble_pack.truncated,
+                    context_warning: preamble_pack.warning.clone(),
+                    context_tokens: preamble_pack.tokens_used,
+                    context_budget_tokens: preamble_pack.max_tokens,
+                    context_layers: preamble_pack.layers.clone(),
+                };
+            }
+            Ok(Err(e)) | Err(e) => {
+                messages.push(AgentMessage {
+                    role: "assistant".into(),
+                    content: format!(
+                        "ACP agent error: {e}\n\
+                         Falling back to offline heuristic tools.\n\
+                         Check: `kiro-cli login`, `VEIL_ACP_COMMAND`, `VEIL_ACP_ARGS`."
+                    ),
+                });
+                // fall through to heuristic
+            }
+        }
+    }
 
     // Prefer Rig agent loop with tools when provider supports it.
     if cfg.supports_rig_agent() {
@@ -199,44 +277,68 @@ pub async fn run_turn<P: SourceProvider>(
             }
         }
 
-        let ws = Workspace::new(source.clone(), registry.clone(), confirm);
+        // Mid-turn live flush: each tool write hits SourceProvider immediately
+        // (SSE revision events fire from write_source → IDE badge updates).
+        let writer: Option<crate::rig_tools::LiveWriter> = if plan_only {
+            None
+        } else {
+            let p = provider.clone();
+            let allow = allowlist.clone();
+            let files = loaded.clone();
+            Some(std::sync::Arc::new(move |src: String| {
+                let p = p.clone();
+                let allow = allow.clone();
+                let files = files.clone();
+                Box::pin(async move {
+                    crate::safety::check_write_allowed("", &allow, &files)?;
+                    p.write_source("", &src).await
+                })
+            }))
+        };
+
+        let mut ws = Workspace::new(source.clone(), registry.clone(), confirm);
+        if let Some(w) = writer {
+            ws = ws.with_live_writer(w);
+        }
+
         match crate::model::prompt_with_tools(&cfg, &preamble, prompt, ws.clone()).await {
             Ok(content) => {
                 let tool_calls = ws.take_log();
                 let wants_write = ws.changed();
-                if wants_write {
-                    if plan_only {
-                        let plan = Some(format!(
-                            "plan_only: would write {} bytes after tools {:?}",
-                            ws.source_snapshot().len(),
-                            tool_calls.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
-                        ));
-                        let mut content = content;
-                        if let Some(ref w) = preamble_pack.warning {
-                            content = format!("{w}\n\n{content}");
-                        }
-                        messages.push(AgentMessage {
-                            role: "assistant".into(),
-                            content: format!(
-                                "{content}\n\n[plan_only] No write applied. Re-run without VEIL_AGENT_PLAN_ONLY / plan_only to apply."
-                            ),
-                        });
-                        return AgentTurnResponse {
-                            turn_id,
-                            messages,
-                            tool_calls,
-                            source_changed: false,
-                            ok: true,
-                            error: None,
-                            backend: format!("rig-{}", cfg.kind_name()),
-                            plan,
-                            context_truncated: preamble_pack.truncated,
-                            context_warning: preamble_pack.warning.clone(),
-                            context_tokens: preamble_pack.tokens_used,
-                            context_budget_tokens: preamble_pack.max_tokens,
-                            context_layers: preamble_pack.layers.clone(),
-                        };
+                if wants_write && plan_only {
+                    let plan = Some(format!(
+                        "plan_only: would write {} bytes after tools {:?}",
+                        ws.source_snapshot().len(),
+                        tool_calls.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+                    ));
+                    let mut content = content;
+                    if let Some(ref w) = preamble_pack.warning {
+                        content = format!("{w}\n\n{content}");
                     }
+                    messages.push(AgentMessage {
+                        role: "assistant".into(),
+                        content: format!(
+                            "{content}\n\n[plan_only] No write applied. Re-run without VEIL_AGENT_PLAN_ONLY / plan_only to apply."
+                        ),
+                    });
+                    return AgentTurnResponse {
+                        turn_id,
+                        messages,
+                        tool_calls,
+                        source_changed: false,
+                        ok: true,
+                        error: None,
+                        backend: format!("rig-{}", cfg.kind_name()),
+                        plan,
+                        context_truncated: preamble_pack.truncated,
+                        context_warning: preamble_pack.warning.clone(),
+                        context_tokens: preamble_pack.tokens_used,
+                        context_budget_tokens: preamble_pack.max_tokens,
+                        context_layers: preamble_pack.layers.clone(),
+                    };
+                }
+                // Ensure final snapshot is on disk (covers tools that skipped live write)
+                if wants_write && !plan_only {
                     if let Err(e) = crate::safety::check_write_allowed("", &allowlist, &loaded) {
                         return AgentTurnResponse {
                             turn_id,
@@ -286,7 +388,7 @@ pub async fn run_turn<P: SourceProvider>(
                     turn_id,
                     messages,
                     tool_calls,
-                    source_changed: wants_write,
+                    source_changed: wants_write && !plan_only,
                     ok: !preamble_pack.truncated,
                     error: if preamble_pack.truncated {
                         Some("agent context was truncated (ran with VEIL_AGENT_ALLOW_TRUNCATED=1)".into())
@@ -317,7 +419,7 @@ pub async fn run_turn<P: SourceProvider>(
 
     // Heuristic offline path (no Rig model) — same tools, host-dispatched.
     let mut resp = heuristic_turn(
-        provider,
+        provider.as_ref(),
         turn_id,
         prompt,
         source,

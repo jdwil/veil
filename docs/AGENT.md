@@ -24,14 +24,17 @@ Toolbar **Agent** → `POST /api/agent/turn` with `{ "prompt": "…" }`.
 | `read_source` | Active `.veil` text (truncated) |
 | `rename_construct` | Structured `EditOp::Rename` |
 
-Tools mutate an in-memory workspace; the host persists via `SourceProvider` when
-`source_changed` is true.
+Tools mutate an in-memory workspace; each successful edit is **flushed live** to
+`SourceProvider` (disk) mid-turn when possible, and `GET /api/events` streams
+revision SSE so the viewer badge updates without waiting for the turn HTTP
+response. `rename_construct` is **format-preserving** (identifier token patch —
+does not re-serialize the whole package).
 
 ### Env
 
 | Variable | Meaning |
 |----------|---------|
-| `VEIL_MODEL_PROVIDER` | `echo` \| `openai` \| `ollama` |
+| `VEIL_MODEL_PROVIDER` | `echo` \| `openai` \| `ollama` \| **`acp`** / `kiro` |
 | `VEIL_MODEL_NAME` | Model id (defaults: `gpt-4o-mini`, `llama3.2`; **make serve** defaults to `qwen3.5:9b`) |
 
 ### Local make serve (Ollama)
@@ -48,6 +51,29 @@ make serve VEIL_MODEL_NAME=llama3.2
 ```
 
 Requires `ollama serve` and the model pulled (`ollama pull qwen3.5:9b`).
+
+### Kiro via ACP (recommended for strong models)
+
+VEIL acts as an **ACP client** and spawns Kiro CLI:
+
+```bash
+# once
+kiro-cli login   # Builder ID / Pro developer deal
+
+# serve with ACP backend
+make serve VEIL_MODEL_PROVIDER=acp
+
+# optional overrides
+export VEIL_ACP_COMMAND=kiro-cli
+export VEIL_ACP_ARGS="acp --trust-all-tools"
+export VEIL_ACP_CWD=$PWD          # workspace root for Kiro
+export VEIL_ACP_AGENT=personal    # optional agent profile
+export VEIL_ACP_MODEL=…          # if your Kiro plan exposes model ids
+export VEIL_ACP_TIMEOUT_SECS=300
+```
+
+Kiro edits files on disk; after each ACP turn the server **reloads from disk**
+and the viewer refreshes via SSE (`GET /api/events`).
 
 ### Agent context (Tier 0 + Tier 1 — not vector RAG)
 

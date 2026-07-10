@@ -28,17 +28,32 @@ PID_DIR     := .veil-dev
 API_PID     := $(PID_DIR)/api.pid
 UI_PID      := $(PID_DIR)/ui.pid
 
-# Agent (Rig) — Ollama by default for local make serve
+# Agent backend — Ollama by default for local make serve
 # Override: make serve VEIL_MODEL_PROVIDER=echo
 #           make serve VEIL_MODEL_NAME=llama3.2
+#           make serve VEIL_MODEL_PROVIDER=acp          # Kiro via ACP
+#           make serve VEIL_MODEL_PROVIDER=acp VEIL_ACP_AGENT=personal
 VEIL_MODEL_PROVIDER ?= ollama
 VEIL_MODEL_NAME     ?= qwen3.5:9b
 # Optional: VEIL_MODEL_BASE_URL=http://127.0.0.1:11434
+# ACP / Kiro
+VEIL_ACP_COMMAND    ?= kiro-cli
+VEIL_ACP_ARGS       ?= acp --trust-all-tools
+VEIL_ACP_CWD        ?= $(CURDIR)
 
 export VEIL_MODEL_PROVIDER
 export VEIL_MODEL_NAME
+export VEIL_ACP_COMMAND
+export VEIL_ACP_ARGS
+export VEIL_ACP_CWD
 ifneq ($(origin VEIL_MODEL_BASE_URL), undefined)
 export VEIL_MODEL_BASE_URL
+endif
+ifneq ($(origin VEIL_ACP_AGENT), undefined)
+export VEIL_ACP_AGENT
+endif
+ifneq ($(origin VEIL_ACP_MODEL), undefined)
+export VEIL_ACP_MODEL
 endif
 
 # External crates that need stubs
@@ -93,6 +108,15 @@ serve serve-examples: veil viewer-install
 			echo "  Ollama:   up at :11434"; \
 		else \
 			echo "  Ollama:   WARN not reachable at :11434 (start ollama or use VEIL_MODEL_PROVIDER=echo)"; \
+		fi; \
+	fi
+	@if [ "$(VEIL_MODEL_PROVIDER)" = "acp" ] || [ "$(VEIL_MODEL_PROVIDER)" = "kiro" ]; then \
+		echo "  ACP:      $(VEIL_ACP_COMMAND) $(VEIL_ACP_ARGS)"; \
+		echo "  ACP cwd:  $(VEIL_ACP_CWD)"; \
+		if command -v $(VEIL_ACP_COMMAND) >/dev/null 2>&1; then \
+			echo "  ACP bin:  ok ($$(command -v $(VEIL_ACP_COMMAND)))"; \
+		else \
+			echo "  ACP bin:  WARN $(VEIL_ACP_COMMAND) not on PATH — install Kiro CLI"; \
 		fi; \
 	fi
 	@echo "  Stop:     Ctrl-C  or  make serve-stop"

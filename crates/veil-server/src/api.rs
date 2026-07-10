@@ -562,7 +562,7 @@ async fn post_agent_turn<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
     Json(req): Json<crate::agent::AgentTurnRequest>,
 ) -> axum::response::Response {
-    let resp = crate::agent::run_turn(state.as_ref(), req).await;
+    let resp = crate::agent::run_turn(state.clone(), req).await;
     match serde_json::to_string(&resp) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -627,38 +627,59 @@ async fn get_agent_tools() -> axum::response::Response {
     }
 }
 
-/// AGT-002 / AGT-018: SSE revision heartbeat.
+/// AGT-002 / AGT-018: live SSE revision stream.
 ///
-/// When using `RemoteHttpProvider`, `data.remote_events` points at the host
-/// `/api/events` so clients can subscribe directly (or keep polling this proxy,
-/// which hashes remote source on each connect).
+/// Sends an immediate snapshot, then streams every `revision::bus` publish
+/// (agent mid-turn writes, POST /api/source, structured edits).
 async fn get_events<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
 ) -> axum::response::Response {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures_util::stream::{self, StreamExt};
+    use std::convert::Infallible;
+    use std::time::Duration;
+
     let src = state.read_source("").await.unwrap_or_default();
-    let rev = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        src.hash(&mut h);
-        h.finish()
+    let remote = state.remote_events_url();
+    let bus = crate::revision::bus();
+    let rx = bus.subscribe();
+
+    let initial = crate::revision::RevisionEvent {
+        revision: bus.current(),
+        bytes: src.len(),
+        path: String::new(),
+        reason: "subscribe".into(),
     };
-    let remote = state
-        .remote_events_url()
-        .map(|u| format!(",\"remote_events\":{u:?}"))
-        .unwrap_or_default();
-    let body = format!(
-        "event: revision\ndata: {{\"revision\":{},\"bytes\":{}{}}}\n\n",
-        rev,
-        src.len(),
-        remote
-    );
-    (
-        [
-            (header::CONTENT_TYPE, "text/event-stream"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        body,
-    )
+    let mut init_json = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
+    if let Some(ref u) = remote {
+        // Attach remote hint for proxies without breaking schema consumers.
+        if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&init_json) {
+            v.as_object_mut()
+                .map(|m| m.insert("remote_events".into(), serde_json::json!(u)));
+            init_json = v.to_string();
+        }
+    }
+
+    let stream = stream::once(async move {
+        Ok::<_, Infallible>(Event::default().event("revision").data(init_json))
+    })
+    .chain(stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let data = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
+                    return Some((
+                        Ok::<_, Infallible>(Event::default().event("revision").data(data)),
+                        rx,
+                    ));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }));
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
         .into_response()
 }

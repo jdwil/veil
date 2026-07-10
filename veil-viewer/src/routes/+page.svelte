@@ -29,6 +29,7 @@
     loading,
     error,
     fetchIr,
+    startRevisionWatch,
     drillDown,
     navigateTo,
     getChildren,
@@ -331,10 +332,12 @@
     });
 
     void fetchIr();
+    const stopSse = startRevisionWatch();
 
     return () => {
       unsubParent();
       unsubRev();
+      stopSse();
     };
   });
 

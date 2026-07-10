@@ -340,6 +340,63 @@ export async function refreshAfterEdit(): Promise<void> {
   }
 }
 
+/** Last SSE revision we applied — skip the subscribe snapshot once. */
+let lastSseRevision: number | null = null;
+let sse: EventSource | null = null;
+let sseRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Subscribe to `GET /api/events` so agent mid-turn writes update the badge
+ * without waiting for the HTTP turn response.
+ */
+export function startRevisionWatch(): () => void {
+  stopRevisionWatch();
+  try {
+    sse = new EventSource(`${API_BASE}/events`);
+  } catch {
+    return () => {};
+  }
+  const onRevision = (ev: MessageEvent) => {
+    try {
+      const data = JSON.parse(String(ev.data || '{}')) as {
+        revision?: number;
+        reason?: string;
+      };
+      const rev = data.revision;
+      if (typeof rev !== 'number') return;
+      if (lastSseRevision === null) {
+        // First event is the subscribe snapshot — don't force a reload.
+        lastSseRevision = rev;
+        return;
+      }
+      if (rev === lastSseRevision) return;
+      lastSseRevision = rev;
+      // Debounce bursty multi-tool writes
+      if (sseRefreshTimer) clearTimeout(sseRefreshTimer);
+      sseRefreshTimer = setTimeout(() => {
+        void refreshAfterEdit();
+      }, 120);
+    } catch {
+      /* ignore malformed */
+    }
+  };
+  sse.addEventListener('revision', onRevision as EventListener);
+  sse.onmessage = onRevision; // fallback if event name stripped
+  return stopRevisionWatch;
+}
+
+export function stopRevisionWatch(): void {
+  if (sseRefreshTimer) {
+    clearTimeout(sseRefreshTimer);
+    sseRefreshTimer = null;
+  }
+  if (sse) {
+    sse.close();
+    sse = null;
+  }
+  lastSseRevision = null;
+}
+
 export function drillDown(node: IrNode) {
   currentParent.set(node.id);
   breadcrumbs.update(bc => [...bc, { id: node.id, name: node.name }]);

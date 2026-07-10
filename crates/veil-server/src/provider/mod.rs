@@ -65,4 +65,12 @@ pub trait SourceProvider: Send + Sync + 'static {
     fn remote_events_url(&self) -> Option<String> {
         None
     }
+
+    /// Re-read active (or all) files from disk into the in-memory cache.
+    ///
+    /// Used after an external ACP agent (e.g. Kiro) mutates workspace files.
+    /// Default: no-op.
+    async fn reload_from_disk(&self) -> Result<usize, String> {
+        Ok(0)
+    }
 }

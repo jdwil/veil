@@ -32,7 +32,7 @@ pub struct CompleteResponse {
     pub provider: String,
 }
 
-/// Which Rig backend to use.
+/// Which model / agent backend to use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderKind {
     /// No network — local guidance text.
@@ -43,6 +43,8 @@ pub enum ProviderKind {
     Ollama,
     /// Amazon Bedrock — reserved; use OpenAI-compatible gateway or future rig feature.
     Bedrock,
+    /// External ACP agent (e.g. Kiro CLI via `kiro-cli acp`).
+    Acp,
 }
 
 /// Config from env (AGT-003 / AGT-012).
@@ -64,6 +66,7 @@ impl ModelConfig {
             "openai" | "openai-compatible" => ProviderKind::OpenAi,
             "ollama" => ProviderKind::Ollama,
             "bedrock" => ProviderKind::Bedrock,
+            "acp" | "kiro" => ProviderKind::Acp,
             "echo" | "heuristic" | "" => ProviderKind::Echo,
             other => {
                 tracing::warn!(provider = %other, "unknown VEIL_MODEL_PROVIDER; using echo");
@@ -74,6 +77,7 @@ impl ModelConfig {
             ProviderKind::Ollama => "llama3.2".to_string(),
             ProviderKind::OpenAi => "gpt-4o-mini".to_string(),
             ProviderKind::Bedrock => "anthropic.claude-3-sonnet".to_string(),
+            ProviderKind::Acp => "kiro".to_string(),
             ProviderKind::Echo => "echo".to_string(),
         };
         Self {
@@ -95,12 +99,18 @@ impl ModelConfig {
             ProviderKind::OpenAi => "openai",
             ProviderKind::Ollama => "ollama",
             ProviderKind::Bedrock => "bedrock",
+            ProviderKind::Acp => "acp",
         }
     }
 
     /// Whether this config can run a full Rig agent with tools.
     pub fn supports_rig_agent(&self) -> bool {
         matches!(self.kind, ProviderKind::OpenAi | ProviderKind::Ollama)
+    }
+
+    /// External ACP agent (Kiro, etc.).
+    pub fn supports_acp(&self) -> bool {
+        matches!(self.kind, ProviderKind::Acp)
     }
 }
 
@@ -162,6 +172,9 @@ pub async fn complete_with_env(req: CompleteRequest) -> Result<CompleteResponse,
              (VEIL_MODEL_PROVIDER=openai + VEIL_MODEL_BASE_URL) or set ollama. region={}",
             cfg.region.as_deref().unwrap_or("us-east-1")
         )),
+        ProviderKind::Acp => Err(
+            "ACP agents use POST /api/agent/turn (session/prompt), not complete_with_env".into(),
+        ),
     }
 }
 
@@ -277,18 +290,22 @@ pub async fn prompt_with_tools(
                 .build();
             agent.prompt(user_prompt).await.map_err(|e| e.to_string())
         }
-        ProviderKind::Echo | ProviderKind::Bedrock => Err(
-            "Rig tool agent requires VEIL_MODEL_PROVIDER=openai or ollama".into(),
+        ProviderKind::Echo | ProviderKind::Bedrock | ProviderKind::Acp => Err(
+            "Rig tool agent requires VEIL_MODEL_PROVIDER=openai or ollama (use acp via run_turn)".into(),
         ),
     }
 }
 
 pub fn list_provider_info() -> serde_json::Value {
     let cfg = ModelConfig::from_env();
+    if cfg.supports_acp() {
+        return crate::acp::acp_info();
+    }
     serde_json::json!({
         "provider": cfg.kind_name(),
         "models": [cfg.model],
-        "rig": true,
+        "rig": cfg.supports_rig_agent(),
+        "acp": false,
         "supports_tools": cfg.supports_rig_agent(),
         "config": {
             "kind": cfg.kind_name(),

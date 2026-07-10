@@ -95,6 +95,8 @@ impl FilesystemProvider {
     }
 }
 
+// reload_from_disk implemented below in SourceProvider impl
+
 #[async_trait]
 impl SourceProvider for FilesystemProvider {
     async fn list_files(&self) -> Vec<FileInfo> {
@@ -145,6 +147,11 @@ impl SourceProvider for FilesystemProvider {
         if let Ok(reg) = LayerRegistry::for_veil_file(&entry.path) {
             *entry.registry.lock().unwrap() = reg;
         }
+        crate::revision::bus().publish(
+            content.len(),
+            &entry.path.to_string_lossy(),
+            "write_source",
+        );
         Ok(())
     }
 
@@ -211,5 +218,33 @@ impl SourceProvider for FilesystemProvider {
         }
         let text = String::from_utf8_lossy(&show.stdout).to_string();
         Ok(Some(("git HEAD".into(), text)))
+    }
+
+    async fn reload_from_disk(&self) -> Result<usize, String> {
+        let mut n = 0usize;
+        let mut changed = false;
+        for entry in &self.files {
+            let disk = std::fs::read_to_string(&entry.path)
+                .map_err(|e| format!("reload {}: {e}", entry.path.display()))?;
+            let mut guard = entry.source.lock().unwrap();
+            if *guard != disk {
+                *guard = disk;
+                changed = true;
+                n += 1;
+                if let Ok(reg) = LayerRegistry::for_veil_file(&entry.path) {
+                    *entry.registry.lock().unwrap() = reg;
+                }
+            }
+        }
+        if changed {
+            let active = &self.files[self.active_index()];
+            let bytes = active.source.lock().unwrap().len();
+            crate::revision::bus().publish(
+                bytes,
+                &active.path.to_string_lossy(),
+                "reload_from_disk",
+            );
+        }
+        Ok(n)
     }
 }

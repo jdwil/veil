@@ -46,16 +46,21 @@ stdio server lands.
 | **Go** on ACP host as a **follow-on** after MCP stdio | Yes (not blocking dual loop) |
 | **No-go** on blocking product on full ACP inject | Yes — do not wait |
 
-## Config sketch (future)
+## Config (implemented)
 
 ```bash
-# Built-in Rig (today)
+# Built-in Rig
 VEIL_MODEL_PROVIDER=openai   # or ollama
 
-# Future ACP launcher (not implemented)
-# VEIL_ACP_COMMAND="path/to/agent"
-# VEIL_ACP_MCP_URL="http://localhost:3001/api/agent/tools"
+# ACP host → Kiro CLI (or any ACP agent)
+VEIL_MODEL_PROVIDER=acp
+VEIL_ACP_COMMAND=kiro-cli
+VEIL_ACP_ARGS="acp --trust-all-tools"
+VEIL_ACP_CWD=/path/to/project
+# optional: VEIL_ACP_AGENT, VEIL_ACP_MODEL, VEIL_ACP_TIMEOUT_SECS
 ```
+
+See `docs/AGENT.md` § Kiro via ACP.
 
 ## Clients noted
 

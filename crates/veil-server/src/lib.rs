@@ -23,6 +23,8 @@ pub mod model;
 pub mod agent_context;
 pub mod rig_tools;
 pub mod safety;
+pub mod revision;
+pub mod acp;
 
 pub use provider::{SourceProvider, FileInfo};
 pub use provider::filesystem::FilesystemProvider;

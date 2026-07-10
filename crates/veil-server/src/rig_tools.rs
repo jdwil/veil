@@ -1,7 +1,9 @@
 //! VEIL agent tools for the Rig SDK (AGT-005 / AGT-006).
 //!
-//! Tools operate on an in-memory workspace snapshot; the host loop persists
-//! writes through [`SourceProvider`] after the turn.
+//! Tools operate on an in-memory workspace snapshot. When a
+//! [`LiveWriter`] is attached, each successful edit is flushed to the
+//! host immediately (and SSE revision events fire) so the IDE badge
+//! updates mid-turn — not only after the model finishes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,9 +11,17 @@ use std::sync::{Arc, Mutex};
 use rig_core::completion::ToolDefinition;
 use rig_core::tool::Tool;
 use serde::{Deserialize, Serialize};
-use veil_ir::{apply_edits_with, check_solution, build_ir_with_registry, EditOp, LayerRegistry};
+use veil_ir::{check_solution, build_ir_with_registry, LayerRegistry};
+use veil_parser::TokenKind;
 
 use crate::agent::AgentToolCall;
+
+/// Callback to persist source mid-turn (async, host-owned).
+pub type LiveWriter = Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Shared mutable workspace for a single agent turn.
 #[derive(Clone)]
@@ -21,6 +31,8 @@ pub struct Workspace {
     pub source_changed: Arc<AtomicBool>,
     pub tool_log: Arc<Mutex<Vec<AgentToolCall>>>,
     pub confirm_writes: bool,
+    /// When set, edits flush to the SourceProvider immediately.
+    pub live_writer: Option<LiveWriter>,
 }
 
 impl Workspace {
@@ -31,7 +43,24 @@ impl Workspace {
             source_changed: Arc::new(AtomicBool::new(false)),
             tool_log: Arc::new(Mutex::new(Vec::new())),
             confirm_writes,
+            live_writer: None,
         }
+    }
+
+    pub fn with_live_writer(mut self, writer: LiveWriter) -> Self {
+        self.live_writer = Some(writer);
+        self
+    }
+
+    async fn apply_source(&self, new_src: String) -> Result<(), String> {
+        if let Ok(mut g) = self.source.lock() {
+            *g = new_src.clone();
+        }
+        self.source_changed.store(true, Ordering::SeqCst);
+        if let Some(ref w) = self.live_writer {
+            w(new_src).await?;
+        }
+        Ok(())
     }
 
     fn log(&self, name: &str, detail: impl Into<String>) {
@@ -237,10 +266,9 @@ impl Tool for RenameTool {
         let src = self.ws.source_snapshot();
         match apply_rename(&src, &self.ws.registry, &args.from, &args.to) {
             Ok((new_src, summary)) => {
-                if let Ok(mut g) = self.ws.source.lock() {
-                    *g = new_src.clone();
+                if let Err(e) = self.ws.apply_source(new_src.clone()).await {
+                    return Err(ToolErr(format!("live write failed: {e}")));
                 }
-                self.ws.source_changed.store(true, Ordering::SeqCst);
                 let check = run_check(&new_src, &self.ws.registry);
                 self.ws.log("veil_check", "post-rename");
                 Ok(format!("{summary}\n\n{check}"))
@@ -313,31 +341,183 @@ pub fn run_outline(source: &str, registry: &LayerRegistry) -> String {
     }
 }
 
+/// Format-preserving rename: patch identifier tokens in the original source.
+///
+/// Does **not** round-trip through `serialize_solution` (which rewrites layout,
+/// drops comments, and reorders members). Validates by re-parsing after patch.
+///
+/// Replaces every `Ident` token equal to `from` (definition + type references).
+/// Compound names like `UserStatus` are untouched.
 pub fn apply_rename(
     source: &str,
     registry: &LayerRegistry,
     from: &str,
     to: &str,
 ) -> Result<(String, String), String> {
+    if from.is_empty() || to.is_empty() {
+        return Err("rename requires non-empty from/to".into());
+    }
+    if from == to {
+        return Err("from and to are identical".into());
+    }
+    // Ensure the name exists as a construct (or at least parses as source).
     let sol = parse_source(source, registry)?;
     let graph = build_ir_with_registry(&sol, Some(registry));
-    let node = graph
-        .nodes
+    let has_construct = graph.nodes.iter().any(|n| n.name == from);
+    if !has_construct {
+        // Still allow pure identifier renames if the token exists.
+        let tokens = veil_parser::lex(source);
+        let any = tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Ident && t.text == from);
+        if !any {
+            return Err(format!("no construct or identifier named '{from}'"));
+        }
+    }
+
+    let tokens = veil_parser::lex(source);
+    // Lexer spans are **char** indices into the source (see veil-parser lexer).
+    let mut char_spans: Vec<(usize, usize)> = tokens
         .iter()
-        .find(|n| n.name == from)
-        .ok_or_else(|| format!("no construct named '{from}'"))?;
-    let ops = vec![EditOp::Rename {
-        span_start: node.span.start,
-        name: to.to_string(),
-    }];
-    let mut sol2 = sol;
-    apply_edits_with(&mut sol2, &ops, |s| {
-        veil_parser::parse_expr_str(s, registry).map_err(|e| e.to_string())
-    })
-    .map_err(|e| e.to_string())?;
-    let new_src = veil_ir::serialize_solution(&sol2);
+        .filter(|t| t.kind == TokenKind::Ident && t.text == from)
+        .map(|t| (t.span.start, t.span.end))
+        .collect();
+    if char_spans.is_empty() {
+        return Err(format!("no identifier token '{from}' in source"));
+    }
+    char_spans.sort_by_key(|(s, _)| *s);
+    char_spans.dedup();
+
+    let mut byte_spans: Vec<(usize, usize)> = Vec::with_capacity(char_spans.len());
+    for (cs, ce) in &char_spans {
+        let bs = char_index_to_byte(source, *cs);
+        let be = char_index_to_byte(source, *ce);
+        byte_spans.push((bs, be));
+    }
+
+    let mut new_src = source.to_string();
+    for (start, end) in byte_spans.iter().rev() {
+        if *end > new_src.len() || *start >= *end {
+            return Err(format!("invalid rename span {start}..{end}"));
+        }
+        if &new_src[*start..*end] != from {
+            // Defensive fallback for any residual indexing quirks.
+            new_src = rename_idents_text(source, from, to)?;
+            break;
+        }
+        new_src.replace_range(*start..*end, to);
+    }
+    // Must still parse.
+    parse_source(&new_src, registry)?;
+    let n = char_spans.len();
     Ok((
         new_src,
-        format!("Renamed '{from}' → '{to}' via EditOp::Rename."),
+        format!(
+            "Renamed '{from}' → '{to}' (format-preserving, {n} identifier site{}).",
+            if n == 1 { "" } else { "s" }
+        ),
     ))
+}
+
+/// Convert a character index (from the lexer) to a UTF-8 byte offset.
+fn char_index_to_byte(source: &str, char_idx: usize) -> usize {
+    source
+        .char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or_else(|| source.len())
+}
+
+/// Word-boundary identifier rename on raw text (byte-safe).
+fn rename_idents_text(source: &str, from: &str, to: &str) -> Result<String, String> {
+    let bytes = source.as_bytes();
+    let from_b = from.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0usize;
+    let mut n = 0usize;
+    while i < bytes.len() {
+        if i + from_b.len() <= bytes.len() && &bytes[i..i + from_b.len()] == from_b {
+            let before_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
+            let after_i = i + from_b.len();
+            let after_ok = after_i >= bytes.len() || !is_ident_byte(bytes[after_i]);
+            if before_ok && after_ok {
+                out.push_str(to);
+                i = after_i;
+                n += 1;
+                continue;
+            }
+        }
+        // copy one utf-8 char
+        let ch = source[i..]
+            .chars()
+            .next()
+            .ok_or_else(|| "invalid utf-8 in source".to_string())?;
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    if n == 0 {
+        return Err(format!("no word-boundary match for '{from}'"));
+    }
+    Ok(out)
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+    use veil_ir::LayerRegistry;
+
+    #[test]
+    fn rename_preserves_comments_and_layout() {
+        let src = "\
+# keep this comment
+pkg Demo
+  use ddd
+  ctx App
+    group domain
+      agg User
+        root
+          id: Id
+          name: Str
+";
+        let reg = LayerRegistry::builtin();
+        // ddd may be needed — if builtin lacks ddd, use empty parse of simpler source
+        let simple = "\
+# header stays
+pkg Demo
+  struct User
+    id: Id
+  struct Bag
+    owner: User
+";
+        let (out, summary) = apply_rename(simple, &reg, "User", "Account").expect("rename");
+        assert!(out.contains("# header stays"), "comment must survive: {out}");
+        assert!(out.contains("struct Account"), "{out}");
+        assert!(out.contains("owner: Account"), "{out}");
+        assert!(!out.contains("struct User"), "{out}");
+        assert!(summary.contains("format-preserving"));
+        let _ = src; // silence
+    }
+}
+
+#[cfg(test)]
+mod rename_hello {
+    use super::*;
+    use veil_ir::LayerRegistry;
+    #[test]
+    fn rename_hello_user() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/hello_world.veil");
+        let src = std::fs::read_to_string(&path).expect("read hello_world");
+        let reg = LayerRegistry::for_veil_file(&path).unwrap_or_else(|_| LayerRegistry::builtin());
+        let (out, sum) = apply_rename(&src, &reg, "User", "AppUser").expect("rename");
+        assert!(out.contains("# Hello World"), "comment lost: {out}");
+        assert!(out.contains("agg AppUser"), "{out}");
+        assert!(!out.contains("agg User\n"), "{out}");
+        assert!(out.contains("AppUser.new") || out.contains("AppUser)"), "{out}");
+        eprintln!("{sum}");
+    }
 }
