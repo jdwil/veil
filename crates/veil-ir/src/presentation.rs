@@ -202,12 +202,12 @@ const MEMBERS: &[&str] = &[
     "by_construct",
     "all_descendants",
 ];
-const ORPHANS: &[&str] = &["list", "hide", "bucket"];
 const WHENS: &[&str] = &[
     "declared_in_parent",
     "in_parent_type",
     "same_source_group",
     "always",
+    "implements",
 ];
 const ROLES: &[&str] = &["container", "leaf", "edge_endpoint"];
 
@@ -248,9 +248,11 @@ pub fn validate_presentations(
                     MEMBERS.join(", ")
                 ));
             }
-            if !v.orphan_policy.is_empty() && !ORPHANS.contains(&v.orphan_policy.as_str()) {
+            if !v.orphan_policy.is_empty()
+                && !crate::project::orphan_policy_valid(&v.orphan_policy)
+            {
                 return Err(format!(
-                    "construct '{cname}' view '{}': unknown orphan_policy '{}'",
+                    "construct '{cname}' view '{}': unknown orphan_policy '{}' (expected list|hide|bucket[:Name])",
                     v.id, v.orphan_policy
                 ));
             }

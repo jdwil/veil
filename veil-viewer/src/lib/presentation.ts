@@ -63,6 +63,12 @@ export interface ProjectResult {
   layoutFallback: boolean;
   /** For `flow`: ELK direction. */
   flowDirection: 'LR' | 'TB' | null;
+  /** Nest attachments child→parent (LAY-007). */
+  nestEdges: { child: number; parent: number }[];
+  /** Orphans (not root, not nested). */
+  orphanIds: number[];
+  /** Synthetic bucket label when orphan_policy is bucket[:Name]. */
+  orphanBucketLabel: string | null;
   view: ViewSpec | null;
 }
 
@@ -150,7 +156,27 @@ function collectCandidates(
   if (layout === 'tabs' || mode === 'by_source_group') {
     return direct;
   }
-  return flattenGroups(graph, direct);
+  const top = flattenGroups(graph, direct);
+  // Tree: include full subtrees under flattened tops so nest rules see
+  // children of roots (e.g. Event under Aggregate under group domain).
+  if (layout === 'tree') {
+    const seen = new Set<number>();
+    const out: IrNode[] = [];
+    for (const n of top) {
+      if (!seen.has(n.id)) {
+        seen.add(n.id);
+        out.push(n);
+      }
+      for (const d of irDescendants(graph, n.id)) {
+        if (!seen.has(d.id)) {
+          seen.add(d.id);
+          out.push(d);
+        }
+      }
+    }
+    return out.sort(sortBySpan);
+  }
+  return top;
 }
 
 function defaultMembers(layout: string): string {
@@ -177,24 +203,99 @@ function ancestorWithName(
   return null;
 }
 
-function isNestedUnderRule(
+function nearestGroupName(graph: IrGraph, node: IrNode): string | null {
+  let pid = node.metadata.parent;
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const seen = new Set<number>();
+  while (pid != null && !seen.has(pid)) {
+    seen.add(pid);
+    const p = byId.get(pid);
+    if (!p) break;
+    if (p.kind === 'Group') return p.name;
+    pid = p.metadata.parent;
+  }
+  return null;
+}
+
+function implementsEdge(graph: IrGraph, a: number, b: number): boolean {
+  return graph.edges.some(
+    (e) =>
+      e.kind === 'Implements' &&
+      ((e.from === a && e.to === b) || (e.from === b && e.to === a))
+  );
+}
+
+/** Candidate parents ordered for ambiguity (AST prefer, then id). */
+function candidateParents(
   graph: IrGraph,
   child: IrNode,
-  rule: NestRule,
+  parentType: string,
+  when: string,
+  candidates: IrNode[],
   candidateIds: Set<number>
+): IrNode[] {
+  const parents = candidates.filter((p) => {
+    if (constructName(p) !== parentType || p.id === child.id) return false;
+    switch (when) {
+      case 'declared_in_parent':
+      case 'in_parent_type':
+        return ancestorWithName(graph, child, parentType)?.id === p.id;
+      case 'same_source_group': {
+        const cg = nearestGroupName(graph, child);
+        const pg = nearestGroupName(graph, p);
+        return cg != null && cg === pg && candidateIds.has(p.id);
+      }
+      case 'always':
+        return true;
+      case 'implements':
+        return implementsEdge(graph, child.id, p.id);
+      default:
+        return ancestorWithName(graph, child, parentType)?.id === p.id;
+    }
+  });
+  const astPref = ancestorWithName(graph, child, parentType)?.id;
+  parents.sort((a, b) => {
+    const pa = a.id === astPref ? 0 : 1;
+    const pb = b.id === astPref ? 0 : 1;
+    return pa - pb || a.id - b.id;
+  });
+  return parents;
+}
+
+function wouldCycle(
+  nest: Map<number, number>,
+  child: number,
+  parent: number
 ): boolean {
-  if (constructName(child) !== rule.child) return false;
-  const when = rule.when || 'declared_in_parent';
-  if (when === 'always') {
-    // Attach if any candidate has parent type
-    return [...candidateIds].some((id) => {
-      const n = graph.nodes.find((x) => x.id === id);
-      return n && constructName(n) === rule.parent;
-    });
+  if (child === parent) return true;
+  let walk: number | undefined = parent;
+  const seen = new Set<number>();
+  while (walk != null) {
+    if (walk === child) return true;
+    if (seen.has(walk)) return true;
+    seen.add(walk);
+    walk = nest.get(walk);
   }
-  // declared_in_parent / in_parent_type / same_source_group (approx)
-  const anc = ancestorWithName(graph, child, rule.parent);
-  return anc != null && candidateIds.has(anc.id);
+  return false;
+}
+
+export function parseOrphanPolicy(raw: string | undefined | null): {
+  mode: string;
+  bucketLabel: string | null;
+} {
+  const s = (raw ?? '').trim();
+  if (!s) return { mode: 'list', bucketLabel: null };
+  if (s === 'list' || s === 'hide') return { mode: s, bucketLabel: null };
+  if (s === 'bucket') return { mode: 'bucket', bucketLabel: 'Other' };
+  if (s.startsWith('bucket:')) {
+    const name = s.slice(7).trim();
+    return { mode: 'bucket', bucketLabel: name || 'Other' };
+  }
+  if (s.startsWith('bucket ')) {
+    const name = s.slice(7).trim();
+    return { mode: 'bucket', bucketLabel: name || 'Other' };
+  }
+  return { mode: 'list', bucketLabel: null };
 }
 
 /**
@@ -207,20 +308,24 @@ export function projectView(
   view: ViewSpec | null,
   options?: { hideLayerProvided?: boolean }
 ): ProjectResult {
+  const empty = {
+    nodes: [] as IrNode[],
+    tabs: [] as string[],
+    tabGroupNodes: new Map<string, IrNode | null>(),
+    layout: 'flat',
+    layoutFallback: false,
+    flowDirection: null as 'LR' | 'TB' | null,
+    nestEdges: [] as { child: number; parent: number }[],
+    orphanIds: [] as number[],
+    orphanBucketLabel: null as string | null,
+    view: null as ViewSpec | null,
+  };
+
   if (!view) {
-    return {
-      nodes: [],
-      tabs: [],
-      tabGroupNodes: new Map(),
-      layout: 'flat',
-      layoutFallback: false,
-      flowDirection: null,
-      view: null,
-    };
+    return empty;
   }
 
   const { layout, fallback: layoutFallback } = resolveLayout(view.layout);
-  // Project using resolved layout (unknown → flat)
   const effectiveView: ViewSpec = { ...view, layout };
 
   let candidates = collectCandidates(graph, hostId, view.members ?? '', effectiveView);
@@ -241,9 +346,8 @@ export function projectView(
 
   if (layout === 'flow') {
     return {
+      ...empty,
       nodes: [...candidates].sort(sortBySpan),
-      tabs: [],
-      tabGroupNodes: new Map(),
       layout: 'flow',
       layoutFallback,
       flowDirection: 'LR',
@@ -251,14 +355,11 @@ export function projectView(
     };
   }
 
-  // flat
   return {
+    ...empty,
     nodes: [...candidates].sort(sortBySpan),
-    tabs: [],
-    tabGroupNodes: new Map(),
     layout: 'flat',
     layoutFallback,
-    flowDirection: null,
     view: effectiveView,
   };
 }
@@ -291,6 +392,9 @@ function projectTabs(
     layout: 'tabs',
     layoutFallback,
     flowDirection: null,
+    nestEdges: [],
+    orphanIds: [],
+    orphanBucketLabel: null,
     view,
   };
 }
@@ -304,31 +408,48 @@ function projectTree(
 ): ProjectResult {
   const rootNames = new Set(view.roots ?? []);
   const rules = view.nest_rules ?? [];
+  const nest = new Map<number, number>();
 
-  const nestedIds = new Set<number>();
   for (const rule of rules) {
+    const when = rule.when || 'declared_in_parent';
     for (const c of candidates) {
-      if (isNestedUnderRule(graph, c, rule, candidateIds)) {
-        nestedIds.add(c.id);
+      if (constructName(c) !== rule.child) continue;
+      if (nest.has(c.id)) continue;
+      const parents = candidateParents(
+        graph,
+        c,
+        rule.parent,
+        when,
+        candidates,
+        candidateIds
+      );
+      const p = parents[0];
+      if (p && !wouldCycle(nest, c.id, p.id)) {
+        nest.set(c.id, p.id);
       }
     }
   }
 
+  const nestedIds = new Set(nest.keys());
   const isRoot = (n: IrNode) =>
     rootNames.size === 0 ? !nestedIds.has(n.id) : rootNames.has(constructName(n));
 
   const roots = candidates.filter((n) => isRoot(n) && !nestedIds.has(n.id));
   const orphans = candidates.filter((n) => !isRoot(n) && !nestedIds.has(n.id));
+  const { mode, bucketLabel } = parseOrphanPolicy(view.orphan_policy);
 
-  const policy = view.orphan_policy || 'list';
   let nodes: IrNode[] = [...roots];
-  if (policy === 'list' || policy === 'bucket') {
+  if (mode === 'list') {
     nodes = [...roots, ...orphans];
-  } else if (policy === 'hide') {
+  } else if (mode === 'hide' || mode === 'bucket') {
     nodes = [...roots];
   }
-
   nodes.sort(sortBySpan);
+
+  const nestEdges = [...nest.entries()]
+    .map(([child, parent]) => ({ child, parent }))
+    .sort((a, b) => a.child - b.child || a.parent - b.parent);
+
   return {
     nodes,
     tabs: [],
@@ -336,6 +457,9 @@ function projectTree(
     layout: 'tree',
     layoutFallback,
     flowDirection: null,
+    nestEdges,
+    orphanIds: orphans.map((o) => o.id),
+    orphanBucketLabel: mode === 'bucket' ? bucketLabel : null,
     view,
   };
 }

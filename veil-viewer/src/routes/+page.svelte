@@ -436,17 +436,80 @@
         return;
       }
 
-      // flat | tree | flow — driven only by projected.layout (LAY-006)
+      // flat | tree | flow — driven only by projected.layout (LAY-006/007)
       tabs = [];
       activeTab = null;
-      const itemIds = new Set(projected.nodes.map((c) => c.id));
-      const flowNodes = toFlowNodes(graph, projected.nodes, itemIds);
-      const flowEdges = edgesAmong(graph, itemIds);
+      let displayNodes = [...projected.nodes];
+      // bucket orphans: synthetic non-editable folder + orphan children (LAY-007)
+      if (
+        projected.layout === 'tree' &&
+        projected.orphanBucketLabel &&
+        projected.orphanIds.length > 0
+      ) {
+        for (const oid of projected.orphanIds) {
+          const n = graph.nodes.find((x) => x.id === oid);
+          if (n && !displayNodes.some((d) => d.id === n.id)) displayNodes.push(n);
+        }
+      }
+      const itemIds = new Set(displayNodes.map((c) => c.id));
+      let flowNodes = toFlowNodes(graph, displayNodes, itemIds);
+      let flowEdges = edgesAmong(graph, itemIds);
+      // Nest edges (hierarchy) for tree view
+      if (projected.layout === 'tree' && projected.nestEdges?.length) {
+        for (const { child, parent } of projected.nestEdges) {
+          if (itemIds.has(child) || itemIds.has(parent)) {
+            // Nested children are not always on canvas (drill); only edge if both visible
+            if (itemIds.has(child) && itemIds.has(parent)) {
+              flowEdges.push({
+                id: `nest-${parent}-${child}`,
+                source: String(parent),
+                target: String(child),
+                animated: false,
+                style: 'stroke: var(--veil-text-faint); stroke-width: 1.5; stroke-dasharray: 3 3;',
+                label: '',
+              });
+            }
+          }
+        }
+      }
+      if (
+        projected.layout === 'tree' &&
+        projected.orphanBucketLabel &&
+        projected.orphanIds.length > 0
+      ) {
+        const bucketId = 'orphan-bucket';
+        flowNodes = [
+          ...flowNodes,
+          {
+            id: bucketId,
+            type: 'veil',
+            position: { x: 0, y: 0 },
+            data: {
+              label: projected.orphanBucketLabel,
+              kind: 'Group',
+              hasChildren: false,
+              annotations: [],
+              isGhost: true,
+              isBucket: true,
+            },
+          },
+        ];
+        for (const oid of projected.orphanIds) {
+          if (itemIds.has(oid)) {
+            flowEdges.push({
+              id: `bucket-${oid}`,
+              source: bucketId,
+              target: String(oid),
+              animated: false,
+              style: 'stroke: var(--veil-text-faint); stroke-width: 1; stroke-dasharray: 2 2;',
+            });
+          }
+        }
+      }
       if (projected.layout === 'flow') {
         const dir = projected.flowDirection ?? 'LR';
         nodes = await layoutNodes(flowNodes, flowEdges, dir, graphContainerEl);
       } else {
-        // flat + tree: type-column layout (tree drill uses same placement)
         nodes = await layoutByType(flowNodes, graphContainerEl);
       }
       edges = flowEdges;

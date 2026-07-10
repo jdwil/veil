@@ -31,7 +31,10 @@ pub use presentation::{
     presentation_from_registry, ConstructPresentation, HostPresentation, NestRule, NestableHint,
     PresentationModel, ViewSpec,
 };
-pub use project::{project_view, resolve_layout, ProjectInputNode, ProjectOutput, MVP_LAYOUTS};
+pub use project::{
+    orphan_policy_valid, parse_orphan_policy, project_view, project_view_with_edges, resolve_layout,
+    ProjectEdge, ProjectInputNode, ProjectOutput, MVP_LAYOUTS, NEST_WHENS,
+};
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;

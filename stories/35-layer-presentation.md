@@ -254,7 +254,7 @@ MVP layouts (implement + document):
 
 ## LAY-007: Nest rules & containment edges
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** layer author  
 **I want** nest rules that use containment and/or IR relationships  
 **So that** hierarchy can follow parse tree *or* semantic edges
@@ -271,6 +271,15 @@ MVP layouts (implement + document):
 - Unit tests with synthetic IR graphs
 
 **Depends:** LAY-001, LAY-002  
+**Done notes:**
+
+- `when`: `declared_in_parent` / `in_parent_type`, `same_source_group`, `always`,
+  **`implements`** (IR Implements edge — second relationship kind; type membership deferred)
+- Orphans: `list` | `hide` | `bucket` | `bucket:Name`; viewer synthetic bucket node
+- Ambiguity: AST prefer → lowest id; first nest rule wins; cycle refused
+- Tests: nest_*, orphan_policy_*, nest_skips_cycle, nest_implements_edge
+- PRESENTATION.md §4.3–4.4, §6.3–6.4 updated
+
 **Mission impact:** Hierarchical DDD model view is only as good as nest rules.
 
 ---

@@ -8,6 +8,8 @@
   in `veil-viewer/src/lib/presentation.ts` (tabs / tree / flat / flow)
 - **LAY-006:** MVP layouts locked + tested (`veil-ir/src/project.rs` + viewer
   `resolveLayout` fallback)
+- **LAY-007:** Nest when predicates, orphan policies, cycle/ambiguity rules;
+  `implements` edge; type membership deferred
 
 **Mission rule:** The engine and viewer contain **zero domain knowledge**.
 Paradigms (DDD, functional, Svelte UI, …) teach the IDE **how to look** via
@@ -211,28 +213,34 @@ Default if omitted:
 
 Unknown `members` → **layer load error**.
 
-### 4.3 Nest `when` predicates
+### 4.3 Nest `when` predicates (LAY-007 — implemented)
 
 | Id | Meaning |
 |----|---------|
-| `declared_in_parent` | Child’s AST parent construct is an instance of `ParentName` (source nesting / `has` children) |
-| `in_parent_type` | Same as `declared_in_parent` (alias reserved for clarity) |
-| `same_source_group` | Child shares the host’s active source group with parent (weak; prefer declared_in_parent) |
-| `always` | If both appear in the candidate set, attach child under nearest/only parent of type (see §6.3) |
+| `declared_in_parent` | An **AST ancestor** of the child is a candidate of construct `ParentName` |
+| `in_parent_type` | Alias of `declared_in_parent` |
+| `same_source_group` | Child and parent share the same nearest **Group** ancestor name |
+| `always` | Attach under a parent-type candidate (deterministic pick — §6.3) |
+| `implements` | IR edge `Implements` between child and parent (either direction) |
 
 Default if `when` omitted: `declared_in_parent`.
 
 Unknown `when` → **layer load error**.
 
-### 4.4 Orphan policy
+**Not implemented (no IR yet):** field-type / annotation **type membership** links.
+When the IR gains typed field references, add e.g. `when field_type` without
+viewer domain knowledge. Until then use `declared_in_parent` or `implements`.
 
-Nodes in the candidate set that match the view filter but attach to no parent:
+### 4.4 Orphan policy (LAY-007)
+
+Nodes in the candidate set that are not roots and not nested:
 
 | Id | Behavior |
 |----|----------|
 | `list` | Show as top-level siblings alongside roots (default for `tree`) |
-| `hide` | Omit from this view |
-| `bucket` | Place under a synthetic folder node labeled `"Other"` (id `_orphan`) |
+| `hide` | Omit from top-level; still recorded in `orphan_ids` |
+| `bucket` | Synthetic folder labeled `"Other"`; orphans linked under it (not editable) |
+| `bucket:Name` / `bucket Name` | Same with custom label |
 
 Unknown policy → **layer load error**.
 
@@ -344,18 +352,23 @@ A candidate node *C* (construct name = Child) attaches under parent node *P*
 2. *P* is in the candidate set or is a chosen root, and  
 3. No earlier nest rule already attached *C*.
 
-### 6.3 Ambiguity
+### 6.3 Ambiguity (LAY-007)
 
 If multiple parents satisfy the predicate:
 
-1. Prefer **AST parent** if it is among matches.  
-2. Else prefer closest common ancestor under host.  
-3. Else first parent in stable order (§5.4).  
-4. Never attach under two parents (tree, not DAG) in MVP.
+1. Prefer the parent that is an **AST ancestor** of the child (when applicable).  
+2. Else **lowest node id** (stable, deterministic).  
+3. First matching **nest rule** wins for a given child (later rules skip).  
+4. Refuse attach if it would create a **cycle** in the nest forest (child stays orphan).
 
-Cycles: if attaching would cycle, skip attach and treat as orphan.
+Never attach under two parents (tree, not DAG) in MVP.
 
-### 6.4 Display-only
+### 6.4 Type membership (deferred)
+
+Field-type / annotation links are **not** available as first-class IR edges yet.
+Do not invent viewer heuristics. Future: `when field_type` once IR carries them.
+
+### 6.5 Display-only
 
 Nesting in a view **must not** imply a source move. Creating a child under a
 container in the IDE (LAY-008) may use nest rules to choose `parent_span`; that
