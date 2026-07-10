@@ -126,18 +126,16 @@ fn registry_for(file: &std::path::Path) -> LayerRegistry {
     }
 }
 
-/// UX-010: whether a loaded file may be written via the IDE edit API.
+/// UX-010 / DSL-002: whether a loaded file may be written via the IDE edit API.
 ///
-/// Application `.veil` sources are editable. Read-only:
-/// - non-`.veil` (layers/stubs if ever loaded)
+/// Editable: `.veil` packages and `.layer` language files.
+/// Read-only:
+/// - other extensions (e.g. `.stub` MVP)
 /// - path contains `generated/`
 /// - first non-empty line is `# veil:readonly`
-///
-/// Note: historically `pkg` files were incorrectly marked read-only via
-/// `!source.starts_with("pkg ")` — that inverted policy is removed.
 fn is_veil_source_editable(path: &std::path::Path, source: &str) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext != "veil" {
+    if ext != "veil" && ext != "layer" {
         return false;
     }
     // Match generated/ as a path component (absolute or relative).
@@ -187,6 +185,14 @@ mod editable_tests {
         assert!(!is_veil_source_editable(
             Path::new("generated/out.veil"),
             "pkg X\n"
+        ));
+    }
+
+    #[test]
+    fn layer_files_are_editable() {
+        assert!(is_veil_source_editable(
+            Path::new("layers/ddd.layer"),
+            "pkg ddd v1\n  construct X\n"
         ));
     }
 }
@@ -590,6 +596,42 @@ fn main() {
 
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let file_display = file.display().to_string();
+
+            // DSL-003: layer files use layer check pipeline
+            if file.extension().and_then(|e| e.to_str()) == Some("layer") {
+                let name = file
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "layer".into());
+                let started = std::time::Instant::now();
+                let mut diagnostics = veil_ir::check_layer(&source, &name);
+                veil_ir::sort_diagnostics(&mut diagnostics);
+                let duration_ms = started.elapsed().as_millis();
+                let errors = diagnostics
+                    .iter()
+                    .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+                    .count();
+                let warnings = diagnostics
+                    .iter()
+                    .filter(|d| matches!(d.severity, veil_ir::Severity::Warning))
+                    .count();
+                for d in &diagnostics {
+                    println!(
+                        "{}: {}",
+                        file_display,
+                        veil_ir::format_diagnostic_line(d)
+                    );
+                }
+                println!(
+                    "{} error(s), {} warning(s) ({} ms) [layer]",
+                    errors, warnings, duration_ms
+                );
+                if errors > 0 {
+                    std::process::exit(1);
+                }
+                return;
+            }
+
             let (sol, registry) = parse_solution_or_exit(&source, &file);
 
             let started = std::time::Instant::now();
@@ -857,21 +899,54 @@ fn main() {
             }
         }
         Commands::Serve { file, port } => {
-            // Collect .veil files: single file or directory scan
-            let veil_files: Vec<PathBuf> = if file.is_dir() {
+            // Collect .veil packages and .layer DSLs (DSL-001)
+            let mut project_files: Vec<PathBuf> = if file.is_dir() {
                 let mut found: Vec<PathBuf> = std::fs::read_dir(&file)
                     .expect("Failed to read directory")
                     .filter_map(|entry| entry.ok())
                     .filter(|entry| {
-                        entry.path().extension()
-                            .map(|ext| ext == "veil")
+                        entry
+                            .path()
+                            .extension()
+                            .map(|ext| ext == "veil" || ext == "layer")
                             .unwrap_or(false)
                     })
                     .map(|entry| entry.path())
                     .collect();
                 found.sort();
+                // Also pull workspace `layers/` when serving examples/ (or any dir)
+                let layers_dir = file
+                    .parent()
+                    .map(|p| p.join("layers"))
+                    .filter(|p| p.is_dir())
+                    .or_else(|| {
+                        let p = PathBuf::from("layers");
+                        if p.is_dir() {
+                            Some(p)
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(ld) = layers_dir {
+                    if let Ok(rd) = std::fs::read_dir(&ld) {
+                        for entry in rd.filter_map(|e| e.ok()) {
+                            let p = entry.path();
+                            if p.extension().map(|e| e == "layer").unwrap_or(false) {
+                                if !found.iter().any(|f| f == &p) {
+                                    found.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Prefer packages first in list (stable UX), then layers
+                found.sort_by(|a, b| {
+                    let ak = a.extension().and_then(|e| e.to_str()) == Some("layer");
+                    let bk = b.extension().and_then(|e| e.to_str()) == Some("layer");
+                    ak.cmp(&bk).then_with(|| a.cmp(b))
+                });
                 if found.is_empty() {
-                    eprintln!("No .veil files found in {}", file.display());
+                    eprintln!("No .veil or .layer files found in {}", file.display());
                     std::process::exit(1);
                 }
                 found
@@ -879,76 +954,116 @@ fn main() {
                 vec![file.clone()]
             };
 
-            // Load and parse the first file to set up the registry
-            let first_file = &veil_files[0];
+            // Prefer a package as the initial active file when present
+            if let Some(pkg_idx) = project_files.iter().position(|p| {
+                p.extension().and_then(|e| e.to_str()) == Some("veil")
+            }) {
+                if pkg_idx != 0 {
+                    project_files.swap(0, pkg_idx);
+                }
+            }
+
+            let first_file = &project_files[0];
             let first_source = std::fs::read_to_string(first_file).expect("Failed to read file");
             let registry = registry_for(first_file);
 
-            // Load all files. UX-010: application `.veil` is editable by default.
-            // Read-only: `.layer` / `.stub`, paths under `generated/`, or `# veil:readonly`.
-            let file_entries: Vec<(PathBuf, String, bool)> = veil_files.iter().map(|path| {
-                let source = std::fs::read_to_string(path).expect("Failed to read file");
-                let editable = is_veil_source_editable(path, &source);
-                (path.clone(), source, editable)
-            }).collect();
+            // UX-010 / DSL-002: .veil and .layer editable unless readonly marker
+            let file_entries: Vec<(PathBuf, String, bool)> = project_files
+                .iter()
+                .map(|path| {
+                    let source = std::fs::read_to_string(path).expect("Failed to read file");
+                    let editable = is_veil_source_editable(path, &source);
+                    (path.clone(), source, editable)
+                })
+                .collect();
 
             let file_count = file_entries.len();
+            let package_count = file_entries
+                .iter()
+                .filter(|(p, _, _)| p.extension().and_then(|e| e.to_str()) == Some("veil"))
+                .count();
+            let layer_count = file_count - package_count;
 
-            // Build IR from the first file for initial display
-            let tokens = veil_parser::lex(&first_source);
-            let veil_file = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
-                Ok(f) => f,
-                Err(errors) => {
-                    eprintln!("Parse errors:");
-                    for err in &errors { eprintln!("  {}", err); }
-                    std::process::exit(1);
-                }
-            };
+            let (node_count, edge_count) =
+                if first_file.extension().and_then(|e| e.to_str()) == Some("layer") {
+                    let name = first_file
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "layer".into());
+                    match veil_ir::build_layer_ir(&first_source, &name) {
+                        Ok(g) => (g.nodes.len(), g.edges.len()),
+                        Err(_) => (0, 0),
+                    }
+                } else {
+                    let tokens = veil_parser::lex(&first_source);
+                    let veil_file =
+                        match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
+                            Ok(f) => f,
+                            Err(errors) => {
+                                eprintln!("Parse errors:");
+                                for err in &errors {
+                                    eprintln!("  {}", err);
+                                }
+                                std::process::exit(1);
+                            }
+                        };
 
-            let graph = match &veil_file {
-                veil_ir::VeilFile::Solution(sol) => {
-                    veil_ir::build_ir_with_registry(sol, Some(&registry))
-                }
-                veil_ir::VeilFile::Package(pkg) => {
-                    let sol = veil_ir::Solution {
-                        name: pkg.name.clone(),
-                        span: pkg.span,
-                        uses: Vec::new(),
-                        items: pkg.items.clone(),
-                        expose: pkg.expose.clone(),
-                    };
-                    veil_ir::build_ir_with_registry(&sol, Some(&registry))
-                }
-                veil_ir::VeilFile::Composition(comp) => {
-                    let search_dir = first_file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-                    let search_paths = vec![search_dir];
-                    let mut resolved = Vec::new();
-                    let found = veil_ir::find_package_files(&comp.imports, &search_paths);
-                    for result in found {
-                        match result {
-                            Ok((imp, path)) => {
-                                let pkg_source = std::fs::read_to_string(&path)
-                                    .expect("Failed to read package");
-                                let pkg_tokens = veil_parser::lex(&pkg_source);
-                                let pkg_registry = veil_ir::LayerRegistry::for_veil_file(&path)
-                                    .unwrap_or_else(|_| veil_ir::LayerRegistry::builtin());
-                                if let Ok(veil_ir::VeilFile::Package(pkg)) =
-                                    veil_parser::parse_file_with_registry(&pkg_tokens, pkg_registry)
-                                {
-                                    resolved.push(veil_ir::resolve_package(&pkg, imp.alias));
+                    let graph = match &veil_file {
+                        veil_ir::VeilFile::Solution(sol) => {
+                            veil_ir::build_ir_with_registry(sol, Some(&registry))
+                        }
+                        veil_ir::VeilFile::Package(pkg) => {
+                            let sol = veil_ir::Solution {
+                                name: pkg.name.clone(),
+                                span: pkg.span,
+                                uses: Vec::new(),
+                                items: pkg.items.clone(),
+                                expose: pkg.expose.clone(),
+                            };
+                            veil_ir::build_ir_with_registry(&sol, Some(&registry))
+                        }
+                        veil_ir::VeilFile::Composition(comp) => {
+                            let search_dir = first_file
+                                .parent()
+                                .unwrap_or(std::path::Path::new("."))
+                                .to_path_buf();
+                            let search_paths = vec![search_dir];
+                            let mut resolved = Vec::new();
+                            let found = veil_ir::find_package_files(&comp.imports, &search_paths);
+                            for result in found {
+                                match result {
+                                    Ok((imp, path)) => {
+                                        let pkg_source = std::fs::read_to_string(&path)
+                                            .expect("Failed to read package");
+                                        let pkg_tokens = veil_parser::lex(&pkg_source);
+                                        let pkg_registry =
+                                            veil_ir::LayerRegistry::for_veil_file(&path)
+                                                .unwrap_or_else(|_| {
+                                                    veil_ir::LayerRegistry::builtin()
+                                                });
+                                        if let Ok(veil_ir::VeilFile::Package(pkg)) =
+                                            veil_parser::parse_file_with_registry(
+                                                &pkg_tokens,
+                                                pkg_registry,
+                                            )
+                                        {
+                                            resolved
+                                                .push(veil_ir::resolve_package(&pkg, imp.alias));
+                                        }
+                                    }
+                                    Err(e) => eprintln!("Warning: {}", e),
                                 }
                             }
-                            Err(e) => eprintln!("Warning: {}", e),
+                            veil_ir::build_composition_ir(comp, &resolved)
                         }
-                    }
-                    veil_ir::build_composition_ir(comp, &resolved)
-                }
-            };
+                    };
+                    (graph.nodes.len(), graph.edges.len())
+                };
 
-            let node_count = graph.nodes.len();
-            let edge_count = graph.edges.len();
-
-            println!("✓ Serving {} file(s) ({} nodes, {} edges)", file_count, node_count, edge_count);
+            println!(
+                "✓ Serving {} file(s) ({} packages, {} layers; {} nodes, {} edges)",
+                file_count, package_count, layer_count, node_count, edge_count
+            );
             if file_count > 1 {
                 for (i, entry) in file_entries.iter().enumerate() {
                     println!("  [{}] {}", i, entry.0.display());
