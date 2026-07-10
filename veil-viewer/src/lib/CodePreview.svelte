@@ -21,28 +21,40 @@
       null;
   }
 
-  onMount(async () => {
-    try {
-      const res = await fetch('http://localhost:3001/api/generated');
-      if (res.ok) {
-        files = await res.json();
-        chooseSelection(Object.keys(files).sort());
-      }
-    } catch (e) {
-      console.error('Failed to fetch generated code:', e);
-    } finally {
-      loading = false;
-    }
-  });
+  /** Apply a generated-code map without creating a reactive read/write cycle. */
+  function applyGenerated(code: Record<string, string> | null | undefined) {
+    if (!code) return;
+    files = code;
+    chooseSelection(Object.keys(code).sort());
+    loading = false;
+  }
 
-  // Live update: when an edit is saved, the store pushes fresh generated code
-  // and this panel re-renders without a manual refresh (UX-005).
-  $effect(() => {
-    const code = $generatedCode;
-    if (code) {
-      files = code;
-      chooseSelection(Object.keys(files).sort());
+  onMount(() => {
+    // Live updates from the store (edits / file switch) — subscribe, not $effect.
+    // An $effect that writes `files`/`selectedFile` while reading them loops
+    // (Svelte effect_update_depth_exceeded).
+    let hadStoreValue = false;
+    const unsub = generatedCode.subscribe((code) => {
+      if (code) {
+        hadStoreValue = true;
+        applyGenerated(code);
+      }
+    });
+
+    // Initial fetch if store has not been populated yet
+    if (!hadStoreValue) {
+      void fetch('http://localhost:3001/api/generated')
+        .then(async (res) => {
+          if (res.ok) applyGenerated(await res.json());
+          else loading = false;
+        })
+        .catch((e) => {
+          console.error('Failed to fetch generated code:', e);
+          loading = false;
+        });
     }
+
+    return unsub;
   });
 
   function toggle() {
