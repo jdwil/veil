@@ -61,13 +61,23 @@ veil serve path/to/pkg.veil -p 3001
 VEIL_REMOTE_URL=http://host:3001 veil serve -p 3002
 ```
 
-`RemoteHttpProvider` proxies `/api/files`, `/api/source` (GET/POST), and file
-select to the remote serve. Layers still resolve from the client registry /
-layer path. Live sync (`/api/events`) remains on the host the IDE connects to;
-tunnel or reverse-proxy as needed.
+`RemoteHttpProvider` (reqwest, no curl) proxies:
 
-Authn for multi-user cloud remains a platform concern (deploy auth in front of
-serve); this path is the **MVP network SourceStore** without browser LocalFs.
+- `/api/files`, `/api/files/select`
+- `/api/source` GET/POST
+- `/api/edit` (structured EditOps — AGT-017 `forward_edit`)
+
+Layers still resolve from the client registry / layer path.
+
+### Live sync (AGT-018)
+
+- Proxy `GET /api/events` returns revision from **remote** source content hash.
+- SSE `data` may include `remote_events` (host URL) so the IDE can subscribe
+  directly to the host stream when tunnels allow.
+- Fallback: poll `GET /api/events` or re-fetch IR after agent `source_changed`.
+
+Authn for multi-user cloud: optional `VEIL_AUTH_TOKEN` (AGT-016) or reverse-proxy
+in front of serve.
 
 ## Viewer assumptions
 

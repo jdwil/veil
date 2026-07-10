@@ -5,6 +5,7 @@
 //! - Meta: `VEIL_META=fs|ddb` (ddb is honest `not_implemented` until AWS SDK)
 
 mod ddb;
+mod http;
 mod meta;
 mod object;
 mod s3;
@@ -209,11 +210,13 @@ mod tests {
     }
 
     #[test]
-    fn ddb_ops_are_not_implemented() {
-        let ddb = DdbMetaStore::new("veil-meta-test", "us-east-1", None);
+    fn ddb_config_constructs() {
+        let ddb = DdbMetaStore::new(
+            "veil-meta-test",
+            "us-east-1",
+            Some("http://127.0.0.1:9".into()), // closed port — fail closed
+        );
         let err = ddb.get_bytes("repo", "1").unwrap_err();
-        assert!(matches!(err, StorageError::NotImplemented(_)));
-        assert!(ddb.put_bytes("repo", "1", b"{}").is_err());
-        assert!(ddb.list_ids("repo").is_err());
+        assert!(matches!(err, StorageError::Http(_)), "{err:?}");
     }
 }

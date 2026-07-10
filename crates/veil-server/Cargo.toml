@@ -19,3 +19,4 @@ tracing.workspace = true
 async-trait = "0.1"
 rig-core.workspace = true
 thiserror.workspace = true
+reqwest.workspace = true

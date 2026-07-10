@@ -250,7 +250,7 @@ Surfaced after RT-015 MVP (S3 curl + DDB NotImplemented).
 
 ## RT-024: DynamoDB metadata adapter (real ops)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** AWS / LocalStack deployer  
 **I want** `VEIL_META=ddb` to put/get/delete/list metadata  
 **So that** pre-prod tests are not stuck on `NotImplemented`
@@ -267,11 +267,14 @@ Surfaced after RT-015 MVP (S3 curl + DDB NotImplemented).
 **Depends:** RT-015  
 **Mission impact:** Cloud path honesty for platform metadata
 
+**Done notes:** DynamoDB JSON HTTP API Put/Get/Delete/Scan; base64 payload;
+LocalStack via `VEIL_DDB_ENDPOINT`.
+
 ---
 
 ## RT-025: S3 object store with production auth (SigV4 / SDK)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** AWS deployer  
 **I want** S3 put/get/list/delete with real credentials  
 **So that** LocalStack and AWS both work beyond anonymous curl MVP
@@ -288,11 +291,14 @@ Surfaced after RT-015 MVP (S3 curl + DDB NotImplemented).
 **Depends:** RT-015  
 **Mission impact:** Pre-prod object storage without false greens
 
+**Done notes:** reqwest + minimal SigV4 when AWS keys set; path-style default;
+HMAC unit tests.
+
 ---
 
 ## RT-026: Shared HTTP client (drop curl subprocesses)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** platform maintainer  
 **I want** S3 and `RemoteHttpProvider` to use an in-process HTTP client  
 **So that** errors, timeouts, and non-Unix hosts are reliable
@@ -308,3 +314,5 @@ Surfaced after RT-015 MVP (S3 curl + DDB NotImplemented).
 
 **Depends:** RT-015, AGT-010  
 **Mission impact:** Operational reliability of cloud + remote IDE path
+
+**Done notes:** `veil_local::http` + reqwest in remote provider; no curl.

@@ -49,4 +49,17 @@ pub trait SourceProvider: Send + Sync + 'static {
     async fn baseline_source(&self, _file: &str) -> Result<Option<(String, String)>, String> {
         Ok(None)
     }
+
+    /// AGT-017: optional remote-forward for structured edits.
+    ///
+    /// When `Some`, the API handler uses the remote result instead of local
+    /// apply+write. Default: `None` (handle locally).
+    async fn forward_edit(&self, _edit_json: &str) -> Option<Result<String, String>> {
+        None
+    }
+
+    /// AGT-018: URL for SSE events when this provider is a remote proxy.
+    fn remote_events_url(&self) -> Option<String> {
+        None
+    }
 }

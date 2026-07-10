@@ -31,17 +31,22 @@ let objects = veil_local::object_store_from_env()?;
 let meta = veil_local::meta_store_mode_from_env()?;
 ```
 
-### S3 MVP
+### S3 (RT-025)
 
-Minimal REST via `curl` (path-style). Suitable for LocalStack smoke tests.
-Production AWS should move to a dedicated adapter package with SigV4 / SDK.
+In-process HTTP via `reqwest` (RT-026). Path-style by default (LocalStack).
+When `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (or `VEIL_S3_*`) are set,
+requests are signed with **AWS SigV4**.
 
-### DynamoDB
+### DynamoDB (RT-024)
 
-`DdbMetaStore::from_env()` validates config, then **every op returns
-`StorageError::NotImplemented`** with table/region in the message. This satisfies
-“explicit not_implemented” until the AWS SDK path lands — deployers never get a
-false green.
+`DdbMetaStore` uses DynamoDB JSON HTTP API (`PutItem` / `GetItem` / `DeleteItem`
+/ `Scan`). Set `VEIL_DDB_ENDPOINT` for LocalStack. Items store base64 payload
+under `pk = kind#id`. Failures are structured HTTP errors (never silent success).
+
+### HTTP (RT-026)
+
+`veil_local::http::request` — blocking client, timeouts; **no curl**.
+`RemoteHttpProvider` uses the same stack.
 
 ## Does not replace local defaults
 

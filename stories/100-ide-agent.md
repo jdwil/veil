@@ -502,7 +502,7 @@ truncate marker; aligns with CLI `veil prompt --max-tokens`.
 
 ## AGT-017: Remote structured EditOp path
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** IDE/agent on `VEIL_REMOTE_URL`  
 **I want** structured `POST /api/edit` (and agent tools) over the network  
 **So that** remote sessions are not limited to full-file `POST /api/source`
@@ -518,11 +518,14 @@ truncate marker; aligns with CLI `veil prompt --max-tokens`.
 **Depends:** AGT-010, SER edit API  
 **Mission impact:** Same IDE UX local vs remote
 
+**Done notes:** `SourceProvider::forward_edit` + remote `POST /api/edit`;
+agent write_source still full-file over remote after tools.
+
 ---
 
 ## AGT-018: Live sync when client is remote
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** remote IDE user  
 **I want** AGT-002 SSE (or equivalent) to reflect remote source changes  
 **So that** multi-tab / agent edits stay live without LocalFs
@@ -537,3 +540,6 @@ truncate marker; aligns with CLI `veil prompt --max-tokens`.
 
 **Depends:** AGT-002, AGT-010  
 **Mission impact:** Dual-loop live refresh on cloud-hosted packages
+
+**Done notes:** Proxy `/api/events` hashes remote source; SSE payload includes
+`remote_events` URL for direct host subscribe; poll fallback = re-GET events.

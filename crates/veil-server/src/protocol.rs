@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use veil_ir::EditOp;
 
 /// Request body for `POST /api/edit`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EditRequest {
     pub edits: Vec<EditOp>,
 }

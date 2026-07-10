@@ -453,36 +453,43 @@ async fn post_edit<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
     Json(req): Json<EditRequest>,
 ) -> axum::response::Response {
-    // 1. Read current source
+    if !state.is_editable("") {
+        return (StatusCode::BAD_REQUEST, "file is read-only").into_response();
+    }
+
+    // AGT-017: remote SourceStore — forward structured edit to host serve
+    let edit_json = match serde_json::to_string(&req) {
+        Ok(j) => j,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if let Some(remote) = state.forward_edit(&edit_json).await {
+        return match remote {
+            Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        };
+    }
+
+    // Local path: read → apply → check → write
     let source = match state.read_source("").await {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
 
-    if !state.is_editable("") {
-        return (StatusCode::BAD_REQUEST, "file is read-only").into_response();
-    }
-
-    // 2. Parse into AST
     let mut sol = match parse_source(&source, state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("parse failed: {}", e)).into_response(),
     };
 
-    // 3. Apply edits (SetBody lines parsed to real Expr via veil-parser)
     if let Err(e) = veil_parser::apply_edits(&mut sol, &req.edits, state.registry()) {
         return (StatusCode::BAD_REQUEST, format!("edit failed: {}", e)).into_response();
     }
 
-    // 4. Re-serialize
     let new_source = veil_ir::serialize_solution(&sol);
 
-    // 5. Validate
     let reparsed = match parse_source(&new_source, state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("edit produced invalid source: {}", e)).into_response(),
     };
-    // 5. Full check (same pipeline as /api/check) — reject on errors
     let check_resp = match run_check(&reparsed, state.registry(), "rust", false, false) {
         Ok(r) => r,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
@@ -498,12 +505,10 @@ async fn post_edit<P: SourceProvider>(
         return (StatusCode::BAD_REQUEST, format!("validation failed: {}", msg)).into_response();
     }
 
-    // 6. Write back via provider
     if let Err(e) = state.write_source("", &new_source).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
     }
 
-    // 7. Return fresh state + diagnostics
     let graph = veil_ir::build_ir_with_registry(&reparsed, Some(state.registry()));
     let project = veil_codegen::generate(&reparsed, state.registry());
     let generated: std::collections::HashMap<String, String> = project.files.iter()
@@ -590,9 +595,11 @@ async fn get_agent_tools() -> axum::response::Response {
     }
 }
 
-/// AGT-002 MVP: long-poll-friendly SSE keepalive + revision heartbeat.
-/// Full push-on-write requires a shared event bus; for MVP the IDE also
-/// refreshes after agent turns that set `source_changed`.
+/// AGT-002 / AGT-018: SSE revision heartbeat.
+///
+/// When using `RemoteHttpProvider`, `data.remote_events` points at the host
+/// `/api/events` so clients can subscribe directly (or keep polling this proxy,
+/// which hashes remote source on each connect).
 async fn get_events<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
 ) -> axum::response::Response {
@@ -604,10 +611,15 @@ async fn get_events<P: SourceProvider>(
         src.hash(&mut h);
         h.finish()
     };
+    let remote = state
+        .remote_events_url()
+        .map(|u| format!(",\"remote_events\":{u:?}"))
+        .unwrap_or_default();
     let body = format!(
-        "event: revision\ndata: {{\"revision\":{},\"bytes\":{}}}\n\n",
+        "event: revision\ndata: {{\"revision\":{},\"bytes\":{}{}}}\n\n",
         rev,
-        src.len()
+        src.len(),
+        remote
     );
     (
         [
