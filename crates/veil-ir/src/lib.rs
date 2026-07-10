@@ -3,6 +3,7 @@
 pub mod ast;
 pub mod builder;
 pub mod check;
+pub mod context;
 pub mod diagnostics;
 pub mod edit;
 pub mod escape;
@@ -20,6 +21,7 @@ pub mod validate;
 pub use ast::*;
 pub use builder::build_ir;
 pub use check::{check_solution, format_diagnostic_line, sort_diagnostics, CheckResult};
+pub use context::{build_context_pack, ContextPack, ContextQuery};
 pub use diagnostics::{Diagnostic, Severity};
 pub use escape::{
     check_escape_hatches, is_escape_hatch_code, promote_escape_hatches, EscapeHatchSummary,

@@ -343,7 +343,7 @@ MVP layouts (implement + document):
 
 ## LAY-010: Agent/context export of presentation
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** in-IDE agent  
 **I want** presentation/view metadata in context tools  
 **So that** I describe topology the way humans see it
@@ -355,6 +355,14 @@ MVP layouts (implement + document):
 - Agent docs: prefer speaking in view terms (“under Aggregate X in model view”)
 
 **Depends:** LAY-002, AGT context tools  
+**Done notes:**
+
+- `GET /api/context?host_id=&view_id=` → `ContextPack` (outline, presentation,
+  layer prompts, agent_hints, optional projected host view)
+- `veil_ir::build_context_pack` — shared by server / future MCP tools
+- AGT-005 tool surface documents `get_context` / view-speaking guidance
+- PRESENTATION.md agent section
+
 **Mission impact:** Agents and humans share one structural vocabulary.
 
 ---

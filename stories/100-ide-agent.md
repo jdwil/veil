@@ -199,7 +199,8 @@ Tool ports (names illustrative):
 | `apply_patch` | Unified diff / search-replace for agent convenience |
 | `veil_check` | Run check pipeline; return diagnostics |
 | `get_ir_summary` / `get_palette` | Topology + layer vocabulary for the agent |
-| `get_layer_prompts` | Concatenated layer `prompt` sections (PAR-009) |
+| `get_context` | **LAY-010** — outline + presentation views + optional host projection (`GET /api/context?host_id=&view_id=`); prefer speaking in view terms |
+| `get_layer_prompts` | Concatenated layer `prompt` sections (PAR-009); also included in context pack |
 
 - Tools call ports; adapters handle storage
 - Writes that fail check can be rejected or returned as diagnostics (configurable)

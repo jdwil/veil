@@ -10,6 +10,25 @@
   `resolveLayout` fallback)
 - **LAY-007:** Nest when predicates, orphan policies, cycle/ambiguity rules;
   `implements` edge; type membership deferred
+- **LAY-008–010:** Create placement, critical lenses, `GET /api/context` agent pack
+
+## Agent usage (LAY-010)
+
+```http
+GET /api/context
+GET /api/context?host_id=12&view_id=model
+```
+
+Response includes:
+
+- `presentation` — same as `/api/presentation`
+- `outline` — compact topology with construct lenses
+- `layer_prompts` — RAG text from layers
+- `agent_hints` — e.g. which hosts have multiple views
+- `projected` (optional) — top-level names + nest edges for a host/view
+
+Agents should describe structure in view language when hints list views
+(e.g. “in Domain model under Customer aggregate”) rather than only flat IR.
 
 **Mission rule:** The engine and viewer contain **zero domain knowledge**.
 Paradigms (DDD, functional, Svelte UI, …) teach the IDE **how to look** via

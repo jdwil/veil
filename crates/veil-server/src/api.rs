@@ -26,6 +26,7 @@ use crate::provider::SourceProvider;
 /// - `GET /api/generated` — generated code map
 /// - `GET /api/palette` — construct palette from loaded layers
 /// - `GET /api/presentation` — layer-driven views / nest rules (LAY-002)
+/// - `GET /api/context` — agent context pack: outline + presentation (LAY-010)
 /// - `GET /api/stubs` — loaded external crate APIs
 /// - `GET /api/diagnostics` — diagnostics array (compat; same pipeline as check)
 /// - `GET|POST /api/check` — full check pipeline (CHK-007)
@@ -41,6 +42,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/generated", get(get_generated::<P>))
         .route("/api/palette", get(get_palette::<P>))
         .route("/api/presentation", get(get_presentation::<P>))
+        .route("/api/context", get(get_context::<P>))
         .route("/api/stubs", get(get_stubs::<P>))
         .route("/api/diagnostics", get(get_diagnostics::<P>))
         .route("/api/check", get(get_check::<P>).post(post_check::<P>))
@@ -124,6 +126,41 @@ async fn get_presentation<P: SourceProvider>(
 ) -> axum::response::Response {
     let model = veil_ir::presentation_from_registry(state.registry());
     match serde_json::to_string(&model) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Agent context pack: topology outline + presentation + optional host projection.
+/// Query: `?host_id=N&view_id=model` (LAY-010).
+#[derive(Debug, Default, serde::Deserialize)]
+struct ContextApiQuery {
+    host_id: Option<u32>,
+    view_id: Option<String>,
+}
+
+async fn get_context<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Query(q): Query<ContextApiQuery>,
+) -> axum::response::Response {
+    let source = match state.read_source("").await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let sol = match parse_source(&source, state.registry()) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let graph = veil_ir::build_ir(&sol);
+    let pack = veil_ir::build_context_pack(
+        &graph,
+        state.registry(),
+        &veil_ir::ContextQuery {
+            host_id: q.host_id,
+            view_id: q.view_id,
+        },
+    );
+    match serde_json::to_string(&pack) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
