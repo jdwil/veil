@@ -592,6 +592,46 @@ pkg App
         assert!(matches!(e, Expr::IfExpr(_)), "got {:?}", e);
     }
 
+    /// SER-006: delete construct persists through re-serialize.
+    #[test]
+    fn test_edit_delete_construct_roundtrips() {
+        use veil_ir::edit::{apply_edits, EditOp};
+        use veil_ir::serialize::serialize_solution;
+        let src = r#"
+pkg App
+  use ddd
+  ctx Identity
+    val Email
+      addr: Str
+    val Phone
+      number: Str
+"#;
+        let mut sol = parse_src(src);
+        let ctx = find_construct(&sol.items, "Identity");
+        let phone_span = ctx
+            .children
+            .iter()
+            .find(|c| c.name == "Phone")
+            .expect("Phone")
+            .span
+            .start;
+        apply_edits(
+            &mut sol,
+            &[EditOp::DeleteConstruct {
+                span_start: phone_span,
+            }],
+        )
+        .expect("delete");
+        let emitted = serialize_solution(&sol);
+        assert!(emitted.contains("val Email"), "Email must remain:\n{}", emitted);
+        assert!(!emitted.contains("Phone"), "Phone must be gone:\n{}", emitted);
+        assert!(!emitted.contains("number: Str"), "Phone fields gone:\n{}", emitted);
+        let reparsed = parse_src(&emitted);
+        let ctx2 = find_construct(&reparsed.items, "Identity");
+        assert_eq!(ctx2.children.len(), 1);
+        assert_eq!(ctx2.children[0].name, "Email");
+    }
+
     #[test]
     fn test_roundtrip_is_idempotent() {
         use veil_ir::serialize::serialize_solution;

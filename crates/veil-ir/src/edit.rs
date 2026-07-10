@@ -59,6 +59,10 @@ pub enum EditOp {
         span_start: usize,
         body: Vec<String>,
     },
+    /// Remove a construct (and its children), free function, flow, or step
+    /// identified by `span_start`. Layer-provided infrastructure cannot be
+    /// deleted. Keyed by AST span start (not IR node id) — see module docs.
+    DeleteConstruct { span_start: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +97,8 @@ pub enum EditError {
         line: usize,
         message: String,
     },
+    /// Delete refused (e.g. layer-provided infrastructure).
+    RefuseDelete { span_start: usize, reason: String },
 }
 
 impl std::fmt::Display for EditError {
@@ -114,6 +120,9 @@ impl std::fmt::Display for EditError {
                 "invalid body at span {} line {}: {}",
                 span_start, line, message
             ),
+            EditError::RefuseDelete { span_start, reason } => {
+                write!(f, "cannot delete span {}: {}", span_start, reason)
+            }
         }
     }
 }
@@ -232,6 +241,10 @@ where
         return Ok(());
     }
 
+    if let EditOp::DeleteConstruct { span_start } = op {
+        return delete_by_span(&mut sol.items, *span_start);
+    }
+
     let span_start = op.span_start();
     let target = find_construct_mut(&mut sol.items, span_start)
         .ok_or(EditError::TargetNotFound(span_start))?;
@@ -296,9 +309,9 @@ where
                 .collect();
             Ok(())
         }
-        EditOp::CreateConstruct { .. } | EditOp::SetBody { .. } => {
-            unreachable!("handled above")
-        }
+        EditOp::CreateConstruct { .. }
+        | EditOp::SetBody { .. }
+        | EditOp::DeleteConstruct { .. } => unreachable!("handled above"),
     }
 }
 
@@ -309,7 +322,8 @@ impl EditOp {
             | EditOp::SetAnnotations { span_start, .. }
             | EditOp::SetFields { span_start, .. }
             | EditOp::SetMethods { span_start, .. }
-            | EditOp::SetBody { span_start, .. } => *span_start,
+            | EditOp::SetBody { span_start, .. }
+            | EditOp::DeleteConstruct { span_start } => *span_start,
             EditOp::CreateConstruct { parent_span, .. } => *parent_span,
         }
     }
@@ -327,6 +341,112 @@ fn find_construct_mut(items: &mut [TopLevelItem], span_start: usize) -> Option<&
         }
     }
     None
+}
+
+/// Remove a node by AST span start from the solution item tree.
+fn delete_by_span(items: &mut Vec<TopLevelItem>, span_start: usize) -> Result<(), EditError> {
+    // Top-level construct / free function / flow.
+    if let Some(i) = items.iter().position(|item| match item {
+        TopLevelItem::Construct(c) if c.span.start == span_start => true,
+        TopLevelItem::Function(f) if f.span.start == span_start => true,
+        TopLevelItem::Flow(f) if f.span.start == span_start => true,
+        _ => false,
+    }) {
+        if let TopLevelItem::Construct(c) = &items[i] {
+            if c.layer_provided {
+                return Err(EditError::RefuseDelete {
+                    span_start,
+                    reason: format!(
+                        "'{}' is layer-provided infrastructure and cannot be deleted",
+                        c.name
+                    ),
+                });
+            }
+        }
+        items.remove(i);
+        return Ok(());
+    }
+
+    // Nested: children, steps, free-fns, method-impls inside constructs.
+    for item in items.iter_mut() {
+        match item {
+            TopLevelItem::Construct(c) => {
+                if try_delete_in_construct(c, span_start)? {
+                    return Ok(());
+                }
+            }
+            TopLevelItem::Flow(flow) => {
+                if try_delete_in_steps(&mut flow.steps, span_start) {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(EditError::TargetNotFound(span_start))
+}
+
+/// Returns Ok(true) if something was removed, Ok(false) if not found here.
+fn try_delete_in_construct(c: &mut Construct, span_start: usize) -> Result<bool, EditError> {
+    // Direct child construct.
+    if let Some(i) = c.children.iter().position(|ch| ch.span.start == span_start) {
+        if c.children[i].layer_provided {
+            return Err(EditError::RefuseDelete {
+                span_start,
+                reason: format!(
+                    "'{}' is layer-provided infrastructure and cannot be deleted",
+                    c.children[i].name
+                ),
+            });
+        }
+        c.children.remove(i);
+        return Ok(true);
+    }
+    // Nested free function on this construct.
+    if let Some(i) = c.fns.iter().position(|f| f.span.start == span_start) {
+        c.fns.remove(i);
+        return Ok(true);
+    }
+    // Method implementation.
+    if let Some(i) = c.impls.iter().position(|imp| imp.span.start == span_start) {
+        c.impls.remove(i);
+        return Ok(true);
+    }
+    // Flow step (or parallel sub-step / match arm — arms are not full constructs;
+    // only named steps are deleted as first-class nodes on the canvas).
+    if try_delete_in_steps(&mut c.steps, span_start) {
+        return Ok(true);
+    }
+    // Recurse into children.
+    for child in c.children.iter_mut() {
+        if try_delete_in_construct(child, span_start)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn try_delete_in_steps(steps: &mut Vec<FlowStep>, span_start: usize) -> bool {
+    if let Some(i) = steps.iter().position(|s| match s {
+        FlowStep::Step(sd) if sd.span.start == span_start => true,
+        FlowStep::Parallel(p) if p.span.start == span_start => true,
+        FlowStep::Match(m) if m.span.start == span_start => true,
+        _ => false,
+    }) {
+        steps.remove(i);
+        return true;
+    }
+    // Parallel sub-steps.
+    for step in steps.iter_mut() {
+        if let FlowStep::Parallel(par) = step {
+            if let Some(j) = par.steps.iter().position(|s| s.span.start == span_start) {
+                par.steps.remove(j);
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn find_in_construct(c: &mut Construct, span_start: usize) -> Option<&mut Construct> {
@@ -781,5 +901,77 @@ mod tests {
             }],
         );
         assert!(matches!(err, Err(EditError::InvalidBody { .. })));
+    }
+
+    #[test]
+    fn delete_construct_removes_nested_child() {
+        let mut parent =
+            Construct::new("ctx", "Context", Shape::Mod, "Identity".into(), Span::new(10, 500));
+        let child =
+            Construct::new("val", "ValueObject", Shape::Struct, "Email".into(), Span::new(50, 100));
+        parent.children.push(child);
+        let mut sol = Solution {
+            name: "App".into(),
+            span: Span::new(0, 0),
+            uses: Vec::new(),
+            items: vec![TopLevelItem::Construct(parent)],
+            expose: None,
+        };
+        apply_edit(
+            &mut sol,
+            &EditOp::DeleteConstruct { span_start: 50 },
+        )
+        .expect("delete");
+        let TopLevelItem::Construct(ctx) = &sol.items[0] else {
+            panic!();
+        };
+        assert!(ctx.children.is_empty(), "child should be gone");
+    }
+
+    #[test]
+    fn delete_step_by_span() {
+        let mut sol = sample_svc_with_step();
+        apply_edit(
+            &mut sol,
+            &EditOp::DeleteConstruct { span_start: 100 },
+        )
+        .expect("delete step");
+        let TopLevelItem::Construct(svc) = &sol.items[0] else {
+            panic!();
+        };
+        assert!(svc.steps.is_empty());
+    }
+
+    #[test]
+    fn delete_layer_provided_refused() {
+        let mut bus =
+            Construct::new("trait", "Trait", Shape::Trait, "Bus".into(), Span::new(20, 40));
+        bus.layer_provided = true;
+        let mut sol = Solution {
+            name: "App".into(),
+            span: Span::new(0, 0),
+            uses: Vec::new(),
+            items: vec![TopLevelItem::Construct(bus)],
+            expose: None,
+        };
+        let err = apply_edit(
+            &mut sol,
+            &EditOp::DeleteConstruct { span_start: 20 },
+        );
+        assert!(matches!(err, Err(EditError::RefuseDelete { .. })), "{:?}", err);
+        assert_eq!(sol.items.len(), 1, "must not remove on refuse");
+    }
+
+    #[test]
+    fn delete_unknown_span_errors() {
+        let mut sol = Solution {
+            name: "App".into(),
+            span: Span::new(0, 0),
+            uses: Vec::new(),
+            items: Vec::new(),
+            expose: None,
+        };
+        let err = apply_edit(&mut sol, &EditOp::DeleteConstruct { span_start: 99 });
+        assert!(matches!(err, Err(EditError::TargetNotFound(99))));
     }
 }

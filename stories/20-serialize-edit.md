@@ -114,14 +114,17 @@ emit in expr-serialize.
 
 ## SER-006: Delete construct / delete node op
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** human restructuring a package  
 **I want** delete to persist to source  
 **So that** canvas Backspace is not a lie
 
 **Acceptance criteria:**
 
-- `EditOp::DeleteConstruct { node_id }` (or equivalent) removes AST node and children
-- Re-serialize + validate; refuse delete if constraints would break (or warn)
-- Viewer Delete/Backspace calls the API
-- Undo optional later; for now confirm dialog is acceptable
+- `EditOp::DeleteConstruct { span_start }` removes AST node and children (span-keyed)
+- Re-serialize + validate; refuse layer-provided; post-check can block write
+- Viewer Delete/Backspace confirms then calls the API
+- Undo optional later; confirm dialog is acceptable
+
+**Done notes:** delete supports nested constructs, steps, free-fns, method-impls;
+viewer no longer local-only filters canvas on Backspace.

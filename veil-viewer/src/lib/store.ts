@@ -328,7 +328,9 @@ export type EditOp =
       name: string;
       target?: string;
     }
-  | { op: 'set_body'; span_start: number; body: string[] };
+  | { op: 'set_body'; span_start: number; body: string[] }
+  /** Remove construct / step / free-fn by AST span start (SER-006). */
+  | { op: 'delete_construct'; span_start: number };
 
 /**
  * Persist a batch of structured edits to the server. The server applies them

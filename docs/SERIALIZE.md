@@ -56,7 +56,7 @@ Covers every `examples/*.veil` and `runtime/src/*.veil`. Green fixtures must be
 emit-idempotent. Currently allowlisted as unparseable (svelte string bodies):
 `customer_portal.veil`, `runtime-ui.veil`.
 
-## Edit identity (SER-005)
+## Edit identity (SER-005 / SER-006)
 
 Structured edits (`EditOp`) are keyed by **AST span start** (`node.span.start`),
 not ephemeral IR node ids. After a successful save the server returns a fresh
@@ -65,6 +65,10 @@ IR; subsequent edits must use the new spans.
 `set_body` sends VEIL expression source strings; the server parses each line
 with `veil_parser::parse_expr_str` into real `Expr` nodes. Invalid body text
 returns `400` and **does not** write the file.
+
+`delete_construct` removes a construct (and children), free function, flow, or
+step by span. Layer-provided nodes are refused. Post-edit check may also reject
+the write if the tree no longer validates (e.g. dangling references).
 
 ## Related
 

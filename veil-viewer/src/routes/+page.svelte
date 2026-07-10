@@ -298,6 +298,8 @@
           label: child.name,
           kind: child.kind,
           subkind: child.metadata.subkind,
+          spanStart: child.span.start,
+          layerProvided: child.metadata.annotations.includes('layer-provided'),
           hasChildren: childChildren.length > 0,
           annotations: child.metadata.annotations,
           properties: child.metadata.properties,
@@ -642,9 +644,61 @@
     }
 
     if ((event.key === 'Delete' || event.key === 'Backspace') && $selectedNodeId) {
-      nodes = nodes.filter(n => n.id !== $selectedNodeId);
-      edges = edges.filter(e => e.source !== $selectedNodeId && e.target !== $selectedNodeId);
+      event.preventDefault();
+      void handleDeleteSelected();
+    }
+  }
+
+  /** SER-006: persist delete via EditOp (not a local-only canvas filter). */
+  async function handleDeleteSelected() {
+    const id = get(selectedNodeId);
+    if (!id) return;
+    const graph = get(irGraph);
+    if (!graph) return;
+
+    // Ghost nodes are not real AST targets
+    const flowNode = nodes.find(n => n.id === id);
+    if (flowNode?.data?.isGhost) return;
+
+    const irNode = graph.nodes.find(n => n.id === Number(id));
+    if (!irNode) {
+      // Unsaved dropped node — local remove only
+      nodes = nodes.filter(n => n.id !== id);
+      edges = edges.filter(e => e.source !== id && e.target !== id);
       selectedNodeId.set(null);
+      return;
+    }
+
+    const layerProvided =
+      irNode.metadata.annotations.includes('layer-provided')
+      || Boolean(flowNode?.data?.layerProvided);
+    if (layerProvided) {
+      alert(`Cannot delete "${irNode.name}": layer-provided infrastructure.`);
+      return;
+    }
+
+    const spanStart = irNode.span?.start ?? flowNode?.data?.spanStart;
+    if (spanStart === undefined || spanStart === null) {
+      alert(`Cannot delete "${irNode.name}": missing AST span (not yet saved?).`);
+      return;
+    }
+
+    const kind = irNode.metadata.subkind || irNode.kind;
+    if (!confirm(`Delete ${kind} "${irNode.name}"?\n\nThis will update the .veil source.`)) {
+      return;
+    }
+
+    selectedNodeId.set(null);
+    const ok = await saveEdits([{ op: 'delete_construct', span_start: spanStart }]);
+    if (!ok) {
+      // saveError is set by the store; keep selection cleared
+      return;
+    }
+    const fresh = get(irGraph);
+    const parent = get(currentParent);
+    const palette = get(paletteConfig);
+    if (fresh) {
+      await computeView(fresh, parent, palette);
     }
   }
 
