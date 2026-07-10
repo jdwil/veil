@@ -46,6 +46,10 @@ export interface PresentationModel {
   constructs: Record<string, ConstructRoleDto>;
 }
 
+/** MVP layouts (LAY-006). Unknown ids fall back to `flat` at runtime. */
+export const MVP_LAYOUTS = ['flat', 'tabs', 'tree', 'flow'] as const;
+export type MvpLayout = (typeof MVP_LAYOUTS)[number];
+
 export interface ProjectResult {
   /** Nodes to place on the canvas (top-level of this projection). */
   nodes: IrNode[];
@@ -53,8 +57,27 @@ export interface ProjectResult {
   tabs: string[];
   /** Active tab contents when layout is tabs (group IR node or null for virtual). */
   tabGroupNodes: Map<string, IrNode | null>;
+  /** Resolved layout after unknown→flat fallback. */
   layout: string;
+  /** True if view.layout was unknown / deferred and remapped. */
+  layoutFallback: boolean;
+  /** For `flow`: ELK direction. */
+  flowDirection: 'LR' | 'TB' | null;
   view: ViewSpec | null;
+}
+
+/** Resolve layout: known MVP pass through; bipartite/unknown → flat + fallback. */
+export function resolveLayout(layout: string | undefined | null): {
+  layout: string;
+  fallback: boolean;
+} {
+  const l = (layout ?? '').trim();
+  if (!l) return { layout: 'flat', fallback: true };
+  if ((MVP_LAYOUTS as readonly string[]).includes(l)) {
+    return { layout: l, fallback: false };
+  }
+  // bipartite deferred; anything else unknown
+  return { layout: 'flat', fallback: true };
 }
 
 function constructName(n: IrNode): string {
@@ -109,7 +132,8 @@ function collectCandidates(
   members: string,
   view: ViewSpec
 ): IrNode[] {
-  const mode = members || defaultMembers(view.layout);
+  const layout = resolveLayout(view.layout).layout;
+  const mode = members || defaultMembers(layout);
   if (mode === 'all_descendants') {
     return irDescendants(graph, hostId);
   }
@@ -123,7 +147,7 @@ function collectCandidates(
   // by_host_children (default) and by_source_group start from direct children.
   // For non-tab layouts, flatten Group containers so roots can be found inside.
   const direct = irChildren(graph, hostId);
-  if (view.layout === 'tabs' || mode === 'by_source_group') {
+  if (layout === 'tabs' || mode === 'by_source_group') {
     return direct;
   }
   return flattenGroups(graph, direct);
@@ -189,11 +213,17 @@ export function projectView(
       tabs: [],
       tabGroupNodes: new Map(),
       layout: 'flat',
+      layoutFallback: false,
+      flowDirection: null,
       view: null,
     };
   }
 
-  let candidates = collectCandidates(graph, hostId, view.members ?? '', view);
+  const { layout, fallback: layoutFallback } = resolveLayout(view.layout);
+  // Project using resolved layout (unknown → flat)
+  const effectiveView: ViewSpec = { ...view, layout };
+
+  let candidates = collectCandidates(graph, hostId, view.members ?? '', effectiveView);
   if (options?.hideLayerProvided !== false) {
     candidates = candidates.filter(
       (c) => !c.metadata.annotations.includes('layer-provided')
@@ -201,30 +231,43 @@ export function projectView(
   }
   const candidateIds = new Set(candidates.map((c) => c.id));
 
-  if (view.layout === 'tabs') {
-    return projectTabs(graph, hostId, view, candidates, options);
+  if (layout === 'tabs') {
+    return projectTabs(graph, effectiveView, candidates, layoutFallback);
   }
 
-  if (view.layout === 'tree') {
-    return projectTree(graph, view, candidates, candidateIds);
+  if (layout === 'tree') {
+    return projectTree(graph, effectiveView, candidates, candidateIds, layoutFallback);
   }
 
-  // flat | flow | bipartite (MVP: flat sibling list)
+  if (layout === 'flow') {
+    return {
+      nodes: [...candidates].sort(sortBySpan),
+      tabs: [],
+      tabGroupNodes: new Map(),
+      layout: 'flow',
+      layoutFallback,
+      flowDirection: 'LR',
+      view: effectiveView,
+    };
+  }
+
+  // flat
   return {
     nodes: [...candidates].sort(sortBySpan),
     tabs: [],
     tabGroupNodes: new Map(),
-    layout: view.layout || 'flat',
-    view,
+    layout: 'flat',
+    layoutFallback,
+    flowDirection: null,
+    view: effectiveView,
   };
 }
 
 function projectTabs(
   graph: IrGraph,
-  hostId: number,
   view: ViewSpec,
   candidates: IrNode[],
-  options?: { hideLayerProvided?: boolean }
+  layoutFallback: boolean
 ): ProjectResult {
   const groupNodes = candidates.filter((c) => c.kind === 'Group');
   const tabKeys =
@@ -232,7 +275,6 @@ function projectTabs(
       ? [...view.tabs]
       : [...new Set(groupNodes.map((g) => g.name))];
 
-  // Ensure existing groups appear even if not in view.tabs
   for (const g of groupNodes) {
     if (!tabKeys.includes(g.name)) tabKeys.push(g.name);
   }
@@ -243,10 +285,12 @@ function projectTabs(
   }
 
   return {
-    nodes: [], // tab contents resolved by caller for active tab
+    nodes: [],
     tabs: tabKeys,
     tabGroupNodes,
     layout: 'tabs',
+    layoutFallback,
+    flowDirection: null,
     view,
   };
 }
@@ -255,7 +299,8 @@ function projectTree(
   graph: IrGraph,
   view: ViewSpec,
   candidates: IrNode[],
-  candidateIds: Set<number>
+  candidateIds: Set<number>,
+  layoutFallback: boolean
 ): ProjectResult {
   const rootNames = new Set(view.roots ?? []);
   const rules = view.nest_rules ?? [];
@@ -277,13 +322,10 @@ function projectTree(
 
   const policy = view.orphan_policy || 'list';
   let nodes: IrNode[] = [...roots];
-  if (policy === 'list') {
+  if (policy === 'list' || policy === 'bucket') {
     nodes = [...roots, ...orphans];
   } else if (policy === 'hide') {
     nodes = [...roots];
-  } else if (policy === 'bucket') {
-    // Synthetic bucket not an IrNode — orphans still listed as roots siblings for MVP
-    nodes = [...roots, ...orphans];
   }
 
   nodes.sort(sortBySpan);
@@ -292,6 +334,8 @@ function projectTree(
     tabs: [],
     tabGroupNodes: new Map(),
     layout: 'tree',
+    layoutFallback,
+    flowDirection: null,
     view,
   };
 }
@@ -377,10 +421,32 @@ export function selfCheckProjection(): string | null {
   };
   const result = projectView(graph, 1, view, { hideLayerProvided: true });
   const names = result.nodes.map((n) => n.name).sort();
-  // RootA is root; ChildB nested (hidden); OrphanC listed
   if (!names.includes('RootA')) return 'missing root RootA';
   if (names.includes('ChildB')) return 'ChildB should be nested under RootA, not top-level';
   if (!names.includes('OrphanC')) return 'orphan OrphanC should list';
   if (result.layout !== 'tree') return 'layout should be tree';
+
+  // LAY-006: unknown layout falls back to flat
+  const bad = projectView(
+    graph,
+    1,
+    { id: 'x', label: 'X', layout: 'spiral' },
+    { hideLayerProvided: true }
+  );
+  if (bad.layout !== 'flat' || !bad.layoutFallback) {
+    return 'unknown layout should fall back to flat';
+  }
+
+  // flow
+  const flow = projectView(
+    graph,
+    1,
+    { id: 'f', label: 'F', layout: 'flow', members: 'by_host_children' },
+    { hideLayerProvided: true }
+  );
+  if (flow.layout !== 'flow' || flow.flowDirection !== 'LR') {
+    return 'flow layout should set LR direction';
+  }
+
   return null;
 }

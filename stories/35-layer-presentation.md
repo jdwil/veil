@@ -218,7 +218,7 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 ## LAY-006: Layout kinds (MVP set)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** layer author  
 **I want** a documented MVP set of layout algorithms  
 **So that** I can choose presentation without inventing engine features per app
@@ -239,6 +239,15 @@ MVP layouts (implement + document):
 - At least `flat`, `tabs`, `tree` wired end-to-end in tests
 
 **Depends:** LAY-001, LAY-003  
+**Done notes:**
+
+- `crates/veil-ir/src/project.rs` — pure projection + unit tests for flat/tabs/tree/flow
+  and unknown→flat fallback; `bipartite` runtime-falls-back to flat
+- Load still strict (unknown layout fails layer load)
+- Viewer: `resolveLayout`, `flowDirection`; canvas placement keyed only by
+  `projected.layout` (not host kind hardcoding for presentation path)
+- PRESENTATION.md §4.1 updated with implementation status
+
 **Mission impact:** Stops ad-hoc layout growth inside the Svelte app.
 
 ---

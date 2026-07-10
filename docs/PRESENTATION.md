@@ -6,6 +6,8 @@
 - **LAY-002:** layer loader + **`GET /api/presentation`**
 - **LAY-003:** viewer fetches presentation IR, view switcher, `projectView()`
   in `veil-viewer/src/lib/presentation.ts` (tabs / tree / flat / flow)
+- **LAY-006:** MVP layouts locked + tested (`veil-ir/src/project.rs` + viewer
+  `resolveLayout` fallback)
 
 **Mission rule:** The engine and viewer contain **zero domain knowledge**.
 Paradigms (DDD, functional, Svelte UI, …) teach the IDE **how to look** via
@@ -169,17 +171,26 @@ for projection. Loaders may warn if they disagree.
 
 ## 4. Enumerations (MVP)
 
-### 4.1 Layouts
+### 4.1 Layouts (LAY-006 — implemented)
 
-| Id | Behavior | MVP |
-|----|----------|-----|
-| `flat` | All projected nodes as siblings (current default canvas) | **Yes** |
-| `tabs` | Partition candidates by **source group** name (or `tabs` list); one tab active | **Yes** |
-| `tree` | Forest from `roots` + `nest` rules; drill into containers | **Yes** |
-| `flow` | Sequence-oriented layout (LR/TB) for fn/flow-like bodies — maps to existing ELK flow when parent is flow-shaped | **Yes** (thin) |
-| `bipartite` | Two columns (`left` / `right`) + edges of `edge` kind | Later (LAY optional) |
+| Id | Behavior | Status |
+|----|----------|--------|
+| `flat` | All projected candidates as siblings (type-column placement) | **Implemented** |
+| `tabs` | Partition by source group / `tabs` list; one tab active | **Implemented** |
+| `tree` | Roots + nest rules; nested nodes omitted at host level (drill into containers) | **Implemented** |
+| `flow` | Sibling candidates + ELK layered sequence (`LR` by default) | **Implemented** |
+| `bipartite` | Two columns + edge kind | Deferred; load accepted, **runtime falls back to `flat`** |
 
-Unknown `layout` → **layer load error**.
+**Load time (strict):** unknown layout id → **layer load error** (`validate_presentations`).
+
+**Runtime (viewer):** if an older viewer meets a newer layout id, or `bipartite`,
+`resolveLayout` maps to **`flat`** and sets `layoutFallback: true` (no crash).
+
+**Engine tests:** `veil-ir::project` — `layout_flat_*`, `layout_tabs_*`,
+`layout_tree_*`, `layout_flow_*`, `unknown_layout_falls_back_to_flat`.
+
+**Viewer:** uses only `projected.layout` / `flowDirection` for placement — no
+per-construct layout hardcoding.
 
 ### 4.2 Member modes (`members`)
 

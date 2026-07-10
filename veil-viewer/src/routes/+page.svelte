@@ -436,20 +436,17 @@
         return;
       }
 
-      // flat | tree | flow — show projected top-level nodes
+      // flat | tree | flow — driven only by projected.layout (LAY-006)
       tabs = [];
       activeTab = null;
       const itemIds = new Set(projected.nodes.map((c) => c.id));
       const flowNodes = toFlowNodes(graph, projected.nodes, itemIds);
       const flowEdges = edgesAmong(graph, itemIds);
-      const useFlowLayout =
-        projected.layout === 'flow' ||
-        parentNode?.kind === 'Flow' ||
-        parentNode?.kind === 'Step' ||
-        parentNode?.kind === 'InterfaceMethod';
-      if (useFlowLayout) {
-        nodes = await layoutNodes(flowNodes, flowEdges, 'LR', graphContainerEl);
+      if (projected.layout === 'flow') {
+        const dir = projected.flowDirection ?? 'LR';
+        nodes = await layoutNodes(flowNodes, flowEdges, dir, graphContainerEl);
       } else {
+        // flat + tree: type-column layout (tree drill uses same placement)
         nodes = await layoutByType(flowNodes, graphContainerEl);
       }
       edges = flowEdges;

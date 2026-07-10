@@ -10,6 +10,7 @@ pub mod ir;
 pub mod layer;
 pub mod names;
 pub mod presentation;
+pub mod project;
 pub mod resolve;
 pub mod typecheck;
 pub mod serialize;
@@ -30,6 +31,7 @@ pub use presentation::{
     presentation_from_registry, ConstructPresentation, HostPresentation, NestRule, NestableHint,
     PresentationModel, ViewSpec,
 };
+pub use project::{project_view, resolve_layout, ProjectInputNode, ProjectOutput, MVP_LAYOUTS};
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;
