@@ -33,7 +33,7 @@ rust codegen use roles only. Template `dep_fields` via registry.
 
 ## INV-002: Smart constructors as layer/target policy
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** target/policy author  
 **I want** defaulting rules (id, timestamps, scalars) in `rust.layer` (or
   equivalent), not hardcoded arrays in `rust.rs`  
@@ -45,6 +45,10 @@ rust codegen use roles only. Template `dep_fields` via registry.
 - Implemented via layer codegen rules or declarative default policy tables
 - Document how to customize
 - Examples still generate compiling constructors
+
+**Done notes:** `ConstructorPolicy` + `constructor_policy` block in
+`rust.layer`; `rust.rs` reads `registry.constructor_policy` (with
+`rust_defaults()` fallback). Customize by editing the layer block.
 
 ---
 
@@ -125,7 +129,7 @@ rust codegen use roles only. Template `dep_fields` via registry.
 
 ## INV-007: Invariant hygiene CI gate
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** maintainer  
 **I want** CI to fail on new engine domain literals  
 **So that** invariant debt does not grow
@@ -136,3 +140,6 @@ rust codegen use roles only. Template `dep_fields` via registry.
   BoundedContext, sqlx feature special-case, hardcoded annotation policy)
 - Allowlist file for known residual debt with ticket IDs
 - New hits fail CI until allowlisted with justification
+
+**Done notes:** `scripts/invariant_hygiene.sh` + `invariant_allowlist.txt`.
+Run in CI: `bash scripts/invariant_hygiene.sh`.

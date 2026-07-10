@@ -7,6 +7,15 @@ layer rust
   # layout) lives in rust.rs. This layer handles the "opinionated
   # surface" — things teams might want to customize.
 
+  # INV-002: smart-constructor field defaults (not hardcoded in rust.rs).
+  # Override by editing these lists; engine reads ConstructorPolicy.
+  constructor_policy
+    auto_fields created, updated, created_at, updated_at, created_on, updated_on, deleted_on, date_joined
+    type_default Int 0
+    type_default Bool false
+    type_default F64 0.0
+    type_default Json serde_json::json!({})
+
   # ─── Codegen Templates ──────────────────────────────────────────────
 
   codegen rust

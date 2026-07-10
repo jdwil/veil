@@ -282,7 +282,7 @@ uuid.workspace = true"#);
         ),
     });
 
-    files.push(gen_types(&contents, &crate_name));
+    files.push(gen_types(&contents, &crate_name, registry));
     files.push(gen_child_types(&contents, &crate_name));
     files.push(GeneratedFile {
         path: format!("crates/{}/src/domain/mod.rs", crate_name),
@@ -427,7 +427,7 @@ fn gen_manifest(
     }
 }
 
-fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
+fn gen_types(contents: &ModuleContents, crate_name: &str, registry: &LayerRegistry) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
@@ -495,7 +495,7 @@ fn gen_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     }
 
     for c in &contents.structs {
-        out.push_str(&gen_struct(c));
+        out.push_str(&gen_struct(c, registry));
     }
     for e in &contents.enums {
         out.push_str(&gen_enum(e));
@@ -557,7 +557,7 @@ fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
 }
 
 /// Generate a struct-shaped construct: struct + enum blocks + invariant impl.
-fn gen_struct(c: &Construct) -> String {
+fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
     let mut out = String::new();
     let has_invariant = c.annotations.iter().any(|a| a.name == "invariant");
 
@@ -597,17 +597,23 @@ fn gen_struct(c: &Construct) -> String {
         }
     }
 
+    // INV-002: constructor auto-fields / type defaults from layer policy.
+    let ctor_pol = if registry.constructor_policy.auto_fields.is_empty() {
+        veil_ir::layer::ConstructorPolicy::rust_defaults()
+    } else {
+        registry.constructor_policy.clone()
+    };
+
     if has_invariant {
         // Smart constructor with invariant validation — same field filtering as non-invariant
-        let auto_fields = ["created", "updated", "created_at", "updated_at", "created_on", "updated_on", "deleted_on", "date_joined"];
         let scalar_default_fields: std::collections::HashSet<String> = fields.iter()
-            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if n == "Int" || n == "Bool" || n == "F64" || n == "Json"))
+            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if ctor_pol.type_default(n).is_some()))
             .map(|f| f.name.clone())
             .collect();
 
         let user_fields: Vec<&&Field> = fields.iter()
             .filter(|f| {
-                !auto_fields.contains(&f.name.as_str())
+                !ctor_pol.is_auto_field(&f.name)
                 && !scalar_default_fields.contains(&f.name)
                 && !matches!(&f.type_expr, TypeExpr::Optional(_))
                 && !matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option")
@@ -620,15 +626,13 @@ fn gen_struct(c: &Construct) -> String {
 
         let init_fields = fields.iter().map(|f| {
             let snake = to_snake(&f.name);
-            if auto_fields.contains(&f.name.as_str()) {
+            if ctor_pol.is_auto_field(&f.name) {
                 let is_optional = matches!(&f.type_expr, TypeExpr::Optional(_))
                     || matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option");
                 if is_optional { format!("{}: None", snake) } else { format!("{}: Utc::now()", snake) }
             } else if scalar_default_fields.contains(&f.name) {
                 let default = match &f.type_expr {
-                    TypeExpr::Named(n) if n == "Bool" => "false",
-                    TypeExpr::Named(n) if n == "F64" => "0.0",
-                    TypeExpr::Named(n) if n == "Json" => "serde_json::json!({})",
+                    TypeExpr::Named(n) => ctor_pol.type_default(n).unwrap_or("0"),
                     _ => "0",
                 };
                 format!("{}: {}", snake, default)
@@ -644,9 +648,7 @@ fn gen_struct(c: &Construct) -> String {
             c.name, params_str, init_fields,
         ));
     } else if !fields.is_empty() {
-        // Generate a smart constructor — auto-defaulting id, timestamps, and enum-state fields
-        let auto_fields = ["created", "updated", "created_at", "updated_at", "created_on", "updated_on", "deleted_on", "date_joined"];
-
+        // Generate a smart constructor — auto-defaulting timestamps / scalars (INV-002 policy)
         // id is accepted as a parameter — callers provide it (or pass Uuid::new_v4())
         // Enum-typed fields (like status) get their first variant as default
         let enum_field_names: std::collections::HashSet<String> = c.blocks.iter()
@@ -660,15 +662,14 @@ fn gen_struct(c: &Construct) -> String {
                 }).map(|f| f.name.clone())
             }).collect();
 
-        // Fields with scalar defaults (Int→0, Bool→false, F64→0.0, Json→{}) are auto-initialized
         let scalar_default_fields: std::collections::HashSet<String> = fields.iter()
-            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if n == "Int" || n == "Bool" || n == "F64" || n == "Json"))
+            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if ctor_pol.type_default(n).is_some()))
             .map(|f| f.name.clone())
             .collect();
 
         let user_fields: Vec<&&Field> = fields.iter()
             .filter(|f| {
-                !auto_fields.contains(&f.name.as_str())
+                !ctor_pol.is_auto_field(&f.name)
                 && !enum_field_names.contains(&f.name)
                 && !scalar_default_fields.contains(&f.name)
                 // Optional fields default to None — exclude from constructor params
@@ -683,7 +684,7 @@ fn gen_struct(c: &Construct) -> String {
 
         let init_fields = fields.iter().map(|f| {
             let snake = to_snake(&f.name);
-            if auto_fields.contains(&f.name.as_str()) {
+            if ctor_pol.is_auto_field(&f.name) {
                 // Timestamp fields: use Utc::now() for non-optional, None for optional
                 let is_optional = matches!(&f.type_expr,
                     TypeExpr::Generic(name, _) if name == "Opt" || name == "Option")
@@ -694,12 +695,9 @@ fn gen_struct(c: &Construct) -> String {
                     format!("{}: Utc::now()", snake)
                 }
             } else if scalar_default_fields.contains(&f.name) {
-                // Scalar defaults: Int→0, Bool→false, F64→0.0, Json→{}
                 let default = match &f.type_expr {
-                    TypeExpr::Named(n) if n == "Bool" => "false",
-                    TypeExpr::Named(n) if n == "F64" => "0.0",
-                    TypeExpr::Named(n) if n == "Json" => "serde_json::json!({})",
-                    _ => "0", // Int and anything else numeric
+                    TypeExpr::Named(n) => ctor_pol.type_default(n).unwrap_or("0"),
+                    _ => "0",
                 };
                 format!("{}: {}", snake, default)
             } else if enum_field_names.contains(&f.name) {

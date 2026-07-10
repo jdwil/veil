@@ -230,6 +230,52 @@ pub struct CodegenRule {
 
 // ─── LayerRegistry ───────────────────────────────────────────────────────────
 
+/// Target constructor / field-default policy (INV-002).
+/// Declared in target layers (e.g. `rust.layer`); not hardcoded in backends.
+#[derive(Debug, Clone, Default)]
+pub struct ConstructorPolicy {
+    /// Field names auto-filled (timestamps, etc.) rather than constructor params.
+    pub auto_fields: Vec<String>,
+    /// Named type → default Rust expression (e.g. Int → "0").
+    pub type_defaults: Vec<(String, String)>,
+}
+
+impl ConstructorPolicy {
+    /// Built-in Rust defaults — used only until a target layer overrides.
+    /// Living here (layer policy) rather than in rust.rs (INV-002).
+    pub fn rust_defaults() -> Self {
+        Self {
+            auto_fields: vec![
+                "created".into(),
+                "updated".into(),
+                "created_at".into(),
+                "updated_at".into(),
+                "created_on".into(),
+                "updated_on".into(),
+                "deleted_on".into(),
+                "date_joined".into(),
+            ],
+            type_defaults: vec![
+                ("Int".into(), "0".into()),
+                ("Bool".into(), "false".into()),
+                ("F64".into(), "0.0".into()),
+                ("Json".into(), "serde_json::json!({})".into()),
+            ],
+        }
+    }
+
+    pub fn is_auto_field(&self, name: &str) -> bool {
+        self.auto_fields.iter().any(|f| f == name)
+    }
+
+    pub fn type_default(&self, type_name: &str) -> Option<&str> {
+        self.type_defaults
+            .iter()
+            .find(|(t, _)| t == type_name)
+            .map(|(_, e)| e.as_str())
+    }
+}
+
 /// The resolved vocabulary for a compilation: built-in core constructs plus
 /// everything from the loaded (possibly stacked) layers.
 pub struct LayerRegistry {
@@ -249,6 +295,8 @@ pub struct LayerRegistry {
     /// External layer resolver — called when a layer isn't found locally or in system.
     /// Provided by the hosting runtime (e.g. veil-runtime for database-backed resolution).
     pub external_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    /// Smart-constructor / field-default policy (INV-002). Filled from target layers.
+    pub constructor_policy: ConstructorPolicy,
 }
 
 impl Default for LayerRegistry {
@@ -262,6 +310,7 @@ impl Default for LayerRegistry {
             codegen_templates: Vec::new(),
             stubs: Vec::new(),
             external_resolver: None,
+            constructor_policy: ConstructorPolicy::default(),
         }
     }
 }
@@ -277,6 +326,7 @@ impl Clone for LayerRegistry {
             codegen_templates: self.codegen_templates.clone(),
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
+            constructor_policy: self.constructor_policy.clone(),
         }
     }
 }
@@ -562,7 +612,15 @@ impl LayerRegistry {
         self.layers.push(name.to_string());
         let raw = parse_layer_file(content, name)
             .map_err(|e| format!("layer '{}': {}", name, e))?;
-        self.merge_and_resolve(raw)
+        self.merge_and_resolve(raw)?;
+        // INV-002: target layers may install constructor policy tables.
+        if let Some(pol) = parse_constructor_policy(content) {
+            self.constructor_policy = pol;
+        } else if name == "rust" && self.constructor_policy.auto_fields.is_empty() {
+            // rust.layer documents policy; apply canonical Rust defaults.
+            self.constructor_policy = ConstructorPolicy::rust_defaults();
+        }
+        Ok(())
     }
 
     /// Build a registry for a `.veil` file: built-ins plus every layer the
@@ -1641,6 +1699,58 @@ pub fn shape_to_node_kind(shape: Shape) -> &'static str {
         Shape::Impl => "Implementation",
         Shape::Fn => "Flow",
         Shape::Group => "Group",
+    }
+}
+
+/// Parse optional INV-002 constructor policy from layer source:
+/// ```text
+/// constructor_policy
+///   auto_fields created, updated, created_at
+///   type_default Int 0
+///   type_default Bool false
+/// ```
+pub fn parse_constructor_policy(content: &str) -> Option<ConstructorPolicy> {
+    let mut in_block = false;
+    let mut pol = ConstructorPolicy::default();
+    let mut found = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t == "constructor_policy" {
+            in_block = true;
+            found = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        // Leave block on de-dent to a top-level keyword-ish line without indent
+        // (raw lines starting at column 0 that aren't policy keys).
+        if !line.starts_with(' ') && !line.starts_with('\t') && !t.starts_with("auto_fields")
+            && !t.starts_with("type_default")
+        {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("auto_fields ") {
+            pol.auto_fields = rest
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        } else if let Some(rest) = t.strip_prefix("type_default ") {
+            let mut parts = rest.splitn(2, char::is_whitespace);
+            if let (Some(ty), Some(expr)) = (parts.next(), parts.next()) {
+                pol.type_defaults
+                    .push((ty.trim().to_string(), expr.trim().to_string()));
+            }
+        }
+    }
+    if found {
+        Some(pol)
+    } else {
+        None
     }
 }
 

@@ -1,0 +1,17 @@
+# INV-007 allowlist: token|path_substring|ticket/note
+# Broad path matches: any hit under path is allowed for residual debt.
+crud_for_aggregate|crates/veil-ir/src/validate.rs|INV-004 residual constraint algorithm
+Aggregate|crates/veil-ir/src/|tests, docs, residual validate
+Aggregate|crates/veil-codegen/src/|tests residual
+Aggregate|crates/veil-parser/src/|tests residual
+BoundedContext|crates/veil-ir/src/|residual
+BoundedContext|crates/veil-codegen/src/|residual
+ApplicationService|crates/veil-ir/src/|residual
+ApplicationService|crates/veil-codegen/src/|residual
+DomainEvent|crates/veil-ir/src/|residual
+DomainEvent|crates/veil-codegen/src/|residual
+"dep"|crates/veil-codegen/src/template.rs|example has_annotation in comments
+"dep"|crates/veil-ir/src/serialize.rs|round-trip tests
+"dep"|crates/veil-ir/src/builder.rs|comment
+"dep"|crates/veil-parser/src/|parser tests for annotation name
+"dep"|crates/veil-ir/src/layer.rs|tests assert role tagging for dep name

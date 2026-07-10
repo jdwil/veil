@@ -29,7 +29,10 @@ pub use escape::{
 };
 pub use edit::{apply_edit, apply_edit_with, apply_edits, apply_edits_with, EditError, EditOp};
 pub use ir::*;
-pub use layer::{CodegenRule, CodegenTemplate, ConstructSpec, LayerRegistry, Shape, StatementSpec, StmtShape, palette_from_registry};
+pub use layer::{
+    palette_from_registry, CodegenRule, CodegenTemplate, ConstructSpec, ConstructorPolicy,
+    LayerRegistry, Shape, StatementSpec, StmtShape,
+};
 pub use presentation::{
     presentation_from_registry, ConstructPresentation, HostPresentation, NestRule, NestableHint,
     PresentationModel, ViewSpec,
