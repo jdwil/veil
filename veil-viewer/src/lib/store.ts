@@ -175,8 +175,35 @@ function applyRootNavigation(data: IrGraph) {
   viewRevision.update((n) => n + 1);
 }
 
+export type LoadActiveOptions = {
+  /** Keep breadcrumbs / drill-down / selection when possible (agent edits). */
+  preserveNav?: boolean;
+};
+
 /** Core IR + panels load (no loading flag). Returns false if superseded. */
-async function loadActiveFile(gen: number): Promise<boolean> {
+async function loadActiveFile(
+  gen: number,
+  opts: LoadActiveOptions = {}
+): Promise<boolean> {
+  const preserveNav = opts.preserveNav === true;
+  let prevParent: number | null = null;
+  let prevCrumbs: { id: number | null; name: string }[] = [];
+  let prevSel: string | null = null;
+  if (preserveNav) {
+    const unsubP = currentParent.subscribe((v) => {
+      prevParent = v;
+    });
+    unsubP();
+    const unsubB = breadcrumbs.subscribe((v) => {
+      prevCrumbs = v;
+    });
+    unsubB();
+    const unsubS = selectedNodeId.subscribe((v) => {
+      prevSel = v;
+    });
+    unsubS();
+  }
+
   const [irRes, srcRes, palRes, presRes, stubRes, filesRes] = await Promise.all([
     fetchWithTimeout(API_URL),
     fetchWithTimeout(SOURCE_URL),
@@ -198,14 +225,20 @@ async function loadActiveFile(gen: number): Promise<boolean> {
   if (gen !== loadGeneration) return false;
 
   irGraph.set(data);
-  selectedNodeId.set(null);
+  if (!preserveNav) {
+    selectedNodeId.set(null);
+  }
 
   if (stubRes && stubRes.ok) {
     stubs.set(await stubRes.json());
   }
 
-  // Check in background — don't block canvas paint on large packages
-  void fetchCheck();
+  // Check: await when preserving nav (agent edit — need live error badge);
+  // otherwise fire-and-forget so first paint isn't blocked on large packages.
+  const checkPromise = fetchCheck();
+  if (!preserveNav) {
+    void checkPromise;
+  }
 
   if (srcRes.ok) {
     veilSource.set(await srcRes.text());
@@ -238,7 +271,29 @@ async function loadActiveFile(gen: number): Promise<boolean> {
     })
     .catch(() => {});
 
-  applyRootNavigation(data);
+  if (preserveNav) {
+    const parentStill =
+      prevParent == null || data.nodes.some((n) => n.id === prevParent);
+    if (parentStill && prevParent != null) {
+      currentParent.set(prevParent);
+      breadcrumbs.set(
+        prevCrumbs.filter(
+          (c) => c.id == null || data.nodes.some((n) => n.id === c.id)
+        )
+      );
+    } else {
+      applyRootNavigation(data);
+    }
+    if (prevSel && data.nodes.some((n) => String(n.id) === prevSel)) {
+      selectedNodeId.set(prevSel);
+    } else {
+      selectedNodeId.set(null);
+    }
+    viewRevision.update((n) => n + 1);
+    await checkPromise;
+  } else {
+    applyRootNavigation(data);
+  }
   return true;
 }
 
@@ -260,6 +315,28 @@ export async function fetchIr() {
     }
   } finally {
     if (gen === loadGeneration) loading.set(false);
+  }
+}
+
+/**
+ * Soft reload after agent / edit tools — no full-page loading flash, keep nav.
+ * Prefer this when the server already applied source changes in-process.
+ */
+export async function refreshAfterEdit(): Promise<void> {
+  const gen = ++loadGeneration;
+  error.set(null);
+  try {
+    await loadActiveFile(gen, { preserveNav: true });
+  } catch (e) {
+    if (gen === loadGeneration) {
+      const msg =
+        e instanceof Error
+          ? e.name === 'AbortError'
+            ? `Timed out talking to API at ${API_BASE}`
+            : e.message
+          : 'Failed to refresh after edit';
+      error.set(msg);
+    }
   }
 }
 

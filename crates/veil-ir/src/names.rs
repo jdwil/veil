@@ -19,7 +19,9 @@ const BUILTIN_TYPES: &[&str] = &[
 ];
 
 /// Built-in free functions / intrinsics (no construct definition required).
-const BUILTIN_CALLS: &[&str] = &["now", "env", "panic", "todo", "unreachable", "assert"];
+const BUILTIN_CALLS: &[&str] = &[
+    "now", "env", "panic", "todo", "unreachable", "assert", "Ok", "Err",
+];
 
 /// Index of names visible in a package for resolution.
 #[derive(Debug, Default)]
@@ -792,6 +794,20 @@ fn check_action(
     }
 }
 
+/// Built-in methods on container types (name-resolution only).
+fn is_container_method(type_name: &str, method: &str) -> bool {
+    match type_name {
+        "List" | "Vec" => matches!(
+            method,
+            "get" | "at" | "len" | "length" | "count" | "is_empty" | "push" | "pop" | "contains"
+        ),
+        "Opt" | "Option" => matches!(method, "is_some" | "is_none" | "unwrap" | "unwrap_or"),
+        "Res" | "Result" => matches!(method, "is_ok" | "is_err" | "unwrap" | "unwrap_or"),
+        "Map" | "HashMap" => matches!(method, "get" | "insert" | "contains" | "len" | "is_empty"),
+        _ => false,
+    }
+}
+
 fn check_method_on_type(
     type_name: &str,
     method: &str,
@@ -799,6 +815,9 @@ fn check_method_on_type(
     index: &NameIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    if is_container_method(type_name, method) {
+        return;
+    }
     if let Some(info) = index.constructs.get(type_name) {
         if !info.methods.contains(method) && method != "new" {
             let mut d = Diagnostic {
@@ -915,11 +934,14 @@ fn looks_like_type_name(name: &str) -> bool {
 fn type_name_hint(ty: &TypeExpr) -> Option<String> {
     match ty {
         TypeExpr::Named(n) => Some(n.clone()),
-        TypeExpr::Generic(n, args) if n == "Opt" || n == "Res" || n == "List" => {
-            args.first().and_then(type_name_hint)
-        }
-        TypeExpr::Optional(t) | TypeExpr::List(t) | TypeExpr::Result(Some(t)) => type_name_hint(t),
-        TypeExpr::Result(None) => None,
+        // Keep container identity so List/Opt methods resolve (get/len, is_some, …)
+        TypeExpr::Generic(n, _) if n == "List" || n == "Vec" => Some("List".into()),
+        TypeExpr::Generic(n, _) if n == "Opt" || n == "Option" => Some("Opt".into()),
+        TypeExpr::Generic(n, _) if n == "Res" || n == "Result" => Some("Res".into()),
+        TypeExpr::Generic(n, args) => args.first().and_then(type_name_hint).or_else(|| Some(n.clone())),
+        TypeExpr::List(_) => Some("List".into()),
+        TypeExpr::Optional(_) => Some("Opt".into()),
+        TypeExpr::Result(_) => Some("Res".into()),
         _ => None,
     }
 }

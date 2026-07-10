@@ -4,7 +4,8 @@
    * `insertToken` appends canvas selection into the composer (IDE-style).
    */
   import { untrack } from 'svelte';
-  import { fetchIr } from '$lib/store';
+  import { get } from 'svelte/store';
+  import { checkMeta, refreshAfterEdit } from '$lib/store';
 
   interface AgentMessage {
     role: string;
@@ -42,20 +43,20 @@
   let err = $state<string | null>(null);
   let contextWarn = $state<string | null>(null);
   let contextMeta = $state<string>('');
+  let syncNote = $state<string | null>(null);
   let history = $state<{ role: string; content: string; tools?: ToolCall[] }[]>([]);
   let abort: AbortController | null = null;
-  let inputEl: HTMLInputElement | null = $state(null);
+  let inputEl: HTMLTextAreaElement | null = $state(null);
 
-  // Consume insert tokens from ReviewDock (avoid $effect read/write on prompt).
-  let lastInsert = '';
+  // Consume insert tokens from ReviewDock without looping on `prompt`.
   $effect(() => {
     const token = insertToken;
-    if (!token || token === lastInsert) return;
-    lastInsert = token;
-    // Read current prompt outside reactive assignment cycle via snapshot
-    const cur = prompt;
-    const sep = cur && !cur.endsWith(' ') && !cur.endsWith('\n') ? ' ' : '';
-    prompt = `${cur}${sep}\`${token}\``;
+    if (!token) return;
+    untrack(() => {
+      const cur = prompt;
+      const sep = cur && !cur.endsWith(' ') && !cur.endsWith('\n') ? ' ' : '';
+      prompt = `${cur}${sep}\`${token}\``;
+    });
     queueMicrotask(() => inputEl?.focus());
   });
 
@@ -65,6 +66,7 @@
     busy = true;
     err = null;
     contextWarn = null;
+    syncNote = null;
     history = [...history, { role: 'user', content: text }];
     prompt = '';
     abort = new AbortController();
@@ -95,7 +97,12 @@
       }
       if (data.error) err = data.error;
       if (data.source_changed) {
-        await fetchIr();
+        // Quiet refresh: server already has new source — pull IR/source/check without flash.
+        await refreshAfterEdit();
+        const meta = get(checkMeta);
+        const e = meta?.error_count ?? '?';
+        const w = meta?.warning_count ?? '?';
+        syncNote = `Source applied · live check: ${e} error(s), ${w} warning(s)`;
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') {
@@ -111,6 +118,13 @@
 
   function cancel() {
     abort?.abort();
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void send();
+    }
   }
 </script>
 
@@ -133,6 +147,9 @@
   {#if contextMeta}
     <div class="ctx-meta">{contextMeta}</div>
   {/if}
+  {#if syncNote}
+    <div class="sync-note" role="status">{syncNote}</div>
+  {/if}
   <div class="thread">
     {#each history as m}
       <div class="msg" class:user={m.role === 'user'} class:asst={m.role === 'assistant'}>
@@ -149,9 +166,10 @@
     {/each}
     {#if history.length === 0}
       <p class="empty">
-        Free-form prompts use the configured model with Tier 0/1 layer teaching context.
-        Select a node on the canvas and use <strong>+ Insert</strong> to reference it.
-        Offline: <code>check</code> · <code>outline</code> · <code>rename A to B</code>.
+        Ask the agent to fix check errors with tools (rename, edit). Source + diagnostics
+        refresh live when tools write — no server restart.
+        Select a node and use <strong>+ Insert</strong>. Offline: <code>check</code> ·
+        <code>outline</code> · <code>rename A to B</code>. Shift+Enter for newline.
       </p>
     {/if}
   </div>
@@ -159,14 +177,14 @@
     <div class="err">{err}</div>
   {/if}
   <div class="composer">
-    <input
+    <textarea
       bind:this={inputEl}
-      type="text"
       bind:value={prompt}
-      placeholder="Ask the agent… (use + Insert for canvas selection)"
+      placeholder="e.g. Run check and fix all errors with tools…"
+      rows="2"
       disabled={busy}
-      onkeydown={(e) => e.key === 'Enter' && send()}
-    />
+      onkeydown={onKey}
+    ></textarea>
     {#if busy}
       <button type="button" class="cancel" onclick={cancel}>Cancel</button>
     {:else}
@@ -276,14 +294,23 @@
     background: rgba(96, 165, 250, 0.15);
     color: #93c5fd;
   }
+  .sync-note {
+    font-size: 10px;
+    padding: 4px 12px;
+    background: rgba(74, 222, 128, 0.12);
+    color: #86efac;
+    border-bottom: 1px solid rgba(74, 222, 128, 0.35);
+    flex-shrink: 0;
+  }
   .composer {
     display: flex;
     gap: 6px;
     padding: 8px;
     border-top: 1px solid var(--veil-border);
     flex-shrink: 0;
+    align-items: flex-end;
   }
-  .composer input {
+  .composer textarea {
     flex: 1;
     border: 1px solid var(--veil-border);
     border-radius: 4px;
@@ -291,6 +318,11 @@
     color: var(--veil-text);
     padding: 6px 8px;
     font-size: 12px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 40px;
+    max-height: 120px;
+    line-height: 1.35;
   }
   .send,
   .cancel {

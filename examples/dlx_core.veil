@@ -379,18 +379,18 @@ pkg dlx_core
 
       repo ListMemberRepo
         find_by_list!(list_id: Id) -> List<ListMember>
-        add!(member: ListMember)
-        remove!(id: Id)
+        save!(member: ListMember)
+        delete!(id: Id)
 
       repo SegmentMemberRepo
         find_by_segment!(segment_id: Id) -> List<SegmentMember>
-        add!(member: SegmentMember)
-        remove!(id: Id)
+        save!(member: SegmentMember)
+        delete!(id: Id)
 
       repo RosterMemberRepo
         find_by_roster!(roster_id: Id) -> List<RosterMember>
-        add!(member: RosterMember)
-        remove!(id: Id)
+        save!(member: RosterMember)
+        delete!(id: Id)
 
     group application
       handler HandleGetCohort
@@ -488,7 +488,7 @@ pkg dlx_core
           guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = ListMember.new(list_id, user_id)
-          list_member_repo.add!(member)
+          list_member_repo.save!(member)
 
       handler HandleAddSegmentMember
         input
@@ -503,7 +503,7 @@ pkg dlx_core
           guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = SegmentMember.new(segment_id, user_id)
-          segment_member_repo.add!(member)
+          segment_member_repo.save!(member)
 
       handler HandleAddRosterMember
         input
@@ -518,7 +518,7 @@ pkg dlx_core
           guard(is_cohort_member.any?(m -> m.user_id == user_id), "User must be a cohort member")
         step execute
           member = RosterMember.new(roster_id, user_id)
-          roster_member_repo.add!(member)
+          roster_member_repo.save!(member)
 
     group infrastructure
       adapter PgTenantRepo for TenantRepo
@@ -606,25 +606,25 @@ pkg dlx_core
         @env(DATABASE_URL)
         impl find_by_list(list_id)
           sqlx.Query.new("SELECT * FROM list_members WHERE list_id = $1").bind(list_id).fetch_all!(pool)
-        impl add(member)
+        impl save(member)
           sqlx.Query.new("INSERT INTO list_members (id, list_id, user_id) VALUES ($1, $2, $3)").bind(member.id).bind(member.list_id).bind(member.user_id).execute!(pool)
-        impl remove(id)
+        impl delete(id)
           sqlx.Query.new("UPDATE list_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
 
       adapter PgSegmentMemberRepo for SegmentMemberRepo
         @env(DATABASE_URL)
         impl find_by_segment(segment_id)
           sqlx.Query.new("SELECT * FROM segment_members WHERE segment_id = $1").bind(segment_id).fetch_all!(pool)
-        impl add(member)
+        impl save(member)
           sqlx.Query.new("INSERT INTO segment_members (id, segment_id, user_id) VALUES ($1, $2, $3)").bind(member.id).bind(member.segment_id).bind(member.user_id).execute!(pool)
-        impl remove(id)
+        impl delete(id)
           sqlx.Query.new("UPDATE segment_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)
 
       adapter PgRosterMemberRepo for RosterMemberRepo
         @env(DATABASE_URL)
         impl find_by_roster(roster_id)
           sqlx.Query.new("SELECT * FROM roster_members WHERE roster_id = $1").bind(roster_id).fetch_all!(pool)
-        impl add(member)
+        impl save(member)
           sqlx.Query.new("INSERT INTO roster_members (id, roster_id, user_id) VALUES ($1, $2, $3)").bind(member.id).bind(member.roster_id).bind(member.user_id).execute!(pool)
-        impl remove(id)
+        impl delete(id)
           sqlx.Query.new("UPDATE roster_members SET deleted_on = now() WHERE id = $1").bind(id).execute!(pool)

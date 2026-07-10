@@ -109,11 +109,16 @@
     position: fixed;
     right: 0;
     top: 60px;
-    bottom: 0;
+    /* Leave room for bottom ReviewDock so the vertical toggle doesn't steal clicks */
+    bottom: max(140px, 22vh);
     z-index: 10;
     display: flex;
     flex-direction: row;
     align-items: flex-start;
+    pointer-events: none;
+  }
+  .code-preview > * {
+    pointer-events: auto;
   }
 
   .toggle-btn {

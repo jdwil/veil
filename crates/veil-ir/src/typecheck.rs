@@ -1184,20 +1184,52 @@ fn infer_call(
         return Ty::Unknown;
     }
 
-    // Local.method
+    // Local.method (incl. List/Opt/Res intrinsics)
     if scope.locals.contains_key(&call.target) && !call.method.is_empty() {
-        if let Ty::Named(type_name) = scope.get(&call.target) {
-            let method = call.method.trim_end_matches('!');
-            if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
-                check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
-                return sig.ret.clone();
+        let method = call.method.trim_end_matches('!');
+        match scope.get(&call.target) {
+            Ty::Named(type_name) => {
+                if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
+                    check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
+                    return sig.ret.clone();
+                }
             }
+            Ty::List(elem) => {
+                return match method {
+                    "get" | "at" | "index" => *elem,
+                    "len" | "length" | "count" => Ty::Named("Int".into()),
+                    "is_empty" => Ty::Named("Bool".into()),
+                    _ => Ty::Unknown,
+                };
+            }
+            Ty::Opt(inner) => {
+                return match method {
+                    "unwrap" | "expect" => *inner,
+                    "is_some" | "is_none" => Ty::Named("Bool".into()),
+                    _ => Ty::Unknown,
+                };
+            }
+            Ty::Res(inner) => {
+                return match method {
+                    "unwrap" | "expect" => inner.map(|b| *b).unwrap_or(Ty::Unit),
+                    "is_ok" | "is_err" => Ty::Named("Bool".into()),
+                    _ => Ty::Unknown,
+                };
+            }
+            _ => {}
         }
         return Ty::Unknown;
     }
 
     // Free function
     if call.method.is_empty() {
+        // Result constructors
+        if call.target == "Ok" {
+            return Ty::Res(arg_tys.first().cloned().map(Box::new));
+        }
+        if call.target == "Err" {
+            return Ty::Res(None);
+        }
         if let Some(sig) = env.free_fns.get(&call.target) {
             check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
             return sig.ret.clone();

@@ -1010,7 +1010,6 @@
     </div>
     <OutlinePanel />
     <DiffPanel />
-    <AgentPanel />
     <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
       <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
       <span>Show infrastructure</span>
@@ -1113,9 +1112,7 @@
       </div>
     </div>
   {/if}
-  <div class="review-dock">
-    <VeilSourcePanel />
-  </div>
+  <ReviewDock />
   <CodePreview />
 </div>
 
@@ -1328,15 +1325,6 @@
     flex: 1;
     display: flex;
     min-height: 0;
-  }
-
-  .review-dock {
-    flex-shrink: 0;
-    max-height: 36vh;
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid var(--veil-border);
-    z-index: 5;
   }
 
   .status-overlay {
