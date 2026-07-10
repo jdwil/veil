@@ -280,7 +280,44 @@ impl Tool for RenameTool {
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
+fn looks_like_layer(source: &str) -> bool {
+    source.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("construct ") || (t.starts_with("pkg ") && source.contains("\n  construct "))
+    }) && !source.contains("\n  ctx ") && !source.contains("\n    group ")
+}
+
 pub fn run_check(source: &str, registry: &LayerRegistry) -> String {
+    // Layer files (DSL-003 / DSL-011)
+    if looks_like_layer(source) || veil_ir::parse_layer_file(source, "active").is_ok() {
+        let name = source
+            .lines()
+            .find_map(|l| {
+                l.trim()
+                    .strip_prefix("pkg ")
+                    .map(|r| r.split_whitespace().next().unwrap_or("layer").to_string())
+            })
+            .unwrap_or_else(|| "layer".into());
+        let diags = veil_ir::check_layer(source, &name);
+        let errs = diags
+            .iter()
+            .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+            .count();
+        let warns = diags
+            .iter()
+            .filter(|d| matches!(d.severity, veil_ir::Severity::Warning))
+            .count();
+        let mut lines = vec![format!(
+            "layer check: {} error(s), {} warning(s) — {}",
+            errs,
+            warns,
+            if errs > 0 { "FAIL" } else { "OK" }
+        )];
+        for d in diags.iter().take(12) {
+            lines.push(format!("  [{:?}] {}", d.severity, d.message));
+        }
+        return lines.join("\n");
+    }
     match parse_source(source, registry) {
         Ok(sol) => {
             let result = check_solution(&sol, registry);
@@ -313,6 +350,23 @@ pub fn run_check(source: &str, registry: &LayerRegistry) -> String {
 }
 
 pub fn run_outline(source: &str, registry: &LayerRegistry) -> String {
+    if let Ok(graph) = veil_ir::build_layer_ir(source, "active") {
+        if graph.nodes.iter().any(|n| n.metadata.subkind.as_deref() == Some("Layer"))
+            || veil_ir::parse_layer_file(source, "active").is_ok()
+        {
+            let mut lines = vec!["layer outline:".to_string()];
+            for n in graph.nodes.iter().filter(|n| {
+                matches!(
+                    n.kind,
+                    veil_ir::NodeKind::TypeDef | veil_ir::NodeKind::Group | veil_ir::NodeKind::Action
+                )
+            }) {
+                let sk = n.metadata.subkind.as_deref().unwrap_or("");
+                lines.push(format!("  - {} {}", sk, n.name));
+            }
+            return lines.join("\n");
+        }
+    }
     match parse_source(source, registry) {
         Ok(sol) => {
             let graph = build_ir_with_registry(&sol, Some(registry));

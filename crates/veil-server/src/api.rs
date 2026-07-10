@@ -16,7 +16,7 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::protocol::{CheckRequest, CheckResponse, EditRequest, EditResponse};
-use crate::provider::SourceProvider;
+use crate::provider::{FileKind, SourceProvider};
 
 /// Build the complete axum Router for the VEIL dev server API.
 ///
@@ -57,6 +57,8 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/agent/tools", get(get_agent_tools))
         .route("/api/events", get(get_events::<P>))
         .route("/api/models", get(get_models))
+        .route("/api/layer/dependents", get(get_layer_dependents::<P>))
+        .route("/api/layer/scaffold", post(post_layer_scaffold::<P>))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -114,15 +116,64 @@ async fn get_ir<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> ax
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let sol = match parse_source(&source, &state.registry()) {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    let kind = state.file_kind("");
+    let graph = match kind {
+        FileKind::Layer => {
+            let name = layer_name_from_files(state.as_ref()).await;
+            match veil_ir::build_layer_ir(&source, &name) {
+                Ok(g) => g,
+                Err(e) => {
+                    // Empty graph with error still allows IDE shell
+                    let mut g = veil_ir::IrGraph::new();
+                    let id = g.add_node(
+                        veil_ir::NodeKind::Solution,
+                        name.clone(),
+                        veil_ir::Span::new(0, source.len()),
+                    );
+                    let _ = id;
+                    g.nodes.last_mut().map(|n| {
+                        n.metadata.doc = Some(format!("layer parse error: {e}"));
+                        n.metadata.subkind = Some("Layer".into());
+                    });
+                    g
+                }
+            }
+        }
+        FileKind::Stub => {
+            let mut g = veil_ir::IrGraph::new();
+            g.add_node(
+                veil_ir::NodeKind::Solution,
+                "stub".into(),
+                veil_ir::Span::new(0, source.len()),
+            );
+            g
+        }
+        FileKind::Package => {
+            let sol = match parse_source(&source, &state.registry()) {
+                Ok(s) => s,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            };
+            veil_ir::build_ir_with_registry(&sol, Some(&state.registry()))
+        }
     };
-    let graph = veil_ir::build_ir_with_registry(&sol, Some(&state.registry()));
     match serde_json::to_string(&graph) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+async fn layer_name_from_files<P: SourceProvider>(state: &P) -> String {
+    let files = state.list_files().await;
+    files
+        .into_iter()
+        .find(|f| f.active)
+        .map(|f| {
+            std::path::Path::new(&f.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| f.name.clone())
+        })
+        .unwrap_or_else(|| "layer".into())
 }
 
 async fn get_source<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
@@ -140,22 +191,46 @@ async fn post_source<P: SourceProvider>(
     if !state.is_editable("") {
         return (StatusCode::FORBIDDEN, "file is read-only").into_response();
     }
-    // Parse + check before write (same integrity bar as edits)
-    match parse_source(&body, &state.registry()) {
-        Ok(sol) => {
-            let check = veil_ir::check_solution(&sol, &state.registry());
-            if check.has_errors() {
-                let msg = check
-                    .diagnostics
+    match state.file_kind("") {
+        FileKind::Layer => {
+            let name = layer_name_from_files(state.as_ref()).await;
+            let diags = veil_ir::check_layer(&body, &name);
+            if diags.iter().any(|d| matches!(d.severity, veil_ir::Severity::Error)) {
+                let msg = diags
                     .iter()
                     .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
                     .map(veil_ir::format_diagnostic_line)
                     .collect::<Vec<_>>()
                     .join("; ");
-                return (StatusCode::BAD_REQUEST, format!("validation failed: {msg}")).into_response();
+                return (StatusCode::BAD_REQUEST, format!("layer validation failed: {msg}"))
+                    .into_response();
             }
         }
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("parse error: {e}")).into_response(),
+        FileKind::Stub => {}
+        FileKind::Package => {
+            match parse_source(&body, &state.registry()) {
+                Ok(sol) => {
+                    let check = veil_ir::check_solution(&sol, &state.registry());
+                    if check.has_errors() {
+                        let msg = check
+                            .diagnostics
+                            .iter()
+                            .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+                            .map(veil_ir::format_diagnostic_line)
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            format!("validation failed: {msg}"),
+                        )
+                            .into_response();
+                    }
+                }
+                Err(e) => {
+                    return (StatusCode::BAD_REQUEST, format!("parse error: {e}")).into_response();
+                }
+            }
+        }
     }
     match state.write_source("", &body).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -169,11 +244,23 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let head_sol = match parse_source(&head_src, &state.registry()) {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("parse head: {}", e)).into_response(),
+    let kind = state.file_kind("");
+    let head_ir = match kind {
+        FileKind::Layer => {
+            let name = layer_name_from_files(state.as_ref()).await;
+            veil_ir::build_layer_ir(&head_src, &name).unwrap_or_else(|_| veil_ir::IrGraph::new())
+        }
+        FileKind::Stub => veil_ir::IrGraph::new(),
+        FileKind::Package => {
+            let head_sol = match parse_source(&head_src, &state.registry()) {
+                Ok(s) => s,
+                Err(e) => {
+                    return (StatusCode::BAD_REQUEST, format!("parse head: {}", e)).into_response();
+                }
+            };
+            veil_ir::build_ir_with_registry(&head_sol, Some(&state.registry()))
+        }
     };
-    let head_ir = veil_ir::build_ir_with_registry(&head_sol, Some(&state.registry()));
 
     let baseline = match state.baseline_source("").await {
         Ok(b) => b,
@@ -182,17 +269,24 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
 
     let (base_label, base_ir) = match baseline {
         Some((label, src)) => {
-            let sol = match parse_source(&src, &state.registry()) {
-                Ok(s) => s,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        format!("parse baseline ({}): {}", label, e),
-                    )
-                        .into_response();
+            let ir = match kind {
+                FileKind::Layer => {
+                    let name = layer_name_from_files(state.as_ref()).await;
+                    veil_ir::build_layer_ir(&src, &name).unwrap_or_else(|_| veil_ir::IrGraph::new())
                 }
+                FileKind::Stub => veil_ir::IrGraph::new(),
+                FileKind::Package => match parse_source(&src, &state.registry()) {
+                    Ok(sol) => veil_ir::build_ir_with_registry(&sol, Some(&state.registry())),
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            format!("parse baseline ({label}): {e}"),
+                        )
+                            .into_response();
+                    }
+                },
             };
-            (label, veil_ir::build_ir_with_registry(&sol, Some(&state.registry())))
+            (label, ir)
         }
         None => {
             // No git baseline — empty base (everything appears as added).
@@ -208,6 +302,10 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
 }
 
 async fn get_generated<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
+    if !matches!(state.file_kind(""), FileKind::Package) {
+        // Layers/stubs do not codegen
+        return json_response("{}".into()).into_response();
+    }
     let source = match state.read_source("").await {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -439,13 +537,154 @@ async fn run_check_for_provider<P: SourceProvider>(
         .read_source("")
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let sol = parse_source(&source, &state.registry())
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("parse failed: {}", e)))?;
     let target = q.target.as_deref().unwrap_or("rust");
     let deny = q.deny_escape_hatches.unwrap_or(false);
     let debt = q.target_debt.unwrap_or(false);
+
+    if matches!(state.file_kind(""), FileKind::Layer) {
+        let name = layer_name_from_files(state).await;
+        let mut diagnostics = veil_ir::check_layer(&source, &name);
+        veil_ir::sort_diagnostics(&mut diagnostics);
+        let error_count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+            .count();
+        let warning_count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, veil_ir::Severity::Warning))
+            .count();
+        return Ok(CheckResponse {
+            diagnostics,
+            error_count,
+            warning_count,
+            target: target.to_string(),
+            escape_hatch: veil_ir::EscapeHatchSummary::default(),
+            ok: error_count == 0,
+        });
+    }
+
+    let sol = parse_source(&source, &state.registry())
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("parse failed: {}", e)))?;
     run_check(&sol, &state.registry(), target, deny, debt)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
+}
+
+async fn get_layer_dependents<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    let layer = match q.get("layer").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => layer_name_from_files(state.as_ref()).await,
+    };
+    let deps = state.layer_dependents(&layer).await;
+    match serde_json::to_string(&serde_json::json!({ "layer": layer, "dependents": deps })) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ScaffoldRequest {
+    /// Layer package name (file stem), e.g. `loyalty`
+    name: String,
+    /// Optional description
+    #[serde(default)]
+    desc: Option<String>,
+    /// Directory relative to CWD (default `layers`)
+    #[serde(default)]
+    dir: Option<String>,
+}
+
+async fn post_layer_edit<P: SourceProvider>(
+    state: SharedProvider<P>,
+    req: EditRequest,
+) -> axum::response::Response {
+    let source = match state.read_source("").await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let name = layer_name_from_files(state.as_ref()).await;
+    let new_src = match crate::layer_edit::apply_layer_edits(&source, &req.edits) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    let diags = veil_ir::check_layer(&new_src, &name);
+    if diags
+        .iter()
+        .any(|d| matches!(d.severity, veil_ir::Severity::Error))
+    {
+        let msg = diags
+            .iter()
+            .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+            .map(veil_ir::format_diagnostic_line)
+            .collect::<Vec<_>>()
+            .join("; ");
+        return (StatusCode::BAD_REQUEST, format!("validation failed: {msg}")).into_response();
+    }
+    if let Err(e) = state.write_source("", &new_src).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    let graph = veil_ir::build_layer_ir(&new_src, &name).unwrap_or_else(|_| veil_ir::IrGraph::new());
+    let response = EditResponse {
+        source: new_src,
+        ir: serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null),
+        generated: serde_json::json!({}),
+        diagnostics: Some(diags),
+    };
+    Json(response).into_response()
+}
+
+async fn post_layer_scaffold<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Json(req): Json<ScaffoldRequest>,
+) -> axum::response::Response {
+    let name = req.name.trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "invalid layer name (use alphanumerics, _ , -)",
+        )
+            .into_response();
+    }
+    let dir = req.dir.as_deref().unwrap_or("layers");
+    let path = std::path::Path::new(dir).join(format!("{name}.layer"));
+    if path.exists() {
+        return (StatusCode::CONFLICT, format!("{} already exists", path.display()))
+            .into_response();
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    let desc = req
+        .desc
+        .unwrap_or_else(|| format!("{name} team DSL"));
+    let content = format!(
+        "pkg {name} v1\n  desc \"{desc}\"\n  author \"VEIL\"\n\n  construct Example\n    kw example\n    mt struct\n    desc \"Starter construct — rename me\"\n    visual\n      icon \"📦\"\n      color \"#6366f1\"\n      label \"Example\"\n    group domain\n\n  prompt\n    You are authoring packages that use the `{name}` layer.\n    Prefer layer keywords; keep platform packages as dependencies.\n"
+    );
+    if let Err(e) = std::fs::write(&path, &content) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    let idx = match state.register_file(path.clone(), content.clone(), true) {
+        Ok(i) => i,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        }
+    };
+    crate::revision::bus().publish(content.len(), &path.to_string_lossy(), "scaffold_layer");
+    match serde_json::to_string(&serde_json::json!({
+        "index": idx,
+        "path": path.to_string_lossy(),
+        "name": format!("{name}.layer"),
+        "kind": "layer",
+    })) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn get_files<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
@@ -462,23 +701,12 @@ async fn post_select_file<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
     Json(req): Json<crate::protocol::SelectFileRequest>,
 ) -> axum::response::Response {
-    // UX-011: switch active file, then return IR for the new active source.
+    // UX-011 / DSL-001: switch active file, then return IR for package or layer.
     if let Err(e) = state.set_active(req.index) {
         return (StatusCode::BAD_REQUEST, e).into_response();
     }
-    let source = match state.read_source("").await {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
-    let sol = match parse_source(&source, &state.registry()) {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
-    let graph = veil_ir::build_ir_with_registry(&sol, Some(&state.registry()));
-    match serde_json::to_string(&graph) {
-        Ok(json) => json_response(json).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    // Reuse get_ir logic
+    get_ir(State(state)).await
 }
 
 async fn post_edit<P: SourceProvider>(
@@ -487,6 +715,11 @@ async fn post_edit<P: SourceProvider>(
 ) -> axum::response::Response {
     if !state.is_editable("") {
         return (StatusCode::BAD_REQUEST, "file is read-only").into_response();
+    }
+
+    if matches!(state.file_kind(""), FileKind::Layer) {
+        // Layer structured ops: apply textual patch helpers (DSL-006/008)
+        return post_layer_edit(state, req).await;
     }
 
     // AGT-017: remote SourceStore — forward structured edit to host serve
@@ -584,17 +817,17 @@ async fn get_agent_tools() -> axum::response::Response {
     let tools = serde_json::json!([
         {
             "name": "veil_check",
-            "description": "Run the VEIL dual-loop check pipeline on the active package.",
+            "description": "Run check on the active file (package dual-loop or layer validate).",
             "parameters": { "type": "object", "properties": {} }
         },
         {
             "name": "veil_outline",
-            "description": "Compact IR construct outline for the active package.",
+            "description": "Compact IR construct outline for the active package or layer.",
             "parameters": { "type": "object", "properties": {} }
         },
         {
             "name": "read_source",
-            "description": "Read active .veil source (truncated).",
+            "description": "Read active .veil or .layer source (truncated).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -604,7 +837,7 @@ async fn get_agent_tools() -> axum::response::Response {
         },
         {
             "name": "rename_construct",
-            "description": "Rename a construct via structured EditOp.",
+            "description": "Rename a construct via structured EditOp (packages) or layer text patch.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -614,6 +847,16 @@ async fn get_agent_tools() -> axum::response::Response {
                 },
                 "required": ["from", "to"]
             }
+        },
+        {
+            "name": "list_layers",
+            "description": "List .layer files in the serve set (DSL-011).",
+            "parameters": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "layer_outline",
+            "description": "Outline constructs/keywords for the active layer.",
+            "parameters": { "type": "object", "properties": {} }
         }
     ]);
     let body = serde_json::json!({
