@@ -72,7 +72,7 @@ placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` /
 
 ## UX-013: Connect / wiring persistence (MVP policy)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** human  
 **I want** clarity on whether edges are editable wiring or derived  
 **So that** I do not draw edges that vanish on reload
@@ -83,11 +83,15 @@ placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` /
 - Either: disable freeform connect, **or** implement persisted wiring ops
 - If freeform remains, mark edges as “local only” visually until saved
 
+**Done notes:** Freeform connect kept for sketching; edges use dashed amber
+style + `local only` label and `local-…` ids. Real edges from IR on reload.
+Policy documented in `docs/SERVER.md`.
+
 ---
 
 ## UX-014: Outline / search jump
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** reviewer of a large package  
 **I want** search and an outline tree  
 **So that** I can jump to constructs without pan-zoom archaeology
@@ -98,11 +102,14 @@ placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` /
 - Optional left outline: modules → groups → constructs
 - Jump selects node and drills breadcrumb as needed
 
+**Done notes:** `OutlinePanel.svelte` — Ctrl/Cmd-K opens search; jump uses
+`focusDiagnostic` breadcrumb path + selection.
+
 ---
 
 ## UX-015: Stub palette section
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** human writing adapters  
 **I want** loaded stubs visible in the palette/browser  
 **So that** external APIs are discoverable
@@ -115,11 +122,14 @@ placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` /
 
 **Related legacy:** UX-006
 
+**Done notes:** Palette “External (stubs)” lists crates, structs, impls with
+method counts/tooltips; not draggable.
+
 ---
 
 ## UX-016: Statement palette section
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** human editing a step body  
 **I want** layer statements (dispatch, guard, …) listed separately  
 **So that** verbs are discoverable without memorizing the layer
@@ -132,11 +142,14 @@ placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` /
 
 **Related legacy:** UX-001 partial
 
+**Done notes:** `entry_type === 'statement'` section; hint “edit in body”;
+not draggable.
+
 ---
 
 ## UX-017: Layer-provided constructs in graph
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** reviewer  
 **I want** declared/layer-provided infrastructure visible but distinct  
 **So that** I see Bus and friends without confusing them with user code
@@ -149,11 +162,15 @@ placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` /
 
 **Related legacy:** UX-002
 
+**Done notes:** Default **hidden** (`showLayerProvided = false`). When shown:
+dimmed dashed node + `infra` badge. Properties/methods via existing PE.
+Documented in `docs/SERVER.md`.
+
 ---
 
 ## UX-018: Retire dual serve implementations
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** maintainer  
 **I want** one server implementation  
 **So that** API behavior does not drift
@@ -163,3 +180,6 @@ placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` /
 - `veil serve` uses only `veil-server`
 - Delete or thin-wrap legacy `veil-cli/src/serve.rs`
 - All endpoints documented in one place (short `docs/SERVER.md` or README section)
+
+**Done notes:** CLI already used `veil_server::build_router`; deleted orphan
+`serve.rs`. Endpoints + policy in `docs/SERVER.md`.

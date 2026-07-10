@@ -124,6 +124,54 @@
       {/each}
     {/if}
 
+    {#if $paletteConfig?.some((c) => c.entry_type === 'statement')}
+      <div class="palette-category">
+        <span class="category-label">Statements</span>
+        <p class="section-hint">Reference only — edit bodies in the review pane</p>
+        <div class="palette-items">
+          {#each $paletteConfig.filter((c) => c.entry_type === 'statement') as s}
+            <div
+              class="palette-tile statement-tile"
+              title="{s.keyword} — layer statement (edit in body, not draggable)"
+              style="--tile-color: {s.color || 'var(--veil-text-dim)'}"
+            >
+              <span class="tile-icon">{s.icon || '▸'}</span>
+              <span class="tile-label">{s.label || s.keyword}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    {#if $stubs && $stubs.length > 0}
+      <div class="palette-category">
+        <span class="category-label">External (stubs)</span>
+        <p class="section-hint">Read-only browse — not instantiable constructs</p>
+        {#each $stubs as stub}
+          <div class="stub-crate">
+            <span class="stub-name">
+              {stub.name}
+              {#if stub.version}<span class="stub-version">{stub.version}</span>{/if}
+            </span>
+            {#each stub.structs as s}
+              <div class="stub-struct" title={s.methods.map(stubSig).join('\n') || s.name}>
+                <span class="stub-icon">◇</span>
+                <span class="stub-struct-name">{s.name}</span>
+                <span class="stub-method-count">{s.methods.length}m</span>
+              </div>
+            {/each}
+            {#each stub.impls as imp}
+              <div class="stub-struct" title={imp.methods.map(stubSig).join('\n') || imp.target}>
+                <span class="stub-icon">⚙</span>
+                <span class="stub-struct-name">{imp.target}</span>
+                <span class="stub-method-count">{imp.methods.length}m</span>
+              </div>
+            {/each}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
   </div>
 </aside>
 
@@ -224,6 +272,21 @@
     font-size: 11px;
     color: var(--veil-text);
     font-weight: 500;
+  }
+
+  .statement-tile {
+    cursor: default;
+    opacity: 0.85;
+  }
+  .statement-tile:hover {
+    transform: none;
+  }
+  .section-hint {
+    margin: 0 4px 4px;
+    font-size: 9px;
+    color: var(--veil-text-faint);
+    font-style: italic;
+    line-height: 1.3;
   }
 
   @media (max-width: 768px) {

@@ -25,6 +25,7 @@
   const isGroup = data.isGroup ?? false;
   const isAbstract = properties.some(([k, v]) => k === 'abstract' && v === 'true');
   const isCritical = data.critical ?? false;
+  const layerProvided = data.layerProvided ?? false;
 </script>
 
 <div
@@ -35,6 +36,7 @@
   class:is-error={kind === 'ErrorBoundary'}
   class:is-group={isGroup}
   class:is-critical={isCritical}
+  class:layer-provided={layerProvided}
   style="--node-color: {style.color}"
 >
   <Handle type="target" position={Position.Top} id="top" />
@@ -51,6 +53,9 @@
     <div class="node-header">
       <span class="node-icon">{style.icon}</span>
       <span class="node-kind">{style.label}</span>
+      {#if layerProvided}
+        <span class="infra-badge" title="Layer-provided infrastructure (not user source)">infra</span>
+      {/if}
       {#if isCritical}
         <span class="critical-badge" title="Critical (layer lens or diagnostic)">!</span>
       {/if}
@@ -166,6 +171,26 @@
 
   .veil-node.has-children:hover {
     transform: perspective(800px) rotateX(-1deg) translateY(-6px) scale(1.03);
+  }
+
+  /* UX-017: layer-provided infrastructure is distinct and dimmed when shown */
+  .veil-node.layer-provided {
+    opacity: 0.62;
+    border-style: dashed;
+    filter: grayscale(0.25);
+  }
+  .veil-node.layer-provided:hover {
+    opacity: 0.8;
+  }
+  .infra-badge {
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(148, 163, 184, 0.2);
+    color: var(--veil-text-dim);
+    margin-left: auto;
   }
 
   .veil-node.ghost {

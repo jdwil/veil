@@ -19,6 +19,7 @@
   import DiagnosticsPanel from '$lib/DiagnosticsPanel.svelte';
   import CodePreview from '$lib/CodePreview.svelte';
   import VeilSourcePanel from '$lib/VeilSourcePanel.svelte';
+  import OutlinePanel from '$lib/OutlinePanel.svelte';
   import { layoutNodes, layoutByType } from '$lib/layout';
   import {
     irGraph,
@@ -879,13 +880,16 @@
     }
   }
 
+  /** UX-013: freeform connect is local-only — edges are derived from IR on reload. */
   function handleConnect(connection: { source: string; target: string }) {
     const newEdge: Edge = {
-      id: `e-${connection.source}-${connection.target}-${Date.now()}`,
+      id: `local-${connection.source}-${connection.target}-${Date.now()}`,
       source: connection.source,
       target: connection.target,
       animated: true,
-      style: 'stroke: var(--veil-text-dim); stroke-width: 2;',
+      style: 'stroke: #f59e0b; stroke-width: 2; stroke-dasharray: 4 3;',
+      label: 'local only',
+      labelStyle: 'font-size: 9px; fill: #f59e0b;',
     };
     edges = [...edges, newEdge];
   }
@@ -931,7 +935,8 @@
         </button>
       {/each}
     </div>
-    <label class="layer-toggle">
+    <OutlinePanel />
+    <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
       <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
       <span>Show infrastructure</span>
     </label>
@@ -1247,6 +1252,15 @@
     flex: 1;
     display: flex;
     min-height: 0;
+  }
+
+  .review-dock {
+    flex-shrink: 0;
+    max-height: 36vh;
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--veil-border);
+    z-index: 5;
   }
 
   .status-overlay {
