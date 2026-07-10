@@ -190,7 +190,7 @@ preview lines + drill; `routingTargets` badges from Calls edges.
 
 ## UX-027: Demote unused expression-editor chrome
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** maintainer  
 **I want** dead or half-wired editors either wired for review or removed  
 **So that** we do not pretend full visual expression parity exists
@@ -204,3 +204,7 @@ preview lines + drill; `routingTargets` badges from Calls edges.
 - Do not expand click-to-build of all 34 expr kinds until UX-020–023 are Done
 
 **Mission impact:** Align investment with review-first mission.
+
+**Done notes:** Inventory + `docs/ADR-viewer-editors.md`. PropertyEditor keeps
+`BlockEditor` + methods list only; Construct/Fields/Method/Enum/Annotation
+editors quarantined (source retained, not mounted).

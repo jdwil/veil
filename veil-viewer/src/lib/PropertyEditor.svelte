@@ -3,9 +3,11 @@
   import { irGraph, saveEdits, saving, saveError, paletteConfig, selectedNodeId, type EditOp } from '$lib/store';
   import { get } from 'svelte/store';
   import { formatType } from '$lib/typeDisplay';
-  import MethodEditor from '$lib/MethodEditor.svelte';
-  import FieldsEditor from '$lib/FieldsEditor.svelte';
-  import { BlockEditor, AnnotationEditor, EnumEditor } from '$lib/editors';
+  // UX-027: body review uses BlockEditor only. MethodEditor / FieldsEditor /
+  // AnnotationEditor / EnumEditor / ConstructEditor are quarantined — see
+  // docs/ADR-viewer-editors.md. Do not re-expand click-to-build of all expr kinds
+  // until review surfaces (UX-020–023) stay primary.
+  import { BlockEditor } from '$lib/editors';
   import { irChildrenToExprs } from '$lib/editors/ir-convert';
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
