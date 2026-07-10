@@ -105,8 +105,8 @@ impl SourceProvider for RemoteHttpProvider {
         Ok(())
     }
 
-    fn registry(&self) -> &LayerRegistry {
-        &self.registry
+    fn registry(&self) -> LayerRegistry {
+        self.registry.clone()
     }
 
     fn is_editable(&self, _file: &str) -> bool {

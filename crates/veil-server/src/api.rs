@@ -114,11 +114,11 @@ async fn get_ir<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> ax
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let sol = match parse_source(&source, state.registry()) {
+    let sol = match parse_source(&source, &state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let graph = veil_ir::build_ir_with_registry(&sol, Some(state.registry()));
+    let graph = veil_ir::build_ir_with_registry(&sol, Some(&state.registry()));
     match serde_json::to_string(&graph) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -141,9 +141,9 @@ async fn post_source<P: SourceProvider>(
         return (StatusCode::FORBIDDEN, "file is read-only").into_response();
     }
     // Parse + check before write (same integrity bar as edits)
-    match parse_source(&body, state.registry()) {
+    match parse_source(&body, &state.registry()) {
         Ok(sol) => {
-            let check = veil_ir::check_solution(&sol, state.registry());
+            let check = veil_ir::check_solution(&sol, &state.registry());
             if check.has_errors() {
                 let msg = check
                     .diagnostics
@@ -169,11 +169,11 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let head_sol = match parse_source(&head_src, state.registry()) {
+    let head_sol = match parse_source(&head_src, &state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("parse head: {}", e)).into_response(),
     };
-    let head_ir = veil_ir::build_ir_with_registry(&head_sol, Some(state.registry()));
+    let head_ir = veil_ir::build_ir_with_registry(&head_sol, Some(&state.registry()));
 
     let baseline = match state.baseline_source("").await {
         Ok(b) => b,
@@ -182,7 +182,7 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
 
     let (base_label, base_ir) = match baseline {
         Some((label, src)) => {
-            let sol = match parse_source(&src, state.registry()) {
+            let sol = match parse_source(&src, &state.registry()) {
                 Ok(s) => s,
                 Err(e) => {
                     return (
@@ -192,7 +192,7 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
                         .into_response();
                 }
             };
-            (label, veil_ir::build_ir_with_registry(&sol, Some(state.registry())))
+            (label, veil_ir::build_ir_with_registry(&sol, Some(&state.registry())))
         }
         None => {
             // No git baseline — empty base (everything appears as added).
@@ -212,11 +212,11 @@ async fn get_generated<P: SourceProvider>(State(state): State<SharedProvider<P>>
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let sol = match parse_source(&source, state.registry()) {
+    let sol = match parse_source(&source, &state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let project = veil_codegen::generate(&sol, state.registry());
+    let project = veil_codegen::generate(&sol, &state.registry());
     let files_map: std::collections::HashMap<String, String> = project.files.iter()
         .map(|f| (f.path.clone(), f.content.clone()))
         .collect();
@@ -227,7 +227,7 @@ async fn get_generated<P: SourceProvider>(State(state): State<SharedProvider<P>>
 }
 
 async fn get_palette<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
-    let palette = veil_ir::palette_from_registry(state.registry());
+    let palette = veil_ir::palette_from_registry(&state.registry());
     match serde_json::to_string(&palette) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -239,7 +239,7 @@ async fn get_palette<P: SourceProvider>(State(state): State<SharedProvider<P>>) 
 async fn get_presentation<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
 ) -> axum::response::Response {
-    let model = veil_ir::presentation_from_registry(state.registry());
+    let model = veil_ir::presentation_from_registry(&state.registry());
     match serde_json::to_string(&model) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -280,14 +280,14 @@ async fn get_context<P: SourceProvider>(
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let sol = match parse_source(&source, state.registry()) {
+    let sol = match parse_source(&source, &state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let graph = veil_ir::build_ir_with_registry(&sol, Some(state.registry()));
+    let graph = veil_ir::build_ir_with_registry(&sol, Some(&state.registry()));
     let pack = veil_ir::build_context_pack(
         &graph,
-        state.registry(),
+        &state.registry(),
         &veil_ir::ContextQuery {
             host_id: q.host_id,
             view_id: q.view_id,
@@ -439,12 +439,12 @@ async fn run_check_for_provider<P: SourceProvider>(
         .read_source("")
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let sol = parse_source(&source, state.registry())
+    let sol = parse_source(&source, &state.registry())
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("parse failed: {}", e)))?;
     let target = q.target.as_deref().unwrap_or("rust");
     let deny = q.deny_escape_hatches.unwrap_or(false);
     let debt = q.target_debt.unwrap_or(true);
-    run_check(&sol, state.registry(), target, deny, debt)
+    run_check(&sol, &state.registry(), target, deny, debt)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
 
@@ -470,11 +470,11 @@ async fn post_select_file<P: SourceProvider>(
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let sol = match parse_source(&source, state.registry()) {
+    let sol = match parse_source(&source, &state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let graph = veil_ir::build_ir_with_registry(&sol, Some(state.registry()));
+    let graph = veil_ir::build_ir_with_registry(&sol, Some(&state.registry()));
     match serde_json::to_string(&graph) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -507,22 +507,22 @@ async fn post_edit<P: SourceProvider>(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
 
-    let mut sol = match parse_source(&source, state.registry()) {
+    let mut sol = match parse_source(&source, &state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("parse failed: {}", e)).into_response(),
     };
 
-    if let Err(e) = veil_parser::apply_edits(&mut sol, &req.edits, state.registry()) {
+    if let Err(e) = veil_parser::apply_edits(&mut sol, &req.edits, &state.registry()) {
         return (StatusCode::BAD_REQUEST, format!("edit failed: {}", e)).into_response();
     }
 
     let new_source = veil_ir::serialize_solution(&sol);
 
-    let reparsed = match parse_source(&new_source, state.registry()) {
+    let reparsed = match parse_source(&new_source, &state.registry()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("edit produced invalid source: {}", e)).into_response(),
     };
-    let check_resp = match run_check(&reparsed, state.registry(), "rust", false, false) {
+    let check_resp = match run_check(&reparsed, &state.registry(), "rust", false, false) {
         Ok(r) => r,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
@@ -541,8 +541,8 @@ async fn post_edit<P: SourceProvider>(
         return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
     }
 
-    let graph = veil_ir::build_ir_with_registry(&reparsed, Some(state.registry()));
-    let project = veil_codegen::generate(&reparsed, state.registry());
+    let graph = veil_ir::build_ir_with_registry(&reparsed, Some(&state.registry()));
+    let project = veil_codegen::generate(&reparsed, &state.registry());
     let generated: std::collections::HashMap<String, String> = project.files.iter()
         .map(|f| (f.path.clone(), f.content.clone()))
         .collect();

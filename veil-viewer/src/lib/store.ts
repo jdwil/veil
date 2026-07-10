@@ -133,7 +133,15 @@ export async function fetchIr() {
       fetch(STUBS_URL).catch(() => null),
       fetch(FILES_URL).catch(() => null),
     ]);
-    if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
+    if (!irRes.ok) {
+      const body = await irRes.text().catch(() => '');
+      const detail = body.trim().slice(0, 400);
+      throw new Error(
+        detail
+          ? `HTTP ${irRes.status}: ${detail}`
+          : `HTTP ${irRes.status}`
+      );
+    }
     const data: IrGraph = await irRes.json();
     irGraph.set(data);
 

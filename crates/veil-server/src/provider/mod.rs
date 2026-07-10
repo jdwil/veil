@@ -31,8 +31,11 @@ pub trait SourceProvider: Send + Sync + 'static {
     /// Write source content back (edit commit).
     async fn write_source(&self, file: &str, content: &str) -> Result<(), String>;
 
-    /// Get the layer registry for parsing.
-    fn registry(&self) -> &LayerRegistry;
+    /// Layer registry for the **active** source (per-file when multi-file).
+    ///
+    /// Callers receive an owned clone so multi-file providers can switch
+    /// registries when the active file changes.
+    fn registry(&self) -> LayerRegistry;
 
     /// Is the given file editable?
     fn is_editable(&self, file: &str) -> bool;

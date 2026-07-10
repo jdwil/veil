@@ -12,7 +12,6 @@ use super::{FileInfo, SourceProvider};
 /// Local filesystem provider for `veil-cli serve`.
 pub struct FilesystemProvider {
     files: Vec<FileEntry>,
-    registry: LayerRegistry,
     active: Mutex<usize>,
 }
 
@@ -21,6 +20,8 @@ struct FileEntry {
     name: String,
     source: Mutex<String>,
     editable: bool,
+    /// Layers for this file's `use` lines (reloaded on write when content changes).
+    registry: Mutex<LayerRegistry>,
 }
 
 impl FilesystemProvider {
@@ -35,23 +36,42 @@ impl FilesystemProvider {
                 name,
                 source: Mutex::new(source),
                 editable,
+                registry: Mutex::new(registry),
             }],
-            registry,
             active: Mutex::new(0),
         }
     }
 
     /// Create a provider for multiple files.
-    pub fn with_files(files: Vec<(PathBuf, String, bool)>, registry: LayerRegistry) -> Self {
-        let entries = files.into_iter().map(|(path, source, editable)| {
-            let name = path.file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            FileEntry { path, name, source: Mutex::new(source), editable }
-        }).collect();
+    ///
+    /// Each file gets its own layer registry from `LayerRegistry::for_veil_file`
+    /// so switching active file (e.g. to `dlx_core.veil`) loads ddd/di/sqlx etc.
+    pub fn with_files(files: Vec<(PathBuf, String, bool)>, _shared: LayerRegistry) -> Self {
+        let entries = files
+            .into_iter()
+            .map(|(path, source, editable)| {
+                let name = path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let registry = LayerRegistry::for_veil_file(&path).unwrap_or_else(|e| {
+                    eprintln!(
+                        "warning: layers for {}: {e} — using builtin only",
+                        path.display()
+                    );
+                    LayerRegistry::builtin()
+                });
+                FileEntry {
+                    path,
+                    name,
+                    source: Mutex::new(source),
+                    editable,
+                    registry: Mutex::new(registry),
+                }
+            })
+            .collect();
         FilesystemProvider {
             files: entries,
-            registry,
             active: Mutex::new(0),
         }
     }
@@ -121,11 +141,16 @@ impl SourceProvider for FilesystemProvider {
 
         // Update in-memory
         *entry.source.lock().unwrap() = content.to_string();
+        // Refresh layers if `use` lines changed
+        if let Ok(reg) = LayerRegistry::for_veil_file(&entry.path) {
+            *entry.registry.lock().unwrap() = reg;
+        }
         Ok(())
     }
 
-    fn registry(&self) -> &LayerRegistry {
-        &self.registry
+    fn registry(&self) -> LayerRegistry {
+        let idx = self.active_index();
+        self.files[idx].registry.lock().unwrap().clone()
     }
 
     fn is_editable(&self, file: &str) -> bool {

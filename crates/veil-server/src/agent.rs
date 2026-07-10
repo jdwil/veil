@@ -100,7 +100,7 @@ pub async fn run_turn<P: SourceProvider>(
             };
         }
     };
-    let registry = provider.registry().clone();
+    let registry = provider.registry();
     let confirm = std::env::var("VEIL_AGENT_CONFIRM_WRITES")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
