@@ -1,0 +1,46 @@
+# RT-001 / RT-003 — VEIL-authored local harness (real handler path, not echo).
+#
+#   veil gen examples/local_run.veil -o /tmp/local_run -t rust
+#   cd /tmp/local_run && cargo run -p veil_bin
+#
+# Catalog.CreateItem is a real application service (validate + persist via
+# MemItemRepo). Generated main wires InProcessBus + repo and invokes it.
+
+pkg LocalRun
+  use ddd
+  use di
+  use harness
+  use rust
+
+  ctx Catalog
+    group domain
+      val Item
+        id: UUID
+        name: Str
+
+      port ItemRepo
+        save(item: Item) -> Res!
+        find(id: UUID) -> Res!<Opt<Item>>
+
+    group application
+      svc CreateItem
+        input
+          name: Str
+        step validate
+          guard name != "", "name required"
+        step persist
+          item = Item.new(name)
+          ItemRepo.save(item)
+        ret item.id
+
+    group infrastructure
+      adapter MemItemRepo for ItemRepo
+        impl save(item)
+          ret Ok
+        impl find(id)
+          ret Ok(None)
+
+  fn bootstrap
+    @main
+    step demo
+      call run_local_demo

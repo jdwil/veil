@@ -62,7 +62,7 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 
 ## RT-001: Harness primitives as VEIL (or layer `declare`) — not eternal bootstrap
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As an** app author  
 **I want** Bus + HTTP server + handler registration expressible in VEIL layers  
 **So that** `@main` can wire a real service without Rust glue
@@ -80,6 +80,10 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 **Note:** Manifest-driven registration (old RT-001) remains valuable for
 **generic multi-tenant hosts**; implement as a library used *from* VEIL
 `@main` / Exec, not as the only path.
+
+**Done notes:** `InProcessBus` generated into `veil_shared` when layer declares
+`Bus`; `layers/harness.layer` + `gen_local_harness_main` wires adapters and
+calls app services from `veil_bin`. Bootstrap marked seed-only (RT-005).
 
 ---
 

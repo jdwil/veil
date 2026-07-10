@@ -1,0 +1,27 @@
+pkg harness v1
+  desc "Local app harness — InProcessBus + composition helpers (RT-001)"
+  author "VEIL"
+  use base
+  use di
+
+  # No domain vocabulary. App authors `use harness` for local wiring patterns.
+  # InProcessBus is generated into veil_shared when Bus is declared (ddd).
+
+  prompt
+    You are writing a VEIL-authored local harness (not handwritten bootstrap).
+
+    ## Overview
+    Use `@main` (from di.layer) for composition roots. The engine generates
+    `InProcessBus` into `veil_shared` when the package uses a layer that
+    declares `trait Bus` (e.g. ddd). Register handlers and call application
+    services from `@main` steps.
+
+    ## Patterns
+    - Construct `InProcessBus.new()` in `@main` when you need multi-context
+    - Wire `@dep` / `@pvd` for adapters
+    - Prefer calling generated application `fn`s for local demos
+    - Cross-context: `bus.invoke({ type: "HandlerName", ... })`
+
+    ## Constraints
+    - You MUST NOT rely on eternal handwritten bootstrap for new apps
+    - You SHOULD keep `@main` thin: wire + one demo invoke

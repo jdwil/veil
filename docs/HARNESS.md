@@ -4,22 +4,29 @@ VEIL’s daily path is **VEIL-authored harnesses**, not eternal handwritten Rust
 bootstrap. Use `@main` / `@pvd` / `@dep` (from `di.layer`) to compose a runnable
 program.
 
-## Minimal path
-
-1. Author a package with DI annotations, e.g. `examples/di_example.veil`:
-   - `@pvd T` on a factory `fn` that builds type `T`
-   - `@dep` on struct fields that must be injected
-   - `@main` on a composition `fn` whose steps become the generated main
-2. Generate and run:
+## Minimal path (recommended demo)
 
 ```bash
-veil gen examples/di_example.veil -o /tmp/di_out -t rust
-cd /tmp/di_out && cargo build
-# @main contributors emit crates/veil_bin (RT-001b):
-cargo run -p veil_bin
+# One-shot: generate + run real CreateItem handler (RT-003)
+scripts/run_local_example.sh
 ```
 
+Or manually:
+
+```bash
+veil gen examples/local_run.veil -o /tmp/local_run -t rust
+cd /tmp/local_run && cargo run -p veil_bin
+```
+
+`@main` packages emit `crates/veil_bin` with a local harness that:
+
+1. Constructs **`InProcessBus`** (from `veil_shared`, RT-001/004)
+2. Wires **memory adapters** for ports
+3. Calls a generated **application service** (not echo)
+
 Library-only packages (no `@main`) generate context crates without `veil_bin`.
+
+DI-only composition still works via `examples/di_example.veil` (`@pvd` / `@dep`).
 
 3. Check dual-loop quality:
 

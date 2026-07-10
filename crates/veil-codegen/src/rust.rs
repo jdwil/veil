@@ -96,12 +96,24 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // Template output augments the backend's output — it doesn't replace it.
     let template_output = crate::template::execute_templates(solution, registry, "rust");
 
-    // RT-001b: @main contributions become a dedicated runnable bin crate —
-    // never an orphan root `src/main.rs` that is not a workspace member.
-    if let Some(main_body) = crate::template::compose_main_section(&template_output, "rust") {
+    // RT-001b / RT-001: @main → dedicated veil_bin with local harness main.
+    // Prefer a generated InProcessBus harness (RT-001/003/004) over raw
+    // template fragments when we have context modules.
+    let has_main = crate::template::compose_main_section(&template_output, "rust").is_some()
+        || package_has_main_annotation(solution);
+    if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| to_snake(&m.name)).collect();
+        let main_body = if !modules.is_empty() {
+            gen_local_harness_main(solution, &modules, registry)
+        } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust")
+        {
+            body
+        } else {
+            String::from(
+                "#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n    println!(\"veil_bin: no modules to run\");\n    Ok(())\n}\n",
+            )
+        };
         files.extend(gen_bin_crate(solution, &module_crates, &main_body));
-        // Ensure workspace lists the bin crate
         if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
             if !ws.content.contains("crates/veil_bin") {
                 ws.content = ws.content.replacen(
@@ -176,6 +188,135 @@ fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
     contents
 }
 
+fn package_has_main_annotation(sol: &Solution) -> bool {
+    fn walk(c: &Construct) -> bool {
+        if c.annotations.iter().any(|a| a.name == "main") {
+            return true;
+        }
+        c.children.iter().any(walk)
+            || c.fns.iter().any(|f| f.annotations.iter().any(|a| a.name == "main"))
+    }
+    for item in &sol.items {
+        match item {
+            TopLevelItem::Construct(c) if walk(c) => return true,
+            TopLevelItem::Function(f)
+                if f.annotations.iter().any(|a| a.name == "main") =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// RT-001/003/004: working local harness main — InProcessBus + first app svc.
+fn gen_local_harness_main(
+    sol: &Solution,
+    modules: &[&Construct],
+    _registry: &LayerRegistry,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "//! Local harness for package `{}` (RT-001 / RT-003).\n\
+         //! Wires InProcessBus + generated context crates; runs a demo path.\n\
+         //! `cargo run -p veil_bin` from the generated workspace root.\n\n",
+        sol.name
+    ));
+    out.push_str("use std::sync::Arc;\n");
+    out.push_str("use uuid::Uuid;\n");
+    out.push_str("use veil_shared::*;\n\n");
+    for m in modules {
+        let cn = to_snake(&m.name);
+        out.push_str(&format!(
+            "use {cn}::application::{{self as {cn}_app, Deps as {cn}_Deps}};\n"
+        ));
+        out.push_str(&format!("use {cn}::adapters::*;\n"));
+        out.push_str(&format!("use {cn}::ports::*;\n"));
+    }
+    out.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
+    out.push_str(&format!(
+        "    println!(\"veil_bin: starting local harness for {}\");\n",
+        sol.name
+    ));
+    out.push_str("    let bus = Arc::new(InProcessBus::new());\n\n");
+
+    for module in modules {
+        let crate_name = to_snake(&module.name);
+        let flat = flatten_module(module);
+        let adapters = &flat.impls;
+        let services = &flat.fns;
+        if adapters.is_empty() && services.is_empty() {
+            continue;
+        }
+
+        out.push_str(&format!("    // ── context {} ──\n", module.name));
+        for ad in adapters {
+            let target = ad.target.as_deref().unwrap_or("Send");
+            out.push_str(&format!(
+                "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name}{{}});\n",
+                sn = to_snake(&ad.name),
+                name = ad.name,
+            ));
+        }
+
+        if services.is_empty() {
+            continue;
+        }
+
+        // Deps fields: one per adapter target (to_snake of trait name).
+        // Bus is only included when a service has @dep bus or calls bus —
+        // gen_deps_struct omits unused ports; match adapters only here.
+        out.push_str(&format!("    let {crate_name}_deps = {crate_name}_Deps {{\n"));
+        for ad in adapters {
+            if let Some(target) = &ad.target {
+                out.push_str(&format!(
+                    "        {field}: {sn}_inst.clone(),\n",
+                    field = to_snake(target),
+                    sn = to_snake(&ad.name),
+                ));
+            }
+        }
+        out.push_str("    };\n");
+        // Keep bus live for multi-context registration demos (RT-004).
+        out.push_str("    let _bus = &bus;\n");
+
+        if let Some(svc) = services.first() {
+            let fn_name = to_snake(&svc.name);
+            let mut args = vec![format!("&{crate_name}_deps")];
+            for input in &svc.inputs {
+                if input.annotations.iter().any(|a| a.name == "dep") {
+                    continue;
+                }
+                args.push(demo_value_for_type(&input.type_expr));
+            }
+            out.push_str(&format!(
+                "    let result = {crate_name}_app::{fn_name}({}).await?;\n",
+                args.join(", ")
+            ));
+            out.push_str(&format!(
+                "    println!(\"veil_bin: handler `{fn_name}` result = {{:?}}\", result);\n"
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("    println!(\"veil_bin: local harness OK\");\n");
+    out.push_str("    Ok(())\n}\n");
+    out
+}
+
+fn demo_value_for_type(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named(n) if n == "Str" || n == "String" => "\"widget\".to_string()".into(),
+        TypeExpr::Named(n) if n == "Int" || n == "I64" => "1".into(),
+        TypeExpr::Named(n) if n == "F64" => "1.0".into(),
+        TypeExpr::Named(n) if n == "Bool" => "true".into(),
+        TypeExpr::Named(n) if n == "UUID" || n == "Id" => "Uuid::new_v4()".into(),
+        _ => "Default::default()".into(),
+    }
+}
+
 /// RT-001b: dedicated binary crate for `@main` / composition root.
 fn gen_bin_crate(
     sol: &Solution,
@@ -183,7 +324,7 @@ fn gen_bin_crate(
     main_body: &str,
 ) -> Vec<GeneratedFile> {
     let mut deps = String::from(
-        "tokio = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\n",
+        "tokio = { workspace = true }\nuuid = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\n",
     );
     for c in module_crates {
         deps.push_str(&format!("{c} = {{ path = \"../{c}\" }}\n"));
@@ -206,15 +347,9 @@ path = "src/main.rs"
 [dependencies]
 {deps}"#
     );
-    // If compose_main_section already wraps #[tokio::main], use as-is;
-    // otherwise wrap the body.
+    // Harness main already includes uses + #[tokio::main]; don't double-wrap.
     let main_rs = if main_body.contains("#[tokio::main]") || main_body.contains("fn main") {
-        format!(
-            "//! Generated entrypoint for package `{}` (@main contributors).\n\
-             //! Run: `cargo run -p veil_bin` from the generated workspace root.\n\
-             {uses}\n{main_body}",
-            sol.name
-        )
+        main_body.to_string()
     } else {
         format!(
             "//! Generated entrypoint for package `{}` (@main contributors).\n\
@@ -1103,6 +1238,91 @@ fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile
     }
 }
 
+/// RT-001/004: default local Bus implementation (monolith topology).
+const INPROCESS_BUS_IMPL: &str = r#"
+// ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
+use std::collections::HashMap;
+use std::sync::Arc;
+use futures::future::BoxFuture;
+use futures::FutureExt;
+
+type BusHandler = Arc<
+    dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, DomainError>>
+        + Send
+        + Sync,
+>;
+
+/// In-process message bus for local multi-context runs.
+#[derive(Clone, Default)]
+pub struct InProcessBus {
+    handlers: Arc<std::sync::Mutex<HashMap<String, BusHandler>>>,
+}
+
+impl InProcessBus {
+    pub fn new() -> Self {
+        Self {
+            handlers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Register a handler for a message type name (manifest `handlers` keys).
+    pub fn register<F, Fut>(&self, name: impl Into<String>, f: F)
+    where
+        F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<serde_json::Value, DomainError>> + Send + 'static,
+    {
+        let name = name.into();
+        let handler: BusHandler = Arc::new(move |v| f(v).boxed());
+        self.handlers
+            .lock()
+            .expect("bus lock")
+            .insert(name, handler);
+    }
+
+    fn lookup(&self, type_name: &str) -> Option<BusHandler> {
+        self.handlers
+            .lock()
+            .expect("bus lock")
+            .get(type_name)
+            .cloned()
+    }
+}
+
+#[async_trait]
+impl Bus for InProcessBus {
+    async fn dispatch(&self, evt: serde_json::Value) -> Result<(), DomainError> {
+        let type_name = evt
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(handler) = self.lookup(&type_name) {
+            let payload = evt.clone();
+            tokio::spawn(async move {
+                let _ = handler(payload).await;
+            });
+        }
+        Ok(())
+    }
+
+    async fn invoke(&self, cmd: serde_json::Value) -> Result<serde_json::Value, DomainError> {
+        let type_name = cmd
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let handler = self
+            .lookup(&type_name)
+            .ok_or(DomainError::NotFound)?;
+        handler(cmd).await
+    }
+
+    async fn request(&self, qry: serde_json::Value) -> Result<serde_json::Value, DomainError> {
+        self.invoke(qry).await
+    }
+}
+"#;
+
 /// Generate the shared library crate that all context crates depend on. It
 /// owns the common error types and the layer-provided top-level traits (Bus),
 /// so there is exactly one definition of each across the workspace.
@@ -1130,6 +1350,8 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+tokio = { workspace = true }
+futures = "0.3"
 "#.to_string(),
     });
 
@@ -1149,7 +1371,11 @@ chrono.workspace = true
     let trait_names: std::collections::HashSet<String> =
         traits.iter().map(|t| t.name.clone()).collect();
 
+    let mut has_bus = false;
     for t in traits {
+        if t.name == "Bus" {
+            has_bus = true;
+        }
         lib.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {}: Send + Sync {{\n", t.subkind, t.name, t.name));
         for method in &t.methods {
             let params = method
@@ -1166,6 +1392,13 @@ chrono.workspace = true
             lib.push_str(&format!("    async fn {}(&self{}{}){ret};\n", to_snake(&method.name), sep, params));
         }
         lib.push_str("}\n\n");
+    }
+
+    // RT-001 / RT-004: local InProcessBus when layer declares Bus.
+    // Not domain knowledge — keyed on the layer-provided routing trait name
+    // that already appears in the registry declarations.
+    if has_bus {
+        lib.push_str(INPROCESS_BUS_IMPL);
     }
 
     // Emit layer-provided structs (e.g. Principal) so traits can reference them.
@@ -1470,25 +1703,19 @@ fn gen_impls(
                         ctx.locals.insert(name.clone());
                     }
                     if is_last {
-                        // GEN-002: always lower authored adapter bodies via expr
-                        // translator. Never replace real calls with todo!("SQL: …").
-                        // Empty bodies still get a default Ok (escape diagnostic covers debt).
-                        if ret_rust == "Result<(), DomainError>" {
-                            if rust_expr.contains("todo!") {
-                                out.push_str(&format!("        {rust_expr}\n"));
-                            } else {
-                                out.push_str(&format!("        {rust_expr};\n"));
-                                out.push_str("        Ok(())\n");
-                            }
+                        // GEN-002: lower authored adapter bodies. If the last
+                        // expr already returns (`ret Ok` → `return Ok(...)`),
+                        // emit it as-is — do not wrap again.
+                        let is_return = rust_expr.trim_start().starts_with("return ");
+                        if is_return || rust_expr.contains("todo!") {
+                            out.push_str(&format!("        {rust_expr}\n"));
+                        } else if ret_rust == "Result<(), DomainError>" {
+                            out.push_str(&format!("        {rust_expr};\n"));
+                            out.push_str("        Ok(())\n");
                         } else if ret_rust.starts_with("Result<") {
-                            // Prefer propagating Result from the last expression.
-                            if rust_expr.ends_with('?')
-                                || rust_expr.starts_with("Ok(")
-                                || rust_expr.contains("todo!")
-                            {
+                            if rust_expr.ends_with('?') || rust_expr.starts_with("Ok(") {
                                 out.push_str(&format!("        {rust_expr}\n"));
                             } else if rust_expr.contains(".await") {
-                                // Async SDK call — await and map into DomainError
                                 out.push_str(&format!(
                                     "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
                                 ));
