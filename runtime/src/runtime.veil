@@ -395,7 +395,6 @@ sol VeilRuntime
           DdbClient.query("dependencies").filter(repo_id).fetch_all!(client)
         impl get_dependents(dependency)
           DdbClient.query("dependencies").filter(dependency).fetch_all!(client)
-          client.query().table_name(table).send().await.unwrap()
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Tools — Rig SDK tool definitions for agent-callable operations
