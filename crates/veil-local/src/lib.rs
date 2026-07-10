@@ -1,6 +1,10 @@
-//! Local-first platform adapters (RT-010 / RT-012).
+//! Local-first platform adapters (RT-010 / RT-011 / RT-012).
 //!
 //! Default when `VEIL_STORAGE=fs` or no cloud credentials.
+
+mod meta;
+
+pub use meta::FileMetaStore;
 
 use std::fs;
 use std::io;

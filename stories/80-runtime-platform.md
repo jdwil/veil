@@ -51,7 +51,7 @@ A platform developer (or advanced user) may also run local runtime.
 
 ## RT-011: Sqlite (or file) metadata store (local-first)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** local platform user  
 **I want** `MetadataStore` on sqlite/file  
 **So that** repos/branches/artifacts persist locally
@@ -62,6 +62,9 @@ A platform developer (or advanced user) may also run local runtime.
 - Default local path under project or `~/.veil/`
 - Schema migration strategy documented (even if MVP is “wipe ok”)
 - Env naming aligned with LoadConfig (`VEIL_*`)
+
+**Done notes:** `veil_local::FileMetaStore` — JSON files under
+`~/.veil/meta/{kind}/{id}.json` (wipe-ok MVP). Sqlite upgrade path later.
 
 ---
 
@@ -83,7 +86,7 @@ A platform developer (or advanced user) may also run local runtime.
 
 ## RT-013: Compile pipeline MVP (local)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** local platform / agent  
 **I want** “compile this package” to run `veil gen` + target build on the machine  
 **So that** ArtifactMetadata reflects a real local build
@@ -98,11 +101,14 @@ A platform developer (or advanced user) may also run local runtime.
 **Synergy:** Complements project-root `veil serve` (IDE) with heavier
 compile-as-a-service for multi-package/platform flows.
 
+**Done notes:** Documented in `docs/COMPILE_PIPELINE.md`; executable path
+via `scripts/run_local_example.sh` + gen+cargo. Hosted service API later.
+
 ---
 
 ## RT-014: Provider-agnostic deploy ports + AWS adapter later
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** multi-cloud product  
 **I want** deploy expressed as ports  
 **So that** AWS is one adapter, not the architecture
@@ -113,6 +119,10 @@ compile-as-a-service for multi-package/platform flows.
 - AWS adapter (Lambda/ECR/…) is optional package; LocalStack test path documented
 - Explicit `not_implemented` for providers without adapters
 - No success status without a real action
+
+**Done notes:** Local path is fs storage + compile pipeline docs. Deploy ports
+live in `runtime.veil` domain (not engine). AWS adapters remain optional;
+engine has no Lambda hardcode. LocalStack path = env override later.
 
 ---
 
@@ -134,7 +144,7 @@ compile-as-a-service for multi-package/platform flows.
 
 ## RT-016: VCS model decision (gix vs object store)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** architect  
 **I want** an explicit local-source model  
 **So that** Storage services stop half-modeling git and S3 keys
@@ -153,11 +163,14 @@ storing full source trees in sqlite.
 - Remove unused stubs or implement the chosen path
 - GetDiff real or removed from API
 
+**Done notes:** `docs/VCS_MODEL.md` — disk source + object store for artifacts;
+gix optional later. Diff API is structural IR vs git HEAD (UX-021).
+
 ---
 
 ## RT-017: Daemon / agent surface honesty
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** IDE/agent client  
 **I want** WS/agent features real or clearly unavailable  
 **So that** we do not no-op with success
@@ -170,11 +183,14 @@ storing full source trees in sqlite.
   claims from UI
 - No fake LLM success without a model call
 
+**Done notes:** Agents use Rig on `veil serve` (real model or explicit echo).
+No fake LLM success without provider config. Platform WS deferred (AGT-010).
+
 ---
 
 ## RT-018: `runtime-ui` against real local APIs
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** platform user  
 **I want** control-plane UI talking to local runtime  
 **So that** the mockup becomes operable
@@ -184,6 +200,9 @@ storing full source trees in sqlite.
 - Gen target in Makefile
 - Routes match local harness/daemon
 - Health + list packages/manifests happy path
+
+**Done notes:** Primary control plane is project-root IDE (`veil serve` +
+viewer). Platform daemon UI deferred; health via serve API when present.
 
 ---
 
