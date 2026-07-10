@@ -32,7 +32,22 @@ Tools mutate an in-memory workspace; the host persists via `SourceProvider` when
 | Variable | Meaning |
 |----------|---------|
 | `VEIL_MODEL_PROVIDER` | `echo` \| `openai` \| `ollama` |
-| `VEIL_MODEL_NAME` | Model id (defaults: `gpt-4o-mini`, `llama3.2`) |
+| `VEIL_MODEL_NAME` | Model id (defaults: `gpt-4o-mini`, `llama3.2`; **make serve** defaults to `qwen3.5:9b`) |
+
+### Local make serve (Ollama)
+
+```bash
+# defaults: VEIL_MODEL_PROVIDER=ollama  VEIL_MODEL_NAME=qwen3.5:9b
+make serve-examples
+
+# offline heuristic instead
+make serve VEIL_MODEL_PROVIDER=echo
+
+# different Ollama model
+make serve VEIL_MODEL_NAME=llama3.2
+```
+
+Requires `ollama serve` and the model pulled (`ollama pull qwen3.5:9b`).
 | `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | OpenAI credentials |
 | `VEIL_MODEL_BASE_URL` / `OPENAI_BASE_URL` | Compatible base URL |
 | `VEIL_AGENT_CONFIRM_WRITES=1` | Require `confirmed` on renames |

@@ -28,6 +28,19 @@ PID_DIR     := .veil-dev
 API_PID     := $(PID_DIR)/api.pid
 UI_PID      := $(PID_DIR)/ui.pid
 
+# Agent (Rig) — Ollama by default for local make serve
+# Override: make serve VEIL_MODEL_PROVIDER=echo
+#           make serve VEIL_MODEL_NAME=llama3.2
+VEIL_MODEL_PROVIDER ?= ollama
+VEIL_MODEL_NAME     ?= qwen3.5:9b
+# Optional: VEIL_MODEL_BASE_URL=http://127.0.0.1:11434
+
+export VEIL_MODEL_PROVIDER
+export VEIL_MODEL_NAME
+ifneq ($(origin VEIL_MODEL_BASE_URL), undefined)
+export VEIL_MODEL_BASE_URL
+endif
+
 # External crates that need stubs
 STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sqs \
                aws-config gix rig-core axum tokio-tungstenite tower-http \
@@ -74,6 +87,14 @@ serve serve-examples: veil viewer-install
 	@echo "  Backend:  http://localhost:$(PORT)   (veil serve $(EXAMPLES))"
 	@echo "  Frontend: http://localhost:$(VIEWER_PORT)  (veil-viewer)"
 	@echo "  Open:     http://localhost:$(VIEWER_PORT)"
+	@echo "  Agent:    VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)  model=$(VEIL_MODEL_NAME)"
+	@if [ "$(VEIL_MODEL_PROVIDER)" = "ollama" ]; then \
+		if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then \
+			echo "  Ollama:   up at :11434"; \
+		else \
+			echo "  Ollama:   WARN not reachable at :11434 (start ollama or use VEIL_MODEL_PROVIDER=echo)"; \
+		fi; \
+	fi
 	@echo "  Stop:     Ctrl-C  or  make serve-stop"
 	@echo ""
 	@$(VEIL_BIN) serve $(EXAMPLES) -p $(PORT) & echo $$! > $(API_PID); \
