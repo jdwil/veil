@@ -187,3 +187,142 @@ expose story in LANGUAGE + package `expose` when API clients needed.
   until IDE telemetry exists
 
 **Done notes:** `veil check --json` + duration in human path; `docs/METRICS.md`.
+
+---
+
+## Follow-up stack (post–PAR-010)
+
+Work surfaced while closing PAR-003–010 / spikes. Do **not** claim production
+parity until these are Done.
+
+---
+
+## PAR-011: Swift body lowering (beyond signature spike)
+
+**Status:** Open · **Priority:** P3  
+**As a** multi-target author  
+**I want** core expression/stmt subsets lowered to Swift  
+**So that** `veil gen -t swift` is more than stub signatures
+
+**Acceptance criteria:**
+
+- Lower at least: literals, field access, binary ops, `ret`, simple `if`,
+  struct construct, `match` on unit enums
+- `Res!` / `?` either lower honestly or stay capability-gated with diagnostics
+  (no silent `fatalError` for supported shapes)
+- Example package (extend `pure_lib` or add `examples/swift_spike.veil`) builds
+  with `swiftc` or documented skip
+- Capability matrix updated; docs do not claim production readiness until
+  integration tests pass
+- Bodies that still cannot lower emit **check diagnostics** (or explicit
+  escape), not only runtime `fatalError`
+
+**Depends:** PAR-005  
+**Mission impact:** Honesty of multi-target gen; avoids demo-only backends
+
+---
+
+## PAR-012: Kotlin body lowering (beyond signature spike)
+
+**Status:** Open · **Priority:** P3  
+**As a** multi-target author  
+**I want** core expression/stmt subsets lowered to Kotlin  
+**So that** `veil gen -t kotlin` is more than stub signatures
+
+**Acceptance criteria:**
+
+- Same expression subset bar as PAR-011 (literals, fields, ops, `ret`, `if`,
+  constructs, simple `when`/`match`)
+- `Result` / try path honest or capability-gated
+- Example compiles with `kotlinc` or documented skip
+- Capability matrix + CAPABILITIES.md updated
+- Unsupported shapes → check errors, not only `TODO("…")` at runtime
+
+**Depends:** PAR-006  
+**Mission impact:** Same as PAR-011 for JVM/Android path
+
+---
+
+## PAR-013: Structured UI IR — layer constructs + Svelte codegen
+
+**Status:** Open · **Priority:** P3  
+**As a** UI author  
+**I want** view trees as VEIL constructs that codegen to Svelte  
+**So that** critical UI is not trapped in raw `template` strings
+
+**Acceptance criteria:**
+
+- Layer (or core) constructs: `view`/`ui`, `el`, `when`/`else`, `list … as`,
+  `text` (names may match `docs/UI_IR.md`)
+- Codegen path: structured tree → Svelte markup + bindings (first target)
+- Migration: existing `template """…"""` still parses; CHK-006 debt remains
+- At least one example package with structured UI + check green on rust/ts as
+  needed; Svelte emit under generated path
+- Escape hatch documented; no claim that all HTML is migrated
+
+**Depends:** PAR-007 (design), GEN-004  
+**Mission impact:** Human review of UI structure; multi-target UI honesty
+
+---
+
+## PAR-014: Optional `@shared` / ownership marks in source
+
+**Status:** Open · **Priority:** P3  
+**As an** author targeting Rust and GC languages  
+**I want** optional sharing marks only where needed  
+**So that** I never write lifetimes in `.veil`
+
+**Acceptance criteria:**
+
+- Parse + IR metadata for optional share mark on fields/params (syntax per
+  `docs/OWNERSHIP.md`, name may be `@shared` or layer attribute)
+- Default remains **owned**; unmarked portable packages unchanged
+- Rust backend: `Arc` / clone policy at marked boundaries
+- TS / Swift / Kotlin: ignore marks (no errors)
+- Check never invents lifetime diagnostics for portable libs
+- Docs + one example with a shared service-shaped field
+
+**Depends:** PAR-004  
+**Mission impact:** Semantic substrate without Rust-only noise
+
+---
+
+## PAR-015: Spike / partial-backend capability honesty
+
+**Status:** Open · **Priority:** P2  
+**As an** agent or CI  
+**I want** capability claims to match what codegen actually emits  
+**So that** claiming `TryOperator` does not hide stub bodies
+
+**Acceptance criteria:**
+
+- Distinguish **signature-only** vs **body-lowered** support (feature flags,
+  severity tiers, or sub-capabilities)
+- Swift/Kotlin spikes register honestly until PAR-011/012 land
+- `veil check -t swift|kotlin` fails or warns when a supported-looking feature
+  would still emit stub body
+- CAPABILITIES.md table matches code
+- Unit tests lock the honesty contract
+
+**Depends:** PAR-002, PAR-005/006  
+**Mission impact:** Fail closed (CHK-005); dual-loop trust
+
+---
+
+## PAR-016: Typed effect rows beyond `Res!` sugar (phase N)
+
+**Status:** Open · **Priority:** P3  
+**As an** engine architect  
+**I want** optional effect-row IR when multi-target `?` starts to diverge  
+**So that** fallibility stays semantic, not per-backend hacks
+
+**Acceptance criteria:**
+
+- Design delta on `docs/EFFECTS.md` / SEMANTIC_IR when work starts
+- IR representation of fallible regions independent of Rust `Result` keyword
+- At least two backends consume the same IR axis
+- Non-goals remain: full algebraic effect handlers
+- Can stay deferred if PAR-003 lowerings remain honest without it
+
+**Depends:** PAR-003  
+**Mission impact:** Long-term multi-target substrate (only if needed)

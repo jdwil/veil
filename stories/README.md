@@ -52,15 +52,46 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 
 ## Suggested first slice (P0)
 
-Check + serialize integrity are largely landed (CHK / SER). Next dual-loop path:
+Original dual-loop P0/P1 path is largely **Done**. Historical order kept for
+context:
 
 1. **UX-010** — `pkg` files editable under `veil serve`  
 2. **UX-011** — File select sets active file (API schema fix)  
 3. **UX-020** — VEIL source / critical-body review pane  
 4. **LAY-001 → LAY-003** — Layer presentation grammar, API, generic view switcher  
 5. **LAY-004** — DDD model hierarchy as first proof  
+6. **RT-000** — VEIL-authored `@main` harness proof  
 
-Then P1 harness proof: **RT-000** (document + run a VEIL-authored `@main` harness).
+## Next stack (open follow-ups)
 
-**Note:** Prefer **LAY-001–004** before deep hierarchical UX that would otherwise
-hardcode DDD (aggregates, etc.) into the viewer.
+Surfaced after closing the initial backlog (design/MVP honesty, harness gaps,
+agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target demos.
+
+### P2 — trust & daily driver
+
+| ID | Theme | File |
+|----|--------|------|
+| **PAR-015** | Spike capability honesty (signature vs body) | [90](90-parity-future.md) |
+| **AGT-013** | Agent write path allowlist | [100](100-ide-agent.md) |
+| **AGT-014** | Plan-only agent mode | [100](100-ide-agent.md) |
+| **AGT-015** | Token budgets on `/api/context` | [100](100-ide-agent.md) |
+| **AGT-017** | Remote structured EditOp | [100](100-ide-agent.md) |
+| **RT-021** | Generated bin crate layout | [70](70-runtime-harness.md) |
+| **RT-022** | Bus + HTTP as VEIL packages | [70](70-runtime-harness.md) |
+| **RT-023** | `provided_by: runtime` without handwritten host | [70](70-runtime-harness.md) |
+
+### P3 — parity, cloud, polish
+
+| ID | Theme | File |
+|----|--------|------|
+| **PAR-011 / 012** | Swift / Kotlin body lowering | [90](90-parity-future.md) |
+| **PAR-013** | UI IR constructs + Svelte codegen | [90](90-parity-future.md) |
+| **PAR-014** | Optional `@shared` marks | [90](90-parity-future.md) |
+| **PAR-016** | Typed effect rows (only if needed) | [90](90-parity-future.md) |
+| **RT-024 / 025** | Real DDB + SigV4 S3 | [80](80-runtime-platform.md) |
+| **RT-026** | In-process HTTP (drop curl) | [80](80-runtime-platform.md) |
+| **AGT-016 / 018** | Remote auth + live sync | [100](100-ide-agent.md) |
+| **GEN-008 / 009** | Package multi-target + warning hygiene | [60](60-codegen-targets.md) |
+
+**Sequencing note:** Close **PAR-015** before expanding Swift/Kotlin demos so
+capabilities cannot lie. Prefer **AGT-013/014** before multi-user remote auth.

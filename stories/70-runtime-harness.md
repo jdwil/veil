@@ -245,3 +245,74 @@ app-specific (generated); platform daemon routes deferred with RT-010+.
 
 **Done notes:** `AllowAllAuth` generated in `veil_shared` when `AuthService`
 is declared; host swaps via `provided_by: runtime` + strategy (manifest).
+
+---
+
+## Follow-up stack (harness gaps still open after RT-000–008)
+
+Product table at top of this file listed structural gaps that Done stories did
+not fully close. Tracked below.
+
+---
+
+## RT-021: Generated binary crate layout (workspace bin members)
+
+**Status:** Open · **Priority:** P2  
+**As a** coder running `veil gen` + `cargo run`  
+**I want** `@main` emitted as a proper package binary crate  
+**So that** multi-crate workspaces and cargo conventions work without hacks
+
+**Acceptance criteria:**
+
+- Generated layout places main in a bin crate / package member (not only a
+  workspace-root `src/main.rs` that fights multi-package graphs)
+- Documented for single-package and multi-package examples
+- `scripts/run_local_example.sh` (or successor) uses the new layout
+- Regression test: gen → `cargo metadata` shows expected bin target
+- Hand-authored `fn main` path verified or explicitly unsupported with check
+  diagnostic
+
+**Mission impact:** VEIL-authored harnesses are real cargo projects  
+**Related:** product table “Multi-crate workspace + correct binary crate layout”
+
+---
+
+## RT-022: InProcessBus + HTTP as VEIL-reusable packages
+
+**Status:** Open · **Priority:** P2  
+**As an** app author  
+**I want** Bus and minimal HTTP host available as packages/layers  
+**So that** harnesses are not forever tied to handwritten bootstrap
+
+**Acceptance criteria:**
+
+- Reusable VEIL or generated package surface for InProcessBus wiring
+- Optional minimal axum (or chosen HTTP) host package / layer templates
+- Example app `@main` constructs bus + serves without editing `runtime/bootstrap`
+  by hand
+- Stage-0 seed may remain for self-host chicken-egg; docs say what shrinks
+- No engine hardcoding of domain routes
+
+**Mission impact:** Harnesses authored in VEIL (MISSION product model)  
+**Related:** product table “InProcessBus + axum server as VEIL-reusable package”
+
+---
+
+## RT-023: `provided_by: "runtime"` without handwritten host
+
+**Status:** Open · **Priority:** P2  
+**As an** app that declares runtime-provided deps  
+**I want** local run to supply those impls without a custom host binary  
+**So that** `provided_by: runtime` works on the daily-driver path
+
+**Acceptance criteria:**
+
+- Documented matrix: which deps are host-provided vs VEIL-generated
+- Local path: either default runtime impls package or gen emits stubs that
+  compile and fail closed if not wired
+- Manifest / DI still express strategy; no silent wrong wiring
+- At least Bus or AuthService happy path without editing bootstrap Rust
+- Check or runtime error if required provided dep is missing
+
+**Mission impact:** Composition root honesty; local harness completeness  
+**Related:** product table `provided_by: "runtime"` gap

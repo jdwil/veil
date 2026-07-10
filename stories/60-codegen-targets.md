@@ -149,3 +149,48 @@ workspace deps emit features from stub only. `examples/sqlx.stub` updated.
 
 **Done notes:** `manifest_includes_layer_provided_deps_with_strategy` in
 codegen_tests locks Bus/AuthService + strategy fields for onboarding.
+
+---
+
+## Follow-up stack (codegen hygiene & multi-target packages)
+
+---
+
+## GEN-008: Package / expose codegen path for non-TypeScript targets
+
+**Status:** Open · **Priority:** P3  
+**As an** author of a `pkg` with or without `expose`  
+**I want** Swift/Kotlin/Rust package generation to be intentional  
+**So that** only TS has a special API-client path by design—not by accident
+
+**Acceptance criteria:**
+
+- Document per-target behavior for `VeilFile::Package` (API client vs full crate
+  vs spike sources)
+- CLI/gen paths do not silently drop expose contracts on non-TS targets
+- Where expose is TS-only, check `-t rust|swift|kotlin` warns or documents no-op
+- Tests cover package → each registered `CodegenTarget`
+- pure_lib (no expose) remains green on all targets
+
+**Depends:** PAR-005/006, GEN package client work  
+**Mission impact:** Multi-target honesty for libraries (PAR-008)
+
+---
+
+## GEN-009: Codegen and CLI warning hygiene
+
+**Status:** Open · **Priority:** P3  
+**As a** maintainer  
+**I want** `cargo build` / test of veil-codegen and veil-cli clean of noise  
+**So that** real failures are visible
+
+**Acceptance criteria:**
+
+- Remove or use unused imports (`stmt_to_rust`, template `Expr`/`StepDef`/…,
+  `Shape`)
+- Fix unused variables in CLI (e.g. stub index `id`)
+- CI or local `cargo test -p veil-codegen -p veil-cli` shows no `dead_code` /
+  unused warnings for those crates (or allowlist only justified cases)
+- No behavior change
+
+**Mission impact:** Maintainer velocity; low product risk

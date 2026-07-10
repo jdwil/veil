@@ -402,3 +402,129 @@ ACP/MCP launchers remain AGT-007/008. Secrets via env only (never commit).
 
 This delivers “prompt → edit → IDE updates” early, then expands versatility
 (Bedrock, ACP, MCP, remote) without blocking the vertical slice.
+
+---
+
+## Follow-up stack (agent safety, remote, context)
+
+Surfaced from AGT-009/010/011 done notes and remote MVP limits.
+
+---
+
+## AGT-013: Agent write path allowlist
+
+**Status:** Open · **Priority:** P2  
+**As a** user of the in-IDE agent  
+**I want** writes restricted to an allowlisted set of paths/packages  
+**So that** a tool cannot edit arbitrary files on disk
+
+**Acceptance criteria:**
+
+- Config (env or serve flag) for allowed roots / globs
+- Tools refuse writes outside allowlist with visible error in turn response
+- Default for `veil serve <file>` is that project’s loaded `.veil` set
+- Documented in `docs/AGENT.md`
+- Tests: in-allowlist rename OK; out-of-allowlist denied
+
+**Depends:** AGT-005, AGT-009  
+**Mission impact:** Dual-loop safety; human trust in agent apply
+
+---
+
+## AGT-014: Plan-only agent mode
+
+**Status:** Open · **Priority:** P2  
+**As a** cautious reviewer  
+**I want** an agent mode that proposes EditOps without applying  
+**So that** I approve structure before source mutates
+
+**Acceptance criteria:**
+
+- Mode flag/env (e.g. `VEIL_AGENT_PLAN_ONLY=1`) or request field on turn
+- Tools return intended ops / summary; `source_changed` stays false
+- IDE can show plan (diff or op list) for human apply later
+- Compatible with confirm-writes (AGT-009); plan-only is stricter
+- Documented UX: how to apply a plan in a second step
+
+**Depends:** AGT-006, AGT-009  
+**Mission impact:** Human structural review before machine write
+
+---
+
+## AGT-015: Token budgets on server context pack
+
+**Status:** Open · **Priority:** P2  
+**As an** agent runtime  
+**I want** `GET /api/context` (and agent assembly) to honor token budgets  
+**So that** large packages do not blow model context
+
+**Acceptance criteria:**
+
+- Query/body param or env for max tokens (align with `veil prompt --max-tokens`)
+- Truncation markers when cut; prefer outline over full source
+- Default budget documented; 0 = unlimited
+- Agent turn path uses the same packer when building model messages
+- Tests for truncation boundary
+
+**Depends:** AGT-011, PAR-009  
+**Mission impact:** Token-efficient agent context (MISSION)
+
+---
+
+## AGT-016: Remote multi-user authn for agent/SourceStore
+
+**Status:** Open · **Priority:** P3  
+**As a** deployer of shared veil-runtime  
+**I want** authenticated access to remote source + agent APIs  
+**So that** multi-user cloud is not open-by-default
+
+**Acceptance criteria:**
+
+- Authn strategy pluggable (bearer/JWT/OIDC or reverse-proxy identity header)
+- Unauthenticated writes rejected when auth enabled
+- Local dev can keep open/allow-all (document clearly)
+- No secrets in repo; env/config only
+- Docs: recommended deploy pattern (proxy + serve)
+
+**Depends:** AGT-010, RT-008  
+**Mission impact:** Platform multi-user; not required for single-user local
+
+---
+
+## AGT-017: Remote structured EditOp path
+
+**Status:** Open · **Priority:** P2  
+**As an** IDE/agent on `VEIL_REMOTE_URL`  
+**I want** structured `POST /api/edit` (and agent tools) over the network  
+**So that** remote sessions are not limited to full-file `POST /api/source`
+
+**Acceptance criteria:**
+
+- `RemoteHttpProvider` (or successor) proxies edit + file select + source
+- Agent rename/tools work against remote the same as local FilesystemProvider
+- Validation (parse+check) still fails closed before persist
+- Partial failure / network errors surfaced to client
+- Docs update SERVER.md / AGENT.md
+
+**Depends:** AGT-010, SER edit API  
+**Mission impact:** Same IDE UX local vs remote
+
+---
+
+## AGT-018: Live sync when client is remote
+
+**Status:** Open · **Priority:** P3  
+**As a** remote IDE user  
+**I want** AGT-002 SSE (or equivalent) to reflect remote source changes  
+**So that** multi-tab / agent edits stay live without LocalFs
+
+**Acceptance criteria:**
+
+- Documented topology: which process owns `/api/events` (host vs tunnel)
+- Client connected via remote provider still refreshes IR on remote writes
+- Either proxy SSE through remote serve or subscribe to remote events URL
+- No requirement for package files on the browser machine
+- Failure mode: poll fallback documented if SSE blocked
+
+**Depends:** AGT-002, AGT-010  
+**Mission impact:** Dual-loop live refresh on cloud-hosted packages

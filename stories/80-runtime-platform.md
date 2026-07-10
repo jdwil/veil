@@ -239,3 +239,72 @@ viewer). Platform daemon UI deferred; health via serve API when present.
 
 **Done notes:** `runtime/README.md` default story; `docs/HARNESS.md` / `AGENT.md`;
 `veil serve <dir>` already multi-file discovers project `.veil`.
+
+---
+
+## Follow-up stack (cloud adapters & shared HTTP)
+
+Surfaced after RT-015 MVP (S3 curl + DDB NotImplemented).
+
+---
+
+## RT-024: DynamoDB metadata adapter (real ops)
+
+**Status:** Open · **Priority:** P3  
+**As an** AWS / LocalStack deployer  
+**I want** `VEIL_META=ddb` to put/get/delete/list metadata  
+**So that** pre-prod tests are not stuck on `NotImplemented`
+
+**Acceptance criteria:**
+
+- Same conceptual API as `FileMetaStore` (kind + id documents)
+- Real DynamoDB calls (AWS SDK or equivalent) against LocalStack and/or AWS
+- Env: `VEIL_DDB_TABLE`, region, optional endpoint (existing names preferred)
+- Failures are structured (`StorageError`); no silent success
+- Integration test optional behind feature/env; unit tests for key/error paths
+- `docs/STORAGE.md` updated; does not replace `VEIL_META=fs` default
+
+**Depends:** RT-015  
+**Mission impact:** Cloud path honesty for platform metadata
+
+---
+
+## RT-025: S3 object store with production auth (SigV4 / SDK)
+
+**Status:** Open · **Priority:** P3  
+**As an** AWS deployer  
+**I want** S3 put/get/list/delete with real credentials  
+**So that** LocalStack and AWS both work beyond anonymous curl MVP
+
+**Acceptance criteria:**
+
+- Replace or wrap curl MVP with SigV4-capable client or AWS SDK
+- Path-style still supported for LocalStack
+- Credentials via standard AWS env/chain; clear Config errors when missing
+- Same `ObjectStorage` port; `VEIL_STORAGE=s3` default behavior documented
+- Smoke test script or gated integration test
+- `docs/STORAGE.md` updated
+
+**Depends:** RT-015  
+**Mission impact:** Pre-prod object storage without false greens
+
+---
+
+## RT-026: Shared HTTP client (drop curl subprocesses)
+
+**Status:** Open · **Priority:** P3  
+**As a** platform maintainer  
+**I want** S3 and `RemoteHttpProvider` to use an in-process HTTP client  
+**So that** errors, timeouts, and non-Unix hosts are reliable
+
+**Acceptance criteria:**
+
+- No required `curl` binary for S3 or remote SourceStore happy path
+- Timeouts, non-2xx, and body limits handled explicitly
+- Feature or dependency choice documented (e.g. `reqwest` in veil-local /
+  veil-server)
+- Existing env vars and ports unchanged for callers
+- Unit tests with mocked HTTP or wiremock-style local server
+
+**Depends:** RT-015, AGT-010  
+**Mission impact:** Operational reliability of cloud + remote IDE path
