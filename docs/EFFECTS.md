@@ -46,3 +46,16 @@ Unit coverage for type mapping lives in backend modules (`type_to_swift` /
 - Algebraic effect handlers in source
 - Per-error-code enums auto-generated for every target
 - Claiming Swift/Kotlin bodies lower `?` until codegen does
+
+## Phase N delta (PAR-016)
+
+When multi-target `?` starts to diverge beyond `TypeExpr::Result`:
+
+1. Add optional **effect row** metadata on fns (`effects: [fallibility]`).
+2. Keep `Res!` as surface sugar that sets the same axis.
+3. Backends consume one IR axis (Rust `Result`, Swift `throws`/`Result`,
+   Kotlin `Result` / exceptions policy).
+4. Do **not** invent algebraic handlers until two backends need it.
+
+Until then, PAR-003 lowerings + capabilities remain the contract.
+`TypeExpr::Result` is the stable representation.

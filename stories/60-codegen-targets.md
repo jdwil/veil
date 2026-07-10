@@ -158,7 +158,7 @@ codegen_tests locks Bus/AuthService + strategy fields for onboarding.
 
 ## GEN-008: Package / expose codegen path for non-TypeScript targets
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** author of a `pkg` with or without `expose`  
 **I want** Swift/Kotlin/Rust package generation to be intentional  
 **So that** only TS has a special API-client path by design—not by accident
@@ -174,6 +174,8 @@ codegen_tests locks Bus/AuthService + strategy fields for onboarding.
 
 **Depends:** PAR-005/006, GEN package client work  
 **Mission impact:** Multi-target honesty for libraries (PAR-008)
+
+**Done notes:** `docs/PACKAGE_TARGETS.md` matrix for package/expose per target.
 
 ---
 

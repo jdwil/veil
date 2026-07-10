@@ -1,0 +1,63 @@
+pkg ui v1
+  desc "Structured UI IR constructs (PAR-013) — framework-agnostic view trees"
+  author "VEIL"
+
+  construct View
+    kw view
+    mt mod
+    desc "Structured UI root (prefer over raw template)"
+    visual
+      icon "🖼️"
+      color "#6366f1"
+      label "View"
+    present
+      role ui
+    in any
+
+  construct El
+    kw el
+    mt struct
+    desc "UI element node (tag + attrs)"
+    visual
+      icon "▭"
+      color "#818cf8"
+      label "Element"
+    has
+      tag: Str
+    present
+      role ui
+    in View
+
+  construct Text
+    kw text
+    mt struct
+    desc "Text child node"
+    visual
+      icon "T"
+      color "#a5b4fc"
+      label "Text"
+    has
+      value: Str
+    present
+      role ui
+    in View
+
+  # Codegen: Svelte shell for view roots
+  codegen svelte
+    template view_shell
+      for construct where keyword=view
+        file "src/lib/{name}.svelte"
+        """
+        <!-- Generated from VEIL structured UI (PAR-013) — experimental -->
+        <script>
+          // view: {name}
+        </script>
+        <div class="veil-view-{name}">
+          <slot />
+        </div>
+        """
+
+  prompt
+    Structured UI uses view / el / text constructs instead of raw
+    template strings when possible. Raw templates remain as escape hatch
+    (CHK-006 debt). First codegen target: Svelte (view shells).

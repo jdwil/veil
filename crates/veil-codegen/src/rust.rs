@@ -787,10 +787,15 @@ fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
         c.subkind, c.name, c.name, generic_params_rust(&c.type_params)
     ));
     for field in &fields {
+        let mut ty = type_to_rust(&field.type_expr);
+        // PAR-014: optional @shared → Arc<T> (no lifetimes in .veil)
+        if field.annotations.iter().any(|a| a.name == "shared") {
+            ty = format!("std::sync::Arc<{ty}>");
+        }
         out.push_str(&format!(
             "    pub {}: {},\n",
             to_snake(&field.name),
-            type_to_rust(&field.type_expr)
+            ty
         ));
     }
     out.push_str("}\n\n");

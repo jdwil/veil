@@ -16,9 +16,9 @@ unless a sharing mark is required at a boundary.
 - **No lifetime parameters** in `.veil` (enforced by language non-goal).
 - Rust backend already inserts ownership at infrastructure boundaries (Bus
   handlers, shared deps) without author-written `Arc` / `'a`.
-- Explicit `@shared` field annotations are **optional future syntax**; until
-  then, layers / DI inject shared services and codegen decides clone vs Arc.
-- TypeScript / Swift / Kotlin spikes ignore ownership marks.
+- Explicit **`@shared` on fields** (PAR-014): Rust lowers to `std::sync::Arc<T>`.
+  TS / Swift / Kotlin ignore the mark.
+- Layers / DI still inject shared services when unmarked.
 
 ## Design rules
 

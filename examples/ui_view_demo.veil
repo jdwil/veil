@@ -1,0 +1,13 @@
+# PAR-013 — structured UI demo (view shell → Svelte)
+#   veil check examples/ui_view_demo.veil
+#   veil check examples/ui_view_demo.veil --emit-templates  # if templates loaded
+
+pkg UiViewDemo
+  use base
+  use ui
+
+  view Home
+    el Title
+      tag: Str
+    text Greeting
+      value: Str

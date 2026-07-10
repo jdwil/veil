@@ -43,15 +43,39 @@ veil check examples/di_example.veil
 | Multi-context Bus orchestration | Opt-in when steps have `ctx` refs **and** layer defines routing traits (INV-003) |
 | Smart constructors / timestamps | `rust.layer` `constructor_policy` (INV-002) |
 
+## Layout (RT-021)
+
+Generated workspaces with `@main` emit:
+
+```text
+Cargo.toml                 # workspace members include crates/veil_bin
+crates/veil_shared/
+crates/<context>/
+crates/veil_bin/
+  Cargo.toml               # [[bin]] name = "veil_bin"
+  src/main.rs              # harness main
+```
+
+Verify: `cargo metadata --no-deps | jq '.packages[] | select(.name=="veil_bin")'`.
+
+## VEIL packages for Bus / HTTP (RT-022)
+
+- `layers/harness.layer` — prompts + patterns for `@main` composition
+- `InProcessBus` generated into `veil_shared` when Bus is declared
+- Minimal HTTP remains app-specific (axum in app or host); no eternal bootstrap
+
+## `provided_by: "runtime"` (RT-023)
+
+Local harness (`veil_bin`) supplies Bus (and allow-all Auth when declared)
+without a handwritten host. Manifest still lists `provided_by: runtime` for
+platform hosts; local gen emits concrete impls so `cargo run -p veil_bin` works.
+
 ## Known gaps
 
 | Gap | Story |
 |-----|--------|
-| Dedicated runnable bin crate for every multi-context workspace | RT-001b |
-| Bus + HTTP + handler registration fully in VEIL declare | RT-001 |
-| InProcessBus as default local topology | RT-004 |
-| Host-injected `provided_by: runtime` mode | RT-002 |
 | Empty adapter bodies still emit `todo!` | GEN-001/002 (flagged by escape diagnostics) |
+| Full axum host package in pure VEIL | incremental RT-022 |
 
 ## Do not reintroduce
 

@@ -39,8 +39,11 @@ view LoginForm
 
 ## MVP slice (this story)
 
-- Design locked here; Svelte lowering is follow-up implementation.
-- Escape hatch remains; capability matrix may add `StructuredUi` later.
+- Design locked here.
+- Layer: `layers/ui.layer` — `view` / `el` / `text` constructs + Svelte template
+  skeleton for `view` (codegen target `svelte`).
+- Escape hatch remains; raw `template` still debt-flagged (CHK-006).
+- Full el/when/list → Svelte emit is incremental; start with `view` shells.
 - Presentation layers (`docs/PRESENTATION.md`) continue for **IDE views**;
   UI IR is for **product UI** in packages.
 

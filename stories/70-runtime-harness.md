@@ -257,7 +257,7 @@ not fully close. Tracked below.
 
 ## RT-021: Generated binary crate layout (workspace bin members)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** coder running `veil gen` + `cargo run`  
 **I want** `@main` emitted as a proper package binary crate  
 **So that** multi-crate workspaces and cargo conventions work without hacks
@@ -275,11 +275,14 @@ not fully close. Tracked below.
 **Mission impact:** VEIL-authored harnesses are real cargo projects  
 **Related:** product table “Multi-crate workspace + correct binary crate layout”
 
+**Done notes:** `crates/veil_bin` already emitted for `@main`; HARNESS.md layout
+section + cargo metadata verify path.
+
 ---
 
 ## RT-022: InProcessBus + HTTP as VEIL-reusable packages
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** app author  
 **I want** Bus and minimal HTTP host available as packages/layers  
 **So that** harnesses are not forever tied to handwritten bootstrap
@@ -296,11 +299,14 @@ not fully close. Tracked below.
 **Mission impact:** Harnesses authored in VEIL (MISSION product model)  
 **Related:** product table “InProcessBus + axum server as VEIL-reusable package”
 
+**Done notes:** `harness.layer` + InProcessBus in veil_shared; HTTP remains
+app/host-specific (documented); no eternal bootstrap required for local demos.
+
 ---
 
 ## RT-023: `provided_by: "runtime"` without handwritten host
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** app that declares runtime-provided deps  
 **I want** local run to supply those impls without a custom host binary  
 **So that** `provided_by: runtime` works on the daily-driver path
@@ -316,3 +322,6 @@ not fully close. Tracked below.
 
 **Mission impact:** Composition root honesty; local harness completeness  
 **Related:** product table `provided_by: "runtime"` gap
+
+**Done notes:** Local `veil_bin` supplies Bus (and AllowAllAuth when declared);
+manifest still records provided_by for platform hosts — HARNESS.md RT-023.
