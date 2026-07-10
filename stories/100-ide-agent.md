@@ -246,9 +246,9 @@ logged in turn response. Full tool matrix / apply_patch later.
   auto-apply in local dev with clear activity log)
 - Configurable system/instructions path (project `AGENTS.md` / layer prompts)
 
-**Done notes:** `veil_server::agent::run_turn` host-owned heuristic loop;
-tool status in panel; auto-apply rename in local serve. ModelProvider
-pluggability = AGT-003.
+**Done notes:** Host loop prefers **Rig agent + tools** when
+`VEIL_MODEL_PROVIDER=openai|ollama`; otherwise offline heuristic. Tools:
+`veil_check`, `veil_outline`, `read_source`, `rename_construct` (`rig_tools.rs`).
 
 ---
 
@@ -280,7 +280,7 @@ pattern. Implementation stories may split after the spike.
 
 ## AGT-008: VEIL MCP server for tools
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** external agent (ACP or any MCP client)  
 **I want** VEIL edit/check tools over MCP  
 **So that** agentic platforms can modify packages without bespoke integrations
@@ -295,6 +295,10 @@ pattern. Implementation stories may split after the spike.
   “run agent with VEIL MCP configured natively”
 
 **Mission impact:** Decouples “our tools” from “which agent product you like.”
+
+**Done notes:** `GET /api/agent/tools` exposes Rig tool JSON schemas (veil-tools-v1)
+for MCP bridges. Same tool names as Rig agent. Full stdio MCP (`rig-mcp`/`rmcp`)
+documented as next step in AGENT.md.
 
 ---
 

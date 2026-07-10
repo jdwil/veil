@@ -860,6 +860,10 @@ pub struct StubCrate {
     /// types accessible as `S3Client` → `aws_sdk_s3::Client`).
     #[serde(default)]
     pub alias: Option<String>,
+    /// Cargo features for workspace.dependencies (GEN-006) — from stub line
+    /// `cargo_features a, b, c`. Empty = plain version dep.
+    #[serde(default)]
+    pub cargo_features: Vec<String>,
     /// Struct declarations with their methods.
     pub structs: Vec<StubStruct>,
     /// Impl blocks (methods grouped by target type).
@@ -907,6 +911,18 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             let parts: Vec<&str> = trimmed.strip_prefix("stub ").unwrap().split_whitespace().collect();
             stub.name = parts.first().unwrap_or(&"").to_string();
             stub.version = parts.get(1).unwrap_or(&"*").to_string();
+            continue;
+        }
+
+        // GEN-006: cargo_features runtime-tokio, postgres, ...
+        if trimmed.starts_with("cargo_features ") {
+            stub.cargo_features = trimmed
+                .strip_prefix("cargo_features ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             continue;
         }
 

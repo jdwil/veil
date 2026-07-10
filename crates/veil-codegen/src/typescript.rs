@@ -921,8 +921,12 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
     script.push_str("</script>\n");
 
     // ─── Template ─────────────────────────────────────────────────────
+    // GEN-004: zero-raw shell is valid — explicit empty placeholder, not a fake TODO.
     let template_section = if template_content.is_empty() {
-        "\n<!-- TODO: Add template markup -->\n".to_string()
+        format!(
+            "\n<!-- veil: empty template shell for {} — add `template` raw block when needed -->\n<div class=\"veil-shell\"></div>\n",
+            comp.name
+        )
     } else {
         format!("\n{}\n", dedent_block(&template_content))
     };

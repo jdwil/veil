@@ -96,12 +96,21 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // Template output augments the backend's output — it doesn't replace it.
     let template_output = crate::template::execute_templates(solution, registry, "rust");
 
-    // If there's a composed "main" section from @main contributors, add it
-    if let Some(main_content) = crate::template::compose_main_section(&template_output, "rust") {
-        files.push(GeneratedFile {
-            path: "src/main.rs".to_string(),
-            content: main_content,
-        });
+    // RT-001b: @main contributions become a dedicated runnable bin crate —
+    // never an orphan root `src/main.rs` that is not a workspace member.
+    if let Some(main_body) = crate::template::compose_main_section(&template_output, "rust") {
+        let module_crates: Vec<String> = modules.iter().map(|m| to_snake(&m.name)).collect();
+        files.extend(gen_bin_crate(solution, &module_crates, &main_body));
+        // Ensure workspace lists the bin crate
+        if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
+            if !ws.content.contains("crates/veil_bin") {
+                ws.content = ws.content.replacen(
+                    "members = [\n    \"crates/veil_shared\"",
+                    "members = [\n    \"crates/veil_shared\",\n    \"crates/veil_bin\"",
+                    1,
+                );
+            }
+        }
     }
 
     // Add template-generated files
@@ -167,6 +176,70 @@ fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
     contents
 }
 
+/// RT-001b: dedicated binary crate for `@main` / composition root.
+fn gen_bin_crate(
+    sol: &Solution,
+    module_crates: &[String],
+    main_body: &str,
+) -> Vec<GeneratedFile> {
+    let mut deps = String::from(
+        "tokio = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\n",
+    );
+    for c in module_crates {
+        deps.push_str(&format!("{c} = {{ path = \"../{c}\" }}\n"));
+    }
+    // Use statements so main can call into context crates when present
+    let mut uses = String::from("use veil_shared::*;\n");
+    for c in module_crates {
+        uses.push_str(&format!("use {c}::*;\n"));
+    }
+    let cargo = format!(
+        r#"[package]
+name = "veil_bin"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "veil_bin"
+path = "src/main.rs"
+
+[dependencies]
+{deps}"#
+    );
+    // If compose_main_section already wraps #[tokio::main], use as-is;
+    // otherwise wrap the body.
+    let main_rs = if main_body.contains("#[tokio::main]") || main_body.contains("fn main") {
+        format!(
+            "//! Generated entrypoint for package `{}` (@main contributors).\n\
+             //! Run: `cargo run -p veil_bin` from the generated workspace root.\n\
+             {uses}\n{main_body}",
+            sol.name
+        )
+    } else {
+        format!(
+            "//! Generated entrypoint for package `{}` (@main contributors).\n\
+             //! Run: `cargo run -p veil_bin` from the generated workspace root.\n\
+             {uses}\n\
+             #[tokio::main]\n\
+             async fn main() -> Result<(), Box<dyn std::error::Error>> {{\n\
+             {main_body}\n\
+                 Ok(())\n\
+             }}\n",
+            sol.name
+        )
+    };
+    vec![
+        GeneratedFile {
+            path: "crates/veil_bin/Cargo.toml".into(),
+            content: cargo,
+        },
+        GeneratedFile {
+            path: "crates/veil_bin/src/main.rs".into(),
+            content: main_rs,
+        },
+    ]
+}
+
 fn gen_workspace_toml(sol: &Solution, registry: &LayerRegistry) -> GeneratedFile {
     let mut members = vec!["    \"crates/veil_shared\"".to_string()];
     for item in &sol.items {
@@ -177,17 +250,22 @@ fn gen_workspace_toml(sol: &Solution, registry: &LayerRegistry) -> GeneratedFile
         }
     }
 
+    // GEN-006: deps/features from stub metadata only (no engine hardcode for sqlx).
     let mut extra_deps = String::new();
     for stub in &registry.stubs {
-        if stub.name == "sqlx" {
-            // sqlx needs runtime and driver features
-            extra_deps.push_str(&format!(
-                "sqlx = {{ version = \"{}\", features = [\"runtime-tokio\", \"postgres\", \"uuid\", \"chrono\", \"json\"] }}\n",
-                stub.version
-            ));
+        if stub.cargo_features.is_empty() {
+            extra_deps.push_str(&format!("{} = \"{}\"\n", stub.name, stub.version));
         } else {
+            let feats: Vec<String> = stub
+                .cargo_features
+                .iter()
+                .map(|f| format!("\"{f}\""))
+                .collect();
             extra_deps.push_str(&format!(
-                "{} = \"{}\"\n", stub.name, stub.version
+                "{} = {{ version = \"{}\", features = [{}] }}\n",
+                stub.name,
+                stub.version,
+                feats.join(", ")
             ));
         }
     }
@@ -1392,56 +1470,44 @@ fn gen_impls(
                         ctx.locals.insert(name.clone());
                     }
                     if is_last {
-                        // Last expression is the return value
+                        // GEN-002: always lower authored adapter bodies via expr
+                        // translator. Never replace real calls with todo!("SQL: …").
+                        // Empty bodies still get a default Ok (escape diagnostic covers debt).
                         if ret_rust == "Result<(), DomainError>" {
-                            // Void result — execute the expression, then Ok(())
-                            // Detect if the expression involves an external SDK/stub call
-                            let uses_stub = ctx.stub_type_crate.values()
-                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()))
-                                || ctx.stub_type_crate.keys().any(|alias| rust_expr.contains(alias.as_str()));
-                            let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
-                            if uses_stub {
-                                // Adapter calls external SDK (sqlx, etc.) — emit todo!
-                                // to avoid type mismatches. The SQL intent is in manifest.json.
-                                let sql_hint = mimpl.body.iter().find_map(|e| {
-                                    if let Expr::Call(c) = e { c.args.first().and_then(|a| {
-                                        if let Expr::StringLit(s) = a { Some(s.clone()) } else { None }
-                                    }) } else { None }
-                                }).unwrap_or_default();
-                                out.push_str(&format!("        todo!(\"SQL: {}\")\n", sql_hint.replace('"', "'")));
-                            } else if uses_effect {
-                                out.push_str(&format!("        {};\n", rust_expr));
-                                out.push_str("        Ok(())\n");
+                            if rust_expr.contains("todo!") {
+                                out.push_str(&format!("        {rust_expr}\n"));
                             } else {
-                                out.push_str(&format!("        {};\n", rust_expr));
+                                out.push_str(&format!("        {rust_expr};\n"));
                                 out.push_str("        Ok(())\n");
                             }
                         } else if ret_rust.starts_with("Result<") {
-                            // Non-void result with possible SDK call
-                            let uses_stub = ctx.stub_type_crate.values()
-                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()))
-                                || ctx.stub_type_crate.keys().any(|alias| rust_expr.contains(alias.as_str()));
-                            let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
-                            let is_sdk_chain = rust_expr.contains(".await");
-                            if uses_stub || uses_effect || is_sdk_chain {
-                                let sql_hint = mimpl.body.iter().find_map(|e| {
-                                    if let Expr::Call(c) = e { c.args.first().and_then(|a| {
-                                        if let Expr::StringLit(s) = a { Some(s.clone()) } else { None }
-                                    }) } else { None }
-                                }).unwrap_or_default();
-                                out.push_str(&format!("        todo!(\"SQL: {}\")\n", sql_hint.replace('"', "'")));
+                            // Prefer propagating Result from the last expression.
+                            if rust_expr.ends_with('?')
+                                || rust_expr.starts_with("Ok(")
+                                || rust_expr.contains("todo!")
+                            {
+                                out.push_str(&format!("        {rust_expr}\n"));
+                            } else if rust_expr.contains(".await") {
+                                // Async SDK call — await and map into DomainError
+                                out.push_str(&format!(
+                                    "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
+                                ));
                             } else {
-                                out.push_str(&format!("        Ok({})\n", rust_expr));
+                                out.push_str(&format!("        Ok({rust_expr})\n"));
                             }
                         } else {
-                            out.push_str(&format!("        {}\n", rust_expr));
+                            out.push_str(&format!("        {rust_expr}\n"));
                         }
                     } else {
-                        out.push_str(&format!("        {};\n", rust_expr));
+                        out.push_str(&format!("        {rust_expr};\n"));
                     }
                 }
                 if mimpl.body.is_empty() {
-                    out.push_str(&format!("        {}\n", default_ok_for(&ret_rust)));
+                    // Empty adapter — compile-time placeholder; CHK-006 flags debt.
+                    out.push_str(&format!(
+                        "        todo!(\"empty adapter body: {}::{}\")\n",
+                        c.name, mimpl.method_name
+                    ));
                 }
                 out.push_str("    }\n\n");
             }

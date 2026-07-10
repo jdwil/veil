@@ -1,4 +1,6 @@
 stub sqlx 0.8.6
+  # GEN-006: Cargo features declared here, not hardcoded in the engine
+  cargo_features runtime-tokio, postgres, uuid, chrono, json
 
   struct Text
     fn into_inner() -> T

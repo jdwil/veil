@@ -53,19 +53,19 @@ pub fn execute_templates(
         };
     }
 
-    // Walk all top-level constructs in the solution
-    for item in &solution.items {
-        let construct = match item {
-            veil_ir::ast::TopLevelItem::Construct(c) => c,
-            _ => continue,
-        };
-        for template in &templates {
+    // GEN-005: walk nested constructs (not only top-level items).
+    fn visit_construct(
+        construct: &Construct,
+        templates: &[&CodegenTemplate],
+        registry: &LayerRegistry,
+        sections: &mut HashMap<String, Vec<SectionContribution>>,
+        file_fragments: &mut Vec<String>,
+    ) {
+        for template in templates {
             for rule in &template.rules {
                 if matches_construct(construct, rule) {
                     let output = render_template(construct, rule, registry);
-
                     if let Some(section_name) = &rule.emit_to {
-                        // Contribute to a named section
                         sections
                             .entry(section_name.clone())
                             .or_insert_with(Vec::new)
@@ -73,14 +73,34 @@ pub fn execute_templates(
                                 priority: rule.priority,
                                 content: output,
                                 source_layer: template.layer.clone(),
-                                source_rule: format!("match {} where {}", rule.match_shape, rule.condition),
+                                source_rule: format!(
+                                    "match {} where {}",
+                                    rule.match_shape, rule.condition
+                                ),
                             });
                     } else {
-                        // Direct emit to file
                         file_fragments.push(output);
                     }
                 }
             }
+        }
+        for child in &construct.children {
+            visit_construct(child, templates, registry, sections, file_fragments);
+        }
+    }
+
+    for item in &solution.items {
+        match item {
+            veil_ir::ast::TopLevelItem::Construct(c) => {
+                visit_construct(
+                    c,
+                    &templates,
+                    registry,
+                    &mut sections,
+                    &mut file_fragments,
+                );
+            }
+            _ => {}
         }
     }
 

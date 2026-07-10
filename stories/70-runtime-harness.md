@@ -85,7 +85,7 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 
 ## RT-001b: Binary / workspace layout for entrypoints
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** codegen user  
 **I want** `@main` / entry fns to land in a correct runnable crate  
 **So that** multi-context workspaces `cargo run` cleanly
@@ -98,6 +98,10 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 - Document how `@main` interacts with library-only contexts
 - Tests: single-crate and multi-context examples both produce runnable bins
   when `@main` present
+
+**Done notes:** `@main` → `crates/veil_bin` + workspace member; no orphan
+`src/main.rs`. Docs in `docs/HARNESS.md`. Body fidelity still follows template
+emit (GEN / RT-001).
 
 ---
 

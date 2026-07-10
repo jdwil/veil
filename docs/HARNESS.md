@@ -15,9 +15,11 @@ program.
 ```bash
 veil gen examples/di_example.veil -o /tmp/di_out -t rust
 cd /tmp/di_out && cargo build
-# When a binary target is emitted for @main (RT-001b), also:
-# cargo run -p <bin>
+# @main contributors emit crates/veil_bin (RT-001b):
+cargo run -p veil_bin
 ```
+
+Library-only packages (no `@main`) generate context crates without `veil_bin`.
 
 3. Check dual-loop quality:
 

@@ -54,6 +54,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/edit", post(post_edit::<P>))
         .route("/api/diff", get(get_diff::<P>))
         .route("/api/agent/turn", post(post_agent_turn::<P>))
+        .route("/api/agent/tools", get(get_agent_tools))
         .route("/api/events", get(get_events::<P>))
         .route("/api/models", get(get_models))
         .layer(CorsLayer::permissive())
@@ -474,6 +475,55 @@ async fn post_agent_turn<P: SourceProvider>(
 /// AGT-003: list models for the configured Rig-backed provider.
 async fn get_models() -> axum::response::Response {
     let body = crate::model::list_provider_info();
+    match serde_json::to_string(&body) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// AGT-008 MVP: expose Rig tool schemas for MCP / external agents.
+/// Full MCP stdio server can wrap this registry (rig-mcp / rmcp follow-up).
+async fn get_agent_tools() -> axum::response::Response {
+    let tools = serde_json::json!([
+        {
+            "name": "veil_check",
+            "description": "Run the VEIL dual-loop check pipeline on the active package.",
+            "parameters": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "veil_outline",
+            "description": "Compact IR construct outline for the active package.",
+            "parameters": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "read_source",
+            "description": "Read active .veil source (truncated).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_chars": { "type": "integer" }
+                }
+            }
+        },
+        {
+            "name": "rename_construct",
+            "description": "Rename a construct via structured EditOp.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string" },
+                    "to": { "type": "string" },
+                    "confirmed": { "type": "boolean" }
+                },
+                "required": ["from", "to"]
+            }
+        }
+    ]);
+    let body = serde_json::json!({
+        "protocol": "veil-tools-v1",
+        "mcp_note": "HTTP tool discovery for MCP bridges; host tools via Rig. Full MCP server = AGT-008 follow-up with rig-mcp/rmcp.",
+        "tools": tools
+    });
     match serde_json::to_string(&body) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),

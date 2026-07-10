@@ -28,7 +28,7 @@ error. Message names construct + method.
 
 ## GEN-002: AWS / external SDK adapter lowering
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** runtime platform author  
 **I want** adapters that call stubbed SDKs to lower to real calls when bodies
   are authored, not `todo!("SQL: …")`  
@@ -43,6 +43,10 @@ error. Message names construct + method.
 - Document how adapter bodies should be written in VEIL
 
 **Mission impact:** Blocks runtime platform (RT-010+).
+
+**Done notes:** Removed blanket `todo!("SQL: …")` for stub/SDK bodies; authored
+impls lower via `expr_to_rust`. Empty bodies still `todo!("empty adapter…")`
+(CHK-006). S3/DDB typecheck remains example/stub-dep dependent.
 
 ---
 
@@ -65,7 +69,7 @@ error. Message names construct + method.
 
 ## GEN-004: Svelte structured emit (begin raw-template retirement)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** UI author  
 **I want** props/state/derived/effects to drive generated Svelte without
   requiring all logic in raw strings  
@@ -81,11 +85,14 @@ error. Message names construct + method.
 
 **Mission impact:** Escape-hatch debt burn-down for UI.
 
+**Done notes:** Structured `$props`/`$state`/`$derived`/`$effect` from blocks;
+empty template → explicit shell div (no silent TODO). Raw template still OK.
+
 ---
 
 ## GEN-005: Template engine completeness (pragmatic)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** layer author  
 **I want** templates to walk nested constructs and call real builtins  
 **So that** pattern codegen does not require engine PRs
@@ -98,11 +105,14 @@ error. Message names construct + method.
 - Docs match implementation (`CODEGEN_TEMPLATES.md`)
 - Prefer declarative templates; do not invent a third general-purpose language
 
+**Done notes:** Nested construct walk in `execute_templates`. Builtins remain
+as documented in CODEGEN_TEMPLATES.md (emit_action path).
+
 ---
 
 ## GEN-006: sqlx / crate special-cases leave engine
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** stub/layer author  
 **I want** Cargo features and deps driven by stubs + layer metadata  
 **So that** the engine does not special-case `sqlx`
@@ -112,6 +122,9 @@ error. Message names construct + method.
 - Remove hardwired sqlx feature logic from `rust.rs`
 - Stub or layer declares package features/deps
 - Postgres adapter examples still generate correct Cargo.toml
+
+**Done notes:** `StubCrate.cargo_features` + stub line `cargo_features …`;
+workspace deps emit features from stub only. `examples/sqlx.stub` updated.
 
 ---
 
