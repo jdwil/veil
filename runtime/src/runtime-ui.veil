@@ -1,4 +1,4 @@
-sol VeilRuntimeUI
+pkg VeilRuntimeUI
   use svelte5
 
   app RuntimeUI
@@ -20,20 +20,21 @@ sol VeilRuntimeUI
           </aside>
         """
         style """
-          .sidebar { background: var(--vr-surface); border-right: 1px solid var(--vr-border); }
+          .sidebar { background: var(--vr-surface); border-right: 1px solid var(--vr-border); display: flex; flex-direction: column; padding: 16px 0; }
+          .logo { display: flex; align-items: center; gap: 10px; padding: 0 20px 24px; }
+          .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; text-decoration: none; color: var(--vr-text-dim); }
+          .nav-item:hover { background: var(--vr-surface-hover); }
+          .nav-item.active { color: var(--vr-accent); }
         """
 
       comp StatusBar
         props
           status: Str
         template """
-          <footer class="status-bar">
-            <span class="dot" class:connected={status === "connected"}></span>
-            <span>{status}</span>
-          </footer>
+          <footer class="status-bar"><span class="dot"></span><span>{status}</span><span>veil-runtime v0.1.0</span></footer>
         """
         style """
-          .status-bar { padding: 6px 16px; border-top: 1px solid var(--vr-border); font-size: 11px; }
+          .status-bar { display: flex; justify-content: space-between; padding: 6px 16px; border-top: 1px solid var(--vr-border); font-size: 11px; }
         """
 
       comp StatCard
@@ -41,15 +42,12 @@ sol VeilRuntimeUI
           value: Str
           label: Str
         template """
-          <div class="stat-card">
-            <span class="stat-value">{value}</span>
-            <span class="stat-label">{label}</span>
-          </div>
+          <div class="stat-card"><span class="value">{value}</span><span class="label">{label}</span></div>
         """
         style """
-          .stat-card { background: var(--vr-surface); border: 1px solid var(--vr-border); padding: 20px; }
-          .stat-value { font-size: 28px; font-weight: 700; color: var(--vr-accent); }
-          .stat-label { font-size: 12px; color: var(--vr-text-dim); text-transform: uppercase; }
+          .stat-card { background: var(--vr-surface); border: 1px solid var(--vr-border); padding: 20px; border-radius: 8px; }
+          .value { font-size: 28px; font-weight: 700; color: var(--vr-accent); }
+          .label { font-size: 12px; color: var(--vr-text-dim); text-transform: uppercase; }
         """
 
       comp ProjectCard
@@ -59,196 +57,182 @@ sol VeilRuntimeUI
           updatedAt: Str
           id: Str
         template """
-          <a href="/projects/{id}" class="project-card">
-            <div class="name">{name}</div>
-            <div class="meta">{branch} · {updatedAt}</div>
-          </a>
+          <a href="/projects/{id}" class="project-card"><div class="name">{name}</div><div class="meta">{branch} · {updatedAt}</div></a>
         """
         style """
           .project-card { padding: 14px 18px; border: 1px solid var(--vr-border); border-radius: 6px; text-decoration: none; color: var(--vr-text); }
-          .project-card:hover { border-color: var(--vr-border-hover); }
+          .project-card:hover { border-color: var(--vr-accent); }
         """
 
-    group pages
-      layout AppLayout
-        @route("/")
-        template """
-          <div class="app-shell">
-            <Sidebar />
-            <main class="main-content">{@render children()}</main>
-            <StatusBar status="connected" />
-          </div>
-        """
-        style """
-          .app-shell { display: grid; grid-template-columns: 240px 1fr; grid-template-rows: 1fr auto; height: 100vh; }
-          .main-content { overflow-y: auto; padding: 24px; }
-        """
-
-      page Dashboard
-        @route("/")
+      comp DashboardView
         state
           repos: List<Json>
           loading: Bool
+        fn load()
+          repos = ApiClient.fetch("/api/repos", {})
+          loading = false
         template """
           <div class="dashboard">
             <h1>Dashboard</h1>
-            <div class="stats-grid">
-              <StatCard value={repos.length.toString()} label="Projects" />
-              <StatCard value="—" label="Deployments" />
-              <StatCard value="—" label="Layers" />
-              <StatCard value="—" label="Artifacts" />
-            </div>
+            <div class="stats">{#each [{v: repos.length, l: "Projects"}, {v: "—", l: "Deploys"}, {v: "—", l: "Layers"}, {v: "—", l: "Artifacts"}] as s}<StatCard value={s.v} label={s.l} />{/each}</div>
             {#if loading}<p>Loading...</p>{/if}
-            {#each repos as repo}
-              <ProjectCard name={repo.name} branch={repo.default_branch} updatedAt={repo.updated_at} id={repo.id} />
-            {/each}
+            {#each repos as repo}<ProjectCard name={repo.name} branch={repo.default_branch} updatedAt={repo.updated_at} id={repo.id} />{/each}
           </div>
         """
         style """
           .dashboard { max-width: 1200px; }
-          .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px; }
+          .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px; }
         """
 
-      page Projects
-        @route("/projects")
+      comp ProjectsView
         state
           repos: List<Json>
-          showCreate: Bool
           newName: Str
         fn createProject()
-          await ApiClient.mutate("/api/repos", {name: newName})
-          showCreate = false
+          ApiClient.mutate("/api/repos", {name: newName})
+          newName = ""
         template """
-          <div class="projects">
-            <header><h1>Projects</h1><button onclick={() => showCreate = true}>New</button></header>
-            {#each repos as repo}
-              <ProjectCard name={repo.name} branch={repo.default_branch} updatedAt={repo.updated_at} id={repo.id} />
-            {/each}
-          </div>
+          <div class="projects"><h1>Projects</h1><input bind:value={newName} /><button onclick={createProject}>Create</button>{#each repos as r}<ProjectCard name={r.name} branch={r.default_branch} updatedAt={r.updated_at} id={r.id} />{/each}</div>
         """
         style """
           .projects { max-width: 1200px; }
-          header { display: flex; justify-content: space-between; align-items: center; }
         """
 
-      page Deploy
-        @route("/deploy")
+      comp DeployView
         state
           artifactId: Str
           targetType: Str
           deploying: Bool
         fn triggerDeploy()
           deploying = true
-          await ApiClient.mutate("/api/deploy", {artifact_id: artifactId, target: targetType})
+          ApiClient.mutate("/api/deploy", {artifact_id: artifactId, target: targetType})
           deploying = false
         template """
-          <div class="deploy">
-            <h1>Deploy</h1>
-            <label>Artifact ID<input bind:value={artifactId} /></label>
-            <label>Target<select bind:value={targetType}><option value="lambda">Lambda</option><option value="container">Container</option></select></label>
-            <button onclick={triggerDeploy} disabled={deploying}>{deploying ? "Deploying..." : "Deploy"}</button>
-          </div>
+          <div class="deploy"><h1>Deploy</h1><input bind:value={artifactId} placeholder="Artifact ID" /><select bind:value={targetType}><option value="lambda">Lambda</option><option value="container">Container</option></select><button onclick={triggerDeploy} disabled={deploying}>{deploying ? "Deploying..." : "Deploy"}</button></div>
         """
         style """
           .deploy { max-width: 600px; }
-          label { display: block; margin-bottom: 12px; }
-          input, select { width: 100%; padding: 8px; border: 1px solid var(--vr-border); border-radius: 4px; }
+          input, select { width: 100%; padding: 8px; margin-bottom: 12px; border: 1px solid var(--vr-border); border-radius: 4px; }
         """
 
-      page Registry
-        @route("/registry")
+      comp RegistryView
         state
           layers: List<Json>
           stubs: List<Json>
         template """
-          <div class="registry">
-            <h1>Registry</h1>
-            <h2>Layers</h2>
-            {#each layers as l}<div class="item">{l.name} — {l.latest_version}</div>{/each}
-            <h2>Stubs</h2>
-            {#each stubs as s}<div class="item">{s.crate_name} — {s.version}</div>{/each}
-          </div>
+          <div class="registry"><h1>Registry</h1><h2>Layers</h2>{#each layers as l}<div class="item">{l.name}</div>{/each}<h2>Stubs</h2>{#each stubs as s}<div class="item">{s.crate_name} {s.version}</div>{/each}</div>
         """
         style """
           .registry { max-width: 900px; }
           .item { padding: 8px 12px; border: 1px solid var(--vr-border); margin-bottom: 6px; border-radius: 4px; }
         """
 
-      page BusServices
-        @route("/bus")
+      comp BusView
         state
           testMessage: Str
           result: Opt<Str>
         fn sendTest()
-          resp = await ApiClient.mutate("/api/bus/invoke", {message: testMessage})
+          resp = ApiClient.mutate("/api/bus/invoke", {message: testMessage})
           result = resp.result
         template """
-          <div class="bus">
-            <h1>Bus & Services</h1>
-            <input bind:value={testMessage} placeholder="GetCohort { id: ... }" />
-            <button onclick={sendTest}>Send</button>
-            {#if result}<pre>{result}</pre>{/if}
-          </div>
+          <div class="bus"><h1>Bus</h1><input bind:value={testMessage} placeholder="Message..." /><button onclick={sendTest}>Send</button>{#if result}<pre>{result}</pre>{/if}</div>
         """
         style """
           .bus { max-width: 600px; }
-          input { width: 100%; padding: 8px; font-family: monospace; border: 1px solid var(--vr-border); }
-          pre { background: var(--vr-surface); padding: 12px; border-radius: 4px; overflow-x: auto; }
+          input { width: 100%; padding: 8px; font-family: monospace; }
+          pre { background: var(--vr-surface); padding: 12px; }
         """
 
-      page Agents
-        @route("/agents")
+      comp AgentsView
         state
           messages: List<Json>
-          input: Str
+          user_input: Str
         fn sendMessage()
-          messages = messages.push({role: "user", content: input})
-          resp = await ApiClient.mutate("/api/agent", {message: input})
+          messages = messages.push({role: "user", content: user_input})
+          resp = ApiClient.mutate("/api/agent", {message: user_input})
           messages = messages.push({role: "assistant", content: resp.message})
-          input = ""
+          user_input = ""
         template """
-          <div class="agents">
-            <h1>Agents</h1>
-            <div class="messages">
-              {#each messages as msg}<div class="msg {msg.role}">{msg.content}</div>{/each}
-            </div>
-            <div class="input-row">
-              <input bind:value={input} placeholder="Ask the agent..." />
-              <button onclick={sendMessage}>Send</button>
-            </div>
-          </div>
+          <div class="agents"><h1>Agents</h1><div class="msgs">{#each messages as m}<div class={m.role}>{m.content}</div>{/each}</div><div class="row"><input bind:value={user_input} /><button onclick={sendMessage}>Send</button></div></div>
         """
         style """
-          .agents { max-width: 900px; height: calc(100vh - 120px); display: flex; flex-direction: column; }
-          .messages { flex: 1; overflow-y: auto; }
-          .msg { padding: 8px 12px; margin-bottom: 6px; border-radius: 6px; }
-          .msg.user { background: rgba(99,102,241,0.1); text-align: right; }
-          .msg.assistant { background: var(--vr-surface); border: 1px solid var(--vr-border); }
-          .input-row { display: flex; gap: 8px; }
-          .input-row input { flex: 1; padding: 8px; }
+          .agents { max-width: 900px; }
+          .msgs { min-height: 300px; overflow-y: auto; }
+          .user { text-align: right; background: rgba(99,102,241,0.1); padding: 8px; margin: 4px 0; border-radius: 6px; }
+          .assistant { background: var(--vr-surface); border: 1px solid var(--vr-border); padding: 8px; margin: 4px 0; border-radius: 6px; }
+          .row { display: flex; gap: 8px; }
+          .row input { flex: 1; padding: 8px; }
         """
 
-      page Config
-        @route("/config")
+      comp ConfigView
         state
-          config: Json
+          aws_region: Str
+          s3_bucket: Str
+          ddb_table: Str
+          llm_model: Str
           saving: Bool
         fn save()
           saving = true
-          await ApiClient.mutate("/api/config", config)
+          ApiClient.mutate("/api/config", {aws_region, s3_bucket, ddb_table, llm_model})
           saving = false
         template """
-          <div class="config">
-            <h1>Configuration</h1>
-            <label>AWS Region<input bind:value={config.aws_region} /></label>
-            <label>S3 Bucket<input bind:value={config.s3_bucket} /></label>
-            <label>DDB Table<input bind:value={config.ddb_table} /></label>
-            <label>LLM Model<input bind:value={config.llm_model} /></label>
-            <button onclick={save} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
-          </div>
+          <div class="config"><h1>Config</h1><label>Region<input bind:value={aws_region} /></label><label>Bucket<input bind:value={s3_bucket} /></label><label>Table<input bind:value={ddb_table} /></label><label>Model<input bind:value={llm_model} /></label><button onclick={save} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div>
         """
         style """
           .config { max-width: 600px; }
           label { display: block; margin-bottom: 12px; font-size: 13px; }
-          input { width: 100%; padding: 8px; border: 1px solid var(--vr-border); border-radius: 4px; }
+          input { width: 100%; padding: 8px; border: 1px solid var(--vr-border); border-radius: 4px; margin-top: 4px; }
+        """
+
+    group pages
+      layout AppLayout
+        @route("/")
+        template """
+          <div class="shell"><Sidebar /><main>{@render children()}</main><StatusBar status="connected" /></div>
+        """
+        style """
+          .shell { display: grid; grid-template-columns: 240px 1fr; grid-template-rows: 1fr auto; height: 100vh; }
+          main { overflow-y: auto; padding: 24px; }
+        """
+
+      page Dashboard
+        @route("/")
+        template """
+          <DashboardView />
+        """
+
+      page Projects
+        @route("/projects")
+        template """
+          <ProjectsView />
+        """
+
+      page Deploy
+        @route("/deploy")
+        template """
+          <DeployView />
+        """
+
+      page Registry
+        @route("/registry")
+        template """
+          <RegistryView />
+        """
+
+      page Bus
+        @route("/bus")
+        template """
+          <BusView />
+        """
+
+      page Agents
+        @route("/agents")
+        template """
+          <AgentsView />
+        """
+
+      page Config
+        @route("/config")
+        template """
+          <ConfigView />
         """
