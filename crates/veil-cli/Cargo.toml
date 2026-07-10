@@ -14,6 +14,7 @@ path = "src/main.rs"
 veil-parser.workspace = true
 veil-ir.workspace = true
 veil-codegen.workspace = true
+veil-server.workspace = true
 clap.workspace = true
 tokio.workspace = true
 axum.workspace = true

@@ -9,7 +9,6 @@ use std::path::PathBuf;
 
 use veil_ir::LayerRegistry;
 
-mod serve;
 
 #[derive(Parser)]
 #[command(name = "veil", version, about = "VEIL — Visual Engineering Intermediate Language")]
@@ -678,39 +677,11 @@ fn main() {
             println!("  API: http://localhost:{}/api/ir", port);
             println!("  Files: http://localhost:{}/api/files", port);
 
-            let state = std::sync::Arc::new(serve::ServeState::with_files(file_entries, registry.clone()));
+            let provider = veil_server::FilesystemProvider::with_files(file_entries, registry.clone());
+            let app = veil_server::build_router(provider);
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
-                let palette_json =
-                    serde_json::to_string(&veil_ir::palette_from_registry(&registry)).unwrap();
-
-                let app = axum::Router::new()
-                    .route("/api/ir", axum::routing::get(serve::get_ir))
-                    .route("/api/diagnostics", axum::routing::get(serve::get_diagnostics))
-                    .route("/api/source", axum::routing::get(serve::get_source))
-                    .route("/api/generated", axum::routing::get(serve::get_generated))
-                    .route("/api/stubs", axum::routing::get(serve::get_stubs))
-                    .route("/api/files", axum::routing::get(serve::get_files))
-                    .route("/api/files/select", axum::routing::post(serve::post_select_file))
-                    .route("/api/edit", axum::routing::post(serve::post_edit))
-                    .route("/api/palette", axum::routing::get({
-                        let palette = palette_json.clone();
-                        move || async move {
-                            (
-                                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                                palette.clone(),
-                            )
-                        }
-                    }))
-                    .with_state(state)
-                    .layer(
-                        tower_http::cors::CorsLayer::new()
-                            .allow_origin(tower_http::cors::Any)
-                            .allow_methods(tower_http::cors::Any)
-                            .allow_headers(tower_http::cors::Any),
-                    );
-
                 let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
                     .await
                     .unwrap();

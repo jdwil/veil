@@ -3,6 +3,7 @@ members = [
     "crates/veil-parser",
     "crates/veil-ir",
     "crates/veil-codegen",
+    "crates/veil-server",
     "crates/veil-cli",
 ]
 resolver = "2"
@@ -39,3 +40,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 veil-parser = { path = "crates/veil-parser" }
 veil-ir = { path = "crates/veil-ir" }
 veil-codegen = { path = "crates/veil-codegen" }
+veil-server = { path = "crates/veil-server" }
