@@ -55,7 +55,7 @@ pkg ddd v1
 A `.veil` file references layers via `use`:
 
 ```
-sol MyApp
+pkg MyApp
   use ddd
   ctx Identity
     group domain
@@ -236,7 +236,7 @@ contributors are not called in a custom main.
 ```
 .veil source + .layer files
        |
-   Parse (Solution/AST)
+   Parse (Package AST)
        |
    Build IR (nodes, edges, metadata)
        |
@@ -247,14 +247,15 @@ contributors are not called in a custom main.
      2. Layer templates execute against IR (augment output)
      3. Sections compose (multiple @main contributors → one main())
        |
-   Output (target files)
+   Output (target files + manifest.json for runtime)
 ```
 
-The codegen phase receives the full `Solution` and `LayerRegistry`. The
+The codegen phase receives the full AST and `LayerRegistry`. The
 compiler backend (`rust.rs`) handles core shape emission and project structure.
 Layer templates then execute, adding domain-specific code (DI wiring, pattern
 implementations). Section contributions are composed by priority. The result
-is the final target files.
+is the final target files plus a `manifest.json` that describes the module's
+wiring requirements for veil-runtime (deps, handlers, env vars).
 
 ## File Structure
 
@@ -355,7 +356,13 @@ accepted wherever a ddd `Saga` is allowed. Statements stack the same way
 
 The zero-domain-knowledge invariant HOLDS across the whole pipeline —
 lexer, parser, IR builder, **codegen** (both Rust and TypeScript), and
-**viewer**. Both example workspaces generate Rust that compiles.
+**viewer**. All example workspaces generate Rust that compiles cleanly.
+
+**File types:** The only top-level keyword is `pkg`. The `sol` keyword is
+accepted as a deprecated alias (produces identical output). There is no
+separate "solution" vs "package" distinction — `pkg` is the unit of domain
+modeling, and deployment topology is determined by the manifest + runtime.
+
 Implementation map:
 
 - `veil-ir/src/layer.rs` — `LayerRegistry`: parses `.layer` files, resolves
@@ -392,6 +399,20 @@ Implementation map:
   — the "viewer IS the editor" loop. Dark/light mode toggle.
 
 ### Codegen decisions (all keep the invariant)
+
+- **`@dep` annotation for dependency injection.** Handler inputs annotated with
+  `@dep` are excluded from the function's parameter list and instead accessed
+  via a generated `Deps` struct (`deps.repo_name.method().await?`). The Deps
+  struct is auto-populated from all `@dep` fields across all handlers in a
+  module. This is generic — any trait-shaped type can be a dep.
+
+- **Smart constructors.** Entity/aggregate `new()` methods auto-default:
+  timestamps (`created_on`, `updated_on` → `Utc::now()`), optional fields (→ `None`),
+  scalars (`Int` → 0, `Bool` → false), and `Json` fields (→ `{}`).
+  The `id` field is always a parameter — callers that have an externally-provided
+  ID pass it directly; callers that want auto-generation pass `Uuid::new_v4()` at
+  the call site (the expression translator handles this automatically when the
+  caller omits `id`). Types with `@invariant` return `Result<Self, ValidationError>`.
 
 - **JSON message Bus.** Cross-context calls route through a `Bus` whose payloads
   are `Json` (`serde_json::Value`), so an orchestrator crate never depends on
