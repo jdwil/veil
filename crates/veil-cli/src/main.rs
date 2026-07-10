@@ -967,11 +967,12 @@ fn main() {
                 let app = veil_server::build_router(provider);
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async move {
-                    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
-                        .await
-                        .unwrap();
+                    let listener = bind_serve_port(port).await;
                     println!("  Listening on port {port} (remote mode)");
-                    axum::serve(listener, app).await.unwrap();
+                    if let Err(e) = axum::serve(listener, app).await {
+                        eprintln!("Server error: {e}");
+                        std::process::exit(1);
+                    }
                 });
                 return;
             }
@@ -982,12 +983,38 @@ fn main() {
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
-                let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
-                    .await
-                    .unwrap();
+                let listener = bind_serve_port(port).await;
                 println!("  Listening on port {}", port);
-                axum::serve(listener, app).await.unwrap();
+                if let Err(e) = axum::serve(listener, app).await {
+                    eprintln!("Server error: {e}");
+                    std::process::exit(1);
+                }
             });
+        }
+    }
+}
+
+/// Bind `0.0.0.0:port` with a clear error on AddrInUse (no panic).
+async fn bind_serve_port(port: u16) -> tokio::net::TcpListener {
+    match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!(
+                "error: port {port} is already in use.\n\
+                 \n\
+                 Another process (often a previous `veil serve`) is listening there.\n\
+                 \n\
+                   # free the port (if it's an old veil):\n\
+                   fuser -k {port}/tcp\n\
+                   # or pick another port:\n\
+                   veil serve <path> -p 3002\n\
+                   make serve PORT=3002\n"
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: failed to bind 0.0.0.0:{port}: {e}");
+            std::process::exit(1);
         }
     }
 }

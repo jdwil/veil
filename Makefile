@@ -1,30 +1,135 @@
 # VEIL — Build orchestration
 #
 # Targets:
-#   make veil        — build the VEIL compiler
-#   make runtime     — transpile + compile the runtime
-#   make gen-runtime — transpile runtime.veil → Rust (in runtime/generated/)
-#   make build-runtime — cargo build the generated runtime
-#   make clean-runtime — remove generated output
-#   make stubs       — generate all .stub files for runtime dependencies
-#   make check       — run veil check on runtime source
+#   make veil           — build the VEIL compiler
+#   make serve          — backend (veil serve examples/) + frontend (veil-viewer)
+#   make serve-examples — alias for serve
+#   make serve-stop     — stop backend + frontend on default ports
+#   make serve-api      — API only (no viewer)
+#   make serve-ui       — viewer only (expects API already on PORT)
+#   make runtime        — transpile + compile the runtime
+#   make gen-runtime    — transpile runtime.veil → Rust (in runtime/generated/)
+#   make build-runtime  — cargo build the generated runtime
+#   make clean-runtime  — remove generated output
+#   make stubs          — generate all .stub files for runtime dependencies
+#   make check          — run veil check on runtime source
 
 VEIL_BIN    := target/release/veil
 RUNTIME_SRC := runtime/src/runtime.veil
 RUNTIME_OUT := runtime/generated
 STUB_DIR    := runtime/src/stubs
+EXAMPLES    := examples
+VIEWER_DIR  := veil-viewer
+# Backend API (viewer hardcodes localhost:3001 — change both if you override)
+PORT        ?= 3001
+# Vite / SvelteKit dev server
+VIEWER_PORT ?= 5173
+PID_DIR     := .veil-dev
+API_PID     := $(PID_DIR)/api.pid
+UI_PID      := $(PID_DIR)/ui.pid
 
 # External crates that need stubs
 STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sqs \
                aws-config gix rig-core axum tokio-tungstenite tower-http \
                sha2 zip tempfile schemars
 
-.PHONY: veil runtime gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
+.PHONY: veil serve serve-examples serve-stop serve-api serve-ui viewer-install \
+	runtime gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
 
 # ─── Compiler ───────────────────────────────────────────────────────────────
 
 veil:
 	cargo build -p veil-cli --release
+
+# ─── Dev stack: API + viewer ────────────────────────────────────────────────
+
+# Install viewer deps if needed
+viewer-install:
+	@if [ ! -d "$(VIEWER_DIR)/node_modules" ]; then \
+		echo "Installing $(VIEWER_DIR) dependencies…"; \
+		cd $(VIEWER_DIR) && npm install; \
+	fi
+
+# Full stack: veil serve (backend) + veil-viewer (frontend).
+# Alias: serve-examples
+# Stop: Ctrl-C  or  make serve-stop
+# Ports: PORT=3001 (API), VIEWER_PORT=5173 (UI). Viewer fetches API at :3001.
+serve serve-examples: veil viewer-install
+	@mkdir -p $(PID_DIR)
+	@if ss -tln 2>/dev/null | grep -qE ":$(PORT)\\b" || \
+	   netstat -tln 2>/dev/null | grep -qE ":$(PORT)\\b"; then \
+		echo "error: API port $(PORT) is already in use."; \
+		echo "  make serve-stop   or   make serve PORT=…"; \
+		ss -tlnp 2>/dev/null | grep -E ":$(PORT)\\b" || true; \
+		exit 1; \
+	fi
+	@if ss -tln 2>/dev/null | grep -qE ":$(VIEWER_PORT)\\b" || \
+	   netstat -tln 2>/dev/null | grep -qE ":$(VIEWER_PORT)\\b"; then \
+		echo "error: viewer port $(VIEWER_PORT) is already in use."; \
+		echo "  make serve-stop   or   make serve VIEWER_PORT=…"; \
+		ss -tlnp 2>/dev/null | grep -E ":$(VIEWER_PORT)\\b" || true; \
+		exit 1; \
+	fi
+	@echo "Starting VEIL dev stack…"
+	@echo "  Backend:  http://localhost:$(PORT)   (veil serve $(EXAMPLES))"
+	@echo "  Frontend: http://localhost:$(VIEWER_PORT)  (veil-viewer)"
+	@echo "  Open:     http://localhost:$(VIEWER_PORT)"
+	@echo "  Stop:     Ctrl-C  or  make serve-stop"
+	@echo ""
+	@$(VEIL_BIN) serve $(EXAMPLES) -p $(PORT) & echo $$! > $(API_PID); \
+	API_PID_VAL=$$(cat $(API_PID)); \
+	cleanup() { \
+		echo ""; \
+		echo "Stopping dev stack…"; \
+		kill $$API_PID_VAL 2>/dev/null || true; \
+		fuser -k $(PORT)/tcp 2>/dev/null || true; \
+		fuser -k $(VIEWER_PORT)/tcp 2>/dev/null || true; \
+		rm -f $(API_PID) $(UI_PID); \
+	}; \
+	trap cleanup EXIT INT TERM; \
+	i=0; \
+	while [ $$i -lt 30 ]; do \
+		if curl -sf "http://127.0.0.1:$(PORT)/api/files" >/dev/null 2>&1; then break; fi; \
+		if ! kill -0 $$API_PID_VAL 2>/dev/null; then \
+			echo "error: veil serve exited early"; exit 1; \
+		fi; \
+		i=$$((i+1)); sleep 0.5; \
+	done; \
+	if ! curl -sf "http://127.0.0.1:$(PORT)/api/files" >/dev/null 2>&1; then \
+		echo "error: API did not become ready on port $(PORT)"; \
+		exit 1; \
+	fi; \
+	echo "API ready — starting viewer…"; \
+	cd $(VIEWER_DIR) && npm run dev -- --host 127.0.0.1 --port $(VIEWER_PORT)
+
+# API only (no viewer)
+serve-api: veil
+	@if ss -tln 2>/dev/null | grep -qE ":$(PORT)\\b" || \
+	   netstat -tln 2>/dev/null | grep -qE ":$(PORT)\\b"; then \
+		echo "error: port $(PORT) is already in use.  make serve-stop"; \
+		exit 1; \
+	fi
+	@echo "API only: http://localhost:$(PORT)  (Ctrl-C to stop)"
+	$(VEIL_BIN) serve $(EXAMPLES) -p $(PORT)
+
+# Viewer only (expects veil serve already on PORT)
+serve-ui: viewer-install
+	@echo "Viewer: http://localhost:$(VIEWER_PORT)  (API expected at :$(PORT))"
+	cd $(VIEWER_DIR) && npm run dev -- --host 127.0.0.1 --port $(VIEWER_PORT)
+
+# Stop API + viewer (default ports) and any recorded PIDs.
+serve-stop:
+	@echo "Stopping VEIL dev stack (ports $(PORT), $(VIEWER_PORT))…"
+	@if [ -f $(API_PID) ]; then kill $$(cat $(API_PID)) 2>/dev/null || true; fi
+	@if [ -f $(UI_PID) ]; then kill $$(cat $(UI_PID)) 2>/dev/null || true; fi
+	@-fuser -k $(PORT)/tcp 2>/dev/null || true
+	@-fuser -k $(VIEWER_PORT)/tcp 2>/dev/null || true
+	@# also kill stray veil serve / vite for this project
+	@-pkill -f 'veil serve $(EXAMPLES)' 2>/dev/null || true
+	@-pkill -f 'vite dev' 2>/dev/null || true
+	@rm -f $(API_PID) $(UI_PID)
+	@sleep 0.3
+	@echo "Done."
 
 # ─── Runtime ────────────────────────────────────────────────────────────────
 
