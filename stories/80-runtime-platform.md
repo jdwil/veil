@@ -32,7 +32,7 @@ A platform developer (or advanced user) may also run local runtime.
 
 ## RT-010: Filesystem object storage adapter (local-first)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** local platform user  
 **I want** `ObjectStorage` backed by the filesystem  
 **So that** runtime works offline without S3
@@ -43,6 +43,9 @@ A platform developer (or advanced user) may also run local runtime.
 - Used as default when `VEIL_STORAGE=fs` or no cloud creds
 - No `todo!` for these methods
 - Unit tests with temp dirs
+
+**Done notes:** `veil_local::FsObjectStore` — put/get/list/delete; default
+`~/.veil/objects` or `VEIL_DATA_DIR`. Unit tests with tempfile.
 
 ---
 
@@ -64,7 +67,7 @@ A platform developer (or advanced user) may also run local runtime.
 
 ## RT-012: Content addressing (real hashes)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** platform  
 **I want** cryptographic content hashes  
 **So that** artifacts are not `content.len()`
@@ -73,6 +76,8 @@ A platform developer (or advanced user) may also run local runtime.
 
 - sha2 (or documented algorithm) used for content-addressed paths
 - Stable across runs; tests included
+
+**Done notes:** `veil_local::content_hash` + `put_addressed` (sha256).
 
 ---
 

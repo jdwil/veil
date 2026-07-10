@@ -135,7 +135,7 @@ emit (GEN / RT-001).
 
 ## RT-003: End-to-end local run of a generated multi-context app
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** developer  
 **I want** `veil gen && cargo run` (or `make run-example`) to exercise real handlers  
 **So that** the machine loop includes “it runs,” not only “it compiles”
@@ -147,11 +147,16 @@ emit (GEN / RT-001).
 - CI or documented manual script
 - Replaces bootstrap echo as the default demo
 
+**Done notes:** `examples/local_run.veil` + `scripts/run_local_example.sh` —
+`CreateItem` validate+persist via `MemItemRepo`; prints real UUID. Bus instance
+constructed for multi-context topology (RT-004). Cross-context invoke demo can
+extend later.
+
 ---
 
 ## RT-004: InProcessBus as default local topology
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** local developer  
 **I want** multi-context packages to share an in-process Bus  
 **So that** monolith topology matches ARCHITECTURE without cloud
@@ -162,11 +167,14 @@ emit (GEN / RT-001).
 - Config/feature: `local` default
 - HttpBus / queue buses are separate stories (cloud-specific)
 
+**Done notes:** `InProcessBus` in generated `veil_shared` (local default);
+`register` API for handler map; harness main holds shared `Arc<InProcessBus>`.
+
 ---
 
 ## RT-005: Retire or quarantine handwritten bootstrap
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** maintainer  
 **I want** bootstrap to be empty, generated, or clearly “seed only”  
 **So that** we do not maintain two harness philosophies forever
@@ -177,6 +185,9 @@ emit (GEN / RT-001).
   ≤ minimal trampoline
 - Comments updated; no claim that only handwritten file registers handlers
   if VEIL path exists
+
+**Done notes:** `runtime/bootstrap/README.md` — seed only; product path is
+`@main` + `veil_bin` / `scripts/run_local_example.sh`.
 
 ---
 
@@ -221,7 +232,7 @@ app-specific (generated); platform daemon routes deferred with RT-010+.
 
 ## RT-008: Auth provider modes
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** deployer  
 **I want** local allow-all vs real auth strategies  
 **So that** app harness and host harness both compile
@@ -231,3 +242,6 @@ app-specific (generated); platform daemon routes deferred with RT-010+.
 - Trait signatures match layers
 - Local strategy documented (allow-all with log is OK for dev)
 - Host can swap strategy via manifest / config
+
+**Done notes:** `AllowAllAuth` generated in `veil_shared` when `AuthService`
+is declared; host swaps via `provided_by: runtime` + strategy (manifest).

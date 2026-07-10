@@ -1238,6 +1238,36 @@ fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile
     }
 }
 
+/// RT-008: local allow-all auth (dev default; host swaps via strategy).
+const ALLOW_ALL_AUTH_IMPL: &str = r#"
+/// Dev/local AuthService — allows all tokens and permissions (RT-008).
+/// Host harnesses replace this with Cognito/Auth0/etc. via `provided_by: runtime`.
+pub struct AllowAllAuth;
+
+#[async_trait]
+impl AuthService for AllowAllAuth {
+    async fn validate_token(&self, token: String) -> Result<Principal, DomainError> {
+        Ok(Principal {
+            id: if token.is_empty() {
+                "anonymous".into()
+            } else {
+                token
+            },
+            roles: vec!["local".into()],
+            claims: std::collections::HashMap::new(),
+        })
+    }
+
+    async fn check_permission(
+        &self,
+        _principal: Principal,
+        _permission: String,
+    ) -> Result<bool, DomainError> {
+        Ok(true)
+    }
+}
+"#;
+
 /// RT-001/004: default local Bus implementation (monolith topology).
 const INPROCESS_BUS_IMPL: &str = r#"
 // ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
@@ -1372,9 +1402,13 @@ futures = "0.3"
         traits.iter().map(|t| t.name.clone()).collect();
 
     let mut has_bus = false;
+    let mut has_auth = false;
     for t in traits {
         if t.name == "Bus" {
             has_bus = true;
+        }
+        if t.name == "AuthService" {
+            has_auth = true;
         }
         lib.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {}: Send + Sync {{\n", t.subkind, t.name, t.name));
         for method in &t.methods {
@@ -1399,6 +1433,10 @@ futures = "0.3"
     // that already appears in the registry declarations.
     if has_bus {
         lib.push_str(INPROCESS_BUS_IMPL);
+    }
+    // RT-008: local allow-all AuthService for dev harness.
+    if has_auth {
+        lib.push_str(ALLOW_ALL_AUTH_IMPL);
     }
 
     // Emit layer-provided structs (e.g. Principal) so traits can reference them.

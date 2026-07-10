@@ -8,7 +8,7 @@ sequencing phases 2–4).
 
 ## PAR-001: Semantic IR sketch (design)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** engine architect  
 **I want** a written design for typed semantic IR axes  
 **So that** multi-target work does not deepen Rust-only AST assumptions
@@ -24,11 +24,13 @@ sequencing phases 2–4).
 
 **Output:** `docs/SEMANTIC_IR.md` (or design/ folder)
 
+**Done notes:** `docs/SEMANTIC_IR.md`.
+
 ---
 
 ## PAR-002: Backend capability matrix (implemented)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** agent  
 **I want** each backend’s supported feature set machine-readable  
 **So that** check fails closed (CHK-005)
@@ -38,6 +40,8 @@ sequencing phases 2–4).
 - Matrix artifact (layer, TOML, or Rust registry) per target
 - Wired into check
 - Documented how to extend when adding Swift/Kotlin
+
+**Done notes:** `capabilities.rs` + `docs/CAPABILITIES.md`.
 
 ---
 

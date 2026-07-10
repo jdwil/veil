@@ -463,3 +463,41 @@ fn generated_examples_compile() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+
+#[test]
+fn ts_enum_generates_status_type() {
+    let out = generate_ts_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(
+        out.contains("CustomerStatus") || out.contains("Pending"),
+        "enum not present in TS output"
+    );
+}
+
+#[test]
+fn ts_svelte_demo_generates_project() {
+    let mut reg = veil_ir::LayerRegistry::builtin();
+    let svelte = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers/svelte5.layer"),
+    )
+    .expect("svelte5.layer");
+    reg.load_content("svelte5", &svelte).expect("load svelte5");
+    let src = include_str!("../../../examples/svelte_present_demo.veil");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate_ts(&sol, &reg);
+    let joined: String = project
+        .files
+        .iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined.contains("package.json"),
+        "package.json missing from svelte demo gen"
+    );
+    assert!(
+        !joined.contains("// TODO: implement"),
+        "silent TODO implement found"
+    );
+}

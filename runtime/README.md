@@ -27,6 +27,18 @@ gaps (RT-001b bin layout, Bus declare, …).
 
 See **`docs/AGENT.md`** and **`docs/SERVER.md`**.
 
+## Local storage (RT-010 / RT-012)
+
+```rust
+// crates/veil-local
+use veil_local::FsObjectStore;
+let store = FsObjectStore::default_local()?; // ~/.veil/objects or VEIL_DATA_DIR
+store.put("key", b"bytes")?;
+let addr = store.put_addressed(b"blob")?; // sha256:…
+```
+
+Metadata sqlite store remains RT-011.
+
 ## Bootstrap
 
 `runtime/bootstrap` is residual trampoline material — prefer VEIL-authored

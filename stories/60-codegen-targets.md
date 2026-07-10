@@ -52,7 +52,7 @@ impls lower via `expr_to_rust`. Empty bodies still `todo!("empty adapter…")`
 
 ## GEN-003: TypeScript backend fidelity + tests
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** agent targeting TS  
 **I want** TS codegen covered by tests and free of silent placeholders  
 **So that** `-t ts` is a real target, not a demo
@@ -64,6 +64,10 @@ impls lower via `expr_to_rust`. Empty bodies still `todo!("empty adapter…")`
 - `customer_portal.veil` (or successor) generates a project that `tsc` accepts
   or fails check with clear gaps
 - No `// TODO: implement` without diagnostic
+
+**Done notes:** Expanded codegen_tests (enum, svelte demo scaffolding);
+capabilities gate empty services/ranges (CHK-005). Full `tsc` green on portal
+is still example-dependent.
 
 ---
 
