@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 
-use veil_ir::ast::{Construct, Expr, FlowStep, Solution, StepDef, Field, TypeExpr};
+use veil_ir::ast::{Construct, FlowStep, Solution, Field};
 use veil_ir::builder::{expr_to_display, type_to_display};
-use veil_ir::layer::{CodegenRule, CodegenTemplate, LayerRegistry, Shape};
+use veil_ir::layer::{CodegenRule, CodegenTemplate, LayerRegistry};
 
 /// Result of executing all templates for a target.
 pub struct TemplateOutput {

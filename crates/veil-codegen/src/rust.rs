@@ -1556,7 +1556,7 @@ fn gen_impls(
     solution: &Solution,
     registry: &LayerRegistry,
 ) -> GeneratedFile {
-    use crate::expr::{build_ctx_from_solution, expr_to_rust, stmt_to_rust, GenCtx};
+    use crate::expr::{build_ctx_from_solution, expr_to_rust, GenCtx};
 
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");

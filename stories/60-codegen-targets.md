@@ -179,7 +179,7 @@ codegen_tests locks Bus/AuthService + strategy fields for onboarding.
 
 ## GEN-009: Codegen and CLI warning hygiene
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** maintainer  
 **I want** `cargo build` / test of veil-codegen and veil-cli clean of noise  
 **So that** real failures are visible
@@ -194,3 +194,6 @@ codegen_tests locks Bus/AuthService + strategy fields for onboarding.
 - No behavior change
 
 **Mission impact:** Maintainer velocity; low product risk
+
+**Done notes:** Dropped unused imports in `rust.rs` / `template.rs`; CLI stub
+loop `_id`. `cargo check -p veil-codegen -p veil-cli` clean.

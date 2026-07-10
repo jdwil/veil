@@ -358,7 +358,7 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
     }
 
     // Collect and emit public traits with their methods
-    for (id, item) in index {
+    for (_id, item) in index {
         let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let vis = item.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
         if vis != "public" { continue; }
