@@ -37,10 +37,11 @@ comment to end of line.
 
 ## 2. Core keywords — file & package level
 
-### `sol` — Solution
-The root of an application. `sol <Name>` followed by an indented body.
+### `pkg` — Package
+The root of an application. `pkg <Name>` followed by an indented body.
+(`sol` is accepted as a deprecated alias and produces identical output.)
 ```
-sol CustomerOnboarding
+pkg CustomerOnboarding
   use ddd
   ctx Identity
     ...

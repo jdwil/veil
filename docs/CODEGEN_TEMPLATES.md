@@ -127,7 +127,7 @@ translating core shapes to the target language.
 
 ## Execution Model
 
-1. The codegen phase receives the full `Solution` (AST) and `LayerRegistry`
+1. The codegen phase receives the full `Package` (AST) and `LayerRegistry`
 2. For the requested target, it collects all `codegen <target>` blocks from
    all loaded layers
 3. For each template, it evaluates the `match` condition against every node
