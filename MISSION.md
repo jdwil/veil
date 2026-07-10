@@ -400,19 +400,26 @@ Implementation map:
 
 ### Codegen decisions (all keep the invariant)
 
-- **`@dep` annotation for dependency injection.** Handler inputs annotated with
-  `@dep` are excluded from the function's parameter list and instead accessed
-  via a generated `Deps` struct (`deps.repo_name.method().await?`). The Deps
-  struct is auto-populated from all `@dep` fields across all handlers in a
-  module. This is generic — any trait-shaped type can be a dep.
+- **`@dep` annotation routing.** When a `fn`-shaped construct's input field
+  carries an annotation whose name is `dep` (defined by a layer, e.g.
+  `di.layer`), the engine excludes it from the generated function's parameter
+  list. Instead, all `@dep`-annotated fields are collected into a generated
+  `Deps` struct and calls to those fields route through `deps.field.method().await?`.
+  The engine recognizes this pattern generically via the field's annotation +
+  its type resolving to `Shape::Trait`.
 
-- **Smart constructors.** Entity/aggregate `new()` methods auto-default:
-  timestamps (`created_on`, `updated_on` → `Utc::now()`), optional fields (→ `None`),
-  scalars (`Int` → 0, `Bool` → false), and `Json` fields (→ `{}`).
-  The `id` field is always a parameter — callers that have an externally-provided
-  ID pass it directly; callers that want auto-generation pass `Uuid::new_v4()` at
-  the call site (the expression translator handles this automatically when the
-  caller omits `id`). Types with `@invariant` return `Result<Self, ValidationError>`.
+- **Smart constructors for struct-shaped constructs.** The codegen's `new()`
+  generator applies generic heuristics to determine which fields become
+  parameters vs auto-defaulted:
+  - Fields whose type is `Optional` or `Opt<T>` default to `None`
+  - Fields named after common timestamps (`created_on`, `updated_on`, etc.) default to `Utc::now()` or `None` if optional
+  - Fields typed `Int`, `Bool`, `F64` get scalar defaults (0, false, 0.0)
+  - Fields typed `Json` default to `{}`
+  - The `id` field is always a parameter; the expression translator auto-inserts
+    `Uuid::new_v4()` when the caller omits it
+  - Constructs with `@invariant` annotations return `Result<Self, ValidationError>`
+  These heuristics are engine-level (driven by type names and field names),
+  not domain-specific. Any layer's struct-shaped constructs benefit from them.
 
 - **JSON message Bus.** Cross-context calls route through a `Bus` whose payloads
   are `Json` (`serde_json::Value`), so an orchestrator crate never depends on

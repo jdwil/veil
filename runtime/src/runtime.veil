@@ -335,9 +335,6 @@ sol VeilRuntime
       adapter DdbMetadataStore for MetadataStore
         @field(client: DdbClient)
         @env(TABLE)
-      adapter DdbMetadataStore for MetadataStore
-        @field(client: DdbClient)
-        @env(TABLE)
         impl create_repo(metadata)
           DdbClient.put_item("repos", metadata).execute!(client)
         impl get_repo(id)

@@ -11,7 +11,7 @@ structured the way they are.
 | Extension | Purpose | Contains |
 |-----------|---------|----------|
 | `.layer` | Teaches vocabulary | Construct/statement definitions. Never contains domain logic. |
-| `.veil` | Application code | Domain models, ports, adapters, services. Can be `sol` (app) or `pkg` (library). |
+| `.veil` | Application code | Domain models, ports, adapters, services. `pkg <Name>` at the top. (`sol` is deprecated alias.) |
 | `.stub` | External crate API | Declares shapes of third-party Rust crate types for type inference. |
 
 **Key rule:** If it defines concrete entities, repos, or business logic, it's a `.veil` file.
@@ -146,6 +146,89 @@ backward compatibility but they should never be used in new code.
 - `main()` entry point (constructs deps, starts server)
 - HTTP interface to expose the Bus
 - Operational concerns (health checks, shutdown, observability)
+
+---
+
+## The manifest.json Contract
+
+Each generated context crate includes a `manifest.json` that describes
+everything veil-runtime needs to wire the application at startup. This is the
+**only** handoff point between the VEIL compiler and the runtime — no runtime
+code reads `.veil` files directly.
+
+### Example manifest.json
+
+```json
+{
+  "context": "IAAA",
+  "crate": "iaaa",
+  "deps": {
+    "cohort_repo": {
+      "trait": "CohortRepo",
+      "adapter": "PgCohortRepo",
+      "env": ["DATABASE_URL"]
+    },
+    "bus": {
+      "trait": "Bus",
+      "provided_by": "runtime"
+    },
+    "auth_service": {
+      "trait": "AuthService",
+      "provided_by": "runtime",
+      "strategy": "cognito"
+    }
+  },
+  "handlers": {
+    "GetCohort": {
+      "function": "handle_get_cohort",
+      "inputs": [
+        { "name": "id", "type": "Named(\"Id\")" }
+      ]
+    },
+    "CreateList": {
+      "function": "handle_create_list",
+      "inputs": [
+        { "name": "id", "type": "Named(\"Id\")" },
+        { "name": "cohort_id", "type": "Named(\"Id\")" },
+        { "name": "name", "type": "Named(\"Str\")" }
+      ]
+    }
+  },
+  "expose": []
+}
+```
+
+### Field Reference
+
+| Field | Purpose |
+|-------|---------|
+| `context` | The bounded context name (from the `ctx` construct) |
+| `crate` | The generated Rust crate name (snake_case) |
+| `deps` | All trait dependencies the context requires |
+| `deps.<name>.trait` | The trait name (port interface) |
+| `deps.<name>.adapter` | Concrete implementation struct (if defined in .veil) |
+| `deps.<name>.env` | Environment variables the adapter needs |
+| `deps.<name>.provided_by` | `"runtime"` if the runtime supplies this (Bus, Auth, etc.) |
+| `deps.<name>.strategy` | Optional hint for runtime-provided deps (e.g. `"cognito"`, `"local"`) |
+| `handlers` | All message handlers the context exposes via the Bus |
+| `handlers.<MessageName>.function` | The generated Rust function name to call |
+| `handlers.<MessageName>.inputs` | Typed parameter list (for deserialization) |
+| `expose` | Public API contract (from the `expose` block, if present) |
+
+### What veil-runtime Does With It
+
+1. **Reads `deps`** → constructs each adapter (using env vars), builds the `Deps` struct
+2. **Reads `handlers`** → registers each handler as a Bus message listener
+3. **Reads `provided_by: "runtime"`** → injects its own implementations (Bus, AuthService)
+4. **Reads `strategy`** → selects the appropriate runtime implementation variant
+5. **Reads `expose`** (future) → generates API Gateway routes or Lambda entrypoints
+
+### Design Principles
+
+- The manifest is **declarative** — it describes WHAT is needed, not HOW to build it
+- The VEIL compiler is **not aware** of runtime implementation details (Lambda vs ECS vs local)
+- The runtime is **not aware** of domain semantics — it just wires traits to adapters
+- Deployment topology (single Lambda vs multiple Lambdas vs monolith) is a **runtime decision** based on config, not a compiler decision
 
 ---
 

@@ -1399,7 +1399,8 @@ fn gen_impls(
                             // Void result — execute the expression, then Ok(())
                             // Detect if the expression involves an external SDK/stub call
                             let uses_stub = ctx.stub_type_crate.values()
-                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()));
+                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()))
+                                || ctx.stub_type_crate.keys().any(|alias| rust_expr.contains(alias.as_str()));
                             let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
                             if uses_stub {
                                 // Adapter calls external SDK (sqlx, etc.) — emit todo!
@@ -1420,7 +1421,8 @@ fn gen_impls(
                         } else if ret_rust.starts_with("Result<") {
                             // Non-void result with possible SDK call
                             let uses_stub = ctx.stub_type_crate.values()
-                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()));
+                                .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()))
+                                || ctx.stub_type_crate.keys().any(|alias| rust_expr.contains(alias.as_str()));
                             let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
                             let is_sdk_chain = rust_expr.contains(".await");
                             if uses_stub || uses_effect || is_sdk_chain {
