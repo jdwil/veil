@@ -139,6 +139,9 @@ pub struct ConstructSpec {
     /// where implementations should be created. Declared as `dg infrastructure`.
     #[serde(default)]
     pub dg: String,
+    /// Layer-driven IDE presentation (`present` block). See `docs/PRESENTATION.md`.
+    #[serde(default)]
+    pub presentation: crate::presentation::ConstructPresentation,
 }
 
 /// Runtime binding for a delegated fn-shaped construct (e.g. `saga`).
@@ -323,6 +326,7 @@ impl LayerRegistry {
                 runtime: None,
                 tgt: String::new(),
                 dg: String::new(),
+                presentation: Default::default(),
             });
         }
         reg.layers.push("core".to_string());
@@ -419,7 +423,8 @@ impl LayerRegistry {
         }
 
         self.layers.push(name.to_string());
-        let raw = parse_layer_file(&content, name);
+        let raw = parse_layer_file(&content, name)
+            .map_err(|e| format!("layer '{}': {}", name, e))?;
         self.merge_and_resolve(raw)?;
         Ok(())
     }
@@ -525,7 +530,8 @@ impl LayerRegistry {
             return Ok(());
         }
         self.layers.push(name.to_string());
-        let raw = parse_layer_file(content, name);
+        let raw = parse_layer_file(content, name)
+            .map_err(|e| format!("layer '{}': {}", name, e))?;
         self.merge_and_resolve(raw)
     }
 
@@ -631,6 +637,17 @@ impl LayerRegistry {
         for tpl in raw.codegen_templates {
             self.codegen_templates.push(tpl);
         }
+
+        // Validate presentation construct-name refs + enums (LAY-002).
+        let known: std::collections::HashSet<String> =
+            self.constructs.iter().map(|c| c.name.clone()).collect();
+        let to_check: Vec<(String, &crate::presentation::ConstructPresentation)> = self
+            .constructs
+            .iter()
+            .filter(|c| !c.presentation.is_empty())
+            .map(|c| (c.name.clone(), &c.presentation))
+            .collect();
+        crate::presentation::validate_presentations(&to_check, &known)?;
 
         Ok(())
     }
@@ -876,7 +893,7 @@ struct RawLayer {
     codegen_templates: Vec<CodegenTemplate>,
 }
 
-fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
+fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, String> {
     #[derive(PartialEq)]
     enum Section {
         None,
@@ -885,6 +902,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
         Visual,
         Annotations,
         Runtime,
+        Present,
     }
 
     enum Item {
@@ -908,6 +926,16 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
     let mut codegen_target: String = String::new();
     let mut codegen_base_indent: usize = 0;
     let mut codegen_lines: Vec<String> = Vec::new();
+    // In-progress `view` under `present` (flushed on next view / role / section).
+    let mut present_view: Option<crate::presentation::ViewSpec> = None;
+    let mut errors: Vec<String> = Vec::new();
+
+    let flush_present_view = |item: &mut Option<Item>,
+                              view: &mut Option<crate::presentation::ViewSpec>| {
+        if let (Some(Item::Construct(c)), Some(v)) = (item.as_mut(), view.take()) {
+            c.presentation.views.push(v);
+        }
+    };
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -1047,6 +1075,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
         }
 
         if trimmed.starts_with("construct ") {
+            flush_present_view(&mut current, &mut present_view);
             if let Some(item) = current.take() {
                 items.push(item);
             }
@@ -1073,11 +1102,14 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                 runtime: None,
                 tgt: String::new(),
                 dg: String::new(),
+                presentation: Default::default(),
             }));
             section = Section::None;
+            present_view = None;
             continue;
         }
         if trimmed.starts_with("statement ") {
+            flush_present_view(&mut current, &mut present_view);
             if let Some(item) = current.take() {
                 items.push(item);
             }
@@ -1102,17 +1134,20 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             continue;
         }
 
-        let Some(item) = current.as_mut() else { continue };
+        if current.is_none() {
+            continue;
+        }
 
         // Section headers (indent 4 = direct child of construct/statement).
         if indent <= 4 {
             // `runtime <coordinator> <step_trait>` opens a runtime binding whose
             // nested `sub_block -> method` lines fill the method map.
             if let Some(rest) = trimmed.strip_prefix("runtime ") {
+                flush_present_view(&mut current, &mut present_view);
                 let mut parts = rest.split_whitespace();
                 let coordinator = parts.next().unwrap_or("").to_string();
                 let step_trait = parts.next().unwrap_or("").to_string();
-                if let Item::Construct(c) = item {
+                if let Some(Item::Construct(c)) = current.as_mut() {
                     c.runtime = Some(RuntimeBinding {
                         coordinator,
                         step_trait,
@@ -1124,24 +1159,38 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             }
             match trimmed {
                 "has" | "contains" => {
+                    flush_present_view(&mut current, &mut present_view);
                     section = Section::Contains;
                     continue;
                 }
                 "cst" | "constraints" => {
+                    flush_present_view(&mut current, &mut present_view);
                     section = Section::Constraints;
                     continue;
                 }
                 "visual" => {
+                    flush_present_view(&mut current, &mut present_view);
                     section = Section::Visual;
                     continue;
                 }
                 "ann" | "annotations" => {
+                    flush_present_view(&mut current, &mut present_view);
                     section = Section::Annotations;
                     continue;
                 }
-                _ => section = Section::None,
+                "present" => {
+                    flush_present_view(&mut current, &mut present_view);
+                    section = Section::Present;
+                    continue;
+                }
+                _ => {
+                    flush_present_view(&mut current, &mut present_view);
+                    section = Section::None;
+                }
             }
         }
+
+        let Some(item) = current.as_mut() else { continue };
 
         match section {
             Section::Contains => {
@@ -1216,6 +1265,33 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
                     visual.label = unquote(v);
                 }
             }
+            Section::Present => {
+                if let Item::Construct(c) = item {
+                    if let Some(rest) = trimmed.strip_prefix("view ") {
+                        if let Some(v) = present_view.take() {
+                            c.presentation.views.push(v);
+                        }
+                        present_view = Some(crate::presentation::ViewSpec::new(rest.trim()));
+                    } else if present_view.is_some()
+                        && crate::presentation::is_view_property_line(trimmed)
+                    {
+                        if let Some(v) = present_view.as_mut() {
+                            if let Err(e) = crate::presentation::apply_view_line(v, trimmed) {
+                                errors.push(format!("construct '{}': {}", c.name, e));
+                            }
+                        }
+                    } else {
+                        if let Some(v) = present_view.take() {
+                            c.presentation.views.push(v);
+                        }
+                        if let Err(e) =
+                            crate::presentation::apply_construct_present_line(&mut c.presentation, trimmed)
+                        {
+                            errors.push(format!("construct '{}': {}", c.name, e));
+                        }
+                    }
+                }
+            }
             Section::None => match item {
                 Item::Construct(c) => {
                     if let Some(v) = trimmed.strip_prefix("kw ").or_else(|| trimmed.strip_prefix("keyword ")) {
@@ -1252,6 +1328,7 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             },
         }
     }
+    flush_present_view(&mut current, &mut present_view);
     if let Some(item) = current.take() {
         items.push(item);
     }
@@ -1296,7 +1373,18 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
         None
     };
 
-    RawLayer { name: layer_name.to_string(), constructs, statements, declarations, prompt, codegen_templates }
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+
+    Ok(RawLayer {
+        name: layer_name.to_string(),
+        constructs,
+        statements,
+        declarations,
+        prompt,
+        codegen_templates,
+    })
 }
 
 fn unquote(s: &str) -> String {
@@ -1530,6 +1618,7 @@ pub fn keyword_shapes(reg: &LayerRegistry) -> HashMap<String, Shape> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presentation::presentation_from_registry;
 
     #[test]
     fn layer_annotations_parse_and_reach_palette() {
@@ -1552,5 +1641,112 @@ mod tests {
         if let Some(d) = dispatch {
             assert!(d.annotations.is_empty());
         }
+    }
+
+    /// LAY-002: `present` blocks parse into ConstructSpec and API model.
+    #[test]
+    fn present_block_parses_views_and_roles() {
+        let src = r#"
+pkg demo v1
+  construct Host
+    kw host
+    mt mod
+    present
+      view groups
+        label "Layers"
+        layout tabs
+        members by_source_group
+        tabs domain, application
+        default
+      view model
+        label "Domain model"
+        layout tree
+        members by_host_children
+        roots Aggregate
+        nest Event under Aggregate when declared_in_parent
+        orphan_policy list
+  construct Aggregate
+    kw agg
+    mt struct
+    present
+      role container
+      nestable_in model as root
+  construct Event
+    kw evt
+    mt struct
+    present
+      role leaf
+      nestable_in model under Aggregate
+      lens critical
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("demo", src).expect("load demo layer");
+
+        let host = reg.construct_by_name("Host").expect("Host");
+        assert_eq!(host.presentation.views.len(), 2);
+        let groups = &host.presentation.views[0];
+        assert_eq!(groups.id, "groups");
+        assert_eq!(groups.layout, "tabs");
+        assert!(groups.is_default);
+        assert_eq!(groups.tabs, vec!["domain", "application"]);
+        let model = &host.presentation.views[1];
+        assert_eq!(model.id, "model");
+        assert_eq!(model.layout, "tree");
+        assert_eq!(model.roots, vec!["Aggregate"]);
+        assert_eq!(model.nest_rules.len(), 1);
+        assert_eq!(model.nest_rules[0].child, "Event");
+        assert_eq!(model.nest_rules[0].parent, "Aggregate");
+
+        let agg = reg.construct_by_name("Aggregate").expect("Aggregate");
+        assert_eq!(agg.presentation.role.as_deref(), Some("container"));
+
+        let evt = reg.construct_by_name("Event").expect("Event");
+        assert_eq!(evt.presentation.lenses, vec!["critical".to_string()]);
+
+        let api = presentation_from_registry(&reg);
+        assert_eq!(api.version, 1);
+        let host_dto = api.hosts.get("Host").expect("Host in presentation API");
+        assert_eq!(host_dto.default_view.as_deref(), Some("groups"));
+        assert_eq!(host_dto.views.len(), 2);
+        assert!(api.constructs.get("Event").unwrap().lenses.contains(&"critical".into()));
+    }
+
+    #[test]
+    fn present_unknown_layout_fails_load() {
+        let src = r#"
+pkg bad v1
+  construct Host
+    kw host
+    mt mod
+    present
+      view x
+        layout not_a_layout
+"#;
+        let mut reg = LayerRegistry::builtin();
+        let err = reg.load_content("bad", src).unwrap_err();
+        assert!(
+            err.contains("unknown layout") || err.contains("not_a_layout"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn present_unknown_construct_ref_fails_load() {
+        let src = r#"
+pkg bad v1
+  construct Host
+    kw host
+    mt mod
+    present
+      view model
+        layout tree
+        roots NotARealConstruct
+"#;
+        let mut reg = LayerRegistry::builtin();
+        let err = reg.load_content("bad", src).unwrap_err();
+        assert!(
+            err.contains("NotARealConstruct") || err.contains("unknown root"),
+            "unexpected error: {err}"
+        );
     }
 }

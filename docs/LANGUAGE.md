@@ -564,6 +564,7 @@ identifier / layer vocabulary):
   `crates/veil-codegen/src/rust.rs` (`type_to_rust`).
 - Stub format: `crates/veil-ir/src/layer.rs` — `parse_stub_file`.
 - Visual editors: `veil-viewer/src/lib/editors/` — composable components.
+- Layer presentation (views / nest / layout): `docs/PRESENTATION.md`.
 
 ---
 

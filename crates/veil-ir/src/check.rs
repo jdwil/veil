@@ -179,6 +179,7 @@ mod tests {
             runtime: None,
             tgt: String::new(),
             dg: String::new(),
+            presentation: Default::default(),
         }
     }
 

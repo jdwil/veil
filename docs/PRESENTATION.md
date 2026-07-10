@@ -1,9 +1,9 @@
 # VEIL Layer Presentation Model
 
-**Status:** Normative for LAY-001 (grammar + semantics).  
-**Implementation:** LAY-002+ (parse, API, viewer). Until then, layers **may**
-include `present` blocks as documentation-only; loaders **must not** silently
-treat unknown keys as domain logic in the viewer.
+**Status:** Normative (LAY-001 grammar + semantics).  
+**Implementation:** LAY-002 shipped — layer loader parses `present` into
+`ConstructSpec.presentation`; **`GET /api/presentation`** returns
+`PresentationModel` JSON. Viewer projection = LAY-003+.
 
 **Mission rule:** The engine and viewer contain **zero domain knowledge**.
 Paradigms (DDD, functional, Svelte UI, …) teach the IDE **how to look** via
@@ -475,10 +475,9 @@ sibling `presentation` field on the same response).
 explicitly. Existing layers keep working via §5.5 until updated (LAY-004 for
 ddd).
 
-**Compatibility:** Until LAY-002 ships, `present` blocks in `.layer` files may
-be rejected by the loader or ignored — implementation must pick one and test
-it. **Target behavior (LAY-002):** parse and store; do not ignore silently
-without a version warning.
+**Compatibility (LAY-002):** `present` is parsed and stored. Unknown
+layout/members/when/orphan_policy and unresolved construct names **fail layer
+load**. Layers without `present` are unchanged (API returns empty `hosts`).
 
 ---
 

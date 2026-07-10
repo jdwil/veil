@@ -25,6 +25,7 @@ use crate::provider::SourceProvider;
 /// - `GET /api/source` — raw .veil source text
 /// - `GET /api/generated` — generated code map
 /// - `GET /api/palette` — construct palette from loaded layers
+/// - `GET /api/presentation` — layer-driven views / nest rules (LAY-002)
 /// - `GET /api/stubs` — loaded external crate APIs
 /// - `GET /api/diagnostics` — diagnostics array (compat; same pipeline as check)
 /// - `GET|POST /api/check` — full check pipeline (CHK-007)
@@ -39,6 +40,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/source", get(get_source::<P>))
         .route("/api/generated", get(get_generated::<P>))
         .route("/api/palette", get(get_palette::<P>))
+        .route("/api/presentation", get(get_presentation::<P>))
         .route("/api/stubs", get(get_stubs::<P>))
         .route("/api/diagnostics", get(get_diagnostics::<P>))
         .route("/api/check", get(get_check::<P>).post(post_check::<P>))
@@ -110,6 +112,18 @@ async fn get_generated<P: SourceProvider>(State(state): State<SharedProvider<P>>
 async fn get_palette<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
     let palette = veil_ir::palette_from_registry(state.registry());
     match serde_json::to_string(&palette) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Layer-driven presentation model (views, nest rules, roles, lenses).
+/// See `docs/PRESENTATION.md` / LAY-002. Empty hosts when no `present` blocks.
+async fn get_presentation<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
+    let model = veil_ir::presentation_from_registry(state.registry());
+    match serde_json::to_string(&model) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

@@ -88,7 +88,7 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 ## LAY-002: Parse presentation into registry + API
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** viewer or agent client  
 **I want** presentation metadata via API (with palette or dedicated endpoint)  
 **So that** the IDE loads view definitions with the layer vocabulary
@@ -105,6 +105,14 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 **Depends:** LAY-001  
 **Touch:** `veil-ir/layer.rs`, server API, docs
+
+**Done notes:**
+
+- Module `crates/veil-ir/src/presentation.rs` — types, validation, `presentation_from_registry`
+- `ConstructSpec.presentation` filled by `present` section in layer loader
+- Strict validation: layouts, members, nest when, orphan_policy, construct name refs
+- **`GET /api/presentation`** (separate from palette; empty hosts if no `present`)
+- Fixture tests; `ddd.layer` still without live `present` until LAY-004
 
 **Mission impact:** Delivery path for layer → IDE without viewer knowledge of DDD.
 
@@ -316,9 +324,11 @@ LAY-001–004 so those stories can consume presentation rather than invent DDD U
 | [50-invariant-debt](50-invariant-debt.md) | Forbids viewer DDD special cases — LAY is the compliant path |
 | [100-ide-agent](100-ide-agent.md) | Agents need the same projection (LAY-010) |
 
-## Open questions (resolve in LAY-001)
+## Open questions (resolved in LAY-001)
 
-1. Presentation on **construct** only vs package-level `present` defaults?
-2. Are views **additive** across stacked layers (`use ddd` + custom) and how to merge?
-3. Should nest rules ever **rewrite** preferred source structure, or only display?
-4. JSON-only IR vs also human-readable dump (`veil present app.veil`)?
+See `docs/PRESENTATION.md` §15:
+
+1. **Construct-level only** for MVP (package-level deferred)
+2. Stacked layers: **override** view by `(host, view_id)`; lenses **union**
+3. Nest rules are **display-only** on view switch; create policy is LAY-008
+4. **API JSON** is primary machine form; CLI dump optional later
