@@ -12,7 +12,7 @@ hardcoded here — see [35-layer-presentation.md](35-layer-presentation.md)
 
 ## UX-020: VEIL source & body review pane
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** human reviewer  
 **I want** to read VEIL for the selected construct (and its critical bodies)  
 **So that** I review the intermediate language by default
@@ -26,13 +26,16 @@ hardcoded here — see [35-layer-presentation.md](35-layer-presentation.md)
 - This is the **primary** read surface for review; target source preview is
   secondary (UX-028)
 
+**Done notes:** `VeilSourcePanel.svelte` dock — full package or selection-span
+excerpt; monospace MVP.
+
 **Mission impact:** Humans should not be pushed to generated LoC for routine review.
 
 ---
 
 ## UX-028: Multi-target source preview (navigable, secondary)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** reviewer who wants to verify lowering  
 **I want** a **source preview** of the current codegen target (Rust, TS, Svelte, …)  
 **So that** I can inspect emitted code without it dominating the IDE
@@ -51,6 +54,9 @@ open and navigate**. Not Rust-only.
   from topology + VEIL body (UX-020)
 - Live refresh after edit still works
 - Default open file is target-appropriate (not hardcoded `application/mod.rs`)
+
+**Done notes:** CodePreview retitled Source preview; lists all generated paths;
+smarter default selection. Target selector still follows server gen target.
 
 ---
 
@@ -97,7 +103,7 @@ diagnostics / compensate badge.
 
 ## UX-023: Navigable diagnostics
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** reviewer or agent operator  
 **I want** clicking a diagnostic to select/focus the node  
 **So that** the dual loop connects machine and human surfaces
@@ -108,6 +114,9 @@ diagnostics / compensate badge.
 - Click → select node, ensure visible (drill breadcrumb if nested)
 - Panel shows severity, code, message
 - After edit, list refreshes (CHK-007)
+
+**Done notes:** `focusDiagnostic` + DiagnosticsPanel click; check pipeline
+already stamps node_id; edit refreshes diagnostics.
 
 ---
 

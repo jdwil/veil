@@ -18,6 +18,7 @@
   import PropertyEditor from '$lib/PropertyEditor.svelte';
   import DiagnosticsPanel from '$lib/DiagnosticsPanel.svelte';
   import CodePreview from '$lib/CodePreview.svelte';
+  import VeilSourcePanel from '$lib/VeilSourcePanel.svelte';
   import { layoutNodes, layoutByType } from '$lib/layout';
   import {
     irGraph,
@@ -1031,6 +1032,9 @@
       </div>
     </div>
   {/if}
+  <div class="review-dock">
+    <VeilSourcePanel />
+  </div>
   <CodePreview />
 </div>
 

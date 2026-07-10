@@ -12,7 +12,13 @@
   // user's selection across live updates when it still exists.
   function chooseSelection(paths: string[]) {
     if (selectedFile && paths.includes(selectedFile)) return;
-    selectedFile = paths.find(p => p.includes('application/mod.rs')) || paths[0] || null;
+    // Prefer a target-appropriate default, not hardcoded Rust application/mod.rs
+    selectedFile =
+      paths.find((p) => p.endsWith('mod.rs') && p.includes('application')) ||
+      paths.find((p) => p.endsWith('.rs')) ||
+      paths.find((p) => p.endsWith('.ts') || p.endsWith('.svelte')) ||
+      paths[0] ||
+      null;
   }
 
   onMount(async () => {
@@ -43,15 +49,20 @@
     visible = !visible;
   }
 
-  let sortedPaths = $derived(Object.keys(files).filter(p => p.endsWith('.rs')).sort());
+  // UX-028: all generated files for the target, not only .rs
+  let sortedPaths = $derived(
+    Object.keys(files)
+      .filter((p) => !p.endsWith('.map'))
+      .sort()
+  );
   let content = $derived(selectedFile ? files[selectedFile] || '' : '');
-  // Highlighted lines for rendering (tokenized Rust).
+  // Highlighted lines (Rust highlighter is best-effort for other langs too).
   let lines = $derived(content ? content.split('\n').map(highlightLine) : []);
 </script>
 
 <div class="code-preview">
-  <button class="toggle-btn" onclick={toggle}>
-    {visible ? '◀ Hide Code' : '▶ Generated Rust'}
+  <button class="toggle-btn" onclick={toggle} title="Secondary: generated target source">
+    {visible ? '◀ Hide preview' : '▶ Source preview'}
   </button>
 
   {#if visible}
