@@ -1,23 +1,18 @@
 <script lang="ts">
   /**
-   * Built-in agent panel — embeds in ReviewDock (or standalone).
-   * `insertToken` appends canvas selection into the composer (IDE-style).
+   * Built-in agent panel — streams assistant text (SSE typewriter).
    */
   import { untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { checkMeta, refreshAfterEdit } from '$lib/store';
 
-  interface AgentMessage {
-    role: string;
-    content: string;
-  }
   interface ToolCall {
     name: string;
     detail: string;
   }
   interface TurnResponse {
     turn_id: string;
-    messages: AgentMessage[];
+    messages: { role: string; content: string }[];
     tool_calls: ToolCall[];
     source_changed: boolean;
     ok: boolean;
@@ -31,9 +26,7 @@
   }
 
   interface Props {
-    /** Fill parent dock (no floating chrome). */
     embedded?: boolean;
-    /** When set, append into the prompt (selection insert). */
     insertToken?: string;
   }
   let { embedded = false, insertToken = '' }: Props = $props();
@@ -44,11 +37,14 @@
   let contextWarn = $state<string | null>(null);
   let contextMeta = $state<string>('');
   let syncNote = $state<string | null>(null);
-  let history = $state<{ role: string; content: string; tools?: ToolCall[] }[]>([]);
+  let statusLine = $state<string>('');
+  let history = $state<{ role: string; content: string; tools?: ToolCall[]; streaming?: boolean }[]>(
+    []
+  );
   let abort: AbortController | null = null;
   let inputEl: HTMLTextAreaElement | null = $state(null);
+  let threadEl: HTMLDivElement | null = $state(null);
 
-  // Consume insert tokens from ReviewDock without looping on `prompt`.
   $effect(() => {
     const token = insertToken;
     if (!token) return;
@@ -60,6 +56,38 @@
     queueMicrotask(() => inputEl?.focus());
   });
 
+  function scrollThread() {
+    queueMicrotask(() => {
+      if (threadEl) threadEl.scrollTop = threadEl.scrollHeight;
+    });
+  }
+
+  function appendAssistantChunk(text: string) {
+    const last = history[history.length - 1];
+    if (last?.role === 'assistant' && last.streaming) {
+      history = [
+        ...history.slice(0, -1),
+        { ...last, content: last.content + text },
+      ];
+    } else {
+      history = [
+        ...history,
+        { role: 'assistant', content: text, streaming: true, tools: [] },
+      ];
+    }
+    scrollThread();
+  }
+
+  function finalizeAssistant(tools?: ToolCall[]) {
+    const last = history[history.length - 1];
+    if (last?.role === 'assistant' && last.streaming) {
+      history = [
+        ...history.slice(0, -1),
+        { ...last, streaming: false, tools: tools?.length ? tools : last.tools },
+      ];
+    }
+  }
+
   async function send() {
     const text = prompt.trim();
     if (!text || busy) return;
@@ -67,52 +95,178 @@
     err = null;
     contextWarn = null;
     syncNote = null;
+    statusLine = 'connecting…';
     history = [...history, { role: 'user', content: text }];
+    // Placeholder assistant bubble for streaming
+    history = [...history, { role: 'assistant', content: '', streaming: true, tools: [] }];
     prompt = '';
     abort = new AbortController();
+    scrollThread();
+
     try {
-      const res = await fetch('http://localhost:3001/api/agent/turn', {
+      const res = await fetch('http://localhost:3001/api/agent/turn/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
         body: JSON.stringify({ prompt: text }),
         signal: abort.signal,
       });
       if (!res.ok) {
-        err = `HTTP ${res.status}: ${await res.text()}`;
+        // Fallback to non-streaming turn
+        await sendNonStream(text);
         return;
       }
-      const data: TurnResponse = await res.json();
-      if (data.context_truncated) {
-        contextWarn =
-          data.context_warning ||
-          'Agent teaching context was truncated — model is unreliable. Switch model/ACP or raise VEIL_AGENT_PREAMBLE_MAX_TOKENS.';
+      if (!res.body) {
+        err = 'No response body for stream';
+        finalizeAssistant();
+        return;
       }
-      const layers = (data.context_layers || []).join(', ') || '—';
-      contextMeta = `ctx ≈${data.context_tokens ?? '?'} / ${data.context_budget_tokens ?? '?'} tok · layers: ${layers} · ${data.backend ?? ''}`;
-      for (const m of data.messages.filter((x) => x.role === 'assistant')) {
-        history = [
-          ...history,
-          { role: 'assistant', content: m.content, tools: data.tool_calls },
-        ];
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let tools: ToolCall[] = [];
+      let donePayload: TurnResponse | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE events separated by blank line
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() ?? '';
+        for (const part of parts) {
+          if (!part.trim() || part.startsWith(':')) continue; // keep-alive ping
+          let eventName = 'message';
+          const dataLines: string[] = [];
+          for (const line of part.split('\n')) {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+          }
+          const dataStr = dataLines.join('\n');
+          if (!dataStr) continue;
+          let data: any = {};
+          try {
+            data = JSON.parse(dataStr);
+          } catch {
+            data = { text: dataStr };
+          }
+
+          if (eventName === 'status') {
+            statusLine = data.message || statusLine;
+          } else if (eventName === 'chunk') {
+            const t = data.text ?? '';
+            if (t) appendAssistantChunk(t);
+          } else if (eventName === 'tool') {
+            tools = [...tools, { name: data.name || 'tool', detail: data.detail || '' }];
+            const last = history[history.length - 1];
+            if (last?.role === 'assistant') {
+              history = [
+                ...history.slice(0, -1),
+                { ...last, tools: [...tools] },
+              ];
+            }
+          } else if (eventName === 'done') {
+            donePayload = data as TurnResponse;
+          } else if (eventName === 'error') {
+            err = data.message || 'stream error';
+          }
+        }
       }
-      if (data.error) err = data.error;
-      if (data.source_changed) {
-        // Quiet refresh: server already has new source — pull IR/source/check without flash.
-        await refreshAfterEdit();
-        const meta = get(checkMeta);
-        const e = meta?.error_count ?? '?';
-        const w = meta?.warning_count ?? '?';
-        syncNote = `Source applied · live check: ${e} error(s), ${w} warning(s)`;
+
+      finalizeAssistant(tools);
+
+      if (donePayload) {
+        if (donePayload.context_truncated) {
+          contextWarn =
+            donePayload.context_warning ||
+            'Agent teaching context was truncated — model is unreliable.';
+        }
+        const layers = (donePayload.context_layers || []).join(', ') || '—';
+        contextMeta = `ctx ≈${donePayload.context_tokens ?? '?'} / ${donePayload.context_budget_tokens ?? '?'} tok · layers: ${layers} · ${donePayload.backend ?? ''}`;
+        if (donePayload.error) err = donePayload.error;
+        // If stream never sent chunks, fill from done payload
+        const last = history[history.length - 1];
+        if (last?.role === 'assistant' && !last.content) {
+          const asst = donePayload.messages?.filter((m) => m.role === 'assistant').pop();
+          if (asst) {
+            history = [
+              ...history.slice(0, -1),
+              {
+                role: 'assistant',
+                content: asst.content,
+                tools: donePayload.tool_calls || tools,
+                streaming: false,
+              },
+            ];
+          }
+        } else if (donePayload.tool_calls?.length) {
+          finalizeAssistant(donePayload.tool_calls);
+        }
+        if (donePayload.source_changed) {
+          await refreshAfterEdit();
+          const meta = get(checkMeta);
+          syncNote = `Source applied · live check: ${meta?.error_count ?? '?'} error(s), ${meta?.warning_count ?? '?'} warning(s)`;
+        }
       }
+      statusLine = '';
     } catch (e: any) {
       if (e?.name === 'AbortError') {
-        history = [...history, { role: 'assistant', content: '(cancelled)' }];
+        finalizeAssistant();
+        appendAssistantChunk('\n(cancelled)');
+        finalizeAssistant();
       } else {
         err = String(e);
+        finalizeAssistant();
       }
+      statusLine = '';
     } finally {
       busy = false;
       abort = null;
+      scrollThread();
+    }
+  }
+
+  /** Fallback when stream endpoint unavailable. */
+  async function sendNonStream(text: string) {
+    // Remove empty streaming bubble
+    if (history[history.length - 1]?.streaming) {
+      history = history.slice(0, -1);
+    }
+    const res = await fetch('http://localhost:3001/api/agent/turn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: text }),
+      signal: abort?.signal,
+    });
+    if (!res.ok) {
+      err = `HTTP ${res.status}: ${await res.text()}`;
+      return;
+    }
+    const data: TurnResponse = await res.json();
+    // Typewriter client-side
+    history = [...history, { role: 'assistant', content: '', streaming: true, tools: [] }];
+    const full =
+      data.messages?.filter((m) => m.role === 'assistant').map((m) => m.content).join('\n\n') ||
+      '';
+    for (const ch of full) {
+      if (abort?.signal.aborted) break;
+      appendAssistantChunk(ch);
+      await new Promise((r) => setTimeout(r, 8));
+    }
+    finalizeAssistant(data.tool_calls);
+    if (data.context_truncated) {
+      contextWarn = data.context_warning || 'Context truncated';
+    }
+    const layers = (data.context_layers || []).join(', ') || '—';
+    contextMeta = `ctx ≈${data.context_tokens ?? '?'} / ${data.context_budget_tokens ?? '?'} tok · layers: ${layers} · ${data.backend ?? ''}`;
+    if (data.error) err = data.error;
+    if (data.source_changed) {
+      await refreshAfterEdit();
+      const meta = get(checkMeta);
+      syncNote = `Source applied · live check: ${meta?.error_count ?? '?'} error(s), ${meta?.warning_count ?? '?'} warning(s)`;
     }
   }
 
@@ -131,30 +285,32 @@
 <div class="agent-panel" class:embedded>
   {#if !embedded}
     <div class="agent-head">
-      <span class="title">Built-in agent (Rig)</span>
-      <span class="hint">layer prompts + tools</span>
+      <span class="title">Agent</span>
+      <span class="hint">streaming · layer context</span>
     </div>
   {/if}
   {#if contextWarn}
     <div class="ctx-warn" role="alert">
       <strong>⚠️ Context truncated</strong>
       <pre class="ctx-warn-body">{contextWarn}</pre>
-      <p class="ctx-warn-foot">
-        Prefer a larger-context model, OpenAI flagship, or ACP — not a cut curriculum.
-      </p>
     </div>
   {/if}
   {#if contextMeta}
     <div class="ctx-meta">{contextMeta}</div>
   {/if}
+  {#if statusLine}
+    <div class="status-line" role="status">{statusLine}</div>
+  {/if}
   {#if syncNote}
     <div class="sync-note" role="status">{syncNote}</div>
   {/if}
-  <div class="thread">
+  <div class="thread" bind:this={threadEl}>
     {#each history as m}
       <div class="msg" class:user={m.role === 'user'} class:asst={m.role === 'assistant'}>
-        <div class="role">{m.role}</div>
-        <pre class="body">{m.content}</pre>
+        <div class="role">
+          {m.role}{#if m.streaming}<span class="cursor" aria-hidden="true">▍</span>{/if}
+        </div>
+        <pre class="body">{m.content}{#if m.streaming}<span class="blink">▌</span>{/if}</pre>
         {#if m.tools?.length}
           <div class="tools">
             {#each m.tools as t}
@@ -166,10 +322,8 @@
     {/each}
     {#if history.length === 0}
       <p class="empty">
-        Ask the agent to fix check errors with tools (rename, edit). Source + diagnostics
-        refresh live when tools write — no server restart.
-        Select a node and use <strong>+ Insert</strong>. Offline: <code>check</code> ·
-        <code>outline</code> · <code>rename A to B</code>. Shift+Enter for newline.
+        Responses stream live (typewriter). Select a node and use <strong>+ Insert</strong>.
+        Shift+Enter for newline.
       </p>
     {/if}
   </div>
@@ -180,7 +334,7 @@
     <textarea
       bind:this={inputEl}
       bind:value={prompt}
-      placeholder="e.g. Run check and fix all errors with tools…"
+      placeholder="Ask the agent… (streamed reply)"
       rows="2"
       disabled={busy}
       onkeydown={onKey}
@@ -235,17 +389,28 @@
     max-height: 100px;
     overflow: auto;
   }
-  .ctx-warn-foot {
-    margin: 6px 0 0;
-    font-size: 10px;
-    color: #fca5a5;
-  }
   .ctx-meta {
     font-size: 9px;
     color: var(--veil-text-faint);
     padding: 4px 12px;
     border-bottom: 1px solid var(--veil-border);
     font-family: 'JetBrains Mono', monospace;
+    flex-shrink: 0;
+  }
+  .status-line {
+    font-size: 10px;
+    color: #93c5fd;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--veil-border);
+    font-family: 'JetBrains Mono', monospace;
+    flex-shrink: 0;
+  }
+  .sync-note {
+    font-size: 10px;
+    padding: 4px 12px;
+    background: rgba(74, 222, 128, 0.12);
+    color: #86efac;
+    border-bottom: 1px solid rgba(74, 222, 128, 0.35);
     flex-shrink: 0;
   }
   .thread {
@@ -281,6 +446,15 @@
     font-family: 'JetBrains Mono', monospace;
     color: var(--veil-text);
   }
+  .blink {
+    animation: blink 0.9s step-end infinite;
+    color: #4ade80;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
   .tools {
     display: flex;
     flex-wrap: wrap;
@@ -293,14 +467,6 @@
     border-radius: 4px;
     background: rgba(96, 165, 250, 0.15);
     color: #93c5fd;
-  }
-  .sync-note {
-    font-size: 10px;
-    padding: 4px 12px;
-    background: rgba(74, 222, 128, 0.12);
-    color: #86efac;
-    border-bottom: 1px solid rgba(74, 222, 128, 0.35);
-    flex-shrink: 0;
   }
   .composer {
     display: flex;

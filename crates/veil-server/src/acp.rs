@@ -152,7 +152,24 @@ impl AcpProcess {
         }
     }
 
-    fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
+    fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        self.request_streaming(method, params, timeout, None)
+    }
+
+    /// Like [`request`], but invokes `on_text` for each assistant text chunk
+    /// (Kiro `agent_message_chunk`) as it arrives.
+    fn request_streaming(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        mut on_text: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<Value, String> {
         let id = self.next_id();
         self.write_msg(&json!({
             "jsonrpc": "2.0",
@@ -171,7 +188,13 @@ impl AcpProcess {
             // Streamed session updates (collect text)
             if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
                 if method == "session/update" || method.ends_with("/update") {
+                    let before = text_chunks.len();
                     collect_update(&msg, &mut text_chunks, &mut tool_hints);
+                    if let Some(cb) = on_text.as_mut() {
+                        for t in &text_chunks[before..] {
+                            cb(t);
+                        }
+                    }
                 }
                 // Agent may send requests we should auto-ack (fs read/write)
                 if let Some(req_id) = msg.get("id").cloned() {
@@ -264,14 +287,24 @@ impl AcpProcess {
     }
 
     fn prompt(&mut self, text: &str, timeout: Duration) -> Result<AcpTurnResult, String> {
+        self.prompt_streaming(text, timeout, None)
+    }
+
+    fn prompt_streaming(
+        &mut self,
+        text: &str,
+        timeout: Duration,
+        on_text: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<AcpTurnResult, String> {
         let sid = self.ensure_session(timeout)?;
-        let result = self.request(
+        let result = self.request_streaming(
             "session/prompt",
             json!({
                 "sessionId": sid,
                 "prompt": [{ "type": "text", "text": text }]
             }),
             timeout,
+            on_text,
         )?;
         let stop = result
             .get("stopReason")
@@ -384,6 +417,14 @@ fn timeout_secs() -> u64 {
 
 /// Run one prompt against the long-lived ACP agent (spawn on first use).
 pub fn prompt_acp(text: &str) -> Result<AcpTurnResult, String> {
+    prompt_acp_streaming(text, |_| {})
+}
+
+/// Like [`prompt_acp`], but `on_chunk` is called for each text delta as Kiro streams.
+pub fn prompt_acp_streaming(
+    text: &str,
+    mut on_chunk: impl FnMut(&str),
+) -> Result<AcpTurnResult, String> {
     let timeout = Duration::from_secs(timeout_secs());
     let mut guard = ACP
         .lock()
@@ -392,7 +433,8 @@ pub fn prompt_acp(text: &str) -> Result<AcpTurnResult, String> {
         *guard = Some(AcpProcess::spawn()?);
     }
     let proc = guard.as_mut().unwrap();
-    match proc.prompt(text, timeout) {
+    let mut cb = |s: &str| on_chunk(s);
+    match proc.prompt_streaming(text, timeout, Some(&mut cb)) {
         Ok(r) => Ok(r),
         Err(e) => {
             // Drop broken process so next call respawns

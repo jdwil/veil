@@ -54,6 +54,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/edit", post(post_edit::<P>))
         .route("/api/diff", get(get_diff::<P>))
         .route("/api/agent/turn", post(post_agent_turn::<P>))
+        .route("/api/agent/turn/stream", post(post_agent_turn_stream::<P>))
         .route("/api/agent/tools", get(get_agent_tools))
         .route("/api/events", get(get_events::<P>))
         .route("/api/models", get(get_models))
@@ -800,6 +801,38 @@ async fn post_agent_turn<P: SourceProvider>(
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+/// Streaming agent turn (SSE) — chunks typewriter-style for the IDE.
+///
+/// Events: `status` | `chunk` | `tool` | `done` | `error`
+async fn post_agent_turn_stream<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Json(req): Json<crate::agent::AgentTurnRequest>,
+) -> axum::response::Response {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures_util::stream::unfold;
+    use std::convert::Infallible;
+    use std::time::Duration;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<(String, String)>(128);
+    tokio::spawn(async move {
+        crate::agent_stream::run_turn_stream(state, req, tx).await;
+    });
+
+    let stream = unfold(rx, |mut rx| async move {
+        match rx.recv().await {
+            Some((event, data)) => {
+                let ev = Event::default().event(event).data(data);
+                Some((Ok::<_, Infallible>(ev), rx))
+            }
+            None => None,
+        }
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+        .into_response()
 }
 
 /// AGT-003: list models for the configured Rig-backed provider.
