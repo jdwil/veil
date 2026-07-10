@@ -20,6 +20,7 @@ pub mod api;
 pub mod protocol;
 pub mod agent;
 pub mod model;
+pub mod agent_context;
 pub mod rig_tools;
 pub mod safety;
 

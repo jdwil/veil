@@ -48,7 +48,27 @@ make serve VEIL_MODEL_NAME=llama3.2
 ```
 
 Requires `ollama serve` and the model pulled (`ollama pull qwen3.5:9b`).
-| `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | OpenAI credentials |
+
+### Agent context (Tier 0 + Tier 1 — not vector RAG)
+
+Each turn builds a **deterministic teaching pack** for the **active file**:
+
+| Tier | Content |
+|------|---------|
+| 0 | Host rules + tools |
+| 1 | Layer `prompt` sections (in `use` order), construct vocabulary, diagnostics, IR outline |
+
+Budget: `VEIL_AGENT_PREAMBLE_MAX_TOKENS` (default **12000** ≈ 48k chars).
+
+| Env | Meaning |
+|-----|---------|
+| `VEIL_AGENT_PREAMBLE_MAX_TOKENS` | Max approx tokens for preamble (`0` = unlimited) |
+| `VEIL_AGENT_ALLOW_TRUNCATED=1` | **Force** model turn even if curriculum was cut (not recommended) |
+
+**If truncated:** response sets `context_truncated: true`, fills `context_warning`, and
+**refuses the Rig model turn** by default (`ok: false`, backend `rig-*-refused`).
+The UI shows a red banner. Switch to a larger-context model, OpenAI flagship, or ACP
+— do not trust a 9B with a cut layer curriculum.| `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | OpenAI credentials |
 | `VEIL_MODEL_BASE_URL` / `OPENAI_BASE_URL` | Compatible base URL |
 | `VEIL_AGENT_CONFIRM_WRITES=1` | Require `confirmed` on renames |
 | `VEIL_AGENT_ALLOWLIST` | Comma-separated write paths/prefixes/globs (default: loaded `.veil` files) |

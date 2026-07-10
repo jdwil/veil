@@ -20,12 +20,20 @@
     source_changed: boolean;
     ok: boolean;
     error?: string | null;
+    backend?: string;
+    context_truncated?: boolean;
+    context_warning?: string | null;
+    context_tokens?: number;
+    context_budget_tokens?: number;
+    context_layers?: string[];
   }
 
   let open = $state(false);
   let prompt = $state('');
   let busy = $state(false);
   let err = $state<string | null>(null);
+  let contextWarn = $state<string | null>(null);
+  let contextMeta = $state<string>('');
   let history = $state<{ role: string; content: string; tools?: ToolCall[] }[]>([]);
   let abort: AbortController | null = null;
 
@@ -34,6 +42,7 @@
     if (!text || busy) return;
     busy = true;
     err = null;
+    contextWarn = null;
     history = [...history, { role: 'user', content: text }];
     prompt = '';
     abort = new AbortController();
@@ -49,6 +58,13 @@
         return;
       }
       const data: TurnResponse = await res.json();
+      if (data.context_truncated) {
+        contextWarn =
+          data.context_warning ||
+          'Agent teaching context was truncated — model is unreliable. Switch model/ACP or raise VEIL_AGENT_PREAMBLE_MAX_TOKENS.';
+      }
+      const layers = (data.context_layers || []).join(', ') || '—';
+      contextMeta = `ctx ≈${data.context_tokens ?? '?'} / ${data.context_budget_tokens ?? '?'} tok · layers: ${layers} · ${data.backend ?? ''}`;
       for (const m of data.messages.filter((x) => x.role === 'assistant')) {
         history = [
           ...history,
@@ -84,8 +100,20 @@
     <div class="agent-panel">
       <div class="agent-head">
         <span class="title">Built-in agent (Rig)</span>
-        <span class="hint">openai/ollama tools · offline: check · outline · rename</span>
+        <span class="hint">layer prompts + tools · offline: check · outline · rename</span>
       </div>
+      {#if contextWarn}
+        <div class="ctx-warn" role="alert">
+          <strong>⚠️ Context truncated</strong>
+          <pre class="ctx-warn-body">{contextWarn}</pre>
+          <p class="ctx-warn-foot">
+            Prefer a larger-context model, OpenAI flagship, or ACP — not a 9B with a cut curriculum.
+          </p>
+        </div>
+      {/if}
+      {#if contextMeta}
+        <div class="ctx-meta">{contextMeta}</div>
+      {/if}
       <div class="thread">
         {#each history as m}
           <div class="msg" class:user={m.role === 'user'} class:asst={m.role === 'assistant'}>
@@ -101,7 +129,10 @@
           </div>
         {/each}
         {#if history.length === 0}
-          <p class="empty">Ask the agent to check, outline, or rename a construct.</p>
+          <p class="empty">
+            Free-form prompts use Ollama/OpenAI with Tier 0/1 layer teaching context. Offline:
+            <code>check</code> · <code>outline</code> · <code>rename A to B</code>.
+          </p>
         {/if}
       </div>
       {#if err}
@@ -143,8 +174,8 @@
     top: 100%;
     right: 0;
     margin-top: 4px;
-    width: min(420px, 92vw);
-    max-height: 480px;
+    width: min(480px, 94vw);
+    max-height: 560px;
     background: var(--veil-surface);
     border: 1px solid var(--veil-border);
     border-radius: 8px;
@@ -166,6 +197,33 @@
   .hint {
     color: var(--veil-text-faint);
     font-size: 10px;
+  }
+  .ctx-warn {
+    background: rgba(248, 113, 113, 0.12);
+    border-bottom: 1px solid #f87171;
+    padding: 8px 12px;
+    color: #fecaca;
+    font-size: 11px;
+  }
+  .ctx-warn-body {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    max-height: 140px;
+    overflow: auto;
+  }
+  .ctx-warn-foot {
+    margin: 6px 0 0;
+    font-size: 10px;
+    color: #fca5a5;
+  }
+  .ctx-meta {
+    font-size: 9px;
+    color: var(--veil-text-faint);
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--veil-border);
+    font-family: 'JetBrains Mono', monospace;
   }
   .thread {
     flex: 1;

@@ -49,6 +49,32 @@ pub struct AgentTurnResponse {
     /// AGT-014: when plan_only, human-readable planned ops (not applied).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// True when Tier 0/1 teaching context was truncated to fit the budget.
+    #[serde(default)]
+    pub context_truncated: bool,
+    /// Loud warning when truncated (also mirrored into assistant text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_warning: Option<String>,
+    /// Approx tokens in the assembled preamble.
+    #[serde(default)]
+    pub context_tokens: usize,
+    /// Preamble budget (0 = unlimited).
+    #[serde(default)]
+    pub context_budget_tokens: usize,
+    /// Loaded layers for this turn (active file).
+    #[serde(default)]
+    pub context_layers: Vec<String>,
+}
+
+impl AgentTurnResponse {
+    fn with_context(mut self, pre: &crate::agent_context::AgentPreamble) -> Self {
+        self.context_truncated = pre.truncated;
+        self.context_warning = pre.warning.clone();
+        self.context_tokens = pre.tokens_used;
+        self.context_budget_tokens = pre.max_tokens;
+        self.context_layers = pre.layers.clone();
+        self
+    }
 }
 
 /// Run one agent turn against the active source.
@@ -74,6 +100,11 @@ pub async fn run_turn<P: SourceProvider>(
             error: None,
             backend: "none".into(),
             plan: None,
+            context_truncated: false,
+            context_warning: None,
+            context_tokens: 0,
+            context_budget_tokens: 0,
+            context_layers: vec![],
         };
     }
 
@@ -97,6 +128,11 @@ pub async fn run_turn<P: SourceProvider>(
                 error: Some(e),
                 backend: "error".into(),
                 plan: None,
+                context_truncated: false,
+                context_warning: None,
+                context_tokens: 0,
+                context_budget_tokens: 0,
+                context_layers: vec![],
             };
         }
     };
@@ -109,18 +145,61 @@ pub async fn run_turn<P: SourceProvider>(
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+    // Tier 0+1 teaching pack for active file layers (deterministic, not vector RAG).
+    let preamble_pack = crate::agent_context::assemble_preamble(&source, &registry);
+
     let cfg = crate::model::ModelConfig::from_env();
 
     // Prefer Rig agent loop with tools when provider supports it.
     if cfg.supports_rig_agent() {
+        // Truncated curriculum → refuse model turn (unless ALLOW_TRUNCATED).
+        if preamble_pack.truncated && crate::agent_context::refuse_on_truncation() {
+            let warn = preamble_pack
+                .warning
+                .clone()
+                .unwrap_or_else(|| "Agent context truncated.".into());
+            messages.push(AgentMessage {
+                role: "assistant".into(),
+                content: format!(
+                    "{warn}\n\
+                     --- \n\
+                     Model turn **skipped** (VEIL_AGENT_ALLOW_TRUNCATED not set).\n\
+                     Offline tools still available: prompt `check`, `outline`, or `rename A to B`.\n\
+                     Or raise budget only if the model context window can hold it:\n\
+                       VEIL_AGENT_PREAMBLE_MAX_TOKENS=12000 make serve\n"
+                ),
+            });
+            return AgentTurnResponse {
+                turn_id,
+                messages,
+                tool_calls: vec![AgentToolCall {
+                    name: "context_guard".into(),
+                    detail: "truncated — model refused".into(),
+                }],
+                source_changed: false,
+                ok: false,
+                error: Some("agent context truncated — switch model/ACP or raise budget".into()),
+                backend: format!("rig-{}-refused", cfg.kind_name()),
+                plan: None,
+                context_truncated: true,
+                context_warning: Some(warn),
+                context_tokens: preamble_pack.tokens_used,
+                context_budget_tokens: preamble_pack.max_tokens,
+                context_layers: preamble_pack.layers.clone(),
+            };
+        }
+
+        let mut preamble = preamble_pack.text.clone();
+        if preamble_pack.truncated {
+            // ALLOW_TRUNCATED path — still scream in the system prompt
+            if let Some(ref w) = preamble_pack.warning {
+                preamble = format!(
+                    "{w}\n\n# WARNING: continuing with truncated context (VEIL_AGENT_ALLOW_TRUNCATED=1)\n\n{preamble}"
+                );
+            }
+        }
+
         let ws = Workspace::new(source.clone(), registry.clone(), confirm);
-        let outline = rig_tools::run_outline(&source, &registry);
-        let preamble = format!(
-            "You are the VEIL IDE built-in agent (Rig SDK).\n\
-             Edit VEIL structure safely using tools — prefer rename_construct over inventing source.\n\
-             After edits, call veil_check. Prefer veil_outline over dumping generated code.\n\
-             Current package outline:\n{outline}\n"
-        );
         match crate::model::prompt_with_tools(&cfg, &preamble, prompt, ws.clone()).await {
             Ok(content) => {
                 let tool_calls = ws.take_log();
@@ -132,6 +211,10 @@ pub async fn run_turn<P: SourceProvider>(
                             ws.source_snapshot().len(),
                             tool_calls.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
                         ));
+                        let mut content = content;
+                        if let Some(ref w) = preamble_pack.warning {
+                            content = format!("{w}\n\n{content}");
+                        }
                         messages.push(AgentMessage {
                             role: "assistant".into(),
                             content: format!(
@@ -147,6 +230,11 @@ pub async fn run_turn<P: SourceProvider>(
                             error: None,
                             backend: format!("rig-{}", cfg.kind_name()),
                             plan,
+                            context_truncated: preamble_pack.truncated,
+                            context_warning: preamble_pack.warning.clone(),
+                            context_tokens: preamble_pack.tokens_used,
+                            context_budget_tokens: preamble_pack.max_tokens,
+                            context_layers: preamble_pack.layers.clone(),
                         };
                     }
                     if let Err(e) = crate::safety::check_write_allowed("", &allowlist, &loaded) {
@@ -159,6 +247,11 @@ pub async fn run_turn<P: SourceProvider>(
                             error: Some(e),
                             backend: format!("rig-{}", cfg.kind_name()),
                             plan: None,
+                            context_truncated: preamble_pack.truncated,
+                            context_warning: preamble_pack.warning.clone(),
+                            context_tokens: preamble_pack.tokens_used,
+                            context_budget_tokens: preamble_pack.max_tokens,
+                            context_layers: preamble_pack.layers.clone(),
                         };
                     }
                     let new_src = ws.source_snapshot();
@@ -172,9 +265,19 @@ pub async fn run_turn<P: SourceProvider>(
                             error: Some(e),
                             backend: format!("rig-{}", cfg.kind_name()),
                             plan: None,
+                            context_truncated: preamble_pack.truncated,
+                            context_warning: preamble_pack.warning.clone(),
+                            context_tokens: preamble_pack.tokens_used,
+                            context_budget_tokens: preamble_pack.max_tokens,
+                            context_layers: preamble_pack.layers.clone(),
                         };
                     }
                 }
+                let content = if let Some(ref w) = preamble_pack.warning {
+                    format!("{w}\n\n{content}")
+                } else {
+                    content
+                };
                 messages.push(AgentMessage {
                     role: "assistant".into(),
                     content,
@@ -184,10 +287,19 @@ pub async fn run_turn<P: SourceProvider>(
                     messages,
                     tool_calls,
                     source_changed: wants_write,
-                    ok: true,
-                    error: None,
+                    ok: !preamble_pack.truncated,
+                    error: if preamble_pack.truncated {
+                        Some("agent context was truncated (ran with VEIL_AGENT_ALLOW_TRUNCATED=1)".into())
+                    } else {
+                        None
+                    },
                     backend: format!("rig-{}", cfg.kind_name()),
                     plan: None,
+                    context_truncated: preamble_pack.truncated,
+                    context_warning: preamble_pack.warning.clone(),
+                    context_tokens: preamble_pack.tokens_used,
+                    context_budget_tokens: preamble_pack.max_tokens,
+                    context_layers: preamble_pack.layers.clone(),
                 };
             }
             Err(e) => {
@@ -204,7 +316,7 @@ pub async fn run_turn<P: SourceProvider>(
     }
 
     // Heuristic offline path (no Rig model) — same tools, host-dispatched.
-    heuristic_turn(
+    let mut resp = heuristic_turn(
         provider,
         turn_id,
         prompt,
@@ -216,7 +328,9 @@ pub async fn run_turn<P: SourceProvider>(
         loaded,
         messages,
     )
-    .await
+    .await;
+    resp = resp.with_context(&preamble_pack);
+    resp
 }
 
 async fn heuristic_turn<P: SourceProvider>(
@@ -252,6 +366,11 @@ async fn heuristic_turn<P: SourceProvider>(
             error: None,
             backend: "heuristic".into(),
             plan: None,
+            context_truncated: false,
+            context_warning: None,
+            context_tokens: 0,
+            context_budget_tokens: 0,
+            context_layers: vec![],
         };
     }
 
@@ -273,6 +392,11 @@ async fn heuristic_turn<P: SourceProvider>(
             error: None,
             backend: "heuristic".into(),
             plan: None,
+            context_truncated: false,
+            context_warning: None,
+            context_tokens: 0,
+            context_budget_tokens: 0,
+            context_layers: vec![],
         };
     }
 
@@ -296,6 +420,11 @@ async fn heuristic_turn<P: SourceProvider>(
                 error: None,
                 backend: "heuristic".into(),
                 plan: None,
+                context_truncated: false,
+                context_warning: None,
+                context_tokens: 0,
+                context_budget_tokens: 0,
+                context_layers: vec![],
             };
         }
         tool_calls.push(AgentToolCall {
@@ -321,6 +450,11 @@ async fn heuristic_turn<P: SourceProvider>(
                         error: None,
                         backend: "heuristic".into(),
                         plan: Some(plan),
+                        context_truncated: false,
+                        context_warning: None,
+                        context_tokens: 0,
+                        context_budget_tokens: 0,
+                        context_layers: vec![],
                     };
                 }
                 if let Err(e) = crate::safety::check_write_allowed("", &allowlist, &loaded) {
@@ -333,6 +467,11 @@ async fn heuristic_turn<P: SourceProvider>(
                         error: Some(e),
                         backend: "heuristic".into(),
                         plan: None,
+                        context_truncated: false,
+                        context_warning: None,
+                        context_tokens: 0,
+                        context_budget_tokens: 0,
+                        context_layers: vec![],
                     };
                 }
                 if let Err(e) = provider.write_source("", &new_src).await {
@@ -345,6 +484,11 @@ async fn heuristic_turn<P: SourceProvider>(
                         error: Some(e),
                         backend: "heuristic".into(),
                         plan: None,
+                        context_truncated: false,
+                        context_warning: None,
+                        context_tokens: 0,
+                        context_budget_tokens: 0,
+                        context_layers: vec![],
                     };
                 }
                 tool_calls.push(AgentToolCall {
@@ -365,6 +509,11 @@ async fn heuristic_turn<P: SourceProvider>(
                     error: None,
                     backend: "heuristic".into(),
                     plan: None,
+                    context_truncated: false,
+                    context_warning: None,
+                    context_tokens: 0,
+                    context_budget_tokens: 0,
+                    context_layers: vec![],
                 };
             }
             Err(e) => {
@@ -381,6 +530,11 @@ async fn heuristic_turn<P: SourceProvider>(
                     error: Some(e),
                     backend: "heuristic".into(),
                     plan: None,
+                    context_truncated: false,
+                    context_warning: None,
+                    context_tokens: 0,
+                    context_budget_tokens: 0,
+                    context_layers: vec![],
                 };
             }
         }
@@ -416,6 +570,11 @@ async fn heuristic_turn<P: SourceProvider>(
         error: None,
         backend: "heuristic".into(),
         plan: None,
+        context_truncated: false,
+        context_warning: None,
+        context_tokens: 0,
+        context_budget_tokens: 0,
+        context_layers: vec![],
     }
 }
 
