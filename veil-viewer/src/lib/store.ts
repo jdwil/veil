@@ -298,15 +298,37 @@ export function getChildren(graph: IrGraph, parentId: number | null): IrNode[] {
 export const generatedCode = writable<Record<string, string> | null>(null);
 
 /**
- * A structured edit operation, keyed by the target construct's AST span start
- * (`node.span.start`). Mirrors veil-ir's `EditOp` (serde tag = "op").
+ * A structured edit operation, keyed by the target node's **AST span start**
+ * (`node.span.start` / `node.data.spanStart`). Mirrors veil-ir `EditOp`
+ * (serde tag = `"op"`, snake_case).
+ *
+ * Edits are **not** keyed by ephemeral IR node ids. After a successful save the
+ * server returns a fresh IR; use the new spans for subsequent edits.
+ *
+ * `set_body` lines are VEIL expression source; the server parses them into real
+ * `Expr` AST (invalid text fails the request and does not write the file).
  */
 export type EditOp =
   | { op: 'rename'; span_start: number; name: string }
   | { op: 'set_annotations'; span_start: number; annotations: string[] }
   | { op: 'set_fields'; span_start: number; fields: { name: string; type: string }[] }
-  | { op: 'set_methods'; span_start: number; methods: { name: string; params: { name: string; type: string }[]; return_type: string }[] }
-  | { op: 'create_construct'; parent_span: number; keyword: string; name: string; target?: string };
+  | {
+      op: 'set_methods';
+      span_start: number;
+      methods: {
+        name: string;
+        params: { name: string; type: string }[];
+        return_type: string;
+      }[];
+    }
+  | {
+      op: 'create_construct';
+      parent_span: number;
+      keyword: string;
+      name: string;
+      target?: string;
+    }
+  | { op: 'set_body'; span_start: number; body: string[] };
 
 /**
  * Persist a batch of structured edits to the server. The server applies them

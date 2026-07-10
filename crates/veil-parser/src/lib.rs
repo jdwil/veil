@@ -4,4 +4,7 @@ pub mod lexer;
 pub mod parser;
 
 pub use lexer::{Token, TokenKind, lex};
-pub use parser::{parse, parse_file, parse_with_registry, parse_file_with_registry, ParseError};
+pub use parser::{
+    apply_edits, parse, parse_expr_str, parse_file, parse_file_with_registry, parse_with_registry,
+    ParseError,
+};

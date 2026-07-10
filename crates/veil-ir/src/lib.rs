@@ -22,7 +22,7 @@ pub use diagnostics::{Diagnostic, Severity};
 pub use escape::{
     check_escape_hatches, is_escape_hatch_code, promote_escape_hatches, EscapeHatchSummary,
 };
-pub use edit::{apply_edits, EditOp, EditError};
+pub use edit::{apply_edit, apply_edit_with, apply_edits, apply_edits_with, EditError, EditOp};
 pub use ir::*;
 pub use layer::{CodegenRule, CodegenTemplate, ConstructSpec, LayerRegistry, Shape, StatementSpec, StmtShape, palette_from_registry};
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};

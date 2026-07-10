@@ -38,6 +38,57 @@ pub fn parse(tokens: &[Token]) -> Result<Solution, Vec<ParseError>> {
     parse_with_registry(tokens, LayerRegistry::builtin())
 }
 
+/// Parse a single VEIL expression from source text (one statement / expr).
+///
+/// Used by structured edits ([`veil_ir::EditOp::SetBody`]) so body lines become
+/// real AST nodes rather than opaque identifiers. Accepts multi-line forms such
+/// as `if` / `match` when the whole block is provided as one string.
+///
+/// Layer statement sugar (`guard`, `dispatch`, …) resolves against `registry`.
+pub fn parse_expr_str(source: &str, registry: &LayerRegistry) -> Result<Expr, ParseError> {
+    let source = source.trim();
+    if source.is_empty() {
+        return Err(ParseError {
+            message: "empty expression".into(),
+            span: Span::new(0, 0),
+        });
+    }
+    let tokens = crate::lexer::lex(source);
+    let mut parser = Parser::new(&tokens, registry.clone());
+    parser.skip_newlines();
+    let expr = parser.parse_expr()?;
+    // Allow trailing newlines / EOF only.
+    parser.skip_newlines();
+    if !parser.at(&TokenKind::Eof)
+        && !matches!(parser.peek_kind(), TokenKind::Dedent)
+    {
+        // Residual non-whitespace tokens usually mean a second statement was
+        // packed into one body slot — surface a clear error.
+        if !parser.at(&TokenKind::Newline) {
+            return Err(parser.error(format!(
+                "unexpected trailing tokens after expression (got {:?})",
+                parser.peek_kind()
+            )));
+        }
+    }
+    if !parser.errors.is_empty() {
+        return Err(parser.errors[0].clone());
+    }
+    Ok(expr)
+}
+
+/// Apply structured edits, parsing [`EditOp::SetBody`] lines with
+/// [`parse_expr_str`] and the given layer registry.
+pub fn apply_edits(
+    sol: &mut Solution,
+    ops: &[veil_ir::EditOp],
+    registry: &LayerRegistry,
+) -> Result<(), veil_ir::EditError> {
+    veil_ir::edit::apply_edits_with(sol, ops, |line| {
+        parse_expr_str(line, registry).map_err(|e| e.to_string())
+    })
+}
+
 /// Parse a token stream into a Solution with a layer registry.
 pub fn parse_with_registry(
     tokens: &[Token],

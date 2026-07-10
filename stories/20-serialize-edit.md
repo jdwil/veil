@@ -92,20 +92,23 @@ Mission: deterministic round-trips; edit→save must not corrupt agent-authored 
 
 ## SER-005: Edit ops complete and safe
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** viewer user  
 **I want** structured edits that match server capabilities without hacks  
 **So that** the IDE does not cast `as any` or store bodies as opaque Idents forever
 
 **Acceptance criteria:**
 
-- Client `EditOp` type matches server (`set_body`, create, delete, …)
+- Client `EditOp` type matches server (`set_body`, create, …; delete → SER-006)
 - `SetBody` parses VEIL expression text into real `Expr` AST (not only `Ident` lines)
 - Invalid body text returns a diagnostic, does not corrupt file
-- Spans for newly created nodes are stable enough for subsequent edits
-  (or edits key by node id exclusively — document which)
+- Edits key by **AST span start** (not IR node id); new nodes get spans on re-parse
 
-**Touch:** `veil-ir/edit.rs`, `veil-viewer/src/lib/store.ts`, server API
+**Touch:** `veil-ir/edit.rs`, `veil-parser` (`parse_expr_str`, `apply_edits`), viewer store, server API
+
+**Done notes:** `apply_edits_with` + `veil_parser::apply_edits`; body targets step /
+method-impl / free-fn by span; client `set_body` typed (no `as any`); bare-call
+emit in expr-serialize.
 
 ---
 

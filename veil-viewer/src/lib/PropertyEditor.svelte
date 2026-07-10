@@ -133,14 +133,14 @@
 
 
   function handleBodyEdit(newExprs: Expr[]) {
-    // Convert exprs back to VEIL source for persistence
+    // Convert exprs back to VEIL source for persistence (server re-parses to AST)
     const veilSource = newExprs.map(e => exprToVeil(e));
     if (spanStart !== null) {
-      saveEdits([{
+      persist({
         op: 'set_body',
         span_start: spanStart,
         body: veilSource,
-      } as any]);
+      });
     }
   }
 

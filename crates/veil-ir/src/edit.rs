@@ -1,23 +1,33 @@
 //! Structured edits applied to a parsed `Solution` AST.
 //!
-//! The viewer never writes raw text. Instead it sends a structured `EditOp`
-//! keyed by the IR node's span (the IR builder stamps each construct node with
-//! its AST span, so the span uniquely identifies the target construct). The
-//! server applies the edit to the AST, re-serializes, and writes back — the
-//! serializer is idempotent, so a load→edit→save cycle is stable.
+//! The viewer never writes raw text. Instead it sends a structured [`EditOp`]
+//! keyed by **AST span start** (`node.span.start` in the IR graph). The IR
+//! builder stamps each construct, step, method-impl, and free function with its
+//! parse span, so `span_start` uniquely identifies the target across IR rebuilds
+//! for a given source revision. Edits are **not** keyed by ephemeral IR node ids.
+//!
+//! The server applies the edit to the AST, re-serializes, re-parses/checks, and
+//! only then writes back — a failed body parse or validation never corrupts the
+//! file on disk.
+//!
+//! # Body expressions ([`EditOp::SetBody`])
+//!
+//! Each string in `body` is a VEIL expression (possibly multi-line for `if` /
+//! `match`). Callers that can parse real expressions should use
+//! [`apply_edits_with`]; the server/CLI pass `veil_parser::parse_expr_str`.
+//! Opaque `Ident` fallback is intentionally **not** used — invalid lines fail
+//! the edit with [`EditError::InvalidBody`].
 //!
 //! This module is generic: it edits by core shape and never encodes domain
-//! vocabulary. Field/method types are stored as raw strings and parsed with the
-//! same `TypeExpr` grammar the parser uses (via `parse_type_str`).
+//! vocabulary. Field/method types use `parse_type_str`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::ast::*;
 use crate::span::Span;
 
-/// A single structured edit targeting the construct whose AST span starts at
-/// `span_start`. Using the span start (rather than an IR node id) keeps the
-/// edit stable across IR rebuilds.
+/// A single structured edit targeting a node whose AST span starts at
+/// `span_start` (or `parent_span` for create).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum EditOp {
@@ -40,9 +50,11 @@ pub enum EditOp {
         #[serde(default)]
         target: Option<String>,
     },
-    /// Replace the expression body of a fn-shaped construct or step.
-    /// `body` is a list of VEIL expression strings that will be parsed into
-    /// the target's body Vec<Expr>.
+    /// Replace the expression body of a step, free fn, method-impl, or
+    /// fn-shaped construct identified by `span_start`.
+    ///
+    /// `body` is a list of VEIL expression source strings (one statement each)
+    /// that are parsed into real [`Expr`] nodes via [`apply_edits_with`].
     SetBody {
         span_start: usize,
         body: Vec<String>,
@@ -69,12 +81,18 @@ pub struct MethodSpec {
 /// Error applying an edit.
 #[derive(Debug)]
 pub enum EditError {
-    /// No construct found at the given span start.
+    /// No construct / body target found at the given span start.
     TargetNotFound(usize),
     /// The target construct's shape does not support this edit.
     ShapeMismatch { span_start: usize, expected: &'static str },
     /// A construct with this name already exists in the parent.
     DuplicateName(String),
+    /// A body expression line failed to parse into a real [`Expr`].
+    InvalidBody {
+        span_start: usize,
+        line: usize,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for EditError {
@@ -87,26 +105,77 @@ impl std::fmt::Display for EditError {
             EditError::DuplicateName(name) => {
                 write!(f, "a construct named '{}' already exists in this scope", name)
             }
+            EditError::InvalidBody {
+                span_start,
+                line,
+                message,
+            } => write!(
+                f,
+                "invalid body at span {} line {}: {}",
+                span_start, line, message
+            ),
         }
     }
 }
 
 impl std::error::Error for EditError {}
 
-/// Apply a batch of edits to the solution, in order.
+/// Apply a batch of edits. For [`EditOp::SetBody`], expression strings are
+/// parsed with a **no-op failure** parser — use [`apply_edits_with`] (or
+/// `veil_parser::apply_edits`) so bodies become real AST.
 pub fn apply_edits(sol: &mut Solution, ops: &[EditOp]) -> Result<(), EditError> {
+    apply_edits_with(sol, ops, |src| {
+        Err(format!(
+            "body expression parse requires apply_edits_with / veil_parser::apply_edits ({src:?})"
+        ))
+    })
+}
+
+/// Apply edits, parsing each [`EditOp::SetBody`] line with `parse_expr`.
+///
+/// `parse_expr` receives one body string (trimmed); on success it returns a
+/// real [`Expr`]. On failure the whole edit aborts and the solution must be
+/// discarded (server re-parses from disk source on the next request).
+pub fn apply_edits_with<F>(
+    sol: &mut Solution,
+    ops: &[EditOp],
+    mut parse_expr: F,
+) -> Result<(), EditError>
+where
+    F: FnMut(&str) -> Result<Expr, String>,
+{
     for op in ops {
-        apply_edit(sol, op)?;
+        apply_edit_with(sol, op, &mut parse_expr)?;
     }
     Ok(())
 }
 
-/// Apply a single edit to the solution.
+/// Apply a single edit (uses the failing body parser — prefer [`apply_edit_with`]).
 pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
+    apply_edit_with(sol, op, &mut |src| {
+        Err(format!(
+            "body expression parse requires apply_edit_with ({src:?})"
+        ))
+    })
+}
+
+/// Apply a single edit with a body expression parser.
+pub fn apply_edit_with<F>(
+    sol: &mut Solution,
+    op: &EditOp,
+    parse_expr: &mut F,
+) -> Result<(), EditError>
+where
+    F: FnMut(&str) -> Result<Expr, String>,
+{
     // CreateConstruct targets a parent, not the construct itself.
-    if let EditOp::CreateConstruct { parent_span, keyword, name, target } = op {
-        // For impl-shaped constructs: collect method signatures from the target
-        // trait BEFORE borrowing the parent mutably.
+    if let EditOp::CreateConstruct {
+        parent_span,
+        keyword,
+        name,
+        target,
+    } = op
+    {
         let trait_methods: Vec<Method> = if let Some(target_name) = target {
             find_trait_methods_in_solution(&sol.items, target_name)
         } else {
@@ -115,16 +184,15 @@ pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
 
         let parent = find_construct_mut(&mut sol.items, *parent_span)
             .ok_or(EditError::TargetNotFound(*parent_span))?;
-        // Determine the shape from the keyword. For simplicity, impl-shaped if
-        // target is specified, otherwise we rely on the keyword matching core shapes.
         let shape = if target.is_some() {
             Shape::Impl
         } else {
             Shape::from_name(keyword).unwrap_or(Shape::Struct)
         };
+        // New nodes get a zero span until re-parse; subsequent edits key by the
+        // span assigned on the next parse (server returns fresh IR after save).
         let mut child = Construct::new(keyword, keyword, shape, name.clone(), Span::new(0, 0));
         child.target = target.clone();
-        // Copy method stubs from the trait so the serializer emits them.
         for m in trait_methods {
             child.impls.push(MethodImpl {
                 method_name: m.name.clone(),
@@ -133,11 +201,34 @@ pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
                 body: Vec::new(),
             });
         }
-        // Reject duplicate: don't create if a child with the same name exists.
         if parent.children.iter().any(|c| c.name == *name) {
             return Err(EditError::DuplicateName(name.clone()));
         }
         parent.children.push(child);
+        return Ok(());
+    }
+
+    if let EditOp::SetBody { body, span_start } = op {
+        let mut exprs = Vec::new();
+        for (i, line) in body.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match parse_expr(trimmed) {
+                Ok(e) => exprs.push(e),
+                Err(message) => {
+                    return Err(EditError::InvalidBody {
+                        span_start: *span_start,
+                        line: i + 1,
+                        message,
+                    });
+                }
+            }
+        }
+        let slot = find_body_mut(&mut sol.items, *span_start)
+            .ok_or(EditError::TargetNotFound(*span_start))?;
+        *slot = exprs;
         return Ok(());
     }
 
@@ -150,61 +241,63 @@ pub fn apply_edit(sol: &mut Solution, op: &EditOp) -> Result<(), EditError> {
             Ok(())
         }
         EditOp::SetAnnotations { annotations, .. } => {
-            target.annotations = annotations.iter().map(|a| parse_annotation_str(a)).collect();
+            target.annotations = annotations
+                .iter()
+                .map(|a| parse_annotation_str(a))
+                .collect();
             Ok(())
         }
         EditOp::SetFields { fields, span_start } => {
             if target.shape != Shape::Struct {
-                return Err(EditError::ShapeMismatch { span_start: *span_start, expected: "a struct-shaped construct" });
+                return Err(EditError::ShapeMismatch {
+                    span_start: *span_start,
+                    expected: "a struct-shaped construct",
+                });
             }
-            target.fields = fields.iter().map(|f| Field {
-                annotations: Vec::new(),
-                name: f.name.clone(),
-                type_expr: parse_type_str(&f.type_str),
-                default_expr: None,
-                span: Span::new(0, 0),
-            }).collect();
+            target.fields = fields
+                .iter()
+                .map(|f| Field {
+                    annotations: Vec::new(),
+                    name: f.name.clone(),
+                    type_expr: parse_type_str(&f.type_str),
+                    default_expr: None,
+                    span: Span::new(0, 0),
+                })
+                .collect();
             Ok(())
         }
         EditOp::SetMethods { methods, span_start } => {
             if target.shape != Shape::Trait {
-                return Err(EditError::ShapeMismatch { span_start: *span_start, expected: "a trait-shaped construct" });
+                return Err(EditError::ShapeMismatch {
+                    span_start: *span_start,
+                    expected: "a trait-shaped construct",
+                });
             }
-            target.methods = methods.iter().map(|m| Method {
-                name: m.name.clone(),
-                params: m.params.iter().map(|p| Param {
-                    name: p.name.clone(),
-                    type_expr: parse_type_str(&p.type_str),
+            target.methods = methods
+                .iter()
+                .map(|m| Method {
+                    name: m.name.clone(),
+                    params: m
+                        .params
+                        .iter()
+                        .map(|p| Param {
+                            name: p.name.clone(),
+                            type_expr: parse_type_str(&p.type_str),
+                            span: Span::new(0, 0),
+                        })
+                        .collect(),
+                    return_type: if m.return_type.is_empty() {
+                        None
+                    } else {
+                        Some(parse_type_str(&m.return_type))
+                    },
                     span: Span::new(0, 0),
-                }).collect(),
-                return_type: if m.return_type.is_empty() { None } else { Some(parse_type_str(&m.return_type)) },
-                span: Span::new(0, 0),
-            }).collect();
+                })
+                .collect();
             Ok(())
         }
-        EditOp::CreateConstruct { .. } => unreachable!("handled above"),
-        EditOp::SetBody { body, span_start } => {
-            // Store body as raw expression strings. The serializer will emit them
-            // as-is during re-serialization. For fn-shaped constructs, we replace
-            // the body with parsed Ident expressions (one per line) that the
-            // serializer renders back to the original text.
-            if target.shape != Shape::Fn {
-                return Err(EditError::ShapeMismatch { span_start: *span_start, expected: "a fn-shaped construct" });
-            }
-            // Convert string lines into Expr::Ident (used as opaque expression text
-            // that the serializer emits verbatim — the round-trip preserves source).
-            let exprs: Vec<crate::ast::Expr> = body.iter()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| crate::ast::Expr::Ident(l.trim().to_string()))
-                .collect();
-            if !target.fns.is_empty() {
-                target.fns[0].body = exprs;
-            } else if !target.steps.is_empty() {
-                if let Some(crate::ast::FlowStep::Step(s)) = target.steps.first_mut() {
-                    s.body = exprs;
-                }
-            }
-            Ok(())
+        EditOp::CreateConstruct { .. } | EditOp::SetBody { .. } => {
+            unreachable!("handled above")
         }
     }
 }
@@ -246,6 +339,159 @@ fn find_in_construct(c: &mut Construct, span_start: usize) -> Option<&mut Constr
         }
     }
     None
+}
+
+/// Locate a mutable expression body by AST span start.
+///
+/// Matches (in order of search): flow steps, method implementations, nested
+/// free-fns on constructs, top-level free functions, and — as a fallback for
+/// single-body fn-shaped constructs — the first step or first nested fn body
+/// when the construct's own span matches.
+fn find_body_mut(items: &mut [TopLevelItem], span_start: usize) -> Option<&mut Vec<Expr>> {
+    for item in items.iter_mut() {
+        match item {
+            TopLevelItem::Construct(c) => {
+                if let Some(body) = find_body_in_construct(c, span_start) {
+                    return Some(body);
+                }
+            }
+            TopLevelItem::Function(f) if f.span.start == span_start => {
+                return Some(&mut f.body);
+            }
+            TopLevelItem::Flow(flow) => {
+                if let Some(body) = find_body_in_steps(&mut flow.steps, span_start) {
+                    return Some(body);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_body_in_construct(c: &mut Construct, span_start: usize) -> Option<&mut Vec<Expr>> {
+    // Resolve the path with shared refs first, then take a single &mut.
+    if let Some(i) = c.fns.iter().position(|f| f.span.start == span_start) {
+        return Some(&mut c.fns[i].body);
+    }
+    if let Some(i) = c.impls.iter().position(|imp| imp.span.start == span_start) {
+        return Some(&mut c.impls[i].body);
+    }
+    if let Some(path) = locate_step_body(&c.steps, span_start) {
+        return body_from_step_path(&mut c.steps, path);
+    }
+    if let Some(i) = c
+        .children
+        .iter()
+        .position(|ch| body_exists_in_construct(ch, span_start))
+    {
+        return find_body_in_construct(&mut c.children[i], span_start);
+    }
+    // Fallback: body edit on the construct itself (fn-shaped single body).
+    if c.span.start == span_start {
+        if !c.fns.is_empty() {
+            return Some(&mut c.fns[0].body);
+        }
+        if let Some(i) = c.steps.iter().position(|s| matches!(s, FlowStep::Step(_))) {
+            if let FlowStep::Step(s) = &mut c.steps[i] {
+                return Some(&mut s.body);
+            }
+        }
+        if !c.impls.is_empty() {
+            return Some(&mut c.impls[0].body);
+        }
+    }
+    None
+}
+
+/// Read-only probe used to pick a child index before re-borrowing mutably.
+fn body_exists_in_construct(c: &Construct, span_start: usize) -> bool {
+    if c.fns.iter().any(|f| f.span.start == span_start) {
+        return true;
+    }
+    if c.impls.iter().any(|imp| imp.span.start == span_start) {
+        return true;
+    }
+    if steps_contain_span(&c.steps, span_start) {
+        return true;
+    }
+    if c.children.iter().any(|ch| body_exists_in_construct(ch, span_start)) {
+        return true;
+    }
+    c.span.start == span_start
+        && (!c.fns.is_empty()
+            || c.steps.iter().any(|s| matches!(s, FlowStep::Step(_)))
+            || !c.impls.is_empty())
+}
+
+fn steps_contain_span(steps: &[FlowStep], span_start: usize) -> bool {
+    for step in steps {
+        match step {
+            FlowStep::Step(s) if s.span.start == span_start => return true,
+            FlowStep::Parallel(par) => {
+                if par.steps.iter().any(|s| s.span.start == span_start) {
+                    return true;
+                }
+            }
+            FlowStep::Match(m) => {
+                if m.arms.iter().any(|a| a.span.start == span_start) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+enum StepBodyPath {
+    Step(usize),
+    Parallel { step: usize, sub: usize },
+    MatchArm { step: usize, arm: usize },
+}
+
+fn locate_step_body(steps: &[FlowStep], span_start: usize) -> Option<StepBodyPath> {
+    for (i, step) in steps.iter().enumerate() {
+        match step {
+            FlowStep::Step(s) if s.span.start == span_start => {
+                return Some(StepBodyPath::Step(i));
+            }
+            FlowStep::Parallel(par) => {
+                if let Some(j) = par.steps.iter().position(|s| s.span.start == span_start) {
+                    return Some(StepBodyPath::Parallel { step: i, sub: j });
+                }
+            }
+            FlowStep::Match(m) => {
+                if let Some(j) = m.arms.iter().position(|a| a.span.start == span_start) {
+                    return Some(StepBodyPath::MatchArm { step: i, arm: j });
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn body_from_step_path(steps: &mut [FlowStep], path: StepBodyPath) -> Option<&mut Vec<Expr>> {
+    match path {
+        StepBodyPath::Step(i) => match &mut steps[i] {
+            FlowStep::Step(s) => Some(&mut s.body),
+            _ => None,
+        },
+        StepBodyPath::Parallel { step, sub } => match &mut steps[step] {
+            FlowStep::Parallel(par) => Some(&mut par.steps[sub].body),
+            _ => None,
+        },
+        StepBodyPath::MatchArm { step, arm } => match &mut steps[step] {
+            FlowStep::Match(m) => Some(&mut m.arms[arm].body),
+            _ => None,
+        },
+    }
+}
+
+fn find_body_in_steps(steps: &mut [FlowStep], span_start: usize) -> Option<&mut Vec<Expr>> {
+    let path = locate_step_body(steps, span_start)?;
+    body_from_step_path(steps, path)
 }
 
 /// Recursively search for a trait-shaped construct by name and return its methods.
@@ -425,5 +671,115 @@ mod tests {
         };
         let err = apply_edit(&mut sol, &EditOp::Rename { span_start: 42, name: "X".to_string() });
         assert!(matches!(err, Err(EditError::TargetNotFound(42))));
+    }
+
+    fn sample_svc_with_step() -> Solution {
+        let step = StepDef {
+            name: "go".into(),
+            span: Span::new(100, 200),
+            body: vec![Expr::Ident("old".into())],
+            refs: Vec::new(),
+            sub_blocks: Vec::new(),
+        };
+        let mut svc = Construct::new("svc", "Service", Shape::Fn, "Do".into(), Span::new(10, 300));
+        svc.steps.push(FlowStep::Step(step));
+        Solution {
+            name: "App".into(),
+            span: Span::new(0, 0),
+            uses: Vec::new(),
+            items: vec![TopLevelItem::Construct(svc)],
+            expose: None,
+        }
+    }
+
+    #[test]
+    fn set_body_replaces_step_with_parsed_exprs() {
+        let mut sol = sample_svc_with_step();
+        apply_edits_with(
+            &mut sol,
+            &[EditOp::SetBody {
+                span_start: 100,
+                body: vec!["x = 1".into(), "Repo.save(x)".into()],
+            }],
+            |src| {
+                // Minimal stand-in: Ident for bare names; Assign for `a = b`.
+                if let Some((lhs, rhs)) = src.split_once('=') {
+                    Ok(Expr::Assign(
+                        lhs.trim().into(),
+                        Box::new(Expr::Ident(rhs.trim().into())),
+                        None,
+                    ))
+                } else {
+                    Ok(Expr::Ident(src.to_string()))
+                }
+            },
+        )
+        .expect("set_body");
+        let TopLevelItem::Construct(svc) = &sol.items[0] else {
+            panic!("expected construct");
+        };
+        let FlowStep::Step(step) = &svc.steps[0] else {
+            panic!("expected step");
+        };
+        assert_eq!(step.body.len(), 2);
+        assert!(matches!(&step.body[0], Expr::Assign(n, _, None) if n == "x"));
+        assert!(matches!(&step.body[1], Expr::Ident(s) if s == "Repo.save(x)"));
+        // Must not store opaque full-line Idents for the assign line.
+        assert!(!matches!(&step.body[0], Expr::Ident(_)));
+    }
+
+    #[test]
+    fn set_body_invalid_line_does_not_mutate() {
+        let mut sol = sample_svc_with_step();
+        let before = format!("{:?}", sol);
+        let err = apply_edits_with(
+            &mut sol,
+            &[EditOp::SetBody {
+                span_start: 100,
+                body: vec!["x = 1".into(), "!!! bad".into()],
+            }],
+            |src| {
+                if src.contains('!') {
+                    Err("boom".into())
+                } else {
+                    Ok(Expr::Ident(src.into()))
+                }
+            },
+        );
+        assert!(matches!(
+            err,
+            Err(EditError::InvalidBody {
+                span_start: 100,
+                line: 2,
+                ..
+            })
+        ));
+        // On parse failure of a later line, earlier successful parses are not
+        // committed — we build the vec then assign. Verify body unchanged.
+        let TopLevelItem::Construct(svc) = &sol.items[0] else {
+            panic!();
+        };
+        let FlowStep::Step(step) = &svc.steps[0] else {
+            panic!();
+        };
+        assert!(
+            matches!(&step.body[..], [Expr::Ident(s)] if s == "old"),
+            "body must be unchanged on InvalidBody: {:?}",
+            step.body
+        );
+        let _ = before;
+    }
+
+    #[test]
+    fn set_body_without_parser_errors() {
+        let mut sol = sample_svc_with_step();
+        let err = apply_edits(
+            &mut sol,
+            &[EditOp::SetBody {
+                span_start: 100,
+                body: vec!["x = 1".into()],
+            }],
+        );
+        assert!(matches!(err, Err(EditError::InvalidBody { .. })));
     }
 }

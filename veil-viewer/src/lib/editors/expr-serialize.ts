@@ -33,8 +33,9 @@ export function exprToVeil(expr: Expr, indent = 0): string {
         }
         return `${expr.sugar} ${expr.target}.${expr.method}(${args})`;
       }
-      if (expr.method) return `call ${expr.target}.${expr.method}(${args})`;
-      return `call ${expr.target}(${args})`;
+      // Canonical form: bare calls (never `call` keyword — SER-003/005).
+      if (expr.method) return `${expr.target}.${expr.method}(${args})`;
+      return `${expr.target}(${args})`;
     }
 
     case 'binary_op':

@@ -309,8 +309,8 @@ async fn post_edit<P: SourceProvider>(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("parse failed: {}", e)).into_response(),
     };
 
-    // 3. Apply edits
-    if let Err(e) = veil_ir::apply_edits(&mut sol, &req.edits) {
+    // 3. Apply edits (SetBody lines parsed to real Expr via veil-parser)
+    if let Err(e) = veil_parser::apply_edits(&mut sol, &req.edits, state.registry()) {
         return (StatusCode::BAD_REQUEST, format!("edit failed: {}", e)).into_response();
     }
 

@@ -56,10 +56,22 @@ Covers every `examples/*.veil` and `runtime/src/*.veil`. Green fixtures must be
 emit-idempotent. Currently allowlisted as unparseable (svelte string bodies):
 `customer_portal.veil`, `runtime-ui.veil`.
 
+## Edit identity (SER-005)
+
+Structured edits (`EditOp`) are keyed by **AST span start** (`node.span.start`),
+not ephemeral IR node ids. After a successful save the server returns a fresh
+IR; subsequent edits must use the new spans.
+
+`set_body` sends VEIL expression source strings; the server parses each line
+with `veil_parser::parse_expr_str` into real `Expr` nodes. Invalid body text
+returns `400` and **does not** write the file.
+
 ## Related
 
 - SER-001: field annotations and defaults
 - SER-002: full control-flow bodies (`emit_expr`)
 - SER-003: canonical format + churn control
-- Implementation: `crates/veil-ir/src/serialize.rs`
+- SER-004: fixture round-trip suite
+- SER-005: structured edit ops + real body parse
+- Implementation: `crates/veil-ir/src/serialize.rs`, `crates/veil-ir/src/edit.rs`
 - Suite: `crates/veil-parser/tests/roundtrip_suite.rs`

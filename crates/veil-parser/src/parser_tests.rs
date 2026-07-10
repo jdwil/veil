@@ -488,6 +488,110 @@ sol S
         assert!(emitted.contains("verified: Bool"), "new field missing:\n{}", emitted);
     }
 
+    /// SER-005: SetBody parses real expressions (not opaque Idents).
+    #[test]
+    fn test_edit_set_body_parses_real_exprs() {
+        use veil_ir::serialize::serialize_solution;
+        let src = r#"
+pkg App
+  use ddd
+  svc Greet
+    step run
+      x = 0
+"#;
+        let mut sol = parse_src(src);
+        let svc = find_construct(&sol.items, "Greet");
+        let FlowStep::Step(step) = &svc.steps[0] else {
+            panic!("expected step");
+        };
+        let step_span = step.span.start;
+        crate::apply_edits(
+            &mut sol,
+            &[veil_ir::EditOp::SetBody {
+                span_start: step_span,
+                body: vec![
+                    "name = \"world\"".into(),
+                    "UserRepo.save(name)".into(),
+                ],
+            }],
+            &ddd_registry(),
+        )
+        .expect("set_body");
+
+        let svc = find_construct(&sol.items, "Greet");
+        let FlowStep::Step(step) = &svc.steps[0] else {
+            panic!("expected step");
+        };
+        assert!(
+            matches!(&step.body[0], Expr::Assign(n, _, None) if n == "name"),
+            "expected Assign, got {:?}",
+            step.body[0]
+        );
+        assert!(
+            matches!(&step.body[1], Expr::Call(c) if c.target == "UserRepo" && c.method == "save"),
+            "expected Call, got {:?}",
+            step.body[1]
+        );
+
+        let emitted = serialize_solution(&sol);
+        assert!(emitted.contains("name = \"world\""), "emit lost assign:\n{}", emitted);
+        assert!(
+            emitted.contains("UserRepo.save(name)"),
+            "emit lost call:\n{}",
+            emitted
+        );
+        assert!(!emitted.contains("call UserRepo"), "must not emit call kw:\n{}", emitted);
+        // Re-parse edited source cleanly.
+        let _ = parse_src(&emitted);
+    }
+
+    /// SER-005: invalid body text fails the edit (no opaque Ident fallback).
+    #[test]
+    fn test_edit_set_body_invalid_returns_error() {
+        let src = r#"
+pkg App
+  use ddd
+  svc Greet
+    step run
+      x = 0
+"#;
+        let mut sol = parse_src(src);
+        let svc = find_construct(&sol.items, "Greet");
+        let FlowStep::Step(step) = &svc.steps[0] else {
+            panic!("expected step");
+        };
+        let step_span = step.span.start;
+        let err = crate::apply_edits(
+            &mut sol,
+            &[veil_ir::EditOp::SetBody {
+                span_start: step_span,
+                body: vec!["((( not valid".into()],
+            }],
+            &ddd_registry(),
+        );
+        assert!(err.is_err(), "expected InvalidBody, got {:?}", err);
+        // Original body preserved.
+        let svc = find_construct(&sol.items, "Greet");
+        let FlowStep::Step(step) = &svc.steps[0] else {
+            panic!();
+        };
+        assert!(
+            matches!(&step.body[0], Expr::Assign(n, _, _) if n == "x"),
+            "body corrupted: {:?}",
+            step.body
+        );
+    }
+
+    #[test]
+    fn test_parse_expr_str_handles_if() {
+        let e = crate::parse_expr_str(
+            "if true\n  x = 1\nelse\n  x = 0",
+            &ddd_registry(),
+        )
+        .expect("parse if");
+        assert!(matches!(e, Expr::IfExpr(_)), "got {:?}", e);
+    }
+
     #[test]
     fn test_roundtrip_is_idempotent() {
         use veil_ir::serialize::serialize_solution;

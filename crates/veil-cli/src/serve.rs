@@ -232,8 +232,8 @@ pub async fn post_edit(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("parse failed: {}", e)).into_response(),
     };
 
-    // 2. Apply the structured edits to the AST.
-    if let Err(e) = veil_ir::apply_edits(&mut sol, &req.edits) {
+    // 2. Apply the structured edits to the AST (SetBody → real Expr via parser).
+    if let Err(e) = veil_parser::apply_edits(&mut sol, &req.edits, &state.registry) {
         return (StatusCode::BAD_REQUEST, format!("edit failed: {}", e)).into_response();
     }
 
