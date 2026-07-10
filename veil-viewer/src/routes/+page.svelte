@@ -18,10 +18,9 @@
   import PropertyEditor from '$lib/PropertyEditor.svelte';
   import DiagnosticsPanel from '$lib/DiagnosticsPanel.svelte';
   import CodePreview from '$lib/CodePreview.svelte';
-  import VeilSourcePanel from '$lib/VeilSourcePanel.svelte';
+  import ReviewDock from '$lib/ReviewDock.svelte';
   import OutlinePanel from '$lib/OutlinePanel.svelte';
   import DiffPanel from '$lib/DiffPanel.svelte';
-  import AgentPanel from '$lib/AgentPanel.svelte';
   import { layoutNodes, layoutByType } from '$lib/layout';
   import {
     irGraph,

@@ -6,6 +6,12 @@
   import { veilSource, irGraph, selectedNodeId } from '$lib/store';
   import { get } from 'svelte/store';
 
+  interface Props {
+    /** When true, chrome is provided by ReviewDock (no own collapse header). */
+    embedded?: boolean;
+  }
+  let { embedded = false }: Props = $props();
+
   let visible = $state(true);
   let focusSelection = $state(true);
 
@@ -19,7 +25,6 @@
     if (!node || node.span.start === node.span.end) {
       return { title: 'Package source', text: source };
     }
-    // Expand to whole lines covering the span
     let start = node.span.start;
     let end = Math.min(node.span.end, source.length);
     while (start > 0 && source[start - 1] !== '\n') start--;
@@ -35,20 +40,30 @@
   let excerpt = $derived(extractForSelection($veilSource || ''));
 </script>
 
-<div class="veil-source">
-  <div class="vs-header">
-    <button type="button" class="toggle" onclick={() => (visible = !visible)}>
-      {visible ? '▾' : '▸'} VEIL source
-    </button>
-    {#if visible}
+<div class="veil-source" class:embedded>
+  {#if !embedded}
+    <div class="vs-header">
+      <button type="button" class="toggle" onclick={() => (visible = !visible)}>
+        {visible ? '▾' : '▸'} VEIL source
+      </button>
+      {#if visible}
+        <label class="focus-toggle">
+          <input type="checkbox" bind:checked={focusSelection} />
+          Selection focus
+        </label>
+        <span class="vs-title">{excerpt.title}</span>
+      {/if}
+    </div>
+  {:else}
+    <div class="vs-header embedded-header">
       <label class="focus-toggle">
         <input type="checkbox" bind:checked={focusSelection} />
         Selection focus
       </label>
       <span class="vs-title">{excerpt.title}</span>
-    {/if}
-  </div>
-  {#if visible}
+    </div>
+  {/if}
+  {#if visible || embedded}
     <pre class="vs-body"><code>{$veilSource ? excerpt.text : 'No source loaded.'}</code></pre>
   {/if}
 </div>
@@ -62,6 +77,12 @@
     flex-direction: column;
     min-height: 0;
   }
+  .veil-source.embedded {
+    border-top: none;
+    max-height: none;
+    height: 100%;
+    flex: 1;
+  }
   .vs-header {
     display: flex;
     align-items: center;
@@ -69,6 +90,9 @@
     padding: 6px 12px;
     border-bottom: 1px solid var(--veil-border);
     flex-shrink: 0;
+  }
+  .embedded-header {
+    padding: 4px 12px;
   }
   .toggle {
     background: none;

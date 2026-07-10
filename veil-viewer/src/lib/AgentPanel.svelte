@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * AGT-001: In-IDE agent panel (MVP vertical slice).
-   * Sends prompts to POST /api/agent/turn; refreshes IR when source changes.
+   * Built-in agent panel — embeds in ReviewDock (or standalone).
+   * `insertToken` appends canvas selection into the composer (IDE-style).
    */
   import { fetchIr } from '$lib/store';
 
@@ -28,7 +28,14 @@
     context_layers?: string[];
   }
 
-  let open = $state(false);
+  interface Props {
+    /** Fill parent dock (no floating chrome). */
+    embedded?: boolean;
+    /** When set, append into the prompt (selection insert). */
+    insertToken?: string;
+  }
+  let { embedded = false, insertToken = '' }: Props = $props();
+
   let prompt = $state('');
   let busy = $state(false);
   let err = $state<string | null>(null);
@@ -36,6 +43,16 @@
   let contextMeta = $state<string>('');
   let history = $state<{ role: string; content: string; tools?: ToolCall[] }[]>([]);
   let abort: AbortController | null = null;
+  let inputEl: HTMLInputElement | null = $state(null);
+
+  // Consume insert tokens from ReviewDock
+  $effect(() => {
+    if (!insertToken) return;
+    const token = insertToken;
+    const sep = prompt && !prompt.endsWith(' ') && !prompt.endsWith('\n') ? ' ' : '';
+    prompt = `${prompt}${sep}\`${token}\``;
+    queueMicrotask(() => inputEl?.focus());
+  });
 
   async function send() {
     const text = prompt.trim();
@@ -92,97 +109,77 @@
   }
 </script>
 
-<div class="agent-wrap">
-  <button type="button" class="agent-toggle" onclick={() => (open = !open)} title="Agent panel">
-    {open ? '▾' : '▸'} Agent
-  </button>
-  {#if open}
-    <div class="agent-panel">
-      <div class="agent-head">
-        <span class="title">Built-in agent (Rig)</span>
-        <span class="hint">layer prompts + tools · offline: check · outline · rename</span>
-      </div>
-      {#if contextWarn}
-        <div class="ctx-warn" role="alert">
-          <strong>⚠️ Context truncated</strong>
-          <pre class="ctx-warn-body">{contextWarn}</pre>
-          <p class="ctx-warn-foot">
-            Prefer a larger-context model, OpenAI flagship, or ACP — not a 9B with a cut curriculum.
-          </p>
-        </div>
-      {/if}
-      {#if contextMeta}
-        <div class="ctx-meta">{contextMeta}</div>
-      {/if}
-      <div class="thread">
-        {#each history as m}
-          <div class="msg" class:user={m.role === 'user'} class:asst={m.role === 'assistant'}>
-            <div class="role">{m.role}</div>
-            <pre class="body">{m.content}</pre>
-            {#if m.tools?.length}
-              <div class="tools">
-                {#each m.tools as t}
-                  <span class="tool">{t.name}: {t.detail}</span>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/each}
-        {#if history.length === 0}
-          <p class="empty">
-            Free-form prompts use Ollama/OpenAI with Tier 0/1 layer teaching context. Offline:
-            <code>check</code> · <code>outline</code> · <code>rename A to B</code>.
-          </p>
-        {/if}
-      </div>
-      {#if err}
-        <div class="err">{err}</div>
-      {/if}
-      <div class="composer">
-        <input
-          type="text"
-          bind:value={prompt}
-          placeholder="Prompt…"
-          disabled={busy}
-          onkeydown={(e) => e.key === 'Enter' && send()}
-        />
-        {#if busy}
-          <button type="button" class="cancel" onclick={cancel}>Cancel</button>
-        {:else}
-          <button type="button" class="send" onclick={send} disabled={!prompt.trim()}>Send</button>
-        {/if}
-      </div>
+<div class="agent-panel" class:embedded>
+  {#if !embedded}
+    <div class="agent-head">
+      <span class="title">Built-in agent (Rig)</span>
+      <span class="hint">layer prompts + tools</span>
     </div>
   {/if}
+  {#if contextWarn}
+    <div class="ctx-warn" role="alert">
+      <strong>⚠️ Context truncated</strong>
+      <pre class="ctx-warn-body">{contextWarn}</pre>
+      <p class="ctx-warn-foot">
+        Prefer a larger-context model, OpenAI flagship, or ACP — not a cut curriculum.
+      </p>
+    </div>
+  {/if}
+  {#if contextMeta}
+    <div class="ctx-meta">{contextMeta}</div>
+  {/if}
+  <div class="thread">
+    {#each history as m}
+      <div class="msg" class:user={m.role === 'user'} class:asst={m.role === 'assistant'}>
+        <div class="role">{m.role}</div>
+        <pre class="body">{m.content}</pre>
+        {#if m.tools?.length}
+          <div class="tools">
+            {#each m.tools as t}
+              <span class="tool">{t.name}: {t.detail}</span>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/each}
+    {#if history.length === 0}
+      <p class="empty">
+        Free-form prompts use the configured model with Tier 0/1 layer teaching context.
+        Select a node on the canvas and use <strong>+ Insert</strong> to reference it.
+        Offline: <code>check</code> · <code>outline</code> · <code>rename A to B</code>.
+      </p>
+    {/if}
+  </div>
+  {#if err}
+    <div class="err">{err}</div>
+  {/if}
+  <div class="composer">
+    <input
+      bind:this={inputEl}
+      type="text"
+      bind:value={prompt}
+      placeholder="Ask the agent… (use + Insert for canvas selection)"
+      disabled={busy}
+      onkeydown={(e) => e.key === 'Enter' && send()}
+    />
+    {#if busy}
+      <button type="button" class="cancel" onclick={cancel}>Cancel</button>
+    {:else}
+      <button type="button" class="send" onclick={send} disabled={!prompt.trim()}>Send</button>
+    {/if}
+  </div>
 </div>
 
 <style>
-  .agent-wrap {
-    position: relative;
-  }
-  .agent-toggle {
-    background: none;
-    border: 1px solid var(--veil-border);
-    border-radius: 6px;
-    color: var(--veil-text-dim);
-    font-size: 11px;
-    padding: 4px 8px;
-    cursor: pointer;
-  }
   .agent-panel {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 4px;
-    width: min(480px, 94vw);
-    max-height: 560px;
-    background: var(--veil-surface);
-    border: 1px solid var(--veil-border);
-    border-radius: 8px;
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
-    z-index: 60;
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    flex: 1;
+    background: var(--veil-surface);
+  }
+  .agent-panel.embedded {
+    height: 100%;
   }
   .agent-head {
     display: flex;
@@ -190,6 +187,7 @@
     padding: 8px 12px;
     border-bottom: 1px solid var(--veil-border);
     font-size: 11px;
+    flex-shrink: 0;
   }
   .title {
     font-weight: 700;
@@ -204,13 +202,14 @@
     padding: 8px 12px;
     color: #fecaca;
     font-size: 11px;
+    flex-shrink: 0;
   }
   .ctx-warn-body {
     margin: 6px 0 0;
     white-space: pre-wrap;
     font-size: 10px;
     font-family: 'JetBrains Mono', monospace;
-    max-height: 140px;
+    max-height: 100px;
     overflow: auto;
   }
   .ctx-warn-foot {
@@ -224,6 +223,7 @@
     padding: 4px 12px;
     border-bottom: 1px solid var(--veil-border);
     font-family: 'JetBrains Mono', monospace;
+    flex-shrink: 0;
   }
   .thread {
     flex: 1;
@@ -232,8 +232,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    min-height: 160px;
-    max-height: 320px;
+    min-height: 80px;
   }
   .msg {
     border-radius: 6px;
@@ -277,6 +276,7 @@
     gap: 6px;
     padding: 8px;
     border-top: 1px solid var(--veil-border);
+    flex-shrink: 0;
   }
   .composer input {
     flex: 1;
@@ -304,6 +304,7 @@
     color: #f87171;
     font-size: 11px;
     padding: 4px 12px;
+    flex-shrink: 0;
   }
   .empty {
     font-size: 11px;
