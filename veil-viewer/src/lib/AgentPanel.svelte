@@ -3,6 +3,7 @@
    * Built-in agent panel — embeds in ReviewDock (or standalone).
    * `insertToken` appends canvas selection into the composer (IDE-style).
    */
+  import { untrack } from 'svelte';
   import { fetchIr } from '$lib/store';
 
   interface AgentMessage {
@@ -45,12 +46,16 @@
   let abort: AbortController | null = null;
   let inputEl: HTMLInputElement | null = $state(null);
 
-  // Consume insert tokens from ReviewDock
+  // Consume insert tokens from ReviewDock (avoid $effect read/write on prompt).
+  let lastInsert = '';
   $effect(() => {
-    if (!insertToken) return;
     const token = insertToken;
-    const sep = prompt && !prompt.endsWith(' ') && !prompt.endsWith('\n') ? ' ' : '';
-    prompt = `${prompt}${sep}\`${token}\``;
+    if (!token || token === lastInsert) return;
+    lastInsert = token;
+    // Read current prompt outside reactive assignment cycle via snapshot
+    const cur = prompt;
+    const sep = cur && !cur.endsWith(' ') && !cur.endsWith('\n') ? ' ' : '';
+    prompt = `${cur}${sep}\`${token}\``;
     queueMicrotask(() => inputEl?.focus());
   });
 
