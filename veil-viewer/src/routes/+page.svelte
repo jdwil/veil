@@ -346,6 +346,45 @@
     if (graph) computeView(graph, parent, palette);
   }
 
+  /** UX-024: summary lines for step body actions (max N). */
+  const BODY_PREVIEW_MAX = 4;
+
+  function bodyPreviewFor(
+    graph: IrGraph,
+    child: IrNode,
+    childChildren: IrNode[]
+  ): { lines: { text: string; keyword: string | null }[]; empty: boolean; more: number } {
+    if (child.kind !== 'Step' && child.kind !== 'ErrorBoundary') {
+      return { lines: [], empty: false, more: 0 };
+    }
+    const actions = childChildren.filter((c) => c.kind === 'Action');
+    const subBlocks = childChildren.filter(
+      (c) =>
+        c.kind === 'Step' && c.metadata.annotations.includes('sub_block')
+    );
+    const lines: { text: string; keyword: string | null }[] = [];
+    for (const a of actions) {
+      const sk = a.metadata.subkind;
+      const msg = a.metadata.properties.find(([k]) => k === 'message')?.[1];
+      let text = a.name;
+      if (sk === 'guard' && msg) text = `${a.name} — "${msg}"`;
+      lines.push({ text, keyword: sk });
+    }
+    for (const sb of subBlocks) {
+      const nActs = getChildren(graph, sb.id).filter((c) => c.kind === 'Action').length;
+      lines.push({
+        text: nActs > 0 ? `${sb.name} (${nActs})` : `${sb.name} (empty)`,
+        keyword: sb.metadata.subkind ?? sb.name,
+      });
+    }
+    const total = lines.length;
+    return {
+      lines: lines.slice(0, BODY_PREVIEW_MAX),
+      empty: total === 0,
+      more: Math.max(0, total - BODY_PREVIEW_MAX),
+    };
+  }
+
   /** Map IR nodes to SvelteFlow nodes (shared by presentation + legacy paths). */
   function toFlowNodes(
     graph: IrGraph,
@@ -371,6 +410,23 @@
         }));
         hasChildren = false;
       }
+      // Steps: show body preview on card; drill only into non-Action structure
+      // (match arms, compensate sub-blocks). Actions open via VEIL source pane.
+      const bodyPrev = bodyPreviewFor(graph, child, childChildren);
+      if (child.kind === 'Step') {
+        hasChildren = childChildren.some((c) => c.kind !== 'Action');
+      }
+      // Routing: Calls edges from this step's actions (UX-026)
+      const routing = childChildren
+        .filter((c) => c.kind === 'Action')
+        .flatMap((a) =>
+          graph.edges
+            .filter((e) => e.from === a.id && e.kind === 'Calls')
+            .map((e) => {
+              const t = graph.nodes.find((n) => n.id === e.to);
+              return t?.name ?? String(e.to);
+            })
+        );
       const critical = isCriticalNode(child, pres, diags);
       return {
         id: String(child.id),
@@ -388,6 +444,10 @@
           inlineChildren,
           refs,
           critical,
+          bodyPreview: bodyPrev.lines,
+          bodyEmpty: bodyPrev.empty,
+          bodyMore: bodyPrev.more,
+          routingTargets: [...new Set(routing)],
         },
       };
     });

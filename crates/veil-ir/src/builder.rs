@@ -347,7 +347,8 @@ impl IrBuilder {
                 for child in &c.children {
                     self.build_construct(child, id);
                 }
-                // Business logic fns as properties.
+                // Business logic fns as InterfaceMethod children so the viewer
+                // can list signatures, show @invariant, and open bodies (UX-025).
                 for f in &c.fns {
                     let params = f
                         .params
@@ -360,7 +361,63 @@ impl IrBuilder {
                         .as_ref()
                         .map(|t| format!(" -> {}", type_to_display(t)))
                         .unwrap_or_default();
-                    self.set_property(id, &format!("fn:{}", f.name), &format!("({}){}", params, ret));
+                    let sig = format!("({}){}", params, ret);
+                    // Keep summary property for outline/search.
+                    self.set_property(
+                        id,
+                        &format!("fn:{}", f.name),
+                        &format!("({}){}", params, ret),
+                    );
+
+                    let method_id = self.graph.add_node(
+                        NodeKind::InterfaceMethod,
+                        f.name.clone(),
+                        f.span,
+                    );
+                    self.set_parent(method_id, id);
+                    self.set_property(method_id, "params", &format!("({})", params));
+                    if let Some(rt) = &f.return_type {
+                        self.set_property(method_id, "returns", &type_to_display(rt));
+                    }
+                    self.set_property(method_id, "signature", &sig);
+                    if f.body.is_empty() {
+                        self.set_property(method_id, "abstract", "true");
+                    } else {
+                        self.set_property(method_id, "has_body", "true");
+                    }
+                    for ann in &f.annotations {
+                        if let Some(node) =
+                            self.graph.nodes.iter_mut().find(|n| n.id == method_id)
+                        {
+                            node.metadata
+                                .annotations
+                                .push(annotation_to_ir_string(ann));
+                        }
+                    }
+                    if f.layer_provided {
+                        if let Some(node) =
+                            self.graph.nodes.iter_mut().find(|n| n.id == method_id)
+                        {
+                            node.metadata
+                                .annotations
+                                .push("layer-provided".to_string());
+                        }
+                    }
+                    self.graph.add_edge(id, method_id, EdgeKind::Contains);
+
+                    if !f.params.is_empty() {
+                        let inputs_id = self.graph.add_node(
+                            NodeKind::Inputs,
+                            "Inputs".to_string(),
+                            f.span,
+                        );
+                        self.set_parent(inputs_id, method_id);
+                        self.set_property(inputs_id, "params", &params);
+                        self.graph.add_edge(method_id, inputs_id, EdgeKind::Contains);
+                    }
+                    if !f.body.is_empty() {
+                        self.build_step_body(&f.body, method_id);
+                    }
                 }
             }
             Shape::Enum => {
@@ -662,11 +719,27 @@ impl IrBuilder {
                     for r in &s.refs {
                         self.set_property(step_id, &format!("ref:{}", r.keyword), &r.values.join(", "));
                     }
-                    // Named sub-blocks (e.g. compensate).
+                    // Named sub-blocks (e.g. compensate): annotate parent + emit
+                    // nested Step so bodies are visible in the graph (UX-026).
                     for sb in &s.sub_blocks {
                         if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == step_id) {
                             node.metadata.annotations.push(format!("has_{}", sb.keyword));
                         }
+                        let sub_id = self.graph.add_node(
+                            NodeKind::Step,
+                            sb.keyword.clone(),
+                            sb.span,
+                        );
+                        self.set_parent(sub_id, step_id);
+                        self.set_subkind(sub_id, &sb.keyword);
+                        if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == sub_id) {
+                            node.metadata.annotations.push("sub_block".to_string());
+                            node.metadata
+                                .annotations
+                                .push(format!("has_{}", sb.keyword));
+                        }
+                        self.graph.add_edge(step_id, sub_id, EdgeKind::Contains);
+                        self.build_step_body(&sb.body, sub_id);
                     }
                     self.build_step_body(&s.body, step_id);
                     prev_step_id = Some(step_id);

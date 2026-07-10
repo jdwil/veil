@@ -1,6 +1,6 @@
 <script lang="ts">
   import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/types';
-  import { irGraph, saveEdits, saving, saveError, paletteConfig, type EditOp } from '$lib/store';
+  import { irGraph, saveEdits, saving, saveError, paletteConfig, selectedNodeId, type EditOp } from '$lib/store';
   import { get } from 'svelte/store';
   import { formatType } from '$lib/typeDisplay';
   import MethodEditor from '$lib/MethodEditor.svelte';
@@ -47,7 +47,7 @@
 
   // Determine what kind of editor to show — driven by the core shape
   // (node kind), never by layer-specific subkind names.
-  // Parse children into editable method structures (for Port/Interface)
+  // Parse children into method structures (ports, impls, aggregate fns)
   let methods = $derived.by(() => {
     // First try: parse from InterfaceMethod child nodes
     const fromChildren = children
@@ -55,13 +55,26 @@
       .map(c => {
         const paramsRaw = c.metadata.properties.find(([k]) => k === 'params')?.[1] ?? '';
         const returnsRaw = c.metadata.properties.find(([k]) => k === 'returns')?.[1] ?? '';
+        const sig = c.metadata.properties.find(([k]) => k === 'signature')?.[1] ?? '';
         // Parse "(name: Type, name: Type)" into array
         const paramStr = paramsRaw.replace(/^\(|\)$/g, '');
         const params = paramStr ? paramStr.split(', ').map(p => {
           const [name, type] = p.split(': ');
           return { name: name?.trim() ?? '', type: type?.trim() ?? 'Str' };
         }) : [];
-        return { name: c.name, params, returnType: returnsRaw };
+        const invariants = c.metadata.annotations
+          .filter((a) => a.includes('invariant') || a.startsWith('@invariant'))
+          .map((a) => (a.startsWith('@') ? a : `@${a}`));
+        return {
+          id: c.id,
+          name: c.name,
+          params,
+          returnType: returnsRaw,
+          signature: sig || `${paramsRaw}${returnsRaw ? ` -> ${returnsRaw}` : ''}`,
+          annotations: c.metadata.annotations,
+          invariants,
+          hasBody: c.metadata.properties.some(([k, v]) => k === 'has_body' && v === 'true'),
+        };
       });
     if (fromChildren.length > 0) return fromChildren;
 
@@ -310,14 +323,49 @@
       <div class="pe-note pe-note-error">Save failed: {$saveError}</div>
     {/if}
 
-    <!-- Implement button: shown on trait-shaped nodes that have a paired impl construct -->
+    <!-- UX-025: methods on aggregate/struct/port/impl -->
+    {#if methods.length > 0 && kind !== 'InterfaceMethod'}
+      <div class="pe-section">
+        <span class="label-text">Methods</span>
+        <div class="methods-list">
+          {#each methods as m}
+            <button
+              type="button"
+              class="method-item"
+              title="Select to review body in VEIL source pane"
+              onclick={() => selectedNodeId.set(String(m.id))}
+            >
+              <span class="method-icon">⚙</span>
+              <span class="method-sig">
+                {m.name}{m.signature || `(${(m.params ?? []).map((p: any) => `${p.name}: ${p.type}`).join(', ')})${m.returnType ? ` -> ${m.returnType}` : ''}`}
+              </span>
+            </button>
+            {#each m.invariants ?? [] as inv}
+              <div class="invariant-line" title="Invariant">{inv}</div>
+            {/each}
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- Expression Editor for flow/step bodies (container nodes with Action/Step children) -->
     {#if kind === 'Step' || kind === 'Flow' || kind === 'InterfaceMethod'}
       <div class="pe-section">
         <span class="label-text">Body</span>
+        {#if kind === 'InterfaceMethod'}
+          {#each (node.data.annotations ?? []).filter((a: string) => a.includes('invariant')) as inv}
+            <div class="invariant-line">{inv.startsWith('@') ? inv : `@${inv}`}</div>
+          {/each}
+        {/if}
         <div class="expr-editor-container">
-          {#if children.length > 0}
+          {#if children.filter((c) => c.kind === 'Action').length > 0}
+            {@const bodyExprs = irChildrenToExprs(children.filter((c) => c.kind === 'Action'))}
+            <BlockEditor
+              exprs={bodyExprs}
+              onChange={(newExprs) => handleBodyEdit(newExprs)}
+              depth={0}
+            />
+          {:else if children.length > 0}
             {@const bodyExprs = irChildrenToExprs(children)}
             <BlockEditor
               exprs={bodyExprs}
@@ -325,7 +373,7 @@
               depth={0}
             />
           {:else}
-            <p class="pe-empty">No expressions. Drill into this node to add them.</p>
+            <p class="pe-empty">No body expressions.</p>
           {/if}
         </div>
       </div>
@@ -396,6 +444,19 @@
 
 <style>
   .property-editor {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 300px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    background: var(--veil-surface);
+    border: 1px solid var(--veil-border);
+    border-radius: 12px;
+    backdrop-filter: blur(16px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+    z-index: 50;
+  }
 
   .methods-list {
     display: flex;
@@ -422,19 +483,24 @@
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
     color: var(--veil-text-secondary);
+    text-align: left;
+    word-break: break-all;
   }
-    position: absolute;
-    top: 12px;
-    right: 12px;
-    width: 300px;
-    max-height: calc(100vh - 100px);
-    overflow-y: auto;
-    background: var(--veil-surface);
-    border: 1px solid var(--veil-border);
-    border-radius: 12px;
-    backdrop-filter: blur(16px);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
-    z-index: 50;
+  button.method-item {
+    width: 100%;
+    border: none;
+    cursor: pointer;
+    background: var(--veil-accent-subtle);
+    color: inherit;
+  }
+  button.method-item:hover {
+    outline: 1px solid var(--veil-border);
+  }
+  .invariant-line {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: #fbbf24;
+    padding: 2px 8px 6px 28px;
   }
 
   .pe-header {

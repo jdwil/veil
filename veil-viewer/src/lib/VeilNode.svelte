@@ -26,6 +26,11 @@
   const isAbstract = properties.some(([k, v]) => k === 'abstract' && v === 'true');
   const isCritical = data.critical ?? false;
   const layerProvided = data.layerProvided ?? false;
+  const bodyPreview: { text: string; keyword: string | null }[] = data.bodyPreview ?? [];
+  const bodyEmpty: boolean = data.bodyEmpty ?? false;
+  const bodyMore: number = data.bodyMore ?? 0;
+  const routingTargets: string[] = data.routingTargets ?? [];
+  const isStep = kind === 'Step';
 </script>
 
 <div
@@ -78,6 +83,38 @@
 
     {#if isAbstract}
       <span class="abstract-badge">abstract</span>
+    {/if}
+
+    <!-- UX-024: step body summary on the card -->
+    {#if isStep && bodyEmpty}
+      <div class="body-preview empty">empty step</div>
+    {:else if isStep && bodyPreview.length > 0}
+      <div class="body-preview">
+        {#each bodyPreview as line}
+          <div
+            class="body-line"
+            class:is-guard={line.keyword === 'guard'}
+            class:is-subblock={line.keyword === 'compensate' || data.annotations?.includes(`has_${line.keyword}`)}
+            title={line.text}
+          >
+            {#if line.keyword && line.keyword !== 'call' && line.keyword !== 'assign'}
+              <span class="body-kw">{line.keyword}</span>
+            {/if}
+            <span class="body-text">{line.text}</span>
+          </div>
+        {/each}
+        {#if bodyMore > 0}
+          <div class="body-more">+{bodyMore} more · select for full body</div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if routingTargets.length > 0}
+      <div class="routing-badges">
+        {#each routingTargets.slice(0, 3) as t}
+          <span class="routing-badge" title="Calls {t}">→ {t}</span>
+        {/each}
+      </div>
     {/if}
 
     {#if properties.length > 0}
@@ -191,6 +228,70 @@
     background: rgba(148, 163, 184, 0.2);
     color: var(--veil-text-dim);
     margin-left: auto;
+  }
+
+  .body-preview {
+    margin: 4px 10px 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-width: 100%;
+  }
+  .body-preview.empty {
+    font-size: 10px;
+    font-style: italic;
+    color: var(--veil-text-faint);
+    text-align: center;
+  }
+  .body-line {
+    display: flex;
+    gap: 6px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--veil-text-dim);
+    line-height: 1.35;
+    overflow: hidden;
+  }
+  .body-line.is-guard {
+    color: #fbbf24;
+  }
+  .body-line.is-subblock .body-kw {
+    color: #f87171;
+  }
+  .body-kw {
+    flex-shrink: 0;
+    font-weight: 700;
+    font-size: 9px;
+    text-transform: lowercase;
+    color: var(--veil-accent, #60a5fa);
+  }
+  .body-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .body-more {
+    font-size: 9px;
+    color: var(--veil-text-faint);
+    font-style: italic;
+  }
+  .routing-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 0 10px 8px;
+  }
+  .routing-badge {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(96, 165, 250, 0.12);
+    color: #93c5fd;
+    font-family: 'JetBrains Mono', monospace;
   }
 
   .veil-node.ghost {

@@ -122,7 +122,7 @@ already stamps node_id; edit refreshes diagnostics.
 
 ## UX-024: Step / flow body previews on the canvas
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** reviewer  
 **I want** step cards to show a short preview of their actions  
 **So that** I understand flows without property-panel archaeology
@@ -137,11 +137,14 @@ already stamps node_id; edit refreshes diagnostics.
 
 **Related legacy:** UX-003 (flow body visualization)
 
+**Done notes:** `bodyPreview` on step cards (max 4 + “more”); empty label;
+keyword badges; select → VEIL source focus.
+
 ---
 
 ## UX-025: Aggregate / struct method review
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** reviewer  
 **I want** struct-shaped constructs to expose methods and bodies  
 **So that** invariants and domain mutations are reviewable
@@ -155,11 +158,15 @@ already stamps node_id; edit refreshes diagnostics.
 
 **Related legacy:** UX-004
 
+**Done notes:** Builder emits struct `fn`s as `InterfaceMethod` children with
+body + annotations; PE Methods list + `@invariant` lines; click selects for
+VEIL source pane.
+
 ---
 
 ## UX-026: Compensation and routing visibility
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** reviewer of orchestrations  
 **I want** compensate sub-blocks and Bus/cross-context calls visible  
 **So that** failure paths and integration edges are not hidden
@@ -172,6 +179,9 @@ already stamps node_id; edit refreshes diagnostics.
 - No hardcoded “saga” string required beyond layer metadata
 
 **Related legacy:** UX-007
+
+**Done notes:** Sub-blocks emitted as nested Step (`sub_block` ann) with body;
+preview lines + drill; `routingTargets` badges from Calls edges.
 
 ---
 
