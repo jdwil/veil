@@ -203,7 +203,7 @@ export function navigateTo(id: number | null) {
   });
 }
 
-/** Switch to a different loaded file by index. Re-fetches IR from the server. */
+/** Switch to a different loaded file by index. Re-fetches IR + all panels (UX-011). */
 export async function selectFile(index: number) {
   loading.set(true);
   error.set(null);
@@ -217,37 +217,49 @@ export async function selectFile(index: number) {
     const data: IrGraph = await res.json();
     irGraph.set(data);
 
-    // Refresh source
-    const srcRes = await fetch(SOURCE_URL);
+    // Parallel refresh of all file-scoped panels
+    const [srcRes, filesRes, palRes, genRes, presRes] = await Promise.all([
+      fetch(SOURCE_URL),
+      fetch(FILES_URL),
+      fetch(PALETTE_URL),
+      fetch(`${API_BASE}/generated`).catch(() => null),
+      fetch(PRESENTATION_URL).catch(() => null),
+    ]);
+
     if (srcRes.ok) veilSource.set(await srcRes.text());
 
-    // Update file list
-    const filesRes = await fetch(FILES_URL);
     if (filesRes.ok) {
       const files: VeilFileInfo[] = await filesRes.json();
       availableFiles.set(files);
-      const active = files.find(f => f.active);
+      const active = files.find((f) => f.active);
       if (active) activeFileName.set(active.name);
     }
 
-    // Re-run check for the newly active file
-    await fetchCheck();
+    if (palRes.ok) {
+      const palette: PaletteEntry[] = await palRes.json();
+      paletteConfig.set(palette);
+      setPaletteStyles(palette);
+    }
 
-    // Refresh presentation for the new file's layers
-    try {
-      const presRes = await fetch(PRESENTATION_URL);
-      if (presRes.ok) presentationModel.set(await presRes.json());
-      else presentationModel.set(null);
-    } catch {
+    if (genRes && genRes.ok) {
+      generatedCode.set(await genRes.json());
+    }
+
+    if (presRes && presRes.ok) {
+      presentationModel.set(await presRes.json());
+    } else {
       presentationModel.set(null);
     }
 
-    // Reset navigation to root
-    const root = data.nodes.find(n => n.kind === 'Solution');
+    await fetchCheck();
+
+    // Reset navigation to root of new file
+    const root = data.nodes.find((n) => n.kind === 'Solution');
     if (root) {
       currentParent.set(root.id);
       breadcrumbs.set([{ id: root.id, name: root.name }]);
     }
+    selectedNodeId.set(null);
   } catch (e) {
     error.set(e instanceof Error ? e.message : 'Failed to switch file');
   } finally {

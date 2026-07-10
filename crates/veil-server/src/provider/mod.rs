@@ -8,9 +8,11 @@ use veil_ir::LayerRegistry;
 /// Metadata about a loaded file.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileInfo {
+    pub index: usize,
     pub name: String,
     pub path: String,
     pub editable: bool,
+    pub active: bool,
 }
 
 /// Abstraction over where .veil source lives.
@@ -33,4 +35,9 @@ pub trait SourceProvider: Send + Sync + 'static {
 
     /// Is the given file editable?
     fn is_editable(&self, file: &str) -> bool;
+
+    /// Switch the active file by index (UX-011). Default: unsupported.
+    fn set_active(&self, _index: usize) -> Result<(), String> {
+        Err("set_active not supported by this provider".into())
+    }
 }

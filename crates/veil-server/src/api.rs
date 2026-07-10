@@ -318,14 +318,11 @@ async fn post_select_file<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
     Json(req): Json<crate::protocol::SelectFileRequest>,
 ) -> axum::response::Response {
-    // For filesystem provider, we downcast. For others, this is a no-op or custom logic.
-    // The generic approach: just read the file at the given index.
-    let files = state.list_files().await;
-    if req.index >= files.len() {
-        return (StatusCode::BAD_REQUEST, "invalid file index").into_response();
+    // UX-011: switch active file, then return IR for the new active source.
+    if let Err(e) = state.set_active(req.index) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
     }
-    let file = &files[req.index];
-    let source = match state.read_source(&file.name).await {
+    let source = match state.read_source("").await {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };

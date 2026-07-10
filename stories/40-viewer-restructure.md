@@ -32,7 +32,7 @@ targets. Unit tests in `veil-cli`.
 
 ## UX-011: Multi-file select sets active file
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** user with multiple `.veil` files  
 **I want** selecting a file to make it the active IR/source/edit target  
 **So that** subsequent GETs and edits apply to the right package
@@ -45,6 +45,9 @@ targets. Unit tests in `veil-cli`.
 - Remove schema drift between `veil-server` and legacy `serve.rs` (prefer one)
 
 **Touch:** `crates/veil-server/src/api.rs`, `provider/filesystem.rs`, `store.ts`
+
+**Done notes:** `SourceProvider::set_active`; FileInfo includes index/active;
+client refreshes source/palette/generated/presentation/check.
 
 ---
 

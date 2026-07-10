@@ -79,11 +79,17 @@ impl FilesystemProvider {
 impl SourceProvider for FilesystemProvider {
     async fn list_files(&self) -> Vec<FileInfo> {
         let active_idx = self.active_index();
-        self.files.iter().enumerate().map(|(i, entry)| FileInfo {
-            name: entry.name.clone(),
-            path: entry.path.to_string_lossy().to_string(),
-            editable: entry.editable,
-        }).collect()
+        self.files
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| FileInfo {
+                index: i,
+                name: entry.name.clone(),
+                path: entry.path.to_string_lossy().to_string(),
+                editable: entry.editable,
+                active: i == active_idx,
+            })
+            .collect()
     }
 
     async fn read_source(&self, file: &str) -> Result<String, String> {
@@ -130,5 +136,9 @@ impl SourceProvider for FilesystemProvider {
             .find(|e| e.name == file || e.path.to_string_lossy() == file)
             .map(|e| e.editable)
             .unwrap_or(false)
+    }
+
+    fn set_active(&self, index: usize) -> Result<(), String> {
+        FilesystemProvider::set_active(self, index)
     }
 }
