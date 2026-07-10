@@ -83,6 +83,10 @@ pub struct Solution {
     #[serde(default)]
     pub uses: Vec<UseImport>,
     pub items: Vec<TopLevelItem>,
+    /// Public API contract from `pkg` files' `expose` block (preserved when
+    /// packages are lowered to Solution for check/codegen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeBlock>,
 }
 
 /// Top-level items within a solution or package.
@@ -456,8 +460,8 @@ pub enum Expr {
     UnaryOp(UnaryOpExpr),
     /// If/else expression
     IfExpr(IfExprData),
-    /// Variable assignment: name = expr
-    Assign(String, Box<Expr>),
+    /// Variable assignment: `name = expr` or typed `name: Type = expr`
+    Assign(String, Box<Expr>, Option<TypeExpr>),
     /// Mutable variable assignment: mut name = expr (with optional type annotation)
     MutAssign(String, Box<Expr>, Option<TypeExpr>),
     /// String literal

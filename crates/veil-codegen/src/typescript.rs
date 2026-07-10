@@ -149,8 +149,16 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
 
         Expr::Call(call) => translate_call_ts(call, indent),
 
-        Expr::Assign(name, value) => {
-            format!("{} = {}", to_camel(name), expr_to_ts(value, indent))
+        Expr::Assign(name, value, ty_ann) => {
+            match ty_ann {
+                Some(ty) => format!(
+                    "const {}: {} = {}",
+                    to_camel(name),
+                    type_to_ts(ty),
+                    expr_to_ts(value, indent)
+                ),
+                None => format!("{} = {}", to_camel(name), expr_to_ts(value, indent)),
+            }
         }
         Expr::MutAssign(name, value, ty_ann) => {
             match ty_ann {

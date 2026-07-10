@@ -335,7 +335,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 format!("if {} {{\n{}\n}}", cond, then_body)
             }
         }
-        Expr::Assign(name, rhs) => {
+        Expr::Assign(name, rhs, ty_ann) => {
             let rhs_str = expr_to_rust(rhs, ctx);
             if ctx.state_locals.contains(name.as_str()) {
                 // Write the result into the threaded saga state as JSON.
@@ -345,6 +345,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             } else if ctx.is_local(name) {
                 // Already-declared local (e.g. a `mut` var) → reassignment, no `let`.
                 format!("{} = {}", name, rhs_str)
+            } else if let Some(ty) = ty_ann {
+                format!("let {}: {} = {}", name, crate::rust::type_to_rust(ty), rhs_str)
             } else {
                 format!("let mut {} = {}", name, rhs_str)
             }
@@ -996,7 +998,7 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
 /// Translate a full statement (expression at statement position) with semicolons.
 pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
     match expr {
-        Expr::Assign(name, rhs) | Expr::MutAssign(name, rhs, _) => {
+        Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
             // Infer the type of the RHS
             let inferred_type = infer_expr_type(rhs, ctx);
             let s = expr_to_rust(expr, ctx);
@@ -1216,7 +1218,7 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
                 collect_deps_from_expr(arg, ctx, deps);
             }
         }
-        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs, _) => collect_deps_from_expr(rhs, ctx, deps),
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => collect_deps_from_expr(rhs, ctx, deps),
         Expr::Action(a) => {
             for arg in &a.args {
                 collect_deps_from_expr(arg, ctx, deps);

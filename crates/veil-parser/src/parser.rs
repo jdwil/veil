@@ -50,12 +50,14 @@ pub fn parse_with_registry(
             span: pkg.span,
             uses: pkg.uses,
             items: pkg.items,
+            expose: pkg.expose,
         },
         VeilFile::Composition(comp) => Solution {
             name: "composition".to_string(),
             span: comp.span,
             uses: comp.imports.clone(),
             items: comp.flows.into_iter().map(TopLevelItem::Flow).collect(),
+            expose: None,
         },
     };
 
@@ -158,6 +160,7 @@ pub fn parse_file_with_registry(
                         span: pkg.span,
                         uses: pkg.uses.clone(),
                         items: std::mem::take(&mut pkg.items),
+                        expose: pkg.expose.clone(),
                     };
                     inject_declarations(&mut sol, &parser.registry);
                     pkg.items = sol.items;
@@ -450,30 +453,64 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse fields that may use shorthand: `id email created` on one line,
-    /// or full `name: Type` per line.
-    fn parse_field_or_shorthand_line(&mut self, fields: &mut Vec<Field>) -> Result<(), ParseError> {
+    /// or full `name: Type` / `name: Type = expr` per line.
+    ///
+    /// Optional leading annotations (already parsed by the caller) are attached
+    /// to the first field on the line.
+    fn parse_field_or_shorthand_line(
+        &mut self,
+        fields: &mut Vec<Field>,
+        leading_annotations: Vec<Annotation>,
+    ) -> Result<(), ParseError> {
+        let mut first = true;
         while self.at(&TokenKind::Ident) {
             let start_span = self.current().span;
             let name = self.advance().text;
             if self.at(&TokenKind::Colon) {
                 self.advance();
                 let type_expr = self.parse_type()?;
+                // Optional default: `name: Type = expr`
+                let default_expr = if self.at(&TokenKind::Eq) {
+                    self.advance();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                let anns = if first {
+                    first = false;
+                    leading_annotations.clone()
+                } else {
+                    Vec::new()
+                };
                 fields.push(Field {
-                    annotations: Vec::new(),
+                    annotations: anns,
                     name,
                     type_expr,
-                    default_expr: None, span: start_span.merge(self.current().span),
+                    default_expr,
+                    span: start_span.merge(self.current().span),
                 });
+                // Typed fields are one-per-line after annotations; stop if newline.
+                break;
             } else {
                 // Shorthand: type inferred from name later.
+                let anns = if first {
+                    first = false;
+                    leading_annotations.clone()
+                } else {
+                    Vec::new()
+                };
                 fields.push(Field {
-                    annotations: Vec::new(),
+                    annotations: anns,
                     name: name.clone(),
                     type_expr: TypeExpr::Named(name),
-                    default_expr: None, span: start_span,
+                    default_expr: None,
+                    span: start_span,
                 });
             }
         }
+        // If annotations were provided but no field consumed them, drop is wrong —
+        // caller should only pass anns when a field follows.
+        let _ = first;
         Ok(())
     }
 }
@@ -537,9 +574,9 @@ impl<'a> Parser<'a> {
                         flow.annotations = all;
                         items.push(TopLevelItem::Flow(flow));
                     }
-                    // Free function with an expression body (e.g. a layer's
-                    // declared saga coordinator). `fn name(params) -> T` then body.
-                    TokenKind::Fn => {
+                    // Free function: `fn name(params) -> T` with expression body.
+                    // Construct-shaped: `fn Name` + indent (svc-like) → parse as construct.
+                    TokenKind::Fn if self.is_free_function_header() => {
                         let mut func = self.parse_fn_def()?;
                         let mut all = annotations;
                         all.extend(func.annotations);
@@ -575,6 +612,7 @@ impl<'a> Parser<'a> {
             span: start_span.merge(self.current().span),
             uses,
             items,
+            expose: None,
         })
     }
 
@@ -653,7 +691,40 @@ impl<'a> Parser<'a> {
                         expose = Some(self.parse_expose_block()?);
                     }
                     TokenKind::Flow => {
-                        items.push(TopLevelItem::Flow(self.parse_flow()?));
+                        let mut flow = self.parse_flow()?;
+                        let mut all = annotations;
+                        all.extend(flow.annotations);
+                        flow.annotations = all;
+                        items.push(TopLevelItem::Flow(flow));
+                    }
+                    // Free function: `fn name(params) -> T` (layer declare coordinators).
+                    // Construct-shaped `fn Name` with steps → fall through to construct parse.
+                    TokenKind::Fn if self.is_free_function_header() => {
+                        let mut func = self.parse_fn_def()?;
+                        let mut all = annotations;
+                        all.extend(func.annotations);
+                        func.annotations = all;
+                        items.push(TopLevelItem::Function(func));
+                    }
+                    TokenKind::TypeKw => {
+                        self.advance();
+                        let alias_name = self.expect_ident()?;
+                        self.expect(&TokenKind::Eq)?;
+                        let target = self.parse_type()?;
+                        items.push(TopLevelItem::TypeAlias {
+                            name: alias_name,
+                            target,
+                        });
+                    }
+                    TokenKind::ConstKw => {
+                        self.advance();
+                        let const_name = self.expect_ident()?;
+                        self.expect(&TokenKind::Eq)?;
+                        let value = self.parse_expr()?;
+                        items.push(TopLevelItem::Const {
+                            name: const_name,
+                            value,
+                        });
                     }
                     _ => {
                         if let Some(c) = self.parse_any_construct(annotations)? {
@@ -678,6 +749,19 @@ impl<'a> Parser<'a> {
 
     fn is_metadata_key(&self) -> bool {
         matches!(self.current().text.as_str(), "author" | "license" | "repo")
+    }
+
+    /// True when the current token is `fn` followed by `name (` — a free function
+    /// with a parameter list. Distinguishes from construct-shaped `fn Name` blocks
+    /// (flow/svc-like) that use an indented body of steps.
+    fn is_free_function_header(&self) -> bool {
+        if self.peek_kind() != &TokenKind::Fn {
+            return false;
+        }
+        let name = self.tokens.get(self.pos + 1);
+        let after = self.tokens.get(self.pos + 2);
+        matches!(name.map(|t| &t.kind), Some(TokenKind::Ident))
+            && matches!(after.map(|t| &t.kind), Some(TokenKind::LParen))
     }
 
     fn parse_composition(&mut self) -> Result<Composition, ParseError> {
@@ -1118,8 +1202,23 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
+                // Field annotations (`@dep` then `pool: Pool`) attach to the field,
+                // not the construct. Construct-level annotations are those that do
+                // not precede a field line.
                 if self.at(&TokenKind::Annotation) {
-                    c.annotations.extend(self.parse_annotations());
+                    let anns = self.parse_annotations();
+                    if self.at(&TokenKind::Ident)
+                        && (self.is_field_line()
+                            || !self
+                                .registry
+                                .construct(self.current_word().unwrap_or(""))
+                                .is_some())
+                    {
+                        // Annotated field (typed or bare shorthand)
+                        self.parse_field_or_shorthand_line(&mut c.fields, anns)?;
+                        continue;
+                    }
+                    c.annotations.extend(anns);
                     continue;
                 }
                 // `-> Type` return type line (e.g. commands)
@@ -1207,9 +1306,9 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-                // Field line(s) — typed (`name: Type`) or shorthand (`id email created`)
+                // Field line(s) — typed (`name: Type` / `name: Type = expr`) or shorthand
                 if self.at(&TokenKind::Ident) {
-                    self.parse_field_or_shorthand_line(&mut c.fields)?;
+                    self.parse_field_or_shorthand_line(&mut c.fields, Vec::new())?;
                 } else {
                     self.errors.push(self.error(format!(
                         "unexpected token {:?} in '{}' body",
@@ -2009,8 +2108,11 @@ impl<'a> Parser<'a> {
             )
     }
 
-    /// An ident alone on its line, with an indented block following, that is
-    /// NOT a layer statement keyword — e.g. `compensate`.
+    /// An ident alone on its line, with an **indented block** following, that
+    /// is NOT a layer statement keyword — e.g. `compensate`.
+    ///
+    /// Requires Indent (not bare Newline) so a lone Ident expression on a line
+    /// is not mis-parsed as an empty sub-block (SER-003 idempotence).
     fn is_sub_block_header(&self) -> bool {
         if !self.at(&TokenKind::Ident) {
             return false;
@@ -2019,11 +2121,18 @@ impl<'a> Parser<'a> {
         if self.registry.statement(word).is_some() {
             return false;
         }
+        // Accept `keyword\n  indent` or `keyword` immediately followed by Indent.
         let next = self.tokens.get(self.pos + 1);
-        matches!(
-            next.map(|t| &t.kind),
-            Some(TokenKind::Newline) | Some(TokenKind::Indent)
-        )
+        match next.map(|t| &t.kind) {
+            Some(TokenKind::Indent) => true,
+            Some(TokenKind::Newline) => {
+                matches!(
+                    self.tokens.get(self.pos + 2).map(|t| &t.kind),
+                    Some(TokenKind::Indent)
+                )
+            }
+            _ => false,
+        }
     }
 
     /// `step <name>` — the flow-step header. `step`/`par` are layer vocabulary
@@ -2147,13 +2256,31 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // Typed assignment: `name: Type = expr` (immutable; mut form handled above)
+        if self.at(&TokenKind::Colon) {
+            if let Expr::Ident(name) = &lhs {
+                let name = name.clone();
+                self.advance(); // :
+                let type_ann = self.parse_type()?;
+                if self.at(&TokenKind::Eq) {
+                    self.advance();
+                    let rhs = self.parse_expr()?;
+                    return Ok(Expr::Assign(name, Box::new(rhs), Some(type_ann)));
+                }
+                return Err(self.error(format!(
+                    "expected '=' after typed binding '{}: ...'",
+                    name
+                )));
+            }
+        }
+
         // Assignment: name = expr (only if LHS is a simple ident)
         if self.at(&TokenKind::Eq) {
             if let Expr::Ident(name) = &lhs {
                 let name = name.clone();
                 self.advance();
                 let rhs = self.parse_expr()?;
-                return Ok(Expr::Assign(name, Box::new(rhs)));
+                return Ok(Expr::Assign(name, Box::new(rhs), None));
             }
             // Tuple destructuring: (a, b) = expr → LetPattern
             if let Expr::Tuple(items) = &lhs {

@@ -359,7 +359,7 @@ sol Sales
         // Regression: parse_paren_args used to drop floats/bools and split
         // binary expressions into multiple args.
         let body = step_body("x = calc(1.5, true, y + 1)");
-        let Expr::Assign(_, rhs) = &body[0] else { panic!("expected assign, got {:?}", body[0]) };
+        let Expr::Assign(_, rhs, _) = &body[0] else { panic!("expected assign, got {:?}", body[0]) };
         let Expr::Call(call) = rhs.as_ref() else { panic!("expected call rhs") };
         assert_eq!(call.args.len(), 3, "expected exactly 3 args, got {:?}", call.args);
         assert!(matches!(&call.args[0], Expr::FloatLit(f) if (*f - 1.5).abs() < 1e-9));
@@ -372,7 +372,7 @@ sol Sales
         // Regression: `a.b().c()` used to parse as two separate statements.
         let body = step_body("y = items.map(f).collect()");
         assert_eq!(body.len(), 1, "chain should be one statement, got {:?}", body);
-        let Expr::Assign(_, rhs) = &body[0] else { panic!("expected assign") };
+        let Expr::Assign(_, rhs, _) = &body[0] else { panic!("expected assign") };
         // Outer call is `.collect()` with a receiver = `items.map(f)`.
         let Expr::Call(outer) = rhs.as_ref() else { panic!("expected call") };
         assert_eq!(outer.method, "collect");
@@ -404,14 +404,14 @@ sol S
         // The for-loop binding named `step`, the `.run` call on it, and the
         // `par` assignment all parse without treating them as keywords.
         assert!(step.body.iter().any(|e| matches!(e, Expr::ForLoop { binding, .. } if binding == "step")));
-        assert!(step.body.iter().any(|e| matches!(e, Expr::Assign(n, _) if n == "par")));
+        assert!(step.body.iter().any(|e| matches!(e, Expr::Assign(n, _, _) if n == "par")));
     }
 
     #[test]
     fn test_named_target_call_keeps_target() {
         // `Repo.find(id)` must keep the named target for codegen resolution.
         let body = step_body("lead = Repo.find(id)");
-        let Expr::Assign(_, rhs) = &body[0] else { panic!("expected assign") };
+        let Expr::Assign(_, rhs, _) = &body[0] else { panic!("expected assign") };
         let Expr::Call(call) = rhs.as_ref() else { panic!("expected call") };
         assert_eq!(call.target, "Repo");
         assert_eq!(call.method, "find");
@@ -504,5 +504,350 @@ sol S
         };
         // A load→save cycle must reach a fixed point so editing never drifts.
         assert_eq!(emit_once, emit_twice, "serializer is not idempotent");
+    }
+
+    /// SER-001: field annotations (@dep) and defaults survive parse → emit → parse.
+    #[test]
+    fn test_roundtrip_preserves_field_annotations_and_defaults() {
+        use veil_ir::serialize::serialize_solution;
+
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("di", include_str!("../../../layers/di.layer"))
+            .expect("di layer");
+        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+            .ok();
+
+        let src = r#"
+pkg DiRoundtrip
+  use di
+  struct PgTenantRepo
+    @dep
+    @env(DATABASE_URL)
+    pool: Pool
+    count: Int = 0
+  svc Create
+    input
+      @dep
+      repo: PgTenantRepo
+      name: Str
+"#;
+        let tokens = lex(src);
+        let sol1 = parse_with_registry(&tokens, reg.clone()).expect("parse 1");
+        let emitted = serialize_solution(&sol1);
+        assert!(
+            emitted.contains("@dep"),
+            "emit dropped @dep:\n{}",
+            emitted
+        );
+        assert!(
+            emitted.contains("@env(DATABASE_URL)"),
+            "emit dropped @env:\n{}",
+            emitted
+        );
+        assert!(
+            emitted.contains("count: Int = 0"),
+            "emit dropped default:\n{}",
+            emitted
+        );
+
+        let tokens2 = lex(&emitted);
+        let sol2 = parse_with_registry(&tokens2, reg).expect("parse 2 after emit");
+
+        fn walk<'a>(c: &'a Construct, name: &str) -> Option<&'a Construct> {
+            if c.name == name {
+                return Some(c);
+            }
+            c.children.iter().find_map(|ch| walk(ch, name))
+        }
+        fn find_named<'a>(items: &'a [TopLevelItem], name: &str) -> Option<&'a Construct> {
+            items.iter().find_map(|i| match i {
+                TopLevelItem::Construct(c) => walk(c, name),
+                _ => None,
+            })
+        }
+
+        let repo = find_named(&sol2.items, "PgTenantRepo").expect("PgTenantRepo after roundtrip");
+        let pool = repo
+            .fields
+            .iter()
+            .find(|f| f.name == "pool")
+            .expect("pool field");
+        assert!(
+            pool.annotations.iter().any(|a| a.name == "dep"),
+            "pool lost @dep: {:?}",
+            pool.annotations
+        );
+        assert!(
+            pool.annotations
+                .iter()
+                .any(|a| a.name == "env" && a.args.iter().any(|x| x.contains("DATABASE_URL"))),
+            "pool lost @env: {:?}",
+            pool.annotations
+        );
+        let count = repo
+            .fields
+            .iter()
+            .find(|f| f.name == "count")
+            .expect("count field");
+        assert!(
+            matches!(count.default_expr, Some(Expr::IntLit(0))),
+            "count lost default: {:?}",
+            count.default_expr
+        );
+
+        let create = find_named(&sol2.items, "Create").expect("Create svc");
+        let repo_in = create
+            .inputs
+            .iter()
+            .find(|f| f.name == "repo")
+            .expect("repo input");
+        assert!(
+            repo_in.annotations.iter().any(|a| a.name == "dep"),
+            "input lost @dep: {:?}",
+            repo_in.annotations
+        );
+    }
+
+    /// SER-002: control-flow bodies re-serialize and re-parse without `"..."`.
+    #[test]
+    fn test_roundtrip_control_flow_bodies() {
+        use veil_ir::serialize::serialize_solution;
+
+        let src = r#"
+pkg Ctrl
+  use ddd
+  fn Demo
+    step s
+      if x > 0
+        y = 1
+      else
+        y = 0
+      if let Some(v) = opt
+        process(v)
+      while let Some(v) = it
+        process(v)
+      while running
+        break
+      loop
+        break
+      for i in items
+        process(i)
+      match x
+        A if n > 0 ->
+          y = 1
+        _ ->
+          y = 0
+      mut total: Int = 0
+"#;
+        let sol1 = parse_with_registry(&lex(src), ddd_registry()).expect("parse control flow");
+        let emitted = serialize_solution(&sol1);
+        assert!(
+            !emitted.contains("..."),
+            "placeholder in emit:\n{}",
+            emitted
+        );
+        assert!(emitted.contains("if x > 0"), "if lost:\n{}", emitted);
+        assert!(emitted.contains("else"), "else lost:\n{}", emitted);
+        assert!(
+            emitted.contains("if let Some") && emitted.contains("= opt"),
+            "if let lost:\n{}",
+            emitted
+        );
+        assert!(
+            emitted.contains("while let Some") && emitted.contains("= it"),
+            "while let lost:\n{}",
+            emitted
+        );
+        assert!(emitted.contains("while running"), "while lost:\n{}", emitted);
+        assert!(emitted.contains("loop"), "loop lost:\n{}", emitted);
+        assert!(emitted.contains("for i in items"), "for lost:\n{}", emitted);
+        assert!(emitted.contains("match x"), "match lost:\n{}", emitted);
+        assert!(
+            emitted.contains("if n > 0") || emitted.contains("A if"),
+            "match guard lost:\n{}",
+            emitted
+        );
+        assert!(
+            emitted.contains("mut total: Int = 0"),
+            "typed mut lost:\n{}",
+            emitted
+        );
+
+        let sol2 = parse_with_registry(&lex(&emitted), ddd_registry()).expect("reparse control flow");
+        // Spot-check a nested if survived as IfExpr
+        fn find_fn<'a>(items: &'a [TopLevelItem], name: &str) -> Option<&'a Construct> {
+            items.iter().find_map(|i| match i {
+                TopLevelItem::Construct(c) if c.name == name => Some(c),
+                TopLevelItem::Construct(c) => c.children.iter().find(|ch| ch.name == name),
+                _ => None,
+            })
+        }
+        let demo = find_fn(&sol2.items, "Demo").expect("Demo");
+        let FlowStep::Step(step) = &demo.steps[0] else {
+            panic!("expected step");
+        };
+        assert!(
+            step.body.iter().any(|e| matches!(e, Expr::IfExpr(_))),
+            "if not reparsed: {:?}",
+            step.body
+        );
+        assert!(
+            step.body.iter().any(|e| matches!(e, Expr::Match(_, _))),
+            "match not reparsed: {:?}",
+            step.body
+        );
+        assert!(
+            step.body
+                .iter()
+                .any(|e| matches!(e, Expr::MutAssign(n, _, Some(_)) if n == "total")),
+            "mut typed not reparsed: {:?}",
+            step.body
+        );
+    }
+
+    /// SER-003: typed immutable assign `name: Type = expr` round-trips.
+    #[test]
+    fn test_typed_assign_roundtrip() {
+        use veil_ir::serialize::serialize_solution;
+        let src = r#"
+pkg T
+  use ddd
+  svc S
+    step s
+      cohort: CohortDTO = request GetCohort{id: x}
+      members: List<M> = request GetMembers{id: y}
+"#;
+        let once = {
+            let sol = parse_with_registry(&lex(src), ddd_registry()).expect("parse");
+            serialize_solution(&sol)
+        };
+        assert!(
+            once.contains("cohort: CohortDTO ="),
+            "typed assign lost:\n{}",
+            once
+        );
+        assert!(
+            once.contains("members: List<M> ="),
+            "generic typed assign lost:\n{}",
+            once
+        );
+        assert!(
+            !once.lines().any(|l| l.trim() == "cohort"),
+            "bare name leak:\n{}",
+            once
+        );
+        let twice = {
+            let sol = parse_with_registry(&lex(&once), ddd_registry()).expect("reparse");
+            serialize_solution(&sol)
+        };
+        assert_eq!(once, twice, "typed assign not idempotent");
+    }
+
+    /// SER-003: second emit is a no-op on a clean canonical tree.
+    #[test]
+    fn test_emit_idempotent_hello_world() {
+        use veil_ir::serialize::serialize_solution;
+        let src = include_str!("../../../examples/hello_world.veil");
+        let once = {
+            let sol = parse_with_registry(&lex(src), ddd_registry()).expect("parse");
+            serialize_solution(&sol)
+        };
+        let twice = {
+            let sol = parse_with_registry(&lex(&once), ddd_registry()).expect("reparse");
+            serialize_solution(&sol)
+        };
+        assert_eq!(once, twice, "emit not idempotent");
+        assert!(once.starts_with("pkg "), "canonical pkg keyword: {}", &once[..20.min(once.len())]);
+        assert!(!once.contains("\ncall "), "must not emit call keyword:\n{}", once);
+    }
+
+    /// SER-003: di_example remains idempotent (no call-call churn).
+    #[test]
+    fn test_emit_idempotent_di_example() {
+        use veil_ir::serialize::serialize_solution;
+        let mut reg = LayerRegistry::builtin();
+        for (name, content) in [
+            ("base", include_str!("../../../layers/base.layer")),
+            ("di", include_str!("../../../layers/di.layer")),
+            ("rust", include_str!("../../../layers/rust.layer")),
+        ] {
+            reg.load_content(name, content).expect(name);
+        }
+        let src = include_str!("../../../examples/di_example.veil");
+        let once = {
+            let sol = parse_with_registry(&lex(src), reg.clone()).expect("parse");
+            serialize_solution(&sol)
+        };
+        let twice = {
+            let sol = parse_with_registry(&lex(&once), reg).expect("reparse");
+            serialize_solution(&sol)
+        };
+        assert_eq!(once, twice, "di_example not idempotent");
+        assert!(!once.contains("call call"), "call keyword doubled:\n{}", once);
+        assert!(
+            once.contains("self.pool.") || once.contains("self.pool"),
+            "adapter body missing:\n{}",
+            once
+        );
+    }
+
+    /// SER-001: di_example.veil field @dep survives round-trip.
+    #[test]
+    fn test_di_example_preserves_dep_on_roundtrip() {
+        use veil_ir::serialize::serialize_solution;
+
+        let mut reg = LayerRegistry::builtin();
+        for (name, path) in [
+            ("base", "../../../layers/base.layer"),
+            ("di", "../../../layers/di.layer"),
+            ("rust", "../../../layers/rust.layer"),
+        ] {
+            // layers/ paths
+            let content = match name {
+                "base" => include_str!("../../../layers/base.layer"),
+                "di" => include_str!("../../../layers/di.layer"),
+                "rust" => include_str!("../../../layers/rust.layer"),
+                _ => "",
+            };
+            let _ = path;
+            reg.load_content(name, content).expect(name);
+        }
+
+        let src = include_str!("../../../examples/di_example.veil");
+        let sol1 = parse_with_registry(&lex(src), reg.clone()).expect("parse di_example");
+        let emitted = serialize_solution(&sol1);
+        assert!(
+            emitted.contains("@dep"),
+            "di_example emit lost @dep:\n{}",
+            emitted
+        );
+        // @main on bootstrap
+        assert!(
+            emitted.contains("@main") || emitted.contains("@main\n"),
+            "di_example emit lost @main:\n{}",
+            emitted
+        );
+
+        let sol2 = parse_with_registry(&lex(&emitted), reg).expect("reparse di_example");
+        fn walk<'a>(c: &'a Construct, name: &str) -> Option<&'a Construct> {
+            if c.name == name {
+                return Some(c);
+            }
+            c.children.iter().find_map(|ch| walk(ch, name))
+        }
+        let repo = sol2
+            .items
+            .iter()
+            .find_map(|i| match i {
+                TopLevelItem::Construct(c) => walk(c, "PgTenantRepo"),
+                _ => None,
+            })
+            .expect("PgTenantRepo");
+        let pool = repo.fields.iter().find(|f| f.name == "pool").expect("pool");
+        assert!(
+            pool.annotations.iter().any(|a| a.name == "dep"),
+            "PgTenantRepo.pool lost @dep after round-trip: {:?}",
+            pool.annotations
+        );
     }
 }

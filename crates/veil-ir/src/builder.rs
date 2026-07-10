@@ -107,7 +107,13 @@ pub fn expr_to_display(expr: &Expr) -> String {
             }
         }
         Expr::Action(a) => action_to_display(a),
-        Expr::Assign(name, rhs) => format!("{} = {}", name, expr_to_display(rhs)),
+        Expr::Assign(name, rhs, ty) => {
+            if let Some(t) = ty {
+                format!("{}: {} = {}", name, type_to_display(t), expr_to_display(rhs))
+            } else {
+                format!("{} = {}", name, expr_to_display(rhs))
+            }
+        }
         Expr::MutAssign(name, rhs, _) => format!("mut {} = {}", name, expr_to_display(rhs)),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
@@ -760,7 +766,7 @@ impl IrBuilder {
                     }
                     Some(id)
                 }
-                Expr::Assign(name, rhs) => {
+                Expr::Assign(name, rhs, _ty) => {
                     let rhs_display = expr_to_display(rhs);
                     let label = format!("{} = {}", name, rhs_display);
                     let id = self.graph.add_node(NodeKind::Action, label.clone(), Span::new(0, 0));

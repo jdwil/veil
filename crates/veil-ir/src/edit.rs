@@ -421,6 +421,7 @@ mod tests {
             span: Span::new(0, 0),
             uses: Vec::new(),
             items: Vec::new(),
+            expose: None,
         };
         let err = apply_edit(&mut sol, &EditOp::Rename { span_start: 42, name: "X".to_string() });
         assert!(matches!(err, Err(EditError::TargetNotFound(42))));
