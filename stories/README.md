@@ -41,6 +41,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | [10-check-loop.md](10-check-loop.md) | Agent machine loop (`veil check`, diagnostics, types) |
 | [20-serialize-edit.md](20-serialize-edit.md) | Round-trip integrity, edit API honesty |
 | [30-viewer-review.md](30-viewer-review.md) | Human topology + critical-body review + source preview |
+| [35-layer-presentation.md](35-layer-presentation.md) | **Layer-driven views / hierarchy / layout** (paradigm UX) |
 | [40-viewer-restructure.md](40-viewer-restructure.md) | Persist structure edits, multi-file, navigation |
 | [50-invariant-debt.md](50-invariant-debt.md) | Zero domain knowledge — purge engine heuristics |
 | [60-codegen-targets.md](60-codegen-targets.md) | Codegen fidelity, capabilities, escape hatches |
@@ -51,10 +52,15 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 
 ## Suggested first slice (P0)
 
-1. **CHK-001** — Honest `veil check` exit codes + unified diagnostics  
-2. **SER-001** — Serializer preserves annotations and control-flow bodies  
-3. **UX-010** — `pkg` files editable under `veil serve`  
-4. **UX-011** — File select sets active file (API schema fix)  
-5. **UX-020** — VEIL source / critical-body review pane  
+Check + serialize integrity are largely landed (CHK / SER). Next dual-loop path:
+
+1. **UX-010** — `pkg` files editable under `veil serve`  
+2. **UX-011** — File select sets active file (API schema fix)  
+3. **UX-020** — VEIL source / critical-body review pane  
+4. **LAY-001 → LAY-003** — Layer presentation grammar, API, generic view switcher  
+5. **LAY-004** — DDD model hierarchy as first proof  
 
 Then P1 harness proof: **RT-000** (document + run a VEIL-authored `@main` harness).
+
+**Note:** Prefer **LAY-001–004** before deep hierarchical UX that would otherwise
+hardcode DDD (aggregates, etc.) into the viewer.

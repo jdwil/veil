@@ -4,6 +4,10 @@ Mission: humans approve **topology + critical bodies** without reading all
 generated LoC. Invest in **read / navigate / restructure / diff** before full
 expression click-to-build.
 
+**Related:** Paradigm-specific hierarchy and multi-view topology are **not**
+hardcoded here — see [35-layer-presentation.md](35-layer-presentation.md)
+(LAY-*). UX-022 criticality should eventually consume layer lenses (LAY-009).
+
 ---
 
 ## UX-020: VEIL source & body review pane
