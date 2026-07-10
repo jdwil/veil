@@ -27,9 +27,12 @@ Wired into `veil check -t <target>` and multi-target debt warnings.
 | ImplBlocks | yes | n/a | no | no |
 | RawBlocks | escape debt | escape debt | no | no |
 
-**PAR-015:** Spikes do **not** claim expression features. Non-empty function
-bodies → `unsupported_fn_body_lowering` on `-t swift|kotlin`. Struct/enum
-signatures still emit; gen may still stub bodies, but **check fails closed**.
+**PAR-011/012:** Swift/Kotlin claim `FnBodyLowering` for core exprs (literals,
+fields, binary ops, `ret`, `if`, struct lit, simple match/try). Advanced
+features (range, closures, …) still fail closed.
+
+**PAR-015:** Signature-only honesty until body lowering landed; matrix above
+is current.
 
 Exact sets live in code — this table is orientation only.
 

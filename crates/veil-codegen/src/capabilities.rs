@@ -906,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn swift_rejects_fn_body_lowering() {
+    fn swift_allows_fn_body_lowering_after_par011() {
         let sol = Solution {
             name: "T".into(),
             span: Span::new(0, 0),
@@ -925,20 +925,14 @@ mod tests {
         let reg = LayerRegistry::builtin();
         let diags = check_target_capabilities(&sol, &reg, CodegenTarget::Swift);
         assert!(
-            diags.iter().any(|d| d.code.contains("fn_body_lowering")),
+            !diags.iter().any(|d| d.code.contains("fn_body_lowering")),
             "{:?}",
             diags
-        );
-        let rust_ok = check_target_capabilities(&sol, &reg, CodegenTarget::Rust);
-        assert!(
-            !rust_ok.iter().any(|d| d.code.contains("fn_body_lowering")),
-            "{:?}",
-            rust_ok
         );
     }
 
     #[test]
-    fn kotlin_rejects_try_operator_in_body() {
+    fn kotlin_allows_try_in_body_after_par012() {
         let sol = Solution {
             name: "T".into(),
             span: Span::new(0, 0),
@@ -957,9 +951,35 @@ mod tests {
         let reg = LayerRegistry::builtin();
         let diags = check_target_capabilities(&sol, &reg, CodegenTarget::Kotlin);
         assert!(
+            !diags.iter().any(|d| d.code.contains("fn_body_lowering")),
+            "{:?}",
             diags
-                .iter()
-                .any(|d| d.code.contains("try_operator") || d.code.contains("fn_body_lowering")),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code.contains("try_operator")),
+            "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn swift_still_rejects_range_expr() {
+        let mut svc = Construct::new("fn", "Fn", Shape::Fn, "Walk".into(), Span::new(0, 0));
+        svc.steps.push(FlowStep::Step(StepDef {
+            name: "s".into(),
+            span: Span::new(0, 0),
+            body: vec![Expr::Range {
+                start: Some(Box::new(Expr::IntLit(0))),
+                end: Some(Box::new(Expr::IntLit(10))),
+                inclusive: false,
+            }],
+            refs: Vec::new(),
+            sub_blocks: Vec::new(),
+        }));
+        let reg = LayerRegistry::builtin();
+        let diags = check_target_capabilities(&sol_with(svc), &reg, CodegenTarget::Swift);
+        assert!(
+            diags.iter().any(|d| d.code.contains("range_expr")),
             "{:?}",
             diags
         );

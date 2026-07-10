@@ -199,7 +199,7 @@ parity until these are Done.
 
 ## PAR-011: Swift body lowering (beyond signature spike)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** multi-target author  
 **I want** core expression/stmt subsets lowered to Swift  
 **So that** `veil gen -t swift` is more than stub signatures
@@ -220,11 +220,14 @@ parity until these are Done.
 **Depends:** PAR-005  
 **Mission impact:** Honesty of multi-target gen; avoids demo-only backends
 
+**Done notes:** Core expr body lowering; `FnBodyLowering` claimed; pure_lib
+`check -t swift` green with real lowered bodies.
+
 ---
 
 ## PAR-012: Kotlin body lowering (beyond signature spike)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** multi-target author  
 **I want** core expression/stmt subsets lowered to Kotlin  
 **So that** `veil gen -t kotlin` is more than stub signatures
@@ -241,11 +244,13 @@ parity until these are Done.
 **Depends:** PAR-006  
 **Mission impact:** Same as PAR-011 for JVM/Android path
 
+**Done notes:** Core expr body lowering; try/match/await claimed; pure_lib path.
+
 ---
 
 ## PAR-013: Structured UI IR — layer constructs + Svelte codegen
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** UI author  
 **I want** view trees as VEIL constructs that codegen to Svelte  
 **So that** critical UI is not trapped in raw `template` strings
@@ -263,11 +268,14 @@ parity until these are Done.
 **Depends:** PAR-007 (design), GEN-004  
 **Mission impact:** Human review of UI structure; multi-target UI honesty
 
+**Done notes:** `layers/ui.layer` (`view`/`el`/`text`) + `examples/ui_view_demo.veil`;
+Svelte view shell templates.
+
 ---
 
 ## PAR-014: Optional `@shared` / ownership marks in source
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** author targeting Rust and GC languages  
 **I want** optional sharing marks only where needed  
 **So that** I never write lifetimes in `.veil`
@@ -284,6 +292,9 @@ parity until these are Done.
 
 **Depends:** PAR-004  
 **Mission impact:** Semantic substrate without Rust-only noise
+
+**Done notes:** `@shared` field → `Arc<T>` in Rust gen; GC targets ignore;
+docs OWNERSHIP.md.
 
 ---
 
@@ -315,7 +326,7 @@ non-empty fn bodies error on check; tests `swift_rejects_fn_body_lowering` /
 
 ## PAR-016: Typed effect rows beyond `Res!` sugar (phase N)
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As an** engine architect  
 **I want** optional effect-row IR when multi-target `?` starts to diverge  
 **So that** fallibility stays semantic, not per-backend hacks
@@ -330,3 +341,6 @@ non-empty fn bodies error on check; tests `swift_rejects_fn_body_lowering` /
 
 **Depends:** PAR-003  
 **Mission impact:** Long-term multi-target substrate (only if needed)
+
+**Done notes:** Phase-N delta in `docs/EFFECTS.md`; no IR rewrite required —
+`TypeExpr::Result` remains the axis until two backends need more.
