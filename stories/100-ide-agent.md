@@ -336,7 +336,7 @@ pattern. Implementation stories may split after the spike.
 
 ## AGT-011: Context packaging for agents (token-efficient)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** agent  
 **I want** compact, high-signal context  
 **So that** I edit VEIL efficiently (mission token efficiency)
@@ -349,11 +349,14 @@ pattern. Implementation stories may split after the spike.
 - Budget controls (max tokens / max files)
 - Aligns with PAR-009 (`veil prompt` / API)
 
+**Done notes:** `GET /api/context` (LAY-010) + agent outline tool; prefer
+IR/outline over generated LoC. Token budgets remaining polish.
+
 ---
 
 ## AGT-012: Config UX for providers and agents
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** user  
 **I want** IDE/settings UI or documented config for models and ACP agents  
 **So that** versatility is usable, not only theoretical
@@ -365,6 +368,9 @@ pattern. Implementation stories may split after the spike.
 - Configure MCP server enablement
 - Secrets via env / OS keychain / cloud IAM — never commit keys
 - Example configs for: local Bedrock, local OpenAI-compatible, ACP+MCP bridge
+
+**Done notes:** Env-based config documented in `docs/AGENT.md` + `GET /api/models`.
+ACP/MCP launchers remain AGT-007/008. Secrets via env only (never commit).
 
 ---
 

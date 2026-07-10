@@ -171,7 +171,7 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 
 ## RT-006: Runtime README — harness vs IDE vs platform
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** new contributor  
 **I want** clear roles for tools  
 **So that** product scope is not confused
@@ -186,6 +186,8 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 | App `@main` harness | How *this* app runs |
 
 Include env vars, make targets, and “Authoring your own harness.”
+
+**Done notes:** `runtime/README.md` + links to `docs/HARNESS.md` / `AGENT.md`.
 
 ---
 

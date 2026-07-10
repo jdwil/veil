@@ -31,6 +31,18 @@ language.
 | **Layers** | Domain/platform vocabulary, visuals, prompts, codegen opinions |
 | **Runtime** | Wire generated artifacts (Bus, adapters, deploy topology) |
 
+### Default daily driver (RT-020)
+
+```bash
+veil serve .          # project-root IDE: graph, check, edit, agent
+veil check path.veil  # machine loop
+veil gen path.veil    # lower to target project
+```
+
+Optional local platform (fs+sqlite / cloud adapters) is power tooling — not a
+gate. App harnesses are VEIL-authored (`@main`); see `docs/HARNESS.md` and
+`runtime/README.md`.
+
 ### Dual feedback loops (both first-class)
 
 | Loop | Actor | Must be fast and honest |

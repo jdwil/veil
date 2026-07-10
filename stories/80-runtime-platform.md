@@ -193,7 +193,7 @@ storing full source trees in sqlite.
 
 ## RT-020: Project-root workflow is the default story
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** coder  
 **I want** docs and tooling that say: open project → `veil serve` → code  
 **So that** local platform runtime is opt-in power, not a gate
@@ -204,3 +204,6 @@ storing full source trees in sqlite.
 - Optional: `veil serve` discovers `.veil` in cwd, no special platform required
 - Agent prompt story attaches here (PAR-009 / future UX), not only to AWS runtime
 - Local runtime documented as “when you need platform services locally”
+
+**Done notes:** `runtime/README.md` default story; `docs/HARNESS.md` / `AGENT.md`;
+`veil serve <dir>` already multi-file discovers project `.veil`.
