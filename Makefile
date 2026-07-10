@@ -28,15 +28,15 @@ PID_DIR     := .veil-dev
 API_PID     := $(PID_DIR)/api.pid
 UI_PID      := $(PID_DIR)/ui.pid
 
-# Agent backend — Ollama by default for local make serve
-# Override: make serve VEIL_MODEL_PROVIDER=echo
-#           make serve VEIL_MODEL_NAME=llama3.2
-#           make serve VEIL_MODEL_PROVIDER=acp          # Kiro via ACP
-#           make serve VEIL_MODEL_PROVIDER=acp VEIL_ACP_AGENT=personal
-VEIL_MODEL_PROVIDER ?= ollama
-VEIL_MODEL_NAME     ?= qwen3.5:9b
+# Agent backend — Kiro via ACP by default for local make serve
+# Override: make serve VEIL_MODEL_PROVIDER=ollama VEIL_MODEL_NAME=qwen3.5:9b
+#           make serve VEIL_MODEL_PROVIDER=echo
+#           make serve VEIL_ACP_AGENT=personal
+#           make serve VEIL_MODEL_PROVIDER=openai VEIL_MODEL_NAME=gpt-4o
+VEIL_MODEL_PROVIDER ?= acp
+VEIL_MODEL_NAME     ?= kiro
 # Optional: VEIL_MODEL_BASE_URL=http://127.0.0.1:11434
-# ACP / Kiro
+# ACP / Kiro (spawned by veil-server on agent turns when provider=acp)
 VEIL_ACP_COMMAND    ?= kiro-cli
 VEIL_ACP_ARGS       ?= acp --trust-all-tools
 VEIL_ACP_CWD        ?= $(CURDIR)
