@@ -215,11 +215,29 @@ async fn get_presentation<P: SourceProvider>(
 }
 
 /// Agent context pack: topology outline + presentation + optional host projection.
-/// Query: `?host_id=N&view_id=model` (LAY-010).
+/// Query: `?host_id=N&view_id=model&max_tokens=N` (LAY-010 / AGT-015).
 #[derive(Debug, Default, serde::Deserialize)]
 struct ContextApiQuery {
     host_id: Option<u32>,
     view_id: Option<String>,
+    /// Approximate token budget (chars/4). 0 or omit = unlimited.
+    #[serde(default)]
+    max_tokens: Option<usize>,
+}
+
+/// AGT-015: truncate a context pack JSON string to ~max_tokens (chars/4).
+fn apply_token_budget(mut json: String, max_tokens: usize) -> String {
+    if max_tokens == 0 {
+        return json;
+    }
+    let max_chars = max_tokens.saturating_mul(4);
+    if json.len() <= max_chars {
+        return json;
+    }
+    json.truncate(max_chars);
+    // Keep valid-ish JSON by closing a truncated string blob
+    json.push_str("…[truncated for token budget]…\"}");
+    json
 }
 
 async fn get_context<P: SourceProvider>(
@@ -244,7 +262,18 @@ async fn get_context<P: SourceProvider>(
         },
     );
     match serde_json::to_string(&pack) {
-        Ok(json) => json_response(json).into_response(),
+        Ok(json) => {
+            let max = q
+                .max_tokens
+                .or_else(|| {
+                    std::env::var("VEIL_CONTEXT_MAX_TOKENS")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                })
+                .unwrap_or(0);
+            let json = apply_token_budget(json, max);
+            json_response(json).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

@@ -21,6 +21,7 @@ pub mod protocol;
 pub mod agent;
 pub mod model;
 pub mod rig_tools;
+pub mod safety;
 
 pub use provider::{SourceProvider, FileInfo};
 pub use provider::filesystem::FilesystemProvider;

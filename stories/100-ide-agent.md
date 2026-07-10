@@ -413,7 +413,7 @@ Surfaced from AGT-009/010/011 done notes and remote MVP limits.
 
 ## AGT-013: Agent write path allowlist
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** user of the in-IDE agent  
 **I want** writes restricted to an allowlisted set of paths/packages  
 **So that** a tool cannot edit arbitrary files on disk
@@ -429,11 +429,14 @@ Surfaced from AGT-009/010/011 done notes and remote MVP limits.
 **Depends:** AGT-005, AGT-009  
 **Mission impact:** Dual-loop safety; human trust in agent apply
 
+**Done notes:** `veil_server::safety` + `VEIL_AGENT_ALLOWLIST`; default = loaded
+files; unit tests for deny/outside.
+
 ---
 
 ## AGT-014: Plan-only agent mode
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** cautious reviewer  
 **I want** an agent mode that proposes EditOps without applying  
 **So that** I approve structure before source mutates
@@ -449,11 +452,14 @@ Surfaced from AGT-009/010/011 done notes and remote MVP limits.
 **Depends:** AGT-006, AGT-009  
 **Mission impact:** Human structural review before machine write
 
+**Done notes:** `plan_only` on turn request + `VEIL_AGENT_PLAN_ONLY`; response
+`plan` field; `source_changed` false; re-run without flag to apply.
+
 ---
 
 ## AGT-015: Token budgets on server context pack
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** agent runtime  
 **I want** `GET /api/context` (and agent assembly) to honor token budgets  
 **So that** large packages do not blow model context
@@ -468,6 +474,9 @@ Surfaced from AGT-009/010/011 done notes and remote MVP limits.
 
 **Depends:** AGT-011, PAR-009  
 **Mission impact:** Token-efficient agent context (MISSION)
+
+**Done notes:** `GET /api/context?max_tokens=N` + `VEIL_CONTEXT_MAX_TOKENS`;
+truncate marker; aligns with CLI `veil prompt --max-tokens`.
 
 ---
 

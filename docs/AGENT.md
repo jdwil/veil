@@ -36,6 +36,9 @@ Tools mutate an in-memory workspace; the host persists via `SourceProvider` when
 | `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | OpenAI credentials |
 | `VEIL_MODEL_BASE_URL` / `OPENAI_BASE_URL` | Compatible base URL |
 | `VEIL_AGENT_CONFIRM_WRITES=1` | Require `confirmed` on renames |
+| `VEIL_AGENT_ALLOWLIST` | Comma-separated write paths/prefixes/globs (default: loaded `.veil` files) |
+| `VEIL_AGENT_PLAN_ONLY=1` | Propose edits; never persist (`plan` field on response) |
+| `VEIL_CONTEXT_MAX_TOKENS` | Default budget for `GET /api/context` (also `?max_tokens=`) |
 
 `GET /api/models` — provider + config (+ `"rig": true`).
 

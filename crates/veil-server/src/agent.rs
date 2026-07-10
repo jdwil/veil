@@ -18,6 +18,9 @@ pub struct AgentTurnRequest {
     pub prompt: String,
     #[serde(default)]
     pub turn_id: Option<String>,
+    /// AGT-014: propose edits without applying (also `VEIL_AGENT_PLAN_ONLY=1`).
+    #[serde(default)]
+    pub plan_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +46,9 @@ pub struct AgentTurnResponse {
     /// Which backend handled the turn (`rig-openai`, `rig-ollama`, `heuristic`).
     #[serde(default)]
     pub backend: String,
+    /// AGT-014: when plan_only, human-readable planned ops (not applied).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 /// Run one agent turn against the active source.
@@ -67,6 +73,7 @@ pub async fn run_turn<P: SourceProvider>(
             ok: true,
             error: None,
             backend: "none".into(),
+            plan: None,
         };
     }
 
@@ -74,6 +81,9 @@ pub async fn run_turn<P: SourceProvider>(
         role: "user".into(),
         content: prompt.to_string(),
     }];
+
+    let loaded = provider.list_files().await;
+    let allowlist = crate::safety::allowlist_from_env(&loaded);
 
     let source = match provider.read_source("").await {
         Ok(s) => s,
@@ -86,6 +96,7 @@ pub async fn run_turn<P: SourceProvider>(
                 ok: false,
                 error: Some(e),
                 backend: "error".into(),
+                plan: None,
             };
         }
     };
@@ -93,6 +104,10 @@ pub async fn run_turn<P: SourceProvider>(
     let confirm = std::env::var("VEIL_AGENT_CONFIRM_WRITES")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let plan_only = req.plan_only
+        || std::env::var("VEIL_AGENT_PLAN_ONLY")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
 
     let cfg = crate::model::ModelConfig::from_env();
 
@@ -109,8 +124,43 @@ pub async fn run_turn<P: SourceProvider>(
         match crate::model::prompt_with_tools(&cfg, &preamble, prompt, ws.clone()).await {
             Ok(content) => {
                 let tool_calls = ws.take_log();
-                let source_changed = ws.changed();
-                if source_changed {
+                let wants_write = ws.changed();
+                if wants_write {
+                    if plan_only {
+                        let plan = Some(format!(
+                            "plan_only: would write {} bytes after tools {:?}",
+                            ws.source_snapshot().len(),
+                            tool_calls.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+                        ));
+                        messages.push(AgentMessage {
+                            role: "assistant".into(),
+                            content: format!(
+                                "{content}\n\n[plan_only] No write applied. Re-run without VEIL_AGENT_PLAN_ONLY / plan_only to apply."
+                            ),
+                        });
+                        return AgentTurnResponse {
+                            turn_id,
+                            messages,
+                            tool_calls,
+                            source_changed: false,
+                            ok: true,
+                            error: None,
+                            backend: format!("rig-{}", cfg.kind_name()),
+                            plan,
+                        };
+                    }
+                    if let Err(e) = crate::safety::check_write_allowed("", &allowlist, &loaded) {
+                        return AgentTurnResponse {
+                            turn_id,
+                            messages,
+                            tool_calls,
+                            source_changed: false,
+                            ok: false,
+                            error: Some(e),
+                            backend: format!("rig-{}", cfg.kind_name()),
+                            plan: None,
+                        };
+                    }
                     let new_src = ws.source_snapshot();
                     if let Err(e) = provider.write_source("", &new_src).await {
                         return AgentTurnResponse {
@@ -121,6 +171,7 @@ pub async fn run_turn<P: SourceProvider>(
                             ok: false,
                             error: Some(e),
                             backend: format!("rig-{}", cfg.kind_name()),
+                            plan: None,
                         };
                     }
                 }
@@ -132,10 +183,11 @@ pub async fn run_turn<P: SourceProvider>(
                     turn_id,
                     messages,
                     tool_calls,
-                    source_changed,
+                    source_changed: wants_write,
                     ok: true,
                     error: None,
                     backend: format!("rig-{}", cfg.kind_name()),
+                    plan: None,
                 };
             }
             Err(e) => {
@@ -159,6 +211,9 @@ pub async fn run_turn<P: SourceProvider>(
         source,
         &registry,
         confirm,
+        plan_only,
+        allowlist,
+        loaded,
         messages,
     )
     .await
@@ -171,6 +226,9 @@ async fn heuristic_turn<P: SourceProvider>(
     source: String,
     registry: &LayerRegistry,
     confirm: bool,
+    plan_only: bool,
+    allowlist: Vec<String>,
+    loaded: Vec<crate::provider::FileInfo>,
     mut messages: Vec<AgentMessage>,
 ) -> AgentTurnResponse {
     let mut tool_calls = Vec::new();
@@ -193,6 +251,7 @@ async fn heuristic_turn<P: SourceProvider>(
             ok: true,
             error: None,
             backend: "heuristic".into(),
+            plan: None,
         };
     }
 
@@ -213,6 +272,7 @@ async fn heuristic_turn<P: SourceProvider>(
             ok: true,
             error: None,
             backend: "heuristic".into(),
+            plan: None,
         };
     }
 
@@ -235,6 +295,7 @@ async fn heuristic_turn<P: SourceProvider>(
                 ok: true,
                 error: None,
                 backend: "heuristic".into(),
+                plan: None,
             };
         }
         tool_calls.push(AgentToolCall {
@@ -243,6 +304,37 @@ async fn heuristic_turn<P: SourceProvider>(
         });
         match rig_tools::apply_rename(&source, registry, &from, &to) {
             Ok((new_src, summary)) => {
+                if plan_only {
+                    let plan = format!("RenameConstruct {from} → {to}");
+                    messages.push(AgentMessage {
+                        role: "assistant".into(),
+                        content: format!(
+                            "[plan_only] Would apply: {plan}\n{summary}\n\nRe-run without plan_only / VEIL_AGENT_PLAN_ONLY to apply."
+                        ),
+                    });
+                    return AgentTurnResponse {
+                        turn_id,
+                        messages,
+                        tool_calls,
+                        source_changed: false,
+                        ok: true,
+                        error: None,
+                        backend: "heuristic".into(),
+                        plan: Some(plan),
+                    };
+                }
+                if let Err(e) = crate::safety::check_write_allowed("", &allowlist, &loaded) {
+                    return AgentTurnResponse {
+                        turn_id,
+                        messages,
+                        tool_calls,
+                        source_changed: false,
+                        ok: false,
+                        error: Some(e),
+                        backend: "heuristic".into(),
+                        plan: None,
+                    };
+                }
                 if let Err(e) = provider.write_source("", &new_src).await {
                     return AgentTurnResponse {
                         turn_id,
@@ -252,6 +344,7 @@ async fn heuristic_turn<P: SourceProvider>(
                         ok: false,
                         error: Some(e),
                         backend: "heuristic".into(),
+                        plan: None,
                     };
                 }
                 tool_calls.push(AgentToolCall {
@@ -271,6 +364,7 @@ async fn heuristic_turn<P: SourceProvider>(
                     ok: true,
                     error: None,
                     backend: "heuristic".into(),
+                    plan: None,
                 };
             }
             Err(e) => {
@@ -286,6 +380,7 @@ async fn heuristic_turn<P: SourceProvider>(
                     ok: false,
                     error: Some(e),
                     backend: "heuristic".into(),
+                    plan: None,
                 };
             }
         }
@@ -298,7 +393,8 @@ async fn heuristic_turn<P: SourceProvider>(
         role: "assistant".into(),
         content: format!(
             "Offline heuristic agent (set VEIL_MODEL_PROVIDER=openai|ollama for Rig tools).\n\
-             Commands: `check` · `outline` · `rename Old to New`\n\n\
+             Commands: `check` · `outline` · `rename Old to New`\n\
+             Safety: VEIL_AGENT_ALLOWLIST · VEIL_AGENT_PLAN_ONLY · VEIL_AGENT_CONFIRM_WRITES\n\n\
              Context:\n{outline}\n\n{check}"
         ),
     });
@@ -319,6 +415,7 @@ async fn heuristic_turn<P: SourceProvider>(
         ok: true,
         error: None,
         backend: "heuristic".into(),
+        plan: None,
     }
 }
 
