@@ -258,6 +258,66 @@ pkg ddd v1
       color "#ef4444"
       label "Guard"
 
+  # ─── LLM Prompt (RAG context for code-generating agents) ─────────────────────
+  prompt
+    You are writing code using the DDD (Domain-Driven Design) layer for VEIL.
+
+    ## Structure
+    Every pkg using `use ddd` organizes code into bounded contexts (`ctx`), each
+    containing groups: `domain`, `application`, `infrastructure`, and optionally
+    `presentation`.
+
+    ## Domain Group
+    Contains the pure domain model:
+    - `agg` (Aggregate) — the consistency boundary. Has a `root` block with fields,
+      optional `state` (enum with transitions), `evt` (domain events), and `fn` methods.
+    - `ent` (Entity) — subordinate to an aggregate, has identity (id field).
+    - `val` (ValueObject) — immutable, identity-less. Use `@invariant(expr)` for validation.
+    - `repo` (Repository/Port) — trait interface for persistence. Methods use `!` suffix
+      for async operations: `find!(id: Id) -> Opt<T>`, `save!(entity: T)`, `delete!(id: Id)`.
+
+    ## Application Group
+    Contains orchestration:
+    - `handler` (ApplicationService) — receives commands/queries. Inputs use `@dep` annotation
+      to declare injected dependencies (repos, services). Body contains `step` blocks.
+    - Steps contain expressions: assignments, repo calls, `guard(condition, "message")` for
+      preconditions, and `ret value` to return data.
+
+    ## Infrastructure Group
+    Contains adapter implementations:
+    - `adapter PgFooRepo for FooRepo` — implements a port with concrete code.
+      Annotate with `@env(DATABASE_URL)` to declare required config.
+      Each `impl method(params)` contains the body (e.g., SQL via sqlx DSL).
+
+    ## Key Patterns
+    - Dependencies are always injected via `@dep` — never construct adapters in handlers.
+    - Repos return `Opt<T>` for single lookups, `List<T>` for collections.
+    - Use `guard(expr, "msg")` for precondition checks — it short-circuits with a validation error.
+    - Use `ret variable` to return query results from handlers.
+    - Cross-context communication uses `dispatch`, `invoke`, or `request` (routed via Bus).
+    - Sagas use the `saga` keyword with `step`/`compensate` blocks for distributed transactions.
+
+    ## Example Handler
+    ```
+    handler HandleGetCohort
+      input
+        id: Id
+        @dep cohort_repo: CohortRepo
+      step query
+        cohort = cohort_repo.find!(id)
+        ret cohort
+    ```
+
+    ## Example Adapter
+    ```
+    adapter PgCohortRepo for CohortRepo
+      @env(DATABASE_URL)
+      impl find(id)
+        sqlx.Query.new("SELECT * FROM cohorts WHERE id = $1").bind(id).fetch_optional!(pool)
+      impl save(cohort)
+        sqlx.Query.new("INSERT INTO cohorts (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET updated_on = now()").bind(cohort.id).execute!(pool)
+    ```
+
   # ─── Declared constructs (injected into every solution using this layer) ─────
   # The Bus is a JSON message bus: cross-context payloads/results are `Json`
   # (serde_json::Value) so orchestrators can build commands and index results

@@ -229,6 +229,9 @@ pub struct LayerRegistry {
     pub layers: Vec<String>,
     /// Raw VEIL source blocks to inject into solutions using this registry.
     pub declarations: Vec<String>,
+    /// LLM prompt sections from layers — concatenated for RAG context.
+    /// Each entry is (layer_name, prompt_text).
+    pub prompts: Vec<(String, String)>,
     /// Codegen templates declared by loaded layers.
     pub codegen_templates: Vec<CodegenTemplate>,
     /// Loaded third-party crate stubs.
@@ -245,6 +248,7 @@ impl Default for LayerRegistry {
             statements: Vec::new(),
             layers: Vec::new(),
             declarations: Vec::new(),
+            prompts: Vec::new(),
             codegen_templates: Vec::new(),
             stubs: Vec::new(),
             external_resolver: None,
@@ -259,6 +263,7 @@ impl Clone for LayerRegistry {
             statements: self.statements.clone(),
             layers: self.layers.clone(),
             declarations: self.declarations.clone(),
+            prompts: self.prompts.clone(),
             codegen_templates: self.codegen_templates.clone(),
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
@@ -585,6 +590,11 @@ impl LayerRegistry {
             }
         }
 
+        // Store prompt text for LLM context.
+        if let Some(prompt_text) = raw.prompt {
+            self.prompts.push((raw.name.clone(), prompt_text));
+        }
+
         // Accumulate codegen templates.
         for tpl in raw.codegen_templates {
             self.codegen_templates.push(tpl);
@@ -822,11 +832,14 @@ fn parse_stub_method(line: &str) -> StubMethod {
 /// Parse a `.layer` file into raw (shape-unresolved) specs.
 
 struct RawLayer {
+    name: String,
     constructs: Vec<ConstructSpec>,
     statements: Vec<StatementSpec>,
     /// Raw VEIL source blocks declared by this layer (e.g. `port Bus ...`).
     /// Each entry is one top-level construct declaration, dedented for parsing.
     declarations: Vec<String>,
+    /// LLM prompt text for this layer (RAG context for code-generating agents).
+    prompt: Option<String>,
     /// Codegen template blocks declared by this layer.
     codegen_templates: Vec<CodegenTemplate>,
 }
@@ -854,6 +867,9 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
     let mut in_declare = false;
     let mut declare_base_indent: usize = 0;
     let mut current_decl_lines: Vec<String> = Vec::new();
+    let mut in_prompt = false;
+    let mut prompt_base_indent: usize = 0;
+    let mut prompt_lines: Vec<String> = Vec::new();
     // Codegen block parsing state
     let mut codegen_templates: Vec<CodegenTemplate> = Vec::new();
     let mut in_codegen = false;
@@ -882,6 +898,34 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
             declare_base_indent = indent + 2; // items inside declare are at +2
             section = Section::None;
             continue;
+        }
+
+        // Handle `prompt` section: accumulate text for LLM context (ignored by codegen)
+        if trimmed == "prompt" && indent <= 2 {
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            in_prompt = true;
+            prompt_base_indent = indent + 2;
+            section = Section::None;
+            continue;
+        }
+
+        if in_prompt {
+            if indent <= prompt_base_indent.saturating_sub(2) && !trimmed.is_empty() {
+                // Leaving prompt section — flush accumulated lines
+                in_prompt = false;
+                // Fall through to normal parsing of this line
+            } else {
+                // Accumulate prompt line (strip the base indent)
+                let stripped = if line.len() > prompt_base_indent {
+                    &line[prompt_base_indent..]
+                } else {
+                    trimmed
+                };
+                prompt_lines.push(stripped.to_string());
+                continue;
+            }
         }
 
         if in_declare {
@@ -1210,7 +1254,17 @@ fn parse_layer_file(content: &str, layer_name: &str) -> RawLayer {
         codegen_templates.push(template);
     }
 
-    RawLayer { constructs, statements, declarations, codegen_templates }
+    // Flush any trailing prompt content
+    let prompt = if !prompt_lines.is_empty() {
+        while prompt_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+            prompt_lines.pop();
+        }
+        Some(prompt_lines.join("\n"))
+    } else {
+        None
+    };
+
+    RawLayer { name: layer_name.to_string(), constructs, statements, declarations, prompt, codegen_templates }
 }
 
 fn unquote(s: &str) -> String {

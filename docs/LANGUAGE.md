@@ -471,6 +471,28 @@ declare
     invoke(cmd: Json) -> Res!<Json>
 ```
 
+### `prompt` — LLM guidance for code generation
+Free-form text that teaches AI agents how to use the layer. Ignored by the
+compiler and codegen toolchain — stored in the `LayerRegistry` for retrieval
+by LLM-based code generation systems (RAG context).
+
+```
+prompt
+  You are writing code using the DDD layer for VEIL.
+
+  ## Structure
+  Every pkg using `use ddd` organizes code into bounded contexts...
+
+  ## Key Patterns
+  - Dependencies are always injected via @dep
+  - Repos return Opt<T> for single lookups, List<T> for collections
+  ...
+```
+
+The prompt content is indented under the `prompt` keyword. All indented lines
+are accumulated as-is (leading indent stripped). Multiple layers' prompts are
+concatenated in load order when building context for an LLM.
+
 ### `use` (in a layer)
 Loads a dependency layer, so layers can stack (`crm.layer` builds on
 `ddd.layer`).
