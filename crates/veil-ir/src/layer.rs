@@ -162,12 +162,19 @@ pub struct RuntimeBinding {
 ///   annotations
 ///     invariant: "Domain constraint" expr
 ///     retry: "Retry on failure" attempts, backoff
+///     dep: "Injected dependency" field role:dependency
+///
+/// `role:X` tokens are **roles** (INV-001), not viewer params — engine policy
+/// keys off roles (e.g. `dependency`), never hard-coded annotation names.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnotationSpec {
     pub name: String,
     pub desc: String,
     /// Parameter names (rendered as free-text inputs by the viewer).
     pub params: Vec<String>,
+    /// Policy roles (e.g. `dependency`, `provider`, `main`). INV-001.
+    #[serde(default)]
+    pub roles: Vec<String>,
 }
 
 /// A statement definition loaded from a `.layer` file.
@@ -341,6 +348,29 @@ impl LayerRegistry {
     /// Look up a construct by its name (e.g. "Aggregate").
     pub fn construct_by_name(&self, name: &str) -> Option<&ConstructSpec> {
         self.constructs.iter().find(|c| c.name == name)
+    }
+
+    /// Whether any layer-declared annotation named `name` carries policy role `role`.
+    /// INV-001: engine keys off roles, not hard-coded annotation strings.
+    pub fn annotation_has_role(&self, name: &str, role: &str) -> bool {
+        self.constructs.iter().any(|c| {
+            c.annotations
+                .iter()
+                .any(|a| a.name == name && a.roles.iter().any(|r| r == role))
+        })
+    }
+
+    /// True if `name` is a dependency-injection annotation (`role:dependency`).
+    pub fn is_dependency_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "dependency")
+    }
+
+    /// Field/input is an injected dependency per layer policy (INV-001).
+    pub fn field_is_dependency(&self, field: &crate::ast::Field) -> bool {
+        field
+            .annotations
+            .iter()
+            .any(|a| self.is_dependency_annotation(&a.name))
     }
 
     /// Look up a statement by its source keyword.
@@ -1239,15 +1269,22 @@ fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, String>
                         } else {
                             (String::new(), rest.to_string())
                         };
-                        let params = params_str
-                            .split(',')
-                            .map(|p| p.trim().to_string())
-                            .filter(|p| !p.is_empty())
-                            .collect();
+                        let mut roles = Vec::new();
+                        let mut params = Vec::new();
+                        for slot in params_str.split(',') {
+                            for tok in slot.split_whitespace() {
+                                if let Some(r) = tok.strip_prefix("role:") {
+                                    roles.push(r.to_string());
+                                } else if !tok.is_empty() {
+                                    params.push(tok.to_string());
+                                }
+                            }
+                        }
                         c.annotations.push(AnnotationSpec {
                             name: name.trim().to_string(),
                             desc,
                             params,
+                            roles,
                         });
                     }
                 }
@@ -1619,6 +1656,19 @@ pub fn keyword_shapes(reg: &LayerRegistry) -> HashMap<String, Shape> {
 mod tests {
     use super::*;
     use crate::presentation::presentation_from_registry;
+
+    #[test]
+    fn dependency_role_from_di_layer() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("di", include_str!("../../../layers/di.layer"))
+            .expect("di layer should load");
+        assert!(
+            reg.is_dependency_annotation("dep"),
+            "di.layer must tag @dep with role:dependency"
+        );
+        assert!(!reg.is_dependency_annotation("invariant"));
+        assert!(!reg.is_dependency_annotation("nope"));
+    }
 
     #[test]
     fn layer_annotations_parse_and_reach_palette() {

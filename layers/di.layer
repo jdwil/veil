@@ -25,7 +25,8 @@ layer di
     mt struct
     desc "Dependency — a struct field that is injected, not self-constructed"
     ann
-      dep: "Injected dependency" field
+      # role:dependency — engine DI routing (INV-001); never hardcode name "dep"
+      dep: "Injected dependency" field role:dependency
     visual
       icon "💉"
       color "#8b5cf6"

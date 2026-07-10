@@ -62,7 +62,7 @@ pub fn execute_templates(
         for template in &templates {
             for rule in &template.rules {
                 if matches_construct(construct, rule) {
-                    let output = render_template(construct, rule);
+                    let output = render_template(construct, rule, registry);
 
                     if let Some(section_name) = &rule.emit_to {
                         // Contribute to a named section
@@ -161,19 +161,33 @@ fn matches_construct(construct: &Construct, rule: &CodegenRule) -> bool {
 }
 
 /// Render a template body with interpolation against a construct.
-fn render_template(construct: &Construct, rule: &CodegenRule) -> String {
+fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRegistry) -> String {
     let mut output = rule.emit_body.clone();
 
     // Simple interpolations
     output = output.replace("{{name}}", &construct.name);
 
     // Handle {{for field in dep_fields}}...{{end}}
-    // If the struct has @dep, ALL its fields are injectable dependencies.
+    // INV-001: dependency-role fields via registry; construct-level dependency
+    // annotation means all fields are injectable (di.layer pattern).
     if output.contains("{{for field in dep_fields}}") {
-        let dep_fields: Vec<&Field> = if construct.annotations.iter().any(|a| a.name == "dep") {
-            construct.fields.iter().collect()
-        } else {
-            Vec::new()
+        let dep_fields: Vec<&Field> = {
+            let field_level: Vec<&Field> = construct
+                .fields
+                .iter()
+                .filter(|f| registry.field_is_dependency(f))
+                .collect();
+            if !field_level.is_empty() {
+                field_level
+            } else if construct
+                .annotations
+                .iter()
+                .any(|a| registry.is_dependency_annotation(&a.name))
+            {
+                construct.fields.iter().collect()
+            } else {
+                Vec::new()
+            }
         };
 
         output = expand_for_loop(&output, "field", "dep_fields", &dep_fields, |field, var| {

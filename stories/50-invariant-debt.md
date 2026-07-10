@@ -8,7 +8,7 @@ or field-name policy.
 
 ## INV-001: Remove magic `"dep"` from engine
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** layer author  
 **I want** DI routing driven by layer policy, not the string `"dep"`  
 **So that** alternate DI vocabularies work without engine edits
@@ -24,6 +24,10 @@ or field-name policy.
   (allow parsing generic annotation names)
 
 **Touch:** `builder.rs`, `rust.rs`, `template.rs`, `layers/di.layer`
+
+**Done notes:** `AnnotationSpec.roles` + `role:dependency` in di.layer;
+`LayerRegistry::is_dependency_annotation` / `field_is_dependency`; builder &
+rust codegen use roles only. Template `dep_fields` via registry.
 
 ---
 

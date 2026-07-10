@@ -1766,8 +1766,8 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             FlowLike::Construct(c) => &c.inputs,
         };
         for field in inputs {
-            if field.annotations.iter().any(|a| a.name == "dep") {
-                // The type_expr of a @dep field is the trait name
+            if registry.field_is_dependency(field) {
+                // The type_expr of a dependency-role field is the trait name
                 if let TypeExpr::Named(type_name) = &field.type_expr {
                     all_deps.insert(type_name.clone());
                 }
@@ -1814,14 +1814,15 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
 
         let params = inputs
             .iter()
-            .filter(|f| !f.annotations.iter().any(|a| a.name == "dep"))
+            .filter(|f| !registry.field_is_dependency(f))
             .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
             .collect::<Vec<_>>()
             .join(",\n    ");
 
-        // Determine if we need deps parameter — include @dep annotated inputs
-        let dep_inputs: Vec<&Field> = inputs.iter()
-            .filter(|f| f.annotations.iter().any(|a| a.name == "dep"))
+        // Determine if we need deps parameter — dependency-role inputs (INV-001)
+        let dep_inputs: Vec<&Field> = inputs
+            .iter()
+            .filter(|f| registry.field_is_dependency(f))
             .collect();
         let flow_deps = collect_deps(steps, &base_ctx);
         let has_deps = !flow_deps.is_empty() || !dep_inputs.is_empty();
@@ -1831,11 +1832,10 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
         ctx.is_orchestrator = is_orchestrator;
         // Register inputs as locals, with their declared types for inference.
-        // Skip @dep annotated inputs — they're accessed via deps.x, not as locals.
+        // Skip dependency-role inputs — accessed via deps.x, not as locals.
         for input in inputs {
-            if input.annotations.iter().any(|a| a.name == "dep") {
-                // Register the dep field name (e.g. "cohort_repo") as a Trait in name_to_shape
-                // so the expression translator routes calls through deps.x.method().await?
+            if registry.field_is_dependency(input) {
+                // Register the dep field name as Trait so calls route through deps.x
                 ctx.name_to_shape.insert(input.name.clone(), Shape::Trait);
                 continue;
             }

@@ -6,16 +6,31 @@
 
 use crate::ast::*;
 use crate::ir::*;
-use crate::layer::Shape;
+use crate::layer::{LayerRegistry, Shape};
 use crate::span::Span;
 
-/// Build an IR graph from a parsed Solution AST.
+/// Build an IR graph from a parsed Solution AST (no layer policy).
+/// Prefer [`build_ir_with_registry`] when DI / dependency roles matter (INV-001).
 pub fn build_ir(solution: &Solution) -> IrGraph {
-    let mut builder = IrBuilder::new();
+    build_ir_with_registry(solution, None)
+}
+
+/// Build IR, using `registry` for layer policy (e.g. dependency annotation roles).
+pub fn build_ir_with_registry(solution: &Solution, registry: Option<&LayerRegistry>) -> IrGraph {
+    let mut builder = IrBuilder::new(registry);
     builder.build_solution(solution);
     builder.resolve_impl_bindings();
     builder.resolve_references();
     builder.graph
+}
+
+/// True if field carries a dependency-role annotation (INV-001).
+fn field_is_dep(field: &Field, registry: Option<&LayerRegistry>) -> bool {
+    if let Some(reg) = registry {
+        return reg.field_is_dependency(field);
+    }
+    // Without a registry, treat no field as a special dependency (no magic "dep").
+    false
 }
 
 pub fn type_to_display(ty: &TypeExpr) -> String {
@@ -213,15 +228,21 @@ pub fn action_to_display(a: &ActionExpr) -> String {
     }
 }
 
-struct IrBuilder {
+struct IrBuilder<'a> {
     graph: IrGraph,
+    registry: Option<&'a LayerRegistry>,
 }
 
-impl IrBuilder {
-    fn new() -> Self {
+impl<'a> IrBuilder<'a> {
+    fn new(registry: Option<&'a LayerRegistry>) -> Self {
         Self {
             graph: IrGraph::new(),
+            registry,
         }
+    }
+
+    fn is_dep(&self, field: &Field) -> bool {
+        field_is_dep(field, self.registry)
     }
 
     fn build_solution(&mut self, sol: &Solution) {
@@ -578,11 +599,7 @@ impl IrBuilder {
                         .inputs
                         .iter()
                         .map(|f| {
-                            let prefix = if f.annotations.iter().any(|a| a.name == "dep") {
-                                "@dep "
-                            } else {
-                                ""
-                            };
+                            let prefix = if self.is_dep(f) { "@dep " } else { "" };
                             format!("{}{}: {}", prefix, f.name, type_to_display(&f.type_expr))
                         })
                         .collect::<Vec<_>>()
@@ -590,11 +607,11 @@ impl IrBuilder {
                     let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), c.span);
                     self.set_parent(inputs_id, id);
                     self.set_property(inputs_id, "params", &inputs_str);
-                    // Set dep_params property listing @dep-annotated inputs
+                    // Set dep_params for dependency-role inputs (INV-001)
                     let dep_params: Vec<String> = c
                         .inputs
                         .iter()
-                        .filter(|f| f.annotations.iter().any(|a| a.name == "dep"))
+                        .filter(|f| self.is_dep(f))
                         .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
                         .collect();
                     if !dep_params.is_empty() {
@@ -659,11 +676,7 @@ impl IrBuilder {
                 .inputs
                 .iter()
                 .map(|f| {
-                    let prefix = if f.annotations.iter().any(|a| a.name == "dep") {
-                        "@dep "
-                    } else {
-                        ""
-                    };
+                    let prefix = if self.is_dep(f) { "@dep " } else { "" };
                     format!("{}{}: {}", prefix, f.name, type_to_display(&f.type_expr))
                 })
                 .collect::<Vec<_>>()
@@ -671,11 +684,11 @@ impl IrBuilder {
             let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), flow.span);
             self.set_parent(inputs_id, flow_id);
             self.set_property(inputs_id, "params", &inputs_str);
-            // Set dep_params property listing @dep-annotated inputs
+            // Set dep_params for dependency-role inputs (INV-001)
             let dep_params: Vec<String> = flow
                 .inputs
                 .iter()
-                .filter(|f| f.annotations.iter().any(|a| a.name == "dep"))
+                .filter(|f| self.is_dep(f))
                 .map(|f| format!("{}: {}", f.name, type_to_display(&f.type_expr)))
                 .collect();
             if !dep_params.is_empty() {

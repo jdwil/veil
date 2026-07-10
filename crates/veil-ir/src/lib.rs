@@ -20,7 +20,7 @@ pub mod struct_diff;
 pub mod validate;
 
 pub use ast::*;
-pub use builder::build_ir;
+pub use builder::{build_ir, build_ir_with_registry};
 pub use check::{check_solution, format_diagnostic_line, sort_diagnostics, CheckResult};
 pub use context::{build_context_pack, ContextPack, ContextQuery};
 pub use diagnostics::{Diagnostic, Severity};

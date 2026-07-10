@@ -799,7 +799,9 @@ fn main() {
             };
 
             let graph = match &veil_file {
-                veil_ir::VeilFile::Solution(sol) => veil_ir::build_ir(sol),
+                veil_ir::VeilFile::Solution(sol) => {
+                    veil_ir::build_ir_with_registry(sol, Some(&registry))
+                }
                 veil_ir::VeilFile::Package(pkg) => {
                     let sol = veil_ir::Solution {
                         name: pkg.name.clone(),
@@ -808,7 +810,7 @@ fn main() {
                         items: pkg.items.clone(),
                         expose: pkg.expose.clone(),
                     };
-                    veil_ir::build_ir(&sol)
+                    veil_ir::build_ir_with_registry(&sol, Some(&registry))
                 }
                 veil_ir::VeilFile::Composition(comp) => {
                     let search_dir = first_file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();

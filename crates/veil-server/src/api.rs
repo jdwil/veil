@@ -80,7 +80,7 @@ async fn get_ir<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> ax
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let graph = veil_ir::build_ir(&sol);
+    let graph = veil_ir::build_ir_with_registry(&sol, Some(state.registry()));
     match serde_json::to_string(&graph) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -104,7 +104,7 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("parse head: {}", e)).into_response(),
     };
-    let head_ir = veil_ir::build_ir(&head_sol);
+    let head_ir = veil_ir::build_ir_with_registry(&head_sol, Some(state.registry()));
 
     let baseline = match state.baseline_source("").await {
         Ok(b) => b,
@@ -123,7 +123,7 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
                         .into_response();
                 }
             };
-            (label, veil_ir::build_ir(&sol))
+            (label, veil_ir::build_ir_with_registry(&sol, Some(state.registry())))
         }
         None => {
             // No git baseline — empty base (everything appears as added).
@@ -197,7 +197,7 @@ async fn get_context<P: SourceProvider>(
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let graph = veil_ir::build_ir(&sol);
+    let graph = veil_ir::build_ir_with_registry(&sol, Some(state.registry()));
     let pack = veil_ir::build_context_pack(
         &graph,
         state.registry(),
@@ -376,7 +376,7 @@ async fn post_select_file<P: SourceProvider>(
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    let graph = veil_ir::build_ir(&sol);
+    let graph = veil_ir::build_ir_with_registry(&sol, Some(state.registry()));
     match serde_json::to_string(&graph) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -438,7 +438,7 @@ async fn post_edit<P: SourceProvider>(
     }
 
     // 7. Return fresh state + diagnostics
-    let graph = veil_ir::build_ir(&reparsed);
+    let graph = veil_ir::build_ir_with_registry(&reparsed, Some(state.registry()));
     let project = veil_codegen::generate(&reparsed, state.registry());
     let generated: std::collections::HashMap<String, String> = project.files.iter()
         .map(|f| (f.path.clone(), f.content.clone()))

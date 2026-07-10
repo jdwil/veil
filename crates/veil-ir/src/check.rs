@@ -10,7 +10,7 @@
 //! - **Warning** — advisory (e.g. missing implementation); printed but do not fail check
 
 use crate::ast::Solution;
-use crate::builder::build_ir;
+use crate::builder::build_ir_with_registry;
 use crate::diagnostics::{self, Diagnostic, Severity};
 use crate::ir::IrGraph;
 use crate::layer::LayerRegistry;
@@ -57,7 +57,7 @@ impl CheckResult {
 ///
 /// This is the **only** entry point consumers should call for “is this package OK?”
 pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
-    let graph = build_ir(sol);
+    let graph = build_ir_with_registry(sol, Some(registry));
 
     let mut diagnostics: Vec<Diagnostic> = validate::validate_solution(sol, registry)
         .into_iter()
