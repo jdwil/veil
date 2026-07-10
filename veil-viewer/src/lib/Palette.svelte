@@ -16,6 +16,9 @@
     color?: string;
     category: string;
     name?: string;
+    keyword?: string;
+    group?: string;
+    dg?: string;
   }
 
   let { contextKind = "Solution", contextKindCore = "Solution", activeGroup = null }: { contextKind?: NodeKind | null; contextKindCore?: string; activeGroup?: string | null } = $props();
@@ -59,6 +62,9 @@
           color: c.color,
           category: c.group || 'General',
           name: c.name,
+          keyword: c.keyword,
+          group: c.group || undefined,
+          dg: c.dg || undefined,
         });
       }
     }

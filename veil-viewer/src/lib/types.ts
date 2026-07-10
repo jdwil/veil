@@ -86,6 +86,9 @@ export interface PaletteEntry {
   layer: string;
   entry_type: 'construct' | 'statement';
   annotations?: AnnotationSpec[];
+  /** Default group for create/placement (layer `dg`). */
+  dg?: string;
+  expected_groups?: string[];
 }
 
 // Visual config per node kind — CORE SHAPES ONLY.

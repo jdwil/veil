@@ -286,7 +286,7 @@ MVP layouts (implement + document):
 
 ## LAY-008: Create / palette respect presentation
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** human adding structure  
 **I want** create/drop placement to follow view + `dg` / nest rules  
 **So that** new constructs land in the right group *and* hierarchical parent
@@ -300,6 +300,14 @@ MVP layouts (implement + document):
 - Document interaction with UX-012 (palette drop persist)
 
 **Depends:** LAY-003, UX-012  
+**Done notes:**
+
+- Drop → `create_construct` (UX-012) with `resolveCreateParentSpan` (LAY-008):
+  selected container / nest rule parent → active group tab / `dg` / `group` → host
+- Palette drag includes `keyword`, `group`, `dg`
+- Auto-create missing group when placing into tab name
+- Docs: PRESENTATION.md create placement; UX-012 satisfied by same path
+
 **Mission impact:** Presentation stays honest when editing, not only when viewing.
 
 ---

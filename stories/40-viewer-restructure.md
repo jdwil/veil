@@ -46,7 +46,7 @@ Mission: humans restructure topology; canvas mutations must be real.
 
 ## UX-012: Palette drop persists constructs
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** human building structure  
 **I want** dropping a palette item to create a real construct in source  
 **So that** the graph is not a ephemeral sketch
@@ -57,6 +57,9 @@ Mission: humans restructure topology; canvas mutations must be real.
 - Parent/group context respected (allowed_in / layer constraints)
 - Failure surfaces diagnostic (e.g. wrong parent shape)
 - Undo optional later
+
+**Done notes:** Implemented with LAY-008 (`handleDrop` → `saveEdits` create_construct;
+placement via `createPlacement.ts`). Palette filtering still uses `allowed_in` / group.
 
 ---
 

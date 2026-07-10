@@ -45,6 +45,10 @@
     irChildren,
     type ViewSpec,
   } from '$lib/presentation';
+  import {
+    resolveCreateParentSpan,
+    uniqueConstructName,
+  } from '$lib/createPlacement';
 
   const nodeTypes: NodeTypes = {
     veil: VeilNode as any,
@@ -92,55 +96,110 @@
     nodes = nodes.map(n => n.id === id ? { ...n, data } : n);
   }
 
-  function handleDrop(event: DragEvent) {
+  /**
+   * LAY-008 / UX-012: palette drop → create_construct with presentation-aware parent.
+   */
+  async function handleDrop(event: DragEvent) {
     event.preventDefault();
     if (!event.dataTransfer) return;
 
     const data = event.dataTransfer.getData('application/veil-node');
     if (!data) return;
 
-    const item = JSON.parse(data) as { kind: NodeKind; label: string; icon: string; name?: string };
+    const item = JSON.parse(data) as {
+      kind: NodeKind;
+      label: string;
+      icon: string;
+      name?: string;
+      keyword?: string;
+      group?: string;
+      dg?: string;
+    };
 
-    // Create new node at drop position (convert screen coords to flow coords)
-    const id = String(nextNodeId++);
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const graph = get(irGraph);
+    const hostId = get(currentParent);
+    if (!graph || hostId == null) {
+      alert('Cannot create: no active package context.');
+      return;
+    }
 
-    // Get the viewport transform from the xyflow DOM to convert screen → flow coords
-    const viewportEl = (event.currentTarget as HTMLElement).querySelector('.svelte-flow__viewport');
-    let position = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    if (viewportEl) {
-      const transform = window.getComputedStyle(viewportEl).transform;
-      // Parse matrix(a, b, c, d, tx, ty) — a=scale, tx/ty=translate
-      const match = transform.match(/matrix\(([^)]+)\)/);
-      if (match) {
-        const parts = match[1].split(',').map(Number);
-        const scale = parts[0];
-        const tx = parts[4];
-        const ty = parts[5];
-        position = {
-          x: (event.clientX - rect.left - tx) / scale,
-          y: (event.clientY - rect.top - ty) / scale,
-        };
+    const keyword = item.keyword || item.name?.toLowerCase() || 'struct';
+    const selId = $selectedNodeId ? Number($selectedNodeId) : null;
+    const placement = resolveCreateParentSpan(
+      {
+        name: item.name,
+        keyword,
+        label: item.label,
+        dg: item.dg,
+        group: item.group,
+      },
+      {
+        graph,
+        hostId,
+        selectedId: Number.isFinite(selId) ? selId : null,
+        activeGroup: activeTab,
+        activeViewId,
+        presentation: get(presentationModel),
+      }
+    );
+    if (!placement) {
+      alert('Cannot create: missing parent span.');
+      return;
+    }
+
+    // Ensure default group exists when placing into a named group that is missing
+    let parentSpan = placement.parentSpan;
+    const wantGroup = activeTab || item.dg || item.group;
+    if (wantGroup && placement.reason.startsWith('host')) {
+      const hasGroup = graph.nodes.some(
+        (n) =>
+          n.kind === 'Group' &&
+          n.name === wantGroup &&
+          n.metadata.parent === hostId
+      );
+      if (!hasGroup) {
+        const host = graph.nodes.find((n) => n.id === hostId);
+        if (host) {
+          const okGroup = await saveEdits([
+            {
+              op: 'create_construct',
+              parent_span: host.span.start,
+              keyword: 'group',
+              name: wantGroup,
+            },
+          ]);
+          if (okGroup) {
+            const g2 = get(irGraph);
+            const gn = g2?.nodes.find(
+              (n) =>
+                n.kind === 'Group' &&
+                n.name === wantGroup &&
+                n.metadata.parent === hostId
+            );
+            if (gn) parentSpan = gn.span.start;
+          }
+        }
       }
     }
 
-    const newNode: Node = {
-      id,
-      type: 'veil',
-      position,
-      data: {
-        label: `New ${item.label}`,
-        kind: item.kind,
-        subkind: item.name || null,
-        hasChildren: false,
-        annotations: [],
-        properties: [],
-        inlineChildren: [],
-        refs: [],
-      },
-    };
+    const baseName = (item.name || item.label || 'New').replace(/\s+/g, '');
+    const name = uniqueConstructName(graph, baseName, hostId);
 
-    nodes = [...nodes, newNode];
+    const ok = await saveEdits([
+      {
+        op: 'create_construct',
+        parent_span: parentSpan,
+        keyword,
+        name,
+      },
+    ]);
+    if (!ok) {
+      // saveError store already set
+      return;
+    }
+    const fresh = get(irGraph);
+    if (fresh) await computeView(fresh, get(currentParent), get(paletteConfig));
+    flowKey += 1;
   }
 
   function handleDragOver(event: DragEvent) {

@@ -374,6 +374,19 @@ Nesting in a view **must not** imply a source move. Creating a child under a
 container in the IDE (LAY-008) may use nest rules to choose `parent_span`; that
 is an edit policy story, not automatic rewrites on view switch.
 
+### 6.6 Create placement (LAY-008)
+
+Palette drop → `EditOp::CreateConstruct` with `parent_span` chosen as:
+
+1. **Selected node** if it is a presentation `role container`, or a nest rule /
+   `nestable_in` parent for the new construct type in the active view  
+2. Else **active group tab** / palette `dg` / `group` under the host  
+3. Else the **host** construct (ctx / app / module)
+
+Missing groups are created first (`keyword: group`). Failures surface via the
+edit/check API (invalid parent, validation errors). See
+`veil-viewer/src/lib/createPlacement.ts`.
+
 ---
 
 ## 7. Layer stacking and merge
