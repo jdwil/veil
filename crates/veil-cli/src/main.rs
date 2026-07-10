@@ -125,8 +125,8 @@ fn is_veil_source_editable(path: &std::path::Path, source: &str) -> bool {
     if ext != "veil" {
         return false;
     }
-    let path_str = path.to_string_lossy();
-    if path_str.contains("/generated/") || path_str.contains("\\generated\\") {
+    // Match generated/ as a path component (absolute or relative).
+    if path.components().any(|c| c.as_os_str() == "generated") {
         return false;
     }
     for line in source.lines() {
