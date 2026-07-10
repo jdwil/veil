@@ -39,6 +39,7 @@ Tools mutate an in-memory workspace; the host persists via `SourceProvider` when
 | `VEIL_AGENT_ALLOWLIST` | Comma-separated write paths/prefixes/globs (default: loaded `.veil` files) |
 | `VEIL_AGENT_PLAN_ONLY=1` | Propose edits; never persist (`plan` field on response) |
 | `VEIL_CONTEXT_MAX_TOKENS` | Default budget for `GET /api/context` (also `?max_tokens=`) |
+| `VEIL_AUTH_TOKEN` | When set, require `Authorization: Bearer <token>` (or raw token) on all API routes (AGT-016) |
 
 `GET /api/models` — provider + config (+ `"rig": true`).
 

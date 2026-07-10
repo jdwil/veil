@@ -482,7 +482,7 @@ truncate marker; aligns with CLI `veil prompt --max-tokens`.
 
 ## AGT-016: Remote multi-user authn for agent/SourceStore
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** deployer of shared veil-runtime  
 **I want** authenticated access to remote source + agent APIs  
 **So that** multi-user cloud is not open-by-default
@@ -497,6 +497,9 @@ truncate marker; aligns with CLI `veil prompt --max-tokens`.
 
 **Depends:** AGT-010, RT-008  
 **Mission impact:** Platform multi-user; not required for single-user local
+
+**Done notes:** `VEIL_AUTH_TOKEN` → bearer (or raw) Authorization required on
+all routes when set; local open when unset. Docs AGENT/SERVER.
 
 ---
 

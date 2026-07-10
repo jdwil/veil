@@ -39,7 +39,7 @@ use crate::provider::SourceProvider;
 pub fn build_router<P: SourceProvider>(provider: P) -> Router {
     let state = Arc::new(provider);
 
-    Router::new()
+    let mut router = Router::new()
         .route("/api/ir", get(get_ir::<P>))
         .route("/api/source", get(get_source::<P>).post(post_source::<P>))
         .route("/api/generated", get(get_generated::<P>))
@@ -58,7 +58,39 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/events", get(get_events::<P>))
         .route("/api/models", get(get_models))
         .layer(CorsLayer::permissive())
-        .with_state(state)
+        .with_state(state);
+
+    // AGT-016: optional bearer auth when VEIL_AUTH_TOKEN is set.
+    if let Ok(token) = std::env::var("VEIL_AUTH_TOKEN") {
+        if !token.is_empty() {
+            let expected = token;
+            router = router.layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let expected = expected.clone();
+                    async move {
+                        let ok = req
+                            .headers()
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(|h| {
+                                h == expected
+                                    || h.strip_prefix("Bearer ")
+                                        .map(|t| t == expected)
+                                        .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        if ok {
+                            Ok(next.run(req).await)
+                        } else {
+                            Err(StatusCode::UNAUTHORIZED)
+                        }
+                    }
+                },
+            ));
+        }
+    }
+
+    router
 }
 
 type SharedProvider<P> = Arc<P>;
