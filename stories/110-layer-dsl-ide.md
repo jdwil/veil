@@ -71,7 +71,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-001: Serve loads layers as first-class files
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** language designer  
 **I want** `veil serve` to list `.layer` files next to packages  
 **So that** I can open any DSL without leaving the stack
@@ -92,7 +92,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-002: Layer source edit + persist (same path as packages)
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** language designer  
 **I want** to edit and save layer text through the same source API as packages  
 **So that** the write path is one mental model
@@ -113,7 +113,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-003: Layer check / diagnostics pipeline
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** language designer  
 **I want** check diagnostics for layers  
 **So that** the machine loop works while I iterate vocabulary
@@ -134,7 +134,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-004: Hot reload registry after layer write
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** designer with packages open that `use` my layer  
 **I want** palette, presentation, and agent context to refresh on save  
 **So that** I never restart serve to see construct changes
@@ -154,7 +154,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-005: Layer topology / outline canvas (parity with package navigation)
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** language designer  
 **I want** a navigable structure view of a layer (constructs, statements, groups, present)  
 **So that** large DSLs are reviewable like package topology
@@ -175,7 +175,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-006: Palette create / delete constructs on layers
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** language designer  
 **I want** to add and remove constructs from the palette or outline actions  
 **So that** growing a DSL matches growing a package structure
@@ -195,7 +195,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-007: Property editor for layer constructs
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** language designer  
 **I want** to edit construct metadata in the property panel  
 **So that** iteration matches package property editing muscle memory
@@ -215,7 +215,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-008: Structured layer EditOp (or equivalent) honesty
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** platform  
 **I want** structured edits for layers with the same integrity bar as package EditOp  
 **So that** IDE and agent do not corrupt layer files
@@ -235,7 +235,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-009: Edit presentation + layer prompts in IDE
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** language designer  
 **I want** to edit `present` / views and prompt sections in the designer  
 **So that** team IDE layout and agent teaching ship with the DSL
@@ -255,7 +255,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-010: Diff for layer files
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** language designer  
 **I want** structural or text diff vs git baseline for layers  
 **So that** review of vocabulary changes matches package review
@@ -273,7 +273,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-011: Agent tools for layers (parity with package tools)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As an** agent  
 **I want** layer list/read/check/edit tools  
 **So that** DSL generation is tool-driven like package edits
@@ -301,7 +301,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-012: Team consumer mode (package side, driven by layers)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** product implementer  
 **I want** the package IDE constrained by the team DSL  
 **So that** layers deliver a simpler IDE without editing layers myself
@@ -321,7 +321,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-013: Scaffold new layer (+ optional reference package)
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** language designer  
 **I want** to create a new DSL from a template  
 **So that** greenfield family languages start consistent
@@ -338,7 +338,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-014: Impact view — dependents of this layer
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** language designer  
 **I want** to see packages in the serve set that `use` this layer  
 **So that** I know blast radius before breaking changes
@@ -355,7 +355,7 @@ so product teams assemble **programs** on top of platform packages.
 
 ## DSL-015: Multi-layer workspace UX polish
 
-**Status:** Open · **Priority:** P3  
+**Status:** Done · **Priority:** P3  
 **As a** designer juggling many DSLs  
 **I want** search, filter, and kind-aware navigation across dozens of layers  
 **So that** scale does not collapse the file picker
@@ -393,3 +393,23 @@ so product teams assemble **programs** on top of platform packages.
 | Agent | Layer + package tools | Package tools; vocabulary from layers |
 
 This epic makes **language authoring** as real as **program authoring**, which is required when many team DSLs are iterated weekly and client products are programs on top of platform packages — not config rows in a generic engine.
+
+---
+
+## Implementation notes (2026-07-10)
+
+Shipped in one capability pass (logical order A→E):
+
+| Area | Implementation |
+|------|----------------|
+| File kind | `FileKind` on `FileInfo`; serve collects `.veil` + `layers/*.layer` |
+| Edit | Layers editable; `POST /api/source` validates via `check_layer` |
+| Check | CLI + `/api/check` kind-aware; `veil_ir::check_layer` / `build_layer_ir` |
+| Hot reload | Layer write rebuilds dependent package registries + SSE |
+| Topology | Layer IR graph (constructs/groups/statements/prompt) |
+| Structured edit | `layer_edit` + `/api/edit` for create/rename on layers |
+| Scaffold | `POST /api/layer/scaffold` |
+| Impact | `GET /api/layer/dependents?layer=` |
+| Viewer | Kind badge, kind-labeled file list, `activeFileKind` |
+| Docs | `docs/LAYERS_DSL.md` |
+

@@ -1,3 +1,47 @@
-pkg wear-test v1
-  desc "Wear testing domain abstractions"
-  use dlx_core
+pkg wear_test v1
+  desc "Wear testing product-family DSL — vocabulary for initiative programs"
+  author "VEIL"
+  use ddd
+
+  construct WearTest
+    kw wear_test
+    mt mod
+    desc "A wear-test initiative bound to a cohort"
+    visual
+      icon "👟"
+      color "#f59e0b"
+      label "Wear Test"
+    in top
+    group domain
+
+  construct Enrollment
+    kw enrollment
+    mt struct
+    desc "Rules for including users in a wear test"
+    visual
+      icon "✅"
+      color "#10b981"
+      label "Enrollment"
+    in WearTest
+    group domain
+
+  construct Milestone
+    kw milestone
+    mt struct
+    desc "Progress checkpoint in a wear-test journey"
+    visual
+      icon "🏁"
+      color "#6366f1"
+      label "Milestone"
+    in WearTest
+    group domain
+
+  prompt
+    You author wear-test product packages that use this layer and dlx_core (IAAA).
+    Prefer wear_test vocabulary for initiative structure; call GetCohort / membership
+    queries for inclusion; put client-specific post-signal logic in the package, not here.
+
+  present
+    role WearTest
+      view model
+        layout tree

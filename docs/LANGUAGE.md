@@ -401,6 +401,9 @@ Which annotations are available per construct is declared by the layer.
 
 ## 9. The `.layer` format — teaching new vocabulary
 
+Team DSL authoring and IDE parity: see [`docs/LAYERS_DSL.md`](LAYERS_DSL.md) and
+stories [`110-layer-dsl-ide.md`](../stories/110-layer-dsl-ide.md).
+
 A layer is a `pkg` whose body declares `construct`s and `statement`s. This is a
 separate, line-oriented mini-format (not the expression grammar above).
 
