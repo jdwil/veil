@@ -44,98 +44,26 @@ membership rules, layout hints). All paradigm content lives in `.layer` files.
 - Replacing source-level `group` blocks (presentation is orthogonal; groups remain source structure)
 - Perfect auto-layout of every edge kind (wiring policy remains UX-013)
 
-## Design sketch (normative intent; refine in LAY-001)
+## Normative design
 
-### A. Presentation block on the layer package or construct
+**Locked in LAY-001:** [`docs/PRESENTATION.md`](../docs/PRESENTATION.md)
 
-Illustrative grammar (exact syntax to lock in LAY-001):
+Summary:
 
-```
-# On a parent construct (e.g. Context) — declare views available when drilled in
-construct Context
-  kw ctx
-  mt mod
-  ...
-  present
-    view groups
-      label "Layers"
-      layout tabs          # existing requires_groups behavior can map here
-      members by_source_group
-    view model
-      label "Domain model"
-      layout tree
-      roots Aggregate
-      nest Entity under Aggregate when in Aggregate   # or by containment edge
-      nest ValueObject under Aggregate when in Aggregate
-      nest Event under Aggregate
-      nest Command under Aggregate
-      orphan_policy list   # ents not under an agg still shown
-    view ports
-      label "Ports & adapters"
-      layout bipartite
-      left Port
-      right Adapter
-      edge implements
-
-# On leaf/role constructs — membership / default view roles
-construct Aggregate
-  ...
-  present
-    role container
-    default_view model
-    nestable_in model as root
-
-construct Event
-  ...
-  present
-    nestable_in model under Aggregate
-```
-
-### B. Engine presentation IR (generic)
-
-Something the server can serialize next to palette (names TBD):
-
-```json
-{
-  "views": [
-    {
-      "id": "model",
-      "label": "Domain model",
-      "applies_to": ["Context"],
-      "layout": "tree",
-      "roots": ["Aggregate"],
-      "nest_rules": [
-        { "child": "Event", "parent": "Aggregate", "when": "declared_in_parent" }
-      ]
-    }
-  ],
-  "construct_roles": {
-    "Aggregate": { "container": true, "default_view": "model" }
-  }
-}
-```
-
-Viewer rules:
-
-1. Never match on keyword strings like `"agg"` except via IR fields from layers.
-2. Switching views **re-projects** the same AST/IR; it does not rewrite source.
-3. Drill-down still uses IR containment / view-specific children lists.
-4. Missing presentation → current behavior (flat children + `requires_groups` tabs).
-
-### C. Relation to existing features
-
-| Existing | Becomes |
-|----------|---------|
-| `requires_groups` | Default or explicit `view groups` with `layout tabs` |
-| `group domain` on construct | Membership key for `by_source_group` / create placement (`dg`) |
-| `visual` | Unchanged node chrome |
-| `has` / parse nesting | Source of truth for AST; presentation may **also** nest by `in Aggregate` even when events live under the agg in source |
+- `present` / `view` / `nest` / `layout` / `members` / `orphan_policy` / `lens`
+- Construct **names** (not keywords) in all rules
+- Views are **display projections** only (no source rewrite)
+- Fallback: `requires_groups` → implicit tabs; else flat
+- MVP layouts: `flat`, `tabs`, `tree`, `flow`
+- Worked examples: DDD `Context`, Svelte `App`, functional `Module`
+- Machine IR JSON shape for LAY-002
+- Zero-domain-knowledge review checklist
 
 ---
 
 ## LAY-001: Presentation grammar + docs
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** layer author  
 **I want** a documented way to declare views, nest rules, and layout hints  
 **So that** paradigm authors can drive the IDE without engine patches
@@ -149,6 +77,10 @@ Viewer rules:
 - Explicit non-goals and migration path from `requires_groups` / `group` / `dg`
 - Review checklist: “would this force domain knowledge into the viewer?” → no
 - No requirement to fully implement the runtime in this story — grammar + semantics lock
+
+**Done notes:** `docs/PRESENTATION.md` is normative; `LANGUAGE.md` + `MISSION.md`
+cross-link. Runtime parse/API = LAY-002 (do not put `present` in ddd.layer until
+loader accepts it, unless LAY-002 lands in the same change).
 
 **Mission impact:** Without a locked surface, UX hierarchy work will hardcode paradigms.
 

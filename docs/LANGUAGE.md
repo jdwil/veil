@@ -444,7 +444,13 @@ Field meanings:
 - **`visual`** → `icon` / `color` / `label` — how the viewer renders it.
 - **`ann`** — `name: "desc" p1, p2` lines; offered in the property
   editor.
-- **`group`** — a palette-grouping label.
+- **`group`** — a palette-grouping label (also used by presentation
+  `members by_source_group` / tab partitions).
+- **`dg`** — default group for create/placement of impl-shaped constructs.
+- **`present`** — **layer-driven IDE views** (hierarchy, tabs, layouts, nest
+  rules, lenses). Normative grammar and semantics:
+  **[`docs/PRESENTATION.md`](./PRESENTATION.md)** (LAY-001). Not yet required
+  for layers to load; until LAY-002, treat as the locked design for implementers.
 - **`runtime <coordinator> <step_trait>`** — for delegated fn-shaped constructs
   (e.g. `saga`): steps are lowered to `impl <step_trait>` blocks and handed to
   the coordinator function. Nested `sub_block -> method` lines map a step's

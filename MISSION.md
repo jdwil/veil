@@ -245,6 +245,12 @@ The viewer uses `/api/palette` for:
 - Palette of available constructs/statements
 - Property labels and **layer-declared annotations**
 
+**Presentation** (views, nest rules, layouts, review lenses) is also
+layer-declared so paradigms (DDD hierarchy, Svelte route trees, FP modules)
+drive the IDE without hardcoding domain words in the viewer. Normative
+grammar: [`docs/PRESENTATION.md`](docs/PRESENTATION.md). Implementation is
+tracked as LAY-* in `stories/35-layer-presentation.md`.
+
 Edits go through structured APIs (`POST /api/edit`): update AST →
 re-serialize → validate → write → regenerate. Round-trips must stay
 deterministic; noisy pretty-print churn breaks trust for agents and humans.
