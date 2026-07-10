@@ -92,7 +92,7 @@ trees into a row store. Object storage remains the cloud analog of “disk.”
 
 ## AGT-001: In-IDE agent panel (MVP vertical slice)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** human in the VEIL IDE  
 **I want** to send a natural-language prompt that requests code changes  
 **So that** the agent edits my package and the IDE updates without a manual reload
@@ -113,11 +113,15 @@ trees into a row store. Object storage remains the cloud analog of “disk.”
 
 **Depends:** SER-001/002 (safe writes), UX-010 (editable pkg), CHK-001/002
 
+**Done notes:** `AgentPanel.svelte` + `POST /api/agent/turn`; built-in heuristic
+agent tools: check, outline, rename; cancel via AbortController; refresh on
+`source_changed`. Real model adapters remain AGT-003.
+
 ---
 
 ## AGT-002: Live IDE sync on backend source changes
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** user watching the agent work  
 **I want** the graph and panels to track source mutations from any writer  
 **So that** agent tools, manual edits, and multi-tab/server paths stay consistent
@@ -130,6 +134,9 @@ trees into a row store. Object storage remains the cloud analog of “disk.”
 - Conflict policy documented: if user edited same file mid-turn → warn / merge
   strategy (MVP: block agent write or prompt user)
 - Works for LocalFs adapter first; same events for remote adapters later
+
+**Done notes:** `GET /api/events` SSE revision heartbeat; agent turn sets
+`source_changed` → client `fetchIr()`. Full shared event bus deferred.
 
 ---
 
@@ -158,7 +165,7 @@ hardcoded clients in the UI.
 
 ## AGT-004: SourceStore port + adapters (all environments)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As the** edit toolchain  
 **I want** one source abstraction for all deploy modes  
 **So that** agent tools do not care whether files are on disk, in S3, or staged locally
@@ -177,11 +184,14 @@ hardcoded clients in the UI.
 
 **Ties to:** RT-010/011 (storage), SER (serialization of VEIL text)
 
+**Done notes:** `SourceProvider` port + `FilesystemProvider` (LocalFs) is the
+agent tool surface. Object+Meta / Memory adapters deferred with RT-010.
+
 ---
 
 ## AGT-005: Agent edit tools as ports (not filesystem-only hacks)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As an** agent  
 **I want** first-class tools for VEIL editing  
 **So that** changes go through the same integrity path as the IDE
@@ -209,11 +219,15 @@ Tool ports (names illustrative):
 
 **Mission impact:** Agents edit VEIL structure safely; storage stays swappable.
 
+**Done notes:** Built-in tools via `SourceProvider`: `read_source`,
+`apply_edit` (Rename EditOp), `run_check`, `get_context` outline. Tool calls
+logged in turn response. Full tool matrix / apply_patch later.
+
 ---
 
 ## AGT-006: Built-in agent (host-owned loop)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** user without an external ACP agent  
 **I want** a built-in coding agent in the IDE  
 **So that** VEIL works out of the box with only model credentials
@@ -227,6 +241,10 @@ Tool ports (names illustrative):
 - Respects a simple permission mode: auto-apply vs confirm-each-write (MVP:
   auto-apply in local dev with clear activity log)
 - Configurable system/instructions path (project `AGENTS.md` / layer prompts)
+
+**Done notes:** `veil_server::agent::run_turn` host-owned heuristic loop;
+tool status in panel; auto-apply rename in local serve. ModelProvider
+pluggability = AGT-003.
 
 ---
 

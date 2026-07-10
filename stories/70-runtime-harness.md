@@ -37,7 +37,7 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 
 ## RT-000: Prove and document VEIL-authored harness path
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** coder  
 **I want** a documented, working example of a full app harness in VEIL  
 **So that** I do not need handwritten Rust to run my package locally
@@ -54,6 +54,9 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
   reintroducing permanent handwritten app harnesses
 
 **Mission impact:** Validates the user’s assumption; drives gap closure.
+
+**Done notes:** `docs/HARNESS.md` — path via `examples/di_example.veil` +
+`@main`/`@pvd`/`@dep`; known gaps table → RT-001/001b/002/004.
 
 ---
 

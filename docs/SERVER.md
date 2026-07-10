@@ -45,6 +45,8 @@ See `is_veil_source_editable` in `veil-cli`.
 | POST | `/api/files/select` | `{ "index": N }` — set active file |
 | POST | `/api/edit` | `{ "ops": [ EditOp, … ] }` — structured edit |
 | GET | `/api/diff` | Structural IR diff of active file vs git HEAD (UX-021) |
+| POST | `/api/agent/turn` | Built-in agent turn `{ "prompt": "…" }` (AGT-001) |
+| GET | `/api/events` | SSE revision heartbeat for live sync (AGT-002) |
 
 ## Viewer assumptions
 

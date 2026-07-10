@@ -233,6 +233,8 @@ struct IrBuilder<'a> {
     registry: Option<&'a LayerRegistry>,
 }
 
+// note: registry carries IdentityPolicy for FK edges (INV-006)
+
 impl<'a> IrBuilder<'a> {
     fn new(registry: Option<&'a LayerRegistry>) -> Self {
         Self {
@@ -997,8 +999,15 @@ impl<'a> IrBuilder<'a> {
 
     /// Detect FK-style references between constructs.
     /// When a TypeDef node has a field like `cohort_id: Id`, look for a construct
-    /// named "Cohort" and emit a References edge from this node to that target.
+    /// INV-006: FK / reference edges only when layer identity_policy enables a ref_suffix.
     fn resolve_references(&mut self) {
+        let Some(reg) = self.registry else {
+            return;
+        };
+        let Some(suffix) = reg.identity_policy.ref_suffix.clone() else {
+            // Default off: no magic `*_id` inference without layer opt-in.
+            return;
+        };
         let mut ref_edges: Vec<(NodeId, NodeId)> = Vec::new();
 
         // Collect all construct names (TypeDef, Module, Flow, Interface) and their IDs.
@@ -1010,7 +1019,7 @@ impl<'a> IrBuilder<'a> {
             .map(|n| (n.id, n.name.clone()))
             .collect();
 
-        // For each TypeDef node, look at its "fields" property for `xxx_id` patterns.
+        // For each TypeDef node, look at its "fields" property for suffix patterns.
         for node in &self.graph.nodes {
             if node.kind != NodeKind::TypeDef {
                 continue;
@@ -1023,14 +1032,22 @@ impl<'a> IrBuilder<'a> {
                 .map(|(_, v)| v.clone())
                 .unwrap_or_default();
 
-            // Parse field names: "cohort_id: Id, name: Str, ..." -> extract "cohort_id"
+            // Parse field names: "cohort_id: Id, name: Str, ..." when suffix is "_id"
             for field in fields_str.split(", ") {
                 let field_name = field.split(':').next().unwrap_or("").trim();
-                if !field_name.ends_with("_id") || field_name == "id" {
+                if !field_name.ends_with(&suffix) {
                     continue;
                 }
-                // Strip "_id" suffix and convert to PascalCase to match construct names.
-                let ref_name = field_name.trim_end_matches("_id");
+                let id_field = reg
+                    .identity_policy
+                    .identity_field
+                    .as_deref()
+                    .unwrap_or("id");
+                if field_name == id_field {
+                    continue;
+                }
+                // Strip suffix and convert to PascalCase to match construct names.
+                let ref_name = field_name.trim_end_matches(&suffix);
                 let pascal = ref_name
                     .split('_')
                     .map(|part| {

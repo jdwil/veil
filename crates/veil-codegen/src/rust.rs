@@ -1726,16 +1726,22 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         }
     }
 
-    // Detect if this module is an orchestrator (steps have ctx refs = cross-context calls)
-    let is_orchestrator = flows.iter().any(|flow| {
+    // INV-003: JSON-Bus orchestrator path is opt-in via layer routing traits +
+    // step context refs. Packages without routing (no Bus/etc.) stay direct-call.
+    let has_ctx_refs = flows.iter().any(|flow| {
         let steps = match flow {
             FlowLike::Flow(f) => &f.steps,
             FlowLike::Construct(c) => &c.steps,
         };
         steps.iter().any(|s| {
-            if let FlowStep::Step(sd) = s { !sd.refs.is_empty() } else { false }
+            if let FlowStep::Step(sd) = s {
+                !sd.refs.is_empty()
+            } else {
+                false
+            }
         })
     });
+    let is_orchestrator = has_ctx_refs && !registry.routing_traits().is_empty();
 
     // For orchestrators, only routing traits (e.g. Bus) are direct deps — all
     // other calls go through the message bus.

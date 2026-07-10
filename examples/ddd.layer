@@ -2,6 +2,11 @@ pkg ddd v1
   desc "Domain-Driven Design abstraction layer"
   author "VEIL"
 
+  # INV-006: FK / identity conventions (opt-in; off without this block)
+  identity_policy
+    ref_suffix _id
+    identity_field id
+
   construct Context
     kw ctx
     mt mod

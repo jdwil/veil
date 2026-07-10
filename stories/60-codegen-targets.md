@@ -6,7 +6,7 @@ Mission: hybrid codegen; semantic honesty over pretty demos; escape hatches meas
 
 ## GEN-001: Surface adapter `todo!` as check debt
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As an** agent/reviewer  
 **I want** generated `todo!` / stub method bodies reported  
 **So that** “compiles” is not confused with “implements”
@@ -19,6 +19,10 @@ Mission: hybrid codegen; semantic honesty over pretty demos; escape hatches meas
 - Ties to CHK-006
 
 **Touch:** `rust.rs` adapter paths
+
+**Done notes:** CHK-006 `escape_empty_adapter` already flags empty adapter
+methods (“codegen may emit todo!()”); `--deny-escape-hatches` promotes to
+error. Message names construct + method.
 
 ---
 

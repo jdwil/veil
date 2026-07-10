@@ -230,6 +230,15 @@ pub struct CodegenRule {
 
 // ─── LayerRegistry ───────────────────────────────────────────────────────────
 
+/// Identity / FK edge policy (INV-006). Default: no `*_id` inference.
+#[derive(Debug, Clone, Default)]
+pub struct IdentityPolicy {
+    /// When set (e.g. `"_id"`), fields ending with this suffix become References edges.
+    pub ref_suffix: Option<String>,
+    /// Canonical identity field name (e.g. `"id"`) for equality_by_value checks.
+    pub identity_field: Option<String>,
+}
+
 /// Target constructor / field-default policy (INV-002).
 /// Declared in target layers (e.g. `rust.layer`); not hardcoded in backends.
 #[derive(Debug, Clone, Default)]
@@ -297,6 +306,8 @@ pub struct LayerRegistry {
     pub external_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     /// Smart-constructor / field-default policy (INV-002). Filled from target layers.
     pub constructor_policy: ConstructorPolicy,
+    /// Identity / FK inference policy (INV-006). Default off.
+    pub identity_policy: IdentityPolicy,
 }
 
 impl Default for LayerRegistry {
@@ -311,6 +322,7 @@ impl Default for LayerRegistry {
             stubs: Vec::new(),
             external_resolver: None,
             constructor_policy: ConstructorPolicy::default(),
+            identity_policy: IdentityPolicy::default(),
         }
     }
 }
@@ -327,6 +339,7 @@ impl Clone for LayerRegistry {
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
             constructor_policy: self.constructor_policy.clone(),
+            identity_policy: self.identity_policy.clone(),
         }
     }
 }
@@ -619,6 +632,10 @@ impl LayerRegistry {
         } else if name == "rust" && self.constructor_policy.auto_fields.is_empty() {
             // rust.layer documents policy; apply canonical Rust defaults.
             self.constructor_policy = ConstructorPolicy::rust_defaults();
+        }
+        // INV-006: identity / FK policy (ddd opts in; default is off).
+        if let Some(id_pol) = parse_identity_policy(content) {
+            self.identity_policy = id_pol;
         }
         Ok(())
     }
@@ -1745,6 +1762,49 @@ pub fn parse_constructor_policy(content: &str) -> Option<ConstructorPolicy> {
                 pol.type_defaults
                     .push((ty.trim().to_string(), expr.trim().to_string()));
             }
+        }
+    }
+    if found {
+        Some(pol)
+    } else {
+        None
+    }
+}
+
+/// Parse optional INV-006 identity policy:
+/// ```text
+/// identity_policy
+///   ref_suffix _id
+///   identity_field id
+/// ```
+pub fn parse_identity_policy(content: &str) -> Option<IdentityPolicy> {
+    let mut in_block = false;
+    let mut pol = IdentityPolicy::default();
+    let mut found = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t == "identity_policy" {
+            in_block = true;
+            found = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && !t.starts_with("ref_suffix")
+            && !t.starts_with("identity_field")
+        {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("ref_suffix ") {
+            pol.ref_suffix = Some(rest.trim().to_string());
+        } else if let Some(rest) = t.strip_prefix("identity_field ") {
+            pol.identity_field = Some(rest.trim().to_string());
         }
     }
     if found {

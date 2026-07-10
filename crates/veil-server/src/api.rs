@@ -34,6 +34,8 @@ use crate::provider::SourceProvider;
 /// - `POST /api/files/select` — switch active file
 /// - `POST /api/edit` — apply structured edits
 /// - `GET /api/diff` — structural IR diff vs git HEAD (UX-021)
+/// - `POST /api/agent/turn` — built-in agent turn (AGT-001)
+/// - `GET /api/events` — SSE source-change stream (AGT-002 MVP)
 pub fn build_router<P: SourceProvider>(provider: P) -> Router {
     let state = Arc::new(provider);
 
@@ -51,6 +53,8 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/files/select", post(post_select_file::<P>))
         .route("/api/edit", post(post_edit::<P>))
         .route("/api/diff", get(get_diff::<P>))
+        .route("/api/agent/turn", post(post_agent_turn::<P>))
+        .route("/api/events", get(get_events::<P>))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -451,4 +455,46 @@ async fn post_edit<P: SourceProvider>(
         diagnostics: Some(check_resp.diagnostics),
     };
     Json(response).into_response()
+}
+
+// ─── Agent (AGT-001) ───────────────────────────────────────────────────────
+
+async fn post_agent_turn<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Json(req): Json<crate::agent::AgentTurnRequest>,
+) -> axum::response::Response {
+    let resp = crate::agent::run_turn(state.as_ref(), req).await;
+    match serde_json::to_string(&resp) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// AGT-002 MVP: long-poll-friendly SSE keepalive + revision heartbeat.
+/// Full push-on-write requires a shared event bus; for MVP the IDE also
+/// refreshes after agent turns that set `source_changed`.
+async fn get_events<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
+    let src = state.read_source("").await.unwrap_or_default();
+    let rev = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        src.hash(&mut h);
+        h.finish()
+    };
+    let body = format!(
+        "event: revision\ndata: {{\"revision\":{},\"bytes\":{}}}\n\n",
+        rev,
+        src.len()
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }

@@ -250,22 +250,30 @@ fn validate_construct(
                         }
                     }
                 }
-                // `equality_by_value` / `no_identity` — value objects should not have `id`.
+                // `equality_by_value` / `no_identity` — no identity field (INV-006 policy name).
                 Some("equality_by_value") | Some("no_identity") => {
+                    let id_field = registry
+                        .identity_policy
+                        .identity_field
+                        .as_deref()
+                        .unwrap_or("id");
                     let all_fields: Vec<&str> = c.fields.iter()
                         .map(|f| f.name.as_str())
                         .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
                         .collect();
-                    if all_fields.contains(&"id") {
+                    if all_fields.iter().any(|f| *f == id_field) {
                         errors.push(ValidationError::new(
                             "equality_by_value",
                             format!(
-                                "'{}' has equality_by_value but contains an 'id' field (implies identity)",
-                                c.name
+                                "'{}' has equality_by_value but contains '{}' field (implies identity)",
+                                c.name, id_field
                             ),
                             c.name.clone(),
                             parent_name.to_string(),
-                            Some("Value objects should not have an 'id' field — they are compared by all fields".to_string()),
+                            Some(format!(
+                                "Value objects should not have a '{}' field — compared by all fields",
+                                id_field
+                            )),
                         ));
                     }
                 }

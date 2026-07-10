@@ -54,7 +54,7 @@ rust codegen use roles only. Template `dep_fields` via registry.
 
 ## INV-003: Bus / orchestrator policy out of expr core
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** non-DDD app author  
 **I want** plain packages without JSON-Bus orchestration assumptions  
 **So that** “blessed path ≠ core” holds
@@ -70,6 +70,10 @@ rust codegen use roles only. Template `dep_fields` via registry.
   onboarding still does
 
 **Touch:** `expr.rs`, `rust.rs`, layer `routing` / `runtime` metadata
+
+**Done notes:** `is_orchestrator` requires **both** step `ctx` refs **and**
+non-empty `registry.routing_traits()` (from layer statements). No routing
+layer → no JSON-Bus envelope path.
 
 ---
 
@@ -112,7 +116,7 @@ rust codegen use roles only. Template `dep_fields` via registry.
 
 ## INV-006: Identity / FK heuristics as policy
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** layer author  
 **I want** `id` / `*_id` identity and reference edges configurable  
 **So that** domains without UUID identity still work
@@ -124,6 +128,10 @@ rust codegen use roles only. Template `dep_fields` via registry.
 - `equality_by_value` / `has_identity` do not hardcode field `"id"` without
   layer schema
 - Document default for `ddd.layer`
+
+**Done notes:** `IdentityPolicy` + `identity_policy` in `ddd.layer`
+(`ref_suffix _id`, `identity_field id`). Default off without policy.
+`equality_by_value` uses `identity_field` from registry.
 
 ---
 

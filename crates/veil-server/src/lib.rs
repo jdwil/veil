@@ -18,7 +18,9 @@
 pub mod provider;
 pub mod api;
 pub mod protocol;
+pub mod agent;
 
 pub use provider::{SourceProvider, FileInfo};
 pub use provider::filesystem::FilesystemProvider;
 pub use api::build_router;
+pub use agent::{run_turn, AgentTurnRequest, AgentTurnResponse};
