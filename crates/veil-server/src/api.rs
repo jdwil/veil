@@ -33,6 +33,7 @@ use crate::provider::SourceProvider;
 /// - `GET /api/files` — list loaded files
 /// - `POST /api/files/select` — switch active file
 /// - `POST /api/edit` — apply structured edits
+/// - `GET /api/diff` — structural IR diff vs git HEAD (UX-021)
 pub fn build_router<P: SourceProvider>(provider: P) -> Router {
     let state = Arc::new(provider);
 
@@ -49,6 +50,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/files", get(get_files::<P>))
         .route("/api/files/select", post(post_select_file::<P>))
         .route("/api/edit", post(post_edit::<P>))
+        .route("/api/diff", get(get_diff::<P>))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -89,6 +91,50 @@ async fn get_source<P: SourceProvider>(State(state): State<SharedProvider<P>>) -
     match state.read_source("").await {
         Ok(source) => ([(header::CONTENT_TYPE, "text/plain")], source).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// UX-021: structural IR diff of active file vs git HEAD (when available).
+async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
+    let head_src = match state.read_source("").await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let head_sol = match parse_source(&head_src, state.registry()) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("parse head: {}", e)).into_response(),
+    };
+    let head_ir = veil_ir::build_ir(&head_sol);
+
+    let baseline = match state.baseline_source("").await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+
+    let (base_label, base_ir) = match baseline {
+        Some((label, src)) => {
+            let sol = match parse_source(&src, state.registry()) {
+                Ok(s) => s,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("parse baseline ({}): {}", label, e),
+                    )
+                        .into_response();
+                }
+            };
+            (label, veil_ir::build_ir(&sol))
+        }
+        None => {
+            // No git baseline — empty base (everything appears as added).
+            ("(no baseline)".into(), veil_ir::IrGraph::new())
+        }
+    };
+
+    let diff = veil_ir::structural_diff(&base_ir, &head_ir, &base_label, "working tree");
+    match serde_json::to_string(&diff) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

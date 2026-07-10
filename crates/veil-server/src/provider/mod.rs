@@ -40,4 +40,12 @@ pub trait SourceProvider: Send + Sync + 'static {
     fn set_active(&self, _index: usize) -> Result<(), String> {
         Err("set_active not supported by this provider".into())
     }
+
+    /// Baseline source for structural diff (UX-021).
+    ///
+    /// Default: `None` (caller may use session snapshot only).
+    /// Filesystem provider returns `git show HEAD:<path>` when available.
+    async fn baseline_source(&self, _file: &str) -> Result<Option<(String, String)>, String> {
+        Ok(None)
+    }
 }

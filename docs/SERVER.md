@@ -44,6 +44,7 @@ See `is_veil_source_editable` in `veil-cli`.
 | GET | `/api/files` | Loaded files (`index`, `name`, `path`, `editable`, `active`) |
 | POST | `/api/files/select` | `{ "index": N }` — set active file |
 | POST | `/api/edit` | `{ "ops": [ EditOp, … ] }` — structured edit |
+| GET | `/api/diff` | Structural IR diff of active file vs git HEAD (UX-021) |
 
 ## Viewer assumptions
 

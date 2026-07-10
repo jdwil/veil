@@ -16,6 +16,7 @@ pub mod resolve;
 pub mod typecheck;
 pub mod serialize;
 pub mod span;
+pub mod struct_diff;
 pub mod validate;
 
 pub use ast::*;
@@ -40,3 +41,4 @@ pub use project::{
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;
+pub use struct_diff::{structural_diff, DiffItem, StructDiff};

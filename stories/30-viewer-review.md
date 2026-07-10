@@ -62,7 +62,7 @@ smarter default selection. Target selector still follows server gen target.
 
 ## UX-021: Structural / semantic diff
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** human reviewing agent output  
 **I want** a structural diff of topology and critical bodies  
 **So that** I approve changes without full re-walk or LoC churn
@@ -76,6 +76,9 @@ smarter default selection. Target selector still follows server gen target.
 - Later: PR-oriented multi-file; MVP single active file is OK
 
 **Mission impact:** Core success metric — time-to-approve structural change.
+
+**Done notes:** `veil_ir::structural_diff`; `GET /api/diff` vs `git HEAD` via
+provider `baseline_source`; `DiffPanel` toolbar “Review changes” with jump.
 
 ---
 

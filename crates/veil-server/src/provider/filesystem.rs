@@ -1,7 +1,7 @@
 //! Filesystem-backed source provider — reads/writes .veil files from disk.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -140,5 +140,51 @@ impl SourceProvider for FilesystemProvider {
 
     fn set_active(&self, index: usize) -> Result<(), String> {
         FilesystemProvider::set_active(self, index)
+    }
+
+    async fn baseline_source(&self, file: &str) -> Result<Option<(String, String)>, String> {
+        let entry = if file.is_empty() {
+            &self.files[self.active_index()]
+        } else {
+            self.files
+                .iter()
+                .find(|e| e.name == file || e.path.to_string_lossy() == file)
+                .ok_or_else(|| format!("file not found: {}", file))?
+        };
+
+        // Prefer path relative to a git root so `git show HEAD:path` works.
+        let abs = entry
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| entry.path.clone());
+        let parent = abs.parent().unwrap_or(std::path::Path::new("."));
+
+        let root_out = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(parent)
+            .output()
+            .map_err(|e| format!("git unavailable: {}", e))?;
+        if !root_out.status.success() {
+            return Ok(None);
+        }
+        let root = String::from_utf8_lossy(&root_out.stdout).trim().to_string();
+        let root_path = PathBuf::from(&root);
+        let rel = abs
+            .strip_prefix(&root_path)
+            .unwrap_or(&abs)
+            .to_string_lossy()
+            .to_string();
+
+        let show = Command::new("git")
+            .args(["show", &format!("HEAD:{}", rel)])
+            .current_dir(&root_path)
+            .output()
+            .map_err(|e| format!("git show failed: {}", e))?;
+        if !show.status.success() {
+            // Untracked or missing at HEAD
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&show.stdout).to_string();
+        Ok(Some(("git HEAD".into(), text)))
     }
 }

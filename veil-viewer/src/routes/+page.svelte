@@ -20,6 +20,7 @@
   import CodePreview from '$lib/CodePreview.svelte';
   import VeilSourcePanel from '$lib/VeilSourcePanel.svelte';
   import OutlinePanel from '$lib/OutlinePanel.svelte';
+  import DiffPanel from '$lib/DiffPanel.svelte';
   import { layoutNodes, layoutByType } from '$lib/layout';
   import {
     irGraph,
@@ -996,6 +997,7 @@
       {/each}
     </div>
     <OutlinePanel />
+    <DiffPanel />
     <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
       <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
       <span>Show infrastructure</span>
