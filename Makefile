@@ -19,7 +19,7 @@ STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sq
                aws-config gix rig-core axum tokio-tungstenite tower-http \
                sha2 zip tempfile schemars
 
-.PHONY: veil runtime gen-runtime build-runtime clean-runtime stubs check
+.PHONY: veil runtime gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
 
 # ─── Compiler ───────────────────────────────────────────────────────────────
 
@@ -53,3 +53,11 @@ stubs: veil
 
 check: veil
 	$(VEIL_BIN) check $(RUNTIME_SRC)
+
+# SER-004: unit + integration tests including fixture round-trips
+test:
+	cargo test --workspace
+
+# Round-trip suite only (examples/** + runtime/src/**)
+test-roundtrip:
+	cargo test -p veil-parser --test roundtrip_suite

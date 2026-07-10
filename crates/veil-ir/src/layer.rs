@@ -433,6 +433,12 @@ impl LayerRegistry {
                 .map_err(|e| format!("cannot read layer '{}' at {}: {}", name, local_path.display(), e));
         }
 
+        // 1b. Walk ancestors: `layers/<name>.layer` next to any parent
+        // (e.g. runtime/src → …/veil/layers/ddd.layer).
+        if let Some(content) = Self::load_layer_walking_ancestors(name, local_dir) {
+            return Ok(content);
+        }
+
         // 2. System layers directory
         if let Some(content) = Self::load_system_layer(name) {
             return Ok(content);
@@ -446,9 +452,28 @@ impl LayerRegistry {
         }
 
         Err(format!(
-            "layer '{}' not found (searched: {}, system layers)",
+            "layer '{}' not found (searched: {}, ancestors/layers, system layers)",
             name, local_dir.display()
         ))
+    }
+
+    /// Search `dir`, then each ancestor, for `layers/<name>.layer`.
+    fn load_layer_walking_ancestors(name: &str, dir: &Path) -> Option<String> {
+        let mut cur = Some(dir);
+        while let Some(d) = cur {
+            let candidate = d.join("layers").join(format!("{}.layer", name));
+            if candidate.exists() {
+                return std::fs::read_to_string(&candidate).ok();
+            }
+            // Also allow a layer file sitting directly in an ancestor
+            // (examples/ddd.layer when the .veil is under examples/).
+            let sibling = d.join(format!("{}.layer", name));
+            if sibling.exists() {
+                return std::fs::read_to_string(&sibling).ok();
+            }
+            cur = d.parent();
+        }
+        None
     }
 
     /// Load a layer from the system layers directory.
@@ -478,10 +503,17 @@ impl LayerRegistry {
             }
         }
 
-        // Try workspace root /layers/ (for dev)
+        // Try workspace root /layers/ (for dev) relative to CWD
         let path = Path::new("layers").join(format!("{}.layer", name));
         if path.exists() {
             return std::fs::read_to_string(&path).ok();
+        }
+
+        // Walk CWD ancestors for layers/ (cargo test CWD is often a crate dir)
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Some(content) = Self::load_layer_walking_ancestors(name, &cwd) {
+                return Some(content);
+            }
         }
 
         None
