@@ -68,10 +68,19 @@ context:
 Surfaced after closing the initial backlog (design/MVP honesty, harness gaps,
 agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target demos.
 
+### P0/P1 — language designer (team DSLs)
+
+| ID | Theme | File |
+|----|--------|------|
+| **DSL-001–004** | Serve layers, edit, check, hot reload | [110](110-layer-dsl-ide.md) |
+| **DSL-005–008** | Layer topology, palette, props, structured ops | [110](110-layer-dsl-ide.md) |
+| **DSL-009–011** | Presentation/prompts, diff, agent layer tools | [110](110-layer-dsl-ide.md) |
+
 ### P2 — trust & daily driver
 
 | ID | Theme | File |
 |----|--------|------|
+| **DSL-012–014** | Team consumer mode, scaffold, impact view | [110](110-layer-dsl-ide.md) |
 | **PAR-015** | Spike capability honesty (signature vs body) | [90](90-parity-future.md) |
 | **AGT-013** | Agent write path allowlist | [100](100-ide-agent.md) |
 | **AGT-014** | Plan-only agent mode | [100](100-ide-agent.md) |
@@ -93,6 +102,9 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **RT-026** | In-process HTTP (drop curl) | [80](80-runtime-platform.md) |
 | **AGT-016 / 018** | Remote auth + live sync | [100](100-ide-agent.md) |
 | **GEN-008 / 009** | Package multi-target + warning hygiene | [60](60-codegen-targets.md) |
+| **DSL-015** | Many-layer workspace polish | [110](110-layer-dsl-ide.md) |
 
-**Sequencing note:** Close **PAR-015** before expanding Swift/Kotlin demos so
-capabilities cannot lie. Prefer **AGT-013/014** before multi-user remote auth.
+**Sequencing note:** Prefer **DSL-001–004** when language-designer iteration is
+the bottleneck (many team DSLs). Close **PAR-015** before expanding
+Swift/Kotlin demos so capabilities cannot lie. Prefer **AGT-013/014** before
+multi-user remote auth.
