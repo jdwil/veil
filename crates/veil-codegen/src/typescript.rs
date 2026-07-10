@@ -460,13 +460,13 @@ fn unaryop_to_ts(op: &UnaryOp) -> &'static str {
 /// Generate a TypeScript project from a VEIL Solution AST.
 /// `used_packages` optionally provides expose blocks from packages the solution
 /// imports, enabling typed API client generation alongside the frontend code.
-pub fn generate_ts(solution: &Solution, _registry: &LayerRegistry) -> TsProject {
-    generate_ts_with_packages(solution, _registry, &[])
+pub fn generate_ts(solution: &Solution, registry: &LayerRegistry) -> TsProject {
+    generate_ts_with_packages(solution, registry, &[])
 }
 
 pub fn generate_ts_with_packages(
     solution: &Solution,
-    _registry: &LayerRegistry,
+    registry: &LayerRegistry,
     used_packages: &[(String, ExposeBlock)],
 ) -> TsProject {
     let mut files = Vec::new();
@@ -489,9 +489,8 @@ pub fn generate_ts_with_packages(
     // Generate service functions (fn-shaped constructs)
     files.push(gen_services(&modules, solution));
 
-    // Generate Svelte component files for Component-shaped structs
-    // (identified by subkind "Component" from the svelte5 layer)
-    files.extend(gen_svelte_components(&modules));
+    // INV-005: UI file emit keyed on layer identity (is_a), not hardcoded subkind strings
+    files.extend(gen_svelte_components(&modules, registry));
 
     // Generate typed API clients for any used packages with expose blocks
     for (pkg_name, expose) in used_packages {
@@ -698,16 +697,12 @@ fn gen_services(modules: &[&Construct], solution: &Solution) -> TsFile {
     TsFile { path: "src/services.ts".to_string(), content: out }
 }
 
-/// Generate .svelte files for Component-shaped constructs.
-/// A component with `props`, `state`, `derived`, and `fn` blocks becomes a
-/// single-file Svelte 5 component using runes ($props, $state, $derived).
-/// The `template` and `style` fields (if present as StringLit expressions in
-/// the component's methods/fields) are emitted as raw markup and CSS.
-fn gen_svelte_components(modules: &[&Construct]) -> Vec<TsFile> {
+/// Generate .svelte files for UI constructs (layer-identified, INV-005).
+fn gen_svelte_components(modules: &[&Construct], registry: &LayerRegistry) -> Vec<TsFile> {
     let mut files = Vec::new();
 
     for module in modules {
-        let components = collect_all_components(module);
+        let components = collect_all_components(module, registry);
         for comp in components {
             files.push(gen_svelte_file(comp));
         }
@@ -716,18 +711,37 @@ fn gen_svelte_components(modules: &[&Construct]) -> Vec<TsFile> {
     files
 }
 
-/// Recursively collect all struct-shaped constructs with subkind "Component",
-/// "Page", "Layout", or "Store" from the module tree.
-fn collect_all_components(c: &Construct) -> Vec<&Construct> {
+/// True if this construct is a Svelte UI emit target per layer identity.
+/// Uses `LayerRegistry::is_a` so aliases mapping to Component/Page/Layout work.
+fn is_svelte_ui_construct(c: &Construct, registry: &LayerRegistry) -> bool {
+    if c.shape != Shape::Struct {
+        return false;
+    }
+    let kw = c.keyword.as_str();
+    let sk = c.subkind.as_str();
+    // Layer name or keyword chain (supports alias constructs)
+    for ancestor in ["Component", "Page", "Layout"] {
+        if registry.is_a(kw, ancestor) || registry.is_a(sk, ancestor) {
+            return true;
+        }
+        if let Some(spec) = registry.construct_by_name(sk).or_else(|| registry.construct(kw)) {
+            if spec.name == ancestor || registry.is_a(&spec.keyword, ancestor) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Recursively collect UI constructs from the module tree (INV-005).
+fn collect_all_components<'a>(c: &'a Construct, registry: &LayerRegistry) -> Vec<&'a Construct> {
     let mut result = Vec::new();
     for child in &c.children {
-        let sk = child.subkind.as_str();
-        if child.shape == Shape::Struct && (sk == "Component" || sk == "Page" || sk == "Layout") {
+        if is_svelte_ui_construct(child, registry) {
             result.push(child);
         }
-        // Recurse into groups
         if child.shape == Shape::Group || child.shape == Shape::Mod {
-            result.extend(collect_all_components(child));
+            result.extend(collect_all_components(child, registry));
         }
     }
     result

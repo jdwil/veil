@@ -142,7 +142,7 @@ agent tools: check, outline, rename; cancel via AbortController; refresh on
 
 ## AGT-003: ModelProvider port + flexible adapters (Zed-like)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** deployer / power user  
 **I want** pluggable model backends (e.g. Amazon Bedrock, OpenAI-compatible, …)  
 **So that** we are not locked to one vendor API
@@ -160,6 +160,11 @@ agent tools: check, outline, rename; cancel via AbortController; refresh on
 
 **Mission impact:** “Extremely flexible model support” — ports/adapters, not
 hardcoded clients in the UI.
+
+**Done notes:** `ModelProvider` + `EchoProvider`, `OpenAiCompatibleProvider`,
+`BedrockProvider` (port registered; AWS SDK follow-up). Env:
+`VEIL_MODEL_PROVIDER`, `VEIL_MODEL_NAME`, `VEIL_MODEL_API_KEY`,
+`VEIL_MODEL_BASE_URL`, `VEIL_MODEL_REGION`. `GET /api/models`.
 
 ---
 

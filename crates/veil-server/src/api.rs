@@ -55,6 +55,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/diff", get(get_diff::<P>))
         .route("/api/agent/turn", post(post_agent_turn::<P>))
         .route("/api/events", get(get_events::<P>))
+        .route("/api/models", get(get_models))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -465,6 +466,28 @@ async fn post_agent_turn<P: SourceProvider>(
 ) -> axum::response::Response {
     let resp = crate::agent::run_turn(state.as_ref(), req).await;
     match serde_json::to_string(&resp) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// AGT-003: list models for the configured ModelProvider.
+async fn get_models() -> axum::response::Response {
+    let cfg = crate::model::ModelConfig::from_env();
+    let provider = cfg.build_provider();
+    let models = provider.list_models().await.unwrap_or_default();
+    let body = serde_json::json!({
+        "provider": provider.name(),
+        "models": models,
+        "config": {
+            "kind": cfg.kind,
+            "model": cfg.model,
+            "base_url": cfg.base_url,
+            "region": cfg.region,
+            "has_api_key": cfg.api_key.is_some(),
+        }
+    });
+    match serde_json::to_string(&body) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

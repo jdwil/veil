@@ -96,8 +96,14 @@ fn severity_rank(s: &Severity) -> u8 {
 }
 
 fn validation_to_diagnostic(err: ValidationError) -> Diagnostic {
+    // INV-004: unknown constraint notices are warnings, not hard errors.
+    let severity = if err.code.starts_with("unknown_constraint:") {
+        Severity::Warning
+    } else {
+        Severity::Error
+    };
     Diagnostic {
-        severity: Severity::Error,
+        severity,
         message: err.message.clone(),
         node_id: None,
         node_name: Some(err.construct.clone()),

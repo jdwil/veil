@@ -79,7 +79,7 @@ layer → no JSON-Bus envelope path.
 
 ## INV-004: Genericize DDD constraint algorithms
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** layer author  
 **I want** constraint words to map to generic engines or layer scripts  
 **So that** `crud_for_aggregate` is not permanently special-cased Rust
@@ -94,11 +94,14 @@ layer → no JSON-Bus envelope path.
 - `crud_for_aggregate`, `spans_contexts`, `steps_have_compensation` keep
   behavior via layer definitions
 
+**Done notes:** `must_have_methods a|b|c` generic primitive;
+`crud_for_aggregate` = legacy alias; unknown constraints → warning once.
+
 ---
 
 ## INV-005: No subkind string switches in backends
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** UI layer author  
 **I want** Svelte/React emission keyed on layer tags, not `"Component"`  
 **So that** renaming constructs does not break codegen
@@ -111,6 +114,9 @@ layer → no JSON-Bus envelope path.
 - Test with an alias construct name mapping to the same shape
 
 **Touch:** `typescript.rs`, `svelte5.layer`
+
+**Done notes:** `is_svelte_ui_construct` uses `LayerRegistry::is_a` for
+Component/Page/Layout identity (alias-safe).
 
 ---
 

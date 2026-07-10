@@ -188,7 +188,7 @@ pub async fn run_turn<P: SourceProvider>(
         }
     }
 
-    // Default: read source + outline + check (context packaging AGT-011 lite)
+    // Default: try ModelProvider (AGT-003), fall back to heuristic help + context
     tool_calls.push(AgentToolCall {
         name: "read_source".into(),
         detail: format!("{} bytes", source.len()),
@@ -199,16 +199,43 @@ pub async fn run_turn<P: SourceProvider>(
     });
     let outline = tool_outline(&source, registry);
     let check = tool_check(&source, registry);
+
+    let model_reply = crate::model::complete_with_env(crate::model::CompleteRequest {
+        messages: vec![
+            crate::model::ChatMessage {
+                role: "system".into(),
+                content: format!(
+                    "You are the VEIL built-in agent. Tools available to the host: check, outline, rename. Package outline:\n{}\n\n{}",
+                    outline, check
+                ),
+            },
+            crate::model::ChatMessage {
+                role: "user".into(),
+                content: prompt.to_string(),
+            },
+        ],
+        model: None,
+        max_tokens: Some(512),
+    })
+    .await;
+
+    let content = match model_reply {
+        Ok(r) => format!(
+            "[{}/{}]\n{}\n\n—\nHeuristic tools still work: `check` · `outline` · `rename A to B`",
+            r.provider, r.model, r.content
+        ),
+        Err(e) => format!(
+            "Built-in agent (heuristic). ModelProvider note: {}\n\nI can:\n\
+             • `check` — dual-loop check\n\
+             • `outline` — constructs\n\
+             • `rename Old to New` — EditOp rename + check\n\n\
+             Context:\n{}\n\n{}",
+            e, outline, check
+        ),
+    };
     messages.push(AgentMessage {
         role: "assistant".into(),
-        content: format!(
-            "Built-in agent (heuristic MVP). I can:\n\
-             • `check` — run the dual-loop check pipeline\n\
-             • `outline` — list constructs\n\
-             • `rename Old to New` — structured rename + check\n\n\
-             Context:\n{}\n\n{}",
-            outline, check
-        ),
+        content,
     });
     AgentTurnResponse {
         turn_id,

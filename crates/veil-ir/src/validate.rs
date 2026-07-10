@@ -7,10 +7,9 @@
 //! - `must_have <block>`      — a named sub-block (e.g. `root`) must be present
 //! - `requires_groups`        — direct children must be groups
 //!
-//! Free-form constraint words the engine does not recognize (e.g.
-//! `immutable`, `equality_by_value`) are treated as documentation/semantic
-//! hints and skipped — they carry meaning for codegen plugins or humans, not
-//! for the structural validator.
+//! Free-form constraint words the engine does not recognize emit a **one-shot
+//! warning-style ValidationError** (INV-004) so layer authors notice missing
+//! handlers. Preferred generic forms: `must_have_methods`, `must_have`, …
 
 use crate::ast::*;
 use crate::layer::{LayerRegistry, Shape};
@@ -361,22 +360,44 @@ fn validate_construct(
                         }
                     }
                 }
-                Some("crud_for_aggregate") => {
-                    let required = ["find", "save", "delete"];
-                    let method_names: Vec<&str> = c.methods.iter()
-                        .map(|m| m.name.as_str())
+                // INV-004: generic method-list constraint.
+                // `must_have_methods find|save|delete` — preferred form.
+                // `crud_for_aggregate` remains as a legacy alias for the same
+                // default method list so existing layers keep working.
+                Some("must_have_methods") => {
+                    let required: Vec<String> = words
+                        .flat_map(|s| s.split(|ch| ch == '|' || ch == ','))
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
                         .collect();
+                    let method_names: Vec<&str> =
+                        c.methods.iter().map(|m| m.name.as_str()).collect();
+                    for req in &required {
+                        if !method_names.iter().any(|m| m.starts_with(req.as_str())) {
+                            errors.push(ValidationError::new(
+                                "must_have_methods",
+                                format!("'{}' requires a '{}' method", c.name, req),
+                                c.name.clone(),
+                                parent_name.to_string(),
+                                Some(format!("Add a '{}' method to the construct", req)),
+                            ));
+                        }
+                    }
+                }
+                Some("crud_for_aggregate") => {
+                    // Legacy alias → same as must_have_methods find|save|delete
+                    let required = ["find", "save", "delete"];
+                    let method_names: Vec<&str> =
+                        c.methods.iter().map(|m| m.name.as_str()).collect();
                     for req in &required {
                         if !method_names.iter().any(|m| m.starts_with(req)) {
                             errors.push(ValidationError::new(
-                                "crud_for_aggregate",
-                                format!(
-                                    "'{}' requires a '{}' method (crud_for_aggregate)",
-                                    c.name, req
-                                ),
+                                "must_have_methods",
+                                format!("'{}' requires a '{}' method", c.name, req),
                                 c.name.clone(),
                                 parent_name.to_string(),
-                                Some(format!("Add a '{}' method to the port", req)),
+                                Some(format!("Add a '{}' method (must_have_methods)", req)),
                             ));
                         }
                     }
@@ -418,8 +439,36 @@ fn validate_construct(
                         }
                     }
                 }
-                // Unrecognized constraint words are semantic hints — skip.
-                _ => {}
+                // INV-004: unknown constraints warn once (not silent skip).
+                // Skip constraints handled elsewhere (e.g. diagnostics::analyze).
+                Some(other)
+                    if !matches!(
+                        other,
+                        "requires_implementation"
+                            | "immutable"
+                            | "equality_by_value"
+                            | "no_identity"
+                            | "has_identity"
+                    ) =>
+                {
+                    let key = format!("unknown_constraint:{}", other);
+                    if !errors.iter().any(|e| e.code == key) {
+                        errors.push(ValidationError::new(
+                            &key,
+                            format!(
+                                "unknown constraint '{}' on '{}' — not enforced (layer debt)",
+                                other, spec.name
+                            ),
+                            c.name.clone(),
+                            parent_name.to_string(),
+                            Some(
+                                "Implement via generic primitives (must_have_methods, must_have, …) or register a handler"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                }
+                Some(_) | None => {}
             }
         }
 
