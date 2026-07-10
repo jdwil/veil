@@ -111,6 +111,71 @@ fn registry_for(file: &std::path::Path) -> LayerRegistry {
     }
 }
 
+/// UX-010: whether a loaded file may be written via the IDE edit API.
+///
+/// Application `.veil` sources are editable. Read-only:
+/// - non-`.veil` (layers/stubs if ever loaded)
+/// - path contains `generated/`
+/// - first non-empty line is `# veil:readonly`
+///
+/// Note: historically `pkg` files were incorrectly marked read-only via
+/// `!source.starts_with("pkg ")` — that inverted policy is removed.
+fn is_veil_source_editable(path: &std::path::Path, source: &str) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "veil" {
+        return false;
+    }
+    let path_str = path.to_string_lossy();
+    if path_str.contains("/generated/") || path_str.contains("\\generated\\") {
+        return false;
+    }
+    for line in source.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t == "# veil:readonly" || t.starts_with("# veil:readonly ") {
+            return false;
+        }
+        break;
+    }
+    true
+}
+
+#[cfg(test)]
+mod editable_tests {
+    use super::is_veil_source_editable;
+    use std::path::Path;
+
+    #[test]
+    fn pkg_files_are_editable() {
+        assert!(is_veil_source_editable(
+            Path::new("examples/hello_world.veil"),
+            "pkg HelloWorld\n  use ddd\n"
+        ));
+    }
+
+    #[test]
+    fn sol_files_are_editable() {
+        assert!(is_veil_source_editable(
+            Path::new("app.veil"),
+            "sol App\n  use ddd\n"
+        ));
+    }
+
+    #[test]
+    fn readonly_marker_and_generated_not_editable() {
+        assert!(!is_veil_source_editable(
+            Path::new("lock.veil"),
+            "# veil:readonly\npkg Locked\n"
+        ));
+        assert!(!is_veil_source_editable(
+            Path::new("generated/out.veil"),
+            "pkg X\n"
+        ));
+    }
+}
+
 fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Solution, LayerRegistry) {
     let tokens = veil_parser::lex(source);
     let registry = registry_for(file);
@@ -712,10 +777,11 @@ fn main() {
             let first_source = std::fs::read_to_string(first_file).expect("Failed to read file");
             let registry = registry_for(first_file);
 
-            // Load all files
+            // Load all files. UX-010: application `.veil` is editable by default.
+            // Read-only: `.layer` / `.stub`, paths under `generated/`, or `# veil:readonly`.
             let file_entries: Vec<(PathBuf, String, bool)> = veil_files.iter().map(|path| {
                 let source = std::fs::read_to_string(path).expect("Failed to read file");
-                let editable = !source.trim_start().starts_with("pkg ");
+                let editable = is_veil_source_editable(path, &source);
                 (path.clone(), source, editable)
             }).collect();
 

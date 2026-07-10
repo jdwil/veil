@@ -6,7 +6,7 @@ Mission: humans restructure topology; canvas mutations must be real.
 
 ## UX-010: `pkg` files are editable
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** human using `veil serve`  
 **I want** normal `pkg …` sources to be editable  
 **So that** nearly all real VEIL files are not read-only
@@ -21,6 +21,10 @@ Mission: humans restructure topology; canvas mutations must be real.
 - Regression test or assert in server unit test
 
 **Touch:** `crates/veil-cli/src/main.rs` (and/or filesystem provider)
+
+**Done notes:** `is_veil_source_editable` — `.veil` editable; readonly via
+`# veil:readonly` or `generated/` path. Layers/stubs not loaded as serve
+targets. Unit tests in `veil-cli`.
 
 **Mission impact:** Human restructure loop is broken without this.
 
