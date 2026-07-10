@@ -621,6 +621,22 @@ construct Module
       orphan_policy list
 ```
 
+### Adding a paradigm = layer only
+
+Ship a new programming style without a viewer PR:
+
+1. Write/extend a `.layer` with `construct` vocabulary + **`present` views**.
+2. Optionally add an example `.veil` that uses it.
+3. Point `veil serve` at the example — the same view switcher and
+   `projectView` path (LAY-003) apply. No `if (layer === "…")` in the IDE.
+
+**Proofs in-tree:**
+
+| Paradigm | Layer | Host views | Demo |
+|----------|-------|------------|------|
+| DDD | `layers/ddd.layer` | Context: Layers + Domain model | any `use ddd` package |
+| Svelte UI | `layers/svelte5.layer` | App: Folders + Route tree | `examples/svelte_present_demo.veil` |
+
 ---
 
 ## 13. Review checklist (zero domain knowledge)

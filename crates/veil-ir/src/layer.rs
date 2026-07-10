@@ -1750,6 +1750,38 @@ pkg bad v1
         );
     }
 
+    /// LAY-005: svelte5.layer has a different two-view shape than DDD.
+    #[test]
+    fn svelte5_layer_app_has_folders_and_routes_views() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("svelte5", include_str!("../../../layers/svelte5.layer"))
+            .expect("svelte5.layer must load with present blocks");
+        let app = reg.construct_by_name("App").expect("App");
+        let ids: Vec<_> = app.presentation.views.iter().map(|v| v.id.as_str()).collect();
+        assert!(ids.contains(&"groups"), "{ids:?}");
+        assert!(ids.contains(&"routes"), "{ids:?}");
+        // Distinct from DDD (no "model" / Aggregate roots)
+        assert!(!ids.contains(&"model"));
+        let groups = app.presentation.views.iter().find(|v| v.id == "groups").unwrap();
+        assert_eq!(groups.layout, "tabs");
+        assert_eq!(groups.tabs, vec!["pages", "components", "stores"]);
+        let routes = app.presentation.views.iter().find(|v| v.id == "routes").unwrap();
+        assert_eq!(routes.layout, "tree");
+        assert!(routes.roots.contains(&"Layout".to_string()));
+        assert!(routes.roots.contains(&"Page".to_string()));
+        assert!(
+            routes
+                .nest_rules
+                .iter()
+                .any(|r| r.child == "Page" && r.parent == "Layout"),
+            "{:?}",
+            routes.nest_rules
+        );
+        let api = presentation_from_registry(&reg);
+        assert!(api.hosts.contains_key("App"));
+        assert!(!api.hosts.contains_key("Context")); // different paradigm host
+    }
+
     /// LAY-004: real ddd.layer ships Context groups + model presentation.
     #[test]
     fn ddd_layer_context_has_groups_and_model_views() {

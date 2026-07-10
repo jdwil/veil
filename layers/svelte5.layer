@@ -16,6 +16,23 @@ pkg svelte5 v1
       color "#ff3e00"
       label "Svelte App"
     in top
+    # IDE views (docs/PRESENTATION.md) — different shape than DDD Context
+    present
+      view groups
+        label "Folders"
+        layout tabs
+        members by_source_group
+        tabs pages, components, stores
+        default
+      view routes
+        label "Route tree"
+        layout tree
+        members by_host_children
+        roots Layout, Page
+        nest Page under Layout when declared_in_parent
+        nest Component under Page when declared_in_parent
+        nest Component under Layout when declared_in_parent
+        orphan_policy list
 
   construct Page
     kw page
@@ -35,6 +52,10 @@ pkg svelte5 v1
       guard: "Route guard condition" expr
     in App
     group pages
+    present
+      role container
+      nestable_in routes as root
+      nestable_in routes under Layout
 
   construct Layout
     kw layout
@@ -52,6 +73,9 @@ pkg svelte5 v1
       route: "URL route prefix" path
     in App
     group pages
+    present
+      role container
+      nestable_in routes as root
 
   construct Component
     kw comp
@@ -75,6 +99,10 @@ pkg svelte5 v1
       export: "Exported component API methods"
     in App
     group components
+    present
+      role leaf
+      nestable_in routes under Page
+      nestable_in routes under Layout
 
   construct Snippet
     kw snippet
@@ -106,6 +134,8 @@ pkg svelte5 v1
       ssr: "Safe for server-side rendering"
     in App
     group stores
+    present
+      role leaf
 
   # ─── Statements (Svelte-specific operations) ────────────────────────────
 

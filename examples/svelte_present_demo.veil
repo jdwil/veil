@@ -1,0 +1,25 @@
+# Minimal Svelte 5 package that demonstrates layer presentation views (LAY-005).
+# Serve with: veil serve examples/svelte_present_demo.veil
+# Drill into `app Portal` → switcher: Folders | Route tree
+pkg SveltePresentDemo
+  use svelte5
+
+  app Portal
+    group pages
+      layout RootLayout
+        @route("/")
+      page Home
+        @route("/")
+      page Settings
+        @route("/settings")
+    group components
+      comp Avatar
+        props
+          name: Str
+      comp NavBar
+        props
+          title: Str
+    group stores
+      store Session
+        state
+          user: Opt<Str>

@@ -190,7 +190,7 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 ## LAY-005: Second-paradigm proof (non-DDD)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** maintainer  
 **I want** a non-DDD layer to declare a different view structure  
 **So that** we prove presentation is not a DDD feature in disguise
@@ -204,6 +204,14 @@ loader accepts it, unless LAY-002 lands in the same change).
 - Short note in PRESENTATION.md: “adding a paradigm = layer only”
 
 **Depends:** LAY-003  
+**Done notes:**
+
+- `layers/svelte5.layer`: App views **Folders** (tabs pages/components/stores) +
+  **Route tree** (Layout/Page roots; nest Page under Layout, Component under Page/Layout)
+- Demo: `examples/svelte_present_demo.veil` — `veil serve examples/svelte_present_demo.veil`
+- Test: `svelte5_layer_app_has_folders_and_routes_views` (asserts not DDD model/Context)
+- PRESENTATION.md §12: “Adding a paradigm = layer only” + proof table
+
 **Mission impact:** Guards the zero-domain-knowledge invariant.
 
 ---
