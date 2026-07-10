@@ -326,7 +326,7 @@ struct CheckQuery {
     /// Promote escape-hatch debt to errors.
     #[serde(default)]
     deny_escape_hatches: Option<bool>,
-    /// Include multi-target debt warnings (default true when target is rust).
+    /// Include multi-target debt warnings (default **false** — primary target only).
     #[serde(default)]
     target_debt: Option<bool>,
 }
@@ -443,7 +443,7 @@ async fn run_check_for_provider<P: SourceProvider>(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("parse failed: {}", e)))?;
     let target = q.target.as_deref().unwrap_or("rust");
     let deny = q.deny_escape_hatches.unwrap_or(false);
-    let debt = q.target_debt.unwrap_or(true);
+    let debt = q.target_debt.unwrap_or(false);
     run_check(&sol, &state.registry(), target, deny, debt)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }

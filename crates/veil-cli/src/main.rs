@@ -43,9 +43,13 @@ enum Commands {
         /// Codegen target for capability checks (rust, typescript). Default: rust
         #[arg(short = 't', long, default_value = "rust")]
         target: String,
-        /// Suppress multi-target debt warnings (features not honest on other targets).
-        /// Debt warnings are emitted by default when `-t rust`.
+        /// Also emit multi-target debt warnings (features not honest on *other*
+        /// targets). Off by default — only the selected `-t` target is
+        /// capability-checked (primary-target only).
         #[arg(long)]
+        target_debt: bool,
+        /// Deprecated alias: multi-target debt is off by default (no-op).
+        #[arg(long, hide = true)]
         no_target_debt: bool,
         /// Dump the IR graph as JSON after check
         #[arg(long)]
@@ -562,7 +566,8 @@ fn main() {
         Commands::Check {
             file,
             target,
-            no_target_debt,
+            target_debt,
+            no_target_debt: _no_target_debt,
             dump_ir,
             emit_templates,
             list_capabilities,
@@ -590,14 +595,14 @@ fn main() {
             let started = std::time::Instant::now();
             let mut result = veil_ir::check_solution(&sol, &registry);
 
-            // Target capability matrix (CHK-005)
+            // Target capability matrix (CHK-005) — selected target only
             result.diagnostics.extend(veil_codegen::check_target_capabilities(
                 &sol,
                 &registry,
                 codegen_target,
             ));
-            // Multi-target debt: warn about TS gaps when primary target is Rust
-            if !no_target_debt && codegen_target == veil_codegen::CodegenTarget::Rust {
+            // Optional multi-target debt (opt-in): warn about other targets' gaps
+            if target_debt && codegen_target == veil_codegen::CodegenTarget::Rust {
                 result
                     .diagnostics
                     .extend(veil_codegen::check_multi_target_debt(&sol, &registry));

@@ -3,7 +3,8 @@
 //! Each codegen backend declares which language features it supports honestly.
 //! Features that currently lower to placeholders (`todo!`, `/* range */`, empty
 //! service bodies) are **unsupported** for that target and fail check when
-//! `-t <target>` is selected (or warn as multi-target debt on the default Rust check).
+//! `-t <target>` is selected. Multi-target debt is opt-in (`--target-debt` /
+//! `target_debt=true`), not part of the default primary-target check.
 //!
 //! The engine has no domain knowledge — capabilities are about **expression and
 //! construct shape features**, not DDD vocabulary.

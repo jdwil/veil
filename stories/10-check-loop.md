@@ -102,7 +102,8 @@ Success metric: agent fix-cycle time under `veil check` / compile feedback.
 - `veil check app.veil -t ts` reports TS-incapable features as errors
 - Features that currently lower to `todo!` / `/* range */` / empty services are
   either implemented or capability-gated
-- Default check may use primary target (Rust) plus warn on multi-target debt
+- Default check is **primary target only** (`-t rust|ts|…`); multi-target debt
+  warnings are opt-in (`--target-debt`), not part of the default diagnostic stream
 
 **Mission impact:** Full parity ambition requires honesty before breadth.
 

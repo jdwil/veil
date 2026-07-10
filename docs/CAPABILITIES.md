@@ -3,7 +3,11 @@
 Machine-readable source: `crates/veil-codegen/src/capabilities.rs`  
 Enum: `veil_codegen::capabilities::Feature`
 
-Wired into `veil check -t <target>` and multi-target debt warnings.
+Wired into `veil check -t <target>` (**primary target only** by default).
+
+Cross-target “debt” warnings (`capability_debt` for *other* languages) are
+**opt-in**: `veil check -t rust --target-debt` or `?target_debt=true` on the API.
+Prefer switching `-t ts` (etc.) when you want real target-gated errors.
 
 ## How to extend (Swift / Kotlin / …)
 

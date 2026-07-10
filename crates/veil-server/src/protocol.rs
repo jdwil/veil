@@ -41,13 +41,10 @@ pub struct CheckRequest {
     /// Promote escape-hatch debt to errors.
     #[serde(default)]
     pub deny_escape_hatches: bool,
-    /// Include multi-target debt warnings when target is rust (default true).
-    #[serde(default = "default_true")]
+    /// Include multi-target debt warnings when target is rust (default false —
+    /// primary-target only; use `true` or `?target_debt=1` to chase portability).
+    #[serde(default)]
     pub target_debt: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Request to switch active file.
