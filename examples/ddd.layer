@@ -14,6 +14,23 @@ pkg ddd v1
       color "#8b5cf6"
       label "Bounded Context"
     in top
+    present
+      view groups
+        label "Layers"
+        layout tabs
+        members by_source_group
+        tabs domain, application, infrastructure, presentation
+        default
+      view model
+        label "Domain model"
+        layout tree
+        members by_host_children
+        roots Aggregate
+        nest Entity under Aggregate when declared_in_parent
+        nest ValueObject under Aggregate when declared_in_parent
+        nest Event under Aggregate when declared_in_parent
+        nest Command under Aggregate when declared_in_parent
+        orphan_policy list
 
   construct Orchestrator
     kw orchestrator
@@ -27,6 +44,13 @@ pkg ddd v1
       color "#dc2626"
       label "Orchestrator"
     in top
+    present
+      view groups
+        label "Layers"
+        layout tabs
+        members by_source_group
+        tabs domain, application, infrastructure, presentation
+        default
 
   construct Aggregate
     kw agg
@@ -50,6 +74,9 @@ pkg ddd v1
     ann
       invariant: "Domain constraint validation" expr
     group domain
+    present
+      role container
+      nestable_in model as root
 
   construct Entity
     kw ent
@@ -64,6 +91,9 @@ pkg ddd v1
       color "#f43f5e"
       label "Entity"
     group domain
+    present
+      role leaf
+      nestable_in model under Aggregate
 
   construct ValueObject
     kw val
@@ -81,6 +111,9 @@ pkg ddd v1
     ann
       invariant: "Validation rule" expr
     group domain
+    present
+      role leaf
+      nestable_in model under Aggregate
 
   construct Event
     kw evt
@@ -94,6 +127,10 @@ pkg ddd v1
       label "Domain Event"
     group domain
     in Aggregate
+    present
+      role leaf
+      nestable_in model under Aggregate
+      lens critical
 
   construct Command
     kw cmd
@@ -108,6 +145,9 @@ pkg ddd v1
       validate: "Run validation before execution" expr
     group domain
     in Aggregate
+    present
+      role leaf
+      nestable_in model under Aggregate
 
   construct Query
     kw qry

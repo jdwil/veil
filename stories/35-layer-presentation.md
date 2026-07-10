@@ -156,7 +156,7 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 ## LAY-004: DDD layer presentation (Context model view)
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** DDD author/reviewer  
 **I want** a domain-model view that nests under Aggregates  
 **So that** BCs are reviewable as hierarchical models, not only group buckets
@@ -175,6 +175,14 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 **Depends:** LAY-003  
 **Touch:** `layers/ddd.layer`, optional example tweaks
+
+**Done notes:**
+
+- `layers/ddd.layer` (+ `examples/ddd.layer`): Context **Layers** + **Domain model**
+  views; Orchestrator Layers; Aggregate container + Event/Command/Entity/VO roles
+- Prompt section documents IDE views and nesting guidance for agents/authors
+- Test: `ddd_layer_context_has_groups_and_model_views`
+- Viewer still has zero DDD hardcoding (LAY-003 projection)
 
 **Mission impact:** Proves the epic on the primary paradigm.
 

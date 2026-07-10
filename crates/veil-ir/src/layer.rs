@@ -1749,4 +1749,40 @@ pkg bad v1
             "unexpected error: {err}"
         );
     }
+
+    /// LAY-004: real ddd.layer ships Context groups + model presentation.
+    #[test]
+    fn ddd_layer_context_has_groups_and_model_views() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd.layer must load with present blocks");
+        let ctx = reg.construct_by_name("Context").expect("Context");
+        let ids: Vec<_> = ctx.presentation.views.iter().map(|v| v.id.as_str()).collect();
+        assert!(ids.contains(&"groups"), "missing groups view: {ids:?}");
+        assert!(ids.contains(&"model"), "missing model view: {ids:?}");
+        let groups = ctx.presentation.views.iter().find(|v| v.id == "groups").unwrap();
+        assert_eq!(groups.layout, "tabs");
+        assert!(groups.is_default);
+        assert_eq!(
+            groups.tabs,
+            vec!["domain", "application", "infrastructure", "presentation"]
+        );
+        let model = ctx.presentation.views.iter().find(|v| v.id == "model").unwrap();
+        assert_eq!(model.layout, "tree");
+        assert_eq!(model.roots, vec!["Aggregate"]);
+        assert!(
+            model
+                .nest_rules
+                .iter()
+                .any(|r| r.child == "Event" && r.parent == "Aggregate"),
+            "Event under Aggregate nest missing: {:?}",
+            model.nest_rules
+        );
+        let api = presentation_from_registry(&reg);
+        let host = api.hosts.get("Context").expect("Context in presentation API");
+        assert_eq!(host.default_view.as_deref(), Some("groups"));
+        assert_eq!(host.views.len(), 2);
+        let agg = reg.construct_by_name("Aggregate").unwrap();
+        assert_eq!(agg.presentation.role.as_deref(), Some("container"));
+    }
 }
