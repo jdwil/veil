@@ -18,15 +18,39 @@ use crate::layer::{LayerRegistry, Shape};
 /// A validation error with context.
 #[derive(Debug, Clone)]
 pub struct ValidationError {
+    /// Machine-stable rule id (e.g. `must_have`, `deny`).
+    pub code: String,
     pub message: String,
     pub construct: String,
     pub parent: String,
     pub hint: Option<String>,
 }
 
+impl ValidationError {
+    fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        construct: impl Into<String>,
+        parent: impl Into<String>,
+        hint: Option<String>,
+    ) -> Self {
+        ValidationError {
+            code: code.into(),
+            message: message.into(),
+            construct: construct.into(),
+            parent: parent.into(),
+            hint,
+        }
+    }
+}
+
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] in {}: {}", self.construct, self.parent, self.message)?;
+        write!(
+            f,
+            "{}: [{}] in {}: {}",
+            self.code, self.construct, self.parent, self.message
+        )?;
         if let Some(hint) = &self.hint {
             write!(f, " (hint: {})", hint)?;
         }
@@ -37,18 +61,37 @@ impl std::fmt::Display for ValidationError {
 /// Validate a parsed solution against the layer registry.
 pub fn validate_solution(sol: &Solution, registry: &LayerRegistry) -> Vec<ValidationError> {
     let mut errors = Vec::new();
+    // Index all constructs by name for cross-reference rules (e.g. must_implement_port).
+    let mut by_name: std::collections::HashMap<String, &Construct> =
+        std::collections::HashMap::new();
     for item in &sol.items {
         if let TopLevelItem::Construct(c) = item {
-            validate_construct(c, "Solution", registry, &mut errors);
+            index_constructs(c, &mut by_name);
+        }
+    }
+    for item in &sol.items {
+        if let TopLevelItem::Construct(c) = item {
+            validate_construct(c, "Solution", registry, &by_name, &mut errors);
         }
     }
     errors
+}
+
+fn index_constructs<'a>(
+    c: &'a Construct,
+    by_name: &mut std::collections::HashMap<String, &'a Construct>,
+) {
+    by_name.insert(c.name.clone(), c);
+    for child in &c.children {
+        index_constructs(child, by_name);
+    }
 }
 
 fn validate_construct(
     c: &Construct,
     parent_name: &str,
     registry: &LayerRegistry,
+    by_name: &std::collections::HashMap<String, &Construct>,
     errors: &mut Vec<ValidationError>,
 ) {
     let spec = registry.construct(&c.keyword);
@@ -81,20 +124,21 @@ fn validate_construct(
                             .iter()
                             .any(|a| registry.is_a(&child.keyword, a))
                         {
-                            errors.push(ValidationError {
-                                message: format!(
+                            errors.push(ValidationError::new(
+                                "only",
+                                format!(
                                     "'{}' only allows {}, found '{}'",
                                     spec.name,
                                     allowed.join(", "),
                                     child.subkind
                                 ),
-                                construct: child.name.clone(),
-                                parent: c.name.clone(),
-                                hint: Some(format!(
+                                child.name.clone(),
+                                c.name.clone(),
+                                Some(format!(
                                     "Move the '{}' to a construct that allows it",
                                     child.subkind
                                 )),
-                            });
+                            ));
                         }
                     }
                 }
@@ -102,15 +146,16 @@ fn validate_construct(
                     let denied: Vec<&str> = words.collect();
                     for child in &effective {
                         if denied.iter().any(|d| registry.is_a(&child.keyword, d)) {
-                            errors.push(ValidationError {
-                                message: format!(
+                            errors.push(ValidationError::new(
+                                "deny",
+                                format!(
                                     "'{}' is not allowed in '{}'",
                                     child.subkind, spec.name
                                 ),
-                                construct: child.name.clone(),
-                                parent: c.name.clone(),
-                                hint: None,
-                            });
+                                child.name.clone(),
+                                c.name.clone(),
+                                None,
+                            ));
                         }
                     }
                 }
@@ -118,33 +163,35 @@ fn validate_construct(
                     if let Some(block_kw) = words.next() {
                         let has = c.blocks.iter().any(|b| b.keyword == block_kw);
                         if !has {
-                            errors.push(ValidationError {
-                                message: format!(
+                            errors.push(ValidationError::new(
+                                "must_have",
+                                format!(
                                     "'{}' must define a '{}' block",
                                     spec.name, block_kw
                                 ),
-                                construct: c.name.clone(),
-                                parent: parent_name.to_string(),
-                                hint: Some(format!(
+                                c.name.clone(),
+                                parent_name.to_string(),
+                                Some(format!(
                                     "Add a '{}' block with the required fields",
                                     block_kw
                                 )),
-                            });
+                            ));
                         }
                     }
                 }
                 Some("requires_groups") => {
                     for child in &direct {
                         if child.shape != Shape::Group {
-                            errors.push(ValidationError {
-                                message: format!(
+                            errors.push(ValidationError::new(
+                                "requires_groups",
+                                format!(
                                     "'{}' must be inside a group, not directly in '{}'",
                                     child.subkind, spec.name
                                 ),
-                                construct: child.name.clone(),
-                                parent: c.name.clone(),
-                                hint: Some("Wrap it in a 'group <name>' block".to_string()),
-                            });
+                                child.name.clone(),
+                                c.name.clone(),
+                                Some("Wrap it in a 'group <name>' block".to_string()),
+                            ));
                         }
                     }
                 }
@@ -153,11 +200,9 @@ fn validate_construct(
                 // Used by functional.layer to enforce purity.
                 Some("deny_calls") => {
                     let denied_targets: Vec<&str> = words.collect();
-                    // Check all fn bodies in this construct
                     let mut call_targets = Vec::new();
                     collect_call_targets_from_construct(c, &mut call_targets);
                     for (target_name, call_location) in &call_targets {
-                        // Check if the target is a known construct of a denied shape
                         if let Some(target_spec) = registry.construct(target_name) {
                             let shape_name = format!("{:?}", target_spec.shape).to_lowercase();
                             let is_denied = denied_targets.iter().any(|d| {
@@ -166,25 +211,25 @@ fn validate_construct(
                                     || registry.is_a(&target_spec.keyword, d)
                             });
                             if is_denied {
-                                errors.push(ValidationError {
-                                    message: format!(
+                                errors.push(ValidationError::new(
+                                    "deny_calls",
+                                    format!(
                                         "'{}' in '{}' calls '{}' ({}) which is not allowed (deny_calls {})",
                                         call_location, c.name, target_name, target_spec.name,
                                         denied_targets.join(" ")
                                     ),
-                                    construct: c.name.clone(),
-                                    parent: parent_name.to_string(),
-                                    hint: Some(format!(
+                                    c.name.clone(),
+                                    parent_name.to_string(),
+                                    Some(format!(
                                         "'{}' constructs cannot call {} targets",
                                         spec.name, denied_targets.join("/")
                                     )),
-                                });
+                                ));
                             }
                         }
                     }
                 }
-                // `has_identity <field>` — the construct must have the named
-                // field, and codegen will generate PartialEq comparing only that field.
+                // `has_identity <field>` — the construct must have the named field.
                 Some("has_identity") => {
                     if let Some(id_field) = words.next() {
                         let all_fields: Vec<&str> = c.fields.iter()
@@ -192,125 +237,122 @@ fn validate_construct(
                             .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
                             .collect();
                         if !all_fields.iter().any(|f| *f == id_field) {
-                            errors.push(ValidationError {
-                                message: format!(
+                            errors.push(ValidationError::new(
+                                "has_identity",
+                                format!(
                                     "'{}' requires an identity field '{}' but it was not found",
                                     spec.name, id_field
                                 ),
-                                construct: c.name.clone(),
-                                parent: parent_name.to_string(),
-                                hint: Some(format!("Add a '{}' field to the construct", id_field)),
-                            });
+                                c.name.clone(),
+                                parent_name.to_string(),
+                                Some(format!("Add a '{}' field to the construct", id_field)),
+                            ));
                         }
                     }
                 }
-                // `equality_by_value` — no identity field; equality uses all fields.
-                // This is the default #[derive(PartialEq)] behavior, so validation
-                // just ensures there is NO field named 'id' (which would imply identity).
+                // `equality_by_value` / `no_identity` — value objects should not have `id`.
                 Some("equality_by_value") | Some("no_identity") => {
                     let all_fields: Vec<&str> = c.fields.iter()
                         .map(|f| f.name.as_str())
                         .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
                         .collect();
                     if all_fields.contains(&"id") {
-                        errors.push(ValidationError {
-                            message: format!(
+                        errors.push(ValidationError::new(
+                            "equality_by_value",
+                            format!(
                                 "'{}' has equality_by_value but contains an 'id' field (implies identity)",
                                 c.name
                             ),
-                            construct: c.name.clone(),
-                            parent: parent_name.to_string(),
-                            hint: Some("Value objects should not have an 'id' field — they are compared by all fields".to_string()),
-                        });
+                            c.name.clone(),
+                            parent_name.to_string(),
+                            Some("Value objects should not have an 'id' field — they are compared by all fields".to_string()),
+                        ));
                     }
                 }
-                // `immutable` — the construct must not have mut assignments
-                // to self fields in any fn body.
+                // `immutable` — no mut assignments / field assigns in methods.
                 Some("immutable") => {
                     for f in &c.fns {
                         for expr in &f.body {
                             if let Expr::MutAssign(_, _, _) = expr {
-                                errors.push(ValidationError {
-                                    message: format!(
+                                errors.push(ValidationError::new(
+                                    "immutable",
+                                    format!(
                                         "'{}' is immutable but fn '{}' contains a mutable assignment",
                                         c.name, f.name
                                     ),
-                                    construct: c.name.clone(),
-                                    parent: parent_name.to_string(),
-                                    hint: Some(format!("'{}' constructs cannot mutate state", spec.name)),
-                                });
+                                    c.name.clone(),
+                                    parent_name.to_string(),
+                                    Some(format!("'{}' constructs cannot mutate state", spec.name)),
+                                ));
                             }
-                            if let Expr::Assign(name, _) = expr {
-                                // Check if assigning to a field of the construct
+                            if let Expr::Assign(name, _, _) = expr {
                                 let all_fields: Vec<&str> = c.fields.iter()
                                     .map(|f| f.name.as_str())
                                     .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
                                     .collect();
                                 if all_fields.contains(&name.as_str()) {
-                                    errors.push(ValidationError {
-                                        message: format!(
+                                    errors.push(ValidationError::new(
+                                        "immutable",
+                                        format!(
                                             "'{}' is immutable but fn '{}' assigns to field '{}'",
                                             c.name, f.name, name
                                         ),
-                                        construct: c.name.clone(),
-                                        parent: parent_name.to_string(),
-                                        hint: Some(format!("'{}' constructs cannot mutate fields", spec.name)),
-                                    });
+                                        c.name.clone(),
+                                        parent_name.to_string(),
+                                        Some(format!("'{}' constructs cannot mutate fields", spec.name)),
+                                    ));
                                 }
                             }
                         }
                     }
                 }
-                // `mutations_through_methods` — fields can only be changed
-                // inside fn methods, not directly accessible from outside.
-                // Enforced at codegen level (fields are pub but setters required).
-                // At validation level: ensure the construct HAS methods if it has
-                // mutable fields (a construct with state but no methods is suspicious).
                 Some("mutations_through_methods") => {
                     let has_state = c.blocks.iter().any(|b| b.shape == Shape::Enum);
                     if has_state && c.fns.is_empty() {
-                        errors.push(ValidationError {
-                            message: format!(
+                        errors.push(ValidationError::new(
+                            "mutations_through_methods",
+                            format!(
                                 "'{}' has state but no methods to mutate it",
                                 c.name
                             ),
-                            construct: c.name.clone(),
-                            parent: parent_name.to_string(),
-                            hint: Some("Add fn methods that transition state".to_string()),
-                        });
+                            c.name.clone(),
+                            parent_name.to_string(),
+                            Some("Add fn methods that transition state".to_string()),
+                        ));
                     }
                 }
-                // `must_implement_port` — an impl-shaped construct must
-                // implement all methods of its target trait.
+                // `must_implement_port` — impl must cover all methods of its target trait.
+                // Trait is resolved by name across the package (siblings, groups, etc.).
                 Some("must_implement_port") => {
                     if c.shape == Shape::Impl {
                         if let Some(target_name) = &c.target {
-                            // Find the target trait in siblings
-                            let target_trait = effective.iter()
-                                .find(|ch| ch.shape == Shape::Trait && ch.name == *target_name);
+                            // Resolve target trait by name anywhere in the package.
+                            let target_trait = by_name
+                                .get(target_name)
+                                .copied()
+                                .filter(|t| t.shape == Shape::Trait);
                             if let Some(trait_construct) = target_trait {
                                 let impl_methods: Vec<&str> = c.impls.iter()
                                     .map(|m| m.method_name.as_str())
                                     .collect();
                                 for method in &trait_construct.methods {
                                     if !impl_methods.contains(&method.name.as_str()) {
-                                        errors.push(ValidationError {
-                                            message: format!(
+                                        errors.push(ValidationError::new(
+                                            "must_implement_port",
+                                            format!(
                                                 "'{}' does not implement method '{}' from '{}'",
                                                 c.name, method.name, target_name
                                             ),
-                                            construct: c.name.clone(),
-                                            parent: parent_name.to_string(),
-                                            hint: Some(format!("Add 'impl {}(...)' to the adapter", method.name)),
-                                        });
+                                            c.name.clone(),
+                                            parent_name.to_string(),
+                                            Some(format!("Add 'impl {}(...)' to the adapter", method.name)),
+                                        ));
                                     }
                                 }
                             }
                         }
                     }
                 }
-                // `crud_for_aggregate` — a repo/port must have at minimum
-                // find, save, and delete methods.
                 Some("crud_for_aggregate") => {
                     let required = ["find", "save", "delete"];
                     let method_names: Vec<&str> = c.methods.iter()
@@ -318,65 +360,62 @@ fn validate_construct(
                         .collect();
                     for req in &required {
                         if !method_names.iter().any(|m| m.starts_with(req)) {
-                            errors.push(ValidationError {
-                                message: format!(
+                            errors.push(ValidationError::new(
+                                "crud_for_aggregate",
+                                format!(
                                     "'{}' requires a '{}' method (crud_for_aggregate)",
                                     c.name, req
                                 ),
-                                construct: c.name.clone(),
-                                parent: parent_name.to_string(),
-                                hint: Some(format!("Add a '{}' method to the port", req)),
-                            });
+                                c.name.clone(),
+                                parent_name.to_string(),
+                                Some(format!("Add a '{}' method to the port", req)),
+                            ));
                         }
                     }
                 }
-                // `spans_contexts` — the construct must have reference lines
-                // (ctx refs) indicating it coordinates across contexts.
                 Some("spans_contexts") => {
                     let has_refs = c.steps.iter().any(|s| {
                         if let FlowStep::Step(sd) = s { !sd.refs.is_empty() } else { false }
                     });
                     if !has_refs && c.refs.is_empty() {
-                        errors.push(ValidationError {
-                            message: format!(
+                        errors.push(ValidationError::new(
+                            "spans_contexts",
+                            format!(
                                 "'{}' must span multiple contexts (spans_contexts)",
                                 c.name
                             ),
-                            construct: c.name.clone(),
-                            parent: parent_name.to_string(),
-                            hint: Some("Add 'contexts X, Y' or 'ctx X' references to steps".to_string()),
-                        });
+                            c.name.clone(),
+                            parent_name.to_string(),
+                            Some("Add 'contexts X, Y' or 'ctx X' references to steps".to_string()),
+                        ));
                     }
                 }
-                // `steps_have_compensation` — every step must have a
-                // 'compensate' sub-block.
                 Some("steps_have_compensation") => {
                     for step in &c.steps {
                         if let FlowStep::Step(sd) = step {
                             let has_compensate = sd.sub_blocks.iter()
                                 .any(|sb| sb.keyword == "compensate");
                             if !has_compensate {
-                                errors.push(ValidationError {
-                                    message: format!(
+                                errors.push(ValidationError::new(
+                                    "steps_have_compensation",
+                                    format!(
                                         "Step '{}' in '{}' must have a 'compensate' block",
                                         sd.name, c.name
                                     ),
-                                    construct: c.name.clone(),
-                                    parent: parent_name.to_string(),
-                                    hint: Some("Add a 'compensate' sub-block with rollback logic".to_string()),
-                                });
+                                    c.name.clone(),
+                                    parent_name.to_string(),
+                                    Some("Add a 'compensate' sub-block with rollback logic".to_string()),
+                                ));
                             }
                         }
                     }
                 }
-                // Unrecognized constraint words are semantic hints, not
-                // structural rules — skip.
+                // Unrecognized constraint words are semantic hints — skip.
                 _ => {}
             }
         }
 
-        // `contains` allow-list: when declared, children must match one of
-        // the entries (by construct name, block keyword, or shape name).
+        // `contains` allow-list
         if !spec.contains.is_empty() {
             for child in &effective {
                 let allowed = spec.contains.iter().any(|entry| {
@@ -387,15 +426,16 @@ fn validate_construct(
                         || e.split(':').next().map(|s| s.trim()) == Some(child.keyword.as_str())
                 });
                 if !allowed && child.shape != Shape::Group {
-                    errors.push(ValidationError {
-                        message: format!(
+                    errors.push(ValidationError::new(
+                        "contains",
+                        format!(
                             "'{}' is not allowed directly inside '{}'",
                             child.subkind, spec.name
                         ),
-                        construct: child.name.clone(),
-                        parent: c.name.clone(),
-                        hint: Some(format!("Allowed children: {}", spec.contains.join(", "))),
-                    });
+                        child.name.clone(),
+                        c.name.clone(),
+                        Some(format!("Allowed children: {}", spec.contains.join(", "))),
+                    ));
                 }
             }
         }
@@ -403,7 +443,7 @@ fn validate_construct(
 
     // Recurse (through groups too).
     for child in &c.children {
-        validate_construct(child, &c.name, registry, errors);
+        validate_construct(child, &c.name, registry, by_name, errors);
     }
 }
 
@@ -437,7 +477,7 @@ fn collect_call_targets_from_expr(expr: &Expr, location: &str, targets: &mut Vec
                 collect_call_targets_from_expr(arg, location, targets);
             }
         }
-        Expr::Assign(_, rhs) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs)
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs)
         | Expr::Await(rhs) | Expr::Try(rhs) => {
             collect_call_targets_from_expr(rhs, location, targets);
         }

@@ -2,11 +2,15 @@
 //!
 //! Supports multiple target languages via `CodegenTarget`.
 
+pub mod capabilities;
 pub mod expr;
 pub mod rust;
 pub mod template;
 pub mod typescript;
 
+pub use capabilities::{
+    check_multi_target_debt, check_target_capabilities, target_capability_summary, Feature,
+};
 pub use rust::generate;
 pub use template::execute_templates;
 pub use typescript::generate_ts;

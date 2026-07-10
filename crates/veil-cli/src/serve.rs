@@ -97,12 +97,11 @@ impl ServeState {
         serde_json::to_string(&files_map).map_err(|e| e.to_string())
     }
 
-    /// Run layer-driven diagnostics analysis on the IR graph.
+    /// Run the unified check pipeline (validation + graph diagnostics).
     fn diagnostics_json(&self, source: &str) -> Result<String, String> {
         let sol = self.parse(source)?;
-        let graph = veil_ir::build_ir(&sol);
-        let diagnostics = veil_ir::diagnostics::analyze(&graph, &self.registry);
-        serde_json::to_string(&diagnostics).map_err(|e| e.to_string())
+        let result = veil_ir::check_solution(&sol, &self.registry);
+        serde_json::to_string(&result.diagnostics).map_err(|e| e.to_string())
     }
 }
 
@@ -247,9 +246,13 @@ pub async fn post_edit(
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("edit produced invalid source: {}", e)).into_response(),
     };
-    let errors = veil_ir::validate::validate_solution(&reparsed, &state.registry);
-    if !errors.is_empty() {
-        let msg = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
+    let check = veil_ir::check_solution(&reparsed, &state.registry);
+    if check.has_errors() {
+        let msg = check
+            .errors()
+            .map(veil_ir::format_diagnostic_line)
+            .collect::<Vec<_>>()
+            .join("; ");
         return (StatusCode::BAD_REQUEST, format!("validation failed: {}", msg)).into_response();
     }
 
@@ -260,7 +263,7 @@ pub async fn post_edit(
     *guard = new_source.clone();
 
     // 6. Return fresh IR + generated so the viewer refreshes in one round-trip.
-    let graph = veil_ir::build_ir(&reparsed);
+    let graph = check.graph;
     let project = veil_codegen::generate(&reparsed, &state.registry);
     let generated: std::collections::HashMap<String, String> = project
         .files

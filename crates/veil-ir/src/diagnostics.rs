@@ -1,9 +1,7 @@
 //! IR diagnostics — detects structural issues in the graph.
 //!
-//! All analysis is layer-driven. The engine reads constraint declarations
-//! from the LayerRegistry and checks the IR graph against them. The engine
-//! has NO domain knowledge — it only knows about core shapes and constraint
-//! keywords defined in `.layer` files.
+//! Prefer [`crate::check::check_solution`] as the public entry point; this
+//! module holds graph-level rules that run after AST validation.
 
 use crate::ir::{EdgeKind, IrGraph, NodeKind};
 use crate::layer::LayerRegistry;
@@ -18,25 +16,78 @@ pub struct Diagnostic {
     pub node_id: Option<u64>,
     /// The name of the affected construct.
     pub node_name: Option<String>,
-    /// The constraint that was violated.
+    /// Machine-stable rule id (e.g. `must_have`, `requires_implementation`).
+    pub code: String,
+    /// Same as `code` for backward compatibility with the viewer/API clients.
     pub constraint: String,
+    /// Parent construct name when the issue is nested (AST validation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Optional remediation hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Source span start (byte offset), when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_start: Option<usize>,
+    /// Source span end (byte offset), when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_end: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+impl Diagnostic {
+    pub fn error(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        node_name: Option<String>,
+    ) -> Self {
+        let code = code.into();
+        Diagnostic {
+            severity: Severity::Error,
+            message: message.into(),
+            node_id: None,
+            node_name,
+            constraint: code.clone(),
+            code,
+            parent: None,
+            hint: None,
+            span_start: None,
+            span_end: None,
+        }
+    }
+
+    pub fn warning(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        node_name: Option<String>,
+    ) -> Self {
+        let code = code.into();
+        Diagnostic {
+            severity: Severity::Warning,
+            message: message.into(),
+            node_id: None,
+            node_name,
+            constraint: code.clone(),
+            code,
+            parent: None,
+            hint: None,
+            span_start: None,
+            span_end: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub enum Severity {
     Warning,
     Error,
 }
 
 /// Analyze the IR graph against constraints declared in the layer registry.
+///
+/// Prefer [`crate::check::check_solution`] which also runs AST validation.
 pub fn analyze(graph: &IrGraph, registry: &LayerRegistry) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-
-    // Find which construct specs declare `requires_implementation`.
-    // These are trait-shaped constructs that require an impl-shaped construct
-    // targeting them via an Implements edge.
     check_requires_implementation(graph, registry, &mut diagnostics);
-
     diagnostics
 }
 
@@ -47,7 +98,6 @@ fn check_requires_implementation(
     registry: &LayerRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Collect all node IDs that are targets of Implements edges.
     let implemented_targets: std::collections::HashSet<u64> = graph
         .edges
         .iter()
@@ -56,12 +106,10 @@ fn check_requires_implementation(
         .collect();
 
     for node in &graph.nodes {
-        // Only check Interface (trait-shaped) nodes.
         if node.kind != NodeKind::Interface {
             continue;
         }
 
-        // Look up the construct spec for this node's subkind.
         let subkind = match &node.metadata.subkind {
             Some(sk) => sk,
             None => continue,
@@ -72,23 +120,29 @@ fn check_requires_implementation(
             None => continue,
         };
 
-        // Check if this spec declares `requires_implementation`.
-        let has_constraint = spec.constraints.iter().any(|c| c == "requires_implementation");
+        let has_constraint = spec
+            .constraints
+            .iter()
+            .any(|c| c == "requires_implementation");
         if !has_constraint {
             continue;
         }
 
-        // Now check if this node has an Implements edge targeting it.
         if !implemented_targets.contains(&node.id) {
             diagnostics.push(Diagnostic {
                 severity: Severity::Warning,
-                message: format!(
-                    "{} '{}' has no implementation",
-                    subkind, node.name
-                ),
+                message: format!("{} '{}' has no implementation", subkind, node.name),
                 node_id: Some(node.id),
                 node_name: Some(node.name.clone()),
+                code: "requires_implementation".to_string(),
                 constraint: "requires_implementation".to_string(),
+                parent: None,
+                hint: Some(format!(
+                    "Add an impl-shaped construct that implements '{}'",
+                    node.name
+                )),
+                span_start: Some(node.span.start),
+                span_end: Some(node.span.end),
             });
         }
     }

@@ -9,13 +9,45 @@ export const loading = writable(true);
 export const error = writable<string | null>(null);
 export const selectedNodeId = writable<string | null>(null);
 export const paletteConfig = writable<any[]>([]);
-export const diagnostics = writable<any[]>([]);
+/** A diagnostic from `/api/check` (mirrors veil_ir::Diagnostic). */
+export interface Diagnostic {
+  severity: 'Error' | 'Warning' | string;
+  message: string;
+  node_id?: number | null;
+  node_name?: string | null;
+  code?: string;
+  constraint?: string;
+  parent?: string | null;
+  hint?: string | null;
+  span_start?: number | null;
+  span_end?: number | null;
+}
+
+export interface CheckResponse {
+  diagnostics: Diagnostic[];
+  error_count: number;
+  warning_count: number;
+  target: string;
+  escape_hatch: {
+    raw_surface: number;
+    empty_adapter: number;
+    external_call: number;
+    json_boundary: number;
+  };
+  ok: boolean;
+}
+
+export const diagnostics = writable<Diagnostic[]>([]);
+/** Last full check response metadata (counts, target, escape summary). */
+export const checkMeta = writable<Omit<CheckResponse, 'diagnostics'> | null>(null);
+/** Active codegen target for check (rust | typescript). */
+export const checkTarget = writable<string>('rust');
 
 const API_BASE = 'http://localhost:3001/api';
 const API_URL = `${API_BASE}/ir`;
 const SOURCE_URL = `${API_BASE}/source`;
 const PALETTE_URL = `${API_BASE}/palette`;
-const DIAGNOSTICS_URL = `${API_BASE}/diagnostics`;
+const CHECK_URL = `${API_BASE}/check`;
 const EDIT_URL = `${API_BASE}/edit`;
 const STUBS_URL = `${API_BASE}/stubs`;
 const FILES_URL = `${API_BASE}/files`;
@@ -62,17 +94,39 @@ export const saving = writable(false);
 /** Last edit error message, if any. */
 export const saveError = writable<string | null>(null);
 
+/** Fetch full check pipeline results into diagnostics store. */
+export async function fetchCheck(target?: string): Promise<CheckResponse | null> {
+  let t = target;
+  if (!t) {
+    // read current target without subscribing
+    const unsub = checkTarget.subscribe((v) => {
+      t = v;
+    });
+    unsub();
+  }
+  try {
+    const res = await fetch(`${CHECK_URL}?target=${encodeURIComponent(t || 'rust')}`);
+    if (!res.ok && res.status !== 422) return null;
+    const data: CheckResponse = await res.json();
+    diagnostics.set(data.diagnostics ?? []);
+    const { diagnostics: _d, ...meta } = data;
+    checkMeta.set(meta);
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes, palRes, stubRes, filesRes, diagRes] = await Promise.all([
+    const [irRes, srcRes, palRes, stubRes, filesRes] = await Promise.all([
       fetch(API_URL),
       fetch(SOURCE_URL),
       fetch(PALETTE_URL),
       fetch(STUBS_URL).catch(() => null),
       fetch(FILES_URL).catch(() => null),
-      fetch(DIAGNOSTICS_URL).catch(() => null),
     ]);
     if (!irRes.ok) throw new Error(`HTTP ${irRes.status}`);
     const data: IrGraph = await irRes.json();
@@ -82,9 +136,8 @@ export async function fetchIr() {
       stubs.set(await stubRes.json());
     }
 
-    if (diagRes && diagRes.ok) {
-      diagnostics.set(await diagRes.json());
-    }
+    // Full dual-loop check (CHK-007)
+    await fetchCheck();
 
     if (srcRes.ok) {
       veilSource.set(await srcRes.text());
@@ -166,6 +219,9 @@ export async function selectFile(index: number) {
       if (active) activeFileName.set(active.name);
     }
 
+    // Re-run check for the newly active file
+    await fetchCheck();
+
     // Reset navigation to root
     const root = data.nodes.find(n => n.kind === 'Solution');
     if (root) {
@@ -177,6 +233,57 @@ export async function selectFile(index: number) {
   } finally {
     loading.set(false);
   }
+}
+
+/**
+ * Select a graph node (and drill its parent chain) from a diagnostic.
+ * Prefers `node_id`; falls back to matching `node_name`.
+ */
+export function focusDiagnostic(diag: Diagnostic) {
+  let graph: IrGraph | null = null;
+  const unsub = irGraph.subscribe((g) => {
+    graph = g;
+  });
+  unsub();
+  if (!graph) return;
+
+  let node: IrNode | undefined;
+  if (diag.node_id != null) {
+    node = graph.nodes.find((n) => n.id === diag.node_id);
+  }
+  if (!node && diag.node_name) {
+    node = graph.nodes.find((n) => n.name === diag.node_name);
+  }
+  if (!node) return;
+
+  // Build breadcrumb path from root → parent of node
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const chain: { id: number | null; name: string }[] = [];
+  let walk: IrNode | undefined = node;
+  const seen = new Set<number>();
+  while (walk && !seen.has(walk.id)) {
+    seen.add(walk.id);
+    chain.push({ id: walk.id, name: walk.name });
+    const parentId = walk.metadata.parent;
+    walk = parentId != null ? byId.get(parentId) : undefined;
+  }
+  chain.reverse();
+
+  // Navigate to the node's parent scope so the node is visible as a child
+  const parentId = node.metadata.parent ?? null;
+  if (parentId != null) {
+    const parentChain = chain.filter((c) => c.id !== node!.id);
+    breadcrumbs.set(
+      parentChain.length > 0
+        ? parentChain
+        : [{ id: parentId, name: byId.get(parentId)?.name ?? '…' }]
+    );
+    currentParent.set(parentId);
+  } else {
+    breadcrumbs.set(chain.length ? [chain[0]] : []);
+    currentParent.set(node.id);
+  }
+  selectedNodeId.set(String(node.id));
 }
 
 /** Get children of a given parent node */
@@ -224,10 +331,20 @@ export async function saveEdits(edits: EditOp[]): Promise<boolean> {
       saveError.set(msg || `HTTP ${res.status}`);
       return false;
     }
-    const data: { source: string; ir: IrGraph; generated: Record<string, string> } = await res.json();
+    const data: {
+      source: string;
+      ir: IrGraph;
+      generated: Record<string, string>;
+      diagnostics?: Diagnostic[];
+    } = await res.json();
     irGraph.set(data.ir);
     veilSource.set(data.source);
     generatedCode.set(data.generated);
+    if (data.diagnostics) {
+      diagnostics.set(data.diagnostics);
+    } else {
+      await fetchCheck();
+    }
     return true;
   } catch (e) {
     saveError.set(e instanceof Error ? e.message : 'Save failed');

@@ -29,10 +29,39 @@ enum Commands {
         /// Path to the .veil file
         file: PathBuf,
     },
-    /// Validate a VEIL file
+    /// Check a VEIL file (parse + structural validation + graph diagnostics).
+    ///
+    /// Exit code 1 if any **error**-severity diagnostic is present.
+    /// Warnings are printed but do not fail the process.
+    ///
+    /// Severity:
+    ///   error   — constraint violation; must fix
+    ///   warning — advisory (e.g. port without impl)
     Check {
         /// Path to the .veil file
         file: PathBuf,
+        /// Codegen target for capability checks (rust, typescript). Default: rust
+        #[arg(short = 't', long, default_value = "rust")]
+        target: String,
+        /// Suppress multi-target debt warnings (features not honest on other targets).
+        /// Debt warnings are emitted by default when `-t rust`.
+        #[arg(long)]
+        no_target_debt: bool,
+        /// Dump the IR graph as JSON after check
+        #[arg(long)]
+        dump_ir: bool,
+        /// Execute and print layer codegen templates (debug)
+        #[arg(long)]
+        emit_templates: bool,
+        /// Print the capability matrix for the selected target and exit
+        #[arg(long)]
+        list_capabilities: bool,
+        /// Treat escape-hatch debt as errors (raw blocks, empty adapters, external calls, Json boundaries)
+        #[arg(long)]
+        deny_escape_hatches: bool,
+        /// Print escape-hatch debt count summary (always on when any escape diags exist; force with this flag)
+        #[arg(long)]
+        escape_summary: bool,
     },
     /// Generate code from a VEIL file
     Gen {
@@ -410,46 +439,121 @@ fn main() {
             let (sol, _) = parse_solution_or_exit(&source, &file);
             println!("{}", serde_json::to_string_pretty(&sol).unwrap());
         }
-        Commands::Check { file } => {
+        Commands::Check {
+            file,
+            target,
+            no_target_debt,
+            dump_ir,
+            emit_templates,
+            list_capabilities,
+            deny_escape_hatches,
+            escape_summary,
+        } => {
+            let codegen_target = veil_codegen::CodegenTarget::from_str(&target).unwrap_or_else(|| {
+                eprintln!(
+                    "Unknown target '{}'. Use: rust, typescript (rs, ts)",
+                    target
+                );
+                std::process::exit(2);
+            });
+
+            if list_capabilities {
+                println!("{}", veil_codegen::target_capability_summary(codegen_target));
+                return;
+            }
+
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            let file_display = file.display().to_string();
             let (sol, registry) = parse_solution_or_exit(&source, &file);
-            let graph = veil_ir::build_ir(&sol);
-            println!("✓ Parsed: {}", sol.name);
-            println!("  Layers: {}", registry.layers.join(", "));
-            println!("  Nodes: {}", graph.nodes.len());
-            println!("  Edges: {}", graph.edges.len());
-            if !registry.codegen_templates.is_empty() {
-                let total_rules: usize = registry.codegen_templates.iter().map(|t| t.rules.len()).sum();
-                println!("  Codegen: {} template(s), {} rule(s)", registry.codegen_templates.len(), total_rules);
-                // Execute templates and show output summary
-                let output = veil_codegen::execute_templates(&sol, &registry, "rust");
-                if !output.files.is_empty() {
-                    for f in &output.files {
-                        println!("  Generated: {} ({} bytes)", f.path, f.content.len());
-                        println!("--- {} ---\n{}\n---", f.path, f.content);
-                    }
+
+            let mut result = veil_ir::check_solution(&sol, &registry);
+
+            // Target capability matrix (CHK-005)
+            result.diagnostics.extend(veil_codegen::check_target_capabilities(
+                &sol,
+                &registry,
+                codegen_target,
+            ));
+            // Multi-target debt: warn about TS gaps when primary target is Rust
+            if !no_target_debt && codegen_target == veil_codegen::CodegenTarget::Rust {
+                result
+                    .diagnostics
+                    .extend(veil_codegen::check_multi_target_debt(&sol, &registry));
+            }
+
+            // Escape-hatch debt (CHK-006): already included in check_solution as warnings
+            if deny_escape_hatches {
+                veil_ir::promote_escape_hatches(&mut result.diagnostics);
+            }
+
+            veil_ir::sort_diagnostics(&mut result.diagnostics);
+
+            // Compact summary header
+            eprintln!(
+                "check {} — {} (layers: {}; target: {})",
+                file_display,
+                sol.name,
+                if registry.layers.is_empty() {
+                    "—".to_string()
+                } else {
+                    registry.layers.join(", ")
+                },
+                target
+            );
+
+            if emit_templates && !registry.codegen_templates.is_empty() {
+                let tpl_target = match codegen_target {
+                    veil_codegen::CodegenTarget::Rust => "rust",
+                    veil_codegen::CodegenTarget::TypeScript => "typescript",
+                };
+                let output = veil_codegen::execute_templates(&sol, &registry, tpl_target);
+                for f in &output.files {
+                    println!("template-file {}: {} bytes", f.path, f.content.len());
+                    println!("{}", f.content);
                 }
-                if !output.sections.is_empty() {
-                    for (name, contributions) in &output.sections {
-                        println!("  Section '{}': {} contribution(s)", name, contributions.len());
-                        for c in contributions {
-                            println!("--- section:{} (priority:{}, from:{}) ---\n{}\n---", name, c.priority, c.source_layer, c.content);
-                        }
+                for (name, contributions) in &output.sections {
+                    for c in contributions {
+                        println!(
+                            "template-section {} priority={} from={}\n{}",
+                            name, c.priority, c.source_layer, c.content
+                        );
                     }
                 }
             }
 
-            let errors = veil_ir::validate::validate_solution(&sol, &registry);
-            if errors.is_empty() {
-                println!("  Validation: ✓ all constraints pass");
+            let hatch_counts =
+                veil_ir::EscapeHatchSummary::from_diagnostics(&result.diagnostics);
+
+            if result.diagnostics.is_empty() {
+                eprintln!(
+                    "ok — {} node(s), {} edge(s), 0 diagnostics",
+                    result.graph.nodes.len(),
+                    result.graph.edges.len()
+                );
             } else {
-                println!("  Validation: ✗ {} error(s):", errors.len());
-                for err in &errors {
-                    println!("    ✗ {}", err);
+                for d in &result.diagnostics {
+                    // stdout for machine-friendly piping; include file path
+                    println!("{}: {}", file_display, veil_ir::format_diagnostic_line(d));
                 }
+                eprintln!(
+                    "{} error(s), {} warning(s)",
+                    result.error_count(),
+                    result.warning_count()
+                );
             }
 
-            println!("\n{}", serde_json::to_string_pretty(&graph).unwrap());
+            // Metric-friendly escape-hatch summary (CHK-006)
+            if hatch_counts.total() > 0 || escape_summary {
+                eprintln!("{}", hatch_counts.format_line());
+            }
+
+            if dump_ir {
+                println!("{}", serde_json::to_string_pretty(&result.graph).unwrap());
+            }
+
+            if result.has_errors() {
+                std::process::exit(1);
+            }
         }
         Commands::Gen { file, output, target } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
@@ -513,6 +617,7 @@ fn main() {
                                 span: pkg.span,
                                 uses: pkg.uses.clone(),
                                 items: pkg.items.clone(),
+                                expose: pkg.expose.clone(),
                             };
                             veil_codegen::generate_for_target(sol, &registry, codegen_target)
                         }
@@ -635,6 +740,7 @@ fn main() {
                         span: pkg.span,
                         uses: Vec::new(),
                         items: pkg.items.clone(),
+                        expose: pkg.expose.clone(),
                     };
                     veil_ir::build_ir(&sol)
                 }
