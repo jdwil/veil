@@ -184,10 +184,13 @@ storing full source trees in sqlite.
 
 ## RT-019: `sol` → `pkg` for runtime sources
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** maintainer  
 **I want** modern `pkg` keyword only  
 **So that** deprecated aliases fade out
+
+**Done notes:** Serializer already emits `pkg`; `runtime.veil` converted from
+`sol` → `pkg`. Parser still accepts `sol` as alias.
 
 ---
 

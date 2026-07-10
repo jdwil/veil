@@ -254,7 +254,7 @@ logged in turn response. Full tool matrix / apply_patch later.
 
 ## AGT-007: ACP client — pluggable external agent platforms
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** user  
 **I want** to attach external ACP-compatible agents (Zed-style)  
 **So that** I can use Claude Code / Gemini / in-house agents from the VEIL IDE
@@ -275,6 +275,10 @@ logged in turn response. Full tool matrix / apply_patch later.
 
 Deliverable of the spike: short `docs/ACP_SPIKE.md` with go/no-go and chosen
 pattern. Implementation stories may split after the spike.
+
+**Done notes:** Spike complete in `docs/ACP_SPIKE.md` — Rig-first + MCP tools
+path; ACP host deferred as follow-on (not blocking dual loop). Full ACP
+session UX is a future implementation slice.
 
 ---
 

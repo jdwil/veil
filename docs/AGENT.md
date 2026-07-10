@@ -62,3 +62,8 @@ Tool calls are returned in the turn response for review. Use **Review changes**
 
 `layers/rig.layer` defines `tool` / `agent` / `tool_set` constructs for
 authoring agent apps *in VEIL*. The IDE agent itself is host-side Rig Rust.
+
+## MCP / ACP
+
+- Tool discovery: `GET /api/agent/tools` (veil-tools-v1 JSON schemas)
+- ACP research & go/no-go: `docs/ACP_SPIKE.md` (Rig-first; ACP host later)

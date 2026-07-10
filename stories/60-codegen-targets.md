@@ -130,7 +130,7 @@ workspace deps emit features from stub only. `examples/sqlx.stub` updated.
 
 ## GEN-007: Manifest contract tests
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As a** runtime implementer  
 **I want** golden tests for `manifest.json` shape  
 **So that** the compiler↔runtime handoff stays stable
@@ -142,3 +142,6 @@ workspace deps emit features from stub only. `examples/sqlx.stub` updated.
 - Document versioning if fields evolve
 
 **Touch:** codegen tests, `docs/ARCHITECTURE.md` if fields change
+
+**Done notes:** `manifest_includes_layer_provided_deps_with_strategy` in
+codegen_tests locks Bus/AuthService + strategy fields for onboarding.

@@ -107,7 +107,7 @@ emit (GEN / RT-001).
 
 ## RT-002: Explicit vs host-injected deps
 
-**Status:** Open · **Priority:** P1  
+**Status:** Done · **Priority:** P1  
 **As an** author  
 **I want** two supported modes  
 **So that** local app harnesses and hosted runtimes both work
@@ -123,6 +123,9 @@ emit (GEN / RT-001).
 - Host mode: manifest fields remain stable (GEN-007); host library API documented
 - `provided_by: "runtime"` clearly means “host must supply” — check warns if
   neither host nor local provider exists
+
+**Done notes:** Modes documented in `docs/HARNESS.md`; manifest
+`provided_by: runtime` locked by GEN-007 tests.
 
 ---
 

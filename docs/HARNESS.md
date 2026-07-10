@@ -51,8 +51,20 @@ veil check examples/di_example.veil
 Permanent handwritten app harnesses in `runtime/bootstrap` as the only path.
 Stage-0 may remain a thin `cargo` entry that calls generated `@main` only.
 
+## Host modes (RT-002)
+
+| Mode | Who wires deps | When |
+|------|----------------|------|
+| **App harness** | VEIL `@main` / `@pvd` constructs adapters | Local run, custom deploy |
+| **Host harness** | External host reads `manifest.json`, injects `provided_by: "runtime"` | Shared platform |
+
+`provided_by: "runtime"` in generated manifests means the host must supply
+that trait (e.g. Bus). App mode needs no host if all deps are constructible.
+
 ## Related
 
 - Product model: `stories/README.md`
 - Runtime harness backlog: `stories/70-runtime-harness.md`
 - Server API: `docs/SERVER.md`
+- Agents (Rig): `docs/AGENT.md`
+- ACP research: `docs/ACP_SPIKE.md`

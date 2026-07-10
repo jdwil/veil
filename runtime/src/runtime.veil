@@ -1,4 +1,4 @@
-sol VeilRuntime
+pkg VeilRuntime
   use ddd
   use aws_storage
   use rig
