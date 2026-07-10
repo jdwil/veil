@@ -1,9 +1,11 @@
 # VEIL Layer Presentation Model
 
 **Status:** Normative (LAY-001 grammar + semantics).  
-**Implementation:** LAY-002 shipped — layer loader parses `present` into
-`ConstructSpec.presentation`; **`GET /api/presentation`** returns
-`PresentationModel` JSON. Viewer projection = LAY-003+.
+**Implementation:**
+
+- **LAY-002:** layer loader + **`GET /api/presentation`**
+- **LAY-003:** viewer fetches presentation IR, view switcher, `projectView()`
+  in `veil-viewer/src/lib/presentation.ts` (tabs / tree / flat / flow)
 
 **Mission rule:** The engine and viewer contain **zero domain knowledge**.
 Paradigms (DDD, functional, Svelte UI, …) teach the IDE **how to look** via

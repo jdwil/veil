@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { setPaletteStyles, type IrGraph, type IrNode, type PaletteEntry } from './types';
+import type { PresentationModel } from './presentation';
 
 export const irGraph = writable<IrGraph | null>(null);
 export const veilSource = writable<string>('');
@@ -9,6 +10,8 @@ export const loading = writable(true);
 export const error = writable<string | null>(null);
 export const selectedNodeId = writable<string | null>(null);
 export const paletteConfig = writable<any[]>([]);
+/** Layer-driven views / nest rules from GET /api/presentation (LAY-002/003). */
+export const presentationModel = writable<PresentationModel | null>(null);
 /** A diagnostic from `/api/check` (mirrors veil_ir::Diagnostic). */
 export interface Diagnostic {
   severity: 'Error' | 'Warning' | string;
@@ -47,6 +50,7 @@ const API_BASE = 'http://localhost:3001/api';
 const API_URL = `${API_BASE}/ir`;
 const SOURCE_URL = `${API_BASE}/source`;
 const PALETTE_URL = `${API_BASE}/palette`;
+const PRESENTATION_URL = `${API_BASE}/presentation`;
 const CHECK_URL = `${API_BASE}/check`;
 const EDIT_URL = `${API_BASE}/edit`;
 const STUBS_URL = `${API_BASE}/stubs`;
@@ -121,10 +125,11 @@ export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const [irRes, srcRes, palRes, stubRes, filesRes] = await Promise.all([
+    const [irRes, srcRes, palRes, presRes, stubRes, filesRes] = await Promise.all([
       fetch(API_URL),
       fetch(SOURCE_URL),
       fetch(PALETTE_URL),
+      fetch(PRESENTATION_URL).catch(() => null),
       fetch(STUBS_URL).catch(() => null),
       fetch(FILES_URL).catch(() => null),
     ]);
@@ -147,6 +152,12 @@ export async function fetchIr() {
       const palette: PaletteEntry[] = await palRes.json();
       paletteConfig.set(palette);
       setPaletteStyles(palette);
+    }
+
+    if (presRes && presRes.ok) {
+      presentationModel.set(await presRes.json());
+    } else {
+      presentationModel.set(null);
     }
 
     // Load file list
@@ -221,6 +232,15 @@ export async function selectFile(index: number) {
 
     // Re-run check for the newly active file
     await fetchCheck();
+
+    // Refresh presentation for the new file's layers
+    try {
+      const presRes = await fetch(PRESENTATION_URL);
+      if (presRes.ok) presentationModel.set(await presRes.json());
+      else presentationModel.set(null);
+    } catch {
+      presentationModel.set(null);
+    }
 
     // Reset navigation to root
     const root = data.nodes.find(n => n.kind === 'Solution');

@@ -120,7 +120,7 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 ## LAY-003: Viewer consumes presentation IR (generic)
 
-**Status:** Open · **Priority:** P0  
+**Status:** Done · **Priority:** P0  
 **As a** human reviewing a package  
 **I want** the canvas to offer layer-declared views and nest by presentation rules  
 **So that** hierarchy is paradigm-correct without frontend special cases
@@ -140,6 +140,15 @@ loader accepts it, unless LAY-002 lands in the same change).
 
 **Depends:** LAY-002  
 **Touch:** `veil-viewer` (`+page.svelte` / layout / store), possibly IR projection helper
+
+**Done notes:**
+
+- `veil-viewer/src/lib/presentation.ts` — pure projection (`projectView`, members,
+  nest, tabs/tree/flat/flow); uses construct **names**/subkinds only
+- Fetch `GET /api/presentation` into `presentationModel` store
+- View switcher UI when host has ≥2 views; group tabs still nest under tabs layout
+- Fallback path unchanged when presentation empty (pre-LAY-004 ddd.layer)
+- Genericity check: `veil-viewer/scripts/check-presentation.mjs` (Host/RootType/ChildType)
 
 **Mission impact:** Makes multi-view topology real for any layer, not only DDD.
 

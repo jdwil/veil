@@ -31,12 +31,20 @@
     getChildren,
     selectedNodeId,
     paletteConfig,
+    presentationModel,
     saveEdits,
     availableFiles,
     activeFileName,
     selectFile,
   } from '$lib/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
+  import {
+    projectView,
+    pickDefaultView,
+    viewsForHost,
+    irChildren,
+    type ViewSpec,
+  } from '$lib/presentation';
 
   const nodeTypes: NodeTypes = {
     veil: VeilNode as any,
@@ -48,6 +56,9 @@
   let flowKey = $state(0);
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
+  /** Layer presentation views for current host (LAY-003). */
+  let hostViews = $state<ViewSpec[]>([]);
+  let activeViewId = $state<string | null>(null);
   let showLayerProvided = $state(false);
   // DOM reference for node measurement — ELK needs real rendered sizes
   let graphContainerEl: HTMLElement | null = $state(null);
@@ -261,186 +272,34 @@
     if (graph) computeView(graph, parent, palette);
   }
 
-  let computeInProgress = false;
-  async function computeView(graph: IrGraph, parentId: number | null, palette: any[] = []) {
-    let children = getChildren(graph, parentId);
+  function switchView(viewId: string) {
+    activeViewId = viewId;
+    activeTab = null; // reset group tab when switching presentation view
+    const graph = get(irGraph);
+    const parent = get(currentParent);
+    const palette = get(paletteConfig);
+    if (graph) computeView(graph, parent, palette);
+  }
 
-    // Filter out layer-provided infrastructure unless toggled on
-    if (!showLayerProvided) {
-      children = children.filter(c => !c.metadata.annotations.includes('layer-provided'));
-    }
-
-    const visibleIds = new Set(children.map(c => c.id));
-
-    // Check if we're at the Solution level with modules + cross-module flows
-    const parentNode = parentId ? graph.nodes.find(n => n.id === parentId) : null;
-    // Update context kind for palette filtering (was a $derived, moved here to avoid reactive loops)
-    currentContextKind = parentNode?.metadata.subkind ?? parentNode?.kind ?? 'Solution';
-    currentContextKindCore = parentNode?.kind ?? 'Solution';
-    const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
-    const modules = children.filter(c => c.kind === 'Module');
-    // Any node with a reference line (`ref:*`, e.g. a saga's `contexts`) spans
-    // modules — layer-agnostic, no hardcoded keyword.
-    const spanning = children.filter(c => c.metadata.properties.some(([k]) => k.startsWith('ref:')));
-
-    // Simple flat view — modules and flows as regular nodes
-    if (isSolutionLevel && modules.length > 0) {
-    // Spanning nodes get edges to the modules they reference
-    const solNodes: Node[] = children.map(child => {
+  /** Map IR nodes to SvelteFlow nodes (shared by presentation + legacy paths). */
+  function toFlowNodes(
+    graph: IrGraph,
+    items: IrNode[],
+    visibleIds: Set<number>
+  ): Node[] {
+    return items.map((child) => {
       const childChildren = getChildren(graph, child.id);
       const refs = getCrossRefs(graph, child.id, visibleIds);
-
-      return {
-        id: String(child.id),
-        type: 'veil',
-        position: { x: 0, y: 0 },
-        data: {
-          label: child.name,
-          kind: child.kind,
-          subkind: child.metadata.subkind,
-          spanStart: child.span.start,
-          layerProvided: child.metadata.annotations.includes('layer-provided'),
-          hasChildren: childChildren.length > 0,
-          annotations: child.metadata.annotations,
-          properties: child.metadata.properties,
-          refs,
-        },
-      };
-    });
-
-    // Edges: spanning node → modules it references
-    const solEdges: Edge[] = [];
-
-    for (const span of spanning) {
-      const ctxRefs = span.metadata.properties.find(([k]) => k.startsWith('ref:'));
-      if (ctxRefs) {
-        const ctxNames = ctxRefs[1].split(', ');
-        for (const ctxName of ctxNames) {
-          const ctxNode = modules.find(c => c.name === ctxName);
-          if (ctxNode) {
-            solEdges.push({
-              id: `span-${span.id}-${ctxNode.id}`,
-              source: String(span.id),
-              target: String(ctxNode.id),
-              animated: true,
-              style: 'stroke: #dc2626; stroke-width: 2.5; stroke-dasharray: 6 3;',
-              label: 'spans',
-              labelStyle: 'font-size: 9px; fill: #dc2626;',
-            });
-          }
-        }
-      }
-    }
-
-    nodes = await layoutByType(solNodes, graphContainerEl);
-    edges = solEdges;
-    tabs = [];
-    activeTab = null;
-    return;
-    }
-
-    // Standard flat view for other levels
-    // Check if children contain groups — if so, use tabs.
-    // Also check for expected groups declared in the layer (via requires_groups)
-    // so we show tabs even for groups that don't have children yet.
-    const groupNodes = children.filter(c => c.kind === 'Group');
-
-    // Get expected groups from the layer config for this parent's subkind
-    const parentSubkind = parentNode?.metadata.subkind ?? null;
-    const paletteEntry = parentSubkind
-      ? palette.find((p: any) => p.name === parentSubkind)
-      : null;
-    const expectedGroups: string[] = paletteEntry?.expected_groups ?? [];
-
-    // Merge: actual group nodes + expected groups that don't exist yet
-    const allGroupNames = [...new Set([
-      ...groupNodes.map(g => g.name),
-      ...expectedGroups,
-    ])];
-
-    if (allGroupNames.length > 0) {
-      // Sort to match the expected order from the layer
-      if (expectedGroups.length > 0) {
-        allGroupNames.sort((a, b) => {
-          const ai = expectedGroups.indexOf(a);
-          const bi = expectedGroups.indexOf(b);
-          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-        });
-      }
-      tabs = allGroupNames;
-      // Use activeTab if valid, otherwise default to first
-      let currentTab = activeTab;
-      if (!currentTab || !tabs.includes(currentTab)) {
-        currentTab = tabs[0];
-        activeTab = currentTab;
-      }
-
-      const activeGroup = groupNodes.find(g => g.name === currentTab);
-      if (activeGroup) {
-        const groupChildren = getChildren(graph, activeGroup.id);
-        // Also include non-group items at this level
-        const nonGroupItems = children.filter(c => c.kind !== 'Group');
-        const allItems = [...groupChildren, ...nonGroupItems];
-        const itemIds = new Set(allItems.map(c => c.id));
-
-        const tabNodes: Node[] = allItems.map(child => {
-          const childChildren = getChildren(graph, child.id);
-          const refs = getCrossRefs(graph, child.id, itemIds);
-          return {
-            id: String(child.id),
-            type: 'veil',
-            position: { x: 0, y: 0 },
-            data: {
-              label: child.name,
-              kind: child.kind,
-              subkind: child.metadata.subkind,
-              hasChildren: childChildren.length > 0,
-              annotations: child.metadata.annotations,
-              properties: child.metadata.properties,
-              refs,
-            },
-          };
-        });
-
-        const tabEdges: Edge[] = graph.edges
-          .filter(e => itemIds.has(e.from) && itemIds.has(e.to))
-          .filter(e => e.kind !== 'Contains' && e.kind !== 'References')
-          .map((e, i) => ({
-            id: `e-${e.from}-${e.to}-${i}`,
-            source: String(e.from),
-            target: String(e.to),
-            animated: e.kind === 'SequenceFlow',
-            style: getEdgeStyle(e.kind),
-          }));
-
-        nodes = await layoutByType(tabNodes, graphContainerEl);
-        edges = tabEdges;
-        return;
-      }
-      // Active tab is an expected group with no content yet — show empty canvas
-      nodes = await layoutByType([], graphContainerEl);
-      edges = [];
-      return;
-    } else {
-      tabs = [];
-      activeTab = null;
-    }
-
-    const flowNodes: Node[] = children.map(child => {
-      const childChildren = getChildren(graph, child.id);
-      const refs = getCrossRefs(graph, child.id, visibleIds);
-
       let inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = [];
       let hasChildren = childChildren.length > 0;
       if (child.kind === 'ParallelGateway') {
-        inlineChildren = childChildren.map(c => ({
+        inlineChildren = childChildren.map((c) => ({
           name: c.name,
           kind: c.kind,
           properties: c.metadata.properties,
         }));
         hasChildren = false;
       }
-
       return {
         id: String(child.id),
         type: 'veil',
@@ -459,57 +318,236 @@
         },
       };
     });
+  }
 
-    // Edges between visible nodes
-    const flowEdges: Edge[] = graph.edges
-      .filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))
-      .filter(e => e.kind !== 'Contains')
+  function edgesAmong(graph: IrGraph, visibleIds: Set<number>): Edge[] {
+    return graph.edges
+      .filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to))
+      .filter((e) => e.kind !== 'Contains' && e.kind !== 'References')
       .map((e, i) => ({
         id: `e-${e.from}-${e.to}-${i}`,
         source: String(e.from),
         target: String(e.to),
         animated: e.kind === 'SequenceFlow',
         style: getEdgeStyle(e.kind),
-        label: e.kind === 'Implements' ? 'implements' : e.kind === 'SequenceFlow' ? '' : e.kind,
+        label:
+          e.kind === 'Implements'
+            ? 'implements'
+            : e.kind === 'SequenceFlow'
+              ? ''
+              : e.kind,
         labelStyle: 'font-size: 10px; fill: var(--veil-text-dim);',
       }));
+  }
 
-    // Ghost nodes for cross-references
+  let computeInProgress = false;
+  async function computeView(graph: IrGraph, parentId: number | null, palette: any[] = []) {
+    let children = getChildren(graph, parentId);
+
+    // Filter out layer-provided infrastructure unless toggled on
+    if (!showLayerProvided) {
+      children = children.filter((c) => !c.metadata.annotations.includes('layer-provided'));
+    }
+
+    const parentNode = parentId ? graph.nodes.find((n) => n.id === parentId) : null;
+    currentContextKind = parentNode?.metadata.subkind ?? parentNode?.kind ?? 'Solution';
+    currentContextKindCore = parentNode?.kind ?? 'Solution';
+    const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
+    const modules = children.filter((c) => c.kind === 'Module');
+    const spanning = children.filter((c) =>
+      c.metadata.properties.some(([k]) => k.startsWith('ref:'))
+    );
+
+    // Solution-level modules (unchanged special case)
+    if (isSolutionLevel && modules.length > 0) {
+      hostViews = [];
+      activeViewId = null;
+      const visibleIds = new Set(children.map((c) => c.id));
+      const solNodes = toFlowNodes(graph, children, visibleIds);
+      const solEdges: Edge[] = [];
+      for (const span of spanning) {
+        const ctxRefs = span.metadata.properties.find(([k]) => k.startsWith('ref:'));
+        if (ctxRefs) {
+          for (const ctxName of ctxRefs[1].split(', ')) {
+            const ctxNode = modules.find((c) => c.name === ctxName.trim());
+            if (ctxNode) {
+              solEdges.push({
+                id: `span-${span.id}-${ctxNode.id}`,
+                source: String(span.id),
+                target: String(ctxNode.id),
+                animated: true,
+                style: 'stroke: #dc2626; stroke-width: 2.5; stroke-dasharray: 6 3;',
+                label: 'spans',
+                labelStyle: 'font-size: 9px; fill: #dc2626;',
+              });
+            }
+          }
+        }
+      }
+      nodes = await layoutByType(solNodes, graphContainerEl);
+      edges = solEdges;
+      tabs = [];
+      activeTab = null;
+      return;
+    }
+
+    // ─── LAY-003: layer presentation views ─────────────────────────────
+    const pres = get(presentationModel);
+    const hostName = parentNode?.metadata.subkind ?? null;
+    const views = viewsForHost(pres, hostName);
+    hostViews = views;
+
+    if (views.length > 0 && parentId != null) {
+      const hostDto = hostName && pres ? pres.hosts[hostName] : undefined;
+      if (!activeViewId || !views.some((v) => v.id === activeViewId)) {
+        activeViewId = pickDefaultView(hostDto, views);
+      }
+      const view = views.find((v) => v.id === activeViewId) ?? views[0];
+      const projected = projectView(graph, parentId, view, {
+        hideLayerProvided: !showLayerProvided,
+      });
+
+      if (projected.layout === 'tabs') {
+        tabs = projected.tabs;
+        let currentTab = activeTab;
+        if (!currentTab || !tabs.includes(currentTab)) {
+          currentTab = tabs[0] ?? null;
+          activeTab = currentTab;
+        }
+        const groupNode = currentTab
+          ? projected.tabGroupNodes.get(currentTab)
+          : null;
+        let allItems: IrNode[] = [];
+        if (groupNode) {
+          let gc = irChildren(graph, groupNode.id);
+          if (!showLayerProvided) {
+            gc = gc.filter((c) => !c.metadata.annotations.includes('layer-provided'));
+          }
+          const nonGroup = children.filter((c) => c.kind !== 'Group');
+          allItems = [...gc, ...nonGroup];
+        } else if (currentTab) {
+          // Virtual empty tab (expected group not yet in source)
+          allItems = [];
+        }
+        const itemIds = new Set(allItems.map((c) => c.id));
+        const tabNodes = toFlowNodes(graph, allItems, itemIds);
+        nodes = await layoutByType(tabNodes, graphContainerEl);
+        edges = edgesAmong(graph, itemIds);
+        return;
+      }
+
+      // flat | tree | flow — show projected top-level nodes
+      tabs = [];
+      activeTab = null;
+      const itemIds = new Set(projected.nodes.map((c) => c.id));
+      const flowNodes = toFlowNodes(graph, projected.nodes, itemIds);
+      const flowEdges = edgesAmong(graph, itemIds);
+      const useFlowLayout =
+        projected.layout === 'flow' ||
+        parentNode?.kind === 'Flow' ||
+        parentNode?.kind === 'Step' ||
+        parentNode?.kind === 'InterfaceMethod';
+      if (useFlowLayout) {
+        nodes = await layoutNodes(flowNodes, flowEdges, 'LR', graphContainerEl);
+      } else {
+        nodes = await layoutByType(flowNodes, graphContainerEl);
+      }
+      edges = flowEdges;
+      return;
+    }
+
+    // ─── Fallback: no presentation (legacy requires_groups / flat) ─────
+    hostViews = [];
+    activeViewId = null;
+    const visibleIds = new Set(children.map((c) => c.id));
+
+    const groupNodes = children.filter((c) => c.kind === 'Group');
+    const parentSubkind = parentNode?.metadata.subkind ?? null;
+    const paletteEntry = parentSubkind
+      ? palette.find((p: any) => p.name === parentSubkind)
+      : null;
+    const expectedGroups: string[] = paletteEntry?.expected_groups ?? [];
+    const allGroupNames = [
+      ...new Set([...groupNodes.map((g) => g.name), ...expectedGroups]),
+    ];
+
+    if (allGroupNames.length > 0) {
+      if (expectedGroups.length > 0) {
+        allGroupNames.sort((a, b) => {
+          const ai = expectedGroups.indexOf(a);
+          const bi = expectedGroups.indexOf(b);
+          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+        });
+      }
+      tabs = allGroupNames;
+      let currentTab = activeTab;
+      if (!currentTab || !tabs.includes(currentTab)) {
+        currentTab = tabs[0];
+        activeTab = currentTab;
+      }
+      const activeGroup = groupNodes.find((g) => g.name === currentTab);
+      if (activeGroup) {
+        const groupChildren = getChildren(graph, activeGroup.id);
+        const nonGroupItems = children.filter((c) => c.kind !== 'Group');
+        const allItems = [...groupChildren, ...nonGroupItems];
+        const itemIds = new Set(allItems.map((c) => c.id));
+        nodes = await layoutByType(toFlowNodes(graph, allItems, itemIds), graphContainerEl);
+        edges = edgesAmong(graph, itemIds);
+        return;
+      }
+      nodes = await layoutByType([], graphContainerEl);
+      edges = [];
+      return;
+    }
+
+    tabs = [];
+    activeTab = null;
+
+    const flowNodes = toFlowNodes(graph, children, visibleIds);
+    const flowEdges = edgesAmong(graph, visibleIds);
     const ghostNodes: Node[] = [];
     const ghostEdges: Edge[] = [];
     let ghostIdx = 0;
     for (const child of children) {
       const outEdges = graph.edges.filter(
-        e => e.from === child.id && !visibleIds.has(e.to) && e.kind !== 'Contains'
+        (e) => e.from === child.id && !visibleIds.has(e.to) && e.kind !== 'Contains'
       );
       for (const e of outEdges) {
-        const targetNode = graph.nodes.find(n => n.id === e.to);
+        const targetNode = graph.nodes.find((n) => n.id === e.to);
         if (!targetNode) continue;
         const ghostId = `ghost-${ghostIdx++}`;
         ghostNodes.push({
-          id: ghostId, type: 'veil', position: { x: 0, y: 0 },
-          data: { label: targetNode.name, kind: targetNode.kind, hasChildren: false, annotations: [], isGhost: true },
+          id: ghostId,
+          type: 'veil',
+          position: { x: 0, y: 0 },
+          data: {
+            label: targetNode.name,
+            kind: targetNode.kind,
+            hasChildren: false,
+            annotations: [],
+            isGhost: true,
+          },
         });
         ghostEdges.push({
-          id: `ge-${child.id}-${ghostId}`, source: String(child.id), target: ghostId,
-          animated: false, style: getEdgeStyle(e.kind),
+          id: `ge-${child.id}-${ghostId}`,
+          source: String(child.id),
+          target: ghostId,
+          animated: false,
+          style: getEdgeStyle(e.kind),
         });
       }
     }
 
     const allNodes = [...flowNodes, ...ghostNodes];
     const allEdges = [...flowEdges, ...ghostEdges];
-
-    const direction = parentNode?.kind === 'Flow' || parentNode?.kind === 'ParallelGateway'
-      || parentNode?.kind === 'InterfaceMethod'
-      ? 'LR' : 'TB';
-
-    const isFlowView = parentNode?.kind === 'Flow'
-      || parentNode?.kind === 'ParallelGateway' || parentNode?.kind === 'Step'
-      || parentNode?.kind === 'InterfaceMethod';
+    const isFlowView =
+      parentNode?.kind === 'Flow' ||
+      parentNode?.kind === 'ParallelGateway' ||
+      parentNode?.kind === 'Step' ||
+      parentNode?.kind === 'InterfaceMethod';
 
     if (isFlowView) {
-      nodes = await layoutNodes(allNodes, allEdges, direction, graphContainerEl);
+      nodes = await layoutNodes(allNodes, allEdges, 'LR', graphContainerEl);
     } else {
       nodes = await layoutByType(allNodes, graphContainerEl);
     }
@@ -790,6 +828,22 @@
     <div class="main-layout">
       <Palette contextKind={currentContextKind} contextKindCore={currentContextKindCore} activeGroup={activeTab} />
       <div class="graph-wrapper">
+        {#if hostViews.length > 1}
+          <div class="view-bar" role="tablist" aria-label="Presentation views">
+            {#each hostViews as v}
+              <button
+                type="button"
+                class="view-btn"
+                class:active={activeViewId === v.id}
+                role="tab"
+                aria-selected={activeViewId === v.id}
+                onclick={() => switchView(v.id)}
+              >
+                {v.label || v.id}
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if tabs.length > 0}
           <div class="tab-bar">
             {#each tabs as tab}
@@ -942,6 +996,37 @@
     flex-direction: column;
     min-height: 0;
     min-width: 0;
+  }
+
+  .view-bar {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px 4px;
+    background: var(--veil-surface);
+    border-bottom: 1px solid var(--veil-border);
+  }
+
+  .view-btn {
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--veil-text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .view-btn:hover {
+    background: var(--veil-accent-subtle);
+    color: var(--veil-text-secondary);
+  }
+
+  .view-btn.active {
+    background: var(--veil-accent-hover);
+    color: var(--veil-text);
+    border-color: rgba(115, 115, 115, 0.35);
   }
 
   .tab-bar {
