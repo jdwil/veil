@@ -123,8 +123,15 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 let ret_type = method.return_type.as_ref()
                     .map(|t| extract_inner_type(t))
                     .unwrap_or_else(|| "()".to_string());
+                // Register under PascalCase trait name (e.g. "CohortRepo", "find")
                 ctx.method_returns.insert(
                     (c.name.clone(), method.name.clone()),
+                    ret_type.clone(),
+                );
+                // Also register under snake_case dep name (e.g. "cohort_repo", "find")
+                // so lookups from @dep variable names resolve without conversion
+                ctx.method_returns.insert(
+                    (to_snake(&c.name), method.name.clone()),
                     ret_type,
                 );
             }
@@ -145,10 +152,16 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             }
             ctx.struct_fields.insert(c.name.clone(), fields);
 
-            // Record struct constructors: Type.new → Type
+            // Record struct constructors: Type.new → Type (or Result<Type> for invariant types)
+            let has_invariant = c.annotations.iter().any(|a| a.name == "invariant");
+            let new_ret = if has_invariant {
+                format!("Result<{}>", c.name)
+            } else {
+                c.name.clone()
+            };
             ctx.method_returns.insert(
                 (c.name.clone(), "new".to_string()),
-                c.name.clone(),
+                new_ret,
             );
         }
 
@@ -711,12 +724,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             return format!("{}.{}({}).await?", ctx.bus_ref, to_snake(method), final_args);
         }
         // Check if this method returns Option<T> — if so, unwrap with .ok_or(NotFound)?
-        // Try both the dep field name and PascalCase trait name as keys
-        let target_pascal = call.target.split('_')
-            .map(|s| { let mut c = s.chars(); match c.next() { None => String::new(), Some(f) => f.to_uppercase().collect::<String>() + c.as_str() } })
-            .collect::<String>();
         let returns_option = ctx.method_returns.get(&(call.target.clone(), call.method.clone()))
-            .or_else(|| ctx.method_returns.get(&(target_pascal, call.method.clone())))
             .map(|t| t.starts_with("Option<"))
             .unwrap_or(false);
         let opt_suffix = if returns_option { ".ok_or(DomainError::NotFound)?" } else { "" };
@@ -819,7 +827,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             if qualified == "sqlx::Query" {
                 return format!("sqlx::query({})", cloned);
             }
-            return format!("{}::{}({})", qualified, to_snake(method), cloned);
+            // If the constructor returns Result (invariant type), append ? to unwrap
+            let returns_result = ctx.method_returns.get(&(effective_target.clone(), "new".to_string()))
+                .map(|t| t.starts_with("Result<"))
+                .unwrap_or(false);
+            let suffix = if returns_result { "?" } else { "" };
+            return format!("{}::{}({}){}", qualified, to_snake(method), cloned, suffix);
         }
         // Non-new method on a struct: check if first arg is the instance
         // e.g. call Email.validate(email) → email.validate()
@@ -1130,7 +1143,15 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             // If calling a trait method, return type is known
             if ctx.is_trait_target(&call.target) {
                 let method = if call.method.is_empty() { "call" } else { &call.method };
-                return ctx.return_type_of(&call.target, method).map(|s| s.to_string());
+                let ret = ctx.return_type_of(&call.target, method).map(|s| s.to_string());
+                // If the return type is Option<T> and this is a dep call (which gets .ok_or()),
+                // the effective type after unwrap is T
+                if let Some(ref t) = ret {
+                    if let Some(inner) = t.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
+                        return Some(inner.to_string());
+                    }
+                }
+                return ret;
             }
             // If calling a struct constructor
             if ctx.is_struct_target(&call.target) {

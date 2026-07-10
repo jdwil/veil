@@ -1040,7 +1040,7 @@ chrono.workspace = true
     lib.push_str("    #[error(\"Validation failed: {0}\")]\n    Validation(String),\n");
     lib.push_str("    #[error(\"External service error: {0}\")]\n    External(String),\n");
     lib.push_str("}\n\n");
-    lib.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\n");
+    lib.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for DomainError {\n    fn from(e: ValidationError) -> Self {\n        DomainError::Validation(e.0)\n    }\n}\n\n");
 
     // Trait names in scope — used to box value-position references (List<Trait>).
     let trait_names: std::collections::HashSet<String> =
