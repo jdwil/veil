@@ -25,8 +25,9 @@ pub mod rig_tools;
 pub mod safety;
 pub mod revision;
 pub mod acp;
+pub mod layer_edit;
 
-pub use provider::{SourceProvider, FileInfo};
+pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;
 pub use provider::remote::RemoteHttpProvider;
 pub use api::build_router;

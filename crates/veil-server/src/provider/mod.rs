@@ -6,6 +6,34 @@ pub mod remote;
 use async_trait::async_trait;
 use veil_ir::LayerRegistry;
 
+/// Kind of project file in the serve set (DSL-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    #[default]
+    Package,
+    Layer,
+    Stub,
+}
+
+impl FileKind {
+    pub fn from_path(path: &std::path::Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+            "layer" => FileKind::Layer,
+            "stub" => FileKind::Stub,
+            _ => FileKind::Package,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileKind::Package => "package",
+            FileKind::Layer => "layer",
+            FileKind::Stub => "stub",
+        }
+    }
+}
+
 /// Metadata about a loaded file.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileInfo {
@@ -14,9 +42,12 @@ pub struct FileInfo {
     pub path: String,
     pub editable: bool,
     pub active: bool,
+    /// package | layer | stub
+    #[serde(default)]
+    pub kind: FileKind,
 }
 
-/// Abstraction over where .veil source lives.
+/// Abstraction over where .veil / .layer source lives.
 ///
 /// - [`filesystem::FilesystemProvider`] — reads from local disk (veil-cli)
 /// - A `VcsProvider` in veil-runtime would read from S3/git via the Bus
@@ -39,6 +70,12 @@ pub trait SourceProvider: Send + Sync + 'static {
 
     /// Is the given file editable?
     fn is_editable(&self, file: &str) -> bool;
+
+    /// Kind of the active file (or named file when non-empty).
+    fn file_kind(&self, file: &str) -> FileKind {
+        let _ = file;
+        FileKind::Package
+    }
 
     /// Switch the active file by index (UX-011). Default: unsupported.
     fn set_active(&self, _index: usize) -> Result<(), String> {
@@ -72,5 +109,20 @@ pub trait SourceProvider: Send + Sync + 'static {
     /// Default: no-op.
     async fn reload_from_disk(&self) -> Result<usize, String> {
         Ok(0)
+    }
+
+    /// Packages in the serve set that `use` the given layer name (DSL-014).
+    async fn layer_dependents(&self, _layer_name: &str) -> Vec<FileInfo> {
+        Vec::new()
+    }
+
+    /// Append a newly scaffolded file into the live serve set (DSL-013).
+    fn register_file(
+        &self,
+        _path: std::path::PathBuf,
+        _source: String,
+        _editable: bool,
+    ) -> Result<usize, String> {
+        Err("register_file not supported".into())
     }
 }
