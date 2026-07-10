@@ -60,19 +60,14 @@ impl AcpProcess {
                 args.push(agent);
             }
         }
-        if let Ok(model) = std::env::var("VEIL_ACP_MODEL")
-            .or_else(|_| std::env::var("VEIL_MODEL_NAME"))
-        {
-            // Only pass model if using kiro-style CLI and not already set
-            if !model.is_empty()
-                && model != "echo"
-                && !args.iter().any(|a| a == "--model")
-            {
-                // Skip ollama-looking names when user still has default
-                if !model.contains("qwen") && !model.contains("llama") {
-                    args.push("--model".into());
-                    args.push(model);
-                }
+        // Only pass --model when explicitly set to a real Kiro model id.
+        // Placeholders like "kiro" / "acp" / ollama defaults are NOT valid Kiro
+        // model ids and cause: "The model 'kiro' is not available".
+        // Prefer VEIL_ACP_MODEL; fall back to VEIL_MODEL_NAME only if it looks real.
+        if let Some(model) = resolve_acp_model_arg() {
+            if !args.iter().any(|a| a == "--model") {
+                args.push("--model".into());
+                args.push(model);
             }
         }
 
@@ -317,9 +312,8 @@ impl AcpProcess {
 
 fn collect_update(msg: &Value, text: &mut Vec<String>, tools: &mut Vec<String>) {
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
-    let update = params.get("update").cloned().unwrap_or(params);
-    // Common shapes: { sessionUpdate: "agent_message_chunk", content: { type, text } }
-    // or { type: "AgentMessageChunk", content: ... }
+    let update = params.get("update").cloned().unwrap_or(params.clone());
+    // Kiro: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "…" } }
     let kind = update
         .get("sessionUpdate")
         .or_else(|| update.get("type"))
@@ -329,6 +323,7 @@ fn collect_update(msg: &Value, text: &mut Vec<String>, tools: &mut Vec<String>) 
     if kind_l.contains("message") || kind_l.contains("chunk") || kind_l.contains("text") {
         if let Some(t) = extract_text(&update) {
             text.push(t);
+            return;
         }
     }
     if kind_l.contains("tool") {
@@ -342,15 +337,10 @@ fn collect_update(msg: &Value, text: &mut Vec<String>, tools: &mut Vec<String>) 
         if let Some(t) = extract_text(&update) {
             text.push(format!("\n[{name}] {t}\n"));
         }
+        return;
     }
-    // Nested content arrays
     if let Some(t) = extract_text(&update) {
-        if text.last().map(|s| s.as_str()) != Some(t.as_str()) {
-            // avoid dup when already pushed
-            if !kind_l.contains("message") && !kind_l.contains("tool") {
-                text.push(t);
-            }
-        }
+        text.push(t);
     }
 }
 
@@ -422,16 +412,44 @@ pub fn acp_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve optional `--model` for `kiro-cli acp`.
+///
+/// Kiro's default (often `auto` from `~/.kiro` settings) is used when we omit
+/// `--model`. Never pass VEIL placeholders (`kiro`, `acp`, ollama model names).
+fn resolve_acp_model_arg() -> Option<String> {
+    let explicit = std::env::var("VEIL_ACP_MODEL").ok().filter(|s| !s.trim().is_empty());
+    let from_name = std::env::var("VEIL_MODEL_NAME").ok().filter(|s| !s.trim().is_empty());
+    let candidate = explicit.or(from_name)?;
+    if is_placeholder_model(&candidate) {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn is_placeholder_model(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    matches!(
+        m.as_str(),
+        "" | "echo" | "kiro" | "acp" | "heuristic" | "none"
+    ) || m.contains("qwen")
+        || m.contains("llama")
+        || m.starts_with("gpt-") // OpenAI ids — not Kiro ACP model ids
+}
+
 /// Info blob for GET /api/models.
 pub fn acp_info() -> serde_json::Value {
+    let model_arg = resolve_acp_model_arg();
     json!({
         "provider": "acp",
         "command": std::env::var("VEIL_ACP_COMMAND").unwrap_or_else(|_| "kiro-cli".into()),
         "args": std::env::var("VEIL_ACP_ARGS").unwrap_or_else(|_| "acp --trust-all-tools".into()),
         "cwd": std::env::var("VEIL_ACP_CWD").ok(),
+        "model": model_arg.clone().unwrap_or_else(|| "(kiro default / auto)".into()),
+        "model_flag": model_arg,
         "timeout_secs": timeout_secs(),
         "rig": false,
         "acp": true,
+        "hint": "Set VEIL_ACP_MODEL to a real Kiro model id, or omit for default. Do not use VEIL_MODEL_NAME=kiro.",
     })
 }
 

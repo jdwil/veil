@@ -34,7 +34,10 @@ UI_PID      := $(PID_DIR)/ui.pid
 #           make serve VEIL_ACP_AGENT=personal
 #           make serve VEIL_MODEL_PROVIDER=openai VEIL_MODEL_NAME=gpt-4o
 VEIL_MODEL_PROVIDER ?= acp
-VEIL_MODEL_NAME     ?= kiro
+# Leave empty for ACP: Kiro uses its default model (often `auto` from ~/.kiro).
+# Do NOT set this to "kiro" — that is not a model id. For a specific model:
+#   make serve VEIL_ACP_MODEL=<kiro-model-id>
+VEIL_MODEL_NAME     ?=
 # Optional: VEIL_MODEL_BASE_URL=http://127.0.0.1:11434
 # ACP / Kiro (spawned by veil-server on agent turns when provider=acp)
 VEIL_ACP_COMMAND    ?= kiro-cli
@@ -42,10 +45,13 @@ VEIL_ACP_ARGS       ?= acp --trust-all-tools
 VEIL_ACP_CWD        ?= $(CURDIR)
 
 export VEIL_MODEL_PROVIDER
-export VEIL_MODEL_NAME
 export VEIL_ACP_COMMAND
 export VEIL_ACP_ARGS
 export VEIL_ACP_CWD
+# Only export model name when non-empty (avoids forcing --model kiro)
+ifneq ($(strip $(VEIL_MODEL_NAME)),)
+export VEIL_MODEL_NAME
+endif
 ifneq ($(origin VEIL_MODEL_BASE_URL), undefined)
 export VEIL_MODEL_BASE_URL
 endif
@@ -102,10 +108,11 @@ serve serve-examples: veil viewer-install
 	@echo "  Backend:  http://localhost:$(PORT)   (veil serve $(EXAMPLES))"
 	@echo "  Frontend: http://localhost:$(VIEWER_PORT)  (veil-viewer)"
 	@echo "  Open:     http://localhost:$(VIEWER_PORT)"
-	@echo "  Agent:    VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)  model=$(VEIL_MODEL_NAME)"
+	@echo "  Agent:    VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)$(if $(VEIL_MODEL_NAME),  model=$(VEIL_MODEL_NAME),)"
 	@if [ "$(VEIL_MODEL_PROVIDER)" = "acp" ] || [ "$(VEIL_MODEL_PROVIDER)" = "kiro" ]; then \
 		echo "  ACP:      $(VEIL_ACP_COMMAND) $(VEIL_ACP_ARGS)"; \
 		echo "  ACP cwd:  $(VEIL_ACP_CWD)"; \
+		if [ -n "$(VEIL_ACP_MODEL)" ]; then echo "  ACP model: $(VEIL_ACP_MODEL)"; else echo "  ACP model: (kiro default / auto — set VEIL_ACP_MODEL to pin)"; fi; \
 		if command -v $(VEIL_ACP_COMMAND) >/dev/null 2>&1; then \
 			echo "  ACP bin:  ok ($$(command -v $(VEIL_ACP_COMMAND)))"; \
 		else \
