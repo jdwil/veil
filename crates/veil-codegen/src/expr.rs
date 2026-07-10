@@ -747,7 +747,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // Built-in type-level method translations.
     // These are VEIL's short type names with associated methods that map
     // to Rust idioms. No framework knowledge — just language primitives.
-    if !call.method.is_empty() {
+    // ONLY apply these if the target is NOT a known domain struct (e.g., an entity
+    // named "List" should NOT be translated as Vec::new()).
+    if !call.method.is_empty() && !ctx.is_struct_target(&call.target) {
         let translated = match (call.target.as_str(), call.method.as_str()) {
             ("Dt", "now") => Some("Utc::now()".to_string()),
             ("Uuid", "new_v4") => Some("Uuid::new_v4()".to_string()),
@@ -827,12 +829,31 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             if qualified == "sqlx::Query" {
                 return format!("sqlx::query({})", cloned);
             }
+            // If the struct has an `id` field and the caller doesn't provide it
+            // (arg count is one fewer than expected), auto-insert Uuid::new_v4() as first arg.
+            let has_id_field = ctx.struct_fields.get(&effective_target)
+                .map(|fields| fields.iter().any(|(n, _)| n == "id"))
+                .unwrap_or(false);
+            let final_args = if has_id_field && !call.args.is_empty() {
+                // Check if first arg is already named 'id' — if so, caller is providing it
+                let first_is_id = matches!(&call.args[0], Expr::Ident(n) if n == "id");
+                if first_is_id {
+                    cloned // caller provides id explicitly
+                } else {
+                    // Prepend auto-generated id
+                    format!("Uuid::new_v4(), {}", cloned)
+                }
+            } else if has_id_field && call.args.is_empty() {
+                "Uuid::new_v4()".to_string()
+            } else {
+                cloned
+            };
             // If the constructor returns Result (invariant type), append ? to unwrap
             let returns_result = ctx.method_returns.get(&(effective_target.clone(), "new".to_string()))
                 .map(|t| t.starts_with("Result<"))
                 .unwrap_or(false);
             let suffix = if returns_result { "?" } else { "" };
-            return format!("{}::{}({}){}", qualified, to_snake(method), cloned, suffix);
+            return format!("{}::{}({}){}", qualified, to_snake(method), final_args, suffix);
         }
         // Non-new method on a struct: check if first arg is the instance
         // e.g. call Email.validate(email) → email.validate()

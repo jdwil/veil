@@ -598,27 +598,56 @@ fn gen_struct(c: &Construct) -> String {
     }
 
     if has_invariant {
+        // Smart constructor with invariant validation — same field filtering as non-invariant
+        let auto_fields = ["created", "updated", "created_at", "updated_at", "created_on", "updated_on", "deleted_on", "date_joined"];
+        let scalar_default_fields: std::collections::HashSet<String> = fields.iter()
+            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if n == "Int" || n == "Bool" || n == "F64" || n == "Json"))
+            .map(|f| f.name.clone())
+            .collect();
+
+        let user_fields: Vec<&&Field> = fields.iter()
+            .filter(|f| {
+                !auto_fields.contains(&f.name.as_str())
+                && !scalar_default_fields.contains(&f.name)
+                && !matches!(&f.type_expr, TypeExpr::Optional(_))
+                && !matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option")
+            })
+            .collect();
+
+        let params_str = user_fields.iter()
+            .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
+            .collect::<Vec<_>>().join(", ");
+
+        let init_fields = fields.iter().map(|f| {
+            let snake = to_snake(&f.name);
+            if auto_fields.contains(&f.name.as_str()) {
+                let is_optional = matches!(&f.type_expr, TypeExpr::Optional(_))
+                    || matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option");
+                if is_optional { format!("{}: None", snake) } else { format!("{}: Utc::now()", snake) }
+            } else if scalar_default_fields.contains(&f.name) {
+                let default = match &f.type_expr {
+                    TypeExpr::Named(n) if n == "Bool" => "false",
+                    TypeExpr::Named(n) if n == "F64" => "0.0",
+                    TypeExpr::Named(n) if n == "Json" => "serde_json::json!({})",
+                    _ => "0",
+                };
+                format!("{}: {}", snake, default)
+            } else if matches!(&f.type_expr, TypeExpr::Optional(_)) || matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option") {
+                format!("{}: None", snake)
+            } else {
+                snake
+            }
+        }).collect::<Vec<_>>().join(", ");
+
         out.push_str(&format!(
             "impl {} {{\n    pub fn new({}) -> Result<Self, ValidationError> {{\n        let value = Self {{ {} }};\n        value.validate()?;\n        Ok(value)\n    }}\n\n    pub fn validate(&self) -> Result<(), ValidationError> {{\n        Ok(())\n    }}\n}}\n\n",
-            c.name,
-            fields
-                .iter()
-                .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
-                .collect::<Vec<_>>()
-                .join(", "),
-            fields
-                .iter()
-                .map(|f| to_snake(&f.name))
-                .collect::<Vec<_>>()
-                .join(", "),
+            c.name, params_str, init_fields,
         ));
     } else if !fields.is_empty() {
         // Generate a smart constructor — auto-defaulting id, timestamps, and enum-state fields
-        let auto_fields = ["id", "created", "updated", "created_at", "updated_at", "created_on", "updated_on", "deleted_on", "date_joined"];
+        let auto_fields = ["created", "updated", "created_at", "updated_at", "created_on", "updated_on", "deleted_on", "date_joined"];
 
-        // id is special: it's auto-generated in the constructor body (Uuid::new_v4())
-        // but if explicitly passed by caller, it's a parameter too.
-        // For entities/aggregates, we generate id internally — callers pass it separately.
+        // id is accepted as a parameter — callers provide it (or pass Uuid::new_v4())
         // Enum-typed fields (like status) get their first variant as default
         let enum_field_names: std::collections::HashSet<String> = c.blocks.iter()
             .filter(|b| b.shape == Shape::Enum)
@@ -654,9 +683,7 @@ fn gen_struct(c: &Construct) -> String {
 
         let init_fields = fields.iter().map(|f| {
             let snake = to_snake(&f.name);
-            if f.name == "id" {
-                format!("{}: Uuid::new_v4()", snake)
-            } else if auto_fields.contains(&f.name.as_str()) {
+            if auto_fields.contains(&f.name.as_str()) {
                 // Timestamp fields: use Utc::now() for non-optional, None for optional
                 let is_optional = matches!(&f.type_expr,
                     TypeExpr::Generic(name, _) if name == "Opt" || name == "Option")
@@ -1395,7 +1422,8 @@ fn gen_impls(
                             let uses_stub = ctx.stub_type_crate.values()
                                 .any(|(crate_name, _)| rust_expr.contains(crate_name.as_str()));
                             let uses_effect = hooks.iter().any(|(h, _)| rust_expr.contains(h.as_str()));
-                            if uses_stub || uses_effect {
+                            let is_sdk_chain = rust_expr.contains(".await");
+                            if uses_stub || uses_effect || is_sdk_chain {
                                 let sql_hint = mimpl.body.iter().find_map(|e| {
                                     if let Expr::Call(c) = e { c.args.first().and_then(|a| {
                                         if let Expr::StringLit(s) = a { Some(s.clone()) } else { None }
