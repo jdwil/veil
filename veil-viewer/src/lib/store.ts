@@ -85,11 +85,15 @@ export interface VeilFileInfo {
   path: string;
   editable: boolean;
   active: boolean;
+  /** package | layer | stub (DSL-001) */
+  kind?: 'package' | 'layer' | 'stub' | string;
 }
 
 /** List of available files and the currently active one. */
 export const availableFiles = writable<VeilFileInfo[]>([]);
 export const activeFileName = writable<string>('');
+/** Active file kind for chrome switching. */
+export const activeFileKind = writable<string>('package');
 
 /** External crate stubs (from .stub files), for the External palette section. */
 export const stubs = writable<StubCrate[]>([]);
@@ -260,7 +264,10 @@ async function loadActiveFile(
     const files: VeilFileInfo[] = await filesRes.json();
     availableFiles.set(files);
     const active = files.find((f) => f.active);
-    if (active) activeFileName.set(active.name);
+    if (active) {
+      activeFileName.set(active.name);
+      activeFileKind.set(active.kind || 'package');
+    }
   }
 
   // Generated code is optional (can be slow); don't block UI

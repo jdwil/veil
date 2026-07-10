@@ -39,6 +39,7 @@
     saveEdits,
     availableFiles,
     activeFileName,
+    activeFileKind,
     selectFile,
     diagnostics,
     viewRevision,
@@ -993,10 +994,17 @@
           }}
         >
           {#each $availableFiles as file}
-            <option value={file.index}>{file.name}{file.active ? ' ●' : ''}</option>
+            <option value={file.index}
+              >{file.kind === 'layer' ? '📐 ' : file.kind === 'stub' ? '📎 ' : ''}{file.name}{file.active
+                ? ' ●'
+                : ''}</option
+            >
           {/each}
         </select>
         <span class="breadcrumb-sep">›</span>
+      {/if}
+      {#if $activeFileKind === 'layer'}
+        <span class="kind-badge" title="Language designer mode">layer</span>
       {/if}
       {#each $breadcrumbs as crumb, i}
         {#if i > 0}
@@ -1183,6 +1191,19 @@
     outline: none;
   }
   .file-selector:focus { border-color: var(--veil-accent); }
+
+  .kind-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #a5b4fc;
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-right: 8px;
+  }
 
   .breadcrumb-item {
     background: none;
