@@ -17,10 +17,11 @@ pub struct SwiftFile {
     pub content: String,
 }
 
-/// Features Swift spike claims (everything else fails closed via check).
+/// Features Swift spike claims (PAR-015: signature-only — no body lowering).
+/// Struct/enum shapes need no Feature flags; `FnBodyLowering` is **not** listed.
 pub fn swift_supported_features() -> std::collections::HashSet<Feature> {
-    use Feature::*;
-    [MatchExpr, TryOperator].into_iter().collect()
+    // Empty set: types/signatures emit without claiming expression features.
+    std::collections::HashSet::new()
 }
 
 pub fn generate_swift(solution: &Solution, _registry: &LayerRegistry) -> SwiftProject {

@@ -15,9 +15,9 @@ pub struct KotlinFile {
     pub content: String,
 }
 
+/// PAR-015: signature-only spike — no body/expression features claimed.
 pub fn kotlin_supported_features() -> std::collections::HashSet<Feature> {
-    use Feature::*;
-    [MatchExpr, TryOperator, AwaitExpr].into_iter().collect()
+    std::collections::HashSet::new()
 }
 
 pub fn generate_kotlin(solution: &Solution, _registry: &LayerRegistry) -> KotlinProject {

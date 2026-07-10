@@ -289,7 +289,7 @@ parity until these are Done.
 
 ## PAR-015: Spike / partial-backend capability honesty
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As an** agent or CI  
 **I want** capability claims to match what codegen actually emits  
 **So that** claiming `TryOperator` does not hide stub bodies
@@ -306,6 +306,10 @@ parity until these are Done.
 
 **Depends:** PAR-002, PAR-005/006  
 **Mission impact:** Fail closed (CHK-005); dual-loop trust
+
+**Done notes:** `Feature::FnBodyLowering`; Swift/Kotlin empty supported sets;
+non-empty fn bodies error on check; tests `swift_rejects_fn_body_lowering` /
+`kotlin_rejects_try_operator_in_body`.
 
 ---
 

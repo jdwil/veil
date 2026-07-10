@@ -52,6 +52,8 @@ pub enum Feature {
     MatchExpr,
     /// Raw string blocks (`template`, `style`)
     RawBlocks,
+    /// Non-empty function / method bodies actually lowered (not stub TODO/fatalError)
+    FnBodyLowering,
 }
 
 impl Feature {
@@ -73,6 +75,7 @@ impl Feature {
             Feature::AwaitExpr => "await_expr",
             Feature::MatchExpr => "match_expr",
             Feature::RawBlocks => "raw_blocks",
+            Feature::FnBodyLowering => "fn_body_lowering",
         }
     }
 
@@ -94,6 +97,7 @@ impl Feature {
             Feature::AwaitExpr => "await expressions",
             Feature::MatchExpr => "match expressions",
             Feature::RawBlocks => "raw template/style blocks",
+            Feature::FnBodyLowering => "non-empty function bodies (expression lowering)",
         }
     }
 }
@@ -119,6 +123,7 @@ fn supported_features(target: CodegenTarget) -> HashSet<Feature> {
             AwaitExpr,
             MatchExpr,
             RawBlocks, // ignored / passed through in adapters
+            FnBodyLowering,
             // Empty bodies: Rust supports non-empty; empty adapter body is debt
         ]),
         CodegenTarget::TypeScript => HashSet::from([
@@ -135,11 +140,12 @@ fn supported_features(target: CodegenTarget) -> HashSet<Feature> {
             AwaitExpr,
             MatchExpr,
             RawBlocks, // Svelte templates
+            FnBodyLowering,
             // EmptyServiceBody NOT supported
             // EmptyUiTemplate NOT supported as complete
             // EmptyAdapterBody N/A-ish
         ]),
-        // PAR-005/006 spikes: intentionally sparse — most features fail closed.
+        // PAR-005/006 spikes: signature-only — no body features claimed (PAR-015).
         CodegenTarget::Swift => crate::swift::swift_supported_features(),
         CodegenTarget::Kotlin => crate::kotlin::kotlin_supported_features(),
     }
@@ -301,6 +307,14 @@ fn collect_feature_uses(sol: &Solution) -> Vec<FeatureUse> {
         match item {
             TopLevelItem::Construct(c) => collect_construct(c, &mut uses),
             TopLevelItem::Function(f) => {
+                if !f.body.is_empty() {
+                    uses.push(FeatureUse {
+                        feature: Feature::FnBodyLowering,
+                        location: f.name.clone(),
+                        span: Some(f.span),
+                        detail: Some("free function with non-empty body".into()),
+                    });
+                }
                 for e in &f.body {
                     collect_expr(e, &f.name, &mut uses);
                 }
@@ -339,6 +353,13 @@ fn collect_construct(c: &Construct, uses: &mut Vec<FeatureUse>) {
                     location: c.name.clone(),
                     span: Some(imp.span),
                     detail: Some(format!("empty impl {}", imp.method_name)),
+                });
+            } else {
+                uses.push(FeatureUse {
+                    feature: Feature::FnBodyLowering,
+                    location: format!("{}.{}", c.name, imp.method_name),
+                    span: Some(imp.span),
+                    detail: Some("impl method with non-empty body".into()),
                 });
             }
             for e in &imp.body {
@@ -417,6 +438,14 @@ fn collect_construct(c: &Construct, uses: &mut Vec<FeatureUse>) {
         }
     }
     for fndef in &c.fns {
+        if !fndef.body.is_empty() {
+            uses.push(FeatureUse {
+                feature: Feature::FnBodyLowering,
+                location: format!("{}.{}", c.name, fndef.name),
+                span: Some(fndef.span),
+                detail: Some("method/fn with non-empty body".into()),
+            });
+        }
         for e in &fndef.body {
             collect_expr(e, &c.name, uses);
         }
@@ -734,6 +763,7 @@ pub fn target_capability_summary(target: CodegenTarget) -> String {
         Feature::AwaitExpr,
         Feature::MatchExpr,
         Feature::RawBlocks,
+        Feature::FnBodyLowering,
     ];
     let mut lines = vec![format!("target: {}", target_name(target))];
     for f in all {
@@ -743,6 +773,7 @@ pub fn target_capability_summary(target: CodegenTarget) -> String {
             (CodegenTarget::TypeScript, Feature::EmptyServiceBody) => "GAP",
             (CodegenTarget::TypeScript, Feature::EmptyUiTemplate) => "GAP",
             (CodegenTarget::Rust, Feature::EmptyAdapterBody) => "warn",
+            (CodegenTarget::Swift | CodegenTarget::Kotlin, Feature::FnBodyLowering) => "sig-only",
             _ => status,
         };
         lines.push(format!("  [{}] {} — {}", status, f.id(), f.description()));
@@ -869,6 +900,66 @@ mod tests {
         let diags = check_target_capabilities(&sol_with(comp), &reg, CodegenTarget::TypeScript);
         assert!(
             diags.iter().any(|d| d.code.contains("empty_ui_template")),
+            "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn swift_rejects_fn_body_lowering() {
+        let sol = Solution {
+            name: "T".into(),
+            span: Span::new(0, 0),
+            uses: Vec::new(),
+            items: vec![TopLevelItem::Function(FnDef {
+                name: "add".into(),
+                span: Span::new(0, 0),
+                params: vec![],
+                return_type: Some(TypeExpr::Named("Int".into())),
+                annotations: vec![],
+                body: vec![Expr::IntLit(1)],
+                layer_provided: false,
+            })],
+            expose: None,
+        };
+        let reg = LayerRegistry::builtin();
+        let diags = check_target_capabilities(&sol, &reg, CodegenTarget::Swift);
+        assert!(
+            diags.iter().any(|d| d.code.contains("fn_body_lowering")),
+            "{:?}",
+            diags
+        );
+        let rust_ok = check_target_capabilities(&sol, &reg, CodegenTarget::Rust);
+        assert!(
+            !rust_ok.iter().any(|d| d.code.contains("fn_body_lowering")),
+            "{:?}",
+            rust_ok
+        );
+    }
+
+    #[test]
+    fn kotlin_rejects_try_operator_in_body() {
+        let sol = Solution {
+            name: "T".into(),
+            span: Span::new(0, 0),
+            uses: Vec::new(),
+            items: vec![TopLevelItem::Function(FnDef {
+                name: "f".into(),
+                span: Span::new(0, 0),
+                params: vec![],
+                return_type: None,
+                annotations: vec![],
+                body: vec![Expr::Try(Box::new(Expr::Ident("x".into())))],
+                layer_provided: false,
+            })],
+            expose: None,
+        };
+        let reg = LayerRegistry::builtin();
+        let diags = check_target_capabilities(&sol, &reg, CodegenTarget::Kotlin);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.contains("try_operator") || d.code.contains("fn_body_lowering")),
             "{:?}",
             diags
         );
