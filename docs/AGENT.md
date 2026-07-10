@@ -41,3 +41,12 @@ Writes go through the same path as the IDE.
 
 `GET /api/events` — SSE revision heartbeat. Agent turns with `source_changed`
 trigger client `fetchIr()`.
+
+## Safety (AGT-009)
+
+| Mode | Env | Behavior |
+|------|-----|----------|
+| Auto-apply (default local) | unset | Renames write immediately; tool log in panel |
+| Confirm writes | `VEIL_AGENT_CONFIRM_WRITES=1` | Rename requires `confirm rename A to B` |
+
+All tool calls are returned in the turn response for human review.

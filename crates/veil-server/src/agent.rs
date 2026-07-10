@@ -132,6 +132,30 @@ pub async fn run_turn<P: SourceProvider>(
 
     // rename Old to New  /  rename Old -> New
     if let Some((from, to)) = parse_rename(prompt) {
+        // AGT-009: optional confirm mode — refuse write until user re-prompts with "confirm rename"
+        let confirm_mode = std::env::var("VEIL_AGENT_CONFIRM_WRITES")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if confirm_mode && !prompt.to_lowercase().contains("confirm") {
+            messages.push(AgentMessage {
+                role: "assistant".into(),
+                content: format!(
+                    "Permission: write would rename '{}' → '{}'. Re-send as `confirm rename {} to {}` to apply (VEIL_AGENT_CONFIRM_WRITES).",
+                    from, to, from, to
+                ),
+            });
+            return AgentTurnResponse {
+                turn_id,
+                messages,
+                tool_calls: vec![AgentToolCall {
+                    name: "permission_check".into(),
+                    detail: "confirm required".into(),
+                }],
+                source_changed: false,
+                ok: true,
+                error: None,
+            };
+        }
         tool_calls.push(AgentToolCall {
             name: "read_source".into(),
             detail: "active".into(),

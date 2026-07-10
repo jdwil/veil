@@ -301,7 +301,7 @@ pattern. Implementation stories may split after the spike.
 
 ## AGT-009: Permissions, safety, and review hooks
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** human reviewer  
 **I want** control over what the agent may change  
 **So that** dual-loop trust holds when the agent is fast
@@ -313,6 +313,10 @@ pattern. Implementation stories may split after the spike.
 - After a turn: link to **structural diff** (UX-021) of agent changes
 - Escape-hatch and check failures visible in-thread (CHK-006)
 - No silent write on check error when `strict` is on
+
+**Done notes:** `VEIL_AGENT_CONFIRM_WRITES=1` requires `confirm rename …`;
+tool audit in turn response; post-edit check in thread; UX-021 Review changes
+for structural diff. Path allowlist / plan-only remaining polish.
 
 ---
 

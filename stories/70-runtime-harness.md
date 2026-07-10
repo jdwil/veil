@@ -193,7 +193,7 @@ Include env vars, make targets, and “Authoring your own harness.”
 
 ## RT-007: HTTP surface documentation
 
-**Status:** Open · **Priority:** P2  
+**Status:** Done · **Priority:** P2  
 **As a** client  
 **I want** documented routes for whatever harness is running  
 **So that** UI and agents do not guess
@@ -202,6 +202,9 @@ Include env vars, make targets, and “Authoring your own harness.”
 
 - Route table for app harness templates and platform daemon (when present)
 - UI paths match or are marked future
+
+**Done notes:** IDE/dev routes in `docs/SERVER.md`. App harness HTTP remains
+app-specific (generated); platform daemon routes deferred with RT-010+.
 
 ---
 
