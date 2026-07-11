@@ -33,7 +33,9 @@ veil serve "$(veil projects path my-app)" -p 3001
 
 - Config: `~/.veil/config.json` (`projects_dir`); env `VEIL_PROJECTS_DIR` overrides.
 - Runtime is **VEIL-authored** and must **reuse** `veil-server` APIs — not reimplement them.
-- Multi-product = **one process**, request-scoped project routes (`/api/p/{name}/…`).
+- Multi-product host today: `veil serve --multi` (embeds `build_multi_router` / `ProjectsHub`).
+  Runtime host should link the same crate (`build_multi_router`) rather than forking N servers.
+- Viewer multi: open `http://localhost:5173/?project=<name>` against multi serve.
 - `examples/` is demos/CI only (`make serve-examples`).
 
 No special platform daemon is required for a single-project dual loop. Local

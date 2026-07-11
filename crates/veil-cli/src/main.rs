@@ -93,11 +93,15 @@ enum Commands {
     /// (packages + project layers). Multi-project hub is runtime UX —
     /// use `veil projects` and open IDE per product path.
     Serve {
-        /// Path to a .veil file or project directory
-        file: PathBuf,
+        /// Path to a .veil file or project directory (omit with `--multi`)
+        #[arg(required_unless_present = "multi")]
+        file: Option<PathBuf>,
         /// Port to serve on
         #[arg(short, long, default_value = "3001")]
         port: u16,
+        /// Multi-project hub: one process, `/api/p/{project}/…` (MP-002)
+        #[arg(long)]
+        multi: bool,
         /// Include core platform `.layer` files (ddd, base, …) in the IDE file list.
         /// Default: hide them (userland packages + family/client layers only).
         /// Core layers remain loadable via `use` for packages.
@@ -1122,6 +1126,7 @@ fn main() {
         Commands::Serve {
             file,
             port,
+            multi,
             show_core_layers,
             non_interactive,
         } => {
@@ -1133,10 +1138,35 @@ fn main() {
                     veil_server::load_config_or_default()
                 }
             };
-            let _ = veil_server::ensure_projects_dir_exists();
+            let projects_dir = veil_server::ensure_projects_dir_exists()
+                .unwrap_or_else(|_| veil_server::default_projects_dir());
             let show_core_layers = show_core_layers
                 || env_flag_true("VEIL_SHOW_CORE_LAYERS")
                 || _cfg.show_core_layers;
+
+            if multi {
+                println!(
+                    "✓ Multi-project hub on port {port}"
+                );
+                println!("  Projects dir: {}", projects_dir.display());
+                println!("  Config:       {}", veil_server::config_path().display());
+                println!("  Hub:          http://localhost:{port}/api/projects");
+                println!("  IDE:          http://localhost:{port}/api/p/{{name}}/ir");
+                let hub = veil_server::ProjectsHub::new(projects_dir, show_core_layers);
+                let app = veil_server::build_multi_router(hub);
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async move {
+                    let listener = bind_serve_port(port).await;
+                    println!("  Listening on port {port} (multi-project)");
+                    if let Err(e) = axum::serve(listener, app).await {
+                        eprintln!("Server error: {e}");
+                        std::process::exit(1);
+                    }
+                });
+                return;
+            }
+
+            let file = file.expect("file required without --multi");
             // INIT-003: serve root must exist; ensure shape; empty → offer init
             if !file.exists() {
                 eprintln!("error: path does not exist: {}", file.display());

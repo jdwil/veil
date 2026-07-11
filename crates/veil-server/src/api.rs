@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{Query, State},
-    http::{header, StatusCode},
+    extract::{Path, Query, State},
+    http::{header, Request, StatusCode},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Json,
@@ -16,67 +17,61 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::protocol::{CheckRequest, CheckResponse, EditRequest, EditResponse};
+use crate::provider::hub::{MultiProjectProvider, ProjectsHub, CURRENT_PROJECT};
 use crate::provider::{FileKind, SourceProvider};
 
-/// Build the complete axum Router for the VEIL dev server API.
+/// IDE dual-loop routes under a path prefix (MP-001).
 ///
-/// The returned router handles:
-/// - `GET /api/ir` — current IR graph as JSON
-/// - `GET /api/source` — raw .veil source text
-/// - `GET /api/generated` — generated code map
-/// - `GET /api/palette` — construct palette from loaded layers
-/// - `GET /api/presentation` — layer-driven views / nest rules (LAY-002)
-/// - `GET /api/context` — agent context pack: outline + presentation (LAY-010)
-/// - `GET /api/stubs` — loaded external crate APIs
-/// - `GET /api/diagnostics` — diagnostics array (compat; same pipeline as check)
-/// - `GET|POST /api/check` — full check pipeline (CHK-007)
-/// - `GET /api/files` — list loaded files
-/// - `POST /api/files/select` — switch active file
-/// - `POST /api/edit` — apply structured edits
-/// - `GET /api/diff` — structural IR diff vs git HEAD (UX-021)
-/// - `POST /api/agent/turn` — built-in agent turn (AGT-001)
-/// - `GET /api/events` — SSE source-change stream (AGT-002 MVP)
-pub fn build_router<P: SourceProvider>(provider: P) -> Router {
-    let state = Arc::new(provider);
+/// Single-project: nest at `/api` → `/api/ir`, …
+/// Multi-project: nest at `/api/p/{project}` → `/api/p/foo/ir`, …
+pub fn ide_routes<P: SourceProvider + 'static>() -> Router<Arc<P>> {
+    Router::new()
+        .route("/ir", get(get_ir::<P>))
+        .route("/source", get(get_source::<P>).post(post_source::<P>))
+        .route("/generated", get(get_generated::<P>))
+        .route("/palette", get(get_palette::<P>))
+        .route("/presentation", get(get_presentation::<P>))
+        .route("/context", get(get_context::<P>))
+        .route("/stubs", get(get_stubs::<P>))
+        .route("/diagnostics", get(get_diagnostics::<P>))
+        .route("/check", get(get_check::<P>).post(post_check::<P>))
+        .route("/files", get(get_files::<P>))
+        .route("/files/select", post(post_select_file::<P>))
+        .route("/edit", post(post_edit::<P>))
+        .route("/diff", get(get_diff::<P>))
+        .route("/agent/turn", post(post_agent_turn::<P>))
+        .route("/agent/turn/stream", post(post_agent_turn_stream::<P>))
+        .route("/agent/tools", get(get_agent_tools))
+        .route("/events", get(get_events::<P>))
+        .route("/models", get(get_models))
+        .route("/layer/dependents", get(get_layer_dependents::<P>))
+        .route("/layer/scaffold", post(post_layer_scaffold::<P>))
+        .route("/project", get(get_active_project::<P>))
+}
 
-    let mut router = Router::new()
-        .route("/api/ir", get(get_ir::<P>))
-        .route("/api/source", get(get_source::<P>).post(post_source::<P>))
-        .route("/api/generated", get(get_generated::<P>))
-        .route("/api/palette", get(get_palette::<P>))
-        .route("/api/presentation", get(get_presentation::<P>))
-        .route("/api/context", get(get_context::<P>))
-        .route("/api/stubs", get(get_stubs::<P>))
-        .route("/api/diagnostics", get(get_diagnostics::<P>))
-        .route("/api/check", get(get_check::<P>).post(post_check::<P>))
-        .route("/api/files", get(get_files::<P>))
-        .route("/api/files/select", post(post_select_file::<P>))
-        .route("/api/edit", post(post_edit::<P>))
-        .route("/api/diff", get(get_diff::<P>))
-        .route("/api/agent/turn", post(post_agent_turn::<P>))
-        .route("/api/agent/turn/stream", post(post_agent_turn_stream::<P>))
-        .route("/api/agent/tools", get(get_agent_tools))
-        .route("/api/events", get(get_events::<P>))
-        .route("/api/models", get(get_models))
-        .route("/api/layer/dependents", get(get_layer_dependents::<P>))
-        .route("/api/layer/scaffold", post(post_layer_scaffold::<P>))
-        .route("/api/project", get(get_active_project::<P>))
+fn hub_routes<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
         .route("/api/projects", get(get_projects).post(post_create_project))
         .route("/api/config", get(get_config))
-        .layer(CorsLayer::permissive())
-        .with_state(state);
+}
 
-    // AGT-016: optional bearer auth when VEIL_AUTH_TOKEN is set.
+fn with_auth<S>(mut router: Router<S>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     if let Ok(token) = std::env::var("VEIL_AUTH_TOKEN") {
         if !token.is_empty() {
             let expected = token;
-            router = router.layer(axum::middleware::from_fn(
-                move |req: axum::extract::Request, next: axum::middleware::Next| {
+            router = router.layer(middleware::from_fn(
+                move |req: Request<axum::body::Body>, next: Next| {
                     let expected = expected.clone();
                     async move {
                         let ok = req
                             .headers()
-                            .get(axum::http::header::AUTHORIZATION)
+                            .get(header::AUTHORIZATION)
                             .and_then(|v| v.to_str().ok())
                             .map(|h| {
                                 h == expected
@@ -95,8 +90,40 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
             ));
         }
     }
-
     router
+}
+
+/// Single-project IDE API (`/api/ir`, …) — current dual-loop default.
+pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
+    let state = Arc::new(provider);
+    let router = hub_routes::<Arc<P>>()
+        .nest("/api", ide_routes::<P>())
+        .layer(CorsLayer::permissive())
+        .with_state(state);
+    with_auth(router)
+}
+
+/// Multi-project IDE: hub + `/api/p/{project}/…` (MP-002).
+///
+/// Same handlers as [`build_router`]; project scope via task-local name.
+pub fn build_multi_router(hub: ProjectsHub) -> Router {
+    let multi = Arc::new(MultiProjectProvider::new(hub));
+    let ide = ide_routes::<MultiProjectProvider>()
+        .layer(middleware::from_fn(project_scope_middleware));
+    let router = hub_routes::<Arc<MultiProjectProvider>>()
+        .nest("/api/p/{project}", ide)
+        .layer(CorsLayer::permissive())
+        .with_state(multi);
+    with_auth(router)
+}
+
+/// Set [`CURRENT_PROJECT`] from nested path `{project}`.
+async fn project_scope_middleware(
+    Path(project): Path<String>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> impl IntoResponse {
+    CURRENT_PROJECT.scope(project, next.run(req)).await
 }
 
 type SharedProvider<P> = Arc<P>;

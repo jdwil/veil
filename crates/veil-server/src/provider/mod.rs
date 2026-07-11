@@ -1,6 +1,7 @@
 //! Source provider abstraction — the storage backend for the dev server.
 
 pub mod filesystem;
+pub mod hub;
 pub mod remote;
 
 use async_trait::async_trait;

@@ -53,8 +53,10 @@ See `is_veil_source_editable` in `veil-cli`.
 | GET | `/api/projects` | Hub: products under configured projects dir |
 | POST | `/api/projects` | Hub: create product `{ "name" }` (git + scaffold) |
 | GET | `/api/config` | Public subset of `~/.veil/config.json` |
+| * | `/api/p/{project}/…` | Multi-project: same IDE routes scoped to a product (`veil serve --multi`) |
 
-Multi-project single-process design: [`IDE_RUNTIME.md`](IDE_RUNTIME.md).
+Multi-project: `veil serve --multi` → hub `/api/projects` + per-project
+`/api/p/{name}/ir` etc. Viewer: `?project=name`. See [`IDE_RUNTIME.md`](IDE_RUNTIME.md).
 | POST | `/api/edit` | `{ "ops": [ EditOp, … ] }` — structured edit |
 | GET | `/api/diff` | Structural IR diff of active file vs git HEAD (UX-021) |
 | POST | `/api/agent/turn` | Built-in agent turn `{ "prompt": "…" }` (Rig or heuristic) |

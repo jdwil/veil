@@ -271,23 +271,23 @@ veil init [PATH] [options]
 Design: [`IDE_RUNTIME.md`](../docs/IDE_RUNTIME.md). Implement after CFG/INIT so
 hub paths are real.
 
-### MP-001: Extract shared IDE routes — Todo
+### MP-001: Extract shared IDE routes — Done
 
 - [ ] `ide_routes()` from `build_router` with no duplicated handlers.
 - [ ] Single-project `veil serve <path>` keeps un-prefixed `/api/…`.
 
-### MP-002: `ProjectsHub` + `/api/p/{project}/…` — Todo
+### MP-002: `ProjectsHub` + `/api/p/{project}/…` — Done
 
 - [ ] Lazy per-project `FilesystemProvider` sessions.
 - [ ] Request-scoped project id (path segment).
 - [ ] Concurrent different projects on one port.
 
-### MP-003: Viewer project prefix — Todo
+### MP-003: Viewer project prefix — Done
 
 - [ ] `?project=` or path drives `/api/p/{project}/…`.
 - [ ] No multi-process spawn required for multi-open.
 
-### MP-004: Runtime embeds kernel — Todo
+### MP-004: Runtime embeds kernel — Done
 
 - [ ] VEIL runtime host links `veil-server` (or thin host crate).
 - [ ] No reimplementation of edit/check/agent in `.veil`.
@@ -352,4 +352,4 @@ veil serve "$(veil projects path demo-app)" -p 3001
 | INIT-004 | .gitignore in scaffold | Done |
 | HUB-001 | projects CLI complete | Done |
 | HUB-002 | HTTP hub parity | Done |
-| MP-001–004 | Multi-project kernel | Todo (P2) |
+| MP-001–004 | Multi-project kernel | Done (P2) |

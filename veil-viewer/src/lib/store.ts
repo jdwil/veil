@@ -67,17 +67,43 @@ export const checkMeta = writable<Omit<CheckResponse, 'diagnostics'> | null>(nul
 /** Active codegen target for check (rust | typescript). */
 export const checkTarget = writable<string>('rust');
 
-const API_BASE = 'http://localhost:3001/api';
-const API_URL = `${API_BASE}/ir`;
-const SOURCE_URL = `${API_BASE}/source`;
-const PALETTE_URL = `${API_BASE}/palette`;
-const PRESENTATION_URL = `${API_BASE}/presentation`;
-const CHECK_URL = `${API_BASE}/check`;
-const EDIT_URL = `${API_BASE}/edit`;
-const STUBS_URL = `${API_BASE}/stubs`;
-const FILES_URL = `${API_BASE}/files`;
-const SELECT_FILE_URL = `${API_BASE}/files/select`;
-const PROJECT_URL = `${API_BASE}/project`;
+/** Host origin for the veil-server API (single- or multi-project). */
+const API_HOST = 'http://localhost:3001';
+
+/**
+ * Resolve IDE API base.
+ * - Multi-project: `?project=name` → `/api/p/{name}`
+ * - Single-project: `/api`
+ * Hub routes (`/api/projects`, `/api/config`) always stay under `/api`.
+ */
+export function ideApiBase(): string {
+  if (typeof window !== 'undefined') {
+    const p = new URLSearchParams(window.location.search).get('project');
+    if (p && /^[a-zA-Z0-9_-]+$/.test(p)) {
+      return `${API_HOST}/api/p/${encodeURIComponent(p)}`;
+    }
+  }
+  return `${API_HOST}/api`;
+}
+
+export function hubApiBase(): string {
+  return `${API_HOST}/api`;
+}
+
+function api(path: string): string {
+  return `${ideApiBase()}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+const API_URL = () => api('/ir');
+const SOURCE_URL = () => api('/source');
+const PALETTE_URL = () => api('/palette');
+const PRESENTATION_URL = () => api('/presentation');
+const CHECK_URL = () => api('/check');
+const EDIT_URL = () => api('/edit');
+const STUBS_URL = () => api('/stubs');
+const FILES_URL = () => api('/files');
+const SELECT_FILE_URL = () => api('/files/select');
+const PROJECT_URL = () => api('/project');
 
 /** Loaded file metadata from the server. */
 export interface VeilFileInfo {
@@ -145,7 +171,7 @@ export async function fetchCheck(target?: string): Promise<CheckResponse | null>
   }
   try {
     const res = await fetchWithTimeout(
-      `${CHECK_URL}?target=${encodeURIComponent(t || 'rust')}`
+      `${CHECK_URL()}?target=${encodeURIComponent(t || 'rust')}`
     );
     if (!res.ok && res.status !== 422) return null;
     const data: CheckResponse = await res.json();
@@ -219,13 +245,13 @@ async function loadActiveFile(
   }
 
   const [irRes, srcRes, palRes, presRes, stubRes, filesRes, projRes] = await Promise.all([
-    fetchWithTimeout(API_URL),
-    fetchWithTimeout(SOURCE_URL),
-    fetchWithTimeout(PALETTE_URL),
-    fetchWithTimeout(PRESENTATION_URL).catch(() => null),
-    fetchWithTimeout(STUBS_URL).catch(() => null),
-    fetchWithTimeout(FILES_URL).catch(() => null),
-    fetchWithTimeout(PROJECT_URL).catch(() => null),
+    fetchWithTimeout(API_URL()),
+    fetchWithTimeout(SOURCE_URL()),
+    fetchWithTimeout(PALETTE_URL()),
+    fetchWithTimeout(PRESENTATION_URL()).catch(() => null),
+    fetchWithTimeout(STUBS_URL()).catch(() => null),
+    fetchWithTimeout(FILES_URL()).catch(() => null),
+    fetchWithTimeout(PROJECT_URL()).catch(() => null),
   ]);
   if (gen !== loadGeneration) return false;
 
@@ -286,7 +312,7 @@ async function loadActiveFile(
   }
 
   // Generated code is optional (can be slow); don't block UI
-  void fetchWithTimeout(`${API_BASE}/generated`)
+  void fetchWithTimeout(`${ideApiBase()}/generated`)
     .then(async (r) => {
       if (gen !== loadGeneration || !r.ok) return;
       generatedCode.set(await r.json());
@@ -330,7 +356,7 @@ export async function fetchIr() {
       const msg =
         e instanceof Error
           ? e.name === 'AbortError'
-            ? `Timed out talking to API at ${API_BASE} (is veil serve running?)`
+            ? `Timed out talking to API at ${ideApiBase()} (is veil serve running?)`
             : e.message
           : 'Failed to fetch IR';
       error.set(msg);
@@ -354,7 +380,7 @@ export async function refreshAfterEdit(): Promise<void> {
       const msg =
         e instanceof Error
           ? e.name === 'AbortError'
-            ? `Timed out talking to API at ${API_BASE}`
+            ? `Timed out talking to API at ${ideApiBase()}`
             : e.message
           : 'Failed to refresh after edit';
       error.set(msg);
@@ -374,7 +400,7 @@ let sseRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 export function startRevisionWatch(): () => void {
   stopRevisionWatch();
   try {
-    sse = new EventSource(`${API_BASE}/events`);
+    sse = new EventSource(`${ideApiBase()}/events`);
   } catch {
     return () => {};
   }
@@ -438,7 +464,7 @@ export async function selectFile(index: number) {
   loading.set(true);
   error.set(null);
   try {
-    const res = await fetchWithTimeout(SELECT_FILE_URL, {
+    const res = await fetchWithTimeout(SELECT_FILE_URL(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ index }),
@@ -461,7 +487,7 @@ export async function selectFile(index: number) {
       const msg =
         e instanceof Error
           ? e.name === 'AbortError'
-            ? `Timed out selecting file (API ${API_BASE})`
+            ? `Timed out selecting file (API ${ideApiBase()})`
             : e.message
           : 'Failed to switch file';
       error.set(msg);
@@ -581,7 +607,7 @@ export async function saveEdits(edits: EditOp[]): Promise<boolean> {
   saving.set(true);
   saveError.set(null);
   try {
-    const res = await fetch(EDIT_URL, {
+    const res = await fetch(EDIT_URL(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ edits }),

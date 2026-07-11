@@ -33,7 +33,8 @@ pub mod config;
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;
 pub use provider::remote::RemoteHttpProvider;
-pub use api::build_router;
+pub use api::{build_multi_router, build_router, ide_routes};
+pub use provider::hub::{MultiProjectProvider, ProjectsHub};
 pub use project_layout::{
     collect_project_files, create_project, create_project_with_opts, ensure_project_shape,
     ensure_projects_dir, has_package_sources, init_project, is_core_platform_layer, list_projects,

@@ -303,6 +303,28 @@ pub fn has_package_sources(root: &Path) -> bool {
     root.join("veil.toml").is_file() || read_dir_ext(root, "veil").next().is_some()
 }
 
+/// UX-010 / editable for serve list (shared with hub open).
+pub fn is_source_editable(path: &Path, source: &str) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "veil" && ext != "layer" {
+        return false;
+    }
+    if path.components().any(|c| c.as_os_str() == "generated") {
+        return false;
+    }
+    for line in source.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t == "# veil:readonly" || t.starts_with("# veil:readonly ") {
+            return false;
+        }
+        break;
+    }
+    true
+}
+
 fn pascal_case(name: &str) -> String {
     name.split(|c: char| c == '-' || c == '_')
         .filter(|s| !s.is_empty())
