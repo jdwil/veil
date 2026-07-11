@@ -55,6 +55,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | [120-projects-config-init.md](120-projects-config-init.md) | **Config first-run, `veil init`, projects hub, multi-project kernel** |
 | [130-runtime-ux-audit.md](130-runtime-ux-audit.md) | **Runtime UX audit** — bootstrap vs multi-serve gaps (RTU-*) |
 | [140-pure-veil-runtime.md](140-pure-veil-runtime.md) | **Pure VEIL runtime** — front+back VEIL, full product (PVR-*) |
+| [141-pure-runtime-capability-gaps.md](141-pure-runtime-capability-gaps.md) | **What it takes** — CAP-001–007 engine gaps + sprint plan |
 
 ## Suggested first slice (P0)
 

@@ -7,11 +7,12 @@ customer products is available in-process. Handwritten bootstrap is gone or
 reduced to a **tiny, boring trampoline** that only exists until VEIL can emit
 the host binary itself.
 
-**Status:** MVP implemented — remaining pure authorship noted in status table  
+**Status:** MVP host functional; pure authorship blocked on engine CAPs  
 **Depends on:** [120](120-projects-config-init.md) (Done), [130](130-runtime-ux-audit.md)
 partial host, [70](70-runtime-harness.md), [80](80-runtime-platform.md)  
+**Completion plan + missing capabilities:** [141-pure-runtime-capability-gaps.md](141-pure-runtime-capability-gaps.md)  
 **Docs:** [`IDE_RUNTIME.md`](../docs/IDE_RUNTIME.md), [`HARNESS.md`](../docs/HARNESS.md),
-[`PROJECT_LAYOUT.md`](../docs/PROJECT_LAYOUT.md)
+[`PROJECT_LAYOUT.md`](../docs/PROJECT_LAYOUT.md), [`PURE_RUNTIME.md`](../docs/PURE_RUNTIME.md)
 
 ---
 
