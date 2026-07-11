@@ -535,6 +535,19 @@ fn gen_spa_bundle(solution: &Solution, sol_name: &str) -> Vec<TsFile> {
 
     // Collect @route paths if present on pages
     let mut routes: Vec<(String, String)> = Vec::new();
+    fn strip_ann_quotes(s: &str) -> String {
+        let t = s.trim();
+        if (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
+            || (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
+        {
+            t[1..t.len() - 1].to_string()
+        } else {
+            t.to_string()
+        }
+    }
+    fn js_escape(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
     fn collect_routes(c: &Construct, routes: &mut Vec<(String, String)>) {
         if c.subkind.eq_ignore_ascii_case("page") {
             let route = c
@@ -542,7 +555,7 @@ fn gen_spa_bundle(solution: &Solution, sol_name: &str) -> Vec<TsFile> {
                 .iter()
                 .find(|a| a.name == "route")
                 .and_then(|a| a.args.first())
-                .cloned()
+                .map(|s| strip_ann_quotes(s))
                 .unwrap_or_else(|| format!("/{}", to_camel(&c.name)));
             routes.push((c.name.clone(), route));
         }
@@ -564,7 +577,13 @@ fn gen_spa_bundle(solution: &Solution, sol_name: &str) -> Vec<TsFile> {
     } else {
         routes
             .iter()
-            .map(|(name, path)| format!("{{ href: \"{path}\", label: \"{name}\" }}"))
+            .map(|(name, path)| {
+                format!(
+                    "{{ href: \"{}\", label: \"{}\" }}",
+                    js_escape(path),
+                    js_escape(name)
+                )
+            })
             .collect::<Vec<_>>()
             .join(",\n      ")
     };
