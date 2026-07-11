@@ -276,6 +276,8 @@ stub sqlx 0.8.6
   struct PoolConnectionMetadata
 
   struct Query
+    # VEIL sugar for sqlx::query / Query construction
+    fn new(sql: Str) -> Self
     fn bind(value: T) -> Self
     fn try_bind(value: T) -> Res!<Str>
     fn persistent(value: Bool) -> Self

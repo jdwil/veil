@@ -192,14 +192,24 @@ fn stub_type_and_crate_names(registry: &LayerRegistry) -> HashSet<String> {
     let mut s = HashSet::new();
     for stub in &registry.stubs {
         s.insert(stub.name.clone());
+        let crate_keys: Vec<String> = std::iter::once(stub.name.clone())
+            .chain(stub.alias.iter().cloned())
+            .collect();
         if let Some(a) = &stub.alias {
             s.insert(a.clone());
         }
         for st in &stub.structs {
             s.insert(st.name.clone());
+            // Qualified paths used in source: `sqlx.Query.new(...)`
+            for ck in &crate_keys {
+                s.insert(format!("{}.{}", ck, st.name));
+            }
         }
         for imp in &stub.impls {
             s.insert(imp.target.clone());
+            for ck in &crate_keys {
+                s.insert(format!("{}.{}", ck, imp.target));
+            }
         }
     }
     s

@@ -136,6 +136,14 @@ fn build_index(sol: &Solution, registry: &LayerRegistry) -> NameIndex {
     }
 
     for stub in &registry.stubs {
+        let crate_keys: Vec<String> = std::iter::once(stub.name.clone())
+            .chain(stub.alias.iter().cloned())
+            .collect();
+        // Crate root is a known external namespace (`sqlx.…`)
+        for ck in &crate_keys {
+            index.stub_types.insert(ck.clone());
+            index.all_names.push(ck.clone());
+        }
         for s in &stub.structs {
             index.stub_types.insert(s.name.clone());
             index.all_names.push(s.name.clone());
@@ -144,7 +152,14 @@ fn build_index(sol: &Solution, registry: &LayerRegistry) -> NameIndex {
                 .iter()
                 .map(|m| strip_bang(&m.name))
                 .collect();
-            index.stub_methods.insert(s.name.clone(), methods);
+            index.stub_methods.insert(s.name.clone(), methods.clone());
+            // Qualified path used in source: sqlx.Query
+            for ck in &crate_keys {
+                let q = format!("{}.{}", ck, s.name);
+                index.stub_types.insert(q.clone());
+                index.all_names.push(q.clone());
+                index.stub_methods.insert(q, methods.clone());
+            }
         }
         for imp in &stub.impls {
             index.stub_types.insert(imp.target.clone());
@@ -155,6 +170,21 @@ fn build_index(sol: &Solution, registry: &LayerRegistry) -> NameIndex {
                 .or_default();
             for m in &imp.methods {
                 entry.insert(strip_bang(&m.name));
+            }
+            let methods_snapshot: HashSet<String> = index
+                .stub_methods
+                .get(&imp.target)
+                .cloned()
+                .unwrap_or_default();
+            for ck in &crate_keys {
+                let q = format!("{}.{}", ck, imp.target);
+                index.stub_types.insert(q.clone());
+                index.all_names.push(q.clone());
+                index
+                    .stub_methods
+                    .entry(q)
+                    .or_default()
+                    .extend(methods_snapshot.iter().cloned());
             }
         }
     }
