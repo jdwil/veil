@@ -67,27 +67,125 @@ export const checkMeta = writable<Omit<CheckResponse, 'diagnostics'> | null>(nul
 /** Active codegen target for check (rust | typescript). */
 export const checkTarget = writable<string>('rust');
 
-/** Host origin for the veil-server API (single- or multi-project). */
-const API_HOST = 'http://localhost:3001';
+/**
+ * Host origin for the API.
+ * - `?api=http://localhost:8080` (veil-runtime)
+ * - localStorage `veil-api-host`
+ * - default `:3001` (`veil serve` / `make serve`)
+ */
+export function apiHost(): string {
+  if (typeof window === 'undefined') return 'http://localhost:3001';
+  const q = new URLSearchParams(window.location.search).get('api');
+  if (q) return q.replace(/\/$/, '');
+  try {
+    const saved = localStorage.getItem('veil-api-host');
+    if (saved) return saved.replace(/\/$/, '');
+  } catch {
+    /* ignore */
+  }
+  return 'http://localhost:3001';
+}
+
+export function setApiHost(host: string) {
+  try {
+    localStorage.setItem('veil-api-host', host.replace(/\/$/, ''));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Current `?project=` (multi) or null for single-project serve. */
+export function currentProjectParam(): string | null {
+  if (typeof window === 'undefined') return null;
+  const p = new URLSearchParams(window.location.search).get('project');
+  if (p && /^[a-zA-Z0-9_-]+$/.test(p)) return p;
+  return null;
+}
 
 /**
  * Resolve IDE API base.
  * - Multi-project: `?project=name` → `/api/p/{name}`
  * - Single-project: `/api`
- * Hub routes (`/api/projects`, `/api/config`) always stay under `/api`.
  */
 export function ideApiBase(): string {
-  if (typeof window !== 'undefined') {
-    const p = new URLSearchParams(window.location.search).get('project');
-    if (p && /^[a-zA-Z0-9_-]+$/.test(p)) {
-      return `${API_HOST}/api/p/${encodeURIComponent(p)}`;
-    }
-  }
-  return `${API_HOST}/api`;
+  const host = apiHost();
+  const p = currentProjectParam();
+  if (p) return `${host}/api/p/${encodeURIComponent(p)}`;
+  return `${host}/api`;
 }
 
 export function hubApiBase(): string {
-  return `${API_HOST}/api`;
+  return `${apiHost()}/api`;
+}
+
+export interface HubProject {
+  name: string;
+  path: string;
+  is_git?: boolean;
+  package_count?: number;
+}
+
+export interface HubSnapshot {
+  multi: boolean;
+  projects: HubProject[];
+  projects_dir: string;
+  config_path?: string;
+}
+
+export const hubSnapshot = writable<HubSnapshot | null>(null);
+
+/** Detect multi vs single host; load project list (RTU-009). */
+export async function fetchHubSnapshot(): Promise<HubSnapshot> {
+  const empty: HubSnapshot = { multi: false, projects: [], projects_dir: '' };
+  try {
+    const res = await fetchWithTimeout(`${hubApiBase()}/projects`);
+    if (!res.ok) {
+      hubSnapshot.set(empty);
+      return empty;
+    }
+    const data = await res.json();
+    const projects: HubProject[] = data.projects || [];
+    // Multi host: unscoped /api/ir is 404
+    let multi = false;
+    try {
+      const ir = await fetchWithTimeout(`${hubApiBase()}/ir`);
+      multi = ir.status === 404;
+    } catch {
+      multi = projects.length > 0;
+    }
+    const snap: HubSnapshot = {
+      multi,
+      projects,
+      projects_dir: data.projects_dir || '',
+      config_path: data.config_path,
+    };
+    hubSnapshot.set(snap);
+    return snap;
+  } catch {
+    hubSnapshot.set(empty);
+    return empty;
+  }
+}
+
+export async function createHubProject(name: string): Promise<HubProject | null> {
+  const res = await fetchWithTimeout(`${hubApiBase()}/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) return null;
+  const info = await res.json();
+  await fetchHubSnapshot();
+  return info;
+}
+
+/** Navigate to a multi-project IDE URL (RTU-005). */
+export function openProject(name: string) {
+  if (typeof window === 'undefined') return;
+  const u = new URL(window.location.href);
+  u.searchParams.set('project', name);
+  // Preserve api= override
+  window.location.href = u.toString();
 }
 
 function api(path: string): string {
@@ -350,13 +448,19 @@ export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
+    const hub = await fetchHubSnapshot();
+    // RTU-009: multi host without ?project= → leave loading false, page shows picker
+    if (hub.multi && !currentProjectParam()) {
+      loading.set(false);
+      return;
+    }
     await loadActiveFile(gen);
   } catch (e) {
     if (gen === loadGeneration) {
       const msg =
         e instanceof Error
           ? e.name === 'AbortError'
-            ? `Timed out talking to API at ${ideApiBase()} (is veil serve running?)`
+            ? `Timed out talking to API at ${ideApiBase()} — start veil-runtime (:8080) or veil serve --multi (:3001)?`
             : e.message
           : 'Failed to fetch IR';
       error.set(msg);

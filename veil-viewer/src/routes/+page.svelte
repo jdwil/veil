@@ -41,7 +41,11 @@
     activeFileName,
     activeFileKind,
     activeProject,
+    hubSnapshot,
     selectFile,
+    openProject,
+    createHubProject,
+    currentProjectParam,
     diagnostics,
     viewRevision,
   } from '$lib/store';
@@ -75,8 +79,26 @@
   let showLayerProvided = $state(false);
   /** LAY-009 / UX-022: filter canvas to presentation lens `critical` + escape diags. */
   let showCriticalOnly = $state(false);
+  let newProjectName = $state('');
+  let creatingProject = $state(false);
   // DOM reference for node measurement — ELK needs real rendered sizes
   let graphContainerEl: HTMLElement | null = $state(null);
+
+  async function handleCreateProject() {
+    const name = newProjectName.trim();
+    if (!name || creatingProject) return;
+    creatingProject = true;
+    try {
+      const info = await createHubProject(name);
+      if (info?.name) {
+        openProject(info.name);
+      } else {
+        alert(`Failed to create project "${name}"`);
+      }
+    } finally {
+      creatingProject = false;
+    }
+  }
   let theme = $state<'dark' | 'light'>(
     (typeof localStorage !== 'undefined' && localStorage.getItem('veil-theme') as 'dark' | 'light') || 'dark'
   );
@@ -1055,7 +1077,23 @@
   <!-- Top bar -->
   <div class="top-bar">
     <div class="breadcrumbs">
-      {#if $activeProject?.name}
+      {#if $hubSnapshot?.multi && $hubSnapshot.projects.length > 0}
+        <select
+          class="file-selector project-switcher"
+          title="Switch product project"
+          value={currentProjectParam() ?? ''}
+          onchange={(e) => {
+            const name = (e.currentTarget as HTMLSelectElement).value;
+            if (name) openProject(name);
+          }}
+        >
+          <option value="" disabled={!!currentProjectParam()}>Projects…</option>
+          {#each $hubSnapshot.projects as p}
+            <option value={p.name}>{p.name}</option>
+          {/each}
+        </select>
+        <span class="breadcrumb-sep">›</span>
+      {:else if $activeProject?.name}
         <span class="project-badge" title={$activeProject.path ?? ''}>{$activeProject.name}</span>
         <span class="breadcrumb-sep">›</span>
       {/if}
@@ -1116,13 +1154,53 @@
       <div class="pulse-ring"></div>
       <p>Loading...</p>
     </div>
+  {:else if $hubSnapshot?.multi && !currentProjectParam()}
+    <div class="status-overlay hub-picker">
+      <p class="error-title">Select a project</p>
+      <p class="error-msg">
+        Multi-project host · hub
+        <code>{$hubSnapshot.projects_dir || '…'}</code>
+      </p>
+      {#if $hubSnapshot.projects.length === 0}
+        <p class="error-hint">No products yet. Create one below or run <code>veil projects create my-app</code>.</p>
+      {:else}
+        <ul class="hub-list">
+          {#each $hubSnapshot.projects as p}
+            <li>
+              <button class="retry-btn" type="button" onclick={() => openProject(p.name)}>
+                Open {p.name}
+              </button>
+              <span class="hub-meta">{p.package_count ?? 0} pkg · {p.is_git ? 'git' : 'no-git'}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <div class="hub-create">
+        <input
+          class="hub-input"
+          placeholder="new-project-name"
+          bind:value={newProjectName}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') void handleCreateProject();
+          }}
+        />
+        <button class="retry-btn" type="button" disabled={creatingProject} onclick={() => void handleCreateProject()}>
+          {creatingProject ? 'Creating…' : 'Create project'}
+        </button>
+      </div>
+      <p class="error-hint">
+        API: <code>veil-runtime</code> (:8080) or <code>veil serve --multi</code> (:3001).
+        Override host with <code>?api=http://localhost:3001</code>.
+      </p>
+    </div>
   {:else if $error}
     <div class="status-overlay error">
       <p class="error-title">⚠️ Connection Error</p>
       <p class="error-msg">{$error}</p>
       <p class="error-hint">
-        Run: <code>make serve-examples</code>
-        (API <code>:3001</code> + viewer <code>:5173</code>)
+        Run: <code>make runtime-serve</code> or <code>veil serve --multi -p 3001</code>
+        + viewer <code>:5173</code>
+        (or single project: <code>make serve PROJECT=…</code>)
       </p>
       <button class="retry-btn" onclick={() => void fetchIr()}>Retry</button>
     </div>
@@ -1280,6 +1358,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .project-switcher { max-width: 160px; font-weight: 600; }
+
+  .hub-picker { text-align: left; max-width: 480px; }
+  .hub-list { list-style: none; padding: 0; margin: 16px 0; display: flex; flex-direction: column; gap: 10px; }
+  .hub-list li { display: flex; align-items: center; gap: 12px; }
+  .hub-meta { font-size: 12px; color: var(--veil-text-dim); }
+  .hub-create { display: flex; gap: 8px; margin: 16px 0; }
+  .hub-input {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--veil-border);
+    background: var(--veil-input-bg);
+    color: var(--veil-text);
   }
 
   .kind-badge {
