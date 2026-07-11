@@ -69,7 +69,7 @@ pkg VeilRuntimeUI
           repos: List<Json>
           loading: Bool
         fn load()
-          repos = ApiClient.fetch("/api/repos", {})
+          repos = []  # TODO: fetch /api/projects
           loading = false
         template """
           <div class="dashboard">
@@ -89,7 +89,7 @@ pkg VeilRuntimeUI
           repos: List<Json>
           newName: Str
         fn createProject()
-          ApiClient.mutate("/api/repos", {name: newName})
+          ApiClient.mutate("/api/projects", {name: newName})
           newName = ""
         template """
           <div class="projects"><h1>Projects</h1><input bind:value={newName} /><button onclick={createProject}>Create</button>{#each repos as r}<ProjectCard name={r.name} branch={r.default_branch} updatedAt={r.updated_at} id={r.id} />{/each}</div>
@@ -187,52 +187,24 @@ pkg VeilRuntimeUI
     group pages
       layout AppLayout
         @route("/")
-        template """
-          <div class="shell"><Sidebar /><main>{@render children()}</main><StatusBar status="connected" /></div>
-        """
-        style """
-          .shell { display: grid; grid-template-columns: 240px 1fr; grid-template-rows: 1fr auto; height: 100vh; }
-          main { overflow-y: auto; padding: 24px; }
-        """
 
       page Dashboard
         @route("/")
-        template """
-          <DashboardView />
-        """
 
       page Projects
         @route("/projects")
-        template """
-          <ProjectsView />
-        """
 
       page Deploy
         @route("/deploy")
-        template """
-          <DeployView />
-        """
 
       page Registry
         @route("/registry")
-        template """
-          <RegistryView />
-        """
 
       page Bus
         @route("/bus")
-        template """
-          <BusView />
-        """
 
       page Agents
         @route("/agents")
-        template """
-          <AgentsView />
-        """
 
       page Config
         @route("/config")
-        template """
-          <ConfigView />
-        """

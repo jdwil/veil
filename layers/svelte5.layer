@@ -176,9 +176,9 @@ pkg svelte5 v1
       fetch(endpoint: Str, params: Json) -> Res!<Json>
       mutate(endpoint: Str, body: Json) -> Res!<Json>
 
-    # Form handling
-    struct FormState<T>
-      data: T
+    # Form handling (Json payload until generics in declare are typecheck-clean)
+    struct FormState
+      data: Json
       errors: Map<Str, Str>
       submitting: Bool
       valid: Bool

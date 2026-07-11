@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VEIL Runtime</title>
+  <style>
+    :root {
+      --bg: #0f0f0f; --surface: #1a1a1a; --border: #2e2e2e;
+      --text: #e5e5e5; --dim: #737373; --accent: #a5b4fc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: Inter, system-ui, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+      display: grid; grid-template-columns: 220px 1fr;
+    }
+    aside {
+      border-right: 1px solid var(--border); padding: 20px 0;
+      background: var(--surface);
+    }
+    .logo { padding: 0 20px 24px; font-weight: 700; letter-spacing: 0.04em; }
+    .logo span { color: var(--accent); }
+    nav a {
+      display: block; padding: 10px 20px; color: var(--dim);
+      text-decoration: none; font-size: 14px;
+    }
+    nav a:hover, nav a.active { color: var(--accent); background: rgba(165,180,252,0.08); }
+    main { padding: 28px 32px; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .sub { color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 28px; }
+    .stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px;
+    }
+    .stat .v { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .stat .l { font-size: 11px; text-transform: uppercase; color: var(--dim); }
+    .card {
+      display: block; padding: 14px 16px; margin-bottom: 10px;
+      border: 1px solid var(--border); border-radius: 8px;
+      text-decoration: none; color: var(--text); background: var(--surface);
+    }
+    .card:hover { border-color: var(--accent); }
+    .card .name { font-weight: 600; }
+    .card .meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
+    .row { display: flex; gap: 8px; margin: 16px 0 24px; flex-wrap: wrap; }
+    input {
+      padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
+      background: #0003; color: var(--text); min-width: 200px;
+    }
+    button {
+      padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent);
+      background: rgba(165,180,252,0.15); color: var(--accent); cursor: pointer; font-weight: 600;
+    }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    .err { color: #f87171; font-size: 13px; }
+    code { font-size: 12px; color: var(--dim); }
+  </style>
+</head>
+<body>
+  <aside>
+    <div class="logo"><span>◆</span> veil-runtime</div>
+    <nav>
+      <a href="/" class="active">Dashboard</a>
+      <a href="/#projects">Projects</a>
+      <a href="/health" target="_blank">Health API</a>
+      <a href="/api/projects" target="_blank">Projects API</a>
+    </nav>
+  </aside>
+  <main>
+    <h1>Dashboard</h1>
+    <p class="sub">Projects hub · <code id="hub-path">…</code></p>
+    <div class="stats">
+      <div class="stat"><div class="v" id="stat-projects">—</div><div class="l">Projects</div></div>
+      <div class="stat"><div class="v">—</div><div class="l">Deploys</div></div>
+      <div class="stat"><div class="v">—</div><div class="l">Layers</div></div>
+      <div class="stat"><div class="v">—</div><div class="l">Artifacts</div></div>
+    </div>
+    <h2 id="projects">Projects</h2>
+    <div class="row">
+      <input id="new-name" placeholder="new-project-name" />
+      <button id="btn-create" type="button">Create project</button>
+    </div>
+    <p class="err" id="err"></p>
+    <div id="list"></div>
+    <p class="sub">
+      Open IDE embeds the dual-loop viewer against this host
+      (<code>/api/p/{name}/…</code>). Dev viewer:
+      <code id="viewer-hint"></code>
+    </p>
+  </main>
+  <script>
+    const VIEWER = (window.VEIL_VIEWER_URL || 'http://127.0.0.1:5173').replace(/\/$/, '');
+    const API = location.origin;
+    document.getElementById('viewer-hint').textContent =
+      VIEWER + '/?project=<name>&api=' + encodeURIComponent(API);
+
+    async function load() {
+      const err = document.getElementById('err');
+      err.textContent = '';
+      try {
+        const res = await fetch('/api/projects');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        document.getElementById('hub-path').textContent = data.projects_dir || '';
+        const projects = data.projects || [];
+        document.getElementById('stat-projects').textContent = String(projects.length);
+        const list = document.getElementById('list');
+        list.innerHTML = '';
+        if (!projects.length) {
+          list.innerHTML = '<p class="sub">No products yet — create one above.</p>';
+          return;
+        }
+        for (const p of projects) {
+          const a = document.createElement('a');
+          a.className = 'card';
+          a.href = '/projects/' + encodeURIComponent(p.name) + '/ide';
+          a.innerHTML =
+            '<div class="name">' + p.name + '</div>' +
+            '<div class="meta">' + (p.package_count ?? 0) + ' packages · ' +
+            (p.is_git ? 'git' : 'no-git') + ' · Open IDE</div>';
+          list.appendChild(a);
+        }
+      } catch (e) {
+        err.textContent = String(e.message || e);
+      }
+    }
+
+    document.getElementById('btn-create').onclick = async () => {
+      const name = document.getElementById('new-name').value.trim();
+      const err = document.getElementById('err');
+      if (!name) { err.textContent = 'Name required'; return; }
+      err.textContent = '';
+      const btn = document.getElementById('btn-create');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || res.statusText);
+        document.getElementById('new-name').value = '';
+        await load();
+        location.href = '/projects/' + encodeURIComponent(name) + '/ide';
+      } catch (e) {
+        err.textContent = String(e.message || e);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    load();
+  </script>
+</body>
+</html>

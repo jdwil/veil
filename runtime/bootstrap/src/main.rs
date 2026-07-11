@@ -5,18 +5,19 @@
 //! - Config: `~/.veil/config.json` (first-run via veil-server)
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::State,
-    response::IntoResponse,
+    extract::{Path, State},
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post},
     Json,
 };
 use futures::FutureExt;
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
+use tower_http::{cors::CorsLayer, services::ServeDir};
 
 #[derive(Debug)]
 enum BusError {
@@ -95,6 +96,69 @@ async fn health() -> impl IntoResponse {
         "ide": "multi",
         "docs": "docs/IDE_RUNTIME.md",
     }))
+}
+
+/// RTU-003/004: shell home (static dashboard).
+async fn shell_index() -> impl IntoResponse {
+    match std::fs::read_to_string(static_path("index.html")) {
+        Ok(html) => Html(inject_viewer_url(html)).into_response(),
+        Err(_) => Html(
+            "<h1>veil-runtime</h1><p>Missing static/index.html — open <a href=\"/api/projects\">/api/projects</a></p>"
+                .to_string(),
+        )
+        .into_response(),
+    }
+}
+
+/// RTU-004: embed IDE iframe for a project (`/projects/{name}/ide`).
+async fn ide_embed(Path(name): Path<String>) -> impl IntoResponse {
+    match std::fs::read_to_string(static_path("ide.html")) {
+        Ok(html) => Html(inject_viewer_url(html)).into_response(),
+        Err(_) => Redirect::temporary(&format!(
+            "http://127.0.0.1:5173/?project={}&api={}",
+            name,
+            urlencoding_origin()
+        ))
+        .into_response(),
+    }
+}
+
+fn static_dir() -> PathBuf {
+    let candidates = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("static"))),
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static")),
+        Some(PathBuf::from("static")),
+        Some(PathBuf::from("runtime/bootstrap/static")),
+    ];
+    for c in candidates.into_iter().flatten() {
+        if c.is_dir() {
+            return c;
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static")
+}
+
+fn static_path(file: &str) -> PathBuf {
+    static_dir().join(file)
+}
+
+fn inject_viewer_url(html: String) -> String {
+    let viewer = std::env::var("VEIL_VIEWER_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:5173".into());
+    html.replacen(
+        "<head>",
+        &format!(
+            "<head>\n  <script>window.VEIL_VIEWER_URL = {};</script>",
+            serde_json::to_string(&viewer).unwrap_or_else(|_| "\"http://127.0.0.1:5173\"".into())
+        ),
+        1,
+    )
+}
+
+fn urlencoding_origin() -> String {
+    std::env::var("VEIL_PUBLIC_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into())
 }
 
 async fn bus_invoke(
@@ -387,8 +451,14 @@ async fn main() {
         .route("/bus/dispatch", post(bus_dispatch))
         .with_state(bus_state);
 
-    // Merge: IDE multi routes + bus/health (same process, one port)
-    let app = ide
+    let shell = Router::new()
+        .route("/", get(shell_index))
+        .route("/projects/{name}/ide", get(ide_embed))
+        .nest_service("/static", ServeDir::new(static_dir()));
+
+    // Merge: shell + IDE multi routes + bus/health (same process, one port)
+    let app = shell
+        .merge(ide)
         .merge(bus_routes)
         .layer(CorsLayer::permissive());
 
@@ -397,13 +467,19 @@ async fn main() {
 
     let addr = format!("0.0.0.0:{port}");
     tracing::info!("veil-runtime listening on {addr}");
+    tracing::info!("  shell:        http://127.0.0.1:{port}/");
     tracing::info!("  projects_dir: {}", projects_dir.display());
     tracing::info!("  hub:          http://127.0.0.1:{port}/api/projects");
-    tracing::info!("  ide:          http://127.0.0.1:{port}/api/p/{{name}}/ir");
-    tracing::info!("  viewer:       {viewer}/?project=<name>");
+    tracing::info!("  ide API:      http://127.0.0.1:{port}/api/p/{{name}}/ir");
+    tracing::info!("  ide embed:    http://127.0.0.1:{port}/projects/{{name}}/ide");
+    tracing::info!("  viewer:       {viewer}/?project=<name>&api=http://127.0.0.1:{port}");
     tracing::info!(
         "  bus mode:     {}",
-        if stub { "stub echo" } else { "hub-backed ListRepos/CreateRepo" }
+        if stub {
+            "stub echo"
+        } else {
+            "hub-backed ListRepos/CreateRepo"
+        }
     );
 
     let listener = TcpListener::bind(&addr).await.expect("failed to bind");

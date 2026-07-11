@@ -78,7 +78,7 @@ STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sq
                sha2 zip tempfile schemars
 
 .PHONY: veil serve serve-examples serve-stop serve-api serve-ui viewer-install \
-	projects runtime gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
+	projects runtime runtime-serve gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
 
 # ─── Compiler ───────────────────────────────────────────────────────────────
 
@@ -229,6 +229,21 @@ gen-runtime: veil
 
 build-runtime: gen-runtime
 	cargo build --manifest-path $(RUNTIME_OUT)/Cargo.toml
+
+# Product host: multi-project IDE kernel + shell UI (RTU-008)
+RUNTIME_PORT ?= 8080
+runtime-serve: veil
+	@echo "Building veil-runtime (bootstrap + veil-server multi kernel)…"
+	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
+	@echo ""
+	@echo "Starting veil-runtime on :$(RUNTIME_PORT)"
+	@echo "  Shell:    http://127.0.0.1:$(RUNTIME_PORT)/"
+	@echo "  Projects: http://127.0.0.1:$(RUNTIME_PORT)/api/projects"
+	@echo "  Viewer:   http://127.0.0.1:$(VIEWER_PORT)/?api=http://127.0.0.1:$(RUNTIME_PORT)"
+	@echo "  (optional) make serve-ui VIEWER_PORT=$(VIEWER_PORT)"
+	@echo ""
+	@CI=1 VEIL_NONINTERACTIVE=1 VEIL_PORT=$(RUNTIME_PORT) \
+		./runtime/bootstrap/target/release/veil-runtime
 
 clean-runtime:
 	find $(RUNTIME_OUT) -mindepth 1 ! -name '.gitignore' -delete

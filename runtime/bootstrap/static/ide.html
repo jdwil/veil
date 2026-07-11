@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VEIL IDE</title>
+  <style>
+    body { margin: 0; background: #0f0f0f; color: #e5e5e5; font-family: system-ui, sans-serif; }
+    header {
+      display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+      border-bottom: 1px solid #2e2e2e; background: #1a1a1a; font-size: 13px;
+    }
+    header a { color: #a5b4fc; text-decoration: none; }
+    header .name { font-weight: 700; }
+    iframe { border: 0; width: 100%; height: calc(100vh - 40px); }
+    .fallback { padding: 24px; color: #a3a3a3; max-width: 560px; }
+    code { color: #a5b4fc; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">← Runtime</a>
+    <span class="name" id="proj">…</span>
+    <span style="color:#737373">IDE (embedded viewer)</span>
+  </header>
+  <iframe id="frame" title="VEIL IDE"></iframe>
+  <div class="fallback" id="fb" style="display:none">
+    <p>Could not load the viewer iframe.</p>
+    <p>Start the viewer: <code>cd veil-viewer && npm run dev -- --port 5173</code></p>
+    <p>Or open: <a id="direct" href="#">direct IDE link</a></p>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const project = params.get('project') || location.pathname.split('/').filter(Boolean)[1] || '';
+    document.getElementById('proj').textContent = project || '(none)';
+    const VIEWER = (window.VEIL_VIEWER_URL || 'http://127.0.0.1:5173').replace(/\/$/, '');
+    const api = location.origin;
+    const url = VIEWER + '/?project=' + encodeURIComponent(project) +
+      '&api=' + encodeURIComponent(api);
+    document.getElementById('direct').href = url;
+    const frame = document.getElementById('frame');
+    frame.src = url;
+    frame.onerror = () => {
+      document.getElementById('fb').style.display = 'block';
+    };
+  </script>
+</body>
+</html>

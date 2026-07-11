@@ -98,7 +98,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ### RTU — Runtime host UX (product shell)
 
-#### RTU-001: Embed multi-project IDE kernel in veil-runtime — Todo
+#### RTU-001: Embed multi-project IDE kernel in veil-runtime — Done
 
 **Mission impact:** One binary for hub + IDE; stop dual-process confusion.
 
@@ -116,7 +116,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ---
 
-#### RTU-002: Fix `runtime-ui.veil` parse + generate — Todo
+#### RTU-002: Fix `runtime-ui.veil` parse + generate — Done
 
 **Mission impact:** Runtime shell authored in VEIL, not handwritten React forever.
 
@@ -129,7 +129,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ---
 
-#### RTU-003: Runtime shell pages (dashboard + projects) — Todo
+#### RTU-003: Runtime shell pages (dashboard + projects) — Done
 
 **Mission impact:** Users see products without memorizing query params.
 
@@ -143,7 +143,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ---
 
-#### RTU-004: Embed or serve IDE in runtime shell — Todo
+#### RTU-004: Embed or serve IDE in runtime shell — Done
 
 **Mission impact:** One window, not “start multi + Vite separately.”
 
@@ -157,7 +157,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ---
 
-#### RTU-005: Project switcher in IDE chrome — Todo
+#### RTU-005: Project switcher in IDE chrome — Done
 
 **Mission impact:** Multi-open without editing the URL bar.
 
@@ -170,7 +170,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ---
 
-#### RTU-006: Multi-project error hygiene — Todo
+#### RTU-006: Multi-project error hygiene — Done
 
 **Mission impact:** Trustable HTTP for agents and UI.
 
@@ -184,7 +184,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ---
 
-#### RTU-007: Wire real Bus handlers (not echo) — Todo
+#### RTU-007: Wire real Bus handlers (not echo) — Done
 
 **Mission impact:** Runtime storage/tools match `runtime.veil` domain model.
 
@@ -199,7 +199,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ---
 
-#### RTU-008: `make runtime-serve` (or equivalent) — Todo
+#### RTU-008: `make runtime-serve` (or equivalent) — Done
 
 **Mission impact:** One documented command to try the product stack.
 
@@ -213,7 +213,7 @@ Opened `http://127.0.0.1:5173/?project=hubby` with multi on :3001.
 
 ### Viewer / multi polish (IDE side)
 
-#### RTU-009: Hub API client + empty multi state — Todo
+#### RTU-009: Hub API client + empty multi state — Done
 
 **Acceptance**
 
@@ -256,12 +256,12 @@ RTU-003 → RTU-004 → RTU-007 → RTU-008.
 
 | ID | Title | Status |
 |----|--------|--------|
-| RTU-001 | Embed multi kernel in veil-runtime | Todo |
-| RTU-002 | Fix runtime-ui.veil parse/gen | Todo |
-| RTU-003 | Dashboard + projects pages | Todo |
-| RTU-004 | Embed/serve IDE from runtime | Todo |
-| RTU-005 | Project switcher in IDE | Todo |
-| RTU-006 | 404 hygiene for missing project | Todo |
-| RTU-007 | Real Bus handlers | Todo |
-| RTU-008 | make runtime-serve | Todo |
-| RTU-009 | Viewer hub empty / multi state | Todo |
+| RTU-001 | Embed multi kernel in veil-runtime | Done |
+| RTU-002 | Fix runtime-ui.veil parse/gen | Done |
+| RTU-003 | Dashboard + projects pages | Done |
+| RTU-004 | Embed/serve IDE from runtime | Done |
+| RTU-005 | Project switcher in IDE | Done |
+| RTU-006 | 404 hygiene for missing project | Done |
+| RTU-007 | Real Bus handlers | Done |
+| RTU-008 | make runtime-serve | Done |
+| RTU-009 | Viewer hub empty / multi state | Done |
