@@ -4,6 +4,10 @@ Live pass of what actually runs today as “the runtime” and the multi-project
 path. Gaps become stories below. Related: [120](120-projects-config-init.md),
 [`docs/IDE_RUNTIME.md`](../docs/IDE_RUNTIME.md), [`runtime/README.md`](../runtime/README.md).
 
+> **Superseding epic:** [140-pure-veil-runtime.md](140-pure-veil-runtime.md)
+> (PVR-*) defines pure VEIL front+back + full functionality. RTU items below
+> were the scaffold/audit track; treat incomplete RTU work as absorbed into PVR.
+
 ---
 
 ## What was run

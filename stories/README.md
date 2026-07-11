@@ -54,6 +54,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | [110-layer-dsl-ide.md](110-layer-dsl-ide.md) | **Layer / team-DSL IDE** — full-capability language designer loop |
 | [120-projects-config-init.md](120-projects-config-init.md) | **Config first-run, `veil init`, projects hub, multi-project kernel** |
 | [130-runtime-ux-audit.md](130-runtime-ux-audit.md) | **Runtime UX audit** — bootstrap vs multi-serve gaps (RTU-*) |
+| [140-pure-veil-runtime.md](140-pure-veil-runtime.md) | **Pure VEIL runtime** — front+back VEIL, full product (PVR-*) |
 
 ## Suggested first slice (P0)
 
