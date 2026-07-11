@@ -755,7 +755,9 @@ async function viewConfig() {{
 }}
 
 function route() {{
-  const p = location.pathname.replace(/\\/+$/, "") || "/";
+  // Strip trailing slash without a regex (avoids codegen escape bugs).
+  let p = location.pathname || "/";
+  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
   if (p === "/config" || p.startsWith("/config/")) return viewConfig();
   if (p === "/deploy" || p.startsWith("/deploy/")) return viewDeploy();
   if (p === "/registry" || p.startsWith("/registry/")) return viewRegistry();
