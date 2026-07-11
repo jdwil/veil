@@ -2,21 +2,38 @@
 
 | Tool | Role |
 |------|------|
-| **`veil serve` in project root** | **Primary daily driver** — IDE, edit, check, agent |
+| **`veil serve` in project root** | Single-product IDE (edit, check, agent) |
+| **Runtime UX (local)** | Platform shell: configured **projects directory**, multi-project **tabs**, **IDE embedded** |
 | **App `@main` harness** | How *this* app runs (`docs/HARNESS.md`) |
-| **Local platform (fs+sqlite)** | Optional power: object store, compile pipeline (RT-010+) |
+| **Local platform (fs+sqlite)** | Object store, compile pipeline, meta (RT-010+) |
 | **Cloud adapters** | Provider-specific deploy (AWS/S3/DDB later) |
+
+Project layout and modes: **[`docs/PROJECT_LAYOUT.md`](../docs/PROJECT_LAYOUT.md)**.
 
 ## Default story (RT-020)
 
+**Single project (CLI / early IDE):**
+
 ```bash
-# From your project (directory of .veil files / layers)
+# From one product repo (packages + layers/ + stubs/)
 veil serve .
 # open viewer → edit topology → check → agent prompt
 ```
 
-No special platform daemon is required for the dual loop. Local platform
-runtime is opt-in when you need multi-tenant object storage, deploy ports, etc.
+**Runtime local (product direction):**
+
+```bash
+# Projects directory holds independent git repos (one product each)
+export VEIL_PROJECTS_DIR=~/veil-projects
+# runtime starts → list/create/open projects → IDE tabs per open project
+```
+
+- New projects from the UX: subdirectory + **git init** under `VEIL_PROJECTS_DIR`.
+- Multiple products open as tabs; each tab is one project root (isolated IR/agent).
+- `examples/` is demos/CI only — not the runtime projects home.
+
+No special platform daemon is required for a single-project dual loop. Local
+platform runtime is opt-in for multi-project shell, object storage, deploy, etc.
 
 ## Authoring your own harness
 

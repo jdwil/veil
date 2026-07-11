@@ -2,6 +2,9 @@
 
 `veil serve` is the single HTTP surface for the IDE and agents.
 
+Project roots, multi-project runtime tabs, and layer visibility:
+**[`PROJECT_LAYOUT.md`](PROJECT_LAYOUT.md)**.
+
 ## Entry point
 
 ```text
@@ -12,6 +15,8 @@ veil serve <file-or-dir> [-p PORT]
 - Implementation: `crates/veil-server` only (legacy `veil-cli/src/serve.rs` removed)
 - Default port: `3001`
 - CORS: permissive (local dev)
+- Prefer a **single project root** (packages + `layers/` + `stubs/`). `examples/`
+  is for demos/CI, not the product default workspace.
 
 ## Source of truth
 

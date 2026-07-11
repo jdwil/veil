@@ -10,12 +10,14 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 
 | Piece | Decision |
 |-------|----------|
-| **Daily driver** | `veil serve` in the **project root** (IDE + agent panel) |
+| **Daily driver** | `veil serve` in a **project root**; product path embeds IDE in **runtime UX** |
+| **Projects (runtime local)** | Configured **projects directory**; each product = **independent git repo**; multi-open as **tabs** ([PROJECT_LAYOUT.md](../docs/PROJECT_LAYOUT.md)) |
 | **In-IDE agent** | Prompt → tools edit sources → IDE live-refresh; models + ACP/MCP pluggable ([100-ide-agent.md](100-ide-agent.md)) |
 | **App harness** | **VEIL-authored** via `@main` / composition — not eternal handwritten bootstrap |
 | **Local platform runtime** | Optional; **source on disk**, **metadata in sqlite**; cloud uses object store + meta DB |
 | **Cloud** | Pluggable adapters per provider; LocalStack/AWS only for AWS path testing |
 | **Source preview** | Multi-target, navigable, **secondary** to VEIL topology/body review |
+| **`examples/`** | Syntax demos + CI — **not** the default IDE / runtime workspace |
 
 ## How to use
 
