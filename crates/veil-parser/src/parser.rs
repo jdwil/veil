@@ -100,6 +100,7 @@ pub fn parse_with_registry(
             name: pkg.name,
             span: pkg.span,
             uses: pkg.uses,
+            links: pkg.links,
             items: pkg.items,
             expose: pkg.expose,
         },
@@ -107,6 +108,7 @@ pub fn parse_with_registry(
             name: "composition".to_string(),
             span: comp.span,
             uses: comp.imports.clone(),
+            links: Vec::new(),
             items: comp.flows.into_iter().map(TopLevelItem::Flow).collect(),
             expose: None,
         },
@@ -210,6 +212,7 @@ pub fn parse_file_with_registry(
                         name: pkg.name.clone(),
                         span: pkg.span,
                         uses: pkg.uses.clone(),
+                        links: pkg.links.clone(),
                         items: std::mem::take(&mut pkg.items),
                         expose: pkg.expose.clone(),
                     };
@@ -603,6 +606,7 @@ impl<'a> Parser<'a> {
 
         let mut items = Vec::new();
         let mut uses = Vec::new();
+        let mut links = Vec::new();
         if self.at_block_start() {
             self.enter_block()?;
             while !self.at_block_end() {
@@ -619,6 +623,9 @@ impl<'a> Parser<'a> {
                         // Layer reference — vocabulary already loaded into the
                         // registry by the caller; keep for serialization.
                         uses.push(self.parse_use_import()?);
+                    }
+                    TokenKind::Link => {
+                        links.push(self.parse_link_decl()?);
                     }
                     TokenKind::Allow | TokenKind::Deny => {
                         self.advance();
@@ -671,6 +678,7 @@ impl<'a> Parser<'a> {
             name,
             span: start_span.merge(self.current().span),
             uses,
+            links,
             items,
             expose: None,
         })
@@ -694,6 +702,7 @@ impl<'a> Parser<'a> {
 
         let mut metadata = Vec::new();
         let mut uses = Vec::new();
+        let mut links = Vec::new();
         let mut items = Vec::new();
         let mut expose = None;
 
@@ -743,6 +752,9 @@ impl<'a> Parser<'a> {
                     }
                     TokenKind::Use => {
                         uses.push(self.parse_use_import()?);
+                    }
+                    TokenKind::Link => {
+                        links.push(self.parse_link_decl()?);
                     }
                     TokenKind::Lang => {
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
@@ -802,6 +814,7 @@ impl<'a> Parser<'a> {
             span: start_span.merge(self.current().span),
             metadata,
             uses,
+            links,
             items,
             expose,
         })
@@ -868,6 +881,88 @@ impl<'a> Parser<'a> {
         Ok(UseImport {
             package_name,
             alias,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// CAP-001: `link <name> [path "..."] [features "a,b"]`
+    ///
+    /// Name may be an ident (`veil_server`) or a string (`"veil-server"`).
+    fn parse_link_decl(&mut self) -> Result<LinkDecl, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Link)?;
+
+        let name = if self.at(&TokenKind::StringLit) {
+            let text = self.advance().text;
+            Self::extract_string_content(&text)
+        } else {
+            // Allow hyphenated names: veil-server → Ident Minus Ident…
+            let mut name = self.expect_ident()?;
+            while self.at(&TokenKind::Minus) {
+                self.advance();
+                let rest = self.expect_ident()?;
+                name.push('-');
+                name.push_str(&rest);
+            }
+            name
+        };
+
+        let mut path = None;
+        let mut features = Vec::new();
+
+        // Optional trailing `path "..."` / `features "a,b"` (order free).
+        while self.at(&TokenKind::Ident) {
+            let key = self.current().text.as_str();
+            match key {
+                "path" => {
+                    self.advance();
+                    if self.at(&TokenKind::Eq) {
+                        self.advance();
+                    }
+                    if !self.at(&TokenKind::StringLit) {
+                        return Err(self.error(
+                            "link path expects a string literal".to_string(),
+                        ));
+                    }
+                    let text = self.advance().text;
+                    path = Some(Self::extract_string_content(&text));
+                }
+                "features" => {
+                    self.advance();
+                    if self.at(&TokenKind::Eq) {
+                        self.advance();
+                    }
+                    if self.at(&TokenKind::StringLit) {
+                        let text = self.advance().text;
+                        let raw = Self::extract_string_content(&text);
+                        features = raw
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    } else {
+                        // `features json, rustls` — comma-separated idents
+                        loop {
+                            if !self.at(&TokenKind::Ident) {
+                                break;
+                            }
+                            features.push(self.advance().text);
+                            if self.at(&TokenKind::Comma) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        Ok(LinkDecl {
+            name,
+            path,
+            features,
             span: start_span.merge(self.current().span),
         })
     }

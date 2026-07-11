@@ -400,6 +400,88 @@ sol TestApp
     assert!(out.contains("Empty,"), "unit variant missing:\n{}", grep(&out, "Empty"));
 }
 
+/// CAP-001: `link` emits path deps in generated Cargo.toml (workspace + crates).
+#[test]
+fn link_external_crates_in_cargo_toml() {
+    let src = r#"
+pkg HostApp
+  use ddd
+  link veil_server
+  link veil_local path "../../crates/veil-local" features "local"
+  @main
+  ctx App
+    port Greeter
+      greet(name: Str) -> Str
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        .expect("ddd");
+    // di.layer for @main if needed — check what @main requires
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    assert_eq!(sol.links.len(), 2);
+    let project = veil_codegen::generate(&sol, &reg);
+    let all: String = project
+        .files
+        .iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Workspace root lists path deps
+    let ws = project
+        .files
+        .iter()
+        .find(|f| f.path == "Cargo.toml")
+        .expect("workspace Cargo.toml");
+    assert!(
+        ws.content.contains("veil-server")
+            && ws.content.contains("path = \"../../crates/veil-server\""),
+        "workspace missing veil-server path dep:\n{}",
+        ws.content
+    );
+    assert!(
+        ws.content.contains("veil-local")
+            && ws.content.contains("path = \"../../crates/veil-local\"")
+            && ws.content.contains("features = [\"local\"]"),
+        "workspace missing veil-local path+features:\n{}",
+        ws.content
+    );
+
+    // Module crate pulls workspace deps
+    let mod_cargo = project
+        .files
+        .iter()
+        .find(|f| f.path.contains("crates/app/Cargo.toml") || f.path.ends_with("Cargo.toml") && f.path.contains("app"))
+        .or_else(|| {
+            project.files.iter().find(|f| {
+                f.path.starts_with("crates/") && f.path.ends_with("Cargo.toml") && f.path != "crates/veil_shared/Cargo.toml" && !f.path.contains("veil_bin")
+            })
+        });
+    if let Some(mc) = mod_cargo {
+        assert!(
+            mc.content.contains("veil-server.workspace = true")
+                || mc.content.contains("veil-server"),
+            "module crate missing link dep:\n{}",
+            mc.content
+        );
+    }
+
+    // resolve helpers unit-tested in links.rs; surface failure for non-allowlist
+    let bad = veil_ir::ast::LinkDecl {
+        name: "not_allowlisted".into(),
+        path: None,
+        features: vec![],
+        span: veil_ir::span::Span::new(0, 0),
+    };
+    assert!(veil_codegen::resolve_link(&bad).is_err());
+
+    assert!(
+        all.contains("veil-server") && all.contains("veil-local"),
+        "generated project should mention linked crates"
+    );
+}
+
 /// Integration test: generate Rust from all example .veil files and run cargo check.
 /// This ensures the codegen produces valid Rust that the compiler accepts.
 #[test]

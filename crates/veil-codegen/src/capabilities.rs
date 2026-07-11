@@ -793,7 +793,9 @@ mod tests {
             name: "T".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(c)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(c)],
             expose: None,
         }
     }
@@ -912,7 +914,9 @@ mod tests {
             name: "T".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Function(FnDef {
+
+            links: vec![],
+items: vec![TopLevelItem::Function(FnDef {
                 name: "add".into(),
                 span: Span::new(0, 0),
                 params: vec![],
@@ -938,7 +942,9 @@ mod tests {
             name: "T".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Function(FnDef {
+
+            links: vec![],
+items: vec![TopLevelItem::Function(FnDef {
                 name: "f".into(),
                 span: Span::new(0, 0),
                 params: vec![],

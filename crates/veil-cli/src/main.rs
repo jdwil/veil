@@ -910,6 +910,7 @@ fn main() {
                                 name: pkg.name.clone(),
                                 span: pkg.span,
                                 uses: pkg.uses.clone(),
+                                links: pkg.links.clone(),
                                 items: pkg.items.clone(),
                                 expose: pkg.expose.clone(),
                             };
@@ -1309,7 +1310,8 @@ fn main() {
                             let sol = veil_ir::Solution {
                                 name: pkg.name.clone(),
                                 span: pkg.span,
-                                uses: Vec::new(),
+                                uses: pkg.uses.clone(),
+                                links: pkg.links.clone(),
                                 items: pkg.items.clone(),
                                 expose: pkg.expose.clone(),
                             };

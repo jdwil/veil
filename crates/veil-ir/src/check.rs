@@ -207,7 +207,9 @@ mod tests {
             name: "Test".to_string(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(root)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(root)],
             expose: None,
         }
     }

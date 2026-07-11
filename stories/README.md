@@ -82,16 +82,22 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **DSL-005–008** | Layer topology, palette, props, structured ops | [110](110-layer-dsl-ide.md) |
 | **DSL-009–011** | Presentation/prompts, diff, agent layer tools | [110](110-layer-dsl-ide.md) |
 
-### P1 — pure VEIL runtime (product goal)
+### P0 — engine capabilities for pure runtime (next)
 
 | ID | Theme | File |
 |----|--------|------|
-| **PVR-000–001** | Lock DoD + capability matrix | [140](140-pure-veil-runtime.md) |
-| **PVR-020** | page/layout raw templates (language) | [140](140-pure-veil-runtime.md) |
-| **PVR-010** | Host from VEIL `@main` | [140](140-pure-veil-runtime.md) |
-| **PVR-011 / 015 / 017** | Live storage/tools; no stub default | [140](140-pure-veil-runtime.md) |
-| **PVR-021–025** | Generated shell is the UI; IDE embed | [140](140-pure-veil-runtime.md) |
-| **PVR-030–032** | One port; `make pure-runtime`; delete HTML shell | [140](140-pure-veil-runtime.md) |
+| **CAP-001** | **Done** — External crate `link` / cargo deps from VEIL | [141](141-pure-runtime-capability-gaps.md) |
+| **CAP-002** | HttpHost port (mount IDE + static + listen) | [141](141-pure-runtime-capability-gaps.md) |
+| **CAP-003** | Generated Bus `register_all` | [141](141-pure-runtime-capability-gaps.md) |
+| **CAP-005** | Browser-ready SPA emit (bundle) | [141](141-pure-runtime-capability-gaps.md) |
+
+### P1 — pure VEIL runtime product (after CAP-*)
+
+| ID | Theme | File |
+|----|--------|------|
+| **CAP-004 / 006** | FS/Git ports; multi-crate bin layout | [141](141-pure-runtime-capability-gaps.md) |
+| **PVR-010 / 021–023 / 032** | `@main` host; gen UI only; delete hand HTML | [140](140-pure-veil-runtime.md) |
+| **PVR-*** | Remaining product DoD | [140](140-pure-veil-runtime.md) |
 
 ### P2 — trust & daily driver
 
@@ -121,8 +127,8 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **GEN-008 / 009** | Package multi-target + warning hygiene | [60](60-codegen-targets.md) |
 | **DSL-015** | Many-layer workspace polish | [110](110-layer-dsl-ide.md) |
 
-**Sequencing note:** Prefer **PVR-*** ([140](140-pure-veil-runtime.md)) for
-“runtime pure VEIL front+back, full product.” Prefer **DSL-001–004** when
-language-designer iteration is the bottleneck. Close **PAR-015** before
-expanding Swift/Kotlin demos. Prefer **AGT-013/014** before multi-user remote
-auth.
+**Sequencing note:** Pure VEIL runtime needs **CAP-001–003 + CAP-005** first
+([141](141-pure-runtime-capability-gaps.md)), then PVR host/UI purity. Prefer
+**DSL-001–004** when language-designer iteration is the bottleneck. Close
+**PAR-015** before expanding Swift/Kotlin demos. Prefer **AGT-013/014** before
+multi-user remote auth.

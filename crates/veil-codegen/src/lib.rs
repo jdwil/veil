@@ -5,10 +5,13 @@
 pub mod capabilities;
 pub mod expr;
 pub mod kotlin;
+pub mod links;
 pub mod rust;
 pub mod swift;
 pub mod template;
 pub mod typescript;
+
+pub use links::{cargo_dep_line, resolve_link, resolve_links, ResolvedLink};
 
 pub use capabilities::{
     check_multi_target_debt, check_target_capabilities, target_capability_summary, Feature,

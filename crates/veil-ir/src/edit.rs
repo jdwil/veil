@@ -786,7 +786,9 @@ mod tests {
             name: "T".to_string(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: Vec::new(),
+
+            links: vec![],
+items: Vec::new(),
             expose: None,
         };
         let err = apply_edit(&mut sol, &EditOp::Rename { span_start: 42, name: "X".to_string() });
@@ -807,7 +809,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(svc)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(svc)],
             expose: None,
         }
     }
@@ -914,7 +918,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(parent)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(parent)],
             expose: None,
         };
         apply_edit(
@@ -951,7 +957,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(bus)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(bus)],
             expose: None,
         };
         let err = apply_edit(
@@ -968,7 +976,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: Vec::new(),
+
+            links: vec![],
+items: Vec::new(),
             expose: None,
         };
         let err = apply_edit(&mut sol, &EditOp::DeleteConstruct { span_start: 99 });

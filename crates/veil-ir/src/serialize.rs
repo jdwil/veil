@@ -125,7 +125,10 @@ impl Serializer {
                 None => self.line(&format!("use {}", u.package_name)),
             }
         }
-        if !sol.uses.is_empty() {
+        for link in &sol.links {
+            self.emit_link(link);
+        }
+        if !sol.uses.is_empty() || !sol.links.is_empty() {
             self.blank();
         }
         self.emit_items_spaced(&sol.items);
@@ -136,6 +139,17 @@ impl Serializer {
             self.emit_expose(expose);
         }
         self.dedent();
+    }
+
+    fn emit_link(&mut self, link: &LinkDecl) {
+        let mut line = format!("link {}", link.name);
+        if let Some(path) = &link.path {
+            line.push_str(&format!(" path \"{}\"", path));
+        }
+        if !link.features.is_empty() {
+            line.push_str(&format!(" features \"{}\"", link.features.join(", ")));
+        }
+        self.line(&line);
     }
 
     fn emit_top_level_item(&mut self, item: &TopLevelItem) {
@@ -171,10 +185,27 @@ impl Serializer {
             self.blank();
         }
 
+        for u in &pkg.uses {
+            match &u.alias {
+                Some(alias) => self.line(&format!("use {} as {}", u.package_name, alias)),
+                None => self.line(&format!("use {}", u.package_name)),
+            }
+        }
+        for link in &pkg.links {
+            self.emit_link(link);
+        }
+        if !pkg.uses.is_empty() || !pkg.links.is_empty() {
+            self.blank();
+        }
+
         self.emit_items_spaced(&pkg.items);
 
         if let Some(expose) = &pkg.expose {
-            if pkg.items.iter().any(item_emits) || !pkg.metadata.is_empty() {
+            if pkg.items.iter().any(item_emits)
+                || !pkg.metadata.is_empty()
+                || !pkg.uses.is_empty()
+                || !pkg.links.is_empty()
+            {
                 self.blank();
             }
             self.emit_expose(expose);
@@ -1110,7 +1141,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(c)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(c)],
             expose: None,
         };
         let out = serialize_solution(&sol);
@@ -1141,7 +1174,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(c)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(c)],
             expose: None,
         };
         let out = serialize_solution(&sol);
@@ -1166,7 +1201,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(c)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(c)],
             expose: None,
         };
         let out = serialize_solution(&sol);
@@ -1189,7 +1226,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(c)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(c)],
             expose: None,
         };
         let out = serialize_solution(&sol);
@@ -1210,7 +1249,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(c)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(c)],
             expose: None,
         }
     }
@@ -1375,7 +1416,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: Vec::new(),
+
+            links: vec![],
+items: Vec::new(),
             expose: None,
         };
         let out = serialize_solution(&sol);
@@ -1391,7 +1434,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![TopLevelItem::Construct(c)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(c)],
             expose: None,
         };
         let out = serialize_solution(&sol);
@@ -1427,7 +1472,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: vec![],
-            items: vec![TopLevelItem::Construct(Construct::new(
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(Construct::new(
                 "struct",
                 "Struct",
                 Shape::Struct,
@@ -1451,7 +1498,9 @@ mod tests {
             name: "App".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
-            items: vec![
+
+            links: vec![],
+items: vec![
                 TopLevelItem::Construct(user),
                 TopLevelItem::Construct(bus),
                 TopLevelItem::Construct(other),

@@ -1139,7 +1139,9 @@ pkg testddd v1
             name: "T".into(),
             span: Span::new(0, 1),
             uses: vec![],
-            items: vec![
+
+            links: vec![],
+items: vec![
                 TopLevelItem::Construct(cohort),
                 TopLevelItem::Construct(member),
             ],
@@ -1189,7 +1191,9 @@ pkg testddd v1
             name: "T".into(),
             span: Span::new(0, 1),
             uses: vec![],
-            items: vec![TopLevelItem::Construct(member)],
+
+            links: vec![],
+items: vec![TopLevelItem::Construct(member)],
             expose: None,
         };
         let graph = build_ir_with_registry(&sol, Some(&reg));

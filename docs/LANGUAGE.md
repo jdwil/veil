@@ -46,7 +46,7 @@ pkg CustomerOnboarding
   ctx Identity
     ...
 ```
-The body accepts `use`, `lang`, `type`, `const`, `flow`, `fn`, `allow`/`deny`,
+The body accepts `use`, `link`, `lang`, `type`, `const`, `flow`, `fn`, `allow`/`deny`,
 and any construct from the loaded layers.
 
 ### `pkg` — Package
@@ -66,6 +66,39 @@ from `ddd.layer` (or `ddd.stub`) so its constructs become available. As the
 use ddd
 use billing as bill
 ```
+
+### `link` — External Cargo crate (CAP-001)
+`link <name> [path "…"] [features "a,b"]` declares a **path dependency** that
+codegen emits into the generated Rust workspace `Cargo.toml`. Use this so
+`@main` / adapters can call monorepo crates such as `veil-server`.
+
+```
+pkg VeilRuntimeHost
+  use ddd
+  link veil_server
+  link veil_local path "../../crates/veil-local" features "local"
+  link "my-sdk" path "../vendor/my-sdk"
+```
+
+| Form | Behavior |
+|------|----------|
+| `link veil_server` | Allowlisted monorepo crate; default path `../../crates/veil-server` (from gen workspace root) |
+| `link name path "rel"` | Explicit relative path (required if not allowlisted) |
+| `link name features "a,b"` | Optional Cargo features |
+
+**Security**
+
+- Absolute paths are rejected.
+- Non-allowlisted crates **must** supply a relative `path`.
+- Allowlist (omit path): `veil_server` / `veil-server`, `veil_local` / `veil-local`,
+  `veil_parser`, `veil_ir`, `veil_codegen` (and hyphenated forms).
+
+Codegen writes path deps under `[workspace.dependencies]` and
+`name.workspace = true` on `veil_shared`, module crates, and `veil_bin`.
+Rust import name uses underscores (`use veil_server::…`).
+
+See `crates/veil-codegen/src/links.rs` and story CAP-001 in
+`stories/141-pure-runtime-capability-gaps.md`.
 
 ### `lang` — Glossary
 A block of `term: definition` lines documenting domain terms. Metadata only;
@@ -551,7 +584,7 @@ The definitive list of words the **lexer** reserves (everything else is an
 identifier / layer vocabulary):
 
 `struct` `enum` `fn` `trait` `let`* `mod` `if` `else` `match` `ret` `true`
-`false` `impl` `sol` `pkg` `use` `lang` `expose` `node` `flow` `alt`* `loop`
+`false` `impl` `sol` `pkg` `use` `link` `lang` `expose` `node` `flow` `alt`* `loop`
 `err` `call` `input` `fallback` `for` `while` `mut` `type` `const` `await`
 `break` `continue` `static` `boundary` `as` `desc` `output` `cst`
 `group` `allow` `deny` `export`

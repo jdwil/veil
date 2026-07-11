@@ -34,7 +34,7 @@ capabilities:
 
 | CAP | Need |
 |-----|------|
-| CAP-001 | Link external crates (`veil-server`) from VEIL packages |
+| CAP-001 | **Done** — `link` external crates (`veil-server`) → generated Cargo.toml |
 | CAP-002 | HttpHost port — mount IDE + static + listen from VEIL |
 | CAP-003 | Generated Bus `register_all` |
 | CAP-005 | SPA **bundle** emit for `runtime-ui.veil` |

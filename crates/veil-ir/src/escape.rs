@@ -838,6 +838,7 @@ mod tests {
             name: "T".into(),
             span: Span::new(0, 0),
             uses: Vec::new(),
+            links: vec![],
             items,
             expose: None,
         }

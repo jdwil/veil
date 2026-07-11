@@ -84,6 +84,8 @@ pub enum TokenKind {
     Sol,
     Pkg,
     Use,
+    /// External Cargo crate linkage (CAP-001): `link veil_server path "..."`.
+    Link,
     Lang,
     Expose,
     Node,
@@ -515,6 +517,7 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "sol" => TokenKind::Sol,
         "pkg" => TokenKind::Pkg,
         "use" => TokenKind::Use,
+        "link" => TokenKind::Link,
         "lang" => TokenKind::Lang,
         "expose" => TokenKind::Expose,
         "node" => TokenKind::Node,

@@ -29,6 +29,36 @@ mod tests {
             .unwrap_or_else(|| panic!("construct '{}' not found", name))
     }
 
+    /// CAP-001: `link` declares external Cargo crates.
+    #[test]
+    fn test_parse_link_decls() {
+        let src = r#"
+pkg Host
+  use ddd
+  link veil_server
+  link veil-local path "../../crates/veil-local" features "local,http"
+  link "custom-crate" path "../vendor/custom"
+"#;
+        let sol = parse_src(src);
+        assert_eq!(sol.links.len(), 3, "expected 3 links, got {:?}", sol.links);
+        assert_eq!(sol.links[0].name, "veil_server");
+        assert!(sol.links[0].path.is_none());
+        assert_eq!(sol.links[1].name, "veil-local");
+        assert_eq!(
+            sol.links[1].path.as_deref(),
+            Some("../../crates/veil-local")
+        );
+        assert_eq!(sol.links[1].features, vec!["local".to_string(), "http".to_string()]);
+        assert_eq!(sol.links[2].name, "custom-crate");
+        assert_eq!(sol.links[2].path.as_deref(), Some("../vendor/custom"));
+
+        // Round-trip via serializer
+        let out = veil_ir::serialize::serialize_solution(&sol);
+        assert!(out.contains("link veil_server"), "{out}");
+        assert!(out.contains("link veil-local path \"../../crates/veil-local\""), "{out}");
+        assert!(out.contains("features \"local, http\"") || out.contains("features \"local,http\""), "{out}");
+    }
+
     #[test]
     fn test_parse_empty_solution() {
         let sol = parse_src("sol MyApp");

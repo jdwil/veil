@@ -22,7 +22,25 @@ pub struct GeneratedFile {
 pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProject {
     let mut files = Vec::new();
 
-    files.push(gen_workspace_toml(solution, registry));
+    // CAP-001: resolve external crate links (skip invalid with warning-style omit:
+    // only emit successfully resolved links; invalid ones are dropped so gen still
+    // produces a workspace — CLI can surface resolve errors separately later).
+    let resolved_links = match crate::links::resolve_links(&solution.links) {
+        Ok(links) => links,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("warning: {e}");
+            }
+            // Best-effort: resolve each independently
+            solution
+                .links
+                .iter()
+                .filter_map(|l| crate::links::resolve_link(l).ok())
+                .collect()
+        }
+    };
+
+    files.push(gen_workspace_toml(solution, registry, &resolved_links));
 
     // Shared crate: owns the common error types and the layer-provided
     // top-level traits (the injected Bus), so they are defined ONCE and every
@@ -55,7 +73,14 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             _ => None,
         })
         .collect();
-    files.extend(gen_shared_crate(&shared_traits, &shared_structs, &shared_fns, solution, registry));
+    files.extend(gen_shared_crate(
+        &shared_traits,
+        &shared_structs,
+        &shared_fns,
+        solution,
+        registry,
+        &resolved_links,
+    ));
 
     // Each top-level mod-shaped construct becomes a crate.
     let modules: Vec<&Construct> = solution
@@ -88,6 +113,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             &mut flow_generated,
             solution,
             registry,
+            &resolved_links,
         ));
     }
 
@@ -113,7 +139,12 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
                 "#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n    println!(\"veil_bin: no modules to run\");\n    Ok(())\n}\n",
             )
         };
-        files.extend(gen_bin_crate(solution, &module_crates, &main_body));
+        files.extend(gen_bin_crate(
+            solution,
+            &module_crates,
+            &main_body,
+            &resolved_links,
+        ));
         if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
             if !ws.content.contains("crates/veil_bin") {
                 ws.content = ws.content.replacen(
@@ -322,6 +353,7 @@ fn gen_bin_crate(
     sol: &Solution,
     module_crates: &[String],
     main_body: &str,
+    links: &[crate::links::ResolvedLink],
 ) -> Vec<GeneratedFile> {
     let mut deps = String::from(
         "tokio = { workspace = true }\nuuid = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\n",
@@ -329,7 +361,13 @@ fn gen_bin_crate(
     for c in module_crates {
         deps.push_str(&format!("{c} = {{ path = \"../{c}\" }}\n"));
     }
-    // Use statements so main can call into context crates when present
+    // CAP-001: external crate links on veil_bin (host / @main).
+    for link in links {
+        deps.push_str(&crate::links::cargo_workspace_dep_line(link));
+    }
+    // Use statements so main can call into context crates when present.
+    // CAP-001 linked crates are available as `veil_server::…` via Cargo deps
+    // (extern prelude); no extra `use` required.
     let mut uses = String::from("use veil_shared::*;\n");
     for c in module_crates {
         uses.push_str(&format!("use {c}::*;\n"));
@@ -375,7 +413,11 @@ path = "src/main.rs"
     ]
 }
 
-fn gen_workspace_toml(sol: &Solution, registry: &LayerRegistry) -> GeneratedFile {
+fn gen_workspace_toml(
+    sol: &Solution,
+    registry: &LayerRegistry,
+    links: &[crate::links::ResolvedLink],
+) -> GeneratedFile {
     let mut members = vec!["    \"crates/veil_shared\"".to_string()];
     for item in &sol.items {
         if let TopLevelItem::Construct(c) = item {
@@ -403,6 +445,10 @@ fn gen_workspace_toml(sol: &Solution, registry: &LayerRegistry) -> GeneratedFile
                 feats.join(", ")
             ));
         }
+    }
+    // CAP-001: path deps from `link` declarations.
+    for link in links {
+        extra_deps.push_str(&crate::links::cargo_dep_line(link));
     }
 
     let content = format!(
@@ -443,6 +489,7 @@ fn gen_module_crate(
     flow_generated: &mut bool,
     solution: &Solution,
     registry: &LayerRegistry,
+    links: &[crate::links::ResolvedLink],
 ) -> Vec<GeneratedFile> {
     let crate_name = to_snake(&module.name);
     let mut files = Vec::new();
@@ -482,6 +529,10 @@ uuid.workspace = true"#);
             // Stub crate dependencies
             for stub in &registry.stubs {
                 cargo.push_str(&format!("{}.workspace = true\n", stub.name));
+            }
+            // CAP-001: external crate links
+            for link in links {
+                cargo.push_str(&crate::links::cargo_workspace_dep_line(link));
             }
             cargo
         },
@@ -1367,13 +1418,13 @@ fn gen_shared_crate(
     functions: &[&FnDef],
     solution: &Solution,
     registry: &LayerRegistry,
+    links: &[crate::links::ResolvedLink],
 ) -> Vec<GeneratedFile> {
     use crate::expr::{build_ctx_from_solution, stmt_to_rust};
     let mut files = Vec::new();
 
-    files.push(GeneratedFile {
-        path: "crates/veil_shared/Cargo.toml".to_string(),
-        content: r#"[package]
+    let mut shared_cargo = String::from(
+        r#"[package]
 name = "veil_shared"
 version.workspace = true
 edition.workspace = true
@@ -1387,7 +1438,15 @@ uuid.workspace = true
 chrono.workspace = true
 tokio = { workspace = true }
 futures = "0.3"
-"#.to_string(),
+"#,
+    );
+    // CAP-001: allow shared layer decls / free fns to call linked crates.
+    for link in links {
+        shared_cargo.push_str(&crate::links::cargo_workspace_dep_line(link));
+    }
+    files.push(GeneratedFile {
+        path: "crates/veil_shared/Cargo.toml".to_string(),
+        content: shared_cargo,
     });
 
     let mut lib = String::new();

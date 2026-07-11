@@ -42,7 +42,7 @@ Parallelize: A.4 (UI emit) || A.1–A.3 (host emit); B || C once A lands.
 
 These block pure authorship. Each is a **capability story** (engine), not app code.
 
-### CAP-001: External crate / package linkage from generated Rust — Todo · P0
+### CAP-001: External crate / package linkage from generated Rust — Done · P0
 
 **Problem:** Generated `@main` / packages cannot declare a Cargo dependency on
 `veil-server`, `veil-local`, or other monorepo crates. Host cannot call
@@ -51,20 +51,29 @@ These block pure authorship. Each is a **capability story** (engine), not app co
 **Need**
 
 ```veil
-# proposed (names bikesheddable)
 pkg VeilRuntimeHost
   use ddd
   use di
-  link veil_server   # or: cargo_dep "veil-server" path="..."
-  link veil_local
+  link veil_server
+  link veil_local path "../../crates/veil-local" features "local"
 ```
 
 **Acceptance**
 
-- [ ] Layer or core syntax: declare external Cargo deps (path + crate name + features).
-- [ ] Codegen emits `[dependencies]` entries in generated `Cargo.toml`.
-- [ ] Generated code can `use veil_server::…` in `@main` / adapters.
-- [ ] Documented security: only allowlisted crates (or path deps under workspace).
+- [x] Layer or core syntax: declare external Cargo deps (path + crate name + features).
+- [x] Codegen emits `[dependencies]` entries in generated `Cargo.toml`.
+- [x] Generated code can `use veil_server::…` in `@main` / adapters.
+- [x] Documented security: only allowlisted crates (or path deps under workspace).
+
+**Done notes (CAP-001)**
+
+- Core keyword `link` (lexer + package/solution parse).
+- AST: `LinkDecl` on `Package` / `Solution`; serializer round-trips.
+- Codegen: `crates/veil-codegen/src/links.rs` resolves allowlist + relative paths;
+  emits workspace path deps and `name.workspace = true` on shared / modules / `veil_bin`.
+- Docs: `docs/LANGUAGE.md` § `link`.
+- Tests: parser `test_parse_link_decls`, codegen `link_external_crates_in_cargo_toml`,
+  unit tests in `links.rs`.
 
 **Mission impact:** Without this, host always stays handwritten or only talks
 HTTP to a second process.
@@ -260,7 +269,7 @@ trampoline ≤50 lines.
 
 | ID | Title | Priority |
 |----|--------|----------|
-| **CAP-001** | External crate link from VEIL packages | P0 |
+| **CAP-001** | External crate link from VEIL packages | **Done** · P0 |
 | **CAP-002** | HttpHost port / host HTTP surface | P0 |
 | **CAP-003** | Generated Bus `register_all` | P0 |
 | **CAP-005** | Browser-ready UI emit (SPA bundle) | P0 |

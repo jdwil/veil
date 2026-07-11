@@ -28,6 +28,9 @@ pub struct Package {
     /// Layer/package references (`use ddd`).
     #[serde(default)]
     pub uses: Vec<UseImport>,
+    /// External Cargo crate links (`link veil_server path "..."`). CAP-001.
+    #[serde(default)]
+    pub links: Vec<LinkDecl>,
     pub items: Vec<TopLevelItem>,
     pub expose: Option<ExposeBlock>,
 }
@@ -53,6 +56,28 @@ pub struct Composition {
 pub struct UseImport {
     pub package_name: String,
     pub alias: Option<String>,
+    pub span: Span,
+}
+
+/// External Cargo dependency declared with `link` (CAP-001).
+///
+/// ```veil
+/// link veil_server
+/// link veil_local path "../../crates/veil-local" features "local"
+/// ```
+///
+/// Codegen emits path deps into generated `Cargo.toml`. Unallowlisted crates
+/// require an explicit relative `path`. Absolute paths are rejected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkDecl {
+    /// Crate name as written (`veil_server` or `veil-server`).
+    pub name: String,
+    /// Optional path relative to the generated workspace root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Optional Cargo features.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
     pub span: Span,
 }
 
@@ -82,6 +107,9 @@ pub struct Solution {
     /// Layer/package references (`use ddd`).
     #[serde(default)]
     pub uses: Vec<UseImport>,
+    /// External Cargo crate links (`link veil_server`). CAP-001.
+    #[serde(default)]
+    pub links: Vec<LinkDecl>,
     pub items: Vec<TopLevelItem>,
     /// Public API contract from `pkg` files' `expose` block (preserved when
     /// packages are lowered to Solution for check/codegen).
