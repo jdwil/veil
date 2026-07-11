@@ -19,8 +19,9 @@ Related: [`VCS_MODEL.md`](VCS_MODEL.md), [`STORAGE.md`](STORAGE.md),
 | **User / family layers** | Project-local `layers/` only |
 | **`examples/`** | Syntax demos + CI only — **not** the IDE default workspace |
 | **Runtime local** | Configured **projects directory**; each product is an **independent git repo** |
-| **IDE placement** | Launched **per project** from the runtime UX (one serve/session per product) |
-| **Multi-project UX** | **Runtime hub** lists/creates products; “Open in IDE” → new window/session each |
+| **Config** | `~/.veil/config.json` (`projects_dir`, …); first-run prompt; env overrides |
+| **IDE + runtime API** | **One kernel** (`veil-server`); runtime (VEIL) embeds it — see [`IDE_RUNTIME.md`](IDE_RUNTIME.md) |
+| **Multi-project** | **Single server process**, request-scoped `/api/p/{project}/…` (not N× processes) |
 
 ---
 
@@ -71,10 +72,10 @@ When the **platform runtime** runs locally, it is configured with a single
 
 | Setting | Meaning |
 |---------|---------|
-| Projects directory | Parent folder that contains product repos (`VEIL_PROJECTS_DIR`, default `~/veil-projects`) |
+| Projects directory | `config.projects_dir` or `VEIL_PROJECTS_DIR` (default `~/veil-projects`) |
 | New project (UX/CLI) | Create subdirectory + **`git init`** + scaffold (`veil projects create`) |
-| Open project | Runtime launches **`veil serve <path>`** for that product only |
-| Multi-open | Multiple **IDE windows/sessions** (one project each) — not tabs inside one IDE |
+| Open project | Viewer/runtime selects project on the **shared** multi-project server |
+| Multi-open | Concurrent requests with different `{project}` ids on **one** port |
 
 ### Why independent git repos
 
@@ -83,21 +84,21 @@ When the **platform runtime** runs locally, it is configured with a single
 - No “mixed multiproduct soup” in one working tree unless the user chooses a monorepo workspace later.
 - Runtime can list repos under the projects directory without parsing a giant composite tree.
 
-### IDE launched from the runtime
+### Runtime + IDE (one process)
 
 ```text
-┌─ Runtime UX ─────────────────────────────────────────────┐
-│  Projects dir: ~/dev/veil-projects                       │
+┌─ Runtime UX (VEIL) ──── embeds veil-server ──────────────┐
+│  config: ~/.veil/config.json  projects_dir=…             │
 │  [onboarding] [billing] [dlx_core]  [+ New]              │
 │       │                                                  │
-│       └─ Open in IDE ──► window: veil serve <path>       │
-│                          + viewer (that project only)    │
+│       └─ Open IDE view ──► same host :port               │
+│            /api/p/billing/ir  (request-scoped project)   │
 └──────────────────────────────────────────────────────────┘
 ```
 
-- Runtime owns list/create/open; IDE has **no multi-project tabs**.
-- CLI: `veil projects list|create|dir|path` · `export VEIL_PROJECTS_DIR=$HOME/dev/veil-projects`
-- IDE: `veil serve $VEIL_PROJECTS_DIR/onboarding` or `make serve PROJECT=…`
+- CLI single-project `veil serve <path>` remains for demos/dev convenience.
+- Product path: **runtime host** runs multi-project kernel (see `IDE_RUNTIME.md`).
+- CLI: `veil projects list|create|dir|path`
 
 ---
 
@@ -154,11 +155,13 @@ runtime** — see [`STORAGE.md`](STORAGE.md) and [`VCS_MODEL.md`](VCS_MODEL.md).
 
 ---
 
-## Env / config (target)
+## Env / config
 
 | Variable / key | Purpose |
 |----------------|---------|
-| `VEIL_PROJECTS_DIR` | Runtime projects directory (parent of product git repos) |
+| `~/.veil/config.json` | Durable prefs (`projects_dir`, `layers_dir`, …) |
+| `VEIL_DATA_DIR` | Root for config + local storage (default `~/.veil`) |
+| `VEIL_PROJECTS_DIR` | Session override of `projects_dir` |
 | `VEIL_LAYERS_DIR` | Core platform layers (install path) |
 | `VEIL_SHOW_CORE_LAYERS` | Language-dev: list core layers in the editor |
 | Project `veil.toml` | Name, paths, optional workspace members |

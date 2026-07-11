@@ -62,6 +62,7 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/layer/scaffold", post(post_layer_scaffold::<P>))
         .route("/api/project", get(get_active_project::<P>))
         .route("/api/projects", get(get_projects).post(post_create_project))
+        .route("/api/config", get(get_config))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -702,7 +703,7 @@ async fn get_files<P: SourceProvider>(State(state): State<SharedProvider<P>>) ->
 async fn get_active_project<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
 ) -> axum::response::Response {
-    let projects_dir = crate::project_layout::default_projects_dir();
+    let projects_dir = crate::config::resolve_projects_dir();
     let root = state.project_root();
     let body = if let Some(path) = root {
         let name = crate::project_layout::project_display_name(&path);
@@ -724,15 +725,16 @@ async fn get_active_project<P: SourceProvider>(
     }
 }
 
-/// List products under `VEIL_PROJECTS_DIR` (runtime hub; not multi-tab IDE).
+/// List products under configured projects dir (hub; same kernel for runtime).
 async fn get_projects() -> axum::response::Response {
-    let dir = crate::project_layout::default_projects_dir();
+    let dir = crate::config::resolve_projects_dir();
     let projects = match crate::project_layout::list_projects(&dir) {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     match serde_json::to_string(&serde_json::json!({
         "projects_dir": dir.to_string_lossy(),
+        "config_path": crate::config::config_path().to_string_lossy(),
         "projects": projects,
     })) {
         Ok(json) => json_response(json).into_response(),
@@ -745,9 +747,9 @@ struct CreateProjectRequest {
     name: String,
 }
 
-/// Create a product repo under the projects directory (runtime hub).
+/// Create a product repo under the configured projects directory.
 async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::response::Response {
-    let dir = crate::project_layout::default_projects_dir();
+    let dir = crate::config::resolve_projects_dir();
     match crate::project_layout::create_project(&dir, req.name.trim()) {
         Ok(info) => match serde_json::to_string(&info) {
             Ok(json) => (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/json")], json)
@@ -764,6 +766,24 @@ async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::res
             };
             (status, e).into_response()
         }
+    }
+}
+
+/// GET /api/config — public subset of user config (no secrets).
+async fn get_config() -> axum::response::Response {
+    let cfg = crate::config::load_config_or_default();
+    let body = serde_json::json!({
+        "version": cfg.version,
+        "projects_dir": cfg.projects_dir_path().to_string_lossy(),
+        "layers_dir": cfg.layers_dir_path().map(|p| p.to_string_lossy().to_string()),
+        "show_core_layers": cfg.show_core_layers,
+        "configured": cfg.configured,
+        "config_path": crate::config::config_path().to_string_lossy(),
+        "veil_home": crate::config::veil_home_dir().to_string_lossy(),
+    });
+    match serde_json::to_string(&body) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

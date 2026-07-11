@@ -10,11 +10,11 @@
 #   make projects       — list products under VEIL_PROJECTS_DIR
 #   make runtime        — transpile + compile the runtime
 #
-# Projects (runtime hub owns multi-product UX; IDE is one project per session):
-#   export VEIL_PROJECTS_DIR=$HOME/dev/veil-projects   # default: ~/veil-projects
-#   make projects
+# Projects (config: ~/.veil/config.json projects_dir; env overrides):
+#   veil projects list          # first run prompts for projects dir
 #   veil projects create my-app
-#   make serve PROJECT=$HOME/dev/veil-projects/my-app
+#   make serve PROJECT=$(veil projects path my-app)
+# Multi-project one-process host: docs/IDE_RUNTIME.md
 
 VEIL_BIN    := target/release/veil
 RUNTIME_SRC := runtime/src/runtime.veil
@@ -30,8 +30,8 @@ PID_DIR     := .veil-dev
 API_PID     := $(PID_DIR)/api.pid
 UI_PID      := $(PID_DIR)/ui.pid
 
-# Projects directory (runtime hub). Default ~/veil-projects.
-VEIL_PROJECTS_DIR ?= $(HOME)/veil-projects
+# Optional session override of config projects_dir.
+# VEIL_PROJECTS_DIR ?= $(HOME)/dev/veil-projects
 # Single project root for `make serve` (required for product IDE).
 PROJECT     ?=
 
@@ -55,7 +55,9 @@ export VEIL_MODEL_PROVIDER
 export VEIL_ACP_COMMAND
 export VEIL_ACP_ARGS
 export VEIL_ACP_CWD
+ifneq ($(origin VEIL_PROJECTS_DIR), undefined)
 export VEIL_PROJECTS_DIR
+endif
 # Only export model name when non-empty (avoids forcing --model kiro)
 ifneq ($(strip $(VEIL_MODEL_NAME)),)
 export VEIL_MODEL_NAME

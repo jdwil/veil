@@ -939,10 +939,18 @@ fn main() {
             }
         }
         Commands::Projects { action } => {
+            if let Err(e) = veil_server::ensure_config_interactive() {
+                eprintln!("Config error: {e}");
+                std::process::exit(1);
+            }
             let dir = veil_server::default_projects_dir();
             match action {
                 ProjectsCmd::Dir => {
                     println!("{}", dir.display());
+                    eprintln!(
+                        "# config: {}",
+                        veil_server::config_path().display()
+                    );
                 }
                 ProjectsCmd::List => {
                     if let Err(e) = veil_server::ensure_projects_dir(&dir) {
@@ -952,6 +960,7 @@ fn main() {
                     match veil_server::list_projects(&dir) {
                         Ok(projects) => {
                             println!("Projects directory: {}", dir.display());
+                            println!("Config: {}", veil_server::config_path().display());
                             if projects.is_empty() {
                                 println!("  (empty — create with: veil projects create <name>)");
                             } else {
@@ -964,9 +973,10 @@ fn main() {
                                 }
                             }
                             println!();
-                            println!("Open IDE for one project:");
+                            println!("IDE (single-project convenience):");
                             println!("  veil serve <path> -p 3001");
                             println!("  make serve PROJECT=<path>");
+                            println!("Runtime target: one multi-project server (docs/IDE_RUNTIME.md)");
                         }
                         Err(e) => {
                             eprintln!("{e}");
@@ -980,7 +990,7 @@ fn main() {
                         println!("  path: {}", info.path);
                         println!("  git:  {}", if info.is_git { "yes" } else { "no" });
                         println!();
-                        println!("Open IDE:");
+                        println!("Open IDE (single-project):");
                         println!("  veil serve {} -p 3001", info.path);
                         println!("  make serve PROJECT={}", info.path);
                     }
@@ -1004,7 +1014,17 @@ fn main() {
             port,
             show_core_layers,
         } => {
-            let show_core_layers = show_core_layers || env_flag_true("VEIL_SHOW_CORE_LAYERS");
+            // Durable prefs live in ~/.veil/config.json; first run may prompt.
+            let _cfg = match veil_server::ensure_config_interactive() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Config warning: {e} — continuing with defaults");
+                    veil_server::load_config_or_default()
+                }
+            };
+            let show_core_layers = show_core_layers
+                || env_flag_true("VEIL_SHOW_CORE_LAYERS")
+                || _cfg.show_core_layers;
             // Single-project scan: packages + project layers only (no monorepo layers/)
             let project_root = if file.is_dir() {
                 file.clone()

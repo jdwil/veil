@@ -23,17 +23,17 @@ veil serve .
 **Runtime local (product direction):**
 
 ```bash
-# Projects directory holds independent git repos (one product each)
-export VEIL_PROJECTS_DIR=$HOME/dev/veil-projects   # default: ~/veil-projects
+# First run writes ~/.veil/config.json (projects_dir, etc.)
 veil projects list
 veil projects create my-app
-# Runtime UX later: Open in IDE → spawn:
-veil serve "$VEIL_PROJECTS_DIR/my-app" -p 3001
-# or: make serve PROJECT=$VEIL_PROJECTS_DIR/my-app
+# Target: one multi-project host embedding veil-server (docs/IDE_RUNTIME.md)
+# Dev convenience still works:
+veil serve "$(veil projects path my-app)" -p 3001
 ```
 
-- New projects: subdirectory + **git init** under `VEIL_PROJECTS_DIR`.
-- Multi-product = **multiple IDE windows** (one `veil serve` per project), not tabs inside one IDE.
+- Config: `~/.veil/config.json` (`projects_dir`); env `VEIL_PROJECTS_DIR` overrides.
+- Runtime is **VEIL-authored** and must **reuse** `veil-server` APIs — not reimplement them.
+- Multi-product = **one process**, request-scoped project routes (`/api/p/{name}/…`).
 - `examples/` is demos/CI only (`make serve-examples`).
 
 No special platform daemon is required for a single-project dual loop. Local

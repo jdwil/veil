@@ -44,20 +44,11 @@ pub fn is_core_platform_layer(stem: &str) -> bool {
     )
 }
 
-/// Default projects directory: `VEIL_PROJECTS_DIR` or `~/veil-projects`.
+/// Default projects directory: env → `~/.veil/config.json` → `~/veil-projects`.
+///
+/// Prefer [`crate::config::resolve_projects_dir`] / [`crate::default_projects_dir`].
 pub fn default_projects_dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("VEIL_PROJECTS_DIR") {
-        return PathBuf::from(p);
-    }
-    home_dir()
-        .map(|h| h.join("veil-projects"))
-        .unwrap_or_else(|| PathBuf::from("veil-projects"))
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    crate::config::resolve_projects_dir()
 }
 
 /// Ensure the projects directory exists.

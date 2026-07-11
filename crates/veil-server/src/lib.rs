@@ -28,15 +28,26 @@ pub mod revision;
 pub mod acp;
 pub mod layer_edit;
 pub mod project_layout;
+pub mod config;
 
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;
 pub use provider::remote::RemoteHttpProvider;
 pub use api::build_router;
 pub use project_layout::{
-    collect_project_files, create_project, default_projects_dir, ensure_projects_dir,
-    is_core_platform_layer, list_projects, project_display_name, ActiveProjectInfo, ProjectInfo,
+    collect_project_files, create_project, ensure_projects_dir, is_core_platform_layer,
+    list_projects, project_display_name, ActiveProjectInfo, ProjectInfo,
 };
+pub use config::{
+    complete_first_run, config_path, ensure_config_interactive, load_config,
+    load_config_or_default, needs_first_run, resolve_projects_dir, save_config, veil_home_dir,
+    VeilConfig,
+};
+
+/// Projects directory: env → config.json → ~/veil-projects.
+pub fn default_projects_dir() -> std::path::PathBuf {
+    resolve_projects_dir()
+}
 pub use agent::{run_turn, AgentTurnRequest, AgentTurnResponse};
 pub use model::{
     complete_with_env, ChatMessage, CompleteRequest, CompleteResponse, ModelConfig, ModelProvider,
