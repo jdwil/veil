@@ -54,7 +54,7 @@ pkg dlx_core
       id: Id
       cohort_id: Id
       name: Str
-      filter_criteria: Json
+      filter_criteria: SegmentFilter
       last_evaluated_on: Opt<Dt>
       created_on: Dt
 
@@ -194,6 +194,10 @@ pkg dlx_core
         addr: Str
         @invariant(addr.matches(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"))
 
+      # Opaque filter payload until a segment-filter DSL exists
+      val SegmentFilter
+        expression: Str
+
       agg Tenant
         root
           id: Id
@@ -293,7 +297,7 @@ pkg dlx_core
         evaluation_interval_hours: Int
         last_evaluated_on: Opt<Dt>
         last_evaluation_error: Opt<Str>
-        filter_criteria: Json
+        filter_criteria: SegmentFilter
         member_table_columns: Json
         created_on: Dt
         updated_on: Dt

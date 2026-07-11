@@ -159,16 +159,29 @@ function collectCandidates(
   const top = flattenGroups(graph, direct);
   // Tree: include full subtrees under flattened tops so nest rules see
   // children of roots (e.g. Event under Aggregate under group domain).
+  // Exclude leaf IR noise (fields, actions) — domain model is about constructs.
+  const isConstructNode = (n: IrNode) =>
+    n.kind !== 'Field' &&
+    n.kind !== 'Action' &&
+    n.kind !== 'InterfaceMethod' &&
+    n.kind !== 'Inputs' &&
+    n.kind !== 'Return' &&
+    n.kind !== 'Step' &&
+    n.kind !== 'MatchArm' &&
+    n.kind !== 'MatchDecision' &&
+    n.kind !== 'ParallelGateway' &&
+    n.kind !== 'ErrorBoundary';
+
   if (layout === 'tree') {
     const seen = new Set<number>();
     const out: IrNode[] = [];
     for (const n of top) {
-      if (!seen.has(n.id)) {
+      if (!seen.has(n.id) && isConstructNode(n)) {
         seen.add(n.id);
         out.push(n);
       }
       for (const d of irDescendants(graph, n.id)) {
-        if (!seen.has(d.id)) {
+        if (!seen.has(d.id) && isConstructNode(d)) {
           seen.add(d.id);
           out.push(d);
         }
@@ -176,7 +189,7 @@ function collectCandidates(
     }
     return out.sort(sortBySpan);
   }
-  return top;
+  return top.filter(isConstructNode);
 }
 
 function defaultMembers(layout: string): string {

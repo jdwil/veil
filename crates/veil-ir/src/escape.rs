@@ -85,6 +85,7 @@ pub fn check_escape_hatches(sol: &Solution, registry: &LayerRegistry) -> Vec<Dia
     let mut diagnostics = Vec::new();
     let stub_names = stub_type_and_crate_names(registry);
     let construct_names = collect_construct_names(sol);
+    let free_fns = collect_free_fn_names(sol);
 
     // Expose block = explicit package boundary
     if let Some(expose) = find_expose(sol) {
@@ -104,9 +105,22 @@ pub fn check_escape_hatches(sol: &Solution, registry: &LayerRegistry) -> Vec<Dia
     for item in &sol.items {
         match item {
             TopLevelItem::Construct(c) => {
-                check_construct_escape(c, &stub_names, &construct_names, true, &mut diagnostics);
+                check_construct_escape(
+                    c,
+                    &stub_names,
+                    &construct_names,
+                    &free_fns,
+                    true,
+                    &mut diagnostics,
+                );
             }
             TopLevelItem::Function(f) => {
+                // Layer-provided coordinators (e.g. ddd `run_saga` / `unwind`) are
+                // platform substrate — do not flag their Json state bag or internal
+                // calls as package escape debt.
+                if f.layer_provided {
+                    continue;
+                }
                 let mut locals = HashSet::new();
                 for p in &f.params {
                     locals.insert(p.name.clone());
@@ -124,6 +138,7 @@ pub fn check_escape_hatches(sol: &Solution, registry: &LayerRegistry) -> Vec<Dia
                         &f.name,
                         &stub_names,
                         &construct_names,
+                        &free_fns,
                         &mut locals,
                         &mut diagnostics,
                     );
@@ -148,6 +163,7 @@ pub fn check_escape_hatches(sol: &Solution, registry: &LayerRegistry) -> Vec<Dia
                         &flow.name,
                         &stub_names,
                         &construct_names,
+                        &free_fns,
                         &mut diagnostics,
                     );
                 }
@@ -188,6 +204,16 @@ fn collect_construct_names(sol: &Solution) -> HashSet<String> {
     names
 }
 
+fn collect_free_fn_names(sol: &Solution) -> HashSet<String> {
+    sol.items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevelItem::Function(f) => Some(f.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn stub_type_and_crate_names(registry: &LayerRegistry) -> HashSet<String> {
     let mut s = HashSet::new();
     for stub in &registry.stubs {
@@ -219,6 +245,7 @@ fn check_construct_escape(
     c: &Construct,
     stub_names: &HashSet<String>,
     construct_names: &HashSet<String>,
+    free_fns: &HashSet<String>,
     at_boundary: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -314,7 +341,7 @@ fn check_construct_escape(
                 locals.insert(p.clone());
             }
             for e in &imp.body {
-                check_expr_escape(e, &c.name, stub_names, construct_names, &mut locals, diagnostics);
+                check_expr_escape(e, &c.name, stub_names, construct_names, free_fns, &mut locals, diagnostics);
             }
         }
     }
@@ -325,7 +352,7 @@ fn check_construct_escape(
             locals.insert(p.name.clone());
         }
         for e in &fndef.body {
-            check_expr_escape(e, &c.name, stub_names, construct_names, &mut locals, diagnostics);
+            check_expr_escape(e, &c.name, stub_names, construct_names, free_fns, &mut locals, diagnostics);
         }
     }
 
@@ -337,6 +364,7 @@ fn check_construct_escape(
             &c.name,
             stub_names,
             construct_names,
+            free_fns,
             &mut flow_locals,
             diagnostics,
         );
@@ -347,6 +375,7 @@ fn check_construct_escape(
             &c.name,
             stub_names,
             construct_names,
+            free_fns,
             &mut flow_locals,
             diagnostics,
         );
@@ -354,7 +383,7 @@ fn check_construct_escape(
 
     for child in &c.children {
         // Nested constructs are not package root boundary unless exported
-        check_construct_escape(child, stub_names, construct_names, false, diagnostics);
+        check_construct_escape(child, stub_names, construct_names, free_fns, false, diagnostics);
     }
 }
 
@@ -363,6 +392,7 @@ fn check_flow_step_escape(
     location: &str,
     stub_names: &HashSet<String>,
     construct_names: &HashSet<String>,
+    free_fns: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut locals = HashSet::new();
@@ -371,6 +401,7 @@ fn check_flow_step_escape(
         location,
         stub_names,
         construct_names,
+        free_fns,
         &mut locals,
         diagnostics,
     );
@@ -381,17 +412,18 @@ fn check_flow_step_escape_mut(
     location: &str,
     stub_names: &HashSet<String>,
     construct_names: &HashSet<String>,
+    free_fns: &HashSet<String>,
     locals: &mut HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match step {
         FlowStep::Step(sd) => {
             for e in &sd.body {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             for sb in &sd.sub_blocks {
                 for e in &sb.body {
-                    check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                    check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
                 }
             }
         }
@@ -402,16 +434,17 @@ fn check_flow_step_escape_mut(
                     location,
                     stub_names,
                     construct_names,
+                    free_fns,
                     locals,
                     diagnostics,
                 );
             }
         }
         FlowStep::Match(m) => {
-            check_expr_escape(&m.expr, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(&m.expr, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for arm in &m.arms {
                 for e in &arm.body {
-                    check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                    check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
                 }
             }
         }
@@ -423,6 +456,7 @@ fn check_expr_escape(
     location: &str,
     stub_names: &HashSet<String>,
     construct_names: &HashSet<String>,
+    free_fns: &HashSet<String>,
     locals: &mut HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -433,14 +467,15 @@ fn check_expr_escape(
                 location,
                 stub_names,
                 construct_names,
+                free_fns,
                 locals,
                 diagnostics,
             );
             for a in &call.args {
-                check_expr_escape(a, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(a, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             if let Some(r) = &call.receiver {
-                check_expr_escape(r, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(r, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::Action(a) => {
@@ -458,107 +493,108 @@ fn check_expr_escape(
                     location,
                     stub_names,
                     construct_names,
+                    free_fns,
                     locals,
                     diagnostics,
                 );
             }
             for a in &a.args {
-                check_expr_escape(a, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(a, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             for (_, e) in &a.named_args {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             if let Some(c) = &a.condition {
-                check_expr_escape(c, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(c, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::Assign(name, e, _) | Expr::MutAssign(name, e, _) => {
-            check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             locals.insert(name.clone());
         }
         Expr::Return(e) | Expr::Await(e) | Expr::Try(e) | Expr::FieldAccess(e, _)
         | Expr::Cast(e, _) | Expr::UnaryOp(UnaryOpExpr { expr: e, .. }) => {
-            check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
         }
         Expr::LetPattern(pat, e, _) => {
-            check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             bind_pattern_locals(pat, locals);
         }
         Expr::BinaryOp(op) => {
-            check_expr_escape(&op.left, location, stub_names, construct_names, locals, diagnostics);
-            check_expr_escape(&op.right, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(&op.left, location, stub_names, construct_names, free_fns, locals, diagnostics);
+            check_expr_escape(&op.right, location, stub_names, construct_names, free_fns, locals, diagnostics);
         }
         Expr::IfExpr(ie) => {
-            check_expr_escape(&ie.condition, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(&ie.condition, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for e in &ie.then_body {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             if let Some(eb) = &ie.else_body {
                 for e in eb {
-                    check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                    check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
                 }
             }
         }
         Expr::Match(s, arms) => {
-            check_expr_escape(s, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(s, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for arm in arms {
                 for e in &arm.body {
-                    check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                    check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
                 }
             }
         }
         Expr::ForLoop { iterable, body, .. } => {
-            check_expr_escape(iterable, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(iterable, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for e in body {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::WhileLoop { condition, body } => {
-            check_expr_escape(condition, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(condition, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for e in body {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::Loop(body) => {
             for e in body {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::Closure { body, .. } => {
             for e in body {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::Tuple(items) | Expr::ArrayLit(items) => {
             for e in items {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::Index(a, b) => {
-            check_expr_escape(a, location, stub_names, construct_names, locals, diagnostics);
-            check_expr_escape(b, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(a, location, stub_names, construct_names, free_fns, locals, diagnostics);
+            check_expr_escape(b, location, stub_names, construct_names, free_fns, locals, diagnostics);
         }
         Expr::StructLit(_, fields) | Expr::StructUpdate { fields, .. } => {
             if let Expr::StructUpdate { base, .. } = expr {
-                check_expr_escape(base, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(base, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             for (_, e) in fields {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::StringInterp(parts) => {
             for p in parts {
                 if let StringPart::Expr(e) = p {
-                    check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                    check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
                 }
             }
         }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
-                check_expr_escape(s, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(s, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             if let Some(e) = end {
-                check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         Expr::IfLet {
@@ -567,20 +603,20 @@ fn check_expr_escape(
             else_body,
             ..
         } => {
-            check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for x in then_body {
-                check_expr_escape(x, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(x, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
             if let Some(eb) = else_body {
                 for x in eb {
-                    check_expr_escape(x, location, stub_names, construct_names, locals, diagnostics);
+                    check_expr_escape(x, location, stub_names, construct_names, free_fns, locals, diagnostics);
                 }
             }
         }
         Expr::WhileLet { expr: e, body, .. } => {
-            check_expr_escape(e, location, stub_names, construct_names, locals, diagnostics);
+            check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for x in body {
-                check_expr_escape(x, location, stub_names, construct_names, locals, diagnostics);
+                check_expr_escape(x, location, stub_names, construct_names, free_fns, locals, diagnostics);
             }
         }
         _ => {}
@@ -592,6 +628,7 @@ fn flag_external_call(
     location: &str,
     stub_names: &HashSet<String>,
     construct_names: &HashSet<String>,
+    free_fns: &HashSet<String>,
     locals: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -613,6 +650,10 @@ fn flag_external_call(
     }
     // Known construct
     if construct_names.contains(target) {
+        return;
+    }
+    // Free function (layer-declared coordinators, package fns)
+    if free_fns.contains(target) {
         return;
     }
     // Has stub coverage

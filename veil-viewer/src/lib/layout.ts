@@ -10,13 +10,28 @@ const FALLBACK_NODE_HEIGHT = 120;
 // Minimum padding added around measured node sizes to prevent tight packing
 const NODE_PADDING = 10;
 
+/** Preferred left-to-right order for domain / infrastructure type columns. */
+const TYPE_ORDER = [
+  'Aggregate',
+  'Entity',
+  'ValueObject',
+  'Event',
+  'Command',
+  'Query',
+  'DomainService',
+  'Repository',
+  'Port',
+  'Adapter',
+  'Handler',
+  'Service',
+  'Orchestrator',
+  'Group',
+  'Other',
+];
+
 /**
  * Measures actual rendered node dimensions from the DOM.
  * Svelte Flow renders nodes with `data-id` attributes.
- * Returns a Map of nodeId → { width, height }.
- *
- * This is THE critical piece — without real measurements, ELK will
- * overlap nodes because it doesn't know their actual rendered size.
  */
 export function measureNodesFromDOM(
   nodes: Node[],
@@ -29,18 +44,15 @@ export function measureNodesFromDOM(
     let height = FALLBACK_NODE_HEIGHT;
 
     if (containerEl) {
-      // Svelte Flow renders each node in a wrapper with data-id
       const nodeEl = containerEl.querySelector(
         `[data-id="${node.id}"]`
       ) as HTMLElement | null;
 
       if (nodeEl) {
         const rect = nodeEl.getBoundingClientRect();
-        // Use ceil to avoid sub-pixel overlap issues
         width = Math.ceil(rect.width) + NODE_PADDING;
         height = Math.ceil(rect.height) + NODE_PADDING;
       } else {
-        // Node not yet rendered — use Svelte Flow's measured values if available
         width = (node as any).measured?.width ?? node.width ?? FALLBACK_NODE_WIDTH;
         height = (node as any).measured?.height ?? node.height ?? FALLBACK_NODE_HEIGHT;
       }
@@ -54,12 +66,6 @@ export function measureNodesFromDOM(
 
 /**
  * Lay out nodes using ELK.js for flow-type views (services, steps, methods).
- * Supports optional DOM measurement for accurate sizing.
- *
- * @param nodes - The nodes to layout
- * @param edges - Edges connecting nodes
- * @param direction - 'TB' (top-bottom) or 'LR' (left-right)
- * @param containerEl - Optional DOM container for node measurement
  */
 export async function layoutNodes(
   nodes: Node[],
@@ -69,6 +75,11 @@ export async function layoutNodes(
 ): Promise<Node[]> {
   if (nodes.length === 0) return [];
 
+  // No edges → column-by-type is clearer than ELK layered with empty graph
+  if (edges.length === 0) {
+    return layoutByType(nodes, containerEl);
+  }
+
   const elkDirection = direction === 'LR' ? 'RIGHT' : 'DOWN';
   const measurements = measureNodesFromDOM(nodes, containerEl);
 
@@ -77,15 +88,14 @@ export async function layoutNodes(
     layoutOptions: {
       'elk.algorithm': 'layered',
       'elk.direction': elkDirection,
-      'elk.spacing.nodeNode': '50',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '100',
-      // Crossing minimization for cleaner diagrams
+      'elk.spacing.nodeNode': '60',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '120',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-      // Good node placement for variable-sized nodes
-      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-      // Prevent edge/node overlap
-      'elk.layered.spacing.edgeNodeBetweenLayers': '40',
-      'elk.layered.spacing.edgeEdgeBetweenLayers': '20',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '50',
+      'elk.layered.spacing.edgeEdgeBetweenLayers': '25',
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
     },
     children: nodes.map((node) => {
       const size = measurements.get(node.id)!;
@@ -115,18 +125,14 @@ export async function layoutNodes(
       position: positionMap.get(node.id) ?? node.position,
     }));
   } catch (err) {
-    console.error('ELK layout failed, falling back to grid:', err);
-    return fallbackGrid(nodes);
+    console.error('ELK layout failed, falling back to type columns:', err);
+    return layoutByType(nodes, containerEl);
   }
 }
 
 /**
- * Lay out nodes using ELK.js for non-flow views (domain groups, bounded contexts).
- * Groups nodes by type and arranges them in columns with proper spacing.
- * Supports optional DOM measurement for accurate sizing.
- *
- * @param nodes - The nodes to layout
- * @param containerEl - Optional DOM container for node measurement
+ * Column layout by construct type (Aggregate | Entity | …).
+ * Deterministic, no ELK — avoids grid-of-death and overlapping type columns.
  */
 export async function layoutByType(
   nodes: Node[],
@@ -136,7 +142,6 @@ export async function layoutByType(
 
   const measurements = measureNodesFromDOM(nodes, containerEl);
 
-  // Group nodes by their display type (subkind or kind) for partitioning
   const groups: Record<string, Node[]> = {};
   for (const node of nodes) {
     const type = String(node.data.subkind ?? node.data.kind ?? 'Other');
@@ -144,63 +149,43 @@ export async function layoutByType(
     groups[type].push(node);
   }
 
-  // Assign partition indices so ELK groups same-type nodes together
-  let partitionIndex = 0;
-  const partitionedChildren: any[] = [];
-  for (const [_, groupNodes] of Object.entries(groups)) {
-    for (const node of groupNodes) {
+  // Stable column order: known DDD/infra types first, then alpha
+  const types = Object.keys(groups).sort((a, b) => {
+    const ai = TYPE_ORDER.indexOf(a);
+    const bi = TYPE_ORDER.indexOf(b);
+    const ao = ai === -1 ? 500 : ai;
+    const bo = bi === -1 ? 500 : bi;
+    if (ao !== bo) return ao - bo;
+    return a.localeCompare(b);
+  });
+
+  // Sort within type by name for stability
+  for (const t of types) {
+    groups[t].sort((a, b) =>
+      String(a.data.label ?? a.id).localeCompare(String(b.data.label ?? b.id))
+    );
+  }
+
+  const GAP_X = 56;
+  const GAP_Y = 36;
+  const positions = new Map<string, { x: number; y: number }>();
+
+  let x = 24;
+  for (const type of types) {
+    const col = groups[type];
+    let y = 24;
+    let colW = 0;
+    for (const node of col) {
       const size = measurements.get(node.id)!;
-      partitionedChildren.push({
-        id: node.id,
-        width: size.width,
-        height: size.height,
-        layoutOptions: {
-          'elk.partitioning.partition': String(partitionIndex),
-        },
-      });
+      colW = Math.max(colW, size.width);
+      positions.set(node.id, { x, y });
+      y += size.height + GAP_Y;
     }
-    partitionIndex++;
+    x += colW + GAP_X;
   }
 
-  const elkGraph = {
-    id: 'root',
-    layoutOptions: {
-      'elk.algorithm': 'layered',
-      'elk.direction': 'RIGHT',
-      'elk.spacing.nodeNode': '40',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '80',
-      'elk.partitioning.activate': 'true',
-      // Better placement for variable-sized grouped nodes
-      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-    },
-    children: partitionedChildren,
-    edges: [] as any[],
-  };
-
-  try {
-    const layout = await elk.layout(elkGraph);
-
-    const positionMap = new Map<string, { x: number; y: number }>();
-    for (const child of layout.children ?? []) {
-      positionMap.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 });
-    }
-
-    return nodes.map((node) => ({
-      ...node,
-      position: positionMap.get(node.id) ?? node.position,
-    }));
-  } catch (err) {
-    console.error('ELK partitioned layout failed, falling back to grid:', err);
-    return fallbackGrid(nodes);
-  }
-}
-
-/** Simple fallback grid layout if ELK fails */
-function fallbackGrid(nodes: Node[]): Node[] {
-  const cols = Math.ceil(Math.sqrt(nodes.length));
-  return nodes.map((node, i) => ({
+  return nodes.map((node) => ({
     ...node,
-    position: { x: (i % cols) * 300, y: Math.floor(i / cols) * 150 },
+    position: positions.get(node.id) ?? node.position,
   }));
 }

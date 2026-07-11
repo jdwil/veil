@@ -585,7 +585,8 @@
         const itemIds = new Set(allItems.map((c) => c.id));
         const tabNodes = toFlowNodes(graph, allItems, itemIds);
         nodes = await layoutByType(tabNodes, graphContainerEl);
-        edges = edgesAmong(graph, itemIds);
+        // Type columns are readable without cross-type association edges
+        edges = [];
         return;
       }
 
@@ -662,10 +663,17 @@
       if (projected.layout === 'flow') {
         const dir = projected.flowDirection ?? 'LR';
         nodes = await layoutNodes(flowNodes, flowEdges, dir, graphContainerEl);
+        edges = flowEdges;
+      } else if (projected.layout === 'tree' && projected.nestEdges?.length) {
+        // Nest hierarchy only — cleaner than all association edges
+        const nestOnly = flowEdges.filter((e) => String(e.id).startsWith('nest-') || String(e.id).startsWith('bucket-'));
+        nodes = await layoutNodes(flowNodes, nestOnly, 'TB', graphContainerEl);
+        edges = nestOnly;
       } else {
+        // flat / tree orphans: columns by Aggregate | Entity | ValueObject | …
         nodes = await layoutByType(flowNodes, graphContainerEl);
+        edges = [];
       }
-      edges = flowEdges;
       return;
     }
 

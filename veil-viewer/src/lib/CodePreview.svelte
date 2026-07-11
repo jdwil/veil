@@ -108,10 +108,11 @@
   .code-preview {
     position: fixed;
     right: 0;
-    top: 60px;
-    /* Leave room for bottom ReviewDock so the vertical toggle doesn't steal clicks */
-    bottom: max(140px, 22vh);
-    z-index: 10;
+    /* Below top bar; stay clear of bottom dock */
+    top: 56px;
+    bottom: max(160px, 24vh);
+    /* Below diagnostics (30) and property editor; still above canvas */
+    z-index: 15;
     display: flex;
     flex-direction: row;
     align-items: flex-start;
@@ -131,7 +132,8 @@
     font-size: 12px;
     writing-mode: vertical-rl;
     text-orientation: mixed;
-    margin-top: 20px;
+    /* Push down so it doesn't sit on the diagnostics badge row */
+    margin-top: 48px;
   }
 
   .toggle-btn:hover {
