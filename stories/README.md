@@ -81,30 +81,30 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **DSL-005–008** | Layer topology, palette, props, structured ops | [110](110-layer-dsl-ide.md) |
 | **DSL-009–011** | Presentation/prompts, diff, agent layer tools | [110](110-layer-dsl-ide.md) |
 
-### P1 — onboarding & projects hub (implement next)
+### P1 — pure VEIL runtime (product goal)
 
 | ID | Theme | File |
 |----|--------|------|
-| **CFG-001–003** | Config schema; first-run prompt; auto-create dirs | [120](120-projects-config-init.md) |
-| **INIT-001–002** | `veil init`; align `projects create` | [120](120-projects-config-init.md) |
-| **INIT-003–004** | Serve ensure dirs; scaffold `.gitignore` | [120](120-projects-config-init.md) |
-| **HUB-001–002** | `veil projects` + HTTP hub parity | [120](120-projects-config-init.md) |
-| **CFG-004–005** | `GET /api/config`; reconfigure projects_dir | [120](120-projects-config-init.md) |
+| **PVR-000–001** | Lock DoD + capability matrix | [140](140-pure-veil-runtime.md) |
+| **PVR-020** | page/layout raw templates (language) | [140](140-pure-veil-runtime.md) |
+| **PVR-010** | Host from VEIL `@main` | [140](140-pure-veil-runtime.md) |
+| **PVR-011 / 015 / 017** | Live storage/tools; no stub default | [140](140-pure-veil-runtime.md) |
+| **PVR-021–025** | Generated shell is the UI; IDE embed | [140](140-pure-veil-runtime.md) |
+| **PVR-030–032** | One port; `make pure-runtime`; delete HTML shell | [140](140-pure-veil-runtime.md) |
 
 ### P2 — trust & daily driver
 
 | ID | Theme | File |
 |----|--------|------|
-| **MP-001–004** | Multi-project one process; viewer prefix; runtime embeds kernel | [120](120-projects-config-init.md) |
+| **PVR-012–014 / 016** | Git, compile, local deploy, agents | [140](140-pure-veil-runtime.md) |
+| **PVR-040–041** | Registry + artifacts | [140](140-pure-veil-runtime.md) |
 | **DSL-012–014** | Team consumer mode, scaffold, impact view | [110](110-layer-dsl-ide.md) |
 | **PAR-015** | Spike capability honesty (signature vs body) | [90](90-parity-future.md) |
 | **AGT-013** | Agent write path allowlist | [100](100-ide-agent.md) |
 | **AGT-014** | Plan-only agent mode | [100](100-ide-agent.md) |
 | **AGT-015** | Token budgets on `/api/context` | [100](100-ide-agent.md) |
 | **AGT-017** | Remote structured EditOp | [100](100-ide-agent.md) |
-| **RT-021** | Generated bin crate layout | [70](70-runtime-harness.md) |
-| **RT-022** | Bus + HTTP as VEIL packages | [70](70-runtime-harness.md) |
-| **RT-023** | `provided_by: runtime` without handwritten host | [70](70-runtime-harness.md) |
+| **RT-021–023** | Bin layout, Bus package, provided_by | [70](70-runtime-harness.md) |
 
 ### P3 — parity, cloud, polish
 
