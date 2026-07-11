@@ -519,6 +519,17 @@ impl LayerRegistry {
         let raw = parse_layer_file(&content, name)
             .map_err(|e| format!("layer '{}': {}", name, e))?;
         self.merge_and_resolve(raw)?;
+        // INV-002 / INV-006: same policy install as load_content (load_layer is the
+        // normal path for package `use` lines; without this, identity_policy never
+        // reaches the IR builder).
+        if let Some(pol) = parse_constructor_policy(&content) {
+            self.constructor_policy = pol;
+        } else if name == "rust" && self.constructor_policy.auto_fields.is_empty() {
+            self.constructor_policy = ConstructorPolicy::rust_defaults();
+        }
+        if let Some(id_pol) = parse_identity_policy(&content) {
+            self.identity_policy = id_pol;
+        }
         Ok(())
     }
 

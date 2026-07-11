@@ -32,10 +32,14 @@ pkg ddd v1
         layout tree
         members by_host_children
         roots Aggregate
-        nest Entity under Aggregate when declared_in_parent
-        nest ValueObject under Aggregate when declared_in_parent
+        # AST nesting first (evt/cmd declared inside agg), then FK ownership via identity_policy
         nest Event under Aggregate when declared_in_parent
         nest Command under Aggregate when declared_in_parent
+        nest Entity under Aggregate when declared_in_parent
+        nest ValueObject under Aggregate when declared_in_parent
+        nest Entity under Aggregate when references
+        nest ValueObject under Aggregate when references
+        nest Aggregate under Aggregate when references
         orphan_policy list
 
   construct Orchestrator
@@ -328,11 +332,11 @@ pkg ddd v1
     ## IDE views (presentation)
     Drilling into a `ctx` offers two views (layer-declared, not hardcoded):
     - **Layers** — tabs for domain / application / infrastructure / presentation
-    - **Domain model** — Aggregates as roots; nest `evt`/`cmd` (and `ent`/`val`
-      when placed under the aggregate in source) under their owning Aggregate.
-      Domain types sitting only under `group domain` appear as top-level orphans
-      in the model view. Prefer nesting events and commands under the aggregate
-      they belong to for the best model-tree review experience.
+    - **Domain model** — Aggregates as roots. Nest `evt`/`cmd` when declared under
+      an aggregate in source; nest freestyle `ent`/`val` and child aggregates via
+      FK ownership (`*_id` fields → IR `References` edges, opt-in identity_policy).
+      The canvas shows the full domain with ownership edges; selecting a node
+      highlights related constructs and dims the rest.
 
     ## Domain Group
     Contains the pure domain model:

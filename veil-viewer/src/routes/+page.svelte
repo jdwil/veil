@@ -594,6 +594,14 @@
       tabs = [];
       activeTab = null;
       let displayNodes = [...projected.nodes];
+      // Domain model: show nested ownership children too (segregated by nest edges),
+      // not only roots — user wants the full domain visible without drilling.
+      if (projected.layout === 'tree' && projected.nestEdges?.length) {
+        for (const { child } of projected.nestEdges) {
+          const n = graph.nodes.find((x) => x.id === child);
+          if (n && !displayNodes.some((d) => d.id === n.id)) displayNodes.push(n);
+        }
+      }
       // bucket orphans: synthetic non-editable folder + orphan children (LAY-007)
       if (
         projected.layout === 'tree' &&
@@ -611,18 +619,16 @@
       // Nest edges (hierarchy) for tree view
       if (projected.layout === 'tree' && projected.nestEdges?.length) {
         for (const { child, parent } of projected.nestEdges) {
-          if (itemIds.has(child) || itemIds.has(parent)) {
-            // Nested children are not always on canvas (drill); only edge if both visible
-            if (itemIds.has(child) && itemIds.has(parent)) {
-              flowEdges.push({
-                id: `nest-${parent}-${child}`,
-                source: String(parent),
-                target: String(child),
-                animated: false,
-                style: 'stroke: var(--veil-text-faint); stroke-width: 1.5; stroke-dasharray: 3 3;',
-                label: '',
-              });
-            }
+          if (itemIds.has(child) && itemIds.has(parent)) {
+            flowEdges.push({
+              id: `nest-${parent}-${child}`,
+              source: String(parent),
+              target: String(child),
+              animated: false,
+              style: 'stroke: var(--veil-text-dim); stroke-width: 1.5; stroke-dasharray: 3 3;',
+              label: 'owns',
+              labelStyle: 'font-size: 9px; fill: var(--veil-text-faint);',
+            });
           }
         }
       }
@@ -828,10 +834,21 @@
     }
   }
 
-  /** Add/remove reference edges based on which node is selected */
+  /** Add/remove reference edges + focus related domain nodes when selected. */
   function updateReferenceEdges(graph: IrGraph, selectedId: string | null) {
-    // Remove any existing reference edges
-    edges = edges.filter(e => !e.id.startsWith('ref-'));
+    // Remove any existing reference edges / clear focus styling
+    edges = edges.filter((e) => !String(e.id).startsWith('ref-'));
+    nodes = nodes.map((n) => ({
+      ...n,
+      style: {
+        ...(typeof n.style === 'object' && n.style ? n.style : {}),
+        opacity: 1,
+      },
+      class: String(n.class ?? '')
+        .split(/\s+/)
+        .filter((c) => c && c !== 'focus-related' && c !== 'focus-dim')
+        .join(' '),
+    }));
 
     if (!selectedId) return;
 
@@ -843,11 +860,55 @@
 
     // Find reference edges that touch the selected node
     const nodeId = Number(selectedId);
-    const visibleIds = new Set(nodes.map(n => Number(n.id)));
+    const visibleIds = new Set(nodes.map((n) => Number(n.id)));
+
+    // Related set: selected + References neighbors + nest owns edges on canvas
+    const related = new Set<number>([nodeId]);
+    for (const e of graph.edges) {
+      if (e.kind !== 'References') continue;
+      if (e.from === nodeId) related.add(e.to);
+      if (e.to === nodeId) related.add(e.from);
+    }
+    for (const e of edges) {
+      const id = String(e.id);
+      if (!id.startsWith('nest-') && !id.startsWith('bucket-')) continue;
+      const s = Number(e.source);
+      const t = Number(e.target);
+      if (s === nodeId || t === nodeId) {
+        related.add(s);
+        related.add(t);
+      }
+    }
+
+    // Dim unrelated nodes so the domain stays visible but focus is clear
+    if (related.size > 1 || nodes.length > 1) {
+      nodes = nodes.map((n) => {
+        const id = Number(n.id);
+        const isRelated = related.has(id) || n.id === selectedId;
+        return {
+          ...n,
+          style: {
+            ...(typeof n.style === 'object' && n.style ? n.style : {}),
+            opacity: isRelated ? 1 : 0.28,
+            transition: 'opacity 0.15s ease',
+          },
+          class: [
+            String(n.class ?? '')
+              .split(/\s+/)
+              .filter((c) => c && c !== 'focus-related' && c !== 'focus-dim')
+              .join(' '),
+            isRelated ? 'focus-related' : 'focus-dim',
+          ]
+            .filter(Boolean)
+            .join(' '),
+        };
+      });
+    }
+
     const refEdges: Edge[] = graph.edges
-      .filter(e => e.kind === 'References')
-      .filter(e => (e.from === nodeId || e.to === nodeId))
-      .filter(e => visibleIds.has(e.from) && visibleIds.has(e.to))
+      .filter((e) => e.kind === 'References')
+      .filter((e) => e.from === nodeId || e.to === nodeId)
+      .filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to))
       .map((e, i) => {
         const sourcePos = nodePositions.get(String(e.from));
         const targetPos = nodePositions.get(String(e.to));
@@ -873,8 +934,10 @@
           target: String(e.to),
           sourceHandle,
           targetHandle,
-          animated: false,
+          animated: true,
           style: getEdgeStyle('References'),
+          label: 'ref',
+          labelStyle: 'font-size: 9px; fill: #60a5fa;',
         };
       });
 

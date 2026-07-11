@@ -96,6 +96,12 @@ enum Commands {
         /// Port to serve on
         #[arg(short, long, default_value = "3001")]
         port: u16,
+        /// Include core platform `.layer` files (ddd, base, …) in the IDE file list.
+        /// Default: hide them (userland packages + family/client layers only).
+        /// Core layers remain loadable via `use` for packages.
+        /// Env: `VEIL_SHOW_CORE_LAYERS=1` is equivalent.
+        #[arg(long, default_value_t = false)]
+        show_core_layers: bool,
     },
     /// Serialize: parse then re-emit VEIL source (round-trip test)
     Emit {
@@ -124,6 +130,70 @@ fn registry_for(file: &std::path::Path) -> LayerRegistry {
             std::process::exit(1);
         }
     }
+}
+
+fn env_flag_true(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let t = v.trim();
+            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Core platform layers shipped with VEIL (language design, not userland DSL).
+/// Hidden from the serve file picker by default; still resolved via `use`.
+fn is_core_platform_layer(stem: &str) -> bool {
+    matches!(
+        stem,
+        "base"
+            | "ddd"
+            | "di"
+            | "functional"
+            | "rust"
+            | "harness"
+            | "ui"
+            | "svelte5"
+            | "transports"
+            | "rig"
+            | "aws_storage"
+    )
+}
+
+/// Prefer `layers/<name>.layer` when the same stem also appears under the serve dir.
+fn dedup_layer_files(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    use std::collections::HashMap;
+    let mut by_stem: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let mut non_layers: Vec<PathBuf> = Vec::new();
+    for p in files {
+        if p.extension().and_then(|e| e.to_str()) == Some("layer") {
+            let stem = p
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            by_stem.entry(stem).or_default().push(p);
+        } else {
+            non_layers.push(p);
+        }
+    }
+    let mut layers: Vec<PathBuf> = Vec::new();
+    for (_stem, mut paths) in by_stem {
+        if paths.len() == 1 {
+            layers.push(paths.pop().unwrap());
+            continue;
+        }
+        // Prefer path containing `/layers/` or ending with `layers/<file>`
+        paths.sort_by_key(|p| {
+            let s = p.to_string_lossy();
+            let in_layers = s.contains("/layers/") || s.starts_with("layers/");
+            // false sorts before true for bool? prefer in_layers first → reverse
+            (!in_layers, s.to_string())
+        });
+        layers.push(paths.remove(0));
+    }
+    non_layers.extend(layers);
+    non_layers
 }
 
 /// UX-010 / DSL-002: whether a loaded file may be written via the IDE edit API.
@@ -898,7 +968,12 @@ fn main() {
                 }
             }
         }
-        Commands::Serve { file, port } => {
+        Commands::Serve {
+            file,
+            port,
+            show_core_layers,
+        } => {
+            let show_core_layers = show_core_layers || env_flag_true("VEIL_SHOW_CORE_LAYERS");
             // Collect .veil packages and .layer DSLs (DSL-001)
             let mut project_files: Vec<PathBuf> = if file.is_dir() {
                 let mut found: Vec<PathBuf> = std::fs::read_dir(&file)
@@ -937,6 +1012,28 @@ fn main() {
                                 }
                             }
                         }
+                    }
+                }
+                // Dedup layers by stem: prefer `layers/<name>.layer` over local copies
+                found = dedup_layer_files(found);
+                // Hide core platform layers from the IDE file list unless opted in
+                if !show_core_layers {
+                    let before = found.len();
+                    found.retain(|p| {
+                        if p.extension().and_then(|e| e.to_str()) != Some("layer") {
+                            return true;
+                        }
+                        let stem = p
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("");
+                        !is_core_platform_layer(stem)
+                    });
+                    let hidden = before - found.len();
+                    if hidden > 0 {
+                        eprintln!(
+                            "  (hiding {hidden} core platform layer(s); pass --show-core-layers or VEIL_SHOW_CORE_LAYERS=1 to edit them)"
+                        );
                     }
                 }
                 // Prefer packages first in list (stable UX), then layers

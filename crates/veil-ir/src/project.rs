@@ -12,8 +12,9 @@
 //! | `same_source_group` | Child and parent share nearest Group ancestor name |
 //! | `always` | Attach under a parent-type candidate (deterministic pick) |
 //! | `implements` | IR `Implements` edge between child and parent (either dir) |
+//! | `references` | IR `References` edge from child → parent (FK / ownership) |
 //!
-//! **Type membership** (field-type links) is **not** in IR yet — deferred; see
+//! Field-type membership beyond `References` is deferred; see
 //! `docs/PRESENTATION.md` §6.4.
 
 use crate::presentation::ViewSpec;
@@ -32,6 +33,7 @@ pub const NEST_WHENS: &[&str] = &[
     "same_source_group",
     "always",
     "implements",
+    "references",
 ];
 
 /// Minimal node for projection tests / shared logic.
@@ -45,6 +47,8 @@ pub struct ProjectInputNode {
     /// Core Group shape — organizational bucket.
     pub is_group: bool,
     pub layer_provided: bool,
+    /// Optional `fields` property (`name: Type, …`) for FK parent preference.
+    pub fields: String,
 }
 
 /// Edge used by nest `when implements` (and future edge predicates).
@@ -378,6 +382,43 @@ fn implements_edge(edges: &[ProjectEdge], a: u32, b: u32) -> bool {
     })
 }
 
+/// FK / ownership: References edge from child → parent (field like `cohort_id`).
+fn references_edge(edges: &[ProjectEdge], child: u32, parent: u32) -> bool {
+    edges.iter().any(|e| {
+        e.kind.eq_ignore_ascii_case("References") && e.from == child && e.to == parent
+    })
+}
+
+/// Prefer parent whose PascalCase name matches a `snake_case` + suffix field on child.
+fn field_name_prefers_parent(child_fields: &str, parent_name: &str) -> bool {
+    if child_fields.is_empty() || parent_name.is_empty() {
+        return false;
+    }
+    let snake = pascal_to_snake(parent_name);
+    for field in child_fields.split(", ") {
+        let field_name = field.split(':').next().unwrap_or("").trim();
+        if field_name == format!("{snake}_id") || field_name == snake {
+            return true;
+        }
+    }
+    false
+}
+
+fn pascal_to_snake(name: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Candidate parent ids of construct `parent_type` for child `c`, ordered for
 /// ambiguity resolution (LAY-007 §6.3).
 fn candidate_parents(
@@ -389,8 +430,9 @@ fn candidate_parents(
     parent_type: &str,
     when: &str,
 ) -> Vec<u32> {
-    let mut parents: Vec<u32> = candidates
+    let parent_nodes: Vec<&ProjectInputNode> = candidates
         .iter()
+        .copied()
         .filter(|p| p.construct == parent_type && p.id != c.id)
         .filter(|p| match when {
             "declared_in_parent" | "in_parent_type" => {
@@ -403,16 +445,25 @@ fn candidate_parents(
             }
             "always" => true,
             "implements" => implements_edge(edges, c.id, p.id),
+            "references" => references_edge(edges, c.id, p.id),
             _ => ancestor_with_construct(nodes, c, parent_type) == Some(p.id),
         })
-        .map(|p| p.id)
         .collect();
 
-    // Deterministic ambiguity: AST parent first, then lowest id.
+    let mut parents: Vec<u32> = parent_nodes.iter().map(|p| p.id).collect();
+
+    // Deterministic ambiguity: field-name match, then AST parent, then lowest id.
     let ast_pref = ancestor_with_construct(nodes, c, parent_type);
+    let by_id_map = by_id(nodes);
     parents.sort_by_key(|id| {
-        let prefer = if Some(*id) == ast_pref { 0u8 } else { 1u8 };
-        (prefer, *id)
+        let name = by_id_map.get(id).map(|n| n.name.as_str()).unwrap_or("");
+        let field_rank = if field_name_prefers_parent(&c.fields, name) {
+            0u8
+        } else {
+            1u8
+        };
+        let ast_rank = if Some(*id) == ast_pref { 0u8 } else { 1u8 };
+        (field_rank, ast_rank, *id)
     });
     parents.dedup();
     parents
@@ -553,6 +604,7 @@ mod tests {
             construct: construct.into(),
             is_group,
             layer_provided: false,
+            fields: String::new(),
         }
     }
 
@@ -566,6 +618,62 @@ mod tests {
             node(12, Some(2), "OrphanC", "OtherType", false),
             node(20, Some(3), "Svc", "ServiceType", false),
         ]
+    }
+
+    #[test]
+    fn nest_when_references_uses_fk_edges() {
+        let mut nodes = vec![
+            node(1, None, "H", "Host", false),
+            node(2, Some(1), "domain", "Group", true),
+            node(10, Some(2), "Cohort", "Aggregate", false),
+            node(11, Some(2), "Member", "Entity", false),
+            node(12, Some(2), "User", "Aggregate", false),
+        ];
+        // Member has both cohort_id and user_id — prefer field name match
+        nodes[3].fields = "id: Id, cohort_id: Id, user_id: Id".into();
+        let edges = vec![
+            ProjectEdge {
+                from: 11,
+                to: 10,
+                kind: "References".into(),
+            },
+            ProjectEdge {
+                from: 11,
+                to: 12,
+                kind: "References".into(),
+            },
+        ];
+        let view = ViewSpec {
+            id: "model".into(),
+            label: "Domain model".into(),
+            layout: "tree".into(),
+            is_default: false,
+            members: "by_host_children".into(),
+            roots: vec!["Aggregate".into()],
+            nest_rules: vec![NestRule {
+                child: "Entity".into(),
+                parent: "Aggregate".into(),
+                when: "references".into(),
+            }],
+            orphan_policy: "list".into(),
+            tabs: vec![],
+            left: vec![],
+            right: vec![],
+            edge: None,
+        };
+        let out = project_view_with_edges(&nodes, &edges, 1, &view, true);
+        assert!(
+            out.nest_edges.contains(&(11, 10)),
+            "Member should nest under Cohort via cohort_id: {:?}",
+            out.nest_edges
+        );
+        assert!(
+            !out.node_ids.contains(&11),
+            "nested Member must not be top-level: {:?}",
+            out.node_ids
+        );
+        assert!(out.node_ids.contains(&10));
+        assert!(out.node_ids.contains(&12));
     }
 
     #[test]

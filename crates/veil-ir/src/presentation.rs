@@ -208,6 +208,7 @@ const WHENS: &[&str] = &[
     "same_source_group",
     "always",
     "implements",
+    "references",
 ];
 const ROLES: &[&str] = &["container", "leaf", "edge_endpoint"];
 

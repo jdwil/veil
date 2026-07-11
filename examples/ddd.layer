@@ -31,10 +31,13 @@ pkg ddd v1
         layout tree
         members by_host_children
         roots Aggregate
-        nest Entity under Aggregate when declared_in_parent
-        nest ValueObject under Aggregate when declared_in_parent
         nest Event under Aggregate when declared_in_parent
         nest Command under Aggregate when declared_in_parent
+        nest Entity under Aggregate when declared_in_parent
+        nest ValueObject under Aggregate when declared_in_parent
+        nest Entity under Aggregate when references
+        nest ValueObject under Aggregate when references
+        nest Aggregate under Aggregate when references
         orphan_policy list
 
   construct Orchestrator

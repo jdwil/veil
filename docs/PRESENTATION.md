@@ -241,14 +241,14 @@ Unknown `members` → **layer load error**.
 | `same_source_group` | Child and parent share the same nearest **Group** ancestor name |
 | `always` | Attach under a parent-type candidate (deterministic pick — §6.3) |
 | `implements` | IR edge `Implements` between child and parent (either direction) |
+| `references` | IR edge `References` from **child → parent** (FK ownership via layer `identity_policy` / `*_id` fields) |
 
 Default if `when` omitted: `declared_in_parent`.
 
 Unknown `when` → **layer load error**.
 
-**Not implemented (no IR yet):** field-type / annotation **type membership** links.
-When the IR gains typed field references, add e.g. `when field_type` without
-viewer domain knowledge. Until then use `declared_in_parent` or `implements`.
+When multiple parents match `references`, prefer the parent whose name matches a
+field on the child (e.g. `cohort_id` → `Cohort`), then AST ancestor, then id.
 
 ### 4.4 Orphan policy (LAY-007)
 

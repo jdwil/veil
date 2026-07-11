@@ -238,7 +238,36 @@ function implementsEdge(graph: IrGraph, a: number, b: number): boolean {
   );
 }
 
-/** Candidate parents ordered for ambiguity (AST prefer, then id). */
+/** FK ownership: References edge child → parent (e.g. cohort_id → Cohort). */
+function referencesEdge(graph: IrGraph, child: number, parent: number): boolean {
+  return graph.edges.some(
+    (e) => e.kind === 'References' && e.from === child && e.to === parent
+  );
+}
+
+function nodeFields(n: IrNode): string {
+  return n.metadata.properties.find(([k]) => k === 'fields')?.[1] ?? '';
+}
+
+function pascalToSnake(name: string): string {
+  return name
+    .replace(/([A-Z])/g, (m, _c, i) => (i > 0 ? '_' : '') + m.toLowerCase())
+    .toLowerCase();
+}
+
+/** Prefer parent whose name matches a `snake_case_id` field on the child. */
+function fieldNamePrefersParent(child: IrNode, parentName: string): boolean {
+  const fields = nodeFields(child);
+  if (!fields || !parentName) return false;
+  const snake = pascalToSnake(parentName);
+  for (const field of fields.split(', ')) {
+    const fieldName = field.split(':')[0]?.trim() ?? '';
+    if (fieldName === `${snake}_id` || fieldName === snake) return true;
+  }
+  return false;
+}
+
+/** Candidate parents ordered for ambiguity (field match, AST, then id). */
 function candidateParents(
   graph: IrGraph,
   child: IrNode,
@@ -262,12 +291,17 @@ function candidateParents(
         return true;
       case 'implements':
         return implementsEdge(graph, child.id, p.id);
+      case 'references':
+        return referencesEdge(graph, child.id, p.id);
       default:
         return ancestorWithName(graph, child, parentType)?.id === p.id;
     }
   });
   const astPref = ancestorWithName(graph, child, parentType)?.id;
   parents.sort((a, b) => {
+    const fa = fieldNamePrefersParent(child, a.name) ? 0 : 1;
+    const fb = fieldNamePrefersParent(child, b.name) ? 0 : 1;
+    if (fa !== fb) return fa - fb;
     const pa = a.id === astPref ? 0 : 1;
     const pb = b.id === astPref ? 0 : 1;
     return pa - pb || a.id - b.id;

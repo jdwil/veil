@@ -1080,3 +1080,121 @@ impl<'a> IrBuilder<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod ref_edge_tests {
+    use super::*;
+    use crate::ast::{Construct, Field, Solution, TopLevelItem, TypeExpr};
+    use crate::layer::LayerRegistry;
+    use crate::span::Span;
+
+    fn field(name: &str, ty: &str) -> Field {
+        Field {
+            annotations: vec![],
+            name: name.into(),
+            type_expr: TypeExpr::Named(ty.into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        }
+    }
+
+    #[test]
+    fn fk_fields_emit_references_with_identity_policy() {
+        let mut reg = LayerRegistry::builtin();
+        let layer = r#"
+pkg testddd v1
+  identity_policy
+    ref_suffix _id
+    identity_field id
+  construct Aggregate
+    kw agg
+    mt struct
+  construct Entity
+    kw ent
+    mt struct
+"#;
+        reg.load_content("testddd", layer).unwrap();
+        assert_eq!(reg.identity_policy.ref_suffix.as_deref(), Some("_id"));
+
+        let mut cohort = Construct::new(
+            "agg",
+            "Aggregate",
+            Shape::Struct,
+            "Cohort".into(),
+            Span::new(0, 1),
+        );
+        cohort.fields.push(field("id", "Id"));
+
+        let mut member = Construct::new(
+            "ent",
+            "Entity",
+            Shape::Struct,
+            "Member".into(),
+            Span::new(0, 1),
+        );
+        member.fields.push(field("id", "Id"));
+        member.fields.push(field("cohort_id", "Id"));
+
+        let sol = Solution {
+            name: "T".into(),
+            span: Span::new(0, 1),
+            uses: vec![],
+            items: vec![
+                TopLevelItem::Construct(cohort),
+                TopLevelItem::Construct(member),
+            ],
+            expose: None,
+        };
+        let graph = build_ir_with_registry(&sol, Some(&reg));
+        let refs: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::References)
+            .collect();
+        assert!(
+            !refs.is_empty(),
+            "expected References edges; kinds: {:?}",
+            graph
+                .edges
+                .iter()
+                .map(|e| format!("{:?}", e.kind))
+                .collect::<Vec<_>>()
+        );
+        let by_id: std::collections::HashMap<_, _> =
+            graph.nodes.iter().map(|n| (n.id, n.name.as_str())).collect();
+        let pairs: Vec<_> = refs
+            .iter()
+            .map(|e| (by_id[&e.from], by_id[&e.to]))
+            .collect();
+        assert!(
+            pairs.iter().any(|(f, t)| *f == "Member" && *t == "Cohort"),
+            "pairs: {:?}",
+            pairs
+        );
+    }
+
+    #[test]
+    fn no_references_without_identity_policy() {
+        let reg = LayerRegistry::builtin();
+        assert!(reg.identity_policy.ref_suffix.is_none());
+        let mut member = Construct::new(
+            "struct",
+            "Struct",
+            Shape::Struct,
+            "Member".into(),
+            Span::new(0, 1),
+        );
+        member.fields.push(field("cohort_id", "Id"));
+        let sol = Solution {
+            name: "T".into(),
+            span: Span::new(0, 1),
+            uses: vec![],
+            items: vec![TopLevelItem::Construct(member)],
+            expose: None,
+        };
+        let graph = build_ir_with_registry(&sol, Some(&reg));
+        assert!(!graph.edges.iter().any(|e| e.kind == EdgeKind::References));
+    }
+}
+
+

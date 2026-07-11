@@ -9,7 +9,7 @@ use crate::ir::{IrGraph, NodeKind};
 use crate::layer::LayerRegistry;
 use crate::presentation::{presentation_from_registry, PresentationModel};
 use crate::project::{
-    project_view, ProjectInputNode, ProjectOutput,
+    project_view_with_edges, ProjectInputNode, ProjectOutput,
 };
 use crate::presentation::ViewSpec;
 
@@ -159,17 +159,38 @@ fn project_host(
     let inputs: Vec<ProjectInputNode> = graph
         .nodes
         .iter()
-        .map(|n| ProjectInputNode {
-            id: n.id as u32,
-            parent: n.metadata.parent.map(|p| p as u32),
-            name: n.name.clone(),
-            construct: n.metadata.subkind.clone().unwrap_or_else(|| format!("{:?}", n.kind)),
-            is_group: n.kind == NodeKind::Group,
-            layer_provided: n.metadata.annotations.iter().any(|a| a == "layer-provided"),
+        .map(|n| {
+            let fields = n
+                .metadata
+                .properties
+                .iter()
+                .find(|(k, _)| k == "fields")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            ProjectInputNode {
+                id: n.id as u32,
+                parent: n.metadata.parent.map(|p| p as u32),
+                name: n.name.clone(),
+                construct: n.metadata.subkind.clone().unwrap_or_else(|| format!("{:?}", n.kind)),
+                is_group: n.kind == NodeKind::Group,
+                layer_provided: n.metadata.annotations.iter().any(|a| a == "layer-provided"),
+                fields,
+            }
         })
         .collect();
 
-    let out: ProjectOutput = project_view(&inputs, host_id as u32, view, true);
+    let edges: Vec<crate::project::ProjectEdge> = graph
+        .edges
+        .iter()
+        .map(|e| crate::project::ProjectEdge {
+            from: e.from as u32,
+            to: e.to as u32,
+            kind: format!("{:?}", e.kind),
+        })
+        .collect();
+
+    let out: ProjectOutput =
+        project_view_with_edges(&inputs, &edges, host_id as u32, view, true);
     let by_id: std::collections::HashMap<u32, &str> = inputs
         .iter()
         .map(|n| (n.id, n.name.as_str()))

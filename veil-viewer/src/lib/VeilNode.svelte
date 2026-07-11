@@ -68,7 +68,7 @@
         <span class="compensate-badge" title="Has compensation (rollback)">↩</span>
       {/if}
       {#if hasChildren && !isGhost}
-        <span class="expand-indicator" title="Double-click to expand">⤵</span>
+        <span class="expand-indicator" title="Double-click to enter">⤵</span>
       {/if}
     </div>
 
@@ -79,7 +79,14 @@
       </div>
     {/if}
 
-    <div class="node-name" class:code-name={kind === 'Action'}>{data.label}</div>
+    <div
+      class="node-name"
+      class:code-name={kind === 'Action'}
+      title={hasChildren && !isGhost ? 'Double-click to enter' : undefined}
+    >{data.label}</div>
+    {#if hasChildren && !isGhost}
+      <div class="enter-hint">Double-click to enter</div>
+    {/if}
 
     {#if isAbstract}
       <span class="abstract-badge">abstract</span>
@@ -394,6 +401,14 @@
     color: var(--veil-text);
     word-break: break-word;
     text-shadow: 0 1px 2px var(--veil-input-bg);
+  }
+
+  .enter-hint {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--veil-text-faint);
+    margin-top: 2px;
+    letter-spacing: 0.02em;
   }
 
   .node-name.code-name {
