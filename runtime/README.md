@@ -24,13 +24,17 @@ veil serve .
 
 ```bash
 # Projects directory holds independent git repos (one product each)
-export VEIL_PROJECTS_DIR=~/veil-projects
-# runtime starts → list/create/open projects → IDE tabs per open project
+export VEIL_PROJECTS_DIR=$HOME/dev/veil-projects   # default: ~/veil-projects
+veil projects list
+veil projects create my-app
+# Runtime UX later: Open in IDE → spawn:
+veil serve "$VEIL_PROJECTS_DIR/my-app" -p 3001
+# or: make serve PROJECT=$VEIL_PROJECTS_DIR/my-app
 ```
 
-- New projects from the UX: subdirectory + **git init** under `VEIL_PROJECTS_DIR`.
-- Multiple products open as tabs; each tab is one project root (isolated IR/agent).
-- `examples/` is demos/CI only — not the runtime projects home.
+- New projects: subdirectory + **git init** under `VEIL_PROJECTS_DIR`.
+- Multi-product = **multiple IDE windows** (one `veil serve` per project), not tabs inside one IDE.
+- `examples/` is demos/CI only (`make serve-examples`).
 
 No special platform daemon is required for a single-project dual loop. Local
 platform runtime is opt-in for multi-project shell, object storage, deploy, etc.

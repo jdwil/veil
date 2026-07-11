@@ -125,6 +125,7 @@ mod tests {
             path: path.into(),
             editable: true,
             active,
+            kind: crate::provider::FileKind::Package,
         }
     }
 

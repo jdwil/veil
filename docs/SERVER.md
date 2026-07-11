@@ -49,6 +49,9 @@ See `is_veil_source_editable` in `veil-cli`.
 | GET/POST | `/api/check` | Full check pipeline (`?target=rust\|typescript\|swift\|kotlin`) |
 | GET | `/api/files` | Loaded files (`index`, `name`, `path`, `editable`, `active`) |
 | POST | `/api/files/select` | `{ "index": N }` — set active file |
+| GET | `/api/project` | Active IDE project `{ name, path, projects_dir }` |
+| GET | `/api/projects` | Hub: products under `VEIL_PROJECTS_DIR` |
+| POST | `/api/projects` | Hub: create product `{ "name" }` (git + scaffold) |
 | POST | `/api/edit` | `{ "ops": [ EditOp, … ] }` — structured edit |
 | GET | `/api/diff` | Structural IR diff of active file vs git HEAD (UX-021) |
 | POST | `/api/agent/turn` | Built-in agent turn `{ "prompt": "…" }` (Rig or heuristic) |

@@ -125,4 +125,9 @@ pub trait SourceProvider: Send + Sync + 'static {
     ) -> Result<usize, String> {
         Err("register_file not supported".into())
     }
+
+    /// Active IDE project root (single-project session). Default: unknown.
+    fn project_root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }

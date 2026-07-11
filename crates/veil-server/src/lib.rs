@@ -27,11 +27,16 @@ pub mod safety;
 pub mod revision;
 pub mod acp;
 pub mod layer_edit;
+pub mod project_layout;
 
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;
 pub use provider::remote::RemoteHttpProvider;
 pub use api::build_router;
+pub use project_layout::{
+    collect_project_files, create_project, default_projects_dir, ensure_projects_dir,
+    is_core_platform_layer, list_projects, project_display_name, ActiveProjectInfo, ProjectInfo,
+};
 pub use agent::{run_turn, AgentTurnRequest, AgentTurnResponse};
 pub use model::{
     complete_with_env, ChatMessage, CompleteRequest, CompleteResponse, ModelConfig, ModelProvider,

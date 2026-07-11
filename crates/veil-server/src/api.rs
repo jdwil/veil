@@ -60,6 +60,8 @@ pub fn build_router<P: SourceProvider>(provider: P) -> Router {
         .route("/api/models", get(get_models))
         .route("/api/layer/dependents", get(get_layer_dependents::<P>))
         .route("/api/layer/scaffold", post(post_layer_scaffold::<P>))
+        .route("/api/project", get(get_active_project::<P>))
+        .route("/api/projects", get(get_projects).post(post_create_project))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -693,6 +695,75 @@ async fn get_files<P: SourceProvider>(State(state): State<SharedProvider<P>>) ->
     match serde_json::to_string(&files) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Active IDE project (single-project session).
+async fn get_active_project<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
+    let projects_dir = crate::project_layout::default_projects_dir();
+    let root = state.project_root();
+    let body = if let Some(path) = root {
+        let name = crate::project_layout::project_display_name(&path);
+        serde_json::json!({
+            "name": name,
+            "path": path.to_string_lossy(),
+            "projects_dir": projects_dir.to_string_lossy(),
+        })
+    } else {
+        serde_json::json!({
+            "name": null,
+            "path": null,
+            "projects_dir": projects_dir.to_string_lossy(),
+        })
+    };
+    match serde_json::to_string(&body) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// List products under `VEIL_PROJECTS_DIR` (runtime hub; not multi-tab IDE).
+async fn get_projects() -> axum::response::Response {
+    let dir = crate::project_layout::default_projects_dir();
+    let projects = match crate::project_layout::list_projects(&dir) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    match serde_json::to_string(&serde_json::json!({
+        "projects_dir": dir.to_string_lossy(),
+        "projects": projects,
+    })) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CreateProjectRequest {
+    name: String,
+}
+
+/// Create a product repo under the projects directory (runtime hub).
+async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::response::Response {
+    let dir = crate::project_layout::default_projects_dir();
+    match crate::project_layout::create_project(&dir, req.name.trim()) {
+        Ok(info) => match serde_json::to_string(&info) {
+            Ok(json) => (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/json")], json)
+                .into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        Err(e) => {
+            let status = if e.contains("already exists") {
+                StatusCode::CONFLICT
+            } else if e.contains("name") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, e).into_response()
+        }
     }
 }
 

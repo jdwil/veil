@@ -40,6 +40,7 @@
     availableFiles,
     activeFileName,
     activeFileKind,
+    activeProject,
     selectFile,
     diagnostics,
     viewRevision,
@@ -1054,6 +1055,10 @@
   <!-- Top bar -->
   <div class="top-bar">
     <div class="breadcrumbs">
+      {#if $activeProject?.name}
+        <span class="project-badge" title={$activeProject.path ?? ''}>{$activeProject.name}</span>
+        <span class="breadcrumb-sep">›</span>
+      {/if}
       {#if $availableFiles.length > 1}
         <select
           class="file-selector"
@@ -1262,6 +1267,20 @@
     outline: none;
   }
   .file-selector:focus { border-color: var(--veil-accent); }
+
+  .project-badge {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--veil-text);
+    background: var(--veil-accent-subtle);
+    border: 1px solid var(--veil-border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .kind-badge {
     font-size: 10px;

@@ -77,6 +77,7 @@ const EDIT_URL = `${API_BASE}/edit`;
 const STUBS_URL = `${API_BASE}/stubs`;
 const FILES_URL = `${API_BASE}/files`;
 const SELECT_FILE_URL = `${API_BASE}/files/select`;
+const PROJECT_URL = `${API_BASE}/project`;
 
 /** Loaded file metadata from the server. */
 export interface VeilFileInfo {
@@ -89,11 +90,20 @@ export interface VeilFileInfo {
   kind?: 'package' | 'layer' | 'stub' | string;
 }
 
+/** Active IDE project (one root per serve session). */
+export interface ActiveProject {
+  name: string | null;
+  path: string | null;
+  projects_dir: string;
+}
+
 /** List of available files and the currently active one. */
 export const availableFiles = writable<VeilFileInfo[]>([]);
 export const activeFileName = writable<string>('');
 /** Active file kind for chrome switching. */
 export const activeFileKind = writable<string>('package');
+/** Project root for this IDE session (runtime launches one serve per product). */
+export const activeProject = writable<ActiveProject | null>(null);
 
 /** External crate stubs (from .stub files), for the External palette section. */
 export const stubs = writable<StubCrate[]>([]);
@@ -208,13 +218,14 @@ async function loadActiveFile(
     unsubS();
   }
 
-  const [irRes, srcRes, palRes, presRes, stubRes, filesRes] = await Promise.all([
+  const [irRes, srcRes, palRes, presRes, stubRes, filesRes, projRes] = await Promise.all([
     fetchWithTimeout(API_URL),
     fetchWithTimeout(SOURCE_URL),
     fetchWithTimeout(PALETTE_URL),
     fetchWithTimeout(PRESENTATION_URL).catch(() => null),
     fetchWithTimeout(STUBS_URL).catch(() => null),
     fetchWithTimeout(FILES_URL).catch(() => null),
+    fetchWithTimeout(PROJECT_URL).catch(() => null),
   ]);
   if (gen !== loadGeneration) return false;
 
@@ -268,6 +279,10 @@ async function loadActiveFile(
       activeFileName.set(active.name);
       activeFileKind.set(active.kind || 'package');
     }
+  }
+
+  if (projRes && projRes.ok) {
+    activeProject.set(await projRes.json());
   }
 
   // Generated code is optional (can be slow); don't block UI

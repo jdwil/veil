@@ -2,17 +2,19 @@
 #
 # Targets:
 #   make veil           — build the VEIL compiler
-#   make serve          — backend (veil serve examples/) + frontend (veil-viewer)
-#   make serve-examples — alias for serve
+#   make serve          — IDE for one PROJECT root + viewer
+#   make serve-examples — demo: veil serve examples/ + viewer
 #   make serve-stop     — stop backend + frontend on default ports
 #   make serve-api      — API only (no viewer)
 #   make serve-ui       — viewer only (expects API already on PORT)
+#   make projects       — list products under VEIL_PROJECTS_DIR
 #   make runtime        — transpile + compile the runtime
-#   make gen-runtime    — transpile runtime.veil → Rust (in runtime/generated/)
-#   make build-runtime  — cargo build the generated runtime
-#   make clean-runtime  — remove generated output
-#   make stubs          — generate all .stub files for runtime dependencies
-#   make check          — run veil check on runtime source
+#
+# Projects (runtime hub owns multi-product UX; IDE is one project per session):
+#   export VEIL_PROJECTS_DIR=$HOME/dev/veil-projects   # default: ~/veil-projects
+#   make projects
+#   veil projects create my-app
+#   make serve PROJECT=$HOME/dev/veil-projects/my-app
 
 VEIL_BIN    := target/release/veil
 RUNTIME_SRC := runtime/src/runtime.veil
@@ -27,6 +29,11 @@ VIEWER_PORT ?= 5173
 PID_DIR     := .veil-dev
 API_PID     := $(PID_DIR)/api.pid
 UI_PID      := $(PID_DIR)/ui.pid
+
+# Projects directory (runtime hub). Default ~/veil-projects.
+VEIL_PROJECTS_DIR ?= $(HOME)/veil-projects
+# Single project root for `make serve` (required for product IDE).
+PROJECT     ?=
 
 # Agent backend — Kiro via ACP by default for local make serve
 # Override: make serve VEIL_MODEL_PROVIDER=ollama VEIL_MODEL_NAME=qwen3.5:9b
@@ -48,6 +55,7 @@ export VEIL_MODEL_PROVIDER
 export VEIL_ACP_COMMAND
 export VEIL_ACP_ARGS
 export VEIL_ACP_CWD
+export VEIL_PROJECTS_DIR
 # Only export model name when non-empty (avoids forcing --model kiro)
 ifneq ($(strip $(VEIL_MODEL_NAME)),)
 export VEIL_MODEL_NAME
@@ -68,7 +76,7 @@ STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sq
                sha2 zip tempfile schemars
 
 .PHONY: veil serve serve-examples serve-stop serve-api serve-ui viewer-install \
-	runtime gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
+	projects runtime gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
 
 # ─── Compiler ───────────────────────────────────────────────────────────────
 
@@ -84,11 +92,24 @@ viewer-install:
 		cd $(VIEWER_DIR) && npm install; \
 	fi
 
-# Full stack: veil serve (backend) + veil-viewer (frontend).
-# Alias: serve-examples
+# List products in the projects hub (not the IDE).
+projects: veil
+	@$(VEIL_BIN) projects list
+
+# Full stack: single-project IDE API + viewer.
+# Requires PROJECT= path to a product root (git repo under VEIL_PROJECTS_DIR).
 # Stop: Ctrl-C  or  make serve-stop
-# Ports: PORT=3001 (API), VIEWER_PORT=5173 (UI). Viewer fetches API at :3001.
-serve serve-examples: veil viewer-install
+serve: veil viewer-install
+	@if [ -z "$(strip $(PROJECT))" ]; then \
+		echo "error: set PROJECT to a product root."; \
+		echo "  export VEIL_PROJECTS_DIR=$$HOME/dev/veil-projects"; \
+		echo "  make projects"; \
+		echo "  veil projects create my-app"; \
+		echo "  make serve PROJECT=$$VEIL_PROJECTS_DIR/my-app"; \
+		echo ""; \
+		echo "Demo sandbox: make serve-examples"; \
+		exit 1; \
+	fi
 	@mkdir -p $(PID_DIR)
 	@if ss -tln 2>/dev/null | grep -qE ":$(PORT)\\b" || \
 	   netstat -tln 2>/dev/null | grep -qE ":$(PORT)\\b"; then \
@@ -104,8 +125,10 @@ serve serve-examples: veil viewer-install
 		ss -tlnp 2>/dev/null | grep -E ":$(VIEWER_PORT)\\b" || true; \
 		exit 1; \
 	fi
-	@echo "Starting VEIL dev stack…"
-	@echo "  Backend:  http://localhost:$(PORT)   (veil serve $(EXAMPLES))"
+	@echo "Starting VEIL IDE (single project)…"
+	@echo "  Project:  $(PROJECT)"
+	@echo "  Hub:      VEIL_PROJECTS_DIR=$(VEIL_PROJECTS_DIR)"
+	@echo "  Backend:  http://localhost:$(PORT)   (veil serve $(PROJECT))"
 	@echo "  Frontend: http://localhost:$(VIEWER_PORT)  (veil-viewer)"
 	@echo "  Open:     http://localhost:$(VIEWER_PORT)"
 	@echo "  Agent:    VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)$(if $(VEIL_MODEL_NAME),  model=$(VEIL_MODEL_NAME),)"
@@ -128,7 +151,7 @@ serve serve-examples: veil viewer-install
 	fi
 	@echo "  Stop:     Ctrl-C  or  make serve-stop"
 	@echo ""
-	@$(VEIL_BIN) serve $(EXAMPLES) -p $(PORT) & echo $$! > $(API_PID); \
+	@$(VEIL_BIN) serve $(PROJECT) -p $(PORT) & echo $$! > $(API_PID); \
 	API_PID_VAL=$$(cat $(API_PID)); \
 	cleanup() { \
 		echo ""; \
@@ -154,19 +177,27 @@ serve serve-examples: veil viewer-install
 	echo "API ready — starting viewer…"; \
 	cd $(VIEWER_DIR) && npm run dev -- --host 127.0.0.1 --port $(VIEWER_PORT)
 
-# API only (no viewer)
+# Demo / CI: serve monorepo examples/ (not the product default)
+serve-examples: veil viewer-install
+	@$(MAKE) serve PROJECT=$(EXAMPLES) PORT=$(PORT) VIEWER_PORT=$(VIEWER_PORT)
+
+# API only (no viewer) — requires PROJECT=
 serve-api: veil
+	@if [ -z "$(strip $(PROJECT))" ]; then \
+		echo "error: set PROJECT=…  (or make serve-api PROJECT=examples)"; \
+		exit 1; \
+	fi
 	@if ss -tln 2>/dev/null | grep -qE ":$(PORT)\\b" || \
 	   netstat -tln 2>/dev/null | grep -qE ":$(PORT)\\b"; then \
 		echo "error: port $(PORT) is already in use.  make serve-stop"; \
 		exit 1; \
 	fi
-	@echo "API only: http://localhost:$(PORT)  (Ctrl-C to stop)"
+	@echo "API only: http://localhost:$(PORT)  project=$(PROJECT)  (Ctrl-C to stop)"
 	@echo "  Agent: VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)  model=$(VEIL_MODEL_NAME)"
 	@if [ "$(VEIL_MODEL_PROVIDER)" = "acp" ] || [ "$(VEIL_MODEL_PROVIDER)" = "kiro" ]; then \
 		echo "  ACP:    $(VEIL_ACP_COMMAND) $(VEIL_ACP_ARGS)  (cwd=$(VEIL_ACP_CWD))"; \
 	fi
-	$(VEIL_BIN) serve $(EXAMPLES) -p $(PORT)
+	$(VEIL_BIN) serve $(PROJECT) -p $(PORT)
 
 # Viewer only (expects veil serve already on PORT)
 serve-ui: viewer-install
@@ -181,7 +212,7 @@ serve-stop:
 	@-fuser -k $(PORT)/tcp 2>/dev/null || true
 	@-fuser -k $(VIEWER_PORT)/tcp 2>/dev/null || true
 	@# also kill stray veil serve / vite for this project
-	@-pkill -f 'veil serve $(EXAMPLES)' 2>/dev/null || true
+	@-pkill -x veil 2>/dev/null || true
 	@-pkill -f 'vite dev' 2>/dev/null || true
 	@rm -f $(API_PID) $(UI_PID)
 	@sleep 0.3

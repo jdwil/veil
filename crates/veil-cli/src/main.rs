@@ -89,9 +89,11 @@ enum Commands {
         #[arg(short, long, default_value = "rust")]
         target: String,
     },
-    /// Start the visualization server
+    /// Start the visualization server for a **single project** root
+    /// (packages + project layers). Multi-project hub is runtime UX —
+    /// use `veil projects` and open IDE per product path.
     Serve {
-        /// Path to a .veil file or directory containing .veil files
+        /// Path to a .veil file or project directory
         file: PathBuf,
         /// Port to serve on
         #[arg(short, long, default_value = "3001")]
@@ -102,6 +104,11 @@ enum Commands {
         /// Env: `VEIL_SHOW_CORE_LAYERS=1` is equivalent.
         #[arg(long, default_value_t = false)]
         show_core_layers: bool,
+    },
+    /// Manage the local projects directory (runtime hub; independent git repos)
+    Projects {
+        #[command(subcommand)]
+        action: ProjectsCmd,
     },
     /// Serialize: parse then re-emit VEIL source (round-trip test)
     Emit {
@@ -118,6 +125,23 @@ enum Commands {
         /// Path to a Cargo project that has the crate as a dependency
         #[arg(short, long, default_value = ".")]
         project: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectsCmd {
+    /// Print the resolved projects directory (`VEIL_PROJECTS_DIR` or ~/veil-projects)
+    Dir,
+    /// List product projects under the projects directory
+    List,
+    /// Create a new product (git repo + scaffold) under the projects directory
+    Create {
+        /// Project name ([a-zA-Z0-9_-]+)
+        name: String,
+    },
+    /// Print absolute path to a named project
+    Path {
+        name: String,
     },
 }
 
@@ -140,60 +164,6 @@ fn env_flag_true(name: &str) -> bool {
         }
         Err(_) => false,
     }
-}
-
-/// Core platform layers shipped with VEIL (language design, not userland DSL).
-/// Hidden from the serve file picker by default; still resolved via `use`.
-fn is_core_platform_layer(stem: &str) -> bool {
-    matches!(
-        stem,
-        "base"
-            | "ddd"
-            | "di"
-            | "functional"
-            | "rust"
-            | "harness"
-            | "ui"
-            | "svelte5"
-            | "transports"
-            | "rig"
-            | "aws_storage"
-    )
-}
-
-/// Prefer `layers/<name>.layer` when the same stem also appears under the serve dir.
-fn dedup_layer_files(files: Vec<PathBuf>) -> Vec<PathBuf> {
-    use std::collections::HashMap;
-    let mut by_stem: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    let mut non_layers: Vec<PathBuf> = Vec::new();
-    for p in files {
-        if p.extension().and_then(|e| e.to_str()) == Some("layer") {
-            let stem = p
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            by_stem.entry(stem).or_default().push(p);
-        } else {
-            non_layers.push(p);
-        }
-    }
-    let mut layers: Vec<PathBuf> = Vec::new();
-    for (_stem, mut paths) in by_stem {
-        if paths.len() == 1 {
-            layers.push(paths.pop().unwrap());
-            continue;
-        }
-        // Prefer path containing `/layers/` or ending with `layers/<file>`
-        paths.sort_by_key(|p| {
-            let s = p.to_string_lossy();
-            let in_layers = s.contains("/layers/") || s.starts_with("layers/");
-            // false sorts before true for bool? prefer in_layers first → reverse
-            (!in_layers, s.to_string())
-        });
-        layers.push(paths.remove(0));
-    }
-    non_layers.extend(layers);
-    non_layers
 }
 
 /// UX-010 / DSL-002: whether a loaded file may be written via the IDE edit API.
@@ -968,85 +938,105 @@ fn main() {
                 }
             }
         }
+        Commands::Projects { action } => {
+            let dir = veil_server::default_projects_dir();
+            match action {
+                ProjectsCmd::Dir => {
+                    println!("{}", dir.display());
+                }
+                ProjectsCmd::List => {
+                    if let Err(e) = veil_server::ensure_projects_dir(&dir) {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                    match veil_server::list_projects(&dir) {
+                        Ok(projects) => {
+                            println!("Projects directory: {}", dir.display());
+                            if projects.is_empty() {
+                                println!("  (empty — create with: veil projects create <name>)");
+                            } else {
+                                for p in projects {
+                                    let git = if p.is_git { "git" } else { "no-git" };
+                                    println!(
+                                        "  {}  {}  ({} package(s), {git})",
+                                        p.name, p.path, p.package_count
+                                    );
+                                }
+                            }
+                            println!();
+                            println!("Open IDE for one project:");
+                            println!("  veil serve <path> -p 3001");
+                            println!("  make serve PROJECT=<path>");
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                ProjectsCmd::Create { name } => match veil_server::create_project(&dir, &name) {
+                    Ok(info) => {
+                        println!("✓ Created project {}", info.name);
+                        println!("  path: {}", info.path);
+                        println!("  git:  {}", if info.is_git { "yes" } else { "no" });
+                        println!();
+                        println!("Open IDE:");
+                        println!("  veil serve {} -p 3001", info.path);
+                        println!("  make serve PROJECT={}", info.path);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                ProjectsCmd::Path { name } => {
+                    let p = dir.join(&name);
+                    if !p.is_dir() {
+                        eprintln!("Project not found: {}", p.display());
+                        std::process::exit(1);
+                    }
+                    println!("{}", p.display());
+                }
+            }
+        }
         Commands::Serve {
             file,
             port,
             show_core_layers,
         } => {
             let show_core_layers = show_core_layers || env_flag_true("VEIL_SHOW_CORE_LAYERS");
-            // Collect .veil packages and .layer DSLs (DSL-001)
+            // Single-project scan: packages + project layers only (no monorepo layers/)
+            let project_root = if file.is_dir() {
+                file.clone()
+            } else {
+                file.parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf()
+            };
             let mut project_files: Vec<PathBuf> = if file.is_dir() {
-                let mut found: Vec<PathBuf> = std::fs::read_dir(&file)
-                    .expect("Failed to read directory")
-                    .filter_map(|entry| entry.ok())
-                    .filter(|entry| {
-                        entry
-                            .path()
-                            .extension()
-                            .map(|ext| ext == "veil" || ext == "layer")
-                            .unwrap_or(false)
-                    })
-                    .map(|entry| entry.path())
-                    .collect();
-                found.sort();
-                // Also pull workspace `layers/` when serving examples/ (or any dir)
-                let layers_dir = file
-                    .parent()
-                    .map(|p| p.join("layers"))
-                    .filter(|p| p.is_dir())
-                    .or_else(|| {
-                        let p = PathBuf::from("layers");
-                        if p.is_dir() {
-                            Some(p)
-                        } else {
-                            None
+                match veil_server::collect_project_files(&file, show_core_layers) {
+                    Ok(f) => {
+                        let total_layers = f
+                            .iter()
+                            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("layer"))
+                            .count();
+                        if !show_core_layers {
+                            // count how many core were available under project but hidden
+                            let _ = total_layers;
                         }
-                    });
-                if let Some(ld) = layers_dir {
-                    if let Ok(rd) = std::fs::read_dir(&ld) {
-                        for entry in rd.filter_map(|e| e.ok()) {
-                            let p = entry.path();
-                            if p.extension().map(|e| e == "layer").unwrap_or(false) {
-                                if !found.iter().any(|f| f == &p) {
-                                    found.push(p);
-                                }
-                            }
-                        }
+                        f
                     }
-                }
-                // Dedup layers by stem: prefer `layers/<name>.layer` over local copies
-                found = dedup_layer_files(found);
-                // Hide core platform layers from the IDE file list unless opted in
-                if !show_core_layers {
-                    let before = found.len();
-                    found.retain(|p| {
-                        if p.extension().and_then(|e| e.to_str()) != Some("layer") {
-                            return true;
-                        }
-                        let stem = p
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("");
-                        !is_core_platform_layer(stem)
-                    });
-                    let hidden = before - found.len();
-                    if hidden > 0 {
+                    Err(e) => {
+                        eprintln!("{e}");
                         eprintln!(
-                            "  (hiding {hidden} core platform layer(s); pass --show-core-layers or VEIL_SHOW_CORE_LAYERS=1 to edit them)"
+                            "Hint: product projects live under VEIL_PROJECTS_DIR ({}).",
+                            veil_server::default_projects_dir().display()
                         );
+                        eprintln!("  veil projects list");
+                        eprintln!("  veil projects create <name>");
+                        std::process::exit(1);
                     }
                 }
-                // Prefer packages first in list (stable UX), then layers
-                found.sort_by(|a, b| {
-                    let ak = a.extension().and_then(|e| e.to_str()) == Some("layer");
-                    let bk = b.extension().and_then(|e| e.to_str()) == Some("layer");
-                    ak.cmp(&bk).then_with(|| a.cmp(b))
-                });
-                if found.is_empty() {
-                    eprintln!("No .veil or .layer files found in {}", file.display());
-                    std::process::exit(1);
-                }
-                found
             } else {
                 vec![file.clone()]
             };
@@ -1157,16 +1147,22 @@ fn main() {
                     (graph.nodes.len(), graph.edges.len())
                 };
 
+            let proj_name = veil_server::project_display_name(&project_root);
             println!(
-                "✓ Serving {} file(s) ({} packages, {} layers; {} nodes, {} edges)",
+                "✓ Serving project '{proj_name}' — {} file(s) ({} packages, {} layers; {} nodes, {} edges)",
                 file_count, package_count, layer_count, node_count, edge_count
             );
+            println!("  Root: {}", project_root.display());
             if file_count > 1 {
                 for (i, entry) in file_entries.iter().enumerate() {
                     println!("  [{}] {}", i, entry.0.display());
                 }
             }
-            println!("  Layers: {}", registry.layers.join(", "));
+            println!("  Layers (use): {}", registry.layers.join(", "));
+            println!(
+                "  Projects hub: {}  (veil projects list)",
+                veil_server::default_projects_dir().display()
+            );
             println!("  API: http://localhost:{}/api/ir", port);
             println!("  Files: http://localhost:{}/api/files", port);
 
@@ -1194,8 +1190,11 @@ fn main() {
                 return;
             }
 
-            let provider =
-                veil_server::FilesystemProvider::with_files(file_entries, registry.clone());
+            let provider = veil_server::FilesystemProvider::with_files_in_project(
+                file_entries,
+                registry.clone(),
+                Some(project_root),
+            );
             let app = veil_server::build_router(provider);
 
             let rt = tokio::runtime::Runtime::new().unwrap();

@@ -19,8 +19,8 @@ Related: [`VCS_MODEL.md`](VCS_MODEL.md), [`STORAGE.md`](STORAGE.md),
 | **User / family layers** | Project-local `layers/` only |
 | **`examples/`** | Syntax demos + CI only — **not** the IDE default workspace |
 | **Runtime local** | Configured **projects directory**; each product is an **independent git repo** |
-| **IDE placement** | **Embedded in the runtime UX** (not a separate long-term product shell) |
-| **Multi-project UX** | Multiple projects open as **tabs** (or equivalent) in one runtime session |
+| **IDE placement** | Launched **per project** from the runtime UX (one serve/session per product) |
+| **Multi-project UX** | **Runtime hub** lists/creates products; “Open in IDE” → new window/session each |
 
 ---
 
@@ -71,10 +71,10 @@ When the **platform runtime** runs locally, it is configured with a single
 
 | Setting | Meaning |
 |---------|---------|
-| Projects directory | Parent folder that contains product repos |
-| New project (UX) | Create subdirectory + **`git init`** (own repo) + scaffold `veil.toml` / starter package |
-| Open project | Load that repo’s root as one serve/session context |
-| Multi-open | Several projects open at once as **tabs** in the runtime-embedded IDE |
+| Projects directory | Parent folder that contains product repos (`VEIL_PROJECTS_DIR`, default `~/veil-projects`) |
+| New project (UX/CLI) | Create subdirectory + **`git init`** + scaffold (`veil projects create`) |
+| Open project | Runtime launches **`veil serve <path>`** for that product only |
+| Multi-open | Multiple **IDE windows/sessions** (one project each) — not tabs inside one IDE |
 
 ### Why independent git repos
 
@@ -83,21 +83,21 @@ When the **platform runtime** runs locally, it is configured with a single
 - No “mixed multiproduct soup” in one working tree unless the user chooses a monorepo workspace later.
 - Runtime can list repos under the projects directory without parsing a giant composite tree.
 
-### IDE inside the runtime
+### IDE launched from the runtime
 
 ```text
 ┌─ Runtime UX ─────────────────────────────────────────────┐
-│  [Projects]  [Running]  [Storage]  …                     │
-│  ┌─ IDE ───────────────────────────────────────────────┐ │
-│  │ Tab: onboarding │ Tab: dlx_core │ +                  │ │
-│  │  breadcrumbs · canvas · agent · review dock         │ │
-│  └─────────────────────────────────────────────────────┘ │
+│  Projects dir: ~/dev/veil-projects                       │
+│  [onboarding] [billing] [dlx_core]  [+ New]              │
+│       │                                                  │
+│       └─ Open in IDE ──► window: veil serve <path>       │
+│                          + viewer (that project only)    │
 └──────────────────────────────────────────────────────────┘
 ```
 
-- Each tab = one **project root** (one `SourceProvider` / active package set).
-- Switching tabs switches active IR, layers, agent context, and diagnostics.
-- Cross-project work is explicit (open another tab), not one flattened file list.
+- Runtime owns list/create/open; IDE has **no multi-project tabs**.
+- CLI: `veil projects list|create|dir|path` · `export VEIL_PROJECTS_DIR=$HOME/dev/veil-projects`
+- IDE: `veil serve $VEIL_PROJECTS_DIR/onboarding` or `make serve PROJECT=…`
 
 ---
 
@@ -105,8 +105,8 @@ When the **platform runtime** runs locally, it is configured with a single
 
 | Mode | Who | File list | Notes |
 |------|-----|-----------|--------|
-| **`project`** | App team | Packages + `layers/` + `stubs/` under one project root | Default for `veil serve .` |
-| **`projects`** | Runtime local | **Index** of git repos under the projects directory; open one or more as tabs | Runtime-embedded IDE |
+| **`project`** | App team | Packages + `layers/` + `stubs/` under one project root | `veil serve <path>` / `make serve PROJECT=` |
+| **`projects` hub** | Runtime / CLI | **Index** of git repos under `VEIL_PROJECTS_DIR` | `veil projects list` — not multi-tab IDE |
 | **`workspace`** | Optional monorepo | Members from `veil.toml` `[workspace]` | Still FS + git; later |
 | **`language`** | VEIL core devs | Workspace `layers/` editable; optional test packages | Core platform DSL |
 | **`runtime`** | Platform packages | e.g. `runtime/src/*.veil` as the platform’s own project | Separate from user products |
@@ -143,15 +143,14 @@ runtime** — see [`STORAGE.md`](STORAGE.md) and [`VCS_MODEL.md`](VCS_MODEL.md).
 
 ---
 
-## Migration notes (implementation order)
+## Implementation status
 
-1. Document modes (this file) — **done as design**.
-2. Stop treating `examples/` as the only/default serve root for product UX.
-3. `veil serve` **project** mode: scan only project packages + project
-   `layers/` / `stubs/`; resolve core layers without listing them.
-4. Runtime: `VEIL_PROJECTS_DIR` (or settings) + list/create/open repos.
-5. Embedded IDE shell: project tabs → each tab owns a serve context / provider.
-6. Optional `veil.toml` for name, default package, workspace members.
+1. Document modes — done.
+2. Strict project scan (`collect_project_files`) — no monorepo layers in file list.
+3. `veil projects {dir,list,create,path}` + `VEIL_PROJECTS_DIR`.
+4. `make serve PROJECT=…` / `make serve-examples` / `make projects`.
+5. API: `GET /api/project`, `GET|POST /api/projects` (hub; runtime UI later).
+6. Viewer: project name badge (single session).
 
 ---
 

@@ -13,6 +13,8 @@ use super::{FileInfo, FileKind, SourceProvider};
 pub struct FilesystemProvider {
     files: Mutex<Vec<FileEntry>>,
     active: Mutex<usize>,
+    /// Project root directory (IDE session is always one project).
+    project_root: Option<PathBuf>,
 }
 
 struct FileEntry {
@@ -68,6 +70,7 @@ impl FilesystemProvider {
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
         let kind = FileKind::from_path(&path);
+        let project_root = path.parent().map(|p| p.to_path_buf());
         FilesystemProvider {
             files: Mutex::new(vec![FileEntry {
                 path,
@@ -78,12 +81,22 @@ impl FilesystemProvider {
                 registry: Mutex::new(registry),
             }]),
             active: Mutex::new(0),
+            project_root,
         }
     }
 
     /// Create a provider for multiple files (packages + layers).
     pub fn with_files(files: Vec<(PathBuf, String, bool)>, _shared: LayerRegistry) -> Self {
-        let entries = files
+        Self::with_files_in_project(files, _shared, None)
+    }
+
+    /// Multi-file provider with an explicit project root (for `/api/project`).
+    pub fn with_files_in_project(
+        files: Vec<(PathBuf, String, bool)>,
+        _shared: LayerRegistry,
+        project_root: Option<PathBuf>,
+    ) -> Self {
+        let entries: Vec<FileEntry> = files
             .into_iter()
             .map(|(path, source, editable)| {
                 let name = path
@@ -102,10 +115,21 @@ impl FilesystemProvider {
                 }
             })
             .collect();
+        let project_root = project_root.or_else(|| {
+            entries
+                .first()
+                .and_then(|e| e.path.parent().map(|p| p.to_path_buf()))
+        });
         FilesystemProvider {
             files: Mutex::new(entries),
             active: Mutex::new(0),
+            project_root,
         }
+    }
+
+    /// Project root for the active IDE session, if known.
+    pub fn project_root(&self) -> Option<PathBuf> {
+        self.project_root.clone()
     }
 
     pub fn active_index(&self) -> usize {
@@ -405,5 +429,9 @@ impl SourceProvider for FilesystemProvider {
             registry: Mutex::new(registry),
         });
         Ok(idx)
+    }
+
+    fn project_root(&self) -> Option<PathBuf> {
+        FilesystemProvider::project_root(self)
     }
 }
