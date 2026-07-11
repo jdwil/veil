@@ -11,7 +11,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | Piece | Decision |
 |-------|----------|
 | **Daily driver** | `veil serve` in a **project root**; product path embeds IDE in **runtime UX** |
-| **Projects (runtime local)** | `~/.veil/config.json` + projects dir; multi-project = **one** `veil-server` process ([IDE_RUNTIME.md](../docs/IDE_RUNTIME.md)) |
+| **Projects (runtime local)** | `~/.veil/config.json` + projects dir; first-run prompt; `veil init` / hub create; multi-project = **one** `veil-server` process ([120](120-projects-config-init.md), [IDE_RUNTIME.md](../docs/IDE_RUNTIME.md)) |
 | **In-IDE agent** | Prompt → tools edit sources → IDE live-refresh; models + ACP/MCP pluggable ([100-ide-agent.md](100-ide-agent.md)) |
 | **App harness** | **VEIL-authored** via `@main` / composition — not eternal handwritten bootstrap |
 | **Local platform runtime** | Optional; **source on disk**, **metadata in sqlite**; cloud uses object store + meta DB |
