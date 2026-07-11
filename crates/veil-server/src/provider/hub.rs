@@ -18,6 +18,15 @@ tokio::task_local! {
     pub static CURRENT_PROJECT: String;
 }
 
+/// HTTP class for hub open failures (RTU-006).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenErrorKind {
+    BadRequest,
+    NotFound,
+    Unprocessable,
+    Internal,
+}
+
 /// Lazy sessions keyed by product directory name under `projects_dir`.
 pub struct ProjectsHub {
     projects_dir: PathBuf,
@@ -49,10 +58,24 @@ impl ProjectsHub {
         Ok(info)
     }
 
+    /// Classify open errors for HTTP status (RTU-006).
+    pub fn open_error_kind(err: &str) -> OpenErrorKind {
+        let e = err.to_lowercase();
+        if e.contains("invalid project name") || e.contains("empty") {
+            OpenErrorKind::BadRequest
+        } else if e.contains("not found") || e.contains("not a veil project") {
+            OpenErrorKind::NotFound
+        } else if e.contains("no packages") || e.contains("no .veil") {
+            OpenErrorKind::Unprocessable
+        } else {
+            OpenErrorKind::Internal
+        }
+    }
+
     /// Open or return cached session for a product name.
     pub fn open(&self, name: &str) -> Result<Arc<FilesystemProvider>, String> {
         if name.is_empty() || name.contains('/') || name.contains("..") {
-            return Err("invalid project name".into());
+            return Err(format!("invalid project name: {name}"));
         }
         {
             let map = self.sessions.lock().unwrap();
@@ -65,10 +88,17 @@ impl ProjectsHub {
             return Err(format!("project not found: {name}"));
         }
         if !is_project_root(&root) {
-            return Err(format!("not a VEIL project: {}", root.display()));
+            return Err(format!("project not found: {name} (not a VEIL project)"));
         }
         let _ = ensure_project_shape(&root);
-        let paths = collect_project_files(&root, self.show_core_layers)?;
+        let paths = match collect_project_files(&root, self.show_core_layers) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(format!(
+                    "no packages in project {name}: {e} — run: veil init {name}"
+                ));
+            }
+        };
         let entries: Vec<(PathBuf, String, bool)> = paths
             .into_iter()
             .map(|path| {
@@ -79,7 +109,10 @@ impl ProjectsHub {
             })
             .collect();
         if entries.is_empty() {
-            return Err(format!("no packages in project {name}"));
+            return Err(format!(
+                "no packages in project {name} — run: veil init {}",
+                root.display()
+            ));
         }
         let reg = LayerRegistry::for_veil_file(&entries[0].0).unwrap_or_else(|_| {
             LayerRegistry::builtin()

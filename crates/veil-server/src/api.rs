@@ -17,7 +17,9 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::protocol::{CheckRequest, CheckResponse, EditRequest, EditResponse};
-use crate::provider::hub::{MultiProjectProvider, ProjectsHub, CURRENT_PROJECT};
+use crate::provider::hub::{
+    MultiProjectProvider, OpenErrorKind, ProjectsHub, CURRENT_PROJECT,
+};
 use crate::provider::{FileKind, SourceProvider};
 
 /// IDE dual-loop routes under a path prefix (MP-001).
@@ -108,8 +110,10 @@ pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
 /// Same handlers as [`build_router`]; project scope via task-local name.
 pub fn build_multi_router(hub: ProjectsHub) -> Router {
     let multi = Arc::new(MultiProjectProvider::new(hub));
-    let ide = ide_routes::<MultiProjectProvider>()
-        .layer(middleware::from_fn(project_scope_middleware));
+    let ide = ide_routes::<MultiProjectProvider>().layer(middleware::from_fn_with_state(
+        multi.clone(),
+        project_scope_middleware,
+    ));
     let router = hub_routes::<Arc<MultiProjectProvider>>()
         .nest("/api/p/{project}", ide)
         .layer(CorsLayer::permissive())
@@ -117,13 +121,50 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     with_auth(router)
 }
 
-/// Set [`CURRENT_PROJECT`] from nested path `{project}`.
+/// Validate project exists, then set [`CURRENT_PROJECT`] (RTU-006).
 async fn project_scope_middleware(
+    State(multi): State<Arc<MultiProjectProvider>>,
     Path(project): Path<String>,
     req: Request<axum::body::Body>,
     next: Next,
-) -> impl IntoResponse {
-    CURRENT_PROJECT.scope(project, next.run(req)).await
+) -> axum::response::Response {
+    if project.is_empty()
+        || project.contains('/')
+        || project.contains("..")
+        || !project
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "error": "invalid project name", "name": project }).to_string(),
+        )
+            .into_response();
+    }
+    match multi.hub().open(&project) {
+        Ok(_) => CURRENT_PROJECT.scope(project, next.run(req)).await,
+        Err(msg) => {
+            let (status, code) = match ProjectsHub::open_error_kind(&msg) {
+                OpenErrorKind::BadRequest => (StatusCode::BAD_REQUEST, "bad_request"),
+                OpenErrorKind::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+                OpenErrorKind::Unprocessable => (StatusCode::UNPROCESSABLE_ENTITY, "no_packages"),
+                OpenErrorKind::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+            };
+            (
+                status,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({
+                    "error": msg,
+                    "code": code,
+                    "name": project,
+                    "hint": "veil projects list  |  veil init --in-hub --name <name>",
+                })
+                .to_string(),
+            )
+                .into_response()
+        }
+    }
 }
 
 type SharedProvider<P> = Arc<P>;
