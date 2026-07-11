@@ -249,7 +249,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ### Phase 2 — VEIL frontend is the real shell
 
-#### PVR-020: Page/layout raw templates parse for svelte5 — Todo · P1
+#### PVR-020: Page/layout raw templates parse for svelte5 — Done · P1
 
 **Acceptance**
 
@@ -453,7 +453,7 @@ make pure-runtime
 | PVR-015 | Tools facades | Todo |
 | PVR-016 | Agent message path | Todo |
 | PVR-017 | No default stub bus | Todo |
-| PVR-020 | page/layout raw templates | Todo |
+| PVR-020 | page/layout raw templates | Done |
 | PVR-021 | runtime-ui sole shell source | Todo |
 | PVR-022 | Shell on live APIs | Todo |
 | PVR-023 | Serve generated shell | Todo |

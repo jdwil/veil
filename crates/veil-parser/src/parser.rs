@@ -261,6 +261,15 @@ impl<'a> Parser<'a> {
         self.peek_kind() == kind
     }
 
+    /// True if the token after the current word is a string literal
+    /// (`template """..."""` / `style """..."""`).
+    fn peek_is_string_after_word(&self) -> bool {
+        match self.tokens.get(self.pos + 1).map(|t| &t.kind) {
+            Some(TokenKind::StringLit) | Some(TokenKind::FStringLit) => true,
+            _ => false,
+        }
+    }
+
     /// If the current token is a word (ident or core-construct keyword),
     /// return its text.
     fn current_word(&self) -> Option<&str> {
@@ -1258,7 +1267,14 @@ impl<'a> Parser<'a> {
                 // not precede a field line.
                 if self.at(&TokenKind::Annotation) {
                     let anns = self.parse_annotations();
+                    // Do not treat `template """…"""` / `style """…"""` as annotated fields
+                    // (common after `@route` on page/layout — PVR-020).
+                    let word = self.current_word().unwrap_or("");
+                    let next_string = self.peek_is_string_after_word();
+                    let rawish = (word == "template" || word == "style") && next_string
+                        || spec.raw_block_keywords.iter().any(|k| k == word) && next_string;
                     if self.at(&TokenKind::Ident)
+                        && !rawish
                         && (self.is_field_line()
                             || !self
                                 .registry
@@ -1327,7 +1343,13 @@ impl<'a> Parser<'a> {
                 // Named sub-block declared by the layer (`root: struct`, `state: enum`)
                 if let Some(word) = self.current_word().map(|s| s.to_string()) {
                     // Raw string block (template, style, etc.)
-                    if spec.raw_block_keywords.contains(&word) {
+                    // Also accept template/style + string when next token is a
+                    // string lit even if layer has-list failed to register
+                    // raw_block_keywords (page/layout under groups — PVR-020).
+                    let is_raw = spec.raw_block_keywords.contains(&word)
+                        || ((word == "template" || word == "style")
+                            && (self.peek_is_string_after_word()));
+                    if is_raw {
                         self.advance(); // consume the keyword
                         if self.at(&TokenKind::StringLit) || self.at(&TokenKind::FStringLit) {
                             let text = self.advance().text;
