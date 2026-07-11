@@ -244,8 +244,10 @@ runtime-serve: pure-runtime-build
 	@CI=1 VEIL_NONINTERACTIVE=1 VEIL_PORT=$(RUNTIME_PORT) VEIL_BIN=$(CURDIR)/$(VEIL_BIN) \
 		./runtime/bootstrap/target/release/veil-runtime
 
-# PVR-031 / CAP-005: gen SPA (dist/) + build host trampoline
+# PVR-031 / CAP-005: gen SPA (dist/) + gen runtime crates + build host trampoline
 pure-runtime-build: veil
+	@echo "==> gen runtime.veil → runtime/generated (PVR-011 storage crates)"
+	@$(VEIL_BIN) gen $(RUNTIME_SRC) -o $(RUNTIME_OUT) -t rust || true
 	@echo "==> gen runtime-ui.veil → static/app (SPA dist CAP-005)"
 	@$(VEIL_BIN) check runtime/src/runtime-ui.veil || true
 	@$(VEIL_BIN) gen runtime/src/runtime-ui.veil -o runtime/bootstrap/static/app -t typescript
@@ -260,9 +262,9 @@ pure-runtime-build: veil
 		(echo "error: SPA spa.js missing after gen" >&2; exit 1)
 	@echo "==> gen host.veil (CAP-002/006 product host bin)"
 	@$(VEIL_BIN) gen runtime/src/host.veil -o runtime/generated-host -t rust || true
-	@echo "==> build veil-runtime trampoline"
+	@echo "==> build veil-runtime trampoline (links generated storage)"
 	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
-	@echo "✓ pure-runtime build ready (shell: static/dist)"
+	@echo "✓ pure-runtime build ready (shell: static/dist, bus: storage::application)"
 
 # PVR-031 smoke: build + curl health/projects/config/SPA (no long-lived server)
 pure-runtime-smoke:

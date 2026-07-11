@@ -447,7 +447,7 @@ make pure-runtime
 | PVR-000 | Docs lock pure-runtime DoD | Done |
 | PVR-001 | Capability matrix | Done |
 | PVR-010 | VEIL `@main` host | Done — `host.veil` + ProductHost; trampoline mounts bus |
-| PVR-011 | Storage handlers live | Done — FS under projects_dir |
+| PVR-011 | Storage handlers live | Done — generated storage::application + local_ports |
 | PVR-012 | Git branch/diff/log | Done — git CLI |
 | PVR-013 | Compile pipeline | Done — veil check |
 | PVR-014 | Local deploy | Done — artifact register |

@@ -4,6 +4,7 @@
 //! Bus dispatch lives in `platform` until CAP-003/004 wire generated handlers fully.
 //! Target: keep this file ≤ ~80 lines of process glue.
 
+mod local_ports;
 mod platform;
 
 use std::collections::HashMap;
@@ -175,7 +176,7 @@ fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
                         } else {
                             m = serde_json::json!({ "type": ty, "raw": payload });
                         }
-                        Ok(serde_json::to_string(&platform::handle_bus(&m))
+                        Ok(serde_json::to_string(&platform::handle_bus(&m).await)
                             .unwrap_or_else(|_| "{}".into()))
                     }
                     .boxed()

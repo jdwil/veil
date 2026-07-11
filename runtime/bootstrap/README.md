@@ -30,7 +30,9 @@ scripts/run_local_example.sh
 | Path | Role |
 |------|------|
 | `src/main.rs` | Trampoline: bus routes + `ProductHost::listen` |
-| `src/platform.rs` | Live handlers + `FileSystem`/`GitRepo` + `register_all` |
+| `src/platform.rs` | Bus dispatch + compile/deploy + `register_all` |
+| `src/local_ports.rs` | CAP-004 local MetadataStore/ObjectStorage for generated storage |
+| `../generated/crates/storage` | Generated domain services (PVR-011) |
 | `static/dist/` | **Primary** generated SPA (`make pure-runtime-build`) |
 | `static/ide.html` | IDE iframe embed shell |
 | `static/legacy/` | Quarantined notes for old hand HTML |

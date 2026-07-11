@@ -538,8 +538,146 @@ pub fn list_layers() -> Value {
     json!({ "layers": layers })
 }
 
-/// Dispatch bus message type to platform impl.
-pub fn handle_bus(msg: &Value) -> Value {
+/// Dispatch bus message — PVR-011: storage domain via generated `storage::application`
+/// + CAP-004 local ports; compile/deploy remain host platform ops.
+pub async fn handle_bus(msg: &Value) -> Value {
+    let ty = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let strf = |k: &str| msg.get(k).and_then(|v| v.as_str());
+    let repo = || strf("repo_id").or_else(|| strf("repo")).unwrap_or("").to_string();
+
+    // Prefer generated storage services when not stubbed.
+    if std::env::var("VEIL_PLATFORM_LEGACY")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return handle_bus_legacy(msg);
+    }
+
+    let deps = crate::local_ports::storage_deps();
+    use storage::application;
+    use storage::domain::types::RepoId;
+
+    match ty {
+        "ListRepos" | "ListReposTool" => match application::list_repos(&deps).await {
+            Ok(repos) => json!({
+                "repos": repos,
+                "projects_dir": projects_dir().to_string_lossy(),
+                "via": "storage::application",
+            }),
+            Err(e) => json!({ "error": e.to_string() }),
+        },
+        "CreateRepo" | "CreateRepoTool" => {
+            let name = strf("name").unwrap_or("").to_string();
+            let desc = strf("description").map(|s| s.to_string());
+            match application::create_repo(&deps, name, desc).await {
+                Ok(repo) => json!({ "repo": repo, "via": "storage::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "WriteFile" | "WriteFileTool" => {
+            let id = RepoId {
+                value: repo(),
+            };
+            let branch = strf("branch").unwrap_or("main").to_string();
+            let path = strf("path").unwrap_or("").to_string();
+            let content = strf("content").unwrap_or("").to_string();
+            let message = strf("message").unwrap_or("update").to_string();
+            match application::write_file(&deps, id, branch, path.clone(), content, message).await
+            {
+                Ok(commit) => json!({ "ok": true, "commit": commit, "path": path, "via": "storage::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "ReadFile" | "ReadFileTool" => {
+            let id = RepoId { value: repo() };
+            let branch = strf("branch").unwrap_or("main").to_string();
+            let path = strf("path").unwrap_or("").to_string();
+            match application::read_file(&deps, id, branch, path.clone()).await {
+                Ok(bytes) => {
+                    let content = String::from_utf8_lossy(&bytes).to_string();
+                    json!({ "path": path, "content": content, "via": "storage::application" })
+                }
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "ListFiles" | "ListFilesTool" => {
+            let id = RepoId { value: repo() };
+            let branch = strf("branch").unwrap_or("main").to_string();
+            let prefix = strf("prefix").unwrap_or("").to_string();
+            match application::list_files(&deps, id, branch, prefix).await {
+                Ok(files) => json!({ "repo": repo(), "files": files, "via": "storage::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "ListBranches" | "ListBranchesTool" => {
+            let id = RepoId { value: repo() };
+            match application::list_branches(&deps, id).await {
+                Ok(branches) => json!({ "repo": repo(), "branches": branches, "via": "storage::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "CreateBranch" | "CreateBranchTool" => {
+            let id = RepoId { value: repo() };
+            let name = strf("name").unwrap_or("").to_string();
+            let from = strf("from").unwrap_or("main").to_string();
+            match application::create_branch(&deps, id, name, from).await {
+                Ok(b) => json!({ "branch": b, "via": "storage::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "GetCommitLog" | "LogTool" => {
+            let id = RepoId { value: repo() };
+            let limit = msg.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
+            match application::get_commit_log(&deps, id, None, limit, 0).await {
+                Ok(commits) => json!({ "repo": repo(), "commits": commits, "via": "storage::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "GetDiff" | "DiffTool" => get_diff(
+            strf("repo_id").or_else(|| strf("repo")).unwrap_or(""),
+            strf("from_ref"),
+            strf("to_ref"),
+        ),
+        "Compile" | "CompileTool" => {
+            compile_project(strf("repo_id").or_else(|| strf("repo")).unwrap_or(""))
+        }
+        "Deploy" | "DeployTool" => {
+            deploy_local(strf("repo_id").or_else(|| strf("repo")).unwrap_or(""))
+        }
+        "HealthCheck" => json!({
+            "status": "ok",
+            "service": "veil-runtime",
+            "bus_mode": "generated-storage",
+            "via": "storage::application + local_ports",
+        }),
+        "LoadConfig" => {
+            let cfg = veil_server::load_config_or_default();
+            json!({
+                "projects_dir": cfg.projects_dir_path().to_string_lossy(),
+                "configured": cfg.configured,
+                "config_path": veil_server::config_path().to_string_lossy(),
+            })
+        }
+        "HandleAgentMessage" | "HandleToolCall" => {
+            let project = strf("project").or_else(|| strf("repo")).unwrap_or("");
+            let prompt = strf("message").or_else(|| strf("prompt")).unwrap_or("");
+            json!({
+                "status": "accepted",
+                "project": project,
+                "prompt_len": prompt.len(),
+                "hint": "Use IDE agent dock (veil-server /api/p/{project}/agent/turn) for full ACP turns",
+                "ide_path": format!("/api/p/{project}/agent/turn"),
+            })
+        }
+        other => json!({
+            "error": "not_implemented",
+            "handler": other,
+        }),
+    }
+}
+
+/// Pre-CAP path: pure platform FS helpers (escape hatch VEIL_PLATFORM_LEGACY=1).
+fn handle_bus_legacy(msg: &Value) -> Value {
     let ty = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let strf = |k: &str| msg.get(k).and_then(|v| v.as_str());
     match ty {
@@ -585,30 +723,7 @@ pub fn handle_bus(msg: &Value) -> Value {
         "Deploy" | "DeployTool" => {
             deploy_local(strf("repo_id").or_else(|| strf("repo")).unwrap_or(""))
         }
-        "HealthCheck" => json!({ "status": "ok", "service": "veil-runtime", "bus_mode": "live" }),
-        "LoadConfig" => {
-            let cfg = veil_server::load_config_or_default();
-            json!({
-                "projects_dir": cfg.projects_dir_path().to_string_lossy(),
-                "configured": cfg.configured,
-                "config_path": veil_server::config_path().to_string_lossy(),
-            })
-        }
-        "HandleAgentMessage" | "HandleToolCall" => {
-            // PVR-016: document ACP path; optional local echo with project context
-            let project = strf("project").or_else(|| strf("repo")).unwrap_or("");
-            let prompt = strf("message").or_else(|| strf("prompt")).unwrap_or("");
-            json!({
-                "status": "accepted",
-                "project": project,
-                "prompt_len": prompt.len(),
-                "hint": "Use IDE agent dock (veil-server /api/p/{project}/agent/turn) for full ACP turns",
-                "ide_path": format!("/api/p/{project}/agent/turn"),
-            })
-        }
-        other => json!({
-            "error": "not_implemented",
-            "handler": other,
-        }),
+        "HealthCheck" => json!({ "status": "ok", "service": "veil-runtime", "bus_mode": "legacy" }),
+        other => json!({ "error": "not_implemented", "handler": other }),
     }
 }

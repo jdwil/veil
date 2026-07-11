@@ -241,7 +241,8 @@ Pure VEIL runtime is **complete** when:
    parallel Rust dispatch table.
 5. IDE multi-project works same-origin via linked `veil-server`.
 
-**CAP-001–007 are Done.** Residual honesty: live Bus handler *bodies* still
-sit in `runtime/bootstrap/src/platform.rs` (using CAP-004 ports); generated
-storage crates are not yet the only dispatch path. Product shell primary path
-is generated SPA (`static/dist`).
+**CAP-001–007 are Done.** Bus storage handlers now call generated
+`storage::application::*` with CAP-004 local port adapters
+(`runtime/bootstrap/src/local_ports.rs`). Compile/deploy remain host platform
+ops. Escape hatch: `VEIL_PLATFORM_LEGACY=1`. Product shell: generated SPA
+(`static/dist`).

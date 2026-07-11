@@ -44,12 +44,13 @@ capabilities:
 
 Full plan: [`stories/141-pure-runtime-capability-gaps.md`](../stories/141-pure-runtime-capability-gaps.md).
 
-**Residual:** trampoline still owns live Bus dispatch *bodies* in `platform.rs`
-(via CAP-004 ports + `register_all`); generated storage crates are not yet the
-sole body path. Product shell primary path is generated SPA under `static/dist`.
+**PVR-011:** Bus List/Create/Read/Write/ListFiles/Branches/Log call generated
+`storage::application` with CAP-004 `local_ports`. Compile/deploy remain host
+helpers. Escape hatch: `VEIL_PLATFORM_LEGACY=1`. Shell: generated SPA under
+`static/dist`.
 
 ```bash
-make pure-runtime-build   # gen SPA + host + trampoline binary
+make pure-runtime-build   # gen runtime.veil + SPA + trampoline
 make pure-runtime-smoke   # curl health / projects / config / SPA asset
 make pure-runtime         # build + serve :8080
 ```
