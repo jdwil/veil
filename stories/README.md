@@ -52,6 +52,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | [90-parity-future.md](90-parity-future.md) | Expressiveness parity roadmap |
 | [100-ide-agent.md](100-ide-agent.md) | In-IDE agent, models, ACP/MCP, SourceStore tools |
 | [110-layer-dsl-ide.md](110-layer-dsl-ide.md) | **Layer / team-DSL IDE** — full-capability language designer loop |
+| [120-projects-config-init.md](120-projects-config-init.md) | **Config first-run, `veil init`, projects hub, multi-project kernel** |
 
 ## Suggested first slice (P0)
 
@@ -78,10 +79,21 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **DSL-005–008** | Layer topology, palette, props, structured ops | [110](110-layer-dsl-ide.md) |
 | **DSL-009–011** | Presentation/prompts, diff, agent layer tools | [110](110-layer-dsl-ide.md) |
 
+### P1 — onboarding & projects hub (implement next)
+
+| ID | Theme | File |
+|----|--------|------|
+| **CFG-001–003** | Config schema; first-run prompt; auto-create dirs | [120](120-projects-config-init.md) |
+| **INIT-001–002** | `veil init`; align `projects create` | [120](120-projects-config-init.md) |
+| **INIT-003–004** | Serve ensure dirs; scaffold `.gitignore` | [120](120-projects-config-init.md) |
+| **HUB-001–002** | `veil projects` + HTTP hub parity | [120](120-projects-config-init.md) |
+| **CFG-004–005** | `GET /api/config`; reconfigure projects_dir | [120](120-projects-config-init.md) |
+
 ### P2 — trust & daily driver
 
 | ID | Theme | File |
 |----|--------|------|
+| **MP-001–004** | Multi-project one process; viewer prefix; runtime embeds kernel | [120](120-projects-config-init.md) |
 | **DSL-012–014** | Team consumer mode, scaffold, impact view | [110](110-layer-dsl-ide.md) |
 | **PAR-015** | Spike capability honesty (signature vs body) | [90](90-parity-future.md) |
 | **AGT-013** | Agent write path allowlist | [100](100-ide-agent.md) |
@@ -106,7 +118,8 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **GEN-008 / 009** | Package multi-target + warning hygiene | [60](60-codegen-targets.md) |
 | **DSL-015** | Many-layer workspace polish | [110](110-layer-dsl-ide.md) |
 
-**Sequencing note:** Prefer **DSL-001–004** when language-designer iteration is
-the bottleneck (many team DSLs). Close **PAR-015** before expanding
-Swift/Kotlin demos so capabilities cannot lie. Prefer **AGT-013/014** before
-multi-user remote auth.
+**Sequencing note:** Prefer **CFG/INIT (120)** for machine onboarding and
+projects hub before multi-project MP-*. Prefer **DSL-001–004** when
+language-designer iteration is the bottleneck. Close **PAR-015** before
+expanding Swift/Kotlin demos. Prefer **AGT-013/014** before multi-user remote
+auth.
