@@ -78,7 +78,7 @@ STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sq
                sha2 zip tempfile schemars
 
 .PHONY: veil serve serve-examples serve-stop serve-api serve-ui viewer-install \
-	projects runtime runtime-serve pure-runtime pure-runtime-build gen-runtime build-runtime \
+	projects runtime runtime-serve pure-runtime pure-runtime-build pure-runtime-smoke gen-runtime build-runtime \
 	clean-runtime stubs check test test-roundtrip
 
 # ─── Compiler ───────────────────────────────────────────────────────────────
@@ -249,18 +249,24 @@ pure-runtime-build: veil
 	@echo "==> gen runtime-ui.veil → static/app (SPA dist CAP-005)"
 	@$(VEIL_BIN) check runtime/src/runtime-ui.veil || true
 	@$(VEIL_BIN) gen runtime/src/runtime-ui.veil -o runtime/bootstrap/static/app -t typescript
-	@# Prefer generated dist/ as primary shell (ProductHost serves dist/ first)
-	@if [ -f runtime/bootstrap/static/app/dist/index.html ]; then \
-		mkdir -p runtime/bootstrap/static/dist; \
-		cp -f runtime/bootstrap/static/app/dist/index.html runtime/bootstrap/static/dist/; \
-		cp -f runtime/bootstrap/static/app/dist/spa.js runtime/bootstrap/static/dist/ 2>/dev/null || true; \
-		cp -f runtime/bootstrap/static/app/src/spa.js runtime/bootstrap/static/dist/ 2>/dev/null || true; \
-	fi
+	@# Primary product shell: static/dist (ProductHost serves this first)
+	@test -f runtime/bootstrap/static/app/dist/index.html || \
+		(echo "error: SPA dist/index.html not generated from runtime-ui.veil" >&2; exit 1)
+	@mkdir -p runtime/bootstrap/static/dist
+	@cp -f runtime/bootstrap/static/app/dist/index.html runtime/bootstrap/static/dist/
+	@cp -f runtime/bootstrap/static/app/dist/spa.js runtime/bootstrap/static/dist/ 2>/dev/null \
+		|| cp -f runtime/bootstrap/static/app/src/spa.js runtime/bootstrap/static/dist/spa.js
+	@test -f runtime/bootstrap/static/dist/spa.js || \
+		(echo "error: SPA spa.js missing after gen" >&2; exit 1)
 	@echo "==> gen host.veil (CAP-002/006 product host bin)"
 	@$(VEIL_BIN) gen runtime/src/host.veil -o runtime/generated-host -t rust || true
 	@echo "==> build veil-runtime trampoline"
 	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
-	@echo "✓ pure-runtime build ready (shell: static/dist or static/app)"
+	@echo "✓ pure-runtime build ready (shell: static/dist)"
+
+# PVR-031 smoke: build + curl health/projects/config/SPA (no long-lived server)
+pure-runtime-smoke:
+	@bash scripts/pure_runtime_smoke.sh
 
 pure-runtime: pure-runtime-build runtime-serve
 

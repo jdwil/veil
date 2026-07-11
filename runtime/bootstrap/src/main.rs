@@ -20,14 +20,12 @@ use veil_server::{resolve_static_dir, ProductHost};
 #[derive(Debug)]
 enum BusError {
     NotFound,
-    Other(String),
 }
 
 impl std::fmt::Display for BusError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BusError::NotFound => write!(f, "handler not found"),
-            BusError::Other(s) => write!(f, "{s}"),
         }
     }
 }
@@ -141,10 +139,9 @@ async fn api_compile(
     Json(platform::compile_project(&repo))
 }
 
-/// CAP-003: register names from the canonical handler list (mirrors generated
-/// `register_all` until gen crates are linked into this trampoline).
+/// CAP-003: register via `platform::register_all` (single name registry).
 fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
-    for name in platform::HANDLER_NAMES {
+    platform::register_all(|name| {
         if stub {
             let handler_name = name.to_string();
             bus.register(
@@ -185,7 +182,7 @@ fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
                 }),
             );
         }
-    }
+    });
 }
 
 #[tokio::main]

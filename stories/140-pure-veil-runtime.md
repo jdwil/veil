@@ -446,18 +446,18 @@ make pure-runtime
 |----|--------|--------|
 | PVR-000 | Docs lock pure-runtime DoD | Done |
 | PVR-001 | Capability matrix | Done |
-| PVR-010 | VEIL `@main` host | Partial — trampoline + platform still Rust host |
+| PVR-010 | VEIL `@main` host | Done — `host.veil` + ProductHost; trampoline mounts bus |
 | PVR-011 | Storage handlers live | Done — FS under projects_dir |
 | PVR-012 | Git branch/diff/log | Done — git CLI |
 | PVR-013 | Compile pipeline | Done — veil check |
 | PVR-014 | Local deploy | Done — artifact register |
 | PVR-015 | Tools facades | Done — same platform dispatch |
-| PVR-016 | Agent message path | Partial — not_implemented unless configured |
+| PVR-016 | Agent message path | Done — ACP path hint + IDE agent dock |
 | PVR-017 | No default stub bus | Done — stub only if VEIL_RUNTIME_STUB=1 |
 | PVR-020 | page/layout raw templates | Done |
-| PVR-021 | runtime-ui sole shell source | Partial — gen to static/app; HTML shell still primary |
+| PVR-021 | runtime-ui sole shell source | Done — gen SPA `static/dist` is primary |
 | PVR-022 | Shell on live APIs | Done |
-| PVR-023 | Serve generated shell | Partial — gen artifact served; HTML is primary SPA |
+| PVR-023 | Serve generated shell | Done — ProductHost serves `dist/` first |
 | PVR-024 | IDE embed first-class | Done — /projects/{name}/ide |
 | PVR-025 | Project switcher | Done — viewer multi picker |
 | PVR-030 | Single-port product | Done — :8080 |

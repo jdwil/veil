@@ -1,6 +1,12 @@
-# Generated runtime shell assets
+# Generated shell output (CAP-005)
 
-- `src/` — `veil gen runtime/src/runtime-ui.veil -t typescript` output
-- `index.html` — product shell (mirrors runtime-ui screens; served at `/`)
+`make pure-runtime-build` runs:
 
-Regenerate with `make pure-runtime-build`.
+```bash
+veil gen runtime/src/runtime-ui.veil -o runtime/bootstrap/static/app -t typescript
+```
+
+Primary product UI is copied to **`../dist/`** (`index.html` + `spa.js`).
+`ProductHost` serves `static/dist/` first at `GET /`.
+
+Do not hand-edit product HTML here — author `runtime/src/runtime-ui.veil`.

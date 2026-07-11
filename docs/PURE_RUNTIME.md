@@ -44,6 +44,12 @@ capabilities:
 
 Full plan: [`stories/141-pure-runtime-capability-gaps.md`](../stories/141-pure-runtime-capability-gaps.md).
 
-**Residual:** trampoline still owns live Bus dispatch bodies in `platform.rs`
-until generated storage DI is fully substituted; product shell primary path is
-generated SPA under `static/dist`.
+**Residual:** trampoline still owns live Bus dispatch *bodies* in `platform.rs`
+(via CAP-004 ports + `register_all`); generated storage crates are not yet the
+sole body path. Product shell primary path is generated SPA under `static/dist`.
+
+```bash
+make pure-runtime-build   # gen SPA + host + trampoline binary
+make pure-runtime-smoke   # curl health / projects / config / SPA asset
+make pure-runtime         # build + serve :8080
+```

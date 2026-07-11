@@ -10,6 +10,7 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 /// Canonical bus handler names (CAP-003). Mirrors generated `register_handlers`.
+/// Host trampoline is the single registration entry; do not hardcode elsewhere.
 pub const HANDLER_NAMES: &[&str] = &[
     "CreateRepo",
     "ListRepos",
@@ -45,6 +46,16 @@ pub const HANDLER_NAMES: &[&str] = &[
     "RunSecurityScan",
     "StartHarness",
 ];
+
+/// CAP-003-style registration: call once from the trampoline.
+pub fn register_all<F>(mut register: F)
+where
+    F: FnMut(&'static str),
+{
+    for name in HANDLER_NAMES {
+        register(name);
+    }
+}
 
 // ─── CAP-004: system ports (local defaults) ─────────────────────────────────
 

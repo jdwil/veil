@@ -1,0 +1,9 @@
+{
+  "name": "veilRuntimeUI-spa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "mkdir -p dist && cp index.html dist/ && cp src/spa.js dist/",
+    "dev": "echo 'Serve dist/ via veil-runtime ProductHost'"
+  }
+}

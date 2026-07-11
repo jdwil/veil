@@ -1,22 +1,38 @@
-# Bootstrap — seed only (RT-005)
+# Bootstrap — thin trampoline (CAP-002 / PVR-010)
 
-This directory is a **legacy stage-0 trampoline** for the full `veil-runtime`
-self-hosting app. It is **not** the default app harness path.
+Process entry for **veil-runtime**. Product HTTP surface is
+`veil_server::ProductHost` (IDE multi + SPA + config). Bus dispatch for
+storage/tools uses CAP-004 ports in `platform.rs` until generated crates fully
+own handler bodies.
 
-## Prefer (product default)
+## Prefer
 
 ```bash
-# VEIL-authored @main + generated InProcessBus
-scripts/run_local_example.sh
-# or:
-veil gen examples/local_run.veil -o /tmp/out -t rust
-cd /tmp/out && cargo run -p veil_bin
+make pure-runtime          # build + serve product host
+make pure-runtime-smoke    # CI-friendly curl smoke
 ```
 
-See `docs/HARNESS.md` and `layers/harness.layer`.
+VEIL host package (ProductHost bin, no bus platform yet):
 
-## This folder
+```bash
+veil gen runtime/src/host.veil -t rust -o runtime/generated-host
+cd runtime/generated-host && cargo run -p veil_bin
+```
 
-Handwritten `InProcessBus` + HTTP wiring for the large `runtime.veil` package
-until that package is fully regenerated with the same RT-001 path. Do not grow
-new product demos here — write VEIL + `@main` instead.
+App harness demos (not the product runtime):
+
+```bash
+scripts/run_local_example.sh
+```
+
+## Layout
+
+| Path | Role |
+|------|------|
+| `src/main.rs` | Trampoline: bus routes + `ProductHost::listen` |
+| `src/platform.rs` | Live handlers + `FileSystem`/`GitRepo` + `register_all` |
+| `static/dist/` | **Primary** generated SPA (`make pure-runtime-build`) |
+| `static/ide.html` | IDE iframe embed shell |
+| `static/legacy/` | Quarantined notes for old hand HTML |
+
+Do not grow product UI or domain logic here — author `.veil` under `runtime/src/`.
