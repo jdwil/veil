@@ -131,23 +131,89 @@ pub fn validate_project_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Create a new product under `projects_dir`: mkdir, git init, scaffold.
-pub fn create_project(projects_dir: &Path, name: &str) -> Result<ProjectInfo, String> {
-    validate_project_name(name)?;
-    ensure_projects_dir(projects_dir)?;
-    let root = projects_dir.join(name);
-    if root.exists() {
-        return Err(format!("project already exists: {}", root.display()));
+/// Options for [`init_project`] (INIT-001).
+#[derive(Debug, Clone)]
+pub struct InitOptions {
+    /// Product name (`[a-zA-Z0-9_-]+`).
+    pub name: String,
+    /// Run `git init` when git is available (default true).
+    pub git: bool,
+    /// Allow non-empty dir / overwrite scaffold files.
+    pub force: bool,
+}
+
+impl InitOptions {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            git: true,
+            force: false,
+        }
     }
-    std::fs::create_dir_all(&root)
-        .map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+}
+
+const PROJECT_GITIGNORE: &str = "\
+# VEIL / tooling
+generated/
+target/
+.veil-dev/
+output/
+
+# OS
+.DS_Store
+Thumbs.db
+";
+
+/// Scaffold a product project at `root` (INIT-001).
+///
+/// Creates `veil.toml`, `<name>.veil`, `layers/`, `stubs/`, `.gitignore`,
+/// and optionally `git init`.
+pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, String> {
+    validate_project_name(&opts.name)?;
+
+    if root.exists() {
+        if !root.is_dir() {
+            return Err(format!("not a directory: {}", root.display()));
+        }
+        let has_pkg = root.join("veil.toml").is_file()
+            || read_dir_ext(root, "veil").next().is_some();
+        if has_pkg && !opts.force {
+            return Err(format!(
+                "{} already looks like a VEIL project (veil.toml or *.veil present); use --force to re-scaffold",
+                root.display()
+            ));
+        }
+        if !opts.force {
+            // Non-empty without veil files: refuse unless empty or only empty dirs
+            if let Ok(rd) = std::fs::read_dir(root) {
+                let entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+                if !entries.is_empty() {
+                    let only_ok = entries.iter().all(|e| {
+                        let n = e.file_name();
+                        let s = n.to_string_lossy();
+                        s == "layers" || s == "stubs" || s == ".git" || s == ".gitignore"
+                    });
+                    if !only_ok {
+                        return Err(format!(
+                            "{} is not empty; pass --force or choose an empty path",
+                            root.display()
+                        ));
+                    }
+                }
+            }
+        }
+    } else {
+        std::fs::create_dir_all(root)
+            .map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+    }
+
     std::fs::create_dir_all(root.join("layers"))
         .map_err(|e| format!("cannot create layers/: {e}"))?;
     std::fs::create_dir_all(root.join("stubs"))
         .map_err(|e| format!("cannot create stubs/: {e}"))?;
 
-    let pkg_name = pascal_case(name);
-    let veil_toml = format!("name = \"{name}\"\n");
+    let pkg_name = pascal_case(&opts.name);
+    let veil_toml = format!("name = \"{}\"\n", opts.name);
     std::fs::write(root.join("veil.toml"), veil_toml)
         .map_err(|e| format!("cannot write veil.toml: {e}"))?;
 
@@ -155,30 +221,86 @@ pub fn create_project(projects_dir: &Path, name: &str) -> Result<ProjectInfo, St
         "pkg {pkg_name}\n  use ddd\n\n  # Scaffold — open in IDE: veil serve {}\n",
         root.display()
     );
-    let pkg_file = root.join(format!("{name}.veil"));
+    let pkg_file = root.join(format!("{}.veil", opts.name));
     std::fs::write(&pkg_file, pkg_src).map_err(|e| format!("cannot write package: {e}"))?;
 
-    let git_ok = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !git_ok {
-        eprintln!(
-            "warning: git init failed in {} (git missing or error); project files created anyway",
-            root.display()
-        );
+    let gi = root.join(".gitignore");
+    if !gi.exists() || opts.force {
+        std::fs::write(&gi, PROJECT_GITIGNORE)
+            .map_err(|e| format!("cannot write .gitignore: {e}"))?;
+    }
+
+    if opts.git && !root.join(".git").exists() {
+        let git_ok = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !git_ok {
+            eprintln!(
+                "warning: git init failed in {} (git missing or error); project files created anyway",
+                root.display()
+            );
+        }
     }
 
     Ok(ProjectInfo {
-        name: name.to_string(),
+        name: opts.name.clone(),
         path: root.to_string_lossy().to_string(),
         is_git: root.join(".git").exists(),
         package_count: 1,
     })
+}
+
+/// Create a new product under `projects_dir` (INIT-002 = hub entry to init).
+pub fn create_project(projects_dir: &Path, name: &str) -> Result<ProjectInfo, String> {
+    create_project_with_opts(projects_dir, name, true)
+}
+
+/// Hub create with git flag.
+pub fn create_project_with_opts(
+    projects_dir: &Path,
+    name: &str,
+    git: bool,
+) -> Result<ProjectInfo, String> {
+    validate_project_name(name)?;
+    ensure_projects_dir(projects_dir)?;
+    let root = projects_dir.join(name);
+    if root.exists() && has_package_sources(&root) {
+        return Err(format!("project already exists: {}", root.display()));
+    }
+    init_project(
+        &root,
+        &InitOptions {
+            name: name.to_string(),
+            git,
+            force: root.exists(),
+        },
+    )
+}
+
+/// INIT-003: ensure `layers/` and `stubs/` exist under a project root.
+pub fn ensure_project_shape(root: &Path) -> Result<(), String> {
+    if !root.is_dir() {
+        return Err(format!("not a directory: {}", root.display()));
+    }
+    for sub in ["layers", "stubs"] {
+        let p = root.join(sub);
+        if !p.exists() {
+            std::fs::create_dir_all(&p)
+                .map_err(|e| format!("cannot create {}: {e}", p.display()))?;
+            eprintln!("veil: created {}/", p.display());
+        }
+    }
+    Ok(())
+}
+
+/// Whether the directory has any package sources.
+pub fn has_package_sources(root: &Path) -> bool {
+    root.join("veil.toml").is_file() || read_dir_ext(root, "veil").next().is_some()
 }
 
 fn pascal_case(name: &str) -> String {
@@ -359,9 +481,20 @@ mod tests {
         assert!(root.join("hello-app.veil").is_file());
         assert!(root.join("layers").is_dir());
         assert!(root.join("stubs").is_dir());
+        assert!(root.join(".gitignore").is_file());
+        let gi = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(gi.contains("generated/"));
         let listed = list_projects(&hub).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "hello-app");
+    }
+
+    #[test]
+    fn init_project_refuses_clobber() {
+        let root = tempfile_dir("veil_init_clobber");
+        init_project(&root, &InitOptions::new("a")).unwrap();
+        let err = init_project(&root, &InitOptions::new("b")).unwrap_err();
+        assert!(err.contains("already") || err.contains("force"), "{err}");
     }
 
     #[test]

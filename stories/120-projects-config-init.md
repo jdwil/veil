@@ -47,7 +47,7 @@ end-to-end (TTY, non-TTY, serve ensure, docs).
 
 ## CFG — User config & first-run
 
-### CFG-001: Config path and schema — Todo
+### CFG-001: Config path and schema — Done
 
 **Mission impact:** Durable prefs without env soup.
 
@@ -73,7 +73,7 @@ end-to-end (TTY, non-TTY, serve ensure, docs).
 
 ---
 
-### CFG-002: First-run when config is missing — Todo
+### CFG-002: First-run when config is missing — Done
 
 **Mission impact:** First `veil` command on a new machine is guided.
 
@@ -103,7 +103,7 @@ end-to-end (TTY, non-TTY, serve ensure, docs).
 
 ---
 
-### CFG-003: Ensure directories after config resolve — Todo
+### CFG-003: Ensure directories after config resolve — Done
 
 **Mission impact:** Broken paths are fixed, not fatal-by-default.
 
@@ -119,7 +119,7 @@ end-to-end (TTY, non-TTY, serve ensure, docs).
 
 ---
 
-### CFG-004: `GET /api/config` — Todo
+### CFG-004: `GET /api/config` — Done
 
 **Mission impact:** Viewer/runtime UX can show hub path without shell.
 
@@ -132,7 +132,7 @@ end-to-end (TTY, non-TTY, serve ensure, docs).
 
 ---
 
-### CFG-005: Reconfigure projects dir (optional polish) — Todo
+### CFG-005: Reconfigure projects dir (optional polish) — Done
 
 **Mission impact:** Change hub without hand-editing JSON.
 
@@ -146,7 +146,7 @@ end-to-end (TTY, non-TTY, serve ensure, docs).
 
 ## INIT — Product project scaffold
 
-### INIT-001: `veil init` command — Todo
+### INIT-001: `veil init` command — Done
 
 **Mission impact:** One command creates a product-ready tree.
 
@@ -183,7 +183,7 @@ veil init [PATH] [options]
 
 ---
 
-### INIT-002: Align `veil projects create` with `veil init` — Todo
+### INIT-002: Align `veil projects create` with `veil init` — Done
 
 **Mission impact:** Hub create and init are one scaffold, two entrypoints.
 
@@ -197,7 +197,7 @@ veil init [PATH] [options]
 
 ---
 
-### INIT-003: Serve ensures project shape (auto, non-destructive) — Todo
+### INIT-003: Serve ensures project shape (auto, non-destructive) — Done
 
 **Mission impact:** Opening a half-ready directory still works.
 
@@ -220,7 +220,7 @@ veil init [PATH] [options]
 
 ---
 
-### INIT-004: `.gitignore` and readonly generated — Todo
+### INIT-004: `.gitignore` and readonly generated — Done
 
 **Mission impact:** Codegen output stays out of VCS by default.
 
@@ -235,7 +235,7 @@ veil init [PATH] [options]
 
 ## HUB — Projects directory CLI (complete gaps)
 
-### HUB-001: `veil projects` surface — Todo
+### HUB-001: `veil projects` surface — Done
 
 **Mission impact:** Runtime and humans share one hub CLI.
 
@@ -252,7 +252,7 @@ veil init [PATH] [options]
 
 ---
 
-### HUB-002: HTTP hub APIs stay in sync — Todo
+### HUB-002: HTTP hub APIs stay in sync — Done
 
 **Mission impact:** Runtime UX does not shell out for create/list only.
 
@@ -341,15 +341,15 @@ veil serve "$(veil projects path demo-app)" -p 3001
 
 | ID | Title | Status |
 |----|--------|--------|
-| CFG-001 | Config path and schema | Todo |
-| CFG-002 | First-run prompt + write config | Todo |
-| CFG-003 | Auto-create projects_dir / .veil | Todo |
-| CFG-004 | GET /api/config | Todo |
-| CFG-005 | Reconfigure projects_dir | Todo |
-| INIT-001 | `veil init` | Todo |
-| INIT-002 | Align `projects create` | Todo |
-| INIT-003 | Serve ensures dirs / empty-root UX | Todo |
-| INIT-004 | .gitignore in scaffold | Todo |
-| HUB-001 | projects CLI complete | Todo |
-| HUB-002 | HTTP hub parity | Todo |
+| CFG-001 | Config path and schema | Done |
+| CFG-002 | First-run prompt + write config | Done |
+| CFG-003 | Auto-create projects_dir / .veil | Done |
+| CFG-004 | GET /api/config | Done |
+| CFG-005 | Reconfigure projects_dir | Done |
+| INIT-001 | `veil init` | Done |
+| INIT-002 | Align `projects create` | Done |
+| INIT-003 | Serve ensures dirs / empty-root UX | Done |
+| INIT-004 | .gitignore in scaffold | Done |
+| HUB-001 | projects CLI complete | Done |
+| HUB-002 | HTTP hub parity | Done |
 | MP-001–004 | Multi-project kernel | Todo (P2) |

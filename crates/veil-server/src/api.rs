@@ -747,9 +747,12 @@ struct CreateProjectRequest {
     name: String,
 }
 
-/// Create a product repo under the configured projects directory.
+/// Create a product repo under the configured projects directory (same as `veil init --in-hub`).
 async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::response::Response {
-    let dir = crate::config::resolve_projects_dir();
+    let dir = match crate::config::ensure_projects_dir_exists() {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
     match crate::project_layout::create_project(&dir, req.name.trim()) {
         Ok(info) => match serde_json::to_string(&info) {
             Ok(json) => (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/json")], json)

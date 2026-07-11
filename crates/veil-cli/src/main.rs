@@ -104,11 +104,41 @@ enum Commands {
         /// Env: `VEIL_SHOW_CORE_LAYERS=1` is equivalent.
         #[arg(long, default_value_t = false)]
         show_core_layers: bool,
+        /// Non-interactive first-run / empty-root prompts (also CI=1).
+        #[arg(long, alias = "yes")]
+        non_interactive: bool,
     },
-    /// Manage the local projects directory (runtime hub; independent git repos)
+    /// Scaffold a VEIL product project (`veil.toml`, package, layers/, stubs/)
+    Init {
+        /// Directory to initialize (default: `.`)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Product name (default: directory basename)
+        #[arg(long)]
+        name: Option<String>,
+        /// Create under configured projects_dir/<name>
+        #[arg(long)]
+        in_hub: bool,
+        /// Skip git init
+        #[arg(long)]
+        no_git: bool,
+        /// Allow non-empty / re-scaffold
+        #[arg(long)]
+        force: bool,
+        /// Non-interactive first-run
+        #[arg(long, alias = "yes")]
+        non_interactive: bool,
+    },
+    /// Manage the local projects directory (runtime hub; independent git repos).
+    ///
+    /// Config: `~/.veil/config.json` (first run prompts for projects_dir).
+    /// Scaffold: `veil init` or `veil projects create`.
     Projects {
         #[command(subcommand)]
         action: ProjectsCmd,
+        /// Non-interactive first-run
+        #[arg(long, global = true, alias = "yes")]
+        non_interactive: bool,
     },
     /// Serialize: parse then re-emit VEIL source (round-trip test)
     Emit {
@@ -130,14 +160,21 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ProjectsCmd {
-    /// Print the resolved projects directory (`VEIL_PROJECTS_DIR` or ~/veil-projects)
-    Dir,
+    /// Print the resolved projects directory (config / env)
+    Dir {
+        /// Update config `projects_dir` (does not move existing repos)
+        #[arg(long)]
+        set: Option<PathBuf>,
+    },
     /// List product projects under the projects directory
     List,
-    /// Create a new product (git repo + scaffold) under the projects directory
+    /// Create a new product under the projects hub (same as `veil init --in-hub --name`)
     Create {
         /// Project name ([a-zA-Z0-9_-]+)
         name: String,
+        /// Skip git init
+        #[arg(long)]
+        no_git: bool,
     },
     /// Print absolute path to a named project
     Path {
@@ -938,67 +975,82 @@ fn main() {
                 }
             }
         }
-        Commands::Projects { action } => {
-            if let Err(e) = veil_server::ensure_config_interactive() {
+        Commands::Projects {
+            action,
+            non_interactive,
+        } => {
+            if let Err(e) = veil_server::ensure_config(non_interactive) {
                 eprintln!("Config error: {e}");
                 std::process::exit(1);
             }
+            let _ = veil_server::ensure_projects_dir_exists();
             let dir = veil_server::default_projects_dir();
             match action {
-                ProjectsCmd::Dir => {
-                    println!("{}", dir.display());
-                    eprintln!(
-                        "# config: {}",
-                        veil_server::config_path().display()
-                    );
+                ProjectsCmd::Dir { set } => {
+                    if let Some(path) = set {
+                        match veil_server::set_projects_dir(&path) {
+                            Ok(cfg) => {
+                                println!("{}", cfg.projects_dir_path().display());
+                                eprintln!(
+                                    "✓ Updated {} (projects_dir; existing repos were not moved)",
+                                    veil_server::config_path().display()
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        let d = veil_server::ensure_projects_dir_exists()
+                            .unwrap_or_else(|_| dir.clone());
+                        println!("{}", d.display());
+                        eprintln!("# config: {}", veil_server::config_path().display());
+                    }
                 }
-                ProjectsCmd::List => {
-                    if let Err(e) = veil_server::ensure_projects_dir(&dir) {
+                ProjectsCmd::List => match veil_server::list_projects(&dir) {
+                    Ok(projects) => {
+                        println!("Projects directory: {}", dir.display());
+                        println!("Config: {}", veil_server::config_path().display());
+                        if projects.is_empty() {
+                            println!("  (empty — create with: veil projects create <name>)");
+                            println!("  (or: veil init --in-hub --name <name>)");
+                        } else {
+                            for p in projects {
+                                let git = if p.is_git { "git" } else { "no-git" };
+                                println!(
+                                    "  {}  {}  ({} package(s), {git})",
+                                    p.name, p.path, p.package_count
+                                );
+                            }
+                        }
+                        println!();
+                        println!("IDE (single-project convenience):");
+                        println!("  veil serve <path> -p 3001");
+                        println!("  make serve PROJECT=<path>");
+                        println!("Runtime: docs/IDE_RUNTIME.md");
+                    }
+                    Err(e) => {
                         eprintln!("{e}");
                         std::process::exit(1);
                     }
-                    match veil_server::list_projects(&dir) {
-                        Ok(projects) => {
-                            println!("Projects directory: {}", dir.display());
-                            println!("Config: {}", veil_server::config_path().display());
-                            if projects.is_empty() {
-                                println!("  (empty — create with: veil projects create <name>)");
-                            } else {
-                                for p in projects {
-                                    let git = if p.is_git { "git" } else { "no-git" };
-                                    println!(
-                                        "  {}  {}  ({} package(s), {git})",
-                                        p.name, p.path, p.package_count
-                                    );
-                                }
-                            }
+                },
+                ProjectsCmd::Create { name, no_git } => {
+                    match veil_server::create_project_with_opts(&dir, &name, !no_git) {
+                        Ok(info) => {
+                            println!("✓ Created project {} (hub; same as veil init --in-hub)", info.name);
+                            println!("  path: {}", info.path);
+                            println!("  git:  {}", if info.is_git { "yes" } else { "no" });
                             println!();
-                            println!("IDE (single-project convenience):");
-                            println!("  veil serve <path> -p 3001");
-                            println!("  make serve PROJECT=<path>");
-                            println!("Runtime target: one multi-project server (docs/IDE_RUNTIME.md)");
+                            println!("Open IDE:");
+                            println!("  veil serve {} -p 3001", info.path);
                         }
                         Err(e) => {
-                            eprintln!("{e}");
+                            eprintln!("Error: {e}");
                             std::process::exit(1);
                         }
                     }
                 }
-                ProjectsCmd::Create { name } => match veil_server::create_project(&dir, &name) {
-                    Ok(info) => {
-                        println!("✓ Created project {}", info.name);
-                        println!("  path: {}", info.path);
-                        println!("  git:  {}", if info.is_git { "yes" } else { "no" });
-                        println!();
-                        println!("Open IDE (single-project):");
-                        println!("  veil serve {} -p 3001", info.path);
-                        println!("  make serve PROJECT={}", info.path);
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    }
-                },
                 ProjectsCmd::Path { name } => {
                     let p = dir.join(&name);
                     if !p.is_dir() {
@@ -1009,23 +1061,89 @@ fn main() {
                 }
             }
         }
+        Commands::Init {
+            path,
+            name,
+            in_hub,
+            no_git,
+            force,
+            non_interactive,
+        } => {
+            if let Err(e) = veil_server::ensure_config(non_interactive) {
+                eprintln!("Config error: {e}");
+                std::process::exit(1);
+            }
+            let _ = veil_server::ensure_projects_dir_exists();
+
+            let (root, proj_name) = if in_hub {
+                let n = name.unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .filter(|s| s != "." && !s.is_empty())
+                        .unwrap_or_else(|| "app".into())
+                });
+                let hub = veil_server::default_projects_dir();
+                (hub.join(&n), n)
+            } else {
+                let root = if path.as_os_str() == "." {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                } else {
+                    path
+                };
+                let n = name.unwrap_or_else(|| {
+                    root.file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "app".into())
+                });
+                (root, n)
+            };
+
+            let opts = veil_server::InitOptions {
+                name: proj_name,
+                git: !no_git,
+                force,
+            };
+            match veil_server::init_project(&root, &opts) {
+                Ok(info) => {
+                    println!("✓ Initialized VEIL project {}", info.name);
+                    println!("  path: {}", info.path);
+                    println!("  git:  {}", if info.is_git { "yes" } else { "no" });
+                    println!();
+                    println!("Next:");
+                    println!("  veil serve {} -p 3001", info.path);
+                    println!("  veil check {}/{}.veil", info.path, info.name);
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::Serve {
             file,
             port,
             show_core_layers,
+            non_interactive,
         } => {
             // Durable prefs live in ~/.veil/config.json; first run may prompt.
-            let _cfg = match veil_server::ensure_config_interactive() {
+            let _cfg = match veil_server::ensure_config(non_interactive) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("Config warning: {e} — continuing with defaults");
                     veil_server::load_config_or_default()
                 }
             };
+            let _ = veil_server::ensure_projects_dir_exists();
             let show_core_layers = show_core_layers
                 || env_flag_true("VEIL_SHOW_CORE_LAYERS")
                 || _cfg.show_core_layers;
-            // Single-project scan: packages + project layers only (no monorepo layers/)
+            // INIT-003: serve root must exist; ensure shape; empty → offer init
+            if !file.exists() {
+                eprintln!("error: path does not exist: {}", file.display());
+                eprintln!("  veil init <dir>   or   veil projects create <name>");
+                std::process::exit(1);
+            }
+
             let project_root = if file.is_dir() {
                 file.clone()
             } else {
@@ -1033,27 +1151,65 @@ fn main() {
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .to_path_buf()
             };
+
+            if file.is_dir() {
+                if let Err(e) = veil_server::ensure_project_shape(&file) {
+                    eprintln!("warning: {e}");
+                }
+                if !veil_server::has_package_sources(&file) {
+                    let non_int = non_interactive || veil_server::is_noninteractive(false);
+                    if non_int {
+                        eprintln!(
+                            "error: no .veil packages in {} — run: veil init {}",
+                            file.display(),
+                            file.display()
+                        );
+                        std::process::exit(1);
+                    }
+                    eprint!(
+                        "No packages in {}. Run scaffold here? [y/N] ",
+                        file.display()
+                    );
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    let mut line = String::new();
+                    let _ = std::io::stdin().read_line(&mut line);
+                    if line.trim().eq_ignore_ascii_case("y")
+                        || line.trim().eq_ignore_ascii_case("yes")
+                    {
+                        let n = file
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "app".into());
+                        if let Err(e) = veil_server::init_project(
+                            &file,
+                            &veil_server::InitOptions {
+                                name: n,
+                                git: true,
+                                force: true,
+                            },
+                        ) {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    } else {
+                        eprintln!("Aborted. Hint: veil init {}", file.display());
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            // Single-project scan: packages + project layers only (no monorepo layers/)
             let mut project_files: Vec<PathBuf> = if file.is_dir() {
                 match veil_server::collect_project_files(&file, show_core_layers) {
-                    Ok(f) => {
-                        let total_layers = f
-                            .iter()
-                            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("layer"))
-                            .count();
-                        if !show_core_layers {
-                            // count how many core were available under project but hidden
-                            let _ = total_layers;
-                        }
-                        f
-                    }
+                    Ok(f) => f,
                     Err(e) => {
                         eprintln!("{e}");
                         eprintln!(
-                            "Hint: product projects live under VEIL_PROJECTS_DIR ({}).",
+                            "Hint: projects hub is {}.",
                             veil_server::default_projects_dir().display()
                         );
                         eprintln!("  veil projects list");
-                        eprintln!("  veil projects create <name>");
+                        eprintln!("  veil init --in-hub --name <name>");
                         std::process::exit(1);
                     }
                 }

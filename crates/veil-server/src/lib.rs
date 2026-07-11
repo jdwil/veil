@@ -35,13 +35,15 @@ pub use provider::filesystem::FilesystemProvider;
 pub use provider::remote::RemoteHttpProvider;
 pub use api::build_router;
 pub use project_layout::{
-    collect_project_files, create_project, ensure_projects_dir, is_core_platform_layer,
-    list_projects, project_display_name, ActiveProjectInfo, ProjectInfo,
+    collect_project_files, create_project, create_project_with_opts, ensure_project_shape,
+    ensure_projects_dir, has_package_sources, init_project, is_core_platform_layer, list_projects,
+    project_display_name, ActiveProjectInfo, InitOptions, ProjectInfo,
 };
 pub use config::{
-    complete_first_run, config_path, ensure_config_interactive, load_config,
-    load_config_or_default, needs_first_run, resolve_projects_dir, save_config, veil_home_dir,
-    VeilConfig,
+    complete_first_run, config_path, ensure_config, ensure_config_interactive,
+    ensure_projects_dir_exists, is_noninteractive, load_config, load_config_or_default,
+    needs_first_run, resolve_projects_dir, save_config, set_projects_dir, suggested_projects_dir,
+    veil_home_dir, VeilConfig,
 };
 
 /// Projects directory: env → config.json → ~/veil-projects.
