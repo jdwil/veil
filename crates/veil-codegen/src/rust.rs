@@ -73,15 +73,6 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             _ => None,
         })
         .collect();
-    files.extend(gen_shared_crate(
-        &shared_traits,
-        &shared_structs,
-        &shared_fns,
-        solution,
-        registry,
-        &resolved_links,
-    ));
-
     // Each top-level mod-shaped construct becomes a crate.
     let modules: Vec<&Construct> = solution
         .items
@@ -91,6 +82,19 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             _ => None,
         })
         .collect();
+
+    // CAP-003: collect handler message names for register_all.
+    let handler_names = collect_handler_names(solution, &modules);
+
+    files.extend(gen_shared_crate(
+        &shared_traits,
+        &shared_structs,
+        &shared_fns,
+        solution,
+        registry,
+        &resolved_links,
+        &handler_names,
+    ));
 
     // Impl-shaped constructs may live at top level or inside other modules;
     // collect all of them so each crate can pick up impls targeting its traits.
@@ -129,7 +133,13 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         || package_has_main_annotation(solution);
     if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| to_snake(&m.name)).collect();
-        let main_body = if !modules.is_empty() {
+        // CAP-002/006: product host bin when package links veil_server.
+        let wants_product_host = resolved_links
+            .iter()
+            .any(|l| l.rust_name == "veil_server" || l.cargo_name == "veil-server");
+        let main_body = if wants_product_host {
+            gen_product_host_main(solution, &handler_names)
+        } else if !modules.is_empty() {
             gen_local_harness_main(solution, &modules, registry)
         } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust")
         {
@@ -242,6 +252,52 @@ fn package_has_main_annotation(sol: &Solution) -> bool {
 }
 
 /// RT-001/003/004: working local harness main — InProcessBus + first app svc.
+/// CAP-002 / CAP-006: `@main` + `link veil_server` → ProductHost listen.
+fn gen_product_host_main(sol: &Solution, handler_names: &[String]) -> String {
+    let _ = handler_names;
+    format!(
+        r#"//! Generated product host for package `{pkg}` (CAP-002/006).
+//! Uses `veil_server::ProductHost` for IDE multi + SPA + config.
+//! `cargo run -p veil_bin` from the generated workspace root.
+
+use veil_server::{{resolve_static_dir, ProductHost}};
+use veil_shared::register_all;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {{
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
+    let port: u16 = std::env::var("VEIL_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+    let non_interactive = std::env::var_os("CI").is_some()
+        || std::env::var_os("VEIL_NONINTERACTIVE").is_some();
+    let static_dir = resolve_static_dir(None);
+
+    // CAP-003: register generated handler names (dispatch is host/platform).
+    let mut n = 0usize;
+    register_all(|_name| n += 1);
+    tracing::info!("veil_bin: {{n}} handlers from register_all");
+
+    ProductHost::new()
+        .port(port)
+        .static_dir(static_dir)
+        .ensure_config(non_interactive)?
+        .listen()
+        .await?;
+    Ok(())
+}}
+"#,
+        pkg = sol.name
+    )
+}
+
 fn gen_local_harness_main(
     sol: &Solution,
     modules: &[&Construct],
@@ -364,6 +420,15 @@ fn gen_bin_crate(
     // CAP-001: external crate links on veil_bin (host / @main).
     for link in links {
         deps.push_str(&crate::links::cargo_workspace_dep_line(link));
+    }
+    // Product host needs tracing-subscriber when linking veil-server.
+    if links
+        .iter()
+        .any(|l| l.rust_name == "veil_server" || l.cargo_name == "veil-server")
+    {
+        deps.push_str(
+            "tracing = { workspace = true }\ntracing-subscriber = { version = \"0.3\", features = [\"env-filter\"] }\n",
+        );
     }
     // Use statements so main can call into context crates when present.
     // CAP-001 linked crates are available as `veil_server::…` via Cargo deps
@@ -1412,6 +1477,70 @@ impl Bus for InProcessBus {
 /// Generate the shared library crate that all context crates depend on. It
 /// owns the common error types and the layer-provided top-level traits (Bus),
 /// so there is exactly one definition of each across the workspace.
+/// CAP-003: bus handler message names from application fns across modules.
+fn collect_handler_names(solution: &Solution, modules: &[&Construct]) -> Vec<String> {
+    let mut names = Vec::new();
+    for module in modules {
+        let flat = flatten_module(module);
+        for f in &flat.fns {
+            // HandleX → X; DomainService CreateRepo → CreateRepo
+            let message = f
+                .name
+                .strip_prefix("Handle")
+                .unwrap_or(&f.name)
+                .to_string();
+            if !names.contains(&message) {
+                names.push(message);
+            }
+        }
+    }
+    // Also free functions with Handle prefix at solution top-level
+    for item in &solution.items {
+        if let TopLevelItem::Function(f) = item {
+            if let Some(msg) = f.name.strip_prefix("Handle") {
+                let m = msg.to_string();
+                if !names.contains(&m) {
+                    names.push(m);
+                }
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+fn gen_register_handlers_module(handler_names: &[String]) -> String {
+    let mut out = String::from(
+        "//! CAP-003: generated Bus handler registry.\n\
+         //! Host calls `register_all` once to wire names → dispatch.\n\n",
+    );
+    out.push_str("/// All Bus message types exported by this workspace.\n");
+    out.push_str("pub const HANDLER_NAMES: &[&str] = &[\n");
+    for n in handler_names {
+        out.push_str(&format!("    \"{n}\",\n"));
+    }
+    out.push_str("];\n\n");
+    out.push_str(
+        "/// Register every generated handler name with a host-supplied registrar.\n\
+         ///\n\
+         /// The host provides the actual dispatch (ports / platform). This module\n\
+         /// only owns the name list so trampoline code never hardcodes it.\n\
+         pub fn register_all<F>(mut register: F)\n\
+         where\n\
+             F: FnMut(&'static str),\n\
+         {\n\
+             for name in HANDLER_NAMES {\n\
+                 register(name);\n\
+             }\n\
+         }\n\n\
+         /// Number of handlers in this workspace.\n\
+         pub fn handler_count() -> usize {\n\
+             HANDLER_NAMES.len()\n\
+         }\n",
+    );
+    out
+}
+
 fn gen_shared_crate(
     traits: &[&Construct],
     structs: &[&Construct],
@@ -1419,6 +1548,7 @@ fn gen_shared_crate(
     solution: &Solution,
     registry: &LayerRegistry,
     links: &[crate::links::ResolvedLink],
+    handler_names: &[String],
 ) -> Vec<GeneratedFile> {
     use crate::expr::{build_ctx_from_solution, stmt_to_rust};
     let mut files = Vec::new();
@@ -1449,10 +1579,18 @@ futures = "0.3"
         content: shared_cargo,
     });
 
+    // CAP-003: always emit register_handlers module (may be empty list).
+    files.push(GeneratedFile {
+        path: "crates/veil_shared/src/register_handlers.rs".into(),
+        content: gen_register_handlers_module(handler_names),
+    });
+
     let mut lib = String::new();
     lib.push_str("//! Shared types across all context crates — common errors and\n");
     lib.push_str("//! layer-provided infrastructure traits (the message Bus).\n\n");
     lib.push_str("#![allow(unused_imports)]\n\n");
+    lib.push_str("pub mod register_handlers;\n");
+    lib.push_str("pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};\n\n");
     lib.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
     lib.push_str("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum DomainError {\n");
     lib.push_str("    #[error(\"Not found\")]\n    NotFound,\n");

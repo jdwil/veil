@@ -86,18 +86,14 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 
 | ID | Theme | File |
 |----|--------|------|
-| **CAP-001** | **Done** — External crate `link` / cargo deps from VEIL | [141](141-pure-runtime-capability-gaps.md) |
-| **CAP-002** | HttpHost port (mount IDE + static + listen) | [141](141-pure-runtime-capability-gaps.md) |
-| **CAP-003** | Generated Bus `register_all` | [141](141-pure-runtime-capability-gaps.md) |
-| **CAP-005** | Browser-ready SPA emit (bundle) | [141](141-pure-runtime-capability-gaps.md) |
+| **CAP-001–007** | **Done** — engine gaps for pure runtime (link, host, register_all, SPA, FS/Git, bin, config PATCH) | [141](141-pure-runtime-capability-gaps.md) |
 
 ### P1 — pure VEIL runtime product (after CAP-*)
 
 | ID | Theme | File |
 |----|--------|------|
-| **CAP-004 / 006** | FS/Git ports; multi-crate bin layout | [141](141-pure-runtime-capability-gaps.md) |
-| **PVR-010 / 021–023 / 032** | `@main` host; gen UI only; delete hand HTML | [140](140-pure-veil-runtime.md) |
-| **PVR-*** | Remaining product DoD | [140](140-pure-veil-runtime.md) |
+| **PVR-010 / 021–023 / 032** | `@main` host; gen UI primary; quarantine hand HTML | [140](140-pure-veil-runtime.md) |
+| **PVR-*** | Remaining product DoD polish | [140](140-pure-veil-runtime.md) |
 
 ### P2 — trust & daily driver
 

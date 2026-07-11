@@ -1,26 +1,21 @@
-//! veil-runtime — local product host (PVR pure-runtime path).
+//! veil-runtime — thin trampoline (CAP-002 / PVR-010).
 //!
-//! - Multi-project IDE kernel via `veil-server::build_multi_router`
-//! - Live Bus under `/bus/*` via `platform` (projects FS + git + veil check)
-//! - Shell: generated SPA preferred, static fallback
-//! - Config: `~/.veil/config.json`
+//! Product HTTP surface lives in `veil_server::ProductHost`.
+//! Bus dispatch lives in `platform` until CAP-003/004 wire generated handlers fully.
+//! Target: keep this file ≤ ~80 lines of process glue.
 
 mod platform;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    Router,
-    extract::{Path, State},
-    response::{Html, IntoResponse, Redirect},
+    extract::State,
     routing::{get, post},
-    Json,
+    Json, Router,
 };
 use futures::FutureExt;
-use tokio::net::TcpListener;
-use tower_http::{cors::CorsLayer, services::ServeDir};
+use veil_server::{resolve_static_dir, ProductHost};
 
 #[derive(Debug)]
 enum BusError {
@@ -92,85 +87,20 @@ struct BusRequest {
     message: serde_json::Value,
 }
 
-async fn health() -> impl IntoResponse {
+async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "healthy",
         "service": "veil-runtime",
         "ide": "multi",
+        "host": "ProductHost",
         "docs": "docs/IDE_RUNTIME.md",
     }))
-}
-
-/// RTU-003/004: shell home (static dashboard).
-async fn shell_index() -> impl IntoResponse {
-    // Prefer generated shell under static/app/ (PVR-023)
-    let primary = static_path("app/index.html");
-    let path = if primary.is_file() { primary } else { static_path("index.html") };
-    match std::fs::read_to_string(path) {
-        Ok(html) => Html(inject_viewer_url(html)).into_response(),
-        Err(_) => Html(
-            "<h1>veil-runtime</h1><p>Missing static/index.html — open <a href=\"/api/projects\">/api/projects</a></p>"
-                .to_string(),
-        )
-        .into_response(),
-    }
-}
-
-/// RTU-004: embed IDE iframe for a project (`/projects/{name}/ide`).
-async fn ide_embed(Path(name): Path<String>) -> impl IntoResponse {
-    match std::fs::read_to_string(static_path("ide.html")) {
-        Ok(html) => Html(inject_viewer_url(html)).into_response(),
-        Err(_) => Redirect::temporary(&format!(
-            "http://127.0.0.1:5173/?project={}&api={}",
-            name,
-            urlencoding_origin()
-        ))
-        .into_response(),
-    }
-}
-
-fn static_dir() -> PathBuf {
-    let candidates = [
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("static"))),
-        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static")),
-        Some(PathBuf::from("static")),
-        Some(PathBuf::from("runtime/bootstrap/static")),
-    ];
-    for c in candidates.into_iter().flatten() {
-        if c.is_dir() {
-            return c;
-        }
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static")
-}
-
-fn static_path(file: &str) -> PathBuf {
-    static_dir().join(file)
-}
-
-fn inject_viewer_url(html: String) -> String {
-    let viewer = std::env::var("VEIL_VIEWER_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:5173".into());
-    html.replacen(
-        "<head>",
-        &format!(
-            "<head>\n  <script>window.VEIL_VIEWER_URL = {};</script>",
-            serde_json::to_string(&viewer).unwrap_or_else(|_| "\"http://127.0.0.1:5173\"".into())
-        ),
-        1,
-    )
-}
-
-fn urlencoding_origin() -> String {
-    std::env::var("VEIL_PUBLIC_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into())
 }
 
 async fn bus_invoke(
     State(state): State<BusState>,
     Json(req): Json<BusRequest>,
-) -> impl IntoResponse {
+) -> Json<serde_json::Value> {
     match state.bus.invoke(req.message).await {
         Ok(result) => Json(serde_json::json!({ "result": result })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
@@ -180,7 +110,7 @@ async fn bus_invoke(
 async fn bus_request(
     State(state): State<BusState>,
     Json(req): Json<BusRequest>,
-) -> impl IntoResponse {
+) -> Json<serde_json::Value> {
     match state.bus.request(req.message).await {
         Ok(result) => Json(serde_json::json!({ "result": result })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
@@ -190,39 +120,31 @@ async fn bus_request(
 async fn bus_dispatch(
     State(state): State<BusState>,
     Json(req): Json<BusRequest>,
-) -> impl IntoResponse {
+) -> Json<serde_json::Value> {
     match state.bus.dispatch(req.message).await {
         Ok(()) => Json(serde_json::json!({ "status": "accepted" })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
 
-async fn api_artifacts() -> impl IntoResponse {
+async fn api_artifacts() -> Json<serde_json::Value> {
     Json(platform::list_artifacts(None))
 }
 
-async fn api_layers() -> impl IntoResponse {
+async fn api_layers() -> Json<serde_json::Value> {
     Json(platform::list_layers())
 }
 
-async fn api_compile(Path(repo): Path<String>) -> impl IntoResponse {
+async fn api_compile(
+    axum::extract::Path(repo): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
     Json(platform::compile_project(&repo))
 }
 
-
-/// Register Bus handlers: live platform by default; echo if VEIL_RUNTIME_STUB=1 (PVR-017).
+/// CAP-003: register names from the canonical handler list (mirrors generated
+/// `register_all` until gen crates are linked into this trampoline).
 fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
-    let names = [
-        "CreateRepo", "ListRepos", "WriteFile", "ReadFile", "ListFiles",
-        "CreateBranch", "ListBranches", "GetDiff", "Compile", "Deploy", "GetCommitLog",
-        "CreateRepoTool", "WriteFileTool", "ReadFileTool", "ListFilesTool",
-        "CreateBranchTool", "ListBranchesTool", "DiffTool", "CompileTool",
-        "DeployTool", "ListReposTool", "LogTool",
-        "HealthCheck", "LoadConfig", "HandleConnection", "HandleAgentMessage", "HandleToolCall",
-        "ParseManifest", "ReadAllManifests", "LoadEnvConfig", "WireApplication",
-        "RunSecurityScan", "StartHarness",
-    ];
-    for name in names {
+    for name in platform::HANDLER_NAMES {
         if stub {
             let handler_name = name.to_string();
             bus.register(
@@ -251,11 +173,13 @@ fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
                         let mut m: serde_json::Value =
                             serde_json::from_str(&payload).unwrap_or(serde_json::json!({}));
                         if let Some(obj) = m.as_object_mut() {
-                            obj.entry("type".to_string()).or_insert(serde_json::json!(ty));
+                            obj.entry("type".to_string())
+                                .or_insert(serde_json::json!(ty));
                         } else {
                             m = serde_json::json!({ "type": ty, "raw": payload });
                         }
-                        Ok(serde_json::to_string(&platform::handle_bus(&m)).unwrap_or_else(|_| "{}".into()))
+                        Ok(serde_json::to_string(&platform::handle_bus(&m))
+                            .unwrap_or_else(|_| "{}".into()))
                     }
                     .boxed()
                 }),
@@ -265,7 +189,7 @@ fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -278,21 +202,8 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(8080);
 
-    // First-run config (non-interactive when CI / no TTY)
     let non_interactive = std::env::var_os("CI").is_some()
         || std::env::var_os("VEIL_NONINTERACTIVE").is_some();
-    match veil_server::ensure_config(non_interactive) {
-        Ok(cfg) => {
-            tracing::info!(
-                "config {} projects_dir={}",
-                veil_server::config_path().display(),
-                cfg.projects_dir_path().display()
-            );
-        }
-        Err(e) => tracing::warn!("config: {e}"),
-    }
-    let projects_dir = veil_server::ensure_projects_dir_exists()
-        .unwrap_or_else(|_| veil_server::default_projects_dir());
 
     let stub = std::env::var("VEIL_RUNTIME_STUB")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -302,13 +213,7 @@ async fn main() {
     register_bus_handlers(&mut bus, stub);
     let bus_state = BusState {
         bus: Arc::new(bus),
-    }; // Arc<InProcessBus>
-
-    let show_core = std::env::var("VEIL_SHOW_CORE_LAYERS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let hub = veil_server::ProjectsHub::new(projects_dir.clone(), show_core);
-    let ide = veil_server::build_multi_router(hub);
+    };
 
     let bus_routes = Router::new()
         .route("/health", get(health))
@@ -320,64 +225,16 @@ async fn main() {
         .route("/api/platform/compile/{repo}", post(api_compile))
         .with_state(bus_state);
 
-    let shell = Router::new()
-        .route("/", get(shell_index))
-        .route("/projects/{name}/ide", get(ide_embed))
-        .nest_service("/static", ServeDir::new(static_dir()));
+    let static_dir = resolve_static_dir(Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))));
 
-    // Merge: shell + IDE multi routes + bus/health (same process, one port)
-    let app = shell
-        .merge(ide)
-        .merge(bus_routes)
-        .layer(CorsLayer::permissive());
+    // CAP-002: product host owns IDE + SPA + config; trampoline only mounts bus.
+    ProductHost::new()
+        .port(port)
+        .static_dir(static_dir)
+        .mount_bus_router(bus_routes)
+        .ensure_config(non_interactive)?
+        .listen()
+        .await?;
 
-    let viewer = std::env::var("VEIL_VIEWER_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:5173".into());
-
-    let addr = format!("0.0.0.0:{port}");
-    tracing::info!("veil-runtime listening on {addr}");
-    tracing::info!("  shell:        http://127.0.0.1:{port}/");
-    tracing::info!("  projects_dir: {}", projects_dir.display());
-    tracing::info!("  hub:          http://127.0.0.1:{port}/api/projects");
-    tracing::info!("  ide API:      http://127.0.0.1:{port}/api/p/{{name}}/ir");
-    tracing::info!("  ide embed:    http://127.0.0.1:{port}/projects/{{name}}/ide");
-    tracing::info!("  viewer:       {viewer}/?project=<name>&api=http://127.0.0.1:{port}");
-    tracing::info!(
-        "  bus mode:     {}",
-        if stub {
-            "stub echo"
-        } else {
-            "hub-backed ListRepos/CreateRepo"
-        }
-    );
-
-    let listener = TcpListener::bind(&addr).await.expect("failed to bind");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("server error");
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Ctrl+C handler failed");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler failed")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("Ctrl+C received"),
-        _ = terminate => tracing::info!("SIGTERM received"),
-    }
+    Ok(())
 }

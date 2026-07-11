@@ -57,7 +57,8 @@ where
 {
     Router::new()
         .route("/api/projects", get(get_projects).post(post_create_project))
-        .route("/api/config", get(get_config))
+        // CAP-007: GET + PATCH allowlisted runtime settings
+        .route("/api/config", get(get_config).patch(patch_config))
 }
 
 fn with_auth<S>(mut router: Router<S>) -> Router<S>
@@ -856,6 +857,72 @@ async fn get_config() -> axum::response::Response {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct ConfigPatchBody {
+    projects_dir: Option<String>,
+    show_core_layers: Option<bool>,
+    layers_dir: Option<String>,
+}
+
+/// CAP-007: PATCH /api/config — update allowlisted keys only.
+async fn patch_config(Json(body): Json<ConfigPatchBody>) -> axum::response::Response {
+    match apply_config_patch(body) {
+        Ok(cfg) => {
+            let body = serde_json::json!({
+                "ok": true,
+                "version": cfg.version,
+                "projects_dir": cfg.projects_dir_path().to_string_lossy(),
+                "layers_dir": cfg.layers_dir_path().map(|p| p.to_string_lossy().to_string()),
+                "show_core_layers": cfg.show_core_layers,
+                "configured": cfg.configured,
+                "config_path": crate::config::config_path().to_string_lossy(),
+            });
+            match serde_json::to_string(&body) {
+                Ok(json) => json_response(json).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+fn apply_config_patch(body: ConfigPatchBody) -> Result<crate::config::VeilConfig, String> {
+    use crate::config::{load_config_or_default, save_config, set_projects_dir};
+
+    if let Some(dir) = body.projects_dir {
+        if dir.trim().is_empty() {
+            return Err("projects_dir must not be empty".into());
+        }
+        let mut cfg = set_projects_dir(dir)?;
+        if let Some(show) = body.show_core_layers {
+            cfg.show_core_layers = show;
+            save_config(&cfg)?;
+        }
+        if let Some(layers) = body.layers_dir {
+            cfg.layers_dir = if layers.is_empty() { None } else { Some(layers) };
+            save_config(&cfg)?;
+        }
+        return Ok(cfg);
+    }
+
+    let mut cfg = load_config_or_default();
+    let mut changed = false;
+    if let Some(show) = body.show_core_layers {
+        cfg.show_core_layers = show;
+        changed = true;
+    }
+    if let Some(layers) = body.layers_dir {
+        cfg.layers_dir = if layers.is_empty() { None } else { Some(layers) };
+        changed = true;
+    }
+    if !changed {
+        return Err("no allowlisted fields in PATCH body (projects_dir, show_core_layers, layers_dir)".into());
+    }
+    cfg.configured = true;
+    save_config(&cfg)?;
+    Ok(cfg)
 }
 
 // ─── POST Handlers ─────────────────────────────────────────────────────────

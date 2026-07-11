@@ -32,14 +32,18 @@ See [`RUNTIME_CAPABILITIES.md`](RUNTIME_CAPABILITIES.md).
 Functional multi-host exists; **pure VEIL authorship** is blocked on engine
 capabilities:
 
-| CAP | Need |
-|-----|------|
-| CAP-001 | **Done** — `link` external crates (`veil-server`) → generated Cargo.toml |
-| CAP-002 | HttpHost port — mount IDE + static + listen from VEIL |
-| CAP-003 | Generated Bus `register_all` |
-| CAP-005 | SPA **bundle** emit for `runtime-ui.veil` |
-| CAP-004/006 | FS/Git ports; multi-crate bin layout |
+| CAP | Status |
+|-----|--------|
+| CAP-001 | **Done** — `link` external crates → generated Cargo.toml |
+| CAP-002 | **Done** — `veil_server::ProductHost` + host.veil `@main` |
+| CAP-003 | **Done** — `veil_shared::register_all` / HANDLER_NAMES |
+| CAP-005 | **Done** — SPA `dist/` emit for UI packages |
+| CAP-004 | **Done** — FileSystem / GitRepo local adapters |
+| CAP-006 | **Done** — ProductHost `veil_bin` when linking veil-server |
+| CAP-007 | **Done** — `PATCH /api/config` allowlisted keys |
 
-Full plan + sprint order: [`stories/141-pure-runtime-capability-gaps.md`](../stories/141-pure-runtime-capability-gaps.md).
+Full plan: [`stories/141-pure-runtime-capability-gaps.md`](../stories/141-pure-runtime-capability-gaps.md).
 
-**Estimate:** ~5–8 weeks focused (one senior) after CAP P0s land.
+**Residual:** trampoline still owns live Bus dispatch bodies in `platform.rs`
+until generated storage DI is fully substituted; product shell primary path is
+generated SPA under `static/dist`.

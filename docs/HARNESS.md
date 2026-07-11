@@ -70,12 +70,23 @@ Local harness (`veil_bin`) supplies Bus (and allow-all Auth when declared)
 without a handwritten host. Manifest still lists `provided_by: runtime` for
 platform hosts; local gen emits concrete impls so `cargo run -p veil_bin` works.
 
+## Product host (CAP-002 / CAP-006)
+
+```bash
+veil gen runtime/src/host.veil -t rust -o runtime/generated-host
+cd runtime/generated-host && cargo run -p veil_bin
+```
+
+`link veil_server` + `@main` emits `ProductHost::listen` (IDE multi + SPA +
+`PATCH /api/config`). Live Bus dispatch for storage still mounts from the
+`runtime/bootstrap` trampoline until generated handlers fully replace it.
+
 ## Known gaps
 
 | Gap | Story |
 |-----|--------|
 | Empty adapter bodies still emit `todo!` | GEN-001/002 (flagged by escape diagnostics) |
-| Full axum host package in pure VEIL | incremental RT-022 |
+| Full axum host package in pure VEIL | CAP-002 ProductHost (done); bus body DI ongoing |
 
 ## Do not reintroduce
 

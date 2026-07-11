@@ -1,11 +1,30 @@
 pkg harness v1
-  desc "Local app harness — InProcessBus + composition helpers (RT-001)"
+  desc "Local app harness — InProcessBus + composition helpers (RT-001) + HttpHost (CAP-002)"
   author "VEIL"
   use base
   use di
 
+  # CAP-002 / CAP-004: system + host ports provided by runtime trampoline.
+  # Declared as traits (core shape); host implements via ProductHost / LocalFs.
+  declare
+    trait HttpHost
+      mount_ide() -> Res!
+      serve_dir(path: Str) -> Res!
+      mount_bus() -> Res!
+      listen(port: Int) -> Res!
+
+    trait FileSystem
+      read(path: Str) -> Res!<Str>
+      write(path: Str, content: Str) -> Res!
+      list(prefix: Str) -> Res!<List<Str>>
+
+    trait GitRepo
+      branches(repo: Str) -> Res!<List<Str>>
+      log(repo: Str, limit: Int) -> Res!<List<Str>>
+
   # No domain vocabulary. App authors `use harness` for local wiring patterns.
   # InProcessBus is generated into veil_shared when Bus is declared (ddd).
+  # HttpHost is implemented by veil_server::ProductHost (link veil_server).
 
   prompt
     You are writing a VEIL-authored local harness (not handwritten bootstrap).
@@ -16,11 +35,15 @@ pkg harness v1
     declares `trait Bus` (e.g. ddd). Register handlers and call application
     services from `@main` steps.
 
+    For the product host: `link veil_server` + `@main` emits ProductHost listen
+    (CAP-002/006). FileSystem / GitRepo are provided_by runtime (CAP-004).
+
     ## Patterns
     - Construct `InProcessBus.new()` in `@main` when you need multi-context
     - Wire `@dep` / `@pvd` for adapters
     - Prefer calling generated application `fn`s for local demos
     - Cross-context: `bus.invoke({ type: "HandlerName", ... })`
+    - Product shell: `link veil_server` then `@main` bootstrap
 
     ## Constraints
     - You MUST NOT rely on eternal handwritten bootstrap for new apps

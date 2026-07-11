@@ -894,27 +894,45 @@ fn main() {
                     }
                 }
                 veil_ir::ast::VeilFile::Package(pkg) => {
-                    // Packages generate typed API clients (TS) or full crates / spike sources
+                    // Convert Package to Solution for target codegen.
+                    // CAP-005: TypeScript uses full generate_ts (UI SPA + components),
+                    // not only expose→API client (that path is for library packages).
+                    let sol = veil_ir::ast::Solution {
+                        name: pkg.name.clone(),
+                        span: pkg.span,
+                        uses: pkg.uses.clone(),
+                        links: pkg.links.clone(),
+                        items: pkg.items.clone(),
+                        expose: pkg.expose.clone(),
+                    };
                     match codegen_target {
                         veil_codegen::CodegenTarget::TypeScript => {
-                            let project = veil_codegen::typescript::generate_api_client_from_package(pkg);
-                            project.files.into_iter()
-                                .map(|f| veil_codegen::GeneratedFile { path: f.path, content: f.content })
-                                .collect()
+                            // Prefer full module/SPA gen; if package only has expose and
+                            // no constructs, fall back to API client.
+                            let has_constructs = pkg.items.iter().any(|i| {
+                                matches!(i, veil_ir::ast::TopLevelItem::Construct(_))
+                            });
+                            if has_constructs {
+                                veil_codegen::generate_for_target(&sol, &registry, codegen_target)
+                            } else if pkg.expose.is_some() {
+                                let project =
+                                    veil_codegen::typescript::generate_api_client_from_package(pkg);
+                                project
+                                    .files
+                                    .into_iter()
+                                    .map(|f| veil_codegen::GeneratedFile {
+                                        path: f.path,
+                                        content: f.content,
+                                    })
+                                    .collect()
+                            } else {
+                                veil_codegen::generate_for_target(&sol, &registry, codegen_target)
+                            }
                         }
                         veil_codegen::CodegenTarget::Rust
                         | veil_codegen::CodegenTarget::Swift
                         | veil_codegen::CodegenTarget::Kotlin => {
-                            // Convert Package to Solution for target codegen
-                            let sol = &veil_ir::ast::Solution {
-                                name: pkg.name.clone(),
-                                span: pkg.span,
-                                uses: pkg.uses.clone(),
-                                links: pkg.links.clone(),
-                                items: pkg.items.clone(),
-                                expose: pkg.expose.clone(),
-                            };
-                            veil_codegen::generate_for_target(sol, &registry, codegen_target)
+                            veil_codegen::generate_for_target(&sol, &registry, codegen_target)
                         }
                     }
                 }

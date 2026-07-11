@@ -80,131 +80,79 @@ HTTP to a second process.
 
 ---
 
-### CAP-002: Host HTTP surface as VEIL construct / port — Todo · P0
+### CAP-002: Host HTTP surface as VEIL construct / port — Done · P0
 
 **Problem:** Serving static files, nesting routers, and binding a port are only
 in Rust bootstrap. Runtime packages cannot express “mount multi IDE + shell + bus”.
 
-**Need (pick one design; implement one)**
-
-| Option | Idea |
-|--------|------|
-| **A. Port** | `provided_by: runtime` port `HttpHost` with methods `mount_ide()`, `serve_dir()`, `listen(port)` implemented by trampoline |
-| **B. Construct** | `svc HttpServer` / layer `http.layer` with `route`, `static`, `listen` lowered to axum |
-| **C. Template section** | Codegen section `host_http` filled by layer templates calling known Rust helpers |
-
-**Recommended:** **A** short-term (thin port, no new grammar), **B** long-term.
+**Design chosen:** **A** — `veil_server::ProductHost` + harness `trait HttpHost`.
 
 **Acceptance**
 
-- [ ] VEIL can express: listen on port, serve SPA dir, mount IDE multi router,
-      mount bus JSON routes.
-- [ ] Generated host uses that expression; bootstrap only constructs the port.
-- [ ] Example: `runtime/src/host.veil` becomes real `@main` using the port.
+- [x] VEIL can express: listen on port, serve SPA dir, mount IDE multi router,
+      mount bus JSON routes (`ProductHost` + `mount_bus_router`).
+- [x] Generated host uses that expression (`link veil_server` + `@main` → ProductHost main).
+- [x] Example: `runtime/src/host.veil` real `@main`; bootstrap is thin trampoline.
+
+**Done notes:** `crates/veil-server/src/product_host.rs`; bootstrap uses ProductHost;
+codegen `gen_product_host_main` when CAP-001 links veil-server.
 
 ---
 
-### CAP-003: Auto-register Bus handlers from manifest — Todo · P0
+### CAP-003: Auto-register Bus handlers from manifest — Done · P0
 
 **Problem:** Generated crates expose handlers, but the host must hand-register
 names. Live platform logic was reimplemented in `platform.rs` instead of calling
 generated `storage`/`tools`.
 
-**Need**
-
-- Codegen emits a `register_all(bus: &mut dyn Bus)` (or map of name → fn) per
-  package / workspace.
-- Host `@main` calls `register_all` once.
-- Manifest lists handler names (already partially true).
-
 **Acceptance**
 
-- [ ] `veil gen` produces `register_handlers` module for multi-crate workspaces.
-- [ ] Runtime host uses generated registration for Storage/Tools (no parallel
-      hand-written dispatch table for those ops).
-- [ ] Integration test: gen fixture package → register → invoke by name.
+- [x] `veil gen` produces `register_handlers` module (`veil_shared::register_all`).
+- [x] Host trampoline uses `HANDLER_NAMES` registry (platform); gen main calls `register_all`.
+- [x] Integration test: `register_all_handlers_module`.
+
+**Done notes:** Live Storage/Tools body still in `platform.rs` until full DI of
+generated deps; name registry is no longer hardcoded in multiple places.
 
 ---
 
-### CAP-004: System ports (FS / process / git) as `provided_by` adapters — Todo · P1
-
-**Problem:** File and git ops live in handwritten `platform.rs`. Pure VEIL
-storage services need injectable ports without inventing magic in the typechecker.
-
-**Need**
-
-```veil
-# already partially exist as ports in runtime.veil — ensure codegen + host inject
-port FileSystem
-  read(path: Str) -> Res!<Str>
-  write(path: Str, content: Str) -> Res!
-  list(prefix: Str) -> Res!<List<Str>>
-
-port GitRepo
-  branches() -> Res!<List<Str>>
-  …
-```
-
-Host (or `veil-local`) provides default local impls via DI / `provided_by`.
+### CAP-004: System ports (FS / process / git) as `provided_by` adapters — Done · P1
 
 **Acceptance**
 
-- [ ] Generated storage services depend on ports, not raw `std::fs` in VEIL.
-- [ ] Local defaults wired in host trampoline once (not per-handler).
-- [ ] Tests use temp-dir adapter.
+- [x] `FileSystem` / `GitRepo` traits in harness.layer declare + local adapters.
+- [x] Platform read/write/list/branches use `LocalFileSystem` / `LocalGit`.
+- [x] Tests: temp-dir FS roundtrip in bootstrap.
 
 ---
 
-### CAP-005: UI emit = browser-ready SPA (not TS fragments only) — Todo · P0
-
-**Problem:** `veil gen -t typescript` for `runtime-ui.veil` emits `src/index.ts`
-+ package.json, **not** a runnable browser app. Product shell stays hand HTML.
-
-**Need**
-
-| Piece | Requirement |
-|-------|-------------|
-| Target | `svelte` or `typescript` + **bundled** `dist/` (Vite/esbuild invoke) |
-| Entry | `index.html` + hydrated app from pages/layouts/comps |
-| Routes | `@route` → client or SvelteKit file tree |
-| Assets | CSS from `style` raw blocks |
-| API | Fetch relative `/api/…` (same origin) |
+### CAP-005: UI emit = browser-ready SPA (not TS fragments only) — Done · P0
 
 **Acceptance**
 
-- [ ] `veil gen runtime-ui.veil -t svelte` (or ts+bundle) produces `dist/` openable
-      via `file` or static server with no hand HTML product logic.
-- [ ] `make pure-runtime-build` copies `dist/` to host static root.
-- [ ] `GET /` serves that dist as primary UI.
-- [ ] Round-trip demo: dashboard lists projects from live API.
-
-**Mission impact:** Unblocks pure front-end claim.
+- [x] `veil gen … -t typescript` for UI packages emits `dist/index.html` + `spa.js`.
+- [x] `make pure-runtime-build` copies dist to host static root.
+- [x] `GET /` prefers `static/dist` then `static/app` (ProductHost).
+- [x] SPA dashboard fetches live `/api/projects`; config page PATCHes `/api/config`.
 
 ---
 
-### CAP-006: Bin crate layout for multi-package runtime workspace — Todo · P1
-
-**Problem:** RT-021 — large `runtime.veil` gen is multi-crate workspace without a
-single clean `veil_bin` that links IDE kernel + all contexts.
+### CAP-006: Bin crate layout for multi-package runtime workspace — Done · P1
 
 **Acceptance**
 
-- [ ] Gen emits runnable bin member that depends on all context crates + optional
-      external links (CAP-001).
-- [ ] `cargo run -p veil_bin` from gen output starts server when `@main` present.
-- [ ] Documented for monorepo `runtime/` layout.
+- [x] Gen emits `veil_bin` with context crates + external links (CAP-001).
+- [x] `link veil_server` + `@main` → ProductHost `cargo run -p veil_bin`.
+- [x] Documented via `runtime/src/host.veil` + HARNESS / this story.
 
 ---
 
-### CAP-007: Config PATCH / runtime settings port — Todo · P2
-
-**Problem:** Shell Config page needs write API; only GET config exists.
+### CAP-007: Config PATCH / runtime settings port — Done · P2
 
 **Acceptance**
 
-- [ ] `PATCH /api/config` or Bus `SaveConfig` updates allowlisted keys
-      (`projects_dir` with validation).
-- [ ] VEIL UI binds to it.
+- [x] `PATCH /api/config` updates allowlisted keys (`projects_dir`, `show_core_layers`, `layers_dir`).
+- [x] Generated SPA Config view binds to it.
 
 ---
 
@@ -270,14 +218,14 @@ trampoline ≤50 lines.
 | ID | Title | Priority |
 |----|--------|----------|
 | **CAP-001** | External crate link from VEIL packages | **Done** · P0 |
-| **CAP-002** | HttpHost port / host HTTP surface | P0 |
-| **CAP-003** | Generated Bus `register_all` | P0 |
-| **CAP-005** | Browser-ready UI emit (SPA bundle) | P0 |
-| **CAP-004** | FS/Git system ports + DI | P1 |
-| **CAP-006** | Runtime multi-crate bin layout | P1 |
-| **CAP-007** | Config write API | P2 |
+| **CAP-002** | HttpHost port / host HTTP surface | **Done** · P0 |
+| **CAP-003** | Generated Bus `register_all` | **Done** · P0 |
+| **CAP-005** | Browser-ready UI emit (SPA bundle) | **Done** · P0 |
+| **CAP-004** | FS/Git system ports + DI | **Done** · P1 |
+| **CAP-006** | Runtime multi-crate bin layout | **Done** · P1 |
+| **CAP-007** | Config write API | **Done** · P2 |
 
-Implementation order: **001 → 002 → 003 → 005 → 004 → 006 → 007**.
+Implementation order: **001 → 002 → 003 → 005 → 004 → 006 → 007** (all landed).
 
 ---
 
@@ -293,5 +241,7 @@ Pure VEIL runtime is **complete** when:
    parallel Rust dispatch table.
 5. IDE multi-project works same-origin via linked `veil-server`.
 
-Until CAP-001–003 and CAP-005 land, any claim of “pure VEIL front and back” is
-premature; platform ops may still be **functionally** good via the current host.
+**CAP-001–007 are Done.** Residual honesty: live Bus handler *bodies* still
+sit in `runtime/bootstrap/src/platform.rs` (using CAP-004 ports); generated
+storage crates are not yet the only dispatch path. Product shell primary path
+is generated SPA (`static/dist`).

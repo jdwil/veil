@@ -1,11 +1,18 @@
-# Future pure VEIL host (PVR-010) — not yet the process entry.
-# When harness can emit a bin that links veil-server + platform handlers,
-# this package's @main becomes the product entry and bootstrap shrinks to a trampoline.
+# Pure VEIL product host (CAP-002 / CAP-006 / PVR-010).
+# Generate: veil gen runtime/src/host.veil -t rust -o runtime/generated-host
+# Run:      cargo run -p veil_bin  (from generated-host/)
+#
+# Links veil-server so codegen emits ProductHost @main (IDE multi + SPA + config).
+# Trampoline bootstrap remains for live Bus platform until generated storage
+# ports fully replace platform.rs (CAP-003/004).
 pkg VeilRuntimeHost
   use ddd
   use di
+  link veil_server path "../../crates/veil-server"
 
-  # Placeholder until RT-021 / PVR-010 harness emit is complete.
-  svc HostHealth
-    -> Str
-    ret "veil-runtime-host-pending"
+  @main
+  fn bootstrap() -> Res!
+    step run
+      # ProductHost::listen is emitted by rust codegen when link veil_server is present.
+      # Handler names come from veil_shared::register_all (CAP-003).
+      ret Ok

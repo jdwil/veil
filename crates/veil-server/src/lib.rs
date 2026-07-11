@@ -29,6 +29,7 @@ pub mod acp;
 pub mod layer_edit;
 pub mod project_layout;
 pub mod config;
+pub mod product_host;
 
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;
@@ -46,6 +47,7 @@ pub use config::{
     needs_first_run, resolve_projects_dir, save_config, set_projects_dir, suggested_projects_dir,
     veil_home_dir, VeilConfig,
 };
+pub use product_host::{resolve_static_dir, ProductHost};
 
 /// Projects directory: env → config.json → ~/veil-projects.
 pub fn default_projects_dir() -> std::path::PathBuf {

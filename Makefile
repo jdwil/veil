@@ -244,14 +244,23 @@ runtime-serve: pure-runtime-build
 	@CI=1 VEIL_NONINTERACTIVE=1 VEIL_PORT=$(RUNTIME_PORT) VEIL_BIN=$(CURDIR)/$(VEIL_BIN) \
 		./runtime/bootstrap/target/release/veil-runtime
 
-# PVR-031: gen UI sources + build host
+# PVR-031 / CAP-005: gen SPA (dist/) + build host trampoline
 pure-runtime-build: veil
-	@echo "==> gen runtime-ui.veil → static/app"
+	@echo "==> gen runtime-ui.veil → static/app (SPA dist CAP-005)"
 	@$(VEIL_BIN) check runtime/src/runtime-ui.veil || true
 	@$(VEIL_BIN) gen runtime/src/runtime-ui.veil -o runtime/bootstrap/static/app -t typescript
-	@echo "==> build veil-runtime"
+	@# Prefer generated dist/ as primary shell (ProductHost serves dist/ first)
+	@if [ -f runtime/bootstrap/static/app/dist/index.html ]; then \
+		mkdir -p runtime/bootstrap/static/dist; \
+		cp -f runtime/bootstrap/static/app/dist/index.html runtime/bootstrap/static/dist/; \
+		cp -f runtime/bootstrap/static/app/dist/spa.js runtime/bootstrap/static/dist/ 2>/dev/null || true; \
+		cp -f runtime/bootstrap/static/app/src/spa.js runtime/bootstrap/static/dist/ 2>/dev/null || true; \
+	fi
+	@echo "==> gen host.veil (CAP-002/006 product host bin)"
+	@$(VEIL_BIN) gen runtime/src/host.veil -o runtime/generated-host -t rust || true
+	@echo "==> build veil-runtime trampoline"
 	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
-	@echo "✓ pure-runtime build ready"
+	@echo "✓ pure-runtime build ready (shell: static/dist or static/app)"
 
 pure-runtime: pure-runtime-build runtime-serve
 

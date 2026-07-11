@@ -97,7 +97,10 @@ Codegen writes path deps under `[workspace.dependencies]` and
 `name.workspace = true` on `veil_shared`, module crates, and `veil_bin`.
 Rust import name uses underscores (`use veil_server::…`).
 
-See `crates/veil-codegen/src/links.rs` and story CAP-001 in
+When a package has `link veil_server` **and** `@main`, rust codegen emits a
+**ProductHost** bin (CAP-002/006) instead of the demo InProcessBus harness.
+
+See `crates/veil-codegen/src/links.rs` and story CAP-001–007 in
 `stories/141-pure-runtime-capability-gaps.md`.
 
 ### `lang` — Glossary

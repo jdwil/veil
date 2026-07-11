@@ -506,7 +506,286 @@ pub fn generate_ts_with_packages(
     // Generate tsconfig.json
     files.push(gen_tsconfig());
 
+    // CAP-005: browser-ready SPA when package has UI constructs (app/page/comp).
+    if package_has_ui_constructs(solution) {
+        files.extend(gen_spa_bundle(solution, &sol_name));
+    }
+
     TsProject { files }
+}
+
+/// CAP-005: detect UI packages (svelte5 / ui layers).
+fn package_has_ui_constructs(solution: &Solution) -> bool {
+    fn walk(c: &Construct) -> bool {
+        let sk = c.subkind.to_lowercase();
+        if sk == "app" || sk == "page" || sk == "comp" || sk == "layout" || sk == "store" {
+            return true;
+        }
+        c.children.iter().any(walk)
+    }
+    solution.items.iter().any(|i| match i {
+        TopLevelItem::Construct(c) => walk(c),
+        _ => false,
+    })
+}
+
+/// CAP-005: emit index.html + browser app that talks to same-origin `/api`.
+fn gen_spa_bundle(solution: &Solution, sol_name: &str) -> Vec<TsFile> {
+    let mut files = Vec::new();
+
+    // Collect @route paths if present on pages
+    let mut routes: Vec<(String, String)> = Vec::new();
+    fn collect_routes(c: &Construct, routes: &mut Vec<(String, String)>) {
+        if c.subkind.eq_ignore_ascii_case("page") {
+            let route = c
+                .annotations
+                .iter()
+                .find(|a| a.name == "route")
+                .and_then(|a| a.args.first())
+                .cloned()
+                .unwrap_or_else(|| format!("/{}", to_camel(&c.name)));
+            routes.push((c.name.clone(), route));
+        }
+        for ch in &c.children {
+            collect_routes(ch, routes);
+        }
+    }
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            collect_routes(c, &mut routes);
+        }
+    }
+
+    let nav_items: String = if routes.is_empty() {
+        r#"{ href: "/", label: "Dashboard" },
+      { href: "/projects", label: "Projects" },
+      { href: "/config", label: "Config" }"#
+            .into()
+    } else {
+        routes
+            .iter()
+            .map(|(name, path)| format!("{{ href: \"{path}\", label: \"{name}\" }}"))
+            .collect::<Vec<_>>()
+            .join(",\n      ")
+    };
+
+    let app_js = format!(
+        r#"// Generated SPA entry for {sol_name} (CAP-005) — same-origin /api
+const NAV = [
+      {nav_items}
+];
+
+async function api(path, opts) {{
+  const r = await fetch(path, {{
+    headers: {{ "Content-Type": "application/json", ...(opts?.headers || {{}}) }},
+    ...opts,
+  }});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}}
+
+function el(tag, attrs = {{}}, ...kids) {{
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {{
+    if (k === "className") n.className = v;
+    else if (k.startsWith("on") && typeof v === "function") n.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (v != null) n.setAttribute(k, v);
+  }}
+  for (const c of kids.flat()) {{
+    if (c == null) continue;
+    n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  }}
+  return n;
+}}
+
+function shell(main) {{
+  const root = document.getElementById("app");
+  root.replaceChildren(
+    el("aside", {{ className: "sidebar" }},
+      el("div", {{ className: "logo" }}, el("span", {{}}, "◆"), " veil-runtime"),
+      el("nav", {{}}, ...NAV.map(i => el("a", {{ href: i.href, className: location.pathname === i.href ? "active" : "" }}, i.label)))
+    ),
+    el("main", {{}}, main),
+  );
+}}
+
+async function viewDashboard() {{
+  let projects = [];
+  try {{
+    const data = await api("/api/projects");
+    projects = data.projects || data.repos || [];
+  }} catch (e) {{
+    shell(el("div", {{}}, el("h1", {{}}, "Dashboard"), el("p", {{ className: "err" }}, String(e))));
+    return;
+  }}
+  shell(el("div", {{}},
+    el("h1", {{}}, "Dashboard"),
+    el("p", {{ className: "sub" }}, "Generated shell · live multi-project API"),
+    el("div", {{ className: "stats" }},
+      el("div", {{ className: "stat" }}, el("div", {{ className: "v" }}, String(projects.length)), el("div", {{ className: "l" }}, "Projects")),
+    ),
+    el("h2", {{}}, "Projects"),
+    ...projects.map(p => {{
+      const name = p.name || p.id || "?";
+      return el("a", {{ className: "card", href: `/projects/${{encodeURIComponent(name)}}/ide` }},
+        el("div", {{ className: "name" }}, name),
+        el("div", {{ className: "meta" }}, p.path || p.default_branch || "open IDE"),
+      );
+    }}),
+  ));
+}}
+
+async function viewProjects() {{
+  await viewDashboard();
+}}
+
+async function viewConfig() {{
+  let cfg = {{}};
+  try {{ cfg = await api("/api/config"); }} catch (e) {{
+    shell(el("div", {{}}, el("h1", {{}}, "Config"), el("p", {{ className: "err" }}, String(e))));
+    return;
+  }}
+  const input = el("input", {{ value: cfg.projects_dir || "", id: "pd" }});
+  const status = el("p", {{ className: "sub" }}, "");
+  const save = el("button", {{
+    type: "button",
+    onClick: async () => {{
+      try {{
+        const body = {{ projects_dir: input.value }};
+        const r = await api("/api/config", {{ method: "PATCH", body: JSON.stringify(body) }});
+        status.textContent = r.ok === false ? (r.error || "failed") : "Saved.";
+      }} catch (e) {{ status.textContent = String(e); }}
+    }},
+  }}, "Save projects_dir");
+  shell(el("div", {{}},
+    el("h1", {{}}, "Config"),
+    el("p", {{ className: "sub" }}, cfg.config_path || ""),
+    el("label", {{}}, "projects_dir"),
+    el("div", {{ className: "row" }}, input, save),
+    status,
+  ));
+}}
+
+function route() {{
+  const p = location.pathname;
+  if (p.startsWith("/config")) return viewConfig();
+  if (p.startsWith("/projects")) return viewProjects();
+  return viewDashboard();
+}}
+
+route();
+window.addEventListener("popstate", route);
+"#,
+        sol_name = sol_name,
+        nav_items = nav_items,
+    );
+
+    files.push(TsFile {
+        path: "src/spa.js".into(),
+        content: app_js.clone(),
+    });
+
+    let index_html = r#"<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VEIL Runtime</title>
+  <style>
+    :root {
+      --bg: #0f0f0f; --surface: #1a1a1a; --border: #2e2e2e;
+      --text: #e5e5e5; --dim: #737373; --accent: #a5b4fc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: Inter, system-ui, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+    }
+    #app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+    .sidebar { border-right: 1px solid var(--border); padding: 20px 0; background: var(--surface); }
+    .logo { padding: 0 20px 24px; font-weight: 700; }
+    .logo span { color: var(--accent); }
+    nav a {
+      display: block; padding: 10px 20px; color: var(--dim);
+      text-decoration: none; font-size: 14px;
+    }
+    nav a:hover, nav a.active { color: var(--accent); background: rgba(165,180,252,0.08); }
+    main { padding: 28px 32px; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .sub { color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+    .err { color: #f87171; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 28px; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .stat .v { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .stat .l { font-size: 11px; text-transform: uppercase; color: var(--dim); }
+    .card {
+      display: block; padding: 14px 16px; margin-bottom: 10px;
+      border: 1px solid var(--border); border-radius: 8px;
+      text-decoration: none; color: var(--text); background: var(--surface);
+    }
+    .card:hover { border-color: var(--accent); }
+    .card .name { font-weight: 600; }
+    .card .meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
+    .row { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; align-items: center; }
+    input {
+      padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
+      background: #0003; color: var(--text); min-width: 280px;
+    }
+    button {
+      padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent);
+      background: transparent; color: var(--accent); cursor: pointer;
+    }
+    button:hover { background: rgba(165,180,252,0.12); }
+    label { display: block; font-size: 12px; color: var(--dim); margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <!-- Absolute path so ProductHost can serve from /static/dist/ -->
+  <script type="module" src="/static/dist/spa.js"></script>
+</body>
+</html>
+"#
+    .to_string();
+
+    files.push(TsFile {
+        path: "index.html".into(),
+        content: index_html.clone(),
+    });
+    // dist/ is what ProductHost prefers as primary SPA
+    files.push(TsFile {
+        path: "dist/index.html".into(),
+        content: index_html.clone(),
+    });
+    files.push(TsFile {
+        path: "dist/spa.js".into(),
+        content: app_js,
+    });
+
+    // Zero-deps "build": copy src/spa.js → dist (script for make pure-runtime)
+    files.push(TsFile {
+        path: "scripts/bundle-spa.sh".into(),
+        content: "#!/bin/sh\nset -e\nmkdir -p dist\ncp index.html dist/\ncp src/spa.js dist/\necho \"SPA dist ready\"\n".into(),
+    });
+
+    // package.json build script for SPA
+    files.push(TsFile {
+        path: "package.spa.json".into(),
+        content: format!(
+            r#"{{
+  "name": "{sol_name}-spa",
+  "private": true,
+  "type": "module",
+  "scripts": {{
+    "build": "mkdir -p dist && cp index.html dist/ && cp src/spa.js dist/",
+    "dev": "echo 'Serve dist/ via veil-runtime ProductHost'"
+  }}
+}}
+"#
+        ),
+    });
+
+    files
 }
 
 /// Collect constructs of a given shape from a module tree.
