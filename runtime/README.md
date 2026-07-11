@@ -24,18 +24,16 @@ veil serve .
 
 ```bash
 # First run writes ~/.veil/config.json (projects_dir, etc.)
-veil projects list
-veil projects create my-app
-# Target: one multi-project host embedding veil-server (docs/IDE_RUNTIME.md)
-# Dev convenience still works:
-veil serve "$(veil projects path my-app)" -p 3001
+make runtime-serve          # or: cargo run --release -p veil-runtime-bootstrap
+# multi IDE kernel + bus on :8080
+# Viewer (separate Vite in dev):
+#   http://127.0.0.1:5173/?project=<name>
 ```
 
 - Config: `~/.veil/config.json` (`projects_dir`); env `VEIL_PROJECTS_DIR` overrides.
-- Runtime is **VEIL-authored** and must **reuse** `veil-server` APIs — not reimplement them.
-- Multi-product host today: `veil serve --multi` (embeds `build_multi_router` / `ProjectsHub`).
-  Runtime host should link the same crate (`build_multi_router`) rather than forking N servers.
-- Viewer multi: open `http://localhost:5173/?project=<name>` against multi serve.
+- **`veil-runtime` embeds `veil-server::build_multi_router`** (same routes as `veil serve --multi`).
+- CLI convenience: `veil serve --multi -p 3001` or `veil serve <project>`.
+- Viewer multi: `?project=<name>` against runtime `:8080` or multi serve.
 - `examples/` is demos/CI only (`make serve-examples`).
 
 No special platform daemon is required for a single-project dual loop. Local
