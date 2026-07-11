@@ -1,0 +1,11 @@
+# Future pure VEIL host (PVR-010) — not yet the process entry.
+# When harness can emit a bin that links veil-server + platform handlers,
+# this package's @main becomes the product entry and bootstrap shrinks to a trampoline.
+pkg VeilRuntimeHost
+  use ddd
+  use di
+
+  # Placeholder until RT-021 / PVR-010 harness emit is complete.
+  svc HostHealth
+    -> Str
+    ret "veil-runtime-host-pending"

@@ -415,6 +415,18 @@ pub fn handle_bus(msg: &Value) -> Value {
                 "config_path": veil_server::config_path().to_string_lossy(),
             })
         }
+        "HandleAgentMessage" | "HandleToolCall" => {
+            // PVR-016: document ACP path; optional local echo with project context
+            let project = strf("project").or_else(|| strf("repo")).unwrap_or("");
+            let prompt = strf("message").or_else(|| strf("prompt")).unwrap_or("");
+            json!({
+                "status": "accepted",
+                "project": project,
+                "prompt_len": prompt.len(),
+                "hint": "Use IDE agent dock (veil-server /api/p/{project}/agent/turn) for full ACP turns",
+                "ide_path": format!("/api/p/{project}/agent/turn"),
+            })
+        }
         other => json!({
             "error": "not_implemented",
             "handler": other,

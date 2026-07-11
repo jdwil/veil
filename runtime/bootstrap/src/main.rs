@@ -103,7 +103,10 @@ async fn health() -> impl IntoResponse {
 
 /// RTU-003/004: shell home (static dashboard).
 async fn shell_index() -> impl IntoResponse {
-    match std::fs::read_to_string(static_path("index.html")) {
+    // Prefer generated shell under static/app/ (PVR-023)
+    let primary = static_path("app/index.html");
+    let path = if primary.is_file() { primary } else { static_path("index.html") };
+    match std::fs::read_to_string(path) {
         Ok(html) => Html(inject_viewer_url(html)).into_response(),
         Err(_) => Html(
             "<h1>veil-runtime</h1><p>Missing static/index.html — open <a href=\"/api/projects\">/api/projects</a></p>"

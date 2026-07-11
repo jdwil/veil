@@ -7,7 +7,7 @@ customer products is available in-process. Handwritten bootstrap is gone or
 reduced to a **tiny, boring trampoline** that only exists until VEIL can emit
 the host binary itself.
 
-**Status:** Implemented (MVP host; gen UI artifact + live platform bus)  
+**Status:** MVP implemented — remaining pure authorship noted in status table  
 **Depends on:** [120](120-projects-config-init.md) (Done), [130](130-runtime-ux-audit.md)
 partial host, [70](70-runtime-harness.md), [80](80-runtime-platform.md)  
 **Docs:** [`IDE_RUNTIME.md`](../docs/IDE_RUNTIME.md), [`HARNESS.md`](../docs/HARNESS.md),
