@@ -7,7 +7,7 @@ customer products is available in-process. Handwritten bootstrap is gone or
 reduced to a **tiny, boring trampoline** that only exists until VEIL can emit
 the host binary itself.
 
-**Status:** Spec only (Todo)  
+**Status:** In progress  
 **Depends on:** [120](120-projects-config-init.md) (Done), [130](130-runtime-ux-audit.md)
 partial host, [70](70-runtime-harness.md), [80](80-runtime-platform.md)  
 **Docs:** [`IDE_RUNTIME.md`](../docs/IDE_RUNTIME.md), [`HARNESS.md`](../docs/HARNESS.md),
@@ -131,7 +131,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ### Phase 0 — Contract & inventory
 
-#### PVR-000: Pure-runtime definition of done locked in docs — Todo · P1
+#### PVR-000: Pure-runtime definition of done locked in docs — Done · P1
 
 **Acceptance**
 
@@ -141,7 +141,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-001: Capability matrix (runtime.veil vs live host) — Todo · P1
+#### PVR-001: Capability matrix (runtime.veil vs live host) — Done · P1
 
 **Acceptance**
 
@@ -443,8 +443,8 @@ make pure-runtime
 
 | ID | Title | Status |
 |----|--------|--------|
-| PVR-000 | Docs lock pure-runtime DoD | Todo |
-| PVR-001 | Capability matrix | Todo |
+| PVR-000 | Docs lock pure-runtime DoD | Done |
+| PVR-001 | Capability matrix | Done |
 | PVR-010 | VEIL `@main` host | Todo |
 | PVR-011 | Storage handlers live | Todo |
 | PVR-012 | Git branch/diff/log | Todo |
