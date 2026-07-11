@@ -658,6 +658,75 @@ async function viewProjects() {{
   await viewDashboard();
 }}
 
+async function viewPage(title, load) {{
+  try {{
+    const body = await load();
+    shell(el("div", {{}}, el("h1", {{}}, title), el("p", {{ className: "sub" }}, "Live API"), body));
+  }} catch (e) {{
+    shell(el("div", {{}}, el("h1", {{}}, title), el("p", {{ className: "err" }}, String(e))));
+  }}
+}}
+
+async function viewDeploy() {{
+  await viewPage("Deploy", async () => {{
+    const data = await api("/api/artifacts");
+    const arts = data.artifacts || [];
+    if (!arts.length) return el("p", {{ className: "sub" }}, "No local artifacts yet. Compile a project first.");
+    return el("div", {{}}, ...arts.map(a =>
+      el("div", {{ className: "card" }},
+        el("div", {{ className: "name" }}, a.repo || a.name || "?"),
+        el("div", {{ className: "meta" }}, a.path || a.artifact_dir || JSON.stringify(a)),
+      )
+    ));
+  }});
+}}
+
+async function viewRegistry() {{
+  await viewPage("Registry", async () => {{
+    const data = await api("/api/layers");
+    const layers = data.layers || [];
+    if (!layers.length) return el("p", {{ className: "sub" }}, "No layers found (set VEIL_LAYERS_DIR or use monorepo layers/).");
+    return el("div", {{}}, ...layers.map(l =>
+      el("div", {{ className: "card" }},
+        el("div", {{ className: "name" }}, l.name || l.id || "?"),
+        el("div", {{ className: "meta" }}, l.path || l.kind || ""),
+      )
+    ));
+  }});
+}}
+
+async function viewBus() {{
+  const out = el("pre", {{ className: "sub" }}, "");
+  const typeIn = el("input", {{ value: "ListRepos", id: "busType" }});
+  const go = el("button", {{
+    type: "button",
+    onClick: async () => {{
+      try {{
+        const message = {{ type: typeIn.value || "ListRepos" }};
+        const r = await api("/bus/invoke", {{ method: "POST", body: JSON.stringify({{ message }}) }});
+        out.textContent = JSON.stringify(r, null, 2);
+      }} catch (e) {{ out.textContent = String(e); }}
+    }},
+  }}, "Invoke");
+  shell(el("div", {{}},
+    el("h1", {{}}, "Bus"),
+    el("p", {{ className: "sub" }}, "POST /bus/invoke — generated storage handlers"),
+    el("label", {{}}, "message.type"),
+    el("div", {{ className: "row" }}, typeIn, go),
+    out,
+  ));
+}}
+
+async function viewAgents() {{
+  shell(el("div", {{}},
+    el("h1", {{}}, "Agents"),
+    el("p", {{ className: "sub" }}, "Full ACP turns run in the dual-loop IDE agent dock."),
+    el("p", {{}}, "Open a project IDE, then use the agent panel:"),
+    el("code", {{}}, "POST /api/p/{{project}}/agent/turn"),
+    el("p", {{ className: "sub" }}, "Bus HandleAgentMessage returns a pointer to that path."),
+  ));
+}}
+
 async function viewConfig() {{
   let cfg = {{}};
   try {{ cfg = await api("/api/config"); }} catch (e) {{
@@ -686,9 +755,17 @@ async function viewConfig() {{
 }}
 
 function route() {{
-  const p = location.pathname;
-  if (p.startsWith("/config")) return viewConfig();
-  if (p.startsWith("/projects")) return viewProjects();
+  const p = location.pathname.replace(/\\/+$/, "") || "/";
+  if (p === "/config" || p.startsWith("/config/")) return viewConfig();
+  if (p === "/deploy" || p.startsWith("/deploy/")) return viewDeploy();
+  if (p === "/registry" || p.startsWith("/registry/")) return viewRegistry();
+  if (p === "/bus" || p.startsWith("/bus/")) return viewBus();
+  if (p === "/agents" || p.startsWith("/agents/")) return viewAgents();
+  if (p === "/projects" || p.startsWith("/projects/")) {{
+    // /projects/{{name}}/ide is a full HTML page (iframe), not SPA
+    if (p.includes("/ide")) return;
+    return viewProjects();
+  }}
   return viewDashboard();
 }}
 

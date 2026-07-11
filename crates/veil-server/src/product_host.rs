@@ -94,22 +94,31 @@ impl ProductHost {
             viewer_url: self.viewer_url.clone(),
         };
 
+        // SPA shell routes (generated nav). Full page loads must return index.html.
         let shell = Router::new()
             .route("/", get(shell_index))
-            .route("/projects/{name}/ide", get(ide_embed))
-            .route("/config", get(shell_index))
             .route("/projects", get(shell_index))
+            .route("/projects/{name}/ide", get(ide_embed))
+            .route("/deploy", get(shell_index))
+            .route("/registry", get(shell_index))
+            .route("/bus", get(shell_index))
+            .route("/agents", get(shell_index))
+            .route("/config", get(shell_index))
             // SPA assets under /static/dist/ (index references absolute paths)
             .nest_service("/static", ServeDir::new(&self.static_dir))
             .nest_service("/assets", ServeDir::new(self.static_dir.join("assets")))
-            .with_state(shell_state);
+            .with_state(shell_state.clone());
 
         // IDE multi-router already includes GET+PATCH /api/config (CAP-007).
         let mut app = shell.merge(ide);
         if let Some(bus) = self.bus_router {
             app = app.merge(bus);
         }
-        app.layer(CorsLayer::permissive())
+        // Unmatched GET paths that look like shell pages → SPA (not /api|/bus|/health).
+        let spa_fb = Router::new()
+            .fallback(get(spa_fallback))
+            .with_state(shell_state);
+        app.merge(spa_fb).layer(CorsLayer::permissive())
     }
 
     /// CAP-002: listen and serve until shutdown signal.
@@ -142,6 +151,29 @@ struct ShellState {
 }
 
 async fn shell_index(State(st): State<ShellState>) -> impl IntoResponse {
+    serve_spa_html(&st)
+}
+
+/// Fallback: serve SPA for unknown non-API paths so deep links work.
+async fn spa_fallback(
+    State(st): State<ShellState>,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
+    let path = uri.path();
+    // Leave SPA paths (including GET /bus page) free; only block API-like prefixes.
+    if path.starts_with("/api")
+        || path.starts_with("/bus/")
+        || path.starts_with("/health")
+        || path.starts_with("/static")
+        || path.starts_with("/assets")
+    {
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
+    // Avoid stealing method-not-allowed noise for POST etc. — only GET reaches fallback typically.
+    serve_spa_html(&st)
+}
+
+fn serve_spa_html(st: &ShellState) -> axum::response::Response {
     // Prefer SPA dist (CAP-005), then static/app, then legacy index.html
     let candidates = [
         st.static_dir.join("dist/index.html"),
