@@ -869,7 +869,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 }
             }
         }
-        return format!("{}::{}({})", effective_target, to_snake(method), args_str);
+        // Prefer stub-qualified path (aws_sdk_s3::Client) over VEIL alias (S3Client).
+        return format!("{}::{}({})", qualified, to_snake(method), args_str);
     }
 
     // Self field target (adapter bodies) → self.target.method(args)

@@ -1935,46 +1935,62 @@ fn gen_impls(
                 ctx.struct_fields = seeded.struct_fields;
                 ctx.stub_type_crate = seeded.stub_type_crate;
 
-                for (i, expr) in mimpl.body.iter().enumerate() {
-                    let is_last = i == mimpl.body.len() - 1;
-                    let rust_expr = expr_to_rust(expr, &ctx);
-                    // Track local assignments AFTER translation so first use gets 'let mut'
-                    if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = expr {
-                        ctx.locals.insert(name.clone());
-                    }
-                    if is_last {
-                        // GEN-002: lower authored adapter bodies. If the last
-                        // expr already returns (`ret Ok` → `return Ok(...)`),
-                        // emit it as-is — do not wrap again.
-                        let is_return = rust_expr.trim_start().starts_with("return ");
-                        if is_return || rust_expr.contains("todo!") {
-                            out.push_str(&format!("        {rust_expr}\n"));
-                        } else if ret_rust == "Result<(), DomainError>" {
-                            out.push_str(&format!("        {rust_expr};\n"));
-                            out.push_str("        Ok(())\n");
-                        } else if ret_rust.starts_with("Result<") {
-                            if rust_expr.ends_with('?') || rust_expr.starts_with("Ok(") {
-                                out.push_str(&format!("        {rust_expr}\n"));
-                            } else if rust_expr.contains(".await") {
-                                out.push_str(&format!(
-                                    "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
-                                ));
-                            } else {
-                                out.push_str(&format!("        Ok({rust_expr})\n"));
-                            }
-                        } else {
-                            out.push_str(&format!("        {rust_expr}\n"));
-                        }
-                    } else {
-                        out.push_str(&format!("        {rust_expr};\n"));
-                    }
-                }
-                if mimpl.body.is_empty() {
+                // Cloud/stub SDK bodies (S3Client::…, DdbClient::…) are VEIL
+                // pseudo-API, not real Rust. Emit a compiling Err placeholder so
+                // pure-runtime (local ports) can link the crate. Real cloud
+                // adapters land behind a future RT/cloud story.
+                let uses_stub_sdk = mimpl
+                    .body
+                    .iter()
+                    .any(|e| expr_refs_stub_type(e, &ctx.stub_type_crate));
+                if uses_stub_sdk {
+                    out.push_str(&format!(
+                        "        Err(DomainError::External(\
+                         \"cloud adapter {}::{} not configured (pure-runtime uses local ports)\"\
+                         .into()))\n",
+                        c.name, mimpl.method_name
+                    ));
+                } else if mimpl.body.is_empty() {
                     // Empty adapter — compile-time placeholder; CHK-006 flags debt.
                     out.push_str(&format!(
                         "        todo!(\"empty adapter body: {}::{}\")\n",
                         c.name, mimpl.method_name
                     ));
+                } else {
+                    for (i, expr) in mimpl.body.iter().enumerate() {
+                        let is_last = i == mimpl.body.len() - 1;
+                        let rust_expr = expr_to_rust(expr, &ctx);
+                        // Track local assignments AFTER translation so first use gets 'let mut'
+                        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = expr {
+                            ctx.locals.insert(name.clone());
+                        }
+                        if is_last {
+                            // GEN-002: lower authored adapter bodies. If the last
+                            // expr already returns (`ret Ok` → `return Ok(...)`),
+                            // emit it as-is — do not wrap again.
+                            let is_return = rust_expr.trim_start().starts_with("return ");
+                            if is_return || rust_expr.contains("todo!") {
+                                out.push_str(&format!("        {rust_expr}\n"));
+                            } else if ret_rust == "Result<(), DomainError>" {
+                                out.push_str(&format!("        {rust_expr};\n"));
+                                out.push_str("        Ok(())\n");
+                            } else if ret_rust.starts_with("Result<") {
+                                if rust_expr.ends_with('?') || rust_expr.starts_with("Ok(") {
+                                    out.push_str(&format!("        {rust_expr}\n"));
+                                } else if rust_expr.contains(".await") {
+                                    out.push_str(&format!(
+                                        "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
+                                    ));
+                                } else {
+                                    out.push_str(&format!("        Ok({rust_expr})\n"));
+                                }
+                            } else {
+                                out.push_str(&format!("        {rust_expr}\n"));
+                            }
+                        } else {
+                            out.push_str(&format!("        {rust_expr};\n"));
+                        }
+                    }
                 }
                 out.push_str("    }\n\n");
             }
@@ -2118,6 +2134,89 @@ fn collect_effect_hooks(
             collect_effect_hooks(&op.right, name_to_shape, locals, hooks);
         }
         _ => {}
+    }
+}
+
+/// True if any subexpression calls a stub-declared type (S3Client, DdbClient, …).
+fn expr_refs_stub_type(
+    expr: &Expr,
+    stubs: &std::collections::HashMap<String, (String, String)>,
+) -> bool {
+    match expr {
+        Expr::Call(call) => {
+            let target = if call.target.contains('.') {
+                call.target.split('.').last().unwrap_or(&call.target)
+            } else {
+                call.target.as_str()
+            };
+            if stubs.contains_key(target) || stubs.contains_key(&call.target) {
+                return true;
+            }
+            if call.args.iter().any(|a| expr_refs_stub_type(a, stubs)) {
+                return true;
+            }
+            call.receiver
+                .as_ref()
+                .map(|r| expr_refs_stub_type(r, stubs))
+                .unwrap_or(false)
+        }
+        Expr::FieldAccess(base, _) | Expr::Await(base) | Expr::Try(base) | Expr::Return(base) => {
+            expr_refs_stub_type(base, stubs)
+        }
+        Expr::UnaryOp(u) => expr_refs_stub_type(&u.expr, stubs),
+        Expr::Assign(_, v, _) | Expr::MutAssign(_, v, _) | Expr::LetPattern(_, v, _) => {
+            expr_refs_stub_type(v, stubs)
+        }
+        Expr::BinaryOp(op) => {
+            expr_refs_stub_type(&op.left, stubs) || expr_refs_stub_type(&op.right, stubs)
+        }
+        Expr::IfExpr(data) => {
+            expr_refs_stub_type(&data.condition, stubs)
+                || data.then_body.iter().any(|e| expr_refs_stub_type(e, stubs))
+                || data
+                    .else_body
+                    .iter()
+                    .flatten()
+                    .any(|e| expr_refs_stub_type(e, stubs))
+        }
+        Expr::Match(scrut, arms) => {
+            expr_refs_stub_type(scrut, stubs)
+                || arms
+                    .iter()
+                    .any(|a| a.body.iter().any(|e| expr_refs_stub_type(e, stubs)))
+        }
+        Expr::ForLoop { iterable, body, .. } => {
+            expr_refs_stub_type(iterable, stubs)
+                || body.iter().any(|e| expr_refs_stub_type(e, stubs))
+        }
+        Expr::WhileLoop { condition, body } => {
+            expr_refs_stub_type(condition, stubs)
+                || body.iter().any(|e| expr_refs_stub_type(e, stubs))
+        }
+        Expr::Loop(body) | Expr::Closure { body, .. } => {
+            body.iter().any(|e| expr_refs_stub_type(e, stubs))
+        }
+        Expr::Tuple(xs) | Expr::ArrayLit(xs) => xs.iter().any(|e| expr_refs_stub_type(e, stubs)),
+        Expr::Index(a, b) => expr_refs_stub_type(a, stubs) || expr_refs_stub_type(b, stubs),
+        Expr::StructLit(_, fields) | Expr::StructUpdate { fields, .. } => {
+            fields.iter().any(|(_, v)| expr_refs_stub_type(v, stubs))
+        }
+        Expr::Cast(e, _) => expr_refs_stub_type(e, stubs),
+        Expr::StringInterp(parts) => parts.iter().any(|p| match p {
+            StringPart::Expr(e) => expr_refs_stub_type(e, stubs),
+            _ => false,
+        }),
+        Expr::Action(a) => {
+            a.args.iter().any(|e| expr_refs_stub_type(e, stubs))
+                || a.named_args.iter().any(|(_, e)| expr_refs_stub_type(e, stubs))
+                || a.condition
+                    .as_ref()
+                    .map(|c| expr_refs_stub_type(c, stubs))
+                    .unwrap_or(false)
+                || stubs.contains_key(&a.target)
+        }
+        Expr::Ident(name) => stubs.contains_key(name),
+        _ => false,
     }
 }
 
