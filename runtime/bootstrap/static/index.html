@@ -84,11 +84,18 @@
     </div>
     <p class="err" id="err"></p>
     <div id="list"></div>
+    <h2>Platform</h2>
+    <div class="row">
+      <button type="button" id="btn-layers">Refresh layers</button>
+      <button type="button" id="btn-artifacts">Refresh artifacts</button>
+    </div>
+    <pre id="platform" class="sub" style="white-space:pre-wrap;background:#111;padding:12px;border-radius:8px;border:1px solid var(--border);"></pre>
     <p class="sub">
       Open IDE embeds the dual-loop viewer against this host
       (<code>/api/p/{name}/…</code>). Dev viewer:
       <code id="viewer-hint"></code>
     </p>
+    <p class="sub">UI source of truth: <code>runtime/src/runtime-ui.veil</code> (gen → <code>static/app</code>). Shell HTML implements the same screens until Svelte emit is bundled.</p>
   </main>
   <script>
     const VIEWER = (window.VEIL_VIEWER_URL || 'http://127.0.0.1:5173').replace(/\/$/, '');
@@ -151,6 +158,18 @@
         btn.disabled = false;
       }
     };
+
+    async function showPlatform(path) {
+      const el = document.getElementById('platform');
+      try {
+        const res = await fetch(path);
+        el.textContent = JSON.stringify(await res.json(), null, 2);
+      } catch (e) {
+        el.textContent = String(e);
+      }
+    }
+    document.getElementById('btn-layers').onclick = () => showPlatform('/api/layers');
+    document.getElementById('btn-artifacts').onclick = () => showPlatform('/api/artifacts');
 
     load();
   </script>

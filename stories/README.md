@@ -120,8 +120,8 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **GEN-008 / 009** | Package multi-target + warning hygiene | [60](60-codegen-targets.md) |
 | **DSL-015** | Many-layer workspace polish | [110](110-layer-dsl-ide.md) |
 
-**Sequencing note:** Prefer **CFG/INIT (120)** for machine onboarding and
-projects hub before multi-project MP-*. Prefer **DSL-001–004** when
+**Sequencing note:** Prefer **PVR-*** ([140](140-pure-veil-runtime.md)) for
+“runtime pure VEIL front+back, full product.” Prefer **DSL-001–004** when
 language-designer iteration is the bottleneck. Close **PAR-015** before
 expanding Swift/Kotlin demos. Prefer **AGT-013/014** before multi-user remote
 auth.

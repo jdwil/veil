@@ -78,7 +78,8 @@ STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sq
                sha2 zip tempfile schemars
 
 .PHONY: veil serve serve-examples serve-stop serve-api serve-ui viewer-install \
-	projects runtime runtime-serve gen-runtime build-runtime clean-runtime stubs check test test-roundtrip
+	projects runtime runtime-serve pure-runtime pure-runtime-build gen-runtime build-runtime \
+	clean-runtime stubs check test test-roundtrip
 
 # ─── Compiler ───────────────────────────────────────────────────────────────
 
@@ -230,11 +231,9 @@ gen-runtime: veil
 build-runtime: gen-runtime
 	cargo build --manifest-path $(RUNTIME_OUT)/Cargo.toml
 
-# Product host: multi-project IDE kernel + shell UI (RTU-008)
+# Product host: multi-project IDE kernel + shell UI (RTU-008 / PVR-031)
 RUNTIME_PORT ?= 8080
-runtime-serve: veil
-	@echo "Building veil-runtime (bootstrap + veil-server multi kernel)…"
-	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
+runtime-serve: pure-runtime-build
 	@echo ""
 	@echo "Starting veil-runtime on :$(RUNTIME_PORT)"
 	@echo "  Shell:    http://127.0.0.1:$(RUNTIME_PORT)/"
@@ -242,8 +241,19 @@ runtime-serve: veil
 	@echo "  Viewer:   http://127.0.0.1:$(VIEWER_PORT)/?api=http://127.0.0.1:$(RUNTIME_PORT)"
 	@echo "  (optional) make serve-ui VIEWER_PORT=$(VIEWER_PORT)"
 	@echo ""
-	@CI=1 VEIL_NONINTERACTIVE=1 VEIL_PORT=$(RUNTIME_PORT) \
+	@CI=1 VEIL_NONINTERACTIVE=1 VEIL_PORT=$(RUNTIME_PORT) VEIL_BIN=$(CURDIR)/$(VEIL_BIN) \
 		./runtime/bootstrap/target/release/veil-runtime
+
+# PVR-031: gen UI sources + build host
+pure-runtime-build: veil
+	@echo "==> gen runtime-ui.veil → static/app"
+	@$(VEIL_BIN) check runtime/src/runtime-ui.veil || true
+	@$(VEIL_BIN) gen runtime/src/runtime-ui.veil -o runtime/bootstrap/static/app -t typescript
+	@echo "==> build veil-runtime"
+	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
+	@echo "✓ pure-runtime build ready"
+
+pure-runtime: pure-runtime-build runtime-serve
 
 clean-runtime:
 	find $(RUNTIME_OUT) -mindepth 1 ! -name '.gitignore' -delete

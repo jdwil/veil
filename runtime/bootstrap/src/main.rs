@@ -1,8 +1,11 @@
-//! veil-runtime — local product host (RTU-001).
+//! veil-runtime — local product host (PVR pure-runtime path).
 //!
 //! - Multi-project IDE kernel via `veil-server::build_multi_router`
-//! - Legacy Bus HTTP under `/bus/*` (echo unless `VEIL_RUNTIME_STUB=0` + real wiring)
-//! - Config: `~/.veil/config.json` (first-run via veil-server)
+//! - Live Bus under `/bus/*` via `platform` (projects FS + git + veil check)
+//! - Shell: generated SPA preferred, static fallback
+//! - Config: `~/.veil/config.json`
+
+mod platform;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -191,45 +194,33 @@ async fn bus_dispatch(
     }
 }
 
-/// RTU-007: map storage bus ops onto projects hub when not in stub mode.
+async fn api_artifacts() -> impl IntoResponse {
+    Json(platform::list_artifacts(None))
+}
+
+async fn api_layers() -> impl IntoResponse {
+    Json(platform::list_layers())
+}
+
+async fn api_compile(Path(repo): Path<String>) -> impl IntoResponse {
+    Json(platform::compile_project(&repo))
+}
+
+
+/// Register Bus handlers: live platform by default; echo if VEIL_RUNTIME_STUB=1 (PVR-017).
 fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
-    if stub {
-        let handler_names = [
-            "CreateRepo",
-            "ListRepos",
-            "WriteFile",
-            "ReadFile",
-            "ListFiles",
-            "CreateBranch",
-            "ListBranches",
-            "GetDiff",
-            "Compile",
-            "Deploy",
-            "GetCommitLog",
-            "CreateRepoTool",
-            "WriteFileTool",
-            "ReadFileTool",
-            "ListFilesTool",
-            "CreateBranchTool",
-            "ListBranchesTool",
-            "DiffTool",
-            "CompileTool",
-            "DeployTool",
-            "ListReposTool",
-            "LogTool",
-            "HealthCheck",
-            "LoadConfig",
-            "HandleConnection",
-            "HandleAgentMessage",
-            "HandleToolCall",
-            "ParseManifest",
-            "ReadAllManifests",
-            "LoadEnvConfig",
-            "WireApplication",
-            "RunSecurityScan",
-            "StartHarness",
-        ];
-        for name in handler_names {
+    let names = [
+        "CreateRepo", "ListRepos", "WriteFile", "ReadFile", "ListFiles",
+        "CreateBranch", "ListBranches", "GetDiff", "Compile", "Deploy", "GetCommitLog",
+        "CreateRepoTool", "WriteFileTool", "ReadFileTool", "ListFilesTool",
+        "CreateBranchTool", "ListBranchesTool", "DiffTool", "CompileTool",
+        "DeployTool", "ListReposTool", "LogTool",
+        "HealthCheck", "LoadConfig", "HandleConnection", "HandleAgentMessage", "HandleToolCall",
+        "ParseManifest", "ReadAllManifests", "LoadEnvConfig", "WireApplication",
+        "RunSecurityScan", "StartHarness",
+    ];
+    for name in names {
+        if stub {
             let handler_name = name.to_string();
             bus.register(
                 name,
@@ -247,154 +238,26 @@ fn register_bus_handlers(bus: &mut InProcessBus, stub: bool) {
                     .boxed()
                 }),
             );
+        } else {
+            let ty = name.to_string();
+            bus.register(
+                name,
+                Box::new(move |payload: String| {
+                    let ty = ty.clone();
+                    async move {
+                        let mut m: serde_json::Value =
+                            serde_json::from_str(&payload).unwrap_or(serde_json::json!({}));
+                        if let Some(obj) = m.as_object_mut() {
+                            obj.entry("type".to_string()).or_insert(serde_json::json!(ty));
+                        } else {
+                            m = serde_json::json!({ "type": ty, "raw": payload });
+                        }
+                        Ok(serde_json::to_string(&platform::handle_bus(&m)).unwrap_or_else(|_| "{}".into()))
+                    }
+                    .boxed()
+                }),
+            );
         }
-        return;
-    }
-
-    // Real-ish local handlers backed by projects hub (filesystem products).
-    bus.register(
-        "ListRepos",
-        Box::new(|_payload: String| {
-            async move {
-                let dir = veil_server::resolve_projects_dir();
-                let projects = veil_server::list_projects(&dir).unwrap_or_default();
-                Ok(serde_json::to_string(&serde_json::json!({
-                    "repos": projects,
-                    "projects_dir": dir.to_string_lossy(),
-                }))
-                .unwrap_or_else(|_| "[]".into()))
-            }
-            .boxed()
-        }),
-    );
-    bus.register(
-        "ListReposTool",
-        Box::new(|payload: String| {
-            async move {
-                let dir = veil_server::resolve_projects_dir();
-                let projects = veil_server::list_projects(&dir).unwrap_or_default();
-                Ok(serde_json::to_string(&serde_json::json!({
-                    "repos": projects,
-                    "projects_dir": dir.to_string_lossy(),
-                    "tool": "ListReposTool",
-                    "received": payload.len(),
-                }))
-                .unwrap_or_else(|_| "[]".into()))
-            }
-            .boxed()
-        }),
-    );
-    bus.register(
-        "CreateRepo",
-        Box::new(|payload: String| {
-            async move {
-                let v: serde_json::Value =
-                    serde_json::from_str(&payload).unwrap_or(serde_json::json!({}));
-                let name = v
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if name.is_empty() {
-                    return Ok(serde_json::json!({
-                        "error": "name required",
-                    })
-                    .to_string());
-                }
-                let dir = veil_server::ensure_projects_dir_exists()
-                    .unwrap_or_else(|_| veil_server::default_projects_dir());
-                match veil_server::create_project(&dir, name) {
-                    Ok(info) => Ok(serde_json::to_string(&info).unwrap_or_default()),
-                    Err(e) => Ok(serde_json::json!({ "error": e }).to_string()),
-                }
-            }
-            .boxed()
-        }),
-    );
-    bus.register(
-        "CreateRepoTool",
-        Box::new(|payload: String| {
-            async move {
-                let v: serde_json::Value =
-                    serde_json::from_str(&payload).unwrap_or(serde_json::json!({}));
-                let name = v
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if name.is_empty() {
-                    return Ok(serde_json::json!({ "error": "name required" }).to_string());
-                }
-                let dir = veil_server::ensure_projects_dir_exists()
-                    .unwrap_or_else(|_| veil_server::default_projects_dir());
-                match veil_server::create_project(&dir, name) {
-                    Ok(info) => Ok(serde_json::to_string(&info).unwrap_or_default()),
-                    Err(e) => Ok(serde_json::json!({ "error": e }).to_string()),
-                }
-            }
-            .boxed()
-        }),
-    );
-    bus.register(
-        "HealthCheck",
-        Box::new(|_payload: String| {
-            async move {
-                Ok(serde_json::json!({
-                    "status": "ok",
-                    "service": "veil-runtime",
-                })
-                .to_string())
-            }
-            .boxed()
-        }),
-    );
-    // Remaining names: honest not-implemented (not silent success)
-    for name in [
-        "WriteFile",
-        "ReadFile",
-        "ListFiles",
-        "CreateBranch",
-        "ListBranches",
-        "GetDiff",
-        "Compile",
-        "Deploy",
-        "GetCommitLog",
-        "WriteFileTool",
-        "ReadFileTool",
-        "ListFilesTool",
-        "CreateBranchTool",
-        "ListBranchesTool",
-        "DiffTool",
-        "CompileTool",
-        "DeployTool",
-        "LogTool",
-        "LoadConfig",
-        "HandleConnection",
-        "HandleAgentMessage",
-        "HandleToolCall",
-        "ParseManifest",
-        "ReadAllManifests",
-        "LoadEnvConfig",
-        "WireApplication",
-        "RunSecurityScan",
-        "StartHarness",
-    ] {
-        let handler_name = name.to_string();
-        bus.register(
-            name,
-            Box::new(move |_payload: String| {
-                let name = handler_name.clone();
-                async move {
-                    Ok(serde_json::json!({
-                        "error": "not_implemented",
-                        "handler": name,
-                        "hint": "set VEIL_RUNTIME_STUB=1 for echo stubs; full storage wiring is RTU-007 follow-up",
-                    })
-                    .to_string())
-                }
-                .boxed()
-            }),
-        );
     }
 }
 
@@ -449,6 +312,9 @@ async fn main() {
         .route("/bus/invoke", post(bus_invoke))
         .route("/bus/request", post(bus_request))
         .route("/bus/dispatch", post(bus_dispatch))
+        .route("/api/artifacts", get(api_artifacts))
+        .route("/api/layers", get(api_layers))
+        .route("/api/platform/compile/{repo}", post(api_compile))
         .with_state(bus_state);
 
     let shell = Router::new()

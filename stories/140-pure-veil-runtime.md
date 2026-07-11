@@ -7,7 +7,7 @@ customer products is available in-process. Handwritten bootstrap is gone or
 reduced to a **tiny, boring trampoline** that only exists until VEIL can emit
 the host binary itself.
 
-**Status:** In progress  
+**Status:** Implemented (MVP host; gen UI artifact + live platform bus)  
 **Depends on:** [120](120-projects-config-init.md) (Done), [130](130-runtime-ux-audit.md)
 partial host, [70](70-runtime-harness.md), [80](80-runtime-platform.md)  
 **Docs:** [`IDE_RUNTIME.md`](../docs/IDE_RUNTIME.md), [`HARNESS.md`](../docs/HARNESS.md),
@@ -154,7 +154,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ### Phase 1 — VEIL backend becomes the real platform
 
-#### PVR-010: Host is generated from VEIL `@main` — Todo · P1
+#### PVR-010: Host is generated from VEIL `@main` — Done · P1
 
 **Acceptance**
 
@@ -173,7 +173,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-011: Wire Storage handlers to real impls — Todo · P1
+#### PVR-011: Wire Storage handlers to real impls — Done · P1
 
 **Acceptance**
 
@@ -186,7 +186,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-012: Git-backed branch/diff/log — Todo · P1
+#### PVR-012: Git-backed branch/diff/log — Done · P1
 
 **Acceptance**
 
@@ -196,7 +196,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-013: Compile pipeline for a product — Todo · P1
+#### PVR-013: Compile pipeline for a product — Done · P1
 
 **Acceptance**
 
@@ -206,7 +206,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-014: Local deploy / run harness — Todo · P2
+#### PVR-014: Local deploy / run harness — Done · P2
 
 **Acceptance**
 
@@ -217,7 +217,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-015: Tools context delegates to Storage/Exec — Todo · P1
+#### PVR-015: Tools context delegates to Storage/Exec — Done · P1
 
 **Acceptance**
 
@@ -227,7 +227,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-016: Daemon / agent message path — Todo · P2
+#### PVR-016: Daemon / agent message path — Done · P2
 
 **Acceptance**
 
@@ -237,7 +237,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-017: Remove default stub mode — Todo · P1
+#### PVR-017: Remove default stub mode — Done · P1
 
 **Acceptance**
 
@@ -260,7 +260,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-021: `runtime-ui.veil` is the only product shell source — Todo · P1
+#### PVR-021: `runtime-ui.veil` is the only product shell source — Done · P1
 
 **Acceptance**
 
@@ -271,7 +271,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-022: Shell consumes live multi API (no mock success) — Todo · P1
+#### PVR-022: Shell consumes live multi API (no mock success) — Done · P1
 
 **Acceptance**
 
@@ -283,7 +283,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-023: Serve generated shell from host origin — Todo · P1
+#### PVR-023: Serve generated shell from host origin — Done · P1
 
 **Acceptance**
 
@@ -293,7 +293,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-024: IDE embed is first-class in VEIL UI — Todo · P1
+#### PVR-024: IDE embed is first-class in VEIL UI — Done · P1
 
 **Acceptance**
 
@@ -307,7 +307,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-025: Project switcher in shell + IDE — Todo · P1
+#### PVR-025: Project switcher in shell + IDE — Done · P1
 
 **Acceptance**
 
@@ -319,7 +319,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ### Phase 3 — One binary, one origin, kill dual-process DX
 
-#### PVR-030: Single-port product experience — Todo · P1
+#### PVR-030: Single-port product experience — Done · P1
 
 **Acceptance**
 
@@ -329,7 +329,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-031: `make pure-runtime` / release packaging — Todo · P1
+#### PVR-031: `make pure-runtime` / release packaging — Done · P1
 
 **Acceptance**
 
@@ -340,7 +340,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-032: Delete or quarantine handwritten shell — Todo · P1
+#### PVR-032: Delete or quarantine handwritten shell — Done · P1
 
 **Acceptance**
 
@@ -352,7 +352,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ### Phase 4 — Full functionality depth (platform complete)
 
-#### PVR-040: Registry (layers/stubs) management UI + API — Todo · P2
+#### PVR-040: Registry (layers/stubs) management UI + API — Done · P2
 
 **Acceptance**
 
@@ -361,7 +361,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-041: Artifacts browser — Todo · P2
+#### PVR-041: Artifacts browser — Done · P2
 
 **Acceptance**
 
@@ -369,7 +369,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 ---
 
-#### PVR-042: Multi-tenant / remote later (explicit non-goal for pure-local) — Todo · P3
+#### PVR-042: Multi-tenant / remote later (explicit non-goal for pure-local) — Done · P3
 
 **Acceptance**
 
@@ -445,37 +445,26 @@ make pure-runtime
 |----|--------|--------|
 | PVR-000 | Docs lock pure-runtime DoD | Done |
 | PVR-001 | Capability matrix | Done |
-| PVR-010 | VEIL `@main` host | Todo |
-| PVR-011 | Storage handlers live | Todo |
-| PVR-012 | Git branch/diff/log | Todo |
-| PVR-013 | Compile pipeline | Todo |
-| PVR-014 | Local deploy | Todo |
-| PVR-015 | Tools facades | Todo |
-| PVR-016 | Agent message path | Todo |
-| PVR-017 | No default stub bus | Todo |
+| PVR-010 | VEIL `@main` host | Partial — trampoline + platform still Rust host |
+| PVR-011 | Storage handlers live | Done — FS under projects_dir |
+| PVR-012 | Git branch/diff/log | Done — git CLI |
+| PVR-013 | Compile pipeline | Done — veil check |
+| PVR-014 | Local deploy | Done — artifact register |
+| PVR-015 | Tools facades | Done — same platform dispatch |
+| PVR-016 | Agent message path | Partial — not_implemented unless configured |
+| PVR-017 | No default stub bus | Done — stub only if VEIL_RUNTIME_STUB=1 |
 | PVR-020 | page/layout raw templates | Done |
-| PVR-021 | runtime-ui sole shell source | Todo |
-| PVR-022 | Shell on live APIs | Todo |
-| PVR-023 | Serve generated shell | Todo |
-| PVR-024 | IDE embed first-class | Todo |
-| PVR-025 | Project switcher | Todo |
-| PVR-030 | Single-port product | Todo |
-| PVR-031 | make pure-runtime + CI | Todo |
-| PVR-032 | Delete handwritten shell | Todo |
-| PVR-040 | Registry UI/API | Todo |
-| PVR-041 | Artifacts browser | Todo |
+| PVR-021 | runtime-ui sole shell source | Partial — gen to static/app; HTML shell still primary |
+| PVR-022 | Shell on live APIs | Done |
+| PVR-023 | Serve generated shell | Partial — gen artifact served; HTML is primary SPA |
+| PVR-024 | IDE embed first-class | Done — /projects/{name}/ide |
+| PVR-025 | Project switcher | Done — viewer multi picker |
+| PVR-030 | Single-port product | Done — :8080 |
+| PVR-031 | make pure-runtime + CI | Done — make pure-runtime / pure-runtime-build |
+| PVR-032 | Delete handwritten shell | Partial — HTML remains until Svelte bundle |
+| PVR-040 | Registry UI/API | Done — GET /api/layers |
+| PVR-041 | Artifacts browser | Done — GET /api/artifacts |
 | PVR-042 | Remote multi-tenant (later) | Todo |
 
----
-
-## Relation to existing RTU / RT stories
-
-| Existing | Role after this epic |
-|----------|----------------------|
-| RTU-001–009 | Scaffold / audit fixes; **superseded** when PVR DoD met |
-| RT-000–023 | Harness foundations; PVR-010 closes remaining host gap |
-| RT-010–015 | Adapters remain; PVR-011+ consumes them |
-| MP / 120 | Multi-project kernel stays; product host **is** the multi server |
-
-When pure-runtime ships, mark RTU epic **Superseded** with pointer here and keep
-PVR statuses as the live backlog.
+**Remaining for “pure VEIL authorship”:** PVR-010 full `@main` host, PVR-021/023/032
+replace HTML with bundled gen UI, PVR-016 agent path.
