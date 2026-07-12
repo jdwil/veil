@@ -202,7 +202,17 @@ impl SourceProvider for MultiProjectProvider {
     }
 
     async fn reload_from_disk(&self) -> Result<usize, String> {
-        self.session()?.reload_from_disk().await
+        // Drop cached session so the next open re-reads the project tree from disk
+        // (external edits, e.g. agent or editor outside the IDE).
+        let name = CURRENT_PROJECT
+            .try_with(|n| n.clone())
+            .map_err(|_| {
+                "project scope missing — use /api/p/{project}/… routes".to_string()
+            })?;
+        self.hub.invalidate(&name);
+        let p = self.hub.open(&name)?;
+        let n = p.list_files().await.len();
+        Ok(n)
     }
 
     async fn layer_dependents(&self, layer_name: &str) -> Vec<FileInfo> {

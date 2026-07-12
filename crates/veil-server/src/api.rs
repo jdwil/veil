@@ -39,6 +39,7 @@ pub fn ide_routes<P: SourceProvider + 'static>() -> Router<Arc<P>> {
         .route("/check", get(get_check::<P>).post(post_check::<P>))
         .route("/files", get(get_files::<P>))
         .route("/files/select", post(post_select_file::<P>))
+        .route("/files/reload", post(post_reload_from_disk::<P>))
         .route("/edit", post(post_edit::<P>))
         .route("/diff", get(get_diff::<P>))
         .route("/agent/turn", post(post_agent_turn::<P>))
@@ -765,6 +766,28 @@ async fn get_files<P: SourceProvider>(State(state): State<SharedProvider<P>>) ->
     match serde_json::to_string(&files) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Re-read project sources from disk (external edits outside the IDE).
+/// Multi-project: invalidates the hub session and re-opens so new files appear.
+async fn post_reload_from_disk<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
+    match state.reload_from_disk().await {
+        Ok(n) => {
+            let files = state.list_files().await;
+            let body = serde_json::json!({
+                "ok": true,
+                "reloaded": n,
+                "files": files,
+            });
+            match serde_json::to_string(&body) {
+                Ok(json) => json_response(json).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
