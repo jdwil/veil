@@ -1,47 +1,204 @@
 pkg wear_test v1
-  desc "Wear testing product-family DSL — vocabulary for initiative programs"
+  desc "Wear testing product-family DSL — Application, Initiative, wizard, dashboard"
   author "VEIL"
   use ddd
 
-  construct WearTest
-    kw wear_test
+  # ─── Product family containers ───────────────────────────────────────────
+  # Tenant deploys one Wear Test Application → dashboard + many Initiatives.
+
+  construct WearTestApplication
+    kw wear_app
     mt mod
-    desc "A wear-test initiative bound to a cohort"
+    au
+    desc "Wear Test Application — tenant-scoped product: dashboard + N initiatives"
     visual
       icon "👟"
       color "#f59e0b"
-      label "Wear Test"
+      label "Wear Test Application"
     in top
+    present
+      view groups
+        label "Layers"
+        layout tabs
+        members by_source_group
+        tabs domain, application, infrastructure, presentation
+        default
+      view model
+        label "Model"
+        layout tree
+        members by_host_children
+        roots Initiative
+        nest Enrollment under Initiative when declared_in_parent
+        nest SignalBinding under Initiative when declared_in_parent
+        nest DataPrep under Initiative when declared_in_parent
+        nest Activation under Initiative when declared_in_parent
+        nest FeedbackChannel under Initiative when declared_in_parent
+        nest Wizard under Initiative when declared_in_parent
+        orphan_policy list
+
+  construct WearTestDashboard
+    kw wear_dashboard
+    mt mod
+    desc "Ops dashboard for a Wear Test Application (list / monitor initiatives)"
+    visual
+      icon "📊"
+      color "#0ea5e9"
+      label "Wear Test Dashboard"
+    in top
+
+  # ─── Initiative & configuration vocabulary ───────────────────────────────
+
+  construct Initiative
+    kw initiative
+    mt struct
+    desc "One wear-test initiative (a single run/program instance under an Application)"
+    visual
+      icon "🎯"
+      color "#f59e0b"
+      label "Initiative"
+    in WearTestApplication
     group domain
+    present
+      role container
+      nestable_in model as root
 
   construct Enrollment
     kw enrollment
     mt struct
-    desc "Rules for including users in a wear test"
+    desc "Who participates: entire cohort, list, segment, roster, or custom rules"
     visual
       icon "✅"
       color "#10b981"
       label "Enrollment"
-    in WearTest
+    in Initiative
     group domain
 
-  construct Milestone
-    kw milestone
+  construct SignalBinding
+    kw signal_binding
     mt struct
-    desc "Progress checkpoint in a wear-test journey"
+    desc "Which signals this initiative listens for (binding, not global catalog)"
     visual
-      icon "🏁"
-      color "#6366f1"
-      label "Milestone"
-    in WearTest
+      icon "📡"
+      color "#8b5cf6"
+      label "Signal binding"
+    in Initiative
     group domain
+
+  construct DataPrep
+    kw data_prep
+    mt struct
+    desc "Step 3 — input data and transformations (may hold complex logic)"
+    visual
+      icon "🔧"
+      color "#64748b"
+      label "Data prep"
+    in Initiative
+    group domain
+    has
+      InputData[]
+      Transform[]
+
+  construct InputData
+    kw input_data
+    mt struct
+    desc "Named input source for data prep"
+    visual
+      icon "📥"
+      color "#94a3b8"
+      label "Input data"
+    in DataPrep
+    group domain
+
+  construct Transform
+    kw transform
+    mt struct
+    desc "Named transformation over input data (may map to ports / jobs)"
+    visual
+      icon "⚙️"
+      color "#78716c"
+      label "Transform"
+    in DataPrep
+    group domain
+
+  construct Activation
+    kw activation
+    mt struct
+    desc "Step 4 — what fires when (rules, schedules, reactions to signals)"
+    visual
+      icon "⚡"
+      color "#eab308"
+      label "Activation"
+    in Initiative
+    group domain
+
+  construct FeedbackChannel
+    kw feedback_channel
+    mt struct
+    desc "Step 5 — how feedback is collected (survey, in-app, …)"
+    visual
+      icon "💬"
+      color "#06b6d4"
+      label "Feedback channel"
+    in Initiative
+    group domain
+
+  # ─── Wizard (initialize a new initiative) ────────────────────────────────
+
+  construct Wizard
+    kw wizard
+    mt struct
+    desc "Ordered setup for creating an Initiative (expert-facing wizard)"
+    visual
+      icon "🧙"
+      color "#a855f7"
+      label "Wizard"
+    in Initiative
+    group application
+    has
+      WizardStep[]
+
+  construct WizardStep
+    kw wizard_step
+    mt struct
+    desc "One wizard step (cohort, configure, data prep, activations, feedback)"
+    visual
+      icon "1️⃣"
+      color "#c084fc"
+      label "Wizard step"
+    ann
+      step: "Step number or key (1_cohort, 2_configure, 3_data_prep, 4_activations, 5_feedback)" value
+    in Wizard
+    group application
 
   prompt
-    You author wear-test product packages that use this layer and dlx_core (IAAA).
-    Prefer wear_test vocabulary for initiative structure; call GetCohort / membership
-    queries for inclusion; put client-specific post-signal logic in the package, not here.
+    You author wear-test product packages that `use wear_test` and `use dlx_core`.
+
+    ## Product shape
+    - Wear Test Application (wear_app): tenant deploys this once → dashboard + many Initiatives.
+    - Initiative: one wear-test run/program instance (not "TestPlan").
+    - Wear Test Dashboard: ops list/monitor initiatives for a tenant.
+    - Wizard + wizard_step: expert UI to create an initiative (5 default steps).
+
+    ## Steps (default wizard)
+    1. Cohort / enrollment (entire cohort, list, segment, roster, registration)
+    2. Configure initiative (including which signals are bound)
+    3. Data prep — input_data + transform (may be complex; still declared here)
+    4. Activations
+    5. Feedback channels
+
+    ## Platform boundary
+    - Cohort, List, Segment, Roster, Tenant, User live in dlx_core — request GetCohort etc.
+    - Do NOT reinvent IAAA entities in wear_test packages.
+    - Client-specific extensions go in a client package (e.g. brooks_wear_test.veil), not this layer.
+
+    ## Vocabulary
+    Prefer initiative, enrollment, signal_binding, data_prep, activation, feedback_channel,
+    wizard, wizard_step over ad-hoc names like TestPlan.
 
   present
-    role WearTest
+    role WearTestApplication
+      view model
+        layout tree
+    role Initiative
       view model
         layout tree

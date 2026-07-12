@@ -1,46 +1,165 @@
-pkg WearTest
+# Wear Test product family — stock application (first draft).
+# Layer vocabulary: wear_test.layer · Platform data: dlx_core (IAAA).
+#
+# Shape:
+#   Wear Test Application  → many Initiatives + Dashboard
+#   Create Initiative      → wizard steps 1–5 (simple surface; step 3 can deepen)
+#
+# Note: `use dlx_core` is a package dependency (expose: GetCohort, …). When opened
+# as a hub project with dlx_core.veil alongside, resolution is complete; alone in
+# examples/, import is deferred — guards below stay honest without hard DTO types.
+
+pkg WearTestApp
   use ddd
+  use di
+  use wear_test
   use dlx_core
 
-  ctx WearTesting
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Wear Test Application — tenant-scoped product
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  wear_app WearTestApplication
     group domain
-      agg TestPlan
+      # One wear-test program instance under the application
+      agg Initiative
         root
           id: Id
-          cohort_id: Id
+          tenant_id: Id
           name: Str
           description: Str
+          status: InitiativeStatus
+          # Enrollment (who participates) — ids point into dlx_core appliances
+          enrollment_mode: EnrollmentMode
+          cohort_id: Opt<Id>
+          list_id: Opt<Id>
+          segment_id: Opt<Id>
+          roster_id: Opt<Id>
           start_date: Opt<Dt>
           end_date: Opt<Dt>
-          active: Bool
           created_on: Dt
+          updated_on: Dt
 
-      repo TestPlanRepo
-        find!(id: Id) -> Opt<TestPlan>
-        find_by_cohort!(cohort_id: Id) -> List<TestPlan>
-        save!(plan: TestPlan)
+      enum InitiativeStatus
+        Draft
+        Configuring
+        Active
+        Completed
+        Archived
+
+      # Step 1 — maps to dlx_core cohort / list / segment / roster
+      enum EnrollmentMode
+        EntireCohort
+        List
+        Segment
+        Roster
+        Custom
+
+      # Step 2 — signals this initiative cares about (bindings, not global catalog)
+      val SignalBinding
+        signal_key: Str
+        enabled: Bool
+
+      # Step 3 — intentionally open; transforms may call ports / jobs later
+      val DataPrepSpec
+        notes: Str
+        input_keys: List<Str>
+        transform_keys: List<Str>
+
+      # Step 4
+      val ActivationSpec
+        key: Str
+        description: Str
+        enabled: Bool
+
+      # Step 5
+      val FeedbackChannelSpec
+        channel_key: Str
+        description: Str
+        enabled: Bool
+
+      repo InitiativeRepo
+        find!(id: Id) -> Opt<Initiative>
+        list_by_tenant!(tenant_id: Id) -> List<Initiative>
+        save!(initiative: Initiative)
         delete!(id: Id)
 
     group application
-      svc CreateTestPlan
+      # ── Dashboard / application services ─────────────────────────────────
+
+      svc ListInitiatives
+        input
+          tenant_id: Id
+        step query
+          items = InitiativeRepo.list_by_tenant!(tenant_id)
+          ret items
+
+      svc GetInitiative
         input
           id: Id
-          cohort_id: Id
+        step load
+          init = InitiativeRepo.find!(id)
+          guard init != null, "initiative not found"
+          ret init
+
+      # ── Wizard: create a new initiative (steps 1–5 as ordered work) ───────
+      # Expert surface stays simple; Step 3 body can grow without changing shape.
+      # Full GetCohort validation wires when dlx_core package is on the bus.
+
+      svc CreateInitiative
+        input
+          id: Id
+          tenant_id: Id
           name: Str
           description: Str
-        step verify_cohort
-          cohort: CohortDTO = request GetCohort{id: cohort_id}
-          guard cohort.active == true, "cohort is not active"
-        step create
-          plan = TestPlan.new(id, cohort_id, name, description)
-          TestPlanRepo.save!(plan)
+          enrollment_mode: EnrollmentMode
+          cohort_id: Opt<Id>
+          list_id: Opt<Id>
+          segment_id: Opt<Id>
+          roster_id: Opt<Id>
+          signal_keys: List<Str>
+          data_prep_notes: Str
+          activation_keys: List<Str>
+          feedback_channel_keys: List<Str>
+          start_date: Opt<Dt>
+          end_date: Opt<Dt>
+        step step1_choose_cohort
+          # Enrollment mode selects which dlx_core appliance ids must be present.
+          # EntireCohort / List / Segment / Roster / Custom — deep checks via Bus later.
+          guard name != "", "initiative name required"
+        step step2_configure
+          # signal_keys: which signals this initiative binds (catalog is separate)
+        step step3_data_prep
+          # data_prep_notes + future input_data / transform graphs
+          notes = data_prep_notes
+        step step4_activations
+          # activation_keys — wiring to triggers/signals is a later story
+        step step5_feedback
+          # feedback_channel_keys — channels (survey, in-app, …) later
+        step persist
+          init = Initiative.new(id, tenant_id, name, description)
+          InitiativeRepo.save!(init)
+          ret init
 
-      svc GetTestPlanWithParticipants
+      svc ArchiveInitiative
         input
-          plan_id: Id
-        step load_plan
-          plan = TestPlanRepo.find!(plan_id)
-          guard plan != null, "test plan not found"
-        step load_participants
-          members: List<CohortMemberDTO> = request GetCohortMembers{cohort_id: plan.cohort_id}
-          ret {plan, members}
+          id: Id
+        step load
+          init = InitiativeRepo.find!(id)
+          guard init != null, "initiative not found"
+          ret init
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Dashboard — ops surface for the application (list / monitor initiatives)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # UI pages can live in wear_test_ui.veil; services stay on the application ctx
+  # above (ListInitiatives / GetInitiative). This block marks the dashboard unit
+  # for presentation / deploy packaging.
+
+  wear_dashboard WearTestDashboard
+    group application
+      # Intentionally thin: re-exports application capability for UI binding.
+      # Prefer calling ListInitiatives on WearTestApplication from the shell.
+      svc Ping
+        step ok
+          ret "wear_test_dashboard"
