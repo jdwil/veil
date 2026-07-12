@@ -260,11 +260,24 @@ pure-runtime-build: veil
 		|| cp -f runtime/bootstrap/static/app/src/spa.js runtime/bootstrap/static/dist/spa.js
 	@test -f runtime/bootstrap/static/dist/spa.js || \
 		(echo "error: SPA spa.js missing after gen" >&2; exit 1)
+	@echo "==> build veil-viewer → static/viewer (same-origin IDE embed)"
+	@if [ -d veil-viewer/node_modules ]; then \
+		(cd veil-viewer && VEIL_VIEWER_BASE=/viewer npm run build) || \
+			echo "  ⚠ viewer build failed — IDE embed needs: cd veil-viewer && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
+		rm -rf runtime/bootstrap/static/viewer; \
+		if [ -d veil-viewer/build ]; then \
+			mkdir -p runtime/bootstrap/static/viewer; \
+			cp -a veil-viewer/build/. runtime/bootstrap/static/viewer/; \
+			echo "  ✓ viewer → runtime/bootstrap/static/viewer"; \
+		fi; \
+	else \
+		echo "  ⚠ veil-viewer/node_modules missing — run: cd veil-viewer && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
+	fi
 	@echo "==> gen host.veil (CAP-002/006 product host bin)"
 	@$(VEIL_BIN) gen runtime/src/host.veil -o runtime/generated-host -t rust || true
 	@echo "==> build veil-runtime trampoline (links generated storage)"
 	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
-	@echo "✓ pure-runtime build ready (shell: static/dist, bus: storage::application)"
+	@echo "✓ pure-runtime build ready (shell: static/dist, IDE: /viewer, bus: storage::application)"
 
 # PVR-031 smoke: build + curl health/projects/config/SPA (no long-lived server)
 pure-runtime-smoke:

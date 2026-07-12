@@ -9,7 +9,7 @@ use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::get;
 use axum::{extract::Path as AxumPath, extract::State, Router};
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api::build_multi_router;
 use crate::config::ensure_config;
@@ -34,8 +34,8 @@ impl Default for ProductHost {
             static_dir: PathBuf::from("static"),
             show_core_layers: false,
             port: 8080,
-            viewer_url: std::env::var("VEIL_VIEWER_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:5173".into()),
+            // Same-origin embedded viewer (pure-runtime). Override with full URL for Vite dev.
+            viewer_url: std::env::var("VEIL_VIEWER_URL").unwrap_or_else(|_| "/viewer".into()),
             bus_router: None,
         }
     }
@@ -94,6 +94,13 @@ impl ProductHost {
             viewer_url: self.viewer_url.clone(),
         };
 
+        // Dual-loop viewer static build (pure-runtime single origin). SPA fallback → index.html.
+        let viewer_dir = self.static_dir.join("viewer");
+        let viewer_index = viewer_dir.join("index.html");
+        let viewer_svc = ServeDir::new(&viewer_dir)
+            .append_index_html_on_directories(true)
+            .not_found_service(ServeFile::new(viewer_index));
+
         // SPA shell routes (generated nav). Full page loads must return index.html.
         let shell = Router::new()
             .route("/", get(shell_index))
@@ -104,6 +111,8 @@ impl ProductHost {
             .route("/bus", get(shell_index))
             .route("/agents", get(shell_index))
             .route("/config", get(shell_index))
+            // Dual-loop IDE app (built veil-viewer)
+            .nest_service("/viewer", viewer_svc)
             // SPA assets under /static/dist/ (index references absolute paths)
             .nest_service("/static", ServeDir::new(&self.static_dir))
             .nest_service("/assets", ServeDir::new(self.static_dir.join("assets")))
@@ -166,6 +175,7 @@ async fn spa_fallback(
         || path.starts_with("/health")
         || path.starts_with("/static")
         || path.starts_with("/assets")
+        || path.starts_with("/viewer")
     {
         return axum::http::StatusCode::NOT_FOUND.into_response();
     }
@@ -210,11 +220,12 @@ async fn ide_embed(
 }
 
 fn inject_viewer_url(html: String, viewer: &str) -> String {
+    let v = if viewer.is_empty() { "/viewer" } else { viewer };
     html.replacen(
         "<head>",
         &format!(
             "<head>\n  <script>window.VEIL_VIEWER_URL = {};</script>",
-            serde_json::to_string(viewer).unwrap_or_else(|_| "\"http://127.0.0.1:5173\"".into())
+            serde_json::to_string(v).unwrap_or_else(|_| "\"/viewer\"".into())
         ),
         1,
     )

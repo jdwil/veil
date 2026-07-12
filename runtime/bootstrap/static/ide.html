@@ -12,9 +12,10 @@
     }
     header a { color: #a5b4fc; text-decoration: none; }
     header .name { font-weight: 700; }
-    iframe { border: 0; width: 100%; height: calc(100vh - 40px); }
-    .fallback { padding: 24px; color: #a3a3a3; max-width: 560px; }
-    code { color: #a5b4fc; }
+    iframe { border: 0; width: 100%; height: calc(100vh - 40px); background: #0f0f0f; }
+    .fallback { padding: 24px; color: #a3a3a3; max-width: 640px; line-height: 1.5; display: none; }
+    code { color: #a5b4fc; background: #1a1a1a; padding: 2px 6px; border-radius: 4px; }
+    .fallback a { color: #a5b4fc; }
   </style>
 </head>
 <body>
@@ -22,27 +23,87 @@
     <a href="/">← Runtime</a>
     <span class="name" id="proj">…</span>
     <span style="color:#737373">IDE (embedded viewer)</span>
+    <a id="open-tab" href="#" target="_blank" rel="noopener" style="margin-left:auto">Open in tab ↗</a>
   </header>
   <iframe id="frame" title="VEIL IDE"></iframe>
-  <div class="fallback" id="fb" style="display:none">
-    <p>Could not load the viewer iframe.</p>
-    <p>Start the viewer: <code>cd veil-viewer && npm run dev -- --port 5173</code></p>
-    <p>Or open: <a id="direct" href="#">direct IDE link</a></p>
+  <div class="fallback" id="fb">
+    <p><strong>Could not load the dual-loop viewer.</strong></p>
+    <p>
+      Pure-runtime embeds the viewer at <code>/viewer/</code> (same origin).
+      Build it with <code>make pure-runtime-build</code>.
+    </p>
+    <p>Or run the Vite dev server and point the host at it:</p>
+    <p><code>cd veil-viewer && npm run dev -- --host 127.0.0.1 --port 5173</code></p>
+    <p><code>VEIL_VIEWER_URL=http://127.0.0.1:5173 make pure-runtime</code></p>
+    <p>Direct: <a id="direct" href="#">open viewer URL</a></p>
   </div>
   <script>
-    const params = new URLSearchParams(location.search);
-    const project = params.get('project') || location.pathname.split('/').filter(Boolean)[1] || '';
-    document.getElementById('proj').textContent = project || '(none)';
-    const VIEWER = (window.VEIL_VIEWER_URL || 'http://127.0.0.1:5173').replace(/\/$/, '');
-    const api = location.origin;
-    const url = VIEWER + '/?project=' + encodeURIComponent(project) +
-      '&api=' + encodeURIComponent(api);
-    document.getElementById('direct').href = url;
-    const frame = document.getElementById('frame');
-    frame.src = url;
-    frame.onerror = () => {
-      document.getElementById('fb').style.display = 'block';
-    };
+    (async () => {
+      const project = new URLSearchParams(location.search).get('project')
+        || location.pathname.split('/').filter(Boolean)[1]
+        || '';
+      document.getElementById('proj').textContent = project || '(none)';
+      document.title = (project || 'IDE') + ' · VEIL';
+
+      function resolveViewerBase() {
+        const raw = (window.VEIL_VIEWER_URL || '/viewer').trim().replace(/\/$/, '');
+        if (!raw || raw === 'same' || raw === 'embedded') {
+          return location.origin + '/viewer';
+        }
+        if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+        // Relative path e.g. /viewer
+        return location.origin + (raw.startsWith('/') ? raw : '/' + raw);
+      }
+
+      const VIEWER = resolveViewerBase();
+      const url = VIEWER + '/?project=' + encodeURIComponent(project)
+        + '&api=' + encodeURIComponent(location.origin);
+
+      document.getElementById('direct').href = url;
+      document.getElementById('open-tab').href = url;
+
+      const frame = document.getElementById('frame');
+      const fb = document.getElementById('fb');
+
+      async function reachable(base) {
+        try {
+          const r = await fetch(base + '/', { method: 'GET', cache: 'no-store' });
+          return r.ok || r.status === 304;
+        } catch {
+          return false;
+        }
+      }
+
+      // Prefer configured base; fall back to same-origin /viewer then :5173
+      const candidates = [
+        VIEWER,
+        location.origin + '/viewer',
+        'http://127.0.0.1:5173',
+      ];
+      const seen = new Set();
+      let chosen = null;
+      for (const c of candidates) {
+        const b = c.replace(/\/$/, '');
+        if (seen.has(b)) continue;
+        seen.add(b);
+        if (await reachable(b)) {
+          chosen = b;
+          break;
+        }
+      }
+
+      if (!chosen) {
+        frame.style.display = 'none';
+        fb.style.display = 'block';
+        return;
+      }
+
+      const finalUrl = chosen + '/?project=' + encodeURIComponent(project)
+        + '&api=' + encodeURIComponent(location.origin);
+      document.getElementById('direct').href = finalUrl;
+      document.getElementById('open-tab').href = finalUrl;
+      frame.src = finalUrl;
+    })();
   </script>
 </body>
 </html>

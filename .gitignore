@@ -1,11 +1,12 @@
-/target
-node_modules/
-.svelte-kit/
 build/
 dist/
 .env
-*.swp
-*.swo
 /generated/
+node_modules/
 output/
+runtime/bootstrap/static/viewer/
+.svelte-kit/
+*.swo
+*.swp
+/target
 .veil-dev/
