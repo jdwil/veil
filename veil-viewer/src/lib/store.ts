@@ -83,6 +83,10 @@ export function apiHost(): string {
   } catch {
     /* ignore */
   }
+  // Same-origin pure-runtime embed at /viewer — talk to this host's /api.
+  if (window.location.pathname.startsWith('/viewer')) {
+    return window.location.origin;
+  }
   return 'http://localhost:3001';
 }
 

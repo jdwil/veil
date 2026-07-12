@@ -204,19 +204,35 @@ fn serve_spa_html(st: &ShellState) -> axum::response::Response {
     .into_response()
 }
 
+/// Open dual-loop IDE for a project — **redirect, not iframe**.
+///
+/// Same-origin pure-runtime: `/viewer/?project=…` (viewer uses `location.origin` for API).
+/// Absolute `VEIL_VIEWER_URL` (e.g. Vite :5173): redirect there with `?api=` public URL.
 async fn ide_embed(
     State(st): State<ShellState>,
     AxumPath(name): AxumPath<String>,
 ) -> impl IntoResponse {
-    let path = st.static_dir.join("ide.html");
-    match std::fs::read_to_string(&path) {
-        Ok(html) => Html(inject_viewer_url(html, &st.viewer_url)).into_response(),
-        Err(_) => Redirect::temporary(&format!(
-            "{}/?project={}&api=http://127.0.0.1:8080",
-            st.viewer_url, name
-        ))
-        .into_response(),
-    }
+    let viewer = st.viewer_url.trim().trim_end_matches('/');
+    let name = urlencoding_path(&name);
+    let target = if viewer.starts_with("http://") || viewer.starts_with("https://") {
+        let api = std::env::var("VEIL_PUBLIC_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+        format!("{viewer}/?project={name}&api={api}")
+    } else {
+        let base = if viewer.is_empty() { "/viewer" } else { viewer };
+        // Same origin: no api= needed if viewer treats empty api as location.origin.
+        format!("{base}/?project={name}")
+    };
+    Redirect::temporary(&target).into_response()
+}
+
+fn urlencoding_path(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' => c.to_string(),
+            _ => format!("%{:02X}", c as u8),
+        })
+        .collect()
 }
 
 fn inject_viewer_url(html: String, viewer: &str) -> String {

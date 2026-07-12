@@ -646,7 +646,7 @@ async function viewDashboard() {{
     el("h2", {{}}, "Projects"),
     ...projects.map(p => {{
       const name = p.name || p.id || "?";
-      return el("a", {{ className: "card", href: `/projects/${{encodeURIComponent(name)}}/ide` }},
+      return el("a", {{ className: "card", href: `/viewer/?project=${{encodeURIComponent(name)}}` }},
         el("div", {{ className: "name" }}, name),
         el("div", {{ className: "meta" }}, p.path || p.default_branch || "open IDE"),
       );
