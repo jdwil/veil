@@ -316,6 +316,13 @@
       <input type="text" class="pe-input" bind:value={name} oninput={save} onblur={commitName} placeholder="Enter name..." />
     </label>
 
+    {#if node.data.doc}
+      <div class="pe-doc" title="Domain description from the layer">
+        <span class="label-text">About</span>
+        <p class="pe-doc-body">{node.data.doc}</p>
+      </div>
+    {/if}
+
     {#if layerProvided}
       <div class="pe-note pe-note-info">Layer-provided (read-only infrastructure)</div>
     {/if}
@@ -534,6 +541,22 @@
   .pe-note { font-size: 11px; color: var(--veil-text-secondary); padding: 4px 2px; }
   .pe-note-error { color: #f87171; }
   .pe-note-info { color: var(--veil-text); }
+  .pe-doc {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    background: var(--veil-surface);
+    border: 1px solid var(--veil-border);
+    border-radius: 8px;
+  }
+  .pe-doc-body {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--veil-text-secondary);
+    white-space: pre-wrap;
+  }
 
   .pe-input {
     background: var(--veil-input-bg); border: 1px solid var(--veil-border); border-radius: 6px;

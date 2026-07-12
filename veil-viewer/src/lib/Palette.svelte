@@ -19,6 +19,8 @@
     keyword?: string;
     group?: string;
     dg?: string;
+    /** Layer `desc` — domain help for non-programmers */
+    description?: string;
   }
 
   let { contextKind = "Solution", contextKindCore = "Solution", activeGroup = null }: { contextKind?: NodeKind | null; contextKindCore?: string; activeGroup?: string | null } = $props();
@@ -65,6 +67,7 @@
           keyword: c.keyword,
           group: c.group || undefined,
           dg: c.dg || undefined,
+          description: c.description || undefined,
         });
       }
     }
@@ -114,9 +117,15 @@
                 draggable="true"
                 ondragstart={(e) => onDragStart(e, item)}
                 style="--tile-color: {item.color || NODE_STYLES[item.kind]?.color || 'var(--veil-text-dim)'}"
+                title={item.description || item.label}
               >
                 <span class="tile-icon">{item.icon}</span>
-                <span class="tile-label">{item.label}</span>
+                <div class="tile-text">
+                  <span class="tile-label">{item.label}</span>
+                  {#if item.description}
+                    <span class="tile-desc">{item.description}</span>
+                  {/if}
+                </div>
               </div>
             {/each}
           </div>
@@ -176,9 +185,24 @@
 </aside>
 
 <style>
+  .tile-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .tile-desc {
+    font-size: 10px;
+    line-height: 1.25;
+    color: var(--veil-text-dim);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
   .palette {
-    width: 200px;
-    min-width: 200px;
+    width: 220px;
+    min-width: 220px;
     display: flex;
     flex-direction: column;
     background: var(--veil-surface-alt);

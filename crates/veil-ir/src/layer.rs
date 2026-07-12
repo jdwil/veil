@@ -1647,6 +1647,9 @@ pub struct PaletteEntry {
     pub icon: String,
     pub color: String,
     pub label: String,
+    /// Domain description from the layer `desc` line — shown in palette/property UI.
+    #[serde(default)]
+    pub description: String,
     pub group: String,
     pub allowed_in: String,
     pub layer: String,
@@ -1689,6 +1692,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             icon: c.visual.icon.clone(),
             color: c.visual.color.clone(),
             label: c.visual.label.clone(),
+            description: c.desc.clone(),
             group: c.group.clone(),
             allowed_in: c.allowed_in.clone(),
             layer: c.layer.clone(),
@@ -1722,6 +1726,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             icon: s.visual.icon.clone(),
             color: s.visual.color.clone(),
             label: s.visual.label.clone(),
+            description: s.desc.clone(),
             group: String::new(),
             allowed_in: "Step".to_string(),
             layer: s.layer.clone(),

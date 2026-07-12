@@ -477,6 +477,7 @@
           hasChildren,
           annotations: child.metadata.annotations,
           properties: child.metadata.properties,
+          doc: child.metadata.doc ?? null,
           inlineChildren,
           refs,
           critical,

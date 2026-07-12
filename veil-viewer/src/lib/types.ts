@@ -24,6 +24,8 @@ export interface NodeMetadata {
   annotations: string[];
   properties: [string, string][];
   subkind: string | null;
+  /** Domain help from layer construct `desc` (layer IR) or package docs */
+  doc?: string | null;
 }
 
 export type NodeKind =
@@ -78,6 +80,8 @@ export interface PaletteEntry {
   keyword: string;
   kind: string;
   shape: string;
+  /** Layer construct `desc` — domain help for palette tiles */
+  description?: string;
   icon: string;
   color: string;
   label: string;

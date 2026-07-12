@@ -1,16 +1,42 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Wear Test — product-family language (for domain experts & solution designers)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# WHAT THIS FILE IS
+#   A .layer file defines VOCABULARY and STRUCTURE for authoring wear-test
+#   products in the IDE. It is not the running app — that lives in
+#   wear_test.veil (stock product) and client packages (e.g. brooks_wear_test).
+#
+# DOMAIN STORY (one paragraph)
+#   A retail/brand Tenant runs many wear-test programs. They deploy one
+#   Wear Test Application. Inside it, ops create multiple Initiatives
+#   (each initiative is one wear-test run). Creating an initiative is guided
+#   by a Wizard with five simple steps. Participant lists come from the
+#   platform (dlx_core): Cohort, List, Segment, Roster — not reinvented here.
+#
+# WHO TOUCHES WHAT
+#   · Language designers  → this file (wear_test.layer)
+#   · Product engineers   → wear_test.veil (default services + domain model)
+#   · Client solutions    → brooks_wear_test.veil (extends, does not fork the DSL)
+#   · Day-to-day ops      → Dashboard UI (may never open these sources)
+#
+# HOW TO READ THE GRAPH
+#   Select a construct on the canvas → property panel "About" shows the domain
+#   description. Palette tiles also show short descriptions.
+# ═══════════════════════════════════════════════════════════════════════════
+
 pkg wear_test v1
-  desc "Wear testing product-family DSL — Application, Initiative, wizard, dashboard"
+  desc "Wear testing product-family DSL: Application, Initiative, wizard, dashboard. Built on dlx_core (cohorts, tenants)."
   author "VEIL"
   use ddd
 
-  # ─── Product family containers ───────────────────────────────────────────
-  # Tenant deploys one Wear Test Application → dashboard + many Initiatives.
+  # ─── Containers: Application & Dashboard ─────────────────────────────────
 
   construct WearTestApplication
     kw wear_app
     mt mod
     au
-    desc "Wear Test Application — tenant-scoped product: dashboard + N initiatives"
+    desc "Tenant-scoped product you deploy once. Contains the dashboard and all wear-test Initiatives for that client. Deploying the Application does not create a wear test by itself — ops create Initiatives under it."
     visual
       icon "👟"
       color "#f59e0b"
@@ -39,19 +65,19 @@ pkg wear_test v1
   construct WearTestDashboard
     kw wear_dashboard
     mt mod
-    desc "Ops dashboard for a Wear Test Application (list / monitor initiatives)"
+    desc "Operations home for a Wear Test Application: list initiatives, see status, open the create-initiative wizard, monitor active runs. Not a single wear-test detail page — it governs many initiatives."
     visual
       icon "📊"
       color "#0ea5e9"
       label "Wear Test Dashboard"
     in top
 
-  # ─── Initiative & configuration vocabulary ───────────────────────────────
+  # ─── Initiative: one wear-test run ───────────────────────────────────────
 
   construct Initiative
     kw initiative
     mt struct
-    desc "One wear-test initiative (a single run/program instance under an Application)"
+    desc "One wear-test program instance (one run). A single Tenant/Application may have many Initiatives (e.g. Fall Launch, Winter Waterproof). Holds enrollment, signal bindings, data prep, activations, and feedback configuration."
     visual
       icon "🎯"
       color "#f59e0b"
@@ -65,7 +91,7 @@ pkg wear_test v1
   construct Enrollment
     kw enrollment
     mt struct
-    desc "Who participates: entire cohort, list, segment, roster, or custom rules"
+    desc "STEP 1 of the wizard — who participates. Options map to dlx_core: entire Cohort, a List, a Segment, a Roster, or Custom rules. Does not store the people themselves; it stores which platform appliance to use."
     visual
       icon "✅"
       color "#10b981"
@@ -76,7 +102,7 @@ pkg wear_test v1
   construct SignalBinding
     kw signal_binding
     mt struct
-    desc "Which signals this initiative listens for (binding, not global catalog)"
+    desc "STEP 2 (part of configure) — which signals this initiative cares about. This is a binding to a signal catalog, not the catalog itself. Open question: signal catalog may later live in platform; binding always lives on the Initiative."
     visual
       icon "📡"
       color "#8b5cf6"
@@ -87,7 +113,7 @@ pkg wear_test v1
   construct DataPrep
     kw data_prep
     mt struct
-    desc "Step 3 — input data and transformations (may hold complex logic)"
+    desc "STEP 3 — prepare data before the test runs. Expert surface stays simple (named inputs and transforms). Implementations can be complex (pipelines, jobs, persistence) while still declared under this construct. Contains InputData and Transform children."
     visual
       icon "🔧"
       color "#64748b"
@@ -101,7 +127,7 @@ pkg wear_test v1
   construct InputData
     kw input_data
     mt struct
-    desc "Named input source for data prep"
+    desc "A named input source for data prep (file, query, appliance export, …). Experts name the input; engineers wire how it is loaded."
     visual
       icon "📥"
       color "#94a3b8"
@@ -112,7 +138,7 @@ pkg wear_test v1
   construct Transform
     kw transform
     mt struct
-    desc "Named transformation over input data (may map to ports / jobs)"
+    desc "A named transformation over input data. May map to generated jobs or ports. This is where heavy programming often lives without abandoning the wear-test language."
     visual
       icon "⚙️"
       color "#78716c"
@@ -123,7 +149,7 @@ pkg wear_test v1
   construct Activation
     kw activation
     mt struct
-    desc "Step 4 — what fires when (rules, schedules, reactions to signals)"
+    desc "STEP 4 — what the system does when conditions are met (schedules, signal reactions, notifications). Pairs with SignalBinding: bindings say what we listen to; activations say what we fire."
     visual
       icon "⚡"
       color "#eab308"
@@ -134,7 +160,7 @@ pkg wear_test v1
   construct FeedbackChannel
     kw feedback_channel
     mt struct
-    desc "Step 5 — how feedback is collected (survey, in-app, …)"
+    desc "STEP 5 — how we collect feedback from participants (survey, in-app prompt, email, …). Configuration only; actual survey products may sit behind adapters later."
     visual
       icon "💬"
       color "#06b6d4"
@@ -142,12 +168,12 @@ pkg wear_test v1
     in Initiative
     group domain
 
-  # ─── Wizard (initialize a new initiative) ────────────────────────────────
+  # ─── Wizard: guided create of an Initiative ──────────────────────────────
 
   construct Wizard
     kw wizard
     mt struct
-    desc "Ordered setup for creating an Initiative (expert-facing wizard)"
+    desc "Expert-facing setup flow for a new Initiative. Default stock wizard has five WizardSteps (cohort → configure → data prep → activations → feedback). The UI wizard is generated from this structure; the CreateInitiative service implements it."
     visual
       icon "🧙"
       color "#a855f7"
@@ -160,40 +186,36 @@ pkg wear_test v1
   construct WizardStep
     kw wizard_step
     mt struct
-    desc "One wizard step (cohort, configure, data prep, activations, feedback)"
+    desc "One step in the create-initiative wizard. Use @step with a key such as 1_cohort, 2_configure, 3_data_prep, 4_activations, or 5_feedback so the UI and services stay aligned."
     visual
       icon "1️⃣"
       color "#c084fc"
       label "Wizard step"
     ann
-      step: "Step number or key (1_cohort, 2_configure, 3_data_prep, 4_activations, 5_feedback)" value
+      step: "Stable key for this step (1_cohort, 2_configure, 3_data_prep, 4_activations, 5_feedback)" value
     in Wizard
     group application
 
   prompt
     You author wear-test product packages that `use wear_test` and `use dlx_core`.
 
-    ## Product shape
-    - Wear Test Application (wear_app): tenant deploys this once → dashboard + many Initiatives.
-    - Initiative: one wear-test run/program instance (not "TestPlan").
-    - Wear Test Dashboard: ops list/monitor initiatives for a tenant.
-    - Wizard + wizard_step: expert UI to create an initiative (5 default steps).
+    ## Domain model (read this first)
+    Tenant → Wear Test Application (one deploy) → many Initiatives (each is a wear-test run).
+    Dashboard is how ops list and monitor initiatives.
+    Wizard creates an Initiative in five simple steps; Step 3 (data prep) may contain deep logic.
 
-    ## Steps (default wizard)
-    1. Cohort / enrollment (entire cohort, list, segment, roster, registration)
-    2. Configure initiative (including which signals are bound)
-    3. Data prep — input_data + transform (may be complex; still declared here)
-    4. Activations
-    5. Feedback channels
+    ## Default wizard steps
+    1. Enrollment — who participates (cohort / list / segment / roster via dlx_core)
+    2. Configure — name, dates, signal bindings
+    3. Data prep — input_data + transform (complex work still lives under this shape)
+    4. Activations — what fires when
+    5. Feedback channels — how we collect feedback
 
     ## Platform boundary
-    - Cohort, List, Segment, Roster, Tenant, User live in dlx_core — request GetCohort etc.
-    - Do NOT reinvent IAAA entities in wear_test packages.
-    - Client-specific extensions go in a client package (e.g. brooks_wear_test.veil), not this layer.
-
-    ## Vocabulary
-    Prefer initiative, enrollment, signal_binding, data_prep, activation, feedback_channel,
-    wizard, wizard_step over ad-hoc names like TestPlan.
+    - Cohort, List, Segment, Roster, Tenant, User are dlx_core — never redefine them here.
+    - Client-specific extras go in a client package (e.g. brooks_wear_test.veil).
+    - Prefer initiative / enrollment / signal_binding / data_prep / activation /
+      feedback_channel / wizard / wizard_step over ad-hoc names (no "TestPlan").
 
   present
     role WearTestApplication

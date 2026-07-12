@@ -18,7 +18,13 @@ pub fn build_layer_ir(content: &str, layer_name: &str) -> Result<IrGraph, String
         Span::new(0, content.len()),
     );
     g.nodes.last_mut().unwrap().metadata.subkind = Some("Layer".into());
-    g.nodes.last_mut().unwrap().metadata.doc = Some(format!("layer {}", layer_name));
+    // Layer root: use prompt intro when present so the IDE "About" panel teaches the domain.
+    let layer_doc = raw
+        .prompt
+        .as_ref()
+        .and_then(|p| p.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()))
+        .unwrap_or_else(|| format!("layer {layer_name} — product-family vocabulary"));
+    g.nodes.last_mut().unwrap().metadata.doc = Some(layer_doc);
 
     // Group nodes by construct.group
     let mut group_ids: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
