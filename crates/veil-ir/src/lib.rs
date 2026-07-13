@@ -1,5 +1,6 @@
 //! VEIL IR — AST definitions, graph model, and validation.
 
+pub mod adapt;
 pub mod ast;
 pub mod builder;
 pub mod check;
@@ -20,6 +21,11 @@ pub mod span;
 pub mod struct_diff;
 pub mod validate;
 
+pub use adapt::{
+    build_adapt_chain, default_adapt_search_paths, find_package_source, is_adapt_denied,
+    merge_adapt_chain, merge_adapted_package, package_as_solution, path_exists, AdaptError,
+    MergeResult, ADAPT_DENYLIST,
+};
 pub use ast::*;
 pub use builder::{build_ir, build_ir_with_registry};
 pub use check::{check_solution, format_diagnostic_line, sort_diagnostics, CheckResult};
