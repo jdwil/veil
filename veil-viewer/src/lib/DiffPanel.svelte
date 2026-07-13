@@ -2,7 +2,7 @@
   /**
    * UX-021: structural / semantic diff panel (vs git HEAD).
    */
-  import { focusDiagnostic } from '$lib/store';
+  import { focusDiagnostic, ideApiBase } from '$lib/store';
 
   interface DiffItem {
     kind: string;
@@ -38,7 +38,7 @@
     loading = true;
     error = null;
     try {
-      const res = await fetch('http://localhost:3001/api/diff');
+      const res = await fetch(`${ideApiBase()}/diff`);
       if (!res.ok) {
         error = `HTTP ${res.status}: ${await res.text()}`;
         diff = null;

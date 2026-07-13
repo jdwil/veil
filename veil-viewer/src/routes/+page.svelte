@@ -47,6 +47,7 @@
     openProject,
     createHubProject,
     currentProjectParam,
+    ideApiBase,
     diagnostics,
     viewRevision,
   } from '$lib/store';
@@ -315,7 +316,7 @@
         if (gAfterGroup) computeView(gAfterGroup, get(currentParent), get(paletteConfig));
         // Fetch the fresh IR directly to find the new group's span,
         // avoiding reactive store reads that could trigger effect loops.
-        const freshRes = await fetch('http://localhost:3001/api/ir');
+        const freshRes = await fetch(`${ideApiBase()}/ir`);
         const freshIr = await freshRes.json();
         const newGroupNode = freshIr.nodes.find(
           (n: any) => n.kind === 'Group' && n.name === targetGroup && n.metadata.parent === parent

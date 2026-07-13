@@ -4,7 +4,7 @@
    */
   import { untrack } from 'svelte';
   import { get } from 'svelte/store';
-  import { checkMeta, refreshAfterEdit } from '$lib/store';
+  import { checkMeta, ideApiBase, refreshAfterEdit } from '$lib/store';
 
   interface ToolCall {
     name: string;
@@ -104,15 +104,24 @@
     scrollThread();
 
     try {
-      const res = await fetch('http://localhost:3001/api/agent/turn/stream', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
-        body: JSON.stringify({ prompt: text }),
-        signal: abort.signal,
-      });
+      const turnStreamUrl = `${ideApiBase()}/agent/turn/stream`;
+      let res: Response;
+      try {
+        res = await fetch(turnStreamUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+          },
+          body: JSON.stringify({ prompt: text }),
+          signal: abort.signal,
+        });
+      } catch (netErr: any) {
+        // Connection/CORS failure — try non-stream once with clear API URL in errors
+        statusLine = 'stream unavailable, falling back…';
+        await sendNonStream(text);
+        return;
+      }
       if (!res.ok) {
         // Fallback to non-streaming turn
         await sendNonStream(text);
@@ -235,14 +244,24 @@
     if (history[history.length - 1]?.streaming) {
       history = history.slice(0, -1);
     }
-    const res = await fetch('http://localhost:3001/api/agent/turn', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: text }),
-      signal: abort?.signal,
-    });
+    const turnUrl = `${ideApiBase()}/agent/turn`;
+    let res: Response;
+    try {
+      res = await fetch(turnUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: text }),
+        signal: abort?.signal,
+      });
+    } catch (netErr: any) {
+      err =
+        netErr?.name === 'AbortError'
+          ? 'cancelled'
+          : `Network error talking to agent at ${turnUrl} — is the API up? (${netErr?.message || netErr})`;
+      return;
+    }
     if (!res.ok) {
-      err = `HTTP ${res.status}: ${await res.text()}`;
+      err = `HTTP ${res.status} (${turnUrl}): ${await res.text()}`;
       return;
     }
     const data: TurnResponse = await res.json();

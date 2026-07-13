@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { generatedCode } from '$lib/store';
+  import { generatedCode, ideApiBase } from '$lib/store';
   import { highlightLine } from '$lib/rustHighlight';
 
   let files = $state<Record<string, string>>({});
@@ -43,7 +43,7 @@
 
     // Initial fetch if store has not been populated yet
     if (!hadStoreValue) {
-      void fetch('http://localhost:3001/api/generated')
+      void fetch(`${ideApiBase()}/generated`)
         .then(async (res) => {
           if (res.ok) applyGenerated(await res.json());
           else loading = false;
