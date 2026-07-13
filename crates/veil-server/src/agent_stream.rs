@@ -55,6 +55,20 @@ pub async fn run_turn_stream<P: SourceProvider>(
 
     let cfg = ModelConfig::from_env();
 
+    // Host-side structured commands (create package, list files, …) must not
+    // go through ACP streaming — `run_turn` handles them immediately.
+    if crate::agent::is_structured_agent_command(&req.prompt) {
+        emit(
+            &tx,
+            "status",
+            json!({ "message": "host tools", "turn_id": turn_id }),
+        )
+        .await;
+        let resp = run_turn(provider, req).await;
+        stream_response_typed(&tx, resp).await;
+        return;
+    }
+
     // ── ACP path: real token stream from Kiro ─────────────────────────────
     if cfg.supports_acp() {
         match stream_acp_turn(provider.clone(), req.clone(), &tx, &turn_id).await {

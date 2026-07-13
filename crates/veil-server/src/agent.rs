@@ -150,6 +150,30 @@ pub async fn run_turn<P: SourceProvider>(
 
     let cfg = crate::model::ModelConfig::from_env();
 
+    // Structured IDE commands — run immediately (no LLM wait). Same tools as
+    // Rig create_file / list_files / rename / check / outline.
+    if is_structured_agent_command(prompt) {
+        let mut resp = heuristic_turn(
+            provider.as_ref(),
+            turn_id,
+            prompt,
+            source,
+            &registry,
+            confirm,
+            plan_only,
+            allowlist,
+            loaded,
+            messages,
+        )
+        .await;
+        resp = resp.with_context(&preamble_pack);
+        // Tag backend so UI shows we used the fast host path, not "offline help"
+        if resp.backend == "heuristic" {
+            resp.backend = "host".into();
+        }
+        return resp;
+    }
+
     // ── ACP external agent (Kiro, etc.) ───────────────────────────────────
     if cfg.supports_acp() {
         let active_name = loaded
@@ -734,6 +758,133 @@ async fn heuristic_turn<P: SourceProvider>(
         }
     }
 
+    // list files
+    if lower == "list files"
+        || lower == "files"
+        || lower.starts_with("list file")
+        || lower.contains("what files")
+        || lower.contains("show files")
+    {
+        tool_calls.push(AgentToolCall {
+            name: "list_files".into(),
+            detail: "list".into(),
+        });
+        let files = provider.list_files().await;
+        let mut lines = vec!["files:".to_string()];
+        for f in &files {
+            let mark = if f.active { " ●" } else { "" };
+            lines.push(format!(
+                "  [{idx}] {name} ({kind}){mark}",
+                idx = f.index,
+                name = f.name,
+                kind = f.kind.as_str(),
+            ));
+        }
+        if files.is_empty() {
+            lines.push("  (none)".into());
+        }
+        messages.push(AgentMessage {
+            role: "assistant".into(),
+            content: lines.join("\n"),
+        });
+        return AgentTurnResponse {
+            turn_id,
+            messages,
+            tool_calls,
+            source_changed: false,
+            ok: true,
+            error: None,
+            backend: "heuristic".into(),
+            plan: None,
+            context_truncated: false,
+            context_warning: None,
+            context_tokens: 0,
+            context_budget_tokens: 0,
+            context_layers: vec![],
+        };
+    }
+
+    // create package / layer file (same path as IDE + and Rig create_file tool)
+    if let Some((name, kind)) = parse_create_file(prompt) {
+        tool_calls.push(AgentToolCall {
+            name: "create_file".into(),
+            detail: format!("{name} kind={kind}"),
+        });
+        if plan_only {
+            messages.push(AgentMessage {
+                role: "assistant".into(),
+                content: format!(
+                    "[plan_only] Would create {kind} file '{name}'. Re-run without plan_only to apply."
+                ),
+            });
+            return AgentTurnResponse {
+                turn_id,
+                messages,
+                tool_calls,
+                source_changed: false,
+                ok: true,
+                error: None,
+                backend: "heuristic".into(),
+                plan: Some(format!("create_file {name} ({kind})")),
+                context_truncated: false,
+                context_warning: None,
+                context_tokens: 0,
+                context_budget_tokens: 0,
+                context_layers: vec![],
+            };
+        }
+        match crate::file_ops::create_file_in_project(provider, &name, Some(&kind), None).await {
+            Ok(created) => {
+                messages.push(AgentMessage {
+                    role: "assistant".into(),
+                    content: format!(
+                        "Created {} ({}) at {} — now active.\n\
+                         Use the file picker or say `list files` to confirm.",
+                        created.name,
+                        created.kind.as_str(),
+                        created.path
+                    ),
+                });
+                return AgentTurnResponse {
+                    turn_id,
+                    messages,
+                    tool_calls,
+                    source_changed: true,
+                    ok: true,
+                    error: None,
+                    backend: "heuristic".into(),
+                    plan: None,
+                    context_truncated: false,
+                    context_warning: None,
+                    context_tokens: 0,
+                    context_budget_tokens: 0,
+                    context_layers: vec![],
+                };
+            }
+            Err(e) => {
+                messages.push(AgentMessage {
+                    role: "assistant".into(),
+                    content: format!("Could not create file: {}", e.message()),
+                });
+                return AgentTurnResponse {
+                    turn_id,
+                    messages,
+                    tool_calls,
+                    source_changed: false,
+                    ok: false,
+                    error: Some(e.message().to_string()),
+                    backend: "heuristic".into(),
+                    plan: None,
+                    context_truncated: false,
+                    context_warning: None,
+                    context_tokens: 0,
+                    context_budget_tokens: 0,
+                    context_layers: vec![],
+                };
+            }
+        }
+    }
+
     // Default help
     let outline = rig_tools::run_outline(&source, registry);
     let check = rig_tools::run_check(&source, registry);
@@ -741,7 +892,8 @@ async fn heuristic_turn<P: SourceProvider>(
         role: "assistant".into(),
         content: format!(
             "Offline heuristic agent (set VEIL_MODEL_PROVIDER=openai|ollama for Rig tools).\n\
-             Commands: `check` · `outline` · `rename Old to New`\n\
+             Commands: `check` · `outline` · `list files` · `create package Name` · \
+             `create layer Name` · `rename Old to New`\n\
              Safety: VEIL_AGENT_ALLOWLIST · VEIL_AGENT_PLAN_ONLY · VEIL_AGENT_CONFIRM_WRITES\n\n\
              Context:\n{outline}\n\n{check}"
         ),
@@ -804,6 +956,121 @@ fn parse_rename(prompt: &str) -> Option<(String, String)> {
         let to = b.trim().to_string();
         if !from.is_empty() && !to.is_empty() {
             return Some((from, to));
+        }
+    }
+    None
+}
+
+/// Parse natural create-file prompts → (name, kind) where kind is package|layer.
+///
+/// Examples:
+/// - `create package AcmeWear`
+/// - `create layer engagement`
+/// - `create file Foo.veil`
+/// - `new package Bar`
+/// - `make a new file called Widget`
+/// True when the prompt is a host-side command (no LLM/ACP required).
+pub fn is_structured_agent_command(prompt: &str) -> bool {
+    let lower = prompt.trim().to_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    if lower == "check"
+        || lower.starts_with("check ")
+        || lower.contains("run check")
+        || lower == "outline"
+        || lower.starts_with("outline")
+        || lower.contains("show structure")
+        || lower == "list files"
+        || lower == "files"
+        || lower.starts_with("list file")
+        || lower.contains("what files")
+        || lower.contains("show files")
+    {
+        return true;
+    }
+    if parse_rename(prompt).is_some() {
+        return true;
+    }
+    if parse_create_file(prompt).is_some() {
+        return true;
+    }
+    false
+}
+
+fn parse_create_file(prompt: &str) -> Option<(String, String)> {
+    let p = prompt.trim();
+    let lower = p.to_lowercase();
+
+    // Explicit: create/new [package|layer|file] <name>
+    for prefix in [
+        "create package ",
+        "create layer ",
+        "create file ",
+        "new package ",
+        "new layer ",
+        "new file ",
+        "add package ",
+        "add layer ",
+        "add file ",
+    ] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let name = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            // Preserve casing from original prompt roughly: find token in original
+            let name = extract_name_token(p, &name).unwrap_or(name);
+            let kind = if prefix.contains("layer") {
+                "layer".into()
+            } else if name.ends_with(".layer") {
+                "layer".into()
+            } else {
+                "package".into()
+            };
+            return Some((name, kind));
+        }
+    }
+
+    // Looser: "make a new file called X" / "create a package named X"
+    let called_markers = [" called ", " named ", " name "];
+    if lower.contains("create") || lower.contains("new file") || lower.contains("add file") {
+        for m in called_markers {
+            if let Some(idx) = lower.find(m) {
+                let after = &p[idx + m.len()..];
+                let name = after
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let kind = if lower.contains("layer") || name.ends_with(".layer") {
+                    "layer".into()
+                } else {
+                    "package".into()
+                };
+                return Some((name, kind));
+            }
+        }
+    }
+    None
+}
+
+fn extract_name_token(original: &str, lower_token: &str) -> Option<String> {
+    for w in original.split_whitespace() {
+        let cleaned = w.trim_matches(|c: char| {
+            !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.'
+        });
+        if cleaned.eq_ignore_ascii_case(lower_token) {
+            return Some(cleaned.to_string());
         }
     }
     None
