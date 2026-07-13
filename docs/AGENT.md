@@ -17,18 +17,27 @@ Toolbar **Agent** → `POST /api/agent/turn` with `{ "prompt": "…" }`.
 
 ### Rig tools (typed `rig_core::tool::Tool`)
 
-| Tool | Purpose |
-|------|---------|
-| `veil_check` | Dual-loop check pipeline |
-| `veil_outline` | Compact IR topology |
-| `read_source` | Active `.veil` text (truncated) |
-| `rename_construct` | Structured `EditOp::Rename` |
+| Tool | Purpose | IDE equivalent |
+|------|---------|----------------|
+| `veil_check` | Dual-loop check pipeline | Check / diagnostics |
+| `veil_outline` | Compact IR topology | Graph outline |
+| `read_source` | Active file text (truncated) | Source dock |
+| `rename_construct` | Structured rename | Property / rename |
+| `list_files` | Packages/layers in project | File picker |
+| `select_file` | Switch active file | File picker |
+| `create_file` | New `.veil` / `.layer` | **+** in breadcrumb |
+| `write_source` | Replace active file body | `POST /api/source` |
+
+**Parity rule:** anything the dual-loop front-end can do should have a matching
+agent tool (or structured edit). New IDE actions → add a Rig tool in
+`rig_tools.rs` and register it in `model::prompt_with_tools`.
 
 Tools mutate an in-memory workspace; each successful edit is **flushed live** to
 `SourceProvider` (disk) mid-turn when possible, and `GET /api/events` streams
 revision SSE so the viewer badge updates without waiting for the turn HTTP
 response. `rename_construct` is **format-preserving** (identifier token patch —
-does not re-serialize the whole package).
+does not re-serialize the whole package). `create_file` writes under the project
+root and selects the new file (same as the UI).
 
 ### Env
 

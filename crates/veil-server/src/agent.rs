@@ -283,13 +283,12 @@ pub async fn run_turn<P: SourceProvider>(
             None
         } else {
             let p = provider.clone();
-            let allow = allowlist.clone();
-            let files = loaded.clone();
             Some(std::sync::Arc::new(move |src: String| {
                 let p = p.clone();
-                let allow = allow.clone();
-                let files = files.clone();
                 Box::pin(async move {
+                    // Refresh file list so create_file mid-turn is allowlisted.
+                    let files = p.list_files().await;
+                    let allow = crate::safety::allowlist_from_env(&files);
                     crate::safety::check_write_allowed("", &allow, &files)?;
                     p.write_source("", &src).await
                 })
@@ -299,6 +298,39 @@ pub async fn run_turn<P: SourceProvider>(
         let mut ws = Workspace::new(source.clone(), registry.clone(), confirm);
         if let Some(w) = writer {
             ws = ws.with_live_writer(w);
+        }
+        // Host ops so agent tools can match IDE UI (create/list/select files).
+        {
+            struct ProviderHost<P: crate::provider::SourceProvider>(std::sync::Arc<P>);
+            #[async_trait::async_trait]
+            impl<P: crate::provider::SourceProvider> crate::rig_tools::AgentHost for ProviderHost<P> {
+                async fn list_files(&self) -> Vec<crate::provider::FileInfo> {
+                    self.0.list_files().await
+                }
+                async fn create_file(
+                    &self,
+                    name: &str,
+                    kind: Option<&str>,
+                    content: Option<String>,
+                ) -> Result<crate::file_ops::CreatedFile, String> {
+                    crate::file_ops::create_file_in_project(self.0.as_ref(), name, kind, content)
+                        .await
+                        .map_err(|e| e.message().to_string())
+                }
+                async fn select_file(&self, index: usize) -> Result<(), String> {
+                    self.0.set_active(index)
+                }
+                async fn read_active_source(&self) -> Result<String, String> {
+                    self.0.read_source("").await
+                }
+                fn registry(&self) -> veil_ir::LayerRegistry {
+                    self.0.registry()
+                }
+                async fn reload_from_disk(&self) -> Result<usize, String> {
+                    self.0.reload_from_disk().await
+                }
+            }
+            ws = ws.with_host(std::sync::Arc::new(ProviderHost(provider.clone())));
         }
 
         match crate::model::prompt_with_tools(&cfg, &preamble, prompt, ws.clone()).await {
@@ -339,7 +371,9 @@ pub async fn run_turn<P: SourceProvider>(
                 }
                 // Ensure final snapshot is on disk (covers tools that skipped live write)
                 if wants_write && !plan_only {
-                    if let Err(e) = crate::safety::check_write_allowed("", &allowlist, &loaded) {
+                    let loaded_now = provider.as_ref().list_files().await;
+                    let allow_now = crate::safety::allowlist_from_env(&loaded_now);
+                    if let Err(e) = crate::safety::check_write_allowed("", &allow_now, &loaded_now) {
                         return AgentTurnResponse {
                             turn_id,
                             messages,

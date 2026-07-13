@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use rig_core::completion::ToolDefinition;
 use rig_core::tool::Tool;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ use veil_ir::{check_solution, build_ir_with_registry, LayerRegistry};
 use veil_parser::TokenKind;
 
 use crate::agent::AgentToolCall;
+use crate::provider::FileInfo;
 
 /// Callback to persist source mid-turn (async, host-owned).
 pub type LiveWriter = Arc<
@@ -23,33 +25,64 @@ pub type LiveWriter = Arc<
         + Sync,
 >;
 
+/// Host project ops that mirror IDE front-end capabilities (files, select, …).
+#[async_trait]
+pub trait AgentHost: Send + Sync {
+    async fn list_files(&self) -> Vec<FileInfo>;
+    async fn create_file(
+        &self,
+        name: &str,
+        kind: Option<&str>,
+        content: Option<String>,
+    ) -> Result<crate::file_ops::CreatedFile, String>;
+    async fn select_file(&self, index: usize) -> Result<(), String>;
+    async fn read_active_source(&self) -> Result<String, String>;
+    fn registry(&self) -> LayerRegistry;
+    async fn reload_from_disk(&self) -> Result<usize, String>;
+}
+
 /// Shared mutable workspace for a single agent turn.
 #[derive(Clone)]
 pub struct Workspace {
     pub source: Arc<Mutex<String>>,
-    pub registry: LayerRegistry,
+    pub registry: Arc<Mutex<LayerRegistry>>,
     pub source_changed: Arc<AtomicBool>,
     pub tool_log: Arc<Mutex<Vec<AgentToolCall>>>,
     pub confirm_writes: bool,
     /// When set, edits flush to the SourceProvider immediately.
     pub live_writer: Option<LiveWriter>,
+    /// Project host (create/list/select files). Optional for unit tests.
+    pub host: Option<Arc<dyn AgentHost>>,
 }
 
 impl Workspace {
     pub fn new(source: String, registry: LayerRegistry, confirm_writes: bool) -> Self {
         Self {
             source: Arc::new(Mutex::new(source)),
-            registry,
+            registry: Arc::new(Mutex::new(registry)),
             source_changed: Arc::new(AtomicBool::new(false)),
             tool_log: Arc::new(Mutex::new(Vec::new())),
             confirm_writes,
             live_writer: None,
+            host: None,
         }
     }
 
     pub fn with_live_writer(mut self, writer: LiveWriter) -> Self {
         self.live_writer = Some(writer);
         self
+    }
+
+    pub fn with_host(mut self, host: Arc<dyn AgentHost>) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    pub fn registry_snapshot(&self) -> LayerRegistry {
+        self.registry
+            .lock()
+            .map(|r| r.clone())
+            .unwrap_or_else(|_| LayerRegistry::builtin())
     }
 
     async fn apply_source(&self, new_src: String) -> Result<(), String> {
@@ -59,6 +92,22 @@ impl Workspace {
         self.source_changed.store(true, Ordering::SeqCst);
         if let Some(ref w) = self.live_writer {
             w(new_src).await?;
+        }
+        Ok(())
+    }
+
+    /// Switch workspace snapshot after host selects/creates a different file.
+    async fn adopt_active_file(&self) -> Result<(), String> {
+        let Some(host) = &self.host else {
+            return Err("no project host attached".into());
+        };
+        let src = host.read_active_source().await?;
+        let reg = host.registry();
+        if let Ok(mut g) = self.source.lock() {
+            *g = src;
+        }
+        if let Ok(mut r) = self.registry.lock() {
+            *r = reg;
         }
         Ok(())
     }
@@ -125,7 +174,8 @@ impl Tool for CheckTool {
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         self.ws.log("veil_check", "target=rust");
         let src = self.ws.source_snapshot();
-        Ok(run_check(&src, &self.ws.registry))
+        let reg = self.ws.registry_snapshot();
+        Ok(run_check(&src, &reg))
     }
 }
 
@@ -156,7 +206,8 @@ impl Tool for OutlineTool {
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
         self.ws.log("veil_outline", "outline");
         let src = self.ws.source_snapshot();
-        Ok(run_outline(&src, &self.ws.registry))
+        let reg = self.ws.registry_snapshot();
+        Ok(run_outline(&src, &reg))
     }
 }
 
@@ -264,17 +315,275 @@ impl Tool for RenameTool {
             format!("{} → {}", args.from, args.to),
         );
         let src = self.ws.source_snapshot();
-        match apply_rename(&src, &self.ws.registry, &args.from, &args.to) {
+        let reg = self.ws.registry_snapshot();
+        match apply_rename(&src, &reg, &args.from, &args.to) {
             Ok((new_src, summary)) => {
                 if let Err(e) = self.ws.apply_source(new_src.clone()).await {
                     return Err(ToolErr(format!("live write failed: {e}")));
                 }
-                let check = run_check(&new_src, &self.ws.registry);
+                let check = run_check(&new_src, &reg);
                 self.ws.log("veil_check", "post-rename");
                 Ok(format!("{summary}\n\n{check}"))
             }
             Err(e) => Err(ToolErr(e)),
         }
+    }
+}
+
+// ─── list_files ────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct ListFilesTool {
+    pub ws: Workspace,
+}
+
+impl Tool for ListFilesTool {
+    const NAME: &'static str = "list_files";
+    type Error = ToolErr;
+    type Args = EmptyArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "List packages/layers in the IDE project (same as the file picker). Use before create_file or select_file.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+            }),
+        }
+    }
+
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.ws.log("list_files", "list");
+        let Some(host) = &self.ws.host else {
+            return Err(ToolErr("list_files: no project host".into()));
+        };
+        let files = host.list_files().await;
+        if files.is_empty() {
+            return Ok("No files loaded in this project.".into());
+        }
+        let mut lines = vec!["files:".to_string()];
+        for f in &files {
+            let mark = if f.active { " ●" } else { "" };
+            let kind = f.kind.as_str();
+            let adapts = f
+                .adapts
+                .as_ref()
+                .map(|a| format!(" adapts:{a}"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "  [{idx}] {name} ({kind}){mark}{adapts}",
+                idx = f.index,
+                name = f.name,
+            ));
+        }
+        Ok(lines.join("\n"))
+    }
+}
+
+// ─── select_file ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Serialize)]
+pub struct SelectFileArgs {
+    /// File index from list_files, or basename (e.g. `wear_test.veil`).
+    #[serde(default)]
+    pub index: Option<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct SelectFileTool {
+    pub ws: Workspace,
+}
+
+impl Tool for SelectFileTool {
+    const NAME: &'static str = "select_file";
+    type Error = ToolErr;
+    type Args = SelectFileArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Switch the active IDE file (same as the file picker). Subsequent tools operate on this file. Pass index from list_files or name.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "index": { "type": "integer", "description": "File index from list_files" },
+                    "name": { "type": "string", "description": "Basename e.g. client.veil" }
+                }
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let Some(host) = &self.ws.host else {
+            return Err(ToolErr("select_file: no project host".into()));
+        };
+        let files = host.list_files().await;
+        let idx = if let Some(i) = args.index {
+            i
+        } else if let Some(ref name) = args.name {
+            files
+                .iter()
+                .find(|f| f.name == *name || f.name.trim_end_matches(".veil") == name.as_str())
+                .map(|f| f.index)
+                .ok_or_else(|| ToolErr(format!("no file named '{name}'")))?
+        } else {
+            return Err(ToolErr("select_file requires index or name".into()));
+        };
+        self.ws.log("select_file", format!("index={idx}"));
+        host.select_file(idx)
+            .await
+            .map_err(ToolErr)?;
+        self.ws
+            .adopt_active_file()
+            .await
+            .map_err(ToolErr)?;
+        let name = files
+            .iter()
+            .find(|f| f.index == idx)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| format!("#{idx}"));
+        Ok(format!("Active file is now {name}. Use read_source / veil_check / rename_construct on it."))
+    }
+}
+
+// ─── create_file ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Serialize)]
+pub struct CreateFileArgs {
+    /// Basename or stem: `AcmeWear`, `AcmeWear.veil`, or `wear_test.layer`.
+    pub name: String,
+    /// `package` (default) or `layer`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Optional full starter source; default is a minimal pkg/layer scaffold.
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+#[derive(Clone)]
+pub struct CreateFileTool {
+    pub ws: Workspace,
+}
+
+impl Tool for CreateFileTool {
+    const NAME: &'static str = "create_file";
+    type Error = ToolErr;
+    type Args = CreateFileArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Create a new package (.veil) or layer (.layer) in the project (same as the IDE + button). Writes to disk, registers, and selects it as the active file.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "File stem or name.ext" },
+                    "kind": { "type": "string", "enum": ["package", "layer"], "description": "package (default) or layer" },
+                    "content": { "type": "string", "description": "Optional full file body" },
+                    "confirmed": { "type": "boolean", "description": "User confirmed when write confirmation is on" }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        if self.ws.confirm_writes && !args.confirmed {
+            self.ws.log("permission_check", "confirm create_file");
+            return Ok(format!(
+                "Write blocked (VEIL_AGENT_CONFIRM_WRITES). Confirm create_file name='{}', then call again with confirmed=true.",
+                args.name
+            ));
+        }
+        let Some(host) = &self.ws.host else {
+            return Err(ToolErr("create_file: no project host".into()));
+        };
+        self.ws.log(
+            "create_file",
+            format!(
+                "{} kind={}",
+                args.name,
+                args.kind.as_deref().unwrap_or("package")
+            ),
+        );
+        let created = host
+            .create_file(&args.name, args.kind.as_deref(), args.content)
+            .await
+            .map_err(ToolErr)?;
+        self.ws
+            .adopt_active_file()
+            .await
+            .map_err(ToolErr)?;
+        self.ws.source_changed.store(true, Ordering::SeqCst);
+        Ok(format!(
+            "Created {} ({}) at {} — now active. Edit with rename_construct or write_source; run veil_check when ready.",
+            created.name,
+            created.kind.as_str(),
+            created.path
+        ))
+    }
+}
+
+// ─── write_source ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Serialize)]
+pub struct WriteSourceArgs {
+    /// Full file body for the active package/layer.
+    pub content: String,
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+#[derive(Clone)]
+pub struct WriteSourceTool {
+    pub ws: Workspace,
+}
+
+impl Tool for WriteSourceTool {
+    const NAME: &'static str = "write_source";
+    type Error = ToolErr;
+    type Args = WriteSourceArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Replace the entire active file source (same as POST /api/source). Prefer structured rename_construct for renames; use this for multi-line package/layer composition.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string", "description": "Full new source text" },
+                    "confirmed": { "type": "boolean" }
+                },
+                "required": ["content"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        if self.ws.confirm_writes && !args.confirmed {
+            self.ws.log("permission_check", "confirm write_source");
+            return Ok(
+                "Write blocked (VEIL_AGENT_CONFIRM_WRITES). Confirm with user, then call write_source again with confirmed=true."
+                    .into(),
+            );
+        }
+        let len = args.content.len();
+        self.ws.log("write_source", format!("bytes={len}"));
+        if let Err(e) = self.ws.apply_source(args.content.clone()).await {
+            return Err(ToolErr(format!("write failed: {e}")));
+        }
+        let reg = self.ws.registry_snapshot();
+        let check = run_check(&args.content, &reg);
+        Ok(format!("Wrote {len} bytes to active file.\n\n{check}"))
     }
 }
 

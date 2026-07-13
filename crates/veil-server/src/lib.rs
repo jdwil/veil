@@ -23,6 +23,7 @@ pub mod agent_stream;
 pub mod model;
 pub mod agent_context;
 pub mod rig_tools;
+pub mod file_ops;
 pub mod safety;
 pub mod revision;
 pub mod acp;

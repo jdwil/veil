@@ -251,7 +251,10 @@ pub async fn prompt_with_tools(
     user_prompt: &str,
     ws: crate::rig_tools::Workspace,
 ) -> Result<String, String> {
-    use crate::rig_tools::{CheckTool, OutlineTool, ReadSourceTool, RenameTool};
+    use crate::rig_tools::{
+        CheckTool, CreateFileTool, ListFilesTool, OutlineTool, ReadSourceTool, RenameTool,
+        SelectFileTool, WriteSourceTool,
+    };
 
     match cfg.kind {
         ProviderKind::OpenAi => {
@@ -275,6 +278,10 @@ pub async fn prompt_with_tools(
                 .tool(OutlineTool { ws: ws.clone() })
                 .tool(ReadSourceTool { ws: ws.clone() })
                 .tool(RenameTool { ws: ws.clone() })
+                .tool(ListFilesTool { ws: ws.clone() })
+                .tool(SelectFileTool { ws: ws.clone() })
+                .tool(CreateFileTool { ws: ws.clone() })
+                .tool(WriteSourceTool { ws: ws.clone() })
                 .build();
             agent.prompt(user_prompt).await.map_err(|e| e.to_string())
         }
@@ -287,6 +294,10 @@ pub async fn prompt_with_tools(
                 .tool(OutlineTool { ws: ws.clone() })
                 .tool(ReadSourceTool { ws: ws.clone() })
                 .tool(RenameTool { ws: ws.clone() })
+                .tool(ListFilesTool { ws: ws.clone() })
+                .tool(SelectFileTool { ws: ws.clone() })
+                .tool(CreateFileTool { ws: ws.clone() })
+                .tool(WriteSourceTool { ws: ws.clone() })
                 .build();
             agent.prompt(user_prompt).await.map_err(|e| e.to_string())
         }
