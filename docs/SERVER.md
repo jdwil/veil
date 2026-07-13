@@ -47,7 +47,8 @@ See `is_veil_source_editable` in `veil-cli`.
 | GET | `/api/stubs` | Loaded external crate stubs |
 | GET | `/api/diagnostics` | Diagnostics array (compat; same pipeline as check) |
 | GET/POST | `/api/check` | Full check pipeline (`?target=rust\|typescript\|swift\|kotlin`) |
-| GET | `/api/files` | Loaded files (`index`, `name`, `path`, `editable`, `active`) |
+| GET | `/api/files` | Loaded files (`index`, `name`, `path`, `editable`, `active`, `adapts?`) |
+| POST | `/api/files` | Create package/layer: `{ "name", "kind"?: "package"\|"layer", "content"? }` → writes under project root, registers, selects |
 | POST | `/api/files/select` | `{ "index": N }` — set active file |
 | GET | `/api/project` | Active IDE project `{ name, path, projects_dir }` |
 | GET | `/api/projects` | Hub: products under configured projects dir |

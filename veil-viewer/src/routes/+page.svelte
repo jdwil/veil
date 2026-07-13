@@ -43,6 +43,7 @@
     activeProject,
     hubSnapshot,
     selectFile,
+    createFile,
     openProject,
     createHubProject,
     currentProjectParam,
@@ -81,6 +82,11 @@
   let showCriticalOnly = $state(false);
   let newProjectName = $state('');
   let creatingProject = $state(false);
+  /** Inline “new file” form in the breadcrumb bar. */
+  let showNewFile = $state(false);
+  let newFileName = $state('');
+  let newFileKind = $state<'package' | 'layer'>('package');
+  let creatingFile = $state(false);
   // DOM reference for node measurement — ELK needs real rendered sizes
   let graphContainerEl: HTMLElement | null = $state(null);
 
@@ -97,6 +103,23 @@
       }
     } finally {
       creatingProject = false;
+    }
+  }
+
+  async function handleCreateFile() {
+    const name = newFileName.trim();
+    if (!name || creatingFile) return;
+    creatingFile = true;
+    try {
+      const result = await createFile({ name, kind: newFileKind });
+      if (result?.ok) {
+        newFileName = '';
+        showNewFile = false;
+      } else if (!$error) {
+        alert(`Failed to create file "${name}"`);
+      }
+    } finally {
+      creatingFile = false;
     }
   }
   let theme = $state<'dark' | 'light'>(
@@ -1098,9 +1121,10 @@
         <span class="project-badge" title={$activeProject.path ?? ''}>{$activeProject.name}</span>
         <span class="breadcrumb-sep">›</span>
       {/if}
-      {#if $availableFiles.length > 1}
+      {#if $availableFiles.length > 0}
         <select
           class="file-selector"
+          title="Switch package or layer"
           value={$availableFiles.findIndex(f => f.active)}
           onchange={(e) => {
             const idx = Number((e.currentTarget as HTMLSelectElement).value);
@@ -1112,10 +1136,52 @@
             <option value={file.index}
               >{file.kind === 'layer' ? '📐 ' : file.kind === 'stub' ? '📎 ' : ''}{file.name}{file.active
                 ? ' ●'
-                : ''}</option
+                : ''}{file.adapts ? ` ↳ ${file.adapts}` : ''}</option
             >
           {/each}
         </select>
+      {/if}
+      <button
+        type="button"
+        class="add-file-btn"
+        title="Add package or layer file to this project"
+        onclick={() => {
+          showNewFile = !showNewFile;
+          if (showNewFile) newFileName = '';
+        }}
+      >
+        +
+      </button>
+      {#if showNewFile}
+        <div class="new-file-form" role="group" aria-label="New file">
+          <select
+            class="file-selector kind-select"
+            bind:value={newFileKind}
+            title="File kind"
+          >
+            <option value="package">package (.veil)</option>
+            <option value="layer">layer (.layer)</option>
+          </select>
+          <input
+            class="new-file-input"
+            placeholder={newFileKind === 'layer' ? 'my_layer' : 'MyPackage'}
+            bind:value={newFileName}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') void handleCreateFile();
+              if (e.key === 'Escape') showNewFile = false;
+            }}
+          />
+          <button
+            type="button"
+            class="retry-btn new-file-go"
+            disabled={creatingFile || !newFileName.trim()}
+            onclick={() => void handleCreateFile()}
+          >
+            {creatingFile ? '…' : 'Add'}
+          </button>
+        </div>
+      {/if}
+      {#if $availableFiles.length > 0 || showNewFile}
         <span class="breadcrumb-sep">›</span>
       {/if}
       {#if $activeFileKind === 'layer'}
@@ -1346,6 +1412,48 @@
     outline: none;
   }
   .file-selector:focus { border-color: var(--veil-accent); }
+
+  .add-file-btn {
+    background: var(--veil-input-bg);
+    border: 1px solid var(--veil-border);
+    border-radius: 6px;
+    padding: 2px 10px;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--veil-accent);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .add-file-btn:hover {
+    background: var(--veil-accent-subtle);
+    border-color: var(--veil-accent);
+  }
+
+  .new-file-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .kind-select { max-width: 140px; font-weight: 500; }
+  .new-file-input {
+    width: 120px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--veil-border);
+    background: var(--veil-input-bg);
+    color: var(--veil-text);
+    font-size: 12px;
+  }
+  .new-file-input:focus {
+    outline: none;
+    border-color: var(--veil-accent);
+  }
+  .new-file-go {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
 
   .project-badge {
     font-size: 12px;

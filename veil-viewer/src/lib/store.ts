@@ -216,6 +216,8 @@ export interface VeilFileInfo {
   active: boolean;
   /** package | layer | stub (DSL-001) */
   kind?: 'package' | 'layer' | 'stub' | string;
+  /** Adapt chain badge when package has `adapt` lines. */
+  adapts?: string | null;
 }
 
 /** Active IDE project (one root per serve session). */
@@ -600,6 +602,76 @@ export async function selectFile(index: number) {
           : 'Failed to switch file';
       error.set(msg);
     }
+  } finally {
+    if (gen === loadGeneration) loading.set(false);
+  }
+}
+
+export interface CreateFileResult {
+  ok: boolean;
+  index: number;
+  name: string;
+  path: string;
+  kind: string;
+  files?: VeilFileInfo[];
+}
+
+/**
+ * Create a package (`.veil`) or layer (`.layer`) in the active project,
+ * register it in the serve set, and switch the IDE to it.
+ */
+export async function createFile(opts: {
+  name: string;
+  kind?: 'package' | 'layer';
+  content?: string;
+}): Promise<CreateFileResult | null> {
+  const name = opts.name.trim();
+  if (!name) return null;
+  const gen = ++loadGeneration;
+  loading.set(true);
+  error.set(null);
+  try {
+    const res = await fetchWithTimeout(FILES_URL(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        kind: opts.kind ?? 'package',
+        content: opts.content,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const detail = body.trim().slice(0, 400);
+      throw new Error(
+        detail
+          ? `Failed to create file: HTTP ${res.status}: ${detail}`
+          : `Failed to create file: HTTP ${res.status}`
+      );
+    }
+    const data: CreateFileResult = await res.json();
+    if (data.files && Array.isArray(data.files)) {
+      availableFiles.set(data.files);
+      const active = data.files.find((f) => f.active) ?? data.files[data.index];
+      if (active) {
+        activeFileName.set(active.name);
+        activeFileKind.set(active.kind || data.kind || 'package');
+      }
+    }
+    if (gen !== loadGeneration) return data;
+    await loadActiveFile(gen);
+    return data;
+  } catch (e) {
+    if (gen === loadGeneration) {
+      const msg =
+        e instanceof Error
+          ? e.name === 'AbortError'
+            ? `Timed out creating file (API ${ideApiBase()})`
+            : e.message
+          : 'Failed to create file';
+      error.set(msg);
+    }
+    return null;
   } finally {
     if (gen === loadGeneration) loading.set(false);
   }
