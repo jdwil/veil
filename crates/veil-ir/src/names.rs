@@ -433,6 +433,7 @@ fn check_expr(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match expr {
+        Expr::Stock => {}
         Expr::Ident(_) => {
             // Bare idents are local/field/parameter references — not call targets.
             // Unresolved bare idents are CHK-004 territory when used as values.

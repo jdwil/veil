@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::lexer::lex;
-    use crate::parser::{parse, parse_with_registry};
+    use crate::parser::{parse, parse_file_with_registry, parse_with_registry};
     use veil_ir::ast::*;
     use veil_ir::layer::{LayerRegistry, Shape};
 
@@ -1023,5 +1023,89 @@ pkg T
             "PgTenantRepo.pool lost @dep after round-trip: {:?}",
             pool.annotations
         );
+    }
+
+    // ─── ADP: package adapt ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_adapt_and_patches() {
+        let src = r#"
+pkg Client
+  use base
+  adapt stock_pkg
+  ren ListThings ListPrograms
+  omit Legacy
+  ins CreateThing
+    step audit after persist
+      ret Ok
+  rfn CreateThing
+    step wrap
+      init = stock
+      ret init
+  rpl Archive
+    step
+      ret Ok
+  svc Extra
+    step go
+      ret Ok
+"#;
+        let tokens = lex(src);
+        let file = parse_file_with_registry(&tokens, ddd_registry()).expect("parse adapt");
+        let veil_ir::VeilFile::Package(pkg) = file else {
+            panic!("expected package");
+        };
+        assert_eq!(pkg.adapts.len(), 1);
+        assert_eq!(pkg.adapts[0].package_name, "stock_pkg");
+        assert_eq!(pkg.patches.len(), 5);
+        assert!(matches!(pkg.patches[0], veil_ir::AdaptPatch::Ren { .. }));
+        assert!(matches!(pkg.patches[1], veil_ir::AdaptPatch::Omit { .. }));
+        assert!(matches!(pkg.patches[2], veil_ir::AdaptPatch::Ins { .. }));
+        assert!(matches!(pkg.patches[3], veil_ir::AdaptPatch::Rfn { .. }));
+        assert!(matches!(pkg.patches[4], veil_ir::AdaptPatch::Rpl { .. }));
+        // stock expr present in rfn
+        if let veil_ir::AdaptPatch::Rfn { steps, .. } = &pkg.patches[3] {
+            let has_stock = steps.iter().any(|st| match st {
+                veil_ir::FlowStep::Step(sd) => {
+                    sd.body.iter().any(|e| matches!(e, veil_ir::Expr::Stock)
+                        || matches!(e, veil_ir::Expr::Assign(_, rhs, _) if matches!(rhs.as_ref(), veil_ir::Expr::Stock)))
+                }
+                _ => false,
+            });
+            assert!(has_stock, "expected stock in rfn body");
+        }
+        // serialize round-trip preserves adapt
+        let emitted = veil_ir::serialize_package(&pkg);
+        assert!(emitted.contains("adapt stock_pkg"));
+        assert!(emitted.contains("ren ListThings ListPrograms"));
+        assert!(emitted.contains("omit Legacy"));
+        assert!(emitted.contains("ins CreateThing"));
+        assert!(emitted.contains("rfn CreateThing"));
+        assert!(emitted.contains("stock"));
+    }
+
+    #[test]
+    fn parse_adapt_path_step_fn() {
+        let src = r#"
+pkg P
+  omit CreateThing.step persist
+  ren Initiative.fn mark_vip mark_vip_client
+"#;
+        let tokens = lex(src);
+        let file = parse_file_with_registry(&tokens, ddd_registry()).expect("parse paths");
+        let veil_ir::VeilFile::Package(pkg) = file else {
+            panic!("expected package");
+        };
+        assert_eq!(pkg.patches.len(), 2);
+        if let veil_ir::AdaptPatch::Omit { path, .. } = &pkg.patches[0] {
+            assert_eq!(path.display(), "CreateThing.step persist");
+        } else {
+            panic!("omit");
+        }
+        if let veil_ir::AdaptPatch::Ren { path, new_name, .. } = &pkg.patches[1] {
+            assert_eq!(path.display(), "Initiative.fn mark_vip");
+            assert_eq!(new_name, "mark_vip_client");
+        } else {
+            panic!("ren");
+        }
     }
 }

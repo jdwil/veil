@@ -109,6 +109,7 @@ fn extract_target_from_label(label: &str) -> String {
 /// Render an expression as a human-readable display string.
 pub fn expr_to_display(expr: &Expr) -> String {
     match expr {
+        Expr::Stock => "stock".to_string(),
         Expr::Ident(name) => name.clone(),
         Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_display(base), field),
         Expr::Call(call) => {

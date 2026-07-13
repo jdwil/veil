@@ -314,6 +314,46 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Name in package / adapt contexts: plain idents, or keywords that are
+    /// also legal package/symbol names (`stock` as a package, etc.).
+    fn expect_name(&mut self) -> Result<String, ParseError> {
+        if self.at(&TokenKind::Ident) {
+            return Ok(self.advance().text);
+        }
+        // Allow adapt-family and common keywords as names when they appear as
+        // package or path segment names (e.g. `adapt stock`).
+        match self.peek_kind().clone() {
+            TokenKind::Stock
+            | TokenKind::Adapt
+            | TokenKind::Ins
+            | TokenKind::Rfn
+            | TokenKind::Rpl
+            | TokenKind::Omit
+            | TokenKind::Ren
+            | TokenKind::Link
+            | TokenKind::Lang
+            | TokenKind::Expose
+            | TokenKind::Flow
+            | TokenKind::Input
+            | TokenKind::Output
+            | TokenKind::Node
+            | TokenKind::Desc
+            | TokenKind::TypeKw
+            | TokenKind::ConstKw
+            | TokenKind::Mod
+            | TokenKind::Group
+            | TokenKind::Fn
+            | TokenKind::Trait
+            | TokenKind::Struct
+            | TokenKind::Enum
+            | TokenKind::Impl => Ok(self.advance().text),
+            _ => Err(self.error(format!(
+                "expected name, got {:?}",
+                self.peek_kind()
+            ))),
+        }
+    }
+
     /// Extract the text content from a string literal token (handles both
     /// single-quoted "..." and triple-quoted """...""" forms).
     fn extract_string_content(text: &str) -> String {
@@ -692,7 +732,7 @@ impl<'a> Parser<'a> {
         } else {
             self.expect(&TokenKind::Pkg)?;
         }
-        let name = self.expect_ident()?;
+        let name = self.expect_name()?;
 
         let version = if self.at(&TokenKind::Ident) {
             Some(self.advance().text)
@@ -703,6 +743,8 @@ impl<'a> Parser<'a> {
         let mut metadata = Vec::new();
         let mut uses = Vec::new();
         let mut links = Vec::new();
+        let mut adapts = Vec::new();
+        let mut patches = Vec::new();
         let mut items = Vec::new();
         let mut expose = None;
 
@@ -755,6 +797,24 @@ impl<'a> Parser<'a> {
                     }
                     TokenKind::Link => {
                         links.push(self.parse_link_decl()?);
+                    }
+                    TokenKind::Adapt => {
+                        adapts.push(self.parse_adapt_decl()?);
+                    }
+                    TokenKind::Ins => {
+                        patches.push(self.parse_adapt_ins()?);
+                    }
+                    TokenKind::Rfn => {
+                        patches.push(self.parse_adapt_rfn_or_rpl(true)?);
+                    }
+                    TokenKind::Rpl => {
+                        patches.push(self.parse_adapt_rfn_or_rpl(false)?);
+                    }
+                    TokenKind::Omit => {
+                        patches.push(self.parse_adapt_omit()?);
+                    }
+                    TokenKind::Ren => {
+                        patches.push(self.parse_adapt_ren()?);
                     }
                     TokenKind::Lang => {
                         items.push(TopLevelItem::Lang(self.parse_lang_block()?));
@@ -815,6 +875,8 @@ impl<'a> Parser<'a> {
             metadata,
             uses,
             links,
+            adapts,
+            patches,
             items,
             expose,
         })
@@ -881,6 +943,275 @@ impl<'a> Parser<'a> {
         Ok(UseImport {
             package_name,
             alias,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// `adapt wear_test` (package name may be a keyword e.g. `adapt stock`)
+    fn parse_adapt_decl(&mut self) -> Result<AdaptDecl, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Adapt)?;
+        let package_name = self.expect_name()?;
+        Ok(AdaptDecl {
+            package_name,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Adapt path: `Name`, `Name.step s`, `Name.fn f`, dotted nested names.
+    fn parse_adapt_path(&mut self) -> Result<AdaptPath, ParseError> {
+        let mut segments = Vec::new();
+        let name = self.expect_name()?;
+        segments.push(AdaptPathSeg::Name(name));
+        while self.at(&TokenKind::Dot) {
+            self.advance();
+            // `.fn name` — `fn` is a keyword token
+            if self.at(&TokenKind::Fn) {
+                self.advance();
+                let fname = self.expect_name()?;
+                segments.push(AdaptPathSeg::Fn(fname));
+                continue;
+            }
+            // `.step name` or bare nested name
+            if self.at(&TokenKind::Ident) {
+                let word = self.current().text.clone();
+                if word == "step" {
+                    self.advance();
+                    let sname = self.expect_name()?;
+                    segments.push(AdaptPathSeg::Step(sname));
+                } else {
+                    segments.push(AdaptPathSeg::Name(self.advance().text));
+                }
+                continue;
+            }
+            // bare keyword name after dot
+            if let Ok(n) = self.expect_name() {
+                segments.push(AdaptPathSeg::Name(n));
+                continue;
+            }
+            return Err(self.error(
+                "expected name, step, or fn after '.' in adapt path".into(),
+            ));
+        }
+        Ok(AdaptPath { segments })
+    }
+
+    /// Optional step position: `before x` / `after x` / `at start` / `at end`
+    fn parse_step_position(&mut self) -> Result<StepPosition, ParseError> {
+        if !self.at(&TokenKind::Ident) {
+            return Ok(StepPosition::AtEnd);
+        }
+        let word = self.current().text.clone();
+        match word.as_str() {
+            "before" => {
+                self.advance();
+                let n = self.expect_ident()?;
+                Ok(StepPosition::Before(n))
+            }
+            "after" => {
+                self.advance();
+                let n = self.expect_ident()?;
+                Ok(StepPosition::After(n))
+            }
+            "at" => {
+                self.advance();
+                let where_ = self.expect_ident()?;
+                match where_.as_str() {
+                    "start" => Ok(StepPosition::AtStart),
+                    "end" => Ok(StepPosition::AtEnd),
+                    other => Err(self.error(format!(
+                        "expected 'start' or 'end' after 'at', got '{other}'"
+                    ))),
+                }
+            }
+            _ => Ok(StepPosition::AtEnd),
+        }
+    }
+
+    /// `ins <path>` block: steps and/or fns / nested constructs.
+    fn parse_adapt_ins(&mut self) -> Result<AdaptPatch, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Ins)?;
+        let path = self.parse_adapt_path()?;
+        let mut items = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                if self.at_step_header() {
+                    // `step name [before|after|at …]` body
+                    let step_start = self.current().span;
+                    self.advance(); // step
+                    let name = if self.at(&TokenKind::Ident)
+                        && !matches!(
+                            self.current().text.as_str(),
+                            "before" | "after" | "at"
+                        ) {
+                        self.advance().text
+                    } else {
+                        String::new()
+                    };
+                    let position = self.parse_step_position()?;
+                    let mut body = Vec::new();
+                    if self.at_block_start() {
+                        self.enter_block()?;
+                        while !self.at_block_end() {
+                            self.skip_newlines();
+                            if self.at_block_end() {
+                                break;
+                            }
+                            match self.parse_expr() {
+                                Ok(e) => body.push(e),
+                                Err(_) => {
+                                    self.advance();
+                                }
+                            }
+                        }
+                        self.exit_block();
+                    }
+                    items.push(AdaptInsItem::Step {
+                        step: FlowStep::Step(StepDef {
+                            name,
+                            span: step_start.merge(self.current().span),
+                            body,
+                            refs: Vec::new(),
+                            sub_blocks: Vec::new(),
+                        }),
+                        position,
+                    });
+                    continue;
+                }
+                if self.at(&TokenKind::Fn) && self.is_free_function_header() {
+                    items.push(AdaptInsItem::Function(self.parse_fn_def()?));
+                    continue;
+                }
+                // Nested construct (e.g. method-like under aggregate)
+                if let Some(c) = self.parse_any_construct(Vec::new())? {
+                    // Prefer Function when it's a free-fn shape stored as construct? Keep Construct.
+                    items.push(AdaptInsItem::Construct(c));
+                    continue;
+                }
+                self.advance();
+            }
+            self.exit_block();
+        }
+        Ok(AdaptPatch::Ins {
+            path,
+            position: StepPosition::AtEnd,
+            items,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// `rfn <path>` / `rpl <path>` with step or expression body.
+    fn parse_adapt_rfn_or_rpl(&mut self, is_rfn: bool) -> Result<AdaptPatch, ParseError> {
+        let start_span = self.current().span;
+        if is_rfn {
+            self.expect(&TokenKind::Rfn)?;
+        } else {
+            self.expect(&TokenKind::Rpl)?;
+        }
+        let path = self.parse_adapt_path()?;
+        let mut steps = Vec::new();
+        let mut body = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                if self.at_step_header() {
+                    // Allow anonymous steps: `step` or `step name`
+                    let step_start = self.current().span;
+                    self.advance();
+                    let name = if self.at(&TokenKind::Ident) {
+                        // Don't consume keywords that start expressions oddly
+                        self.advance().text
+                    } else {
+                        String::new()
+                    };
+                    let mut step_body = Vec::new();
+                    if self.at_block_start() {
+                        self.enter_block()?;
+                        while !self.at_block_end() {
+                            self.skip_newlines();
+                            if self.at_block_end() {
+                                break;
+                            }
+                            match self.parse_expr() {
+                                Ok(e) => step_body.push(e),
+                                Err(_) => {
+                                    self.advance();
+                                }
+                            }
+                        }
+                        self.exit_block();
+                    }
+                    steps.push(FlowStep::Step(StepDef {
+                        name,
+                        span: step_start.merge(self.current().span),
+                        body: step_body,
+                        refs: Vec::new(),
+                        sub_blocks: Vec::new(),
+                    }));
+                    continue;
+                }
+                match self.parse_expr() {
+                    Ok(e) => body.push(e),
+                    Err(_) => {
+                        self.advance();
+                    }
+                }
+            }
+            self.exit_block();
+        }
+        let span = start_span.merge(self.current().span);
+        if is_rfn {
+            Ok(AdaptPatch::Rfn {
+                path,
+                steps,
+                body,
+                span,
+            })
+        } else {
+            Ok(AdaptPatch::Rpl {
+                path,
+                steps,
+                body,
+                span,
+            })
+        }
+    }
+
+    /// `omit <path>`
+    fn parse_adapt_omit(&mut self) -> Result<AdaptPatch, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Omit)?;
+        let path = self.parse_adapt_path()?;
+        Ok(AdaptPatch::Omit {
+            path,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// `ren <path> <new_name>` or `ren <path> as <new_name>`
+    fn parse_adapt_ren(&mut self) -> Result<AdaptPatch, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Ren)?;
+        let path = self.parse_adapt_path()?;
+        let new_name = if self.at(&TokenKind::As) {
+            self.advance();
+            self.expect_name()?
+        } else {
+            self.expect_name()?
+        };
+        Ok(AdaptPatch::Ren {
+            path,
+            new_name,
             span: start_span.merge(self.current().span),
         })
     }
@@ -2357,6 +2688,10 @@ impl<'a> Parser<'a> {
     /// (registry lookup on the leading ident) are parsed by statement shape.
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         match self.peek_kind().clone() {
+            TokenKind::Stock => {
+                self.advance();
+                return Ok(Expr::Stock);
+            }
             TokenKind::Call => return self.parse_call_stmt(),
             TokenKind::Match => return self.parse_match_expr(),
             TokenKind::For => return self.parse_for_loop(),

@@ -559,6 +559,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 format!("|{}| {{\n{}\n}}", p, stmts)
             }
         }
+        // Expanded by adapt merge before codegen — should never remain.
+        Expr::Stock => {
+            "/* error: stock not expanded */ ()".to_string()
+        }
     }
 }
 

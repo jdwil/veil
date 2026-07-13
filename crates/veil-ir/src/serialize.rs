@@ -194,7 +194,15 @@ impl Serializer {
         for link in &pkg.links {
             self.emit_link(link);
         }
-        if !pkg.uses.is_empty() || !pkg.links.is_empty() {
+        for a in &pkg.adapts {
+            self.line(&format!("adapt {}", a.package_name));
+        }
+        if !pkg.uses.is_empty() || !pkg.links.is_empty() || !pkg.adapts.is_empty() {
+            self.blank();
+        }
+
+        for patch in &pkg.patches {
+            self.emit_adapt_patch(patch);
             self.blank();
         }
 
@@ -205,6 +213,8 @@ impl Serializer {
                 || !pkg.metadata.is_empty()
                 || !pkg.uses.is_empty()
                 || !pkg.links.is_empty()
+                || !pkg.adapts.is_empty()
+                || !pkg.patches.is_empty()
             {
                 self.blank();
             }
@@ -212,6 +222,96 @@ impl Serializer {
         }
 
         self.dedent();
+    }
+
+    fn emit_adapt_patch(&mut self, patch: &AdaptPatch) {
+        match patch {
+            AdaptPatch::Ins {
+                path,
+                items,
+                ..
+            } => {
+                self.line(&format!("ins {}", path.display()));
+                self.indent();
+                for item in items {
+                    match item {
+                        AdaptInsItem::Step { step, position } => {
+                            if let FlowStep::Step(sd) = step {
+                                let mut head = if sd.name.is_empty() {
+                                    "step".to_string()
+                                } else {
+                                    format!("step {}", sd.name)
+                                };
+                                match position {
+                                    StepPosition::AtEnd => {}
+                                    StepPosition::AtStart => head.push_str(" at start"),
+                                    StepPosition::Before(n) => {
+                                        head.push_str(&format!(" before {n}"));
+                                    }
+                                    StepPosition::After(n) => {
+                                        head.push_str(&format!(" after {n}"));
+                                    }
+                                }
+                                self.line(&head);
+                                self.indent();
+                                for e in &sd.body {
+                                    self.line(&expr_to_veil(e));
+                                }
+                                self.dedent();
+                            }
+                        }
+                        AdaptInsItem::Function(f) => {
+                            self.emit_function(f);
+                        }
+                        AdaptInsItem::Construct(c) => {
+                            self.emit_construct(c);
+                        }
+                    }
+                }
+                self.dedent();
+            }
+            AdaptPatch::Rfn { path, steps, body, .. } => {
+                self.line(&format!("rfn {}", path.display()));
+                self.indent();
+                self.emit_adapt_body(steps, body);
+                self.dedent();
+            }
+            AdaptPatch::Rpl { path, steps, body, .. } => {
+                self.line(&format!("rpl {}", path.display()));
+                self.indent();
+                self.emit_adapt_body(steps, body);
+                self.dedent();
+            }
+            AdaptPatch::Omit { path, .. } => {
+                self.line(&format!("omit {}", path.display()));
+            }
+            AdaptPatch::Ren {
+                path, new_name, ..
+            } => {
+                self.line(&format!("ren {} {}", path.display(), new_name));
+            }
+        }
+    }
+
+    fn emit_adapt_body(&mut self, steps: &[FlowStep], body: &[Expr]) {
+        for st in steps {
+            if let FlowStep::Step(sd) = st {
+                let head = if sd.name.is_empty() {
+                    "step".to_string()
+                } else {
+                    format!("step {}", sd.name)
+                };
+                self.line(&head);
+                self.indent();
+                for e in &sd.body {
+                    self.line(&expr_to_veil(e));
+                }
+                self.dedent();
+            }
+        }
+        for e in body {
+            self.line(&expr_to_veil(e));
+        }
     }
 
     fn emit_composition(&mut self, comp: &Composition) {
@@ -414,6 +514,9 @@ impl Serializer {
                 }
                 for step in &c.steps {
                     self.emit_flow_step(step);
+                }
+                if let Some(rt) = &c.return_type {
+                    self.line(&format!("-> {}", type_to_veil(rt)));
                 }
                 if let Some(ret) = &c.return_expr {
                     self.line(&format!("ret {}", expr_to_veil(ret)));
@@ -777,6 +880,7 @@ fn annotation_to_veil(ann: &Annotation) -> String {
 
 fn expr_to_veil(expr: &Expr) -> String {
     match expr {
+        Expr::Stock => "stock".to_string(),
         Expr::Ident(name) => name.clone(),
         Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_veil(base), field),
         Expr::Call(call) => {

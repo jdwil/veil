@@ -96,6 +96,12 @@ agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target dem
 | **PVR-010 / 021–023 / 032** | `@main` host; gen UI primary; quarantine hand HTML | [140](140-pure-veil-runtime.md) |
 | **PVR-*** | Remaining product DoD polish | [140](140-pure-veil-runtime.md) |
 
+### P1 — package adapt (product lines)
+
+| ID | Theme | File |
+|----|--------|------|
+| **ADP-000–013** | `adapt` + path patches (`ins`/`rfn`/`rpl`/`omit`/`ren`) + flatten merge | [150](150-package-adapt.md) · [ADAPT.md](../docs/ADAPT.md) |
+
 ### P2 — trust & daily driver
 
 | ID | Theme | File |

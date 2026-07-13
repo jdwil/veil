@@ -336,6 +336,8 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
                 None => format!("const {} = {}", pat_str, val),
             }
         }
+        // Expanded by adapt merge before codegen — should never remain.
+        Expr::Stock => "/* error: stock not expanded */ undefined".to_string(),
     }
 }
 

@@ -31,8 +31,135 @@ pub struct Package {
     /// External Cargo crate links (`link veil_server path "..."`). CAP-001.
     #[serde(default)]
     pub links: Vec<LinkDecl>,
+    /// Stock packages this package specializes (`adapt wear_test`). ADP.
+    #[serde(default)]
+    pub adapts: Vec<AdaptDecl>,
+    /// Path patches applied after base merge (`ins`/`rfn`/`rpl`/`omit`/`ren`).
+    #[serde(default)]
+    pub patches: Vec<AdaptPatch>,
     pub items: Vec<TopLevelItem>,
     pub expose: Option<ExposeBlock>,
+}
+
+/// `adapt wear_test` — pull base package source into this compile unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptDecl {
+    pub package_name: String,
+    pub span: Span,
+}
+
+/// Path into merged IR: `CreateInitiative`, `CreateInitiative.step persist`, `Initiative.fn mark_vip`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdaptPath {
+    pub segments: Vec<AdaptPathSeg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AdaptPathSeg {
+    /// Bare name: service, construct, fn, …
+    Name(String),
+    /// `.step <name>`
+    Step(String),
+    /// `.fn <name>`
+    Fn(String),
+}
+
+impl AdaptPath {
+    pub fn from_name(name: &str) -> Self {
+        Self {
+            segments: vec![AdaptPathSeg::Name(name.into())],
+        }
+    }
+
+    pub fn display(&self) -> String {
+        let mut out = String::new();
+        for (i, s) in self.segments.iter().enumerate() {
+            match s {
+                AdaptPathSeg::Name(n) => {
+                    if i > 0 {
+                        out.push('.');
+                    }
+                    out.push_str(n);
+                }
+                AdaptPathSeg::Step(n) => {
+                    out.push_str(".step ");
+                    out.push_str(n);
+                }
+                AdaptPathSeg::Fn(n) => {
+                    out.push_str(".fn ");
+                    out.push_str(n);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Where to insert a new step relative to existing ones.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum StepPosition {
+    #[default]
+    AtEnd,
+    AtStart,
+    Before(String),
+    After(String),
+}
+
+/// One adapt patch in source order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AdaptPatch {
+    /// Insert members/steps into an existing construct or service.
+    Ins {
+        path: AdaptPath,
+        /// For step inserts: optional position.
+        #[serde(default)]
+        position: StepPosition,
+        /// Members to insert: steps (as FlowStep-like via Construct steps) or
+        /// nested constructs / methods carried as free Constructs / FnDefs.
+        items: Vec<AdaptInsItem>,
+        span: Span,
+    },
+    /// Refine body; may contain `stock` Expr.
+    Rfn {
+        path: AdaptPath,
+        /// New steps for svc/fn (FlowStep list) or raw exprs for free fn body.
+        steps: Vec<FlowStep>,
+        /// Free-function body when target is a free fn (optional alternative to steps).
+        #[serde(default)]
+        body: Vec<Expr>,
+        span: Span,
+    },
+    /// Replace body; stock illegal.
+    Rpl {
+        path: AdaptPath,
+        steps: Vec<FlowStep>,
+        #[serde(default)]
+        body: Vec<Expr>,
+        span: Span,
+    },
+    /// Remove symbol or step.
+    Omit { path: AdaptPath, span: Span },
+    /// Rename symbol; rewrite references in merged IR.
+    Ren {
+        path: AdaptPath,
+        new_name: String,
+        span: Span,
+    },
+}
+
+/// Content of an `ins` block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AdaptInsItem {
+    /// A flow step with optional insert position relative to existing steps.
+    Step {
+        step: FlowStep,
+        #[serde(default)]
+        position: StepPosition,
+    },
+    /// Nested construct (e.g. method-shaped construct under aggregate).
+    Construct(Construct),
+    /// Free method as FnDef (fn name on aggregate).
+    Function(FnDef),
 }
 
 /// Package metadata (author, desc, etc.)
@@ -476,6 +603,8 @@ pub struct Annotation {
 /// An expression. Only core language constructs — layer statements become `Action`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
+    /// Transpile-time prior body splice inside `rfn` (ADP-007). Never remains after merge.
+    Stock,
     /// Identifier reference
     Ident(String),
     /// Field access: expr.field

@@ -617,6 +617,7 @@ fn infer_expr(
         Expr::FloatLit(_) => Ty::Named("F64".into()),
         Expr::BoolLit(_) => Ty::Named("Bool".into()),
         Expr::Break | Expr::Continue => Ty::Unit,
+        Expr::Stock => Ty::Unit, // expanded before typecheck of merged IR
         Expr::Ident(name) => {
             if name == "self" {
                 return self_type
