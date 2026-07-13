@@ -86,6 +86,20 @@ pub enum TokenKind {
     Use,
     /// External Cargo crate linkage (CAP-001): `link veil_server path "..."`.
     Link,
+    /// Package adapt (ADP): specialize a stock package in this compile unit.
+    Adapt,
+    /// Insert sub-component into adapted symbol (`ins Initiative`).
+    Ins,
+    /// Refine body with optional `stock` splice (`rfn CreateX`).
+    Rfn,
+    /// Replace body entirely (`rpl ArchiveX`).
+    Rpl,
+    /// Remove base symbol from surface (`omit Legacy`).
+    Omit,
+    /// Rename base symbol (`ren ListX ListY`).
+    Ren,
+    /// Transpile-time prior body splice inside `rfn` only.
+    Stock,
     Lang,
     Expose,
     Node,
@@ -518,6 +532,13 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "pkg" => TokenKind::Pkg,
         "use" => TokenKind::Use,
         "link" => TokenKind::Link,
+        "adapt" => TokenKind::Adapt,
+        "ins" => TokenKind::Ins,
+        "rfn" => TokenKind::Rfn,
+        "rpl" => TokenKind::Rpl,
+        "omit" => TokenKind::Omit,
+        "ren" => TokenKind::Ren,
+        "stock" => TokenKind::Stock,
         "lang" => TokenKind::Lang,
         "expose" => TokenKind::Expose,
         "node" => TokenKind::Node,
