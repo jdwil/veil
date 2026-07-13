@@ -1,0 +1,31 @@
+# ADP-013 — stock product (ddd service) adapted by client.veil
+#   veil check examples/adapt/stock.veil
+#   veil check examples/adapt/client.veil
+#   veil gen examples/adapt/client.veil -t rust -o /tmp/adapt_out
+
+pkg stock
+  use ddd
+
+  ctx Catalog
+    group application
+      svc CreateThing
+        input
+          n: Int
+        step validate
+          guard n > 0, "n must be positive"
+        step persist
+          _ok = n
+        -> Int
+        ret n
+
+      svc ListThings
+        input
+          limit: Int
+        step go
+          _n = limit
+        -> Int
+        ret limit
+
+      svc LegacyDrop
+        step go
+          _n = 0

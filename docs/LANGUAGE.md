@@ -46,8 +46,10 @@ pkg CustomerOnboarding
   ctx Identity
     ...
 ```
-The body accepts `use`, `link`, `lang`, `type`, `const`, `flow`, `fn`, `allow`/`deny`,
-and any construct from the loaded layers.
+The body accepts `use`, `link`, `adapt`, `lang`, `type`, `const`, `flow`,
+`fn`, `allow`/`deny`, adapt patches (`ins`/`rfn`/`rpl`/`omit`/`ren`),
+`stock` (inside `rfn` only), and any construct from the loaded layers.
+See [`ADAPT.md`](ADAPT.md) for product specialization.
 
 ### `pkg` — Package
 A reusable, versioned unit: `pkg <Name> [<version>]`. Same body as `sol` plus
@@ -66,6 +68,29 @@ from `ddd.layer` (or `ddd.stub`) so its constructs become available. As the
 use ddd
 use billing as bill
 ```
+
+### `adapt` — Specialize a stock package (source merge)
+`adapt <package>` pulls another package’s **sources** into this compile unit and
+applies path patches (`ins` / `rfn` / `rpl` / `omit` / `ren`). Distinct from
+`use` (API / layer boundary). Multi-level chains fully flatten before check and
+codegen. `stock` splices the prior body inside `rfn` only.
+
+```
+pkg AcmeWearTest
+  use ddd
+  adapt wear_test
+  ren ListInitiatives ListPrograms
+  ins CreateInitiative
+    step acme_audit after persist
+      ret Ok
+  rfn CreateInitiative
+    step
+      init = stock
+      ret init
+```
+
+Canonical example: `examples/adapt/stock.veil` + `examples/adapt/client.veil`.
+Full contract: [`ADAPT.md`](ADAPT.md).
 
 ### `link` — External Cargo crate (CAP-001)
 `link <name> [path "…"] [features "a,b"]` declares a **path dependency** that
@@ -646,12 +671,14 @@ The definitive list of words the **lexer** reserves (everything else is an
 identifier / layer vocabulary):
 
 `struct` `enum` `fn` `trait` `let`* `mod` `if` `else` `match` `ret` `true`
-`false` `impl` `sol` `pkg` `use` `link` `lang` `expose` `node` `flow` `alt`* `loop`
+`false` `impl` `sol` `pkg` `use` `link` `adapt` `lang` `expose` `node` `flow` `alt`* `loop`
 `err` `call` `input` `fallback` `for` `while` `mut` `type` `const` `await`
 `break` `continue` `static` `boundary` `as` `desc` `output` `cst`
-`group` `allow` `deny` `export`
+`group` `allow` `deny` `export` `ins` `rfn` `rpl` `omit` `ren` `stock`
 
-`*` = reserved by the lexer but not wired into the parser; do not use.
+`*` = reserved by the lexer but not fully wired into the parser; do not use.
+
+Adapt family (`adapt`/`ins`/`rfn`/`rpl`/`omit`/`ren`/`stock`): see [`ADAPT.md`](ADAPT.md).
 
 ### Source of truth
 - Core token list: `crates/veil-parser/src/lexer.rs` — `keyword_lookup`.

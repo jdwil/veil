@@ -4,7 +4,7 @@
 (source merge + path patches), producing one flattened IR and one generated
 binary. Distinct from **`use`** (API dependency, possibly remote Bus).
 
-**Status:** Todo · P1  
+**Status:** Done · P1  
 **Design contract:** [`docs/ADAPT.md`](../docs/ADAPT.md)  
 **Depends on:** package parse/serialize ([20](20-serialize-edit.md)), check
 ([10](10-check-loop.md)), gen ([60](60-codegen-targets.md))  
@@ -334,17 +334,17 @@ confirm one `CreateInitiative`-equivalent body includes stock steps + client ste
 
 | ID | Title | Status |
 |----|--------|--------|
-| ADP-000 | Design locked in docs | Partial — ADAPT.md + stories; LANGUAGE index open |
-| ADP-001 | Lexer keywords | Todo |
-| ADP-002 | Parse adapt + resolve base | Todo |
-| ADP-003 | Chain / cycle / order | Todo |
-| ADP-004 | Path addressing | Todo |
-| ADP-005 | `ins` | Todo |
-| ADP-006 | `rpl` | Todo |
-| ADP-007 | `rfn` + `stock` inline | Todo |
-| ADP-008 | `omit` | Todo |
-| ADP-009 | `ren` | Todo |
-| ADP-010 | Merge + check | Todo |
-| ADP-011 | Gen flattened | Todo |
-| ADP-012 | Serialize + IDE | Todo |
-| ADP-013 | Example + LANGUAGE | Todo |
+| ADP-000 | Design locked in docs | **Done** |
+| ADP-001 | Lexer keywords | **Done** |
+| ADP-002 | Parse adapt + resolve base | **Done** |
+| ADP-003 | Chain / cycle / order | **Done** |
+| ADP-004 | Path addressing | **Done** |
+| ADP-005 | `ins` | **Done** |
+| ADP-006 | `rpl` | **Done** |
+| ADP-007 | `rfn` + `stock` inline | **Done** |
+| ADP-008 | `omit` | **Done** |
+| ADP-009 | `ren` | **Done** |
+| ADP-010 | Merge + check | **Done** |
+| ADP-011 | Gen flattened | **Done** |
+| ADP-012 | Serialize + IDE | **Done** |
+| ADP-013 | Example + LANGUAGE | **Done** |

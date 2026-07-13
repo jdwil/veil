@@ -1,0 +1,28 @@
+# ADP-013 — client adapts stock: ren, ins, rfn+stock, omit
+#   veil check examples/adapt/client.veil
+#   veil gen examples/adapt/client.veil -t rust -o /tmp/adapt_out
+
+pkg client
+  use ddd
+  adapt stock
+
+  ren ListThings ListPrograms
+
+  omit LegacyDrop
+
+  ins CreateThing
+    step audit after persist
+      _audited = n
+
+  rfn CreateThing
+    step wrap
+      init = stock
+      ret init
+
+  svc ClientReport
+    input
+      n: Int
+    step go
+      _x = n
+    -> Int
+    ret n
