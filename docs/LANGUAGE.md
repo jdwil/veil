@@ -103,6 +103,65 @@ When a package has `link veil_server` **and** `@main`, rust codegen emits a
 See `crates/veil-codegen/src/links.rs` and story CAP-001–007 in
 `stories/141-pure-runtime-capability-gaps.md`.
 
+### `adapt` — Specialize a stock package (planned)
+
+**Design:** [`docs/ADAPT.md`](ADAPT.md) · **Stories:** [`stories/150-package-adapt.md`](../stories/150-package-adapt.md)
+
+| Keyword | Role |
+|---------|------|
+| **`use`** | Depend on an API / layer boundary (may be remote Bus) — **not** source rewrite |
+| **`adapt`** | Pull another package’s **source** into this compile unit and specialize it |
+
+Patch ops (only on symbols that exist on the adapted base):
+
+| Op | Role |
+|----|------|
+| **`ins`** | Insert sub-components (method, step, …) into an existing construct |
+| **`rfn`** | Refine body; may splice **`stock`** (prior body inlined at transpile time) |
+| **`rpl`** | Replace body entirely (`stock` illegal) |
+| **`omit`** | Remove a base symbol or step from the product surface |
+| **`ren`** | Rename a base symbol; rewrite references in the merged IR |
+
+New top-level constructs need no special keyword — define them normally.
+
+**`stock`** is a transpile-time splice of the ancestor body (statement or
+expression form), not a runtime “super” call. Multi-level adapt fully flattens
+before codegen (one function body, no parent frames).
+
+```veil
+pkg AcmeWearTest
+  use ddd
+  use dlx_core
+  adapt wear_test
+
+  ren ListInitiatives ListPrograms
+
+  ins Initiative
+    fn mark_vip()
+      ...
+
+  ins CreateInitiative
+    step acme_audit after persist
+      ...
+
+  rfn CreateInitiative
+    step
+      init = stock
+    step
+      ret init
+
+  rpl ArchiveInitiative
+    step
+      ret Ok
+
+  omit SomeLegacyService
+
+  svc AcmeReport
+    ...
+```
+
+Platform packages (e.g. `dlx_core`) must not be adapted — only `use`d.
+
 ### `lang` — Glossary
 A block of `term: definition` lines documenting domain terms. Metadata only;
 does not affect codegen.
