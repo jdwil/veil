@@ -46,6 +46,9 @@ pub struct FileInfo {
     /// package | layer | stub
     #[serde(default)]
     pub kind: FileKind,
+    /// ADP-012: human-readable adapt chain badge, e.g. `wear_test → acme`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapts: Option<String>,
 }
 
 /// Abstraction over where .veil / .layer source lives.

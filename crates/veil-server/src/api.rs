@@ -174,7 +174,53 @@ type SharedProvider<P> = Arc<P>;
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 fn parse_source(source: &str, registry: &veil_ir::LayerRegistry) -> Result<veil_ir::Solution, String> {
+    parse_source_at(source, registry, None)
+}
+
+/// Parse package/solution; when `leaf_path` is set and the package has `adapt`/
+/// patches, flatten the adapt chain before returning a Solution (ADP-010/012).
+fn parse_source_at(
+    source: &str,
+    registry: &veil_ir::LayerRegistry,
+    leaf_path: Option<&std::path::Path>,
+) -> Result<veil_ir::Solution, String> {
     let tokens = veil_parser::lex(source);
+    if let Some(path) = leaf_path {
+        if let Ok(veil_ir::VeilFile::Package(pkg)) =
+            veil_parser::parse_file_with_registry(&tokens, registry.clone())
+        {
+            if !pkg.adapts.is_empty() || !pkg.patches.is_empty() {
+                let search = veil_ir::default_adapt_search_paths(path, &[]);
+                let load = |name: &str| -> Result<veil_ir::Package, String> {
+                    let p = veil_ir::find_package_source(name, &search)
+                        .ok_or_else(|| format!("adapt base '{name}' not found"))?;
+                    let src = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+                    let toks = veil_parser::lex(&src);
+                    let reg = veil_ir::LayerRegistry::for_veil_file(&p)
+                        .unwrap_or_else(|_| veil_ir::LayerRegistry::builtin());
+                    match veil_parser::parse_file_with_registry(&toks, reg) {
+                        Ok(veil_ir::VeilFile::Package(bp)) => Ok(bp),
+                        Ok(_) => Err(format!("'{name}' is not a package")),
+                        Err(errs) => Err(errs
+                            .iter()
+                            .map(|e| e.to_string())
+                            .collect::<Vec<_>>()
+                            .join("; ")),
+                    }
+                };
+                let merged = veil_ir::merge_adapted_package(&pkg, load)
+                    .map_err(|e| format!("{}: {}", e.code, e.message))?;
+                let emitted = veil_ir::serialize_package(&merged.package);
+                let toks = veil_parser::lex(&emitted);
+                return veil_parser::parse_with_registry(&toks, registry.clone()).map_err(|errs| {
+                    errs.iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                });
+            }
+        }
+    }
     veil_parser::parse_with_registry(&tokens, registry.clone())
         .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
 }
@@ -223,7 +269,12 @@ async fn get_ir<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> ax
             g
         }
         FileKind::Package => {
-            let sol = match parse_source(&source, &state.registry()) {
+            let leaf = active_file_path(state.as_ref()).await;
+            let sol = match parse_source_at(
+                &source,
+                &state.registry(),
+                leaf.as_deref(),
+            ) {
                 Ok(s) => s,
                 Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
             };
@@ -248,6 +299,14 @@ async fn layer_name_from_files<P: SourceProvider>(state: &P) -> String {
                 .unwrap_or_else(|| f.name.clone())
         })
         .unwrap_or_else(|| "layer".into())
+}
+
+async fn active_file_path<P: SourceProvider>(state: &P) -> Option<std::path::PathBuf> {
+    let files = state.list_files().await;
+    files
+        .into_iter()
+        .find(|f| f.active)
+        .map(|f| std::path::PathBuf::from(f.path))
 }
 
 async fn get_source<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {

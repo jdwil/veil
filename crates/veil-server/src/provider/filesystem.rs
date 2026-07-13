@@ -27,6 +27,25 @@ struct FileEntry {
     registry: Mutex<LayerRegistry>,
 }
 
+/// ADP-012: `Adapts: a → b` badge text from package source lines.
+fn adapts_badge_from_source(source: &str) -> Option<String> {
+    let mut bases = Vec::new();
+    for line in source.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("adapt ") {
+            let name = rest.split_whitespace().next().unwrap_or("").trim();
+            if !name.is_empty() {
+                bases.push(name.to_string());
+            }
+        }
+    }
+    if bases.is_empty() {
+        None
+    } else {
+        Some(bases.join(" → "))
+    }
+}
+
 fn registry_for_entry(path: &std::path::Path, source: &str) -> LayerRegistry {
     match FileKind::from_path(path) {
         FileKind::Layer => {
@@ -192,13 +211,17 @@ impl SourceProvider for FilesystemProvider {
         files
             .iter()
             .enumerate()
-            .map(|(i, entry)| FileInfo {
-                index: i,
-                name: entry.name.clone(),
-                path: entry.path.to_string_lossy().to_string(),
-                editable: entry.editable,
-                active: i == active_idx,
-                kind: entry.kind,
+            .map(|(i, entry)| {
+                let src = entry.source.lock().unwrap();
+                FileInfo {
+                    index: i,
+                    name: entry.name.clone(),
+                    path: entry.path.to_string_lossy().to_string(),
+                    editable: entry.editable,
+                    active: i == active_idx,
+                    kind: entry.kind,
+                    adapts: adapts_badge_from_source(&src),
+                }
             })
             .collect()
     }
@@ -395,13 +418,17 @@ impl SourceProvider for FilesystemProvider {
                         .unwrap_or(false)
                 })
             })
-            .map(|(i, e)| FileInfo {
-                index: i,
-                name: e.name.clone(),
-                path: e.path.to_string_lossy().to_string(),
-                editable: e.editable,
-                active: i == active_idx,
-                kind: e.kind,
+            .map(|(i, e)| {
+                let src = e.source.lock().unwrap();
+                FileInfo {
+                    index: i,
+                    name: e.name.clone(),
+                    path: e.path.to_string_lossy().to_string(),
+                    editable: e.editable,
+                    active: i == active_idx,
+                    kind: e.kind,
+                    adapts: adapts_badge_from_source(&src),
+                }
             })
             .collect()
     }

@@ -126,6 +126,7 @@ mod tests {
             editable: true,
             active,
             kind: crate::provider::FileKind::Package,
+            adapts: None,
         }
     }
 
