@@ -37,7 +37,8 @@ pub trait AgentHost: Send + Sync {
     ) -> Result<crate::file_ops::CreatedFile, String>;
     async fn select_file(&self, index: usize) -> Result<(), String>;
     async fn read_active_source(&self) -> Result<String, String>;
-    fn registry(&self) -> LayerRegistry;
+    /// Active file layer registry (async so multi-project can re-scope).
+    async fn registry(&self) -> LayerRegistry;
     async fn reload_from_disk(&self) -> Result<usize, String>;
 }
 
@@ -102,7 +103,7 @@ impl Workspace {
             return Err("no project host attached".into());
         };
         let src = host.read_active_source().await?;
-        let reg = host.registry();
+        let reg = host.registry().await;
         if let Ok(mut g) = self.source.lock() {
             *g = src;
         }

@@ -277,20 +277,36 @@ pub async fn run_turn<P: SourceProvider>(
             }
         }
 
+        // Multi-project name (if any) — re-enter task-local when tools run on
+        // other tasks (Rig / live writer) that lost CURRENT_PROJECT.
+        let project_name = crate::provider::hub::CURRENT_PROJECT
+            .try_with(|n| n.clone())
+            .ok();
+
         // Mid-turn live flush: each tool write hits SourceProvider immediately
         // (SSE revision events fire from write_source → IDE badge updates).
         let writer: Option<crate::rig_tools::LiveWriter> = if plan_only {
             None
         } else {
             let p = provider.clone();
+            let proj = project_name.clone();
             Some(std::sync::Arc::new(move |src: String| {
                 let p = p.clone();
+                let proj = proj.clone();
                 Box::pin(async move {
-                    // Refresh file list so create_file mid-turn is allowlisted.
-                    let files = p.list_files().await;
-                    let allow = crate::safety::allowlist_from_env(&files);
-                    crate::safety::check_write_allowed("", &allow, &files)?;
-                    p.write_source("", &src).await
+                    let write = async {
+                        let files = p.list_files().await;
+                        let allow = crate::safety::allowlist_from_env(&files);
+                        crate::safety::check_write_allowed("", &allow, &files)?;
+                        p.write_source("", &src).await
+                    };
+                    if let Some(name) = proj {
+                        crate::provider::hub::CURRENT_PROJECT
+                            .scope(name, write)
+                            .await
+                    } else {
+                        write.await
+                    }
                 })
             }))
         };
@@ -301,11 +317,32 @@ pub async fn run_turn<P: SourceProvider>(
         }
         // Host ops so agent tools can match IDE UI (create/list/select files).
         {
-            struct ProviderHost<P: crate::provider::SourceProvider>(std::sync::Arc<P>);
+            struct ProviderHost<P: crate::provider::SourceProvider> {
+                provider: std::sync::Arc<P>,
+                /// Multi-project name to re-scope if task-local is missing.
+                project: Option<String>,
+            }
+            impl<P: crate::provider::SourceProvider> ProviderHost<P> {
+                async fn with_scope<R, F, Fut>(&self, f: F) -> R
+                where
+                    F: FnOnce(std::sync::Arc<P>) -> Fut,
+                    Fut: std::future::Future<Output = R>,
+                {
+                    let p = self.provider.clone();
+                    if let Some(ref name) = self.project {
+                        crate::provider::hub::CURRENT_PROJECT
+                            .scope(name.clone(), f(p))
+                            .await
+                    } else {
+                        f(p).await
+                    }
+                }
+            }
             #[async_trait::async_trait]
             impl<P: crate::provider::SourceProvider> crate::rig_tools::AgentHost for ProviderHost<P> {
                 async fn list_files(&self) -> Vec<crate::provider::FileInfo> {
-                    self.0.list_files().await
+                    self.with_scope(|p| async move { p.list_files().await })
+                        .await
                 }
                 async fn create_file(
                     &self,
@@ -313,24 +350,45 @@ pub async fn run_turn<P: SourceProvider>(
                     kind: Option<&str>,
                     content: Option<String>,
                 ) -> Result<crate::file_ops::CreatedFile, String> {
-                    crate::file_ops::create_file_in_project(self.0.as_ref(), name, kind, content)
-                        .await
-                        .map_err(|e| e.message().to_string())
+                    let name = name.to_string();
+                    let kind = kind.map(|s| s.to_string());
+                    self.with_scope(|p| {
+                        let name = name.clone();
+                        let kind = kind.clone();
+                        let content = content.clone();
+                        async move {
+                            crate::file_ops::create_file_in_project(
+                                p.as_ref(),
+                                &name,
+                                kind.as_deref(),
+                                content,
+                            )
+                            .await
+                            .map_err(|e| e.message().to_string())
+                        }
+                    })
+                    .await
                 }
                 async fn select_file(&self, index: usize) -> Result<(), String> {
-                    self.0.set_active(index)
+                    self.with_scope(|p| async move { p.set_active(index) })
+                        .await
                 }
                 async fn read_active_source(&self) -> Result<String, String> {
-                    self.0.read_source("").await
+                    self.with_scope(|p| async move { p.read_source("").await })
+                        .await
                 }
-                fn registry(&self) -> veil_ir::LayerRegistry {
-                    self.0.registry()
+                async fn registry(&self) -> veil_ir::LayerRegistry {
+                    self.with_scope(|p| async move { p.registry() }).await
                 }
                 async fn reload_from_disk(&self) -> Result<usize, String> {
-                    self.0.reload_from_disk().await
+                    self.with_scope(|p| async move { p.reload_from_disk().await })
+                        .await
                 }
             }
-            ws = ws.with_host(std::sync::Arc::new(ProviderHost(provider.clone())));
+            ws = ws.with_host(std::sync::Arc::new(ProviderHost {
+                provider: provider.clone(),
+                project: project_name.clone(),
+            }));
         }
 
         match crate::model::prompt_with_tools(&cfg, &preamble, prompt, ws.clone()).await {

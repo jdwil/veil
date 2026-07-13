@@ -1184,8 +1184,17 @@ async fn post_agent_turn_stream<P: SourceProvider>(
     use std::time::Duration;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<(String, String)>(128);
+    // Multi-project: `CURRENT_PROJECT` is task-local and is NOT inherited by
+    // `tokio::spawn`. Capture and re-enter scope so agent tools (create_file,
+    // write_source, …) can resolve the session.
+    let project = CURRENT_PROJECT.try_with(|n| n.clone()).ok();
     tokio::spawn(async move {
-        crate::agent_stream::run_turn_stream(state, req, tx).await;
+        let fut = crate::agent_stream::run_turn_stream(state, req, tx);
+        if let Some(name) = project {
+            CURRENT_PROJECT.scope(name, fut).await;
+        } else {
+            fut.await;
+        }
     });
 
     let stream = unfold(rx, |mut rx| async move {
