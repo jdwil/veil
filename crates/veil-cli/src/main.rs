@@ -281,14 +281,97 @@ mod editable_tests {
 fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Solution, LayerRegistry) {
     let tokens = veil_parser::lex(source);
     let registry = registry_for(file);
-    match veil_parser::parse_with_registry(&tokens, registry.clone()) {
-        Ok(sol) => (sol, registry),
+    // Prefer full file parse so package `adapt` / patches are preserved for merge.
+    let veil_file = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
+        Ok(f) => f,
         Err(errors) => {
             eprintln!("Parse errors:");
             for err in &errors {
                 eprintln!("  {}", err);
             }
             std::process::exit(1);
+        }
+    };
+    match veil_file {
+        veil_ir::VeilFile::Package(pkg)
+            if !pkg.adapts.is_empty() || !pkg.patches.is_empty() =>
+        {
+            match merge_package_or_exit(&pkg, file) {
+                Ok(sol) => (sol, registry),
+                Err(()) => std::process::exit(1),
+            }
+        }
+        veil_ir::VeilFile::Package(_pkg) => {
+            // Lower package → solution + inject declarations (same as parse_with_registry).
+            match veil_parser::parse_with_registry(&tokens, registry.clone()) {
+                Ok(sol) => (sol, registry),
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors {
+                        eprintln!("  {}", err);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        veil_ir::VeilFile::Solution(_) | veil_ir::VeilFile::Composition(_) => {
+            match veil_parser::parse_with_registry(&tokens, registry.clone()) {
+                Ok(sol) => (sol, registry),
+                Err(errors) => {
+                    eprintln!("Parse errors:");
+                    for err in &errors {
+                        eprintln!("  {}", err);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+/// Load adapt bases and flatten to a Solution for check/codegen.
+fn merge_package_or_exit(
+    leaf: &veil_ir::Package,
+    leaf_path: &std::path::Path,
+) -> Result<veil_ir::Solution, ()> {
+    let search = veil_ir::default_adapt_search_paths(leaf_path, &[]);
+    let load = |name: &str| -> Result<veil_ir::Package, String> {
+        let path = veil_ir::find_package_source(name, &search)
+            .ok_or_else(|| format!("not found in {:?}", search))?;
+        let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let tokens = veil_parser::lex(&src);
+        let reg = veil_ir::LayerRegistry::for_veil_file(&path)
+            .unwrap_or_else(|_| veil_ir::LayerRegistry::builtin());
+        match veil_parser::parse_file_with_registry(&tokens, reg) {
+            Ok(veil_ir::VeilFile::Package(p)) => Ok(p),
+            Ok(_) => Err(format!("'{name}' is not a package")),
+            Err(errs) => Err(errs
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")),
+        }
+    };
+    match veil_ir::merge_adapted_package(leaf, load) {
+        Ok(merged) => {
+            if !merged.chain.is_empty() && merged.chain.len() > 1 {
+                eprintln!(
+                    "adapt chain: {}",
+                    merged.chain.join(" → ")
+                );
+            }
+            // Re-inject layer declarations on flattened IR via serialize → parse.
+            let registry = registry_for(leaf_path);
+            let emitted = veil_ir::serialize_package(&merged.package);
+            let tokens = veil_parser::lex(&emitted);
+            match veil_parser::parse_with_registry(&tokens, registry) {
+                Ok(s) => Ok(s),
+                Err(_) => Ok(veil_ir::package_as_solution(&merged.package)),
+            }
+        }
+        Err(e) => {
+            eprintln!("adapt error [{}]: {}", e.code, e.message);
+            Err(())
         }
     }
 }
@@ -894,27 +977,33 @@ fn main() {
                     }
                 }
                 veil_ir::ast::VeilFile::Package(pkg) => {
-                    // Convert Package to Solution for target codegen.
-                    // CAP-005: TypeScript uses full generate_ts (UI SPA + components),
-                    // not only expose→API client (that path is for library packages).
-                    let sol = veil_ir::ast::Solution {
-                        name: pkg.name.clone(),
-                        span: pkg.span,
-                        uses: pkg.uses.clone(),
-                        links: pkg.links.clone(),
-                        items: pkg.items.clone(),
-                        expose: pkg.expose.clone(),
+                    // ADP-010/011: adapt chain → flatten before codegen.
+                    let sol = if !pkg.adapts.is_empty() || !pkg.patches.is_empty() {
+                        match merge_package_or_exit(pkg, &file) {
+                            Ok(s) => s,
+                            Err(()) => std::process::exit(1),
+                        }
+                    } else {
+                        veil_ir::ast::Solution {
+                            name: pkg.name.clone(),
+                            span: pkg.span,
+                            uses: pkg.uses.clone(),
+                            links: pkg.links.clone(),
+                            items: pkg.items.clone(),
+                            expose: pkg.expose.clone(),
+                        }
                     };
                     match codegen_target {
                         veil_codegen::CodegenTarget::TypeScript => {
                             // Prefer full module/SPA gen; if package only has expose and
                             // no constructs, fall back to API client.
-                            let has_constructs = pkg.items.iter().any(|i| {
+                            let has_constructs = sol.items.iter().any(|i| {
                                 matches!(i, veil_ir::ast::TopLevelItem::Construct(_))
                             });
                             if has_constructs {
                                 veil_codegen::generate_for_target(&sol, &registry, codegen_target)
-                            } else if pkg.expose.is_some() {
+                            } else if sol.expose.is_some() {
+                                // API client from pre-merge package expose when no constructs
                                 let project =
                                     veil_codegen::typescript::generate_api_client_from_package(pkg);
                                 project
