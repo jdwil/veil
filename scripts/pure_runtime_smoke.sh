@@ -27,6 +27,18 @@ if [[ ! -f runtime/bootstrap/static/dist/spa.js ]]; then
   exit 1
 fi
 
+# PVR-032: no handwritten product shell at static root; host must not reference ide.html
+if [[ -f runtime/bootstrap/static/ide.html ]]; then
+  echo "PVR-032: static/ide.html must live under static/legacy/ only" >&2
+  exit 1
+fi
+# Fail if product host code still *loads* the old iframe shell path (string literal).
+if grep -R --include='*.rs' -nE '"[^"]*ide\.html"|'"'"'[^'"'"']*ide\.html'"'"'' \
+    crates/veil-server/src runtime/bootstrap/src 2>/dev/null; then
+  echo "PVR-032: host sources must not reference ide.html path literals" >&2
+  exit 1
+fi
+
 echo "==> start veil-runtime on :$PORT"
 "$BIN" &
 PID=$!

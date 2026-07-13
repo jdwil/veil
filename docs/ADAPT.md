@@ -1,6 +1,6 @@
 # Package adapt — product specialization (gold standard)
 
-**Status:** Implemented (ADP-001–013) · Stories: [`stories/150-package-adapt.md`](../stories/150-package-adapt.md)  
+**Status:** **Done** (ADP-000–013) · Stories: [`stories/150-package-adapt.md`](../stories/150-package-adapt.md)  
 **Related:** [`LANGUAGE.md`](LANGUAGE.md) (`use` / `link`), package expose, dual-loop IDE
 
 ---

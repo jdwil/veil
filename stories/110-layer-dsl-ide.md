@@ -374,11 +374,11 @@ so product teams assemble **programs** on top of platform packages.
 
 | Slice | Stories | Outcome |
 |-------|---------|---------|
-| **A — File kind MVP** | DSL-001 … DSL-004 | Open, edit, check, hot reload |
-| **B — Structure parity** | DSL-005 … DSL-008 | Outline/canvas, palette, props, honest ops |
-| **C — Language product** | DSL-009 … DSL-011 | Present/prompts, diff, agent |
-| **D — Ship to teams** | DSL-012 … DSL-014 | Consumer mode, scaffold, impact |
-| **E — Scale** | DSL-015 | Many-layer UX |
+| **A — File kind MVP** | DSL-001 … DSL-004 | **Done** |
+| **B — Structure parity** | DSL-005 … DSL-008 | **Done** |
+| **C — Language product** | DSL-009 … DSL-011 | **Done** |
+| **D — Ship to teams** | DSL-012 … DSL-014 | **Done** |
+| **E — Scale** | DSL-015 | **Done** |
 
 **Vertical slice for first PR:** A (001–004) on `layers/` + one product-family sample (e.g. extend `examples/wear_test.layer`).
 

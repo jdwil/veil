@@ -184,21 +184,17 @@ async fn spa_fallback(
 }
 
 fn serve_spa_html(st: &ShellState) -> axum::response::Response {
-    // Prefer SPA dist (CAP-005), then static/app, then legacy index.html
-    let candidates = [
-        st.static_dir.join("dist/index.html"),
-        st.static_dir.join("app/index.html"),
-        st.static_dir.join("index.html"),
-    ];
-    for path in &candidates {
-        if path.is_file() {
-            if let Ok(html) = std::fs::read_to_string(path) {
-                return Html(inject_viewer_url(html, &st.viewer_url)).into_response();
-            }
+    // PVR-032 / CAP-005: generated SPA only — never handwritten static root shells.
+    let path = st.static_dir.join("dist/index.html");
+    if path.is_file() {
+        if let Ok(html) = std::fs::read_to_string(&path) {
+            return Html(inject_viewer_url(html, &st.viewer_url)).into_response();
         }
     }
     Html(
-        "<h1>veil-runtime</h1><p>Missing shell — open <a href=\"/api/projects\">/api/projects</a></p>"
+        "<h1>veil-runtime</h1><p>Missing generated shell (<code>static/dist/index.html</code>). \
+         Run <code>make pure-runtime-build</code>. API: \
+         <a href=\"/api/projects\">/api/projects</a></p>"
             .to_string(),
     )
     .into_response()

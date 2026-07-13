@@ -43,7 +43,7 @@ New top-level constructs: **ordinary syntax** (no `add` keyword).
 
 ## Stories
 
-### ADP-000: Design locked in docs — Todo · P0
+### ADP-000: Design locked in docs — Done · P0
 
 **I want** the adapt contract written once so implementers don’t invent OOP  
 **So that** AI and humans share one gold standard
@@ -58,222 +58,222 @@ New top-level constructs: **ordinary syntax** (no `add` keyword).
 
 ---
 
-### ADP-001: Lexer + core keywords — Todo · P0
+### ADP-001: Lexer + core keywords — Done · P0
 
 **I want** the lexer to reserve adapt-related keywords  
 **So that** packages can parse patches
 
 **Acceptance**
 
-- [ ] Keywords (or unambiguous parse of): `adapt`, `ins`, `rfn`, `rpl`, `omit`, `ren`, `stock`
-- [ ] Not layer-only vocabulary — core package grammar
-- [ ] Lexer tests for keyword recognition
-- [ ] No collision with existing idents in examples (rename if needed)
+- [x] Keywords (or unambiguous parse of): `adapt`, `ins`, `rfn`, `rpl`, `omit`, `ren`, `stock`
+- [x] Not layer-only vocabulary — core package grammar
+- [x] Lexer tests for keyword recognition
+- [x] No collision with existing idents in examples (rename if needed)
 
 **Mission impact:** Surface syntax exists.
 
 ---
 
-### ADP-002: Parse `adapt` and resolve base package sources — Todo · P0
+### ADP-002: Parse `adapt` and resolve base package sources — Done · P0
 
 **I want** `adapt wear_test` to load the base package AST  
 **So that** specialization has a real base
 
 **Acceptance**
 
-- [ ] Package body accepts `adapt <name>` (optional `as` only if needed — default no)
-- [ ] Resolver finds base `.veil` package sources (search paths: same dir, project, hub, examples, config)
-- [ ] Error if base missing or is a layer/stub only
-- [ ] Error if adapting denylisted platform packages (`dlx_core` at minimum)
-- [ ] AST field e.g. `Package.adapts: Vec<AdaptDecl>`
-- [ ] Serialize/round-trip `adapt` lines
+- [x] Package body accepts `adapt <name>` (optional `as` only if needed — default no)
+- [x] Resolver finds base `.veil` package sources (search paths: same dir, project, hub, examples, config)
+- [x] Error if base missing or is a layer/stub only
+- [x] Error if adapting denylisted platform packages (`dlx_core` at minimum)
+- [x] AST field e.g. `Package.adapts: Vec<AdaptDecl>`
+- [x] Serialize/round-trip `adapt` lines
 
 **Mission impact:** Base product is loadable as source.
 
 ---
 
-### ADP-003: Adapt chain, cycles, multi-level order — Todo · P0
+### ADP-003: Adapt chain, cycles, multi-level order — Done · P0
 
 **I want** multi-level `adapt` (Acme → Regional → stock)  
 **So that** product lines compose without diamonds by default
 
 **Acceptance**
 
-- [ ] Build ordered chain root → leaf
-- [ ] Cycle → hard error with path
-- [ ] Diamond (two bases) → error **or** require explicit `adapt a, b order a then b` (document choice in ADAPT.md; implement one)
-- [ ] Unit tests: 3-level chain; cycle; forbidden platform adapt
+- [x] Build ordered chain root → leaf
+- [x] Cycle → hard error with path
+- [x] Diamond (two bases) → error **or** require explicit `adapt a, b order a then b` (document choice in ADAPT.md; implement one)
+- [x] Unit tests: 3-level chain; cycle; forbidden platform adapt
 
 **Mission impact:** Gold multi-level model, not single-level MVP.
 
 ---
 
-### ADP-004: Path addressing for patches — Todo · P0
+### ADP-004: Path addressing for patches — Done · P0
 
 **I want** patches to target `CreateInitiative.step persist` style paths  
 **So that** we don’t rewrite whole packages
 
 **Acceptance**
 
-- [ ] Path grammar: dotted / stepped (`X`, `X.fn y`, `X.step name`, extend as needed)
-- [ ] Resolve path against merged IR
-- [ ] Clear diagnostic when path missing
-- [ ] Tests for service, step, aggregate method paths
+- [x] Path grammar: dotted / stepped (`X`, `X.fn y`, `X.step name`, extend as needed)
+- [x] Resolve path against merged IR
+- [x] Clear diagnostic when path missing
+- [x] Tests for service, step, aggregate method paths
 
 **Mission impact:** Surgical specialization.
 
 ---
 
-### ADP-005: `ins` — insert sub-components — Todo · P0
+### ADP-005: `ins` — insert sub-components — Done · P0
 
 **I want** to insert methods and steps into existing base constructs  
 **So that** clients extend structure without forking
 
 **Acceptance**
 
-- [ ] `ins <path>` block body parses as construct members / steps
-- [ ] Step position: `before` / `after` / `at start` / `at end` (default end)
-- [ ] Insert method on aggregate from base
-- [ ] Insert step on service from base
-- [ ] New top-level `svc` / `agg` without `ins` still works (implicit add)
-- [ ] Round-trip serialize `ins`
+- [x] `ins <path>` block body parses as construct members / steps
+- [x] Step position: `before` / `after` / `at start` / `at end` (default end)
+- [x] Insert method on aggregate from base
+- [x] Insert step on service from base
+- [x] New top-level `svc` / `agg` without `ins` still works (implicit add)
+- [x] Round-trip serialize `ins`
 
 **Mission impact:** “Add a method to Initiative” without `add` keyword for types.
 
 ---
 
-### ADP-006: `rpl` — replace body — Todo · P0
+### ADP-006: `rpl` — replace body — Done · P0
 
 **I want** to fully replace a base service/fn body  
 **So that** clients can discard stock logic when needed
 
 **Acceptance**
 
-- [ ] `rpl <path>` replaces body of target
-- [ ] `stock` inside `rpl` → error
-- [ ] Signature (inputs/outputs) must match base for `svc`/`fn` (ADP-C8)
-- [ ] Tests: replace service; stock-in-rpl fails check
+- [x] `rpl <path>` replaces body of target
+- [x] `stock` inside `rpl` → error
+- [x] Signature (inputs/outputs) must match base for `svc`/`fn` (ADP-C8)
+- [x] Tests: replace service; stock-in-rpl fails check
 
 **Mission impact:** Full override without keep-base.
 
 ---
 
-### ADP-007: `rfn` + `stock` hygienic inline — Todo · P0
+### ADP-007: `rfn` + `stock` hygienic inline — Done · P0
 
 **I want** to refine a base body by splicing the prior implementation  
 **So that** clients wrap stock behavior without runtime `super`
 
 **Acceptance**
 
-- [ ] `rfn <path>` with body containing `stock` (statement and/or expression form)
-- [ ] `stock` expands to prior body AST; **no** residual stock after merge
-- [ ] Expression form: `x = stock` binds return / last value of prior body
-- [ ] Hygienic local rename on collision
-- [ ] Multi-level: outer `stock` sees already-inlined inner refine
-- [ ] Generated Rust for refined service is a **single** function (no parent call)
-- [ ] Tests: wrap CreateX; 3-level refine; hygiene collision
+- [x] `rfn <path>` with body containing `stock` (statement and/or expression form)
+- [x] `stock` expands to prior body AST; **no** residual stock after merge
+- [x] Expression form: `x = stock` binds return / last value of prior body
+- [x] Hygienic local rename on collision
+- [x] Multi-level: outer `stock` sees already-inlined inner refine
+- [x] Generated Rust for refined service is a **single** function (no parent call)
+- [x] Tests: wrap CreateX; 3-level refine; hygiene collision
 
 **Mission impact:** Gold-standard specialization without OOP call stack.
 
 ---
 
-### ADP-008: `omit` — remove base surface — Todo · P1
+### ADP-008: `omit` — remove base surface — Done · P1
 
 **I want** to drop base services/steps from a client product  
 **So that** legacy or unwanted stock features disappear
 
 **Acceptance**
 
-- [ ] `omit <path>` removes symbol or step
-- [ ] References to omitted symbol elsewhere in merge → error (or document auto-break)
-- [ ] Tests: omit service; omit step
+- [x] `omit <path>` removes symbol or step
+- [x] References to omitted symbol elsewhere in merge → error (or document auto-break)
+- [x] Tests: omit service; omit step
 
 **Mission impact:** Client product surface control.
 
 ---
 
-### ADP-009: `ren` — rename base symbol — Todo · P1
+### ADP-009: `ren` — rename base symbol — Done · P1
 
 **I want** to rename a base construct or service for branding or clarity  
 **So that** clients don’t fork whole files for naming
 
 **Acceptance**
 
-- [ ] `ren <path> <new_name>` (or `ren <path> as <new_name>` — pick one in grammar, document)
-- [ ] Updates definition and **internal references** in merged IR (same package merge)
-- [ ] Collision with existing name → error
-- [ ] Works with subsequent `rfn`/`ins` on **new** name (patches after ren use new path, or ren last — **define order: ren before other patches that target new name; document that ren is applied in source order**)
-- [ ] Expose/API rename if base had expose entry for that name
-- [ ] Serialize/round-trip
-- [ ] Tests: ren ListInitiatives → ListPrograms; rfn after ren; collision
+- [x] `ren <path> <new_name>` (or `ren <path> as <new_name>` — pick one in grammar, document)
+- [x] Updates definition and **internal references** in merged IR (same package merge)
+- [x] Collision with existing name → error
+- [x] Works with subsequent `rfn`/`ins` on **new** name (patches after ren use new path, or ren last — **define order: ren before other patches that target new name; document that ren is applied in source order**)
+- [x] Expose/API rename if base had expose entry for that name
+- [x] Serialize/round-trip
+- [x] Tests: ren ListInitiatives → ListPrograms; rfn after ren; collision
 
 **Mission impact:** Feature-complete naming for product lines (small, high leverage).
 
 ---
 
-### ADP-010: Merge pipeline + `veil check` on flattened IR — Todo · P0
+### ADP-010: Merge pipeline + `veil check` on flattened IR — Done · P0
 
 **I want** check to run on the fully merged package  
 **So that** adapters can’t ship broken merges
 
 **Acceptance**
 
-- [ ] Library API: `merge_adapted_package(leaf) -> Solution` (name flexible)
-- [ ] `veil check acme.veil` loads adapt chain and checks merge
-- [ ] Diagnostics cite leaf patch spans when possible
-- [ ] Provenance available for tooling (symbol → [packages])
-- [ ] Fixture package under `examples/adapt_*/` or `examples/acme_adapt/`
+- [x] Library API: `merge_adapted_package(leaf) -> Solution` (name flexible)
+- [x] `veil check acme.veil` loads adapt chain and checks merge
+- [x] Diagnostics cite leaf patch spans when possible
+- [x] Provenance available for tooling (symbol → [packages])
+- [x] Fixture package under `examples/adapt_*/` or `examples/acme_adapt/`
 
 **Mission impact:** Machine loop trusted on adapted products.
 
 ---
 
-### ADP-011: Codegen from merged IR only — Todo · P0
+### ADP-011: Codegen from merged IR only — Done · P0
 
 **I want** `veil gen` to emit one workspace from the flattened IR  
 **So that** runtime has no adapt machinery
 
 **Acceptance**
 
-- [ ] `veil gen` adapter package → same backends as today on merged Solution
-- [ ] No generated “call parent package” helpers for `stock`
-- [ ] Integration: gen + `cargo check` on adapt fixture (Rust target)
-- [ ] Manifest/handler names reflect `ren` results
+- [x] `veil gen` adapter package → same backends as today on merged Solution
+- [x] No generated “call parent package” helpers for `stock`
+- [x] Integration: gen + `cargo check` on adapt fixture (Rust target)
+- [x] Manifest/handler names reflect `ren` results
 
 **Mission impact:** Transpiler-faithful deploy.
 
 ---
 
-### ADP-012: Serialize, edit ops, IDE dual-loop — Todo · P1
+### ADP-012: Serialize, edit ops, IDE dual-loop — Done · P1
 
 **I want** the dual-loop IDE to show and edit adapt packages  
 **So that** humans review specialization structurally
 
 **Acceptance**
 
-- [ ] Serialize all adapt syntax (canonical form)
-- [ ] EditOps or source edit for patches (minimum: source dock + reload)
-- [ ] IDE: badge or project meta “Adapts: a → b → this”
-- [ ] Optional: flattened source preview (read-only) — gold; may ship after graph badge
-- [ ] Palette/IR: adapted symbols appear in graph after merge (when viewing leaf as product)
-- [ ] Agent tools: reload after external edit still works ([files/reload](../crates/veil-server/src/api.rs))
+- [x] Serialize all adapt syntax (canonical form)
+- [x] EditOps or source edit for patches (minimum: source dock + reload)
+- [x] IDE: badge or project meta “Adapts: a → b → this”
+- [x] Optional: flattened source preview (read-only) — gold; may ship after graph badge
+- [x] Palette/IR: adapted symbols appear in graph after merge (when viewing leaf as product)
+- [x] Agent tools: reload after external edit still works ([files/reload](../crates/veil-server/src/api.rs))
 
 **Mission impact:** Human loop for product lines.
 
 ---
 
-### ADP-013: Docs + example product line — Todo · P1
+### ADP-013: Docs + example product line — Done · P1
 
 **I want** a canonical example and language reference  
 **So that** Wear Test / ACME stories have a template
 
 **Acceptance**
 
-- [ ] `examples/adapt_stock.veil` + `examples/adapt_client.veil` (or under `examples/adapt/`)
-- [ ] Client: `adapt stock`, `ren`, `ins` step or method, `rfn` with `stock`, optional `omit`
-- [ ] `docs/LANGUAGE.md` section for adapt ops
-- [ ] Cross-link from wear-test / engagement design notes when those exist
-- [ ] `veil check` + `veil gen -t rust` green on example
+- [x] `examples/adapt_stock.veil` + `examples/adapt_client.veil` (or under `examples/adapt/`)
+- [x] Client: `adapt stock`, `ren`, `ins` step or method, `rfn` with `stock`, optional `omit`
+- [x] `docs/LANGUAGE.md` section for adapt ops
+- [x] Cross-link from wear-test / engagement design notes when those exist
+- [x] `veil check` + `veil gen -t rust` green on example
 
 **Mission impact:** Teachable gold standard.
 

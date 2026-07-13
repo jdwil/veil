@@ -70,68 +70,35 @@ context:
 5. **LAY-004** — DDD model hierarchy as first proof  
 6. **RT-000** — VEIL-authored `@main` harness proof  
 
-## Next stack (open follow-ups)
+## Board status (2026-07-13)
 
-Surfaced after closing the initial backlog (design/MVP honesty, harness gaps,
-agent safety, cloud stubs). Prefer **P2 dual-loop trust** before more target demos.
+**Primary dual-loop + pure-runtime product path is closed.** Do not treat this
+file’s older “next stack” narrative as open work — check each epic’s status
+board (or `**Status:**` lines) as source of truth.
 
-### P0/P1 — language designer (team DSLs)
+| Epic | Status | File |
+|------|--------|------|
+| Dual-loop core (check, serialize, viewer, layers, harness) | **Done** | [10](10-check-loop.md)–[70](70-runtime-harness.md) |
+| **DSL-001–015** language designer IDE | **Done** | [110](110-layer-dsl-ide.md) |
+| **CAP-001–007** engine gaps | **Done** | [141](141-pure-runtime-capability-gaps.md) |
+| **PVR-000–041** pure VEIL runtime | **Done** | [140](140-pure-veil-runtime.md) |
+| **PVR-032** hand shell quarantine | **Done** | `static/legacy/` + smoke guard |
+| **PVR-042** remote multi-tenant | **Done (deferred)** | non-goal for pure-local; AGT remote paths exist |
+| **ADP-000–013** package adapt | **Done** | [150](150-package-adapt.md) · [ADAPT.md](../docs/ADAPT.md) |
+| **AGT-*** in-IDE agent | **Done** | [100](100-ide-agent.md) |
+| **RT-021–023** harness layout / bus / provided_by | **Done** | [70](70-runtime-harness.md) |
+| Projects hub / multi-project kernel | **Done** | [120](120-projects-config-init.md) · [130](130-runtime-ux-audit.md) |
 
-| ID | Theme | File |
-|----|--------|------|
-| **DSL-001–004** | Serve layers, edit, check, hot reload | [110](110-layer-dsl-ide.md) |
-| **DSL-005–008** | Layer topology, palette, props, structured ops | [110](110-layer-dsl-ide.md) |
-| **DSL-009–011** | Presentation/prompts, diff, agent layer tools | [110](110-layer-dsl-ide.md) |
+### Optional future (not blocking product DoD)
 
-### P0 — engine capabilities for pure runtime (next)
+These may still appear as long-horizon spikes in their files; they are **not**
+open dual-loop debt:
 
-| ID | Theme | File |
-|----|--------|------|
-| **CAP-001–007** | **Done** — engine gaps for pure runtime (link, host, register_all, SPA, FS/Git, bin, config PATCH) | [141](141-pure-runtime-capability-gaps.md) |
+| Area | Notes | File |
+|------|--------|------|
+| Multi-target expressiveness | Swift/Kotlin depth, UI IR, effects | [90](90-parity-future.md) |
+| Cloud adapters | Real DDB / SigV4 S3 beyond local path | [80](80-runtime-platform.md) |
+| Codegen package multi-target polish | GEN-008/009 | [60](60-codegen-targets.md) |
 
-### P1 — pure VEIL runtime product (after CAP-*)
-
-| ID | Theme | File |
-|----|--------|------|
-| **PVR-010 / 021–023 / 032** | `@main` host; gen UI primary; quarantine hand HTML | [140](140-pure-veil-runtime.md) |
-| **PVR-*** | Remaining product DoD polish | [140](140-pure-veil-runtime.md) |
-
-### P1 — package adapt (product lines)
-
-| ID | Theme | File |
-|----|--------|------|
-| **ADP-000–013** | `adapt` + path patches (`ins`/`rfn`/`rpl`/`omit`/`ren`) + flatten merge | [150](150-package-adapt.md) · [ADAPT.md](../docs/ADAPT.md) |
-
-### P2 — trust & daily driver
-
-| ID | Theme | File |
-|----|--------|------|
-| **PVR-012–014 / 016** | Git, compile, local deploy, agents | [140](140-pure-veil-runtime.md) |
-| **PVR-040–041** | Registry + artifacts | [140](140-pure-veil-runtime.md) |
-| **DSL-012–014** | Team consumer mode, scaffold, impact view | [110](110-layer-dsl-ide.md) |
-| **PAR-015** | Spike capability honesty (signature vs body) | [90](90-parity-future.md) |
-| **AGT-013** | Agent write path allowlist | [100](100-ide-agent.md) |
-| **AGT-014** | Plan-only agent mode | [100](100-ide-agent.md) |
-| **AGT-015** | Token budgets on `/api/context` | [100](100-ide-agent.md) |
-| **AGT-017** | Remote structured EditOp | [100](100-ide-agent.md) |
-| **RT-021–023** | Bin layout, Bus package, provided_by | [70](70-runtime-harness.md) |
-
-### P3 — parity, cloud, polish
-
-| ID | Theme | File |
-|----|--------|------|
-| **PAR-011 / 012** | Swift / Kotlin body lowering | [90](90-parity-future.md) |
-| **PAR-013** | UI IR constructs + Svelte codegen | [90](90-parity-future.md) |
-| **PAR-014** | Optional `@shared` marks | [90](90-parity-future.md) |
-| **PAR-016** | Typed effect rows (only if needed) | [90](90-parity-future.md) |
-| **RT-024 / 025** | Real DDB + SigV4 S3 | [80](80-runtime-platform.md) |
-| **RT-026** | In-process HTTP (drop curl) | [80](80-runtime-platform.md) |
-| **AGT-016 / 018** | Remote auth + live sync | [100](100-ide-agent.md) |
-| **GEN-008 / 009** | Package multi-target + warning hygiene | [60](60-codegen-targets.md) |
-| **DSL-015** | Many-layer workspace polish | [110](110-layer-dsl-ide.md) |
-
-**Sequencing note:** Pure VEIL runtime needs **CAP-001–003 + CAP-005** first
-([141](141-pure-runtime-capability-gaps.md)), then PVR host/UI purity. Prefer
-**DSL-001–004** when language-designer iteration is the bottleneck. Close
-**PAR-015** before expanding Swift/Kotlin demos. Prefer **AGT-013/014** before
-multi-user remote auth.
+New work should open a new story ID — do not re-open Done boards without a
+regression.

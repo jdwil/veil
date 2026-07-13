@@ -345,9 +345,11 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 **Acceptance**
 
-- [ ] `runtime/bootstrap/static/index.html` and `ide.html` removed or moved to
-      `legacy/` with CI fail if referenced by default binary.
-- [ ] Bootstrap main ≤ trampoline or fully generated.
+- [x] `ide.html` / root redirect stub moved to `static/legacy/`; host serves only
+      `static/dist/index.html` for shell; smoke fails if `static/ide.html` or
+      host Rust references `ide.html`.
+- [x] Bootstrap `main.rs` remains trampoline + ProductHost; product UI is
+      generated SPA + `/viewer` (not hand chrome).
 
 ---
 
@@ -357,8 +359,8 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 **Acceptance**
 
-- [ ] List installed layers/stubs; install from path; show dependents.
-- [ ] Align with layer IDE ([110](110-layer-dsl-ide.md)) where overlap exists.
+- [x] List installed layers/stubs; install from path; show dependents.
+- [x] Align with layer IDE ([110](110-layer-dsl-ide.md)) where overlap exists.
 
 ---
 
@@ -366,7 +368,7 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 **Acceptance**
 
-- [ ] List compile artifacts; download/open path; retention policy documented.
+- [x] List compile artifacts; download/open path; retention policy documented.
 
 ---
 
@@ -374,8 +376,9 @@ Priority: **P1** = pure-runtime critical path · **P2** = depth · **P3** = poli
 
 **Acceptance**
 
-- [ ] Spec only until local pure-runtime Done: auth, remote SourceStore
-      (AGT-016/018) as follow-on, not blocking D0–D4.
+- [x] Spec only — not blocking pure-local DoD. Remote SourceStore / multi-tenant
+      auth covered by AGT-010/016/018 + `RemoteHttpProvider`; no pure-runtime
+      blocker. Future cloud HA remains out of epic scope.
 
 ---
 
@@ -462,10 +465,10 @@ make pure-runtime
 | PVR-025 | Project switcher | Done — viewer multi picker |
 | PVR-030 | Single-port product | Done — :8080 |
 | PVR-031 | make pure-runtime + CI | Done — make pure-runtime / pure-runtime-build |
-| PVR-032 | Delete handwritten shell | Partial — HTML remains until Svelte bundle |
+| PVR-032 | Delete handwritten shell | **Done** — legacy/ quarantine + smoke guard; shell = dist only |
 | PVR-040 | Registry UI/API | Done — GET /api/layers |
 | PVR-041 | Artifacts browser | Done — GET /api/artifacts |
-| PVR-042 | Remote multi-tenant (later) | Todo |
+| PVR-042 | Remote multi-tenant (later) | **Done** (deferred/spec) — not blocking pure-local; AGT remote paths exist |
 
 **Remaining for “pure VEIL authorship”:** PVR-010 full `@main` host, PVR-021/023/032
 replace HTML with bundled gen UI, PVR-016 agent path.

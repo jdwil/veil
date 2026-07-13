@@ -1,12 +1,21 @@
 # Quarantined handwritten shell (PVR-032)
 
-Handwritten product HTML used to live as the primary runtime shell.
-**Do not use as the product UI.** Author `runtime/src/runtime-ui.veil` instead.
+**Not served by the default product host.** Do not reintroduce these as
+primary UI.
 
-Primary path after `make pure-runtime-build`:
+| File | Former role |
+|------|-------------|
+| `ide.html` | Iframe chrome around dual-loop viewer |
+| `index.redirect.html` | Meta-refresh stub |
 
-- `../dist/index.html` + `../dist/spa.js` (generated, CAP-005)
-- Host: `veil_server::ProductHost` serves `dist/` at `GET /`
+## Primary path (required)
 
-`ide.html` remains for iframe embed of the dual-loop viewer until the viewer
-is fully same-origin bundled.
+After `make pure-runtime-build`:
+
+- `../dist/index.html` + `../dist/spa.js` — generated from `runtime/src/runtime-ui.veil`
+- `../viewer/` — built `veil-viewer` at `/viewer`
+- IDE open: **redirect** to `/viewer/?project=…` (not iframe)
+
+`ProductHost` serves **only** `dist/index.html` for `GET /` and SPA fallbacks.
+CI / `scripts/pure_runtime_smoke.sh` fails if `static/ide.html` reappears at the
+static root or if Rust host sources reference `ide.html`.
