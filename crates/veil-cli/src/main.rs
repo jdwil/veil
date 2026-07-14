@@ -335,6 +335,9 @@ fn merge_package_or_exit(
     leaf_path: &std::path::Path,
 ) -> Result<veil_ir::Solution, ()> {
     let search = veil_ir::default_adapt_search_paths(leaf_path, &[]);
+    // Unified use resolution: inject implicit adapts for uses with companion .veil.
+    let mut leaf = leaf.clone();
+    veil_ir::inject_implicit_adapts(&mut leaf, &search);
     let load = |name: &str| -> Result<veil_ir::Package, String> {
         let path = veil_ir::find_package_source(name, &search)
             .ok_or_else(|| format!("not found in {:?}", search))?;
@@ -352,7 +355,7 @@ fn merge_package_or_exit(
                 .join("; ")),
         }
     };
-    match veil_ir::merge_adapted_package(leaf, load) {
+    match veil_ir::merge_adapted_package(&leaf, load) {
         Ok(merged) => {
             if !merged.chain.is_empty() && merged.chain.len() > 1 {
                 eprintln!(
@@ -466,6 +469,7 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
     // Collect structs and their impl items
     let mut struct_ids: Vec<(String, String)> = Vec::new(); // (id, name)
     let mut struct_impls: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new(); // name → method signatures
+    let mut enum_defs: Vec<(String, Vec<String>)> = Vec::new(); // (name, variants)
 
     for (id, item) in index {
         let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -519,12 +523,116 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
                 }
             }
         }
+
+        // Collect public enums with their variants
+        if inner.contains_key("enum") {
+            if let Some(enum_data) = inner.get("enum").and_then(|v| v.as_object()) {
+                let mut variants = Vec::new();
+                if let Some(variant_ids) = enum_data.get("variants").and_then(|v| v.as_array()) {
+                    for vid in variant_ids {
+                        let vid_str = vid.as_u64().map(|n| n.to_string())
+                            .or_else(|| vid.as_str().map(|s| s.to_string()));
+                        if let Some(vid_str) = vid_str {
+                            if let Some(variant_item) = index.get(&vid_str) {
+                                let vname = variant_item.get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Unknown");
+                                // Check variant kind: unit, tuple, or struct
+                                if let Some(v_inner) = variant_item.get("inner")
+                                    .and_then(|v| v.as_object())
+                                    .and_then(|o| o.get("variant"))
+                                    .and_then(|v| v.as_object())
+                                {
+                                    if let Some(kind) = v_inner.get("kind") {
+                                        if let Some(tuple_fields) = kind.get("tuple").and_then(|v| v.as_array()) {
+                                            let types: Vec<String> = tuple_fields.iter().filter_map(|f| {
+                                                let fid = f.as_u64().map(|n| n.to_string())
+                                                    .or_else(|| f.as_str().map(|s| s.to_string()))?;
+                                                let field_item = index.get(&fid)?;
+                                                let field_inner = field_item.get("inner")?
+                                                    .as_object()?
+                                                    .get("struct_field")?;
+                                                Some(rustdoc_type_to_veil(field_inner))
+                                            }).collect();
+                                            if types.is_empty() {
+                                                variants.push(vname.to_string());
+                                            } else {
+                                                variants.push(format!("{}({})", vname, types.join(", ")));
+                                            }
+                                        } else {
+                                            variants.push(vname.to_string());
+                                        }
+                                    } else {
+                                        variants.push(vname.to_string());
+                                    }
+                                } else {
+                                    variants.push(vname.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                if !variants.is_empty() {
+                    enum_defs.push((name.to_string(), variants));
+                }
+                // Also collect impls on this enum
+                if let Some(impls) = enum_data.get("impls").and_then(|v| v.as_array()) {
+                    for impl_id in impls {
+                        let impl_id_str = impl_id.as_u64().map(|n| n.to_string())
+                            .or_else(|| impl_id.as_str().map(|s| s.to_string()));
+                        if let Some(impl_id_str) = impl_id_str {
+                            if let Some(impl_item) = index.get(&impl_id_str) {
+                                if let Some(impl_inner) = impl_item.get("inner")
+                                    .and_then(|v| v.as_object())
+                                    .and_then(|o| o.get("impl"))
+                                    .and_then(|v| v.as_object())
+                                {
+                                    if impl_inner.get("trait_").is_some() { continue; }
+                                    if let Some(items) = impl_inner.get("items").and_then(|v| v.as_array()) {
+                                        for method_id in items {
+                                            let method_id_str = method_id.as_u64().map(|n| n.to_string())
+                                                .or_else(|| method_id.as_str().map(|s| s.to_string()));
+                                            if let Some(mid) = method_id_str {
+                                                if let Some(method) = index.get(&mid) {
+                                                    let method_vis = method.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
+                                                    if method_vis != "public" { continue; }
+                                                    if let Some(sig) = extract_method_sig(method) {
+                                                        struct_impls.entry(name.to_string())
+                                                            .or_default()
+                                                            .push(sig);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Emit structs with their methods
     for (_, name) in &struct_ids {
         out.push_str(&format!("\n  struct {}\n", name));
         if let Some(methods) = struct_impls.get(name) {
+            for sig in methods {
+                out.push_str(&format!("    {}\n", sig));
+            }
+        }
+    }
+
+    // Emit enums with their variants and methods
+    for (name, variants) in &enum_defs {
+        out.push_str(&format!("\n  enum {}\n", name));
+        for v in variants {
+            out.push_str(&format!("    {}\n", v));
+        }
+        // Enum methods (from impl blocks)
+        if let Some(methods) = struct_impls.get(name) {
+            out.push('\n');
             for sig in methods {
                 out.push_str(&format!("    {}\n", sig));
             }

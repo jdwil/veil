@@ -271,6 +271,66 @@ pub fn merge_adapt_chain(chain: &[Package]) -> Result<MergeResult, AdaptError> {
     })
 }
 
+/// Unified `use` resolution: if a `use X` has a companion `.veil` file alongside
+/// the resolved `.layer`, implicitly add `adapt X` (source merge).
+///
+/// This enables the pattern where `use engagement` loads both `engagement.layer`
+/// (vocabulary) and implicitly adapts `engagement.veil` (stock domain logic).
+///
+/// Does NOT add a duplicate if the user already explicitly wrote `adapt X`.
+pub fn inject_implicit_adapts(pkg: &mut Package, search_paths: &[PathBuf]) {
+    let explicit_adapts: HashSet<String> = pkg
+        .adapts
+        .iter()
+        .map(|a| a.package_name.clone())
+        .collect();
+
+    // The package's own name — never self-adapt.
+    let self_name = &pkg.name;
+
+    for u in &pkg.uses {
+        let name = &u.package_name;
+        // Skip if this IS the current package (would cause a cycle).
+        if name == self_name || name.eq_ignore_ascii_case(self_name) {
+            continue;
+        }
+        // Skip if already explicitly adapted, or on the deny list.
+        if explicit_adapts.contains(name) || is_adapt_denied(name) {
+            continue;
+        }
+        // Check if a companion .veil file exists.
+        if let Some(veil_path) = find_package_source(name, search_paths) {
+            // Skip self-reference: if the found .veil is the current package's
+            // own file (same directory, stem matches the use name).
+            if let Some(pkg_dir) = search_paths.first() {
+                if veil_path.parent() == Some(pkg_dir.as_path()) {
+                    let found_stem = veil_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    if found_stem == name {
+                        // Same directory, same stem as the use target — this
+                        // IS the current file. Don't self-adapt.
+                        continue;
+                    }
+                }
+            }
+            // Only inject if a .layer was actually loaded (don't auto-adapt
+            // packages that are purely `use`d for their expose/Bus API).
+            let has_layer = search_paths.iter().any(|dir| {
+                dir.join(format!("{name}.layer")).is_file()
+                    || dir.join("layers").join(format!("{name}.layer")).is_file()
+            });
+            if has_layer {
+                pkg.adapts.push(AdaptDecl {
+                    package_name: name.clone(),
+                    span: u.span,
+                });
+            }
+        }
+    }
+}
+
 /// High-level: load chain from leaf + loader, then merge.
 pub fn merge_adapted_package(
     leaf: &Package,

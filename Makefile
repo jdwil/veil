@@ -49,7 +49,8 @@ VEIL_MODEL_NAME     ?=
 # ACP / Kiro (spawned by veil-server on agent turns when provider=acp)
 VEIL_ACP_COMMAND    ?= kiro-cli
 VEIL_ACP_ARGS       ?= acp --trust-all-tools
-VEIL_ACP_CWD        ?= $(CURDIR)
+# ACP session cwd: project root (so .kiro/settings/mcp.json + workspace files resolve)
+VEIL_ACP_CWD        ?= $(if $(PROJECT),$(PROJECT),$(CURDIR))
 
 export VEIL_MODEL_PROVIDER
 export VEIL_ACP_COMMAND
@@ -154,7 +155,8 @@ serve: veil viewer-install
 	fi
 	@echo "  Stop:     Ctrl-C  or  make serve-stop"
 	@echo ""
-	@$(VEIL_BIN) serve $(PROJECT) -p $(PORT) & echo $$! > $(API_PID); \
+	@# VEIL_BIN so dev-loop `veil gen` works even if binary isn't on PATH
+	@VEIL_BIN="$(CURDIR)/$(VEIL_BIN)" $(VEIL_BIN) serve $(PROJECT) -p $(PORT) & echo $$! > $(API_PID); \
 	API_PID_VAL=$$(cat $(API_PID)); \
 	cleanup() { \
 		echo ""; \

@@ -29,5 +29,13 @@ export default defineConfig({
 					})
 				: adapterAuto()
 		})
-	]
+	],
+	// Source-export Svelte libs (github:jdwil/aether-ui) ship .svelte.ts with
+	// TypeScript — prebundling fails on `import type`. Let Vite transform them.
+	optimizeDeps: {
+		exclude: ['@aether-ui/core']
+	},
+	ssr: {
+		noExternal: ['@aether-ui/core']
+	}
 });

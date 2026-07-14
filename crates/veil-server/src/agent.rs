@@ -181,11 +181,21 @@ pub async fn run_turn<P: SourceProvider>(
             .find(|f| f.active)
             .map(|f| f.name.clone())
             .unwrap_or_else(|| "active.veil".into());
+        let user_prompt = if is_seed_wiki_command(prompt) {
+            format!("{}\n\n# Operator request\n{}", SEED_MIND_PALACE_PROMPT, prompt)
+        } else {
+            prompt.to_string()
+        };
         let composed = format!(
             "{}\n\n# User request\n{}\n\n# Active VEIL file: `{active_name}`\n\
              Prefer editing this file with your tools. After edits, the IDE reloads from disk.\n",
-            preamble_pack.text, prompt
+            preamble_pack.text, user_prompt
         );
+        // Set project context for ACP MCP server URL routing.
+        let project_name = crate::provider::hub::CURRENT_PROJECT
+            .try_with(|n| n.clone())
+            .ok();
+        crate::acp::set_acp_project(project_name.clone());
         // ACP is sync (stdio) — run on blocking pool so we don't stall the runtime.
         let acp_result = tokio::task::spawn_blocking(move || crate::acp::prompt_acp(&composed))
             .await
@@ -415,7 +425,12 @@ pub async fn run_turn<P: SourceProvider>(
             }));
         }
 
-        match crate::model::prompt_with_tools(&cfg, &preamble, prompt, ws.clone()).await {
+        let rig_prompt = if is_seed_wiki_command(prompt) {
+            format!("{}\n\n# Operator request\n{}", SEED_MIND_PALACE_PROMPT, prompt)
+        } else {
+            prompt.to_string()
+        };
+        match crate::model::prompt_with_tools(&cfg, &preamble, &rig_prompt, ws.clone()).await {
             Ok(content) => {
                 let tool_calls = ws.take_log();
                 let wants_write = ws.changed();
@@ -975,6 +990,10 @@ pub fn is_structured_agent_command(prompt: &str) -> bool {
     if lower.is_empty() {
         return false;
     }
+    // Seed wiki is NOT structured — it needs the LLM + wiki_* tools.
+    if is_seed_wiki_command(prompt) {
+        return false;
+    }
     if lower == "check"
         || lower.starts_with("check ")
         || lower.contains("run check")
@@ -997,6 +1016,73 @@ pub fn is_structured_agent_command(prompt: &str) -> bool {
     }
     false
 }
+
+/// Operator asked to seed Mind Palace with VEIL platform knowledge.
+pub fn is_seed_wiki_command(prompt: &str) -> bool {
+    let lower = prompt.trim().to_lowercase();
+    lower == "seed wiki"
+        || lower == "seed mind palace"
+        || lower == "seed palace"
+        || lower.starts_with("seed wiki ")
+        || lower.starts_with("seed mind palace")
+        || lower.contains("seed the wiki")
+        || lower.contains("seed mind palace")
+        || lower.contains("populate mind palace")
+        || lower.contains("populate the wiki")
+}
+
+/// Expanded task for agents: synthesize VEIL docs into Mind Palace pages via wiki_*.
+const SEED_MIND_PALACE_PROMPT: &str = r#"# Task: Seed Mind Palace with VEIL platform knowledge
+
+You have MCP tools wiki_search, wiki_create, wiki_update, wiki_read, wiki_list, wiki_traverse.
+Mind Palace is empty or sparse. Your job is to CREATE (or UPDATE if present) durable wiki pages
+that future agents will search before writing VEIL.
+
+## Procedure
+1. wiki_list (no filter) and wiki_search for each topic below — skip create if a good page exists; update instead.
+2. wiki_create each missing page with page_type Index or Concept, clear summary, 2–4 sections.
+3. Link related pages via the `links` field (array of slugs).
+4. Do NOT invent false APIs. Prefer patterns from your Tier 0/1 teaching context and this brief.
+
+## Pages to ensure (slug → focus)
+
+1. **veil-language-overview** (Index)
+   - pkg/ctx/port/impl/svc, layers (`use ddd`), dual-loop idea
+   - What belongs in domain vs infrastructure
+
+2. **veil-stubs-and-sdks** (Concept)
+   - `.stub` files declare third-party crate shapes; engine does not hardcode SDKs
+   - `cargo_deps`, `types_module`, `root_types`, `harness_field Type """…"""`
+   - Adapter `@field(client: Client)` + `@env` wiring
+   - Fluent builders lower to real Rust; PascalCase enum variants (AttributeValue.S)
+
+3. **veil-bus-vs-rest** (Concept)
+   - Bus = backend inter-process / multi-context only
+   - Frontends use HTTPS REST/WebSockets + fetch — not the Bus
+   - Local harness exposes `/api/...` for dual-loop / Vite proxy
+
+4. **veil-dual-loop** (Concept)
+   - gen → cargo/npm run; veil.toml targets; relative `/api` + proxy
+   - LocalStack-style env for cloud adapters is declared on the stub harness_field, not the engine
+
+5. **veil-ui-sveltekit5** (Concept)
+   - Only `template` (HTML) and `style` (CSS) are raw
+   - Logic is VEIL `fn` / `effect` / `state` lowered to TypeScript
+   - ApiClient.fetch/mutate for REST; LocalStorage helpers
+   - Layer = tech commitment (SvelteKit), not framework-neutral DOM IR
+
+6. **sop-seed-and-extend-wiki** (Sop)
+   - Prerequisites: MIND_PALACE=1, AWS profile, wiki tools available
+   - Steps: search → read summary → create/update → link → list to verify
+   - Constraints: MUST use progressive disclosure; SHOULD update before create
+
+7. **sop-add-cloud-adapter** (Sop)
+   - Port in domain, impl with @dep @field @env, use stub types, gen + LocalStack/env smoke test
+
+After each create/update, note lint_issues. Finish with wiki_list summarizing what exists.
+
+If wiki_* tools return "disabled" or init errors, report the env fix from docs/MIND_PALACE.md and stop.
+"#;
 
 fn parse_create_file(prompt: &str) -> Option<(String, String)> {
     let p = prompt.trim();

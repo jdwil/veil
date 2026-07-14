@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, WebSocketUpgrade},
     http::{header, Request, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
@@ -21,6 +21,13 @@ use crate::provider::hub::{
     MultiProjectProvider, OpenErrorKind, ProjectsHub, CURRENT_PROJECT,
 };
 use crate::provider::{FileKind, SourceProvider};
+
+async fn ws_aether_chat_route<P: SourceProvider + 'static>(
+    ws: WebSocketUpgrade,
+    State(provider): State<Arc<P>>,
+) -> impl IntoResponse {
+    crate::aether_chat::ws_aether_chat(ws, State(provider)).await
+}
 
 /// IDE dual-loop routes under a path prefix (MP-001).
 ///
@@ -44,7 +51,15 @@ pub fn ide_routes<P: SourceProvider + 'static>() -> Router<Arc<P>> {
         .route("/diff", get(get_diff::<P>))
         .route("/agent/turn", post(post_agent_turn::<P>))
         .route("/agent/turn/stream", post(post_agent_turn_stream::<P>))
+        // AetherUI WebSocket chat (also mounted as /chat for default path)
+        .route("/agent/chat", get(ws_aether_chat_route::<P>))
+        .route("/chat", get(ws_aether_chat_route::<P>))
         .route("/agent/tools", get(get_agent_tools))
+        .route("/mcp", post(crate::mcp::post_mcp::<P>))
+        .route("/dev/targets", get(crate::devloop_api::get_dev_targets::<P>))
+        .route("/dev/start", post(crate::devloop_api::post_dev_start::<P>))
+        .route("/dev/stop", post(crate::devloop_api::post_dev_stop::<P>))
+        .route("/dev/logs", get(crate::devloop_api::get_dev_logs::<P>))
         .route("/events", get(get_events::<P>))
         .route("/models", get(get_models))
         .route("/layer/dependents", get(get_layer_dependents::<P>))
@@ -100,8 +115,15 @@ where
 /// Single-project IDE API (`/api/ir`, …) — current dual-loop default.
 pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
     let state = Arc::new(provider);
+    // Same DevLoop extension as multi-project — without it `/dev/*` 500s and the
+    // IDE launcher (DevToolbar) hides itself.
+    let dev_loops: crate::devloop_api::DevLoopState =
+        crate::devloop::SharedDevLoops::default();
     let router = hub_routes::<Arc<P>>()
-        .nest("/api", ide_routes::<P>())
+        .nest(
+            "/api",
+            ide_routes::<P>().layer(axum::Extension(dev_loops)),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
     with_auth(router)
@@ -112,10 +134,14 @@ pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
 /// Same handlers as [`build_router`]; project scope via task-local name.
 pub fn build_multi_router(hub: ProjectsHub) -> Router {
     let multi = Arc::new(MultiProjectProvider::new(hub));
-    let ide = ide_routes::<MultiProjectProvider>().layer(middleware::from_fn_with_state(
-        multi.clone(),
-        project_scope_middleware,
-    ));
+    let dev_loops: crate::devloop_api::DevLoopState =
+        crate::devloop::SharedDevLoops::default();
+    let ide = ide_routes::<MultiProjectProvider>()
+        .layer(axum::Extension(dev_loops))
+        .layer(middleware::from_fn_with_state(
+            multi.clone(),
+            project_scope_middleware,
+        ));
     let router = hub_routes::<Arc<MultiProjectProvider>>()
         .nest("/api/p/{project}", ide)
         .layer(CorsLayer::permissive())
@@ -189,8 +215,13 @@ fn parse_source_at(
         if let Ok(veil_ir::VeilFile::Package(pkg)) =
             veil_parser::parse_file_with_registry(&tokens, registry.clone())
         {
+            let search = veil_ir::default_adapt_search_paths(path, &[]);
+            // Unified use resolution: if a `use X` has both .layer and .veil,
+            // implicitly inject `adapt X` so stock domain logic is merged.
+            let mut pkg = pkg;
+            veil_ir::inject_implicit_adapts(&mut pkg, &search);
+
             if !pkg.adapts.is_empty() || !pkg.patches.is_empty() {
-                let search = veil_ir::default_adapt_search_paths(path, &[]);
                 let load = |name: &str| -> Result<veil_ir::Package, String> {
                     let p = veil_ir::find_package_source(name, &search)
                         .ok_or_else(|| format!("adapt base '{name}' not found"))?;

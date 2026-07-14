@@ -4,7 +4,7 @@
    * Resizable height, single-panel tabs, or side-by-side split.
    */
   import VeilSourcePanel from './VeilSourcePanel.svelte';
-  import AgentPanel from './AgentPanel.svelte';
+  import AetherAgentPanel from './AetherAgentPanel.svelte';
   import { selectedNodeId, irGraph } from '$lib/store';
 
   type DockTab = 'source' | 'agent' | 'split';
@@ -245,16 +245,29 @@
     </div>
   </div>
   {#if expanded}
-    <div class="dock-body" class:split={tab === 'split'}>
-      {#if tab === 'source'}
-        <VeilSourcePanel embedded />
-      {:else if tab === 'agent'}
-        <AgentPanel embedded insertToken={agentInsert} />
-      {:else}
-        <div class="split-pane source-pane" style:flex="0 0 {splitRatio * 100}%">
+    <!--
+      Keep a single Source + Agent instance mounted for all tabs.
+      {#if tab} branches remounted panels and wiped agent conversation mid-stream.
+    -->
+    <div
+      class="dock-body"
+      class:split={tab === 'split'}
+      class:source-only={tab === 'source'}
+      class:agent-only={tab === 'agent'}
+    >
+      <div
+        class="split-pane source-pane"
+        class:pane-hidden={tab === 'agent'}
+        hidden={tab === 'agent'}
+        aria-hidden={tab === 'agent'}
+        style:flex={tab === 'split' ? `0 0 ${splitRatio * 100}%` : undefined}
+      >
+        {#if tab === 'split'}
           <div class="pane-label">Source</div>
-          <VeilSourcePanel embedded />
-        </div>
+        {/if}
+        <VeilSourcePanel embedded />
+      </div>
+      {#if tab === 'split'}
         <div
           class="split-handle"
           role="separator"
@@ -264,11 +277,18 @@
           onpointerdown={onSplitPointerDown}
           title="Drag to resize panes"
         ></div>
-        <div class="split-pane agent-pane">
-          <div class="pane-label">Agent</div>
-          <AgentPanel embedded insertToken={agentInsert} />
-        </div>
       {/if}
+      <div
+        class="split-pane agent-pane"
+        class:pane-hidden={tab === 'source'}
+        hidden={tab === 'source'}
+        aria-hidden={tab === 'source'}
+      >
+        {#if tab === 'split'}
+          <div class="pane-label">Agent</div>
+        {/if}
+        <AetherAgentPanel embedded insertToken={agentInsert} />
+      </div>
     </div>
   {/if}
 </div>
@@ -390,12 +410,22 @@
     flex: 1;
     min-height: 0;
     display: flex;
-    flex-direction: column;
+    align-items: stretch;
     overflow: hidden;
+  }
+  /* Default single-tab modes stack as a column of one visible pane */
+  .dock-body.source-only,
+  .dock-body.agent-only {
+    flex-direction: column;
   }
   .dock-body.split {
     flex-direction: row;
-    align-items: stretch;
+  }
+  .dock-body.source-only .source-pane,
+  .dock-body.agent-only .agent-pane {
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
   }
   .split-pane {
     min-width: 0;
@@ -403,6 +433,14 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+  /*
+   * Must beat `.split-pane { display: flex }` — HTML [hidden] alone loses to
+   * author display rules, so the inactive pane stayed visible on Agent tab.
+   */
+  .split-pane.pane-hidden,
+  .split-pane[hidden] {
+    display: none !important;
   }
   .agent-pane {
     flex: 1 1 auto;

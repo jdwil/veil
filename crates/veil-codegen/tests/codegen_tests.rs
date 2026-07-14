@@ -530,6 +530,75 @@ pkg UiApp
     assert!(has_dist && has_spa, "SPA files missing: {:?}", project.files.iter().map(|f| &f.path).collect::<Vec<_>>());
 }
 
+/// sveltekit5.layer: @proxy → vite.config.ts server.proxy (layer template + generic ann args).
+#[test]
+fn sveltekit5_proxy_annotation_emits_vite_config() {
+    // Leading @proxy before `app` attaches to the app construct.
+    let src = r#"
+pkg WearUi
+  use sveltekit5
+  @proxy("/api", "http://127.0.0.1:3000")
+  app WearTest
+    page Dashboard
+      @route("/")
+      template """
+        <h1>Hi</h1>
+      """
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let layers = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers");
+    for name in ["svelte5", "sveltekit5"] {
+        let p = layers.join(format!("{name}.layer"));
+        if p.is_file() {
+            reg.load_layer(name, &layers)
+                .unwrap_or_else(|e| panic!("load {name}: {e}"));
+        } else {
+            return; // skip if layers missing
+        }
+    }
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let app = sol
+        .items
+        .iter()
+        .find_map(|i| match i {
+            veil_ir::ast::TopLevelItem::Construct(c)
+                if c.keyword == "app" || c.subkind.eq_ignore_ascii_case("App") =>
+            {
+                Some(c)
+            }
+            _ => None,
+        })
+        .expect("app construct");
+    assert!(
+        app.annotations.iter().any(|a| a.name == "proxy"),
+        "proxy annotation missing on app: {:?}",
+        app.annotations
+    );
+
+    let project = veil_codegen::generate_ts(&sol, &reg);
+    let vite = project
+        .files
+        .iter()
+        .find(|f| f.path == "vite.config.ts")
+        .expect("vite.config.ts missing");
+    assert!(
+        vite.content.contains("server") && vite.content.contains("proxy"),
+        "proxy block missing:\n{}",
+        vite.content
+    );
+    assert!(
+        vite.content.contains("/api") && vite.content.contains("http://127.0.0.1:3000"),
+        "proxy path/target missing:\n{}",
+        vite.content
+    );
+    assert!(
+        !vite.content.contains("annotation_arg"),
+        "placeholder not expanded:\n{}",
+        vite.content
+    );
+}
+
 /// CAP-001: `link` emits path deps in generated Cargo.toml (workspace + crates).
 #[test]
 fn link_external_crates_in_cargo_toml() {
@@ -713,3 +782,4 @@ fn ts_svelte_demo_generates_project() {
         "silent TODO implement found"
     );
 }
+

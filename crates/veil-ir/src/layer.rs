@@ -211,6 +211,18 @@ pub struct CodegenTemplate {
     pub layer: String,
     /// Match rules and their emit bodies
     pub rules: Vec<CodegenRule>,
+    /// Static scaffold files emitted unconditionally for this target.
+    #[serde(default)]
+    pub scaffold: Vec<ScaffoldFile>,
+}
+
+/// A static file emitted as project scaffolding (package.json, config, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScaffoldFile {
+    /// Output path (relative to gen root).
+    pub path: String,
+    /// File content.
+    pub content: String,
 }
 
 /// A single match/emit rule within a codegen block.
@@ -224,6 +236,8 @@ pub struct CodegenRule {
     pub emit_body: String,
     /// Optional named section to emit into (for composition)
     pub emit_to: Option<String>,
+    /// Optional file path pattern to emit to (e.g., "src/routes/{{route}}/+page.svelte")
+    pub emit_file: Option<String>,
     /// Priority for section ordering (lower = earlier, default 100)
     pub priority: u32,
 }
@@ -875,10 +889,42 @@ pub struct StubCrate {
     /// `cargo_features a, b, c`. Empty = plain version dep.
     #[serde(default)]
     pub cargo_features: Vec<String>,
+    /// Extra Cargo deps needed to use this stub (e.g. `aws-config=1`).
+    /// Line: `cargo_deps name=ver, other=ver`.
+    #[serde(default)]
+    pub cargo_deps: Vec<(String, String)>,
+    /// Optional module prefix for model types (e.g. `types` → `crate::types::T`).
+    /// Root types listed in `root_types` stay at crate root.
+    #[serde(default)]
+    pub types_module: Option<String>,
+    /// Type names that live at the crate root (not under `types_module`).
+    #[serde(default)]
+    pub root_types: Vec<String>,
+    /// Harness field constructors: type name → Rust expr that yields a value.
+    /// Line form (multi-line raw): `harness_field Client """ ... """`.
+    /// Used by the local `@main` harness for `@field(name: Type)` wiring —
+    /// engine never invents SDK-specific construction.
+    #[serde(default)]
+    pub harness_fields: std::collections::HashMap<String, String>,
     /// Struct declarations with their methods.
     pub structs: Vec<StubStruct>,
     /// Impl blocks (methods grouped by target type).
     pub impls: Vec<StubImpl>,
+}
+
+impl StubCrate {
+    /// Rust path segment after `crate_name::` for a type (e.g. `types::AttributeValue`).
+    pub fn rust_type_path(&self, type_name: &str) -> String {
+        if self.root_types.iter().any(|t| t == type_name) {
+            return type_name.to_string();
+        }
+        if let Some(module) = &self.types_module {
+            if !module.is_empty() {
+                return format!("{module}::{type_name}");
+            }
+        }
+        type_name.to_string()
+    }
 }
 
 /// A struct declared in a stub file.
@@ -909,8 +955,35 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
     let mut stub = StubCrate::default();
     let mut current_struct: Option<StubStruct> = None;
     let mut current_impl: Option<StubImpl> = None;
+    // Multi-line `harness_field Type """ ... """` capture
+    let mut harness_field_name: Option<String> = None;
+    let mut harness_field_buf: Option<String> = None;
 
     for line in content.lines() {
+        // Finish multi-line harness_field raw string
+        if let Some(ref mut buf) = harness_field_buf {
+            let trimmed_end = line.trim();
+            if trimmed_end.ends_with("\"\"\"") {
+                let before = trimmed_end.trim_end_matches("\"\"\"").trim_end();
+                if !before.is_empty() {
+                    if !buf.is_empty() {
+                        buf.push('\n');
+                    }
+                    buf.push_str(before);
+                }
+                if let Some(name) = harness_field_name.take() {
+                    stub.harness_fields.insert(name, buf.clone());
+                }
+                harness_field_buf = None;
+                continue;
+            }
+            if !buf.is_empty() {
+                buf.push('\n');
+            }
+            buf.push_str(line);
+            continue;
+        }
+
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -937,12 +1010,87 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             continue;
         }
 
+        // cargo_deps aws-config=1, other=0.2
+        if trimmed.starts_with("cargo_deps ") {
+            for part in trimmed
+                .strip_prefix("cargo_deps ")
+                .unwrap_or("")
+                .split(',')
+            {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                if let Some((n, v)) = part.split_once('=') {
+                    stub.cargo_deps
+                        .push((n.trim().to_string(), v.trim().to_string()));
+                }
+            }
+            continue;
+        }
+
+        // types_module types
+        if trimmed.starts_with("types_module ") {
+            stub.types_module = Some(
+                trimmed
+                    .strip_prefix("types_module ")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            );
+            continue;
+        }
+
+        // root_types Client, Config, Error
+        if trimmed.starts_with("root_types ") {
+            stub.root_types = trimmed
+                .strip_prefix("root_types ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            continue;
+        }
+
+        // harness_field Client """ ... """  (same line or multi-line)
+        if trimmed.starts_with("harness_field ") {
+            let rest = trimmed.strip_prefix("harness_field ").unwrap_or("").trim();
+            let (name, after_name) = if let Some((n, r)) = rest.split_once(char::is_whitespace) {
+                (n.to_string(), r.trim())
+            } else {
+                (rest.to_string(), "")
+            };
+            if after_name.starts_with("\"\"\"") {
+                let inner = after_name.trim_start_matches("\"\"\"");
+                if inner.ends_with("\"\"\"") && inner.len() >= 3 {
+                    let body = inner.trim_end_matches("\"\"\"").trim().to_string();
+                    stub.harness_fields.insert(name, body);
+                } else {
+                    // start multi-line
+                    harness_field_name = Some(name);
+                    harness_field_buf = Some(inner.to_string());
+                }
+            }
+            continue;
+        }
+
         // Top-level struct declaration
         if indent <= 2 && trimmed.starts_with("struct ") {
             // Flush previous
             if let Some(s) = current_struct.take() { stub.structs.push(s); }
             if let Some(i) = current_impl.take() { stub.impls.push(i); }
             let name = trimmed.strip_prefix("struct ").unwrap().trim().to_string();
+            current_struct = Some(StubStruct { name, methods: Vec::new() });
+            continue;
+        }
+
+        // Top-level enum declaration — treated as a struct for name resolution,
+        // with each variant exposed as a constructor method.
+        if indent <= 2 && trimmed.starts_with("enum ") {
+            if let Some(s) = current_struct.take() { stub.structs.push(s); }
+            if let Some(i) = current_impl.take() { stub.impls.push(i); }
+            let name = trimmed.strip_prefix("enum ").unwrap().trim().to_string();
             current_struct = Some(StubStruct { name, methods: Vec::new() });
             continue;
         }
@@ -963,6 +1111,34 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
                 s.methods.push(method);
             } else if let Some(ref mut i) = current_impl {
                 i.methods.push(method);
+            }
+        }
+
+        // Enum variant line (indented, not starting with fn) — treat as constructor
+        if indent >= 4 && !trimmed.starts_with("fn ") && current_struct.is_some() {
+            // Parse variant: Name or Name(Type1, Type2)
+            let (vname, params) = if let Some(paren_start) = trimmed.find('(') {
+                let name = trimmed[..paren_start].trim().to_string();
+                let params_str = &trimmed[paren_start + 1..trimmed.len() - 1];
+                let params: Vec<(String, String)> = params_str
+                    .split(',')
+                    .enumerate()
+                    .map(|(i, t)| (format!("v{}", i), t.trim().to_string()))
+                    .collect();
+                (name, params)
+            } else {
+                (trimmed.to_string(), Vec::new())
+            };
+            // Only add if it looks like a variant (starts with uppercase)
+            if vname.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                let ret_type = current_struct.as_ref().map(|s| s.name.clone());
+                if let Some(ref mut s) = current_struct {
+                    s.methods.push(StubMethod {
+                        name: vname,
+                        params,
+                        return_type: ret_type,
+                    });
+                }
             }
         }
     }
@@ -1078,6 +1254,10 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             // Blank lines inside declare blocks are preserved
             if in_declare && !current_decl_lines.is_empty() {
                 current_decl_lines.push(String::new());
+            }
+            // Blank lines inside codegen blocks are preserved
+            if in_codegen {
+                codegen_lines.push(String::new());
             }
             continue;
         }
@@ -1549,10 +1729,41 @@ fn unquote(s: &str) -> String {
 ///     """
 fn parse_codegen_block(target: &str, lines: &[String], layer_name: &str) -> CodegenTemplate {
     let mut rules: Vec<CodegenRule> = Vec::new();
+    let mut scaffold: Vec<ScaffoldFile> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i].trim();
+
+        // Scaffold file: `scaffold "path/to/file"`  followed by emit """..."""
+        if line.starts_with("scaffold ") {
+            let path = unquote(&line[9..]);
+            i += 1;
+            // Expect emit """ block
+            let mut content = String::new();
+            while i < lines.len() {
+                let sl = lines[i].trim();
+                if sl.starts_with("emit \"\"\"") || sl == "emit" {
+                    i += 1;
+                    let mut body_lines: Vec<&str> = Vec::new();
+                    while i < lines.len() {
+                        let el = lines[i].trim_end();
+                        if el.trim() == "\"\"\"" {
+                            break;
+                        }
+                        body_lines.push(el);
+                        i += 1;
+                    }
+                    content = body_lines.join("\n");
+                    i += 1; // skip closing """
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            scaffold.push(ScaffoldFile { path, content });
+            continue;
+        }
 
         // Look for `match <shape> where <condition>` or `match <shape>`
         if line.starts_with("match ") {
@@ -1563,8 +1774,9 @@ fn parse_codegen_block(target: &str, lines: &[String], layer_name: &str) -> Code
                 (rest.trim().to_string(), String::new())
             };
 
-            // Parse the rule body (emit_to, emit)
+            // Parse the rule body (emit_to, emit_file, emit)
             let mut emit_to: Option<String> = None;
+            let mut emit_file: Option<String> = None;
             let mut priority: u32 = 100;
             let mut emit_body = String::new();
 
@@ -1572,11 +1784,19 @@ fn parse_codegen_block(target: &str, lines: &[String], layer_name: &str) -> Code
             while i < lines.len() {
                 let rule_line = lines[i].trim();
 
-                if rule_line.starts_with("match ") || rule_line.is_empty() && i + 1 < lines.len() && lines[i + 1].trim().starts_with("match ") {
-                    break; // next rule
+                if rule_line.starts_with("match ") || rule_line.starts_with("scaffold ")
+                    || (rule_line.is_empty()
+                        && i + 1 < lines.len()
+                        && (lines[i + 1].trim().starts_with("match ")
+                            || lines[i + 1].trim().starts_with("scaffold ")))
+                {
+                    break; // next rule or scaffold
                 }
 
-                if rule_line.starts_with("emit_to ") {
+                if rule_line.starts_with("emit_file ") {
+                    emit_file = Some(unquote(&rule_line[10..]));
+                    i += 1;
+                } else if rule_line.starts_with("emit_to ") {
                     // Parse: emit_to "section" priority N
                     let et_rest = &rule_line[8..];
                     if let Some(section_end) = et_rest.find('"') {
@@ -1623,6 +1843,7 @@ fn parse_codegen_block(target: &str, lines: &[String], layer_name: &str) -> Code
                 condition,
                 emit_body,
                 emit_to,
+                emit_file,
                 priority,
             });
         } else {
@@ -1634,6 +1855,7 @@ fn parse_codegen_block(target: &str, lines: &[String], layer_name: &str) -> Code
         target: target.to_string(),
         layer: layer_name.to_string(),
         rules,
+        scaffold,
     }
 }
 

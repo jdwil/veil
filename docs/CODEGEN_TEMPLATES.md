@@ -89,7 +89,11 @@ match struct where field_typed("Pool")    # structs with a Pool-typed field
 {{name}}                    # construct name
 {{field.name}}              # field property access
 {{field.type}}              # field type
-{{annotation_value("pvd")}} # annotation argument
+{{route}}                   # @route first arg (or /name_lower)
+{{annotation_value:name}}   # first arg of @name (quotes stripped)
+{{annotation_arg:name:N}}   # Nth arg (0-based) of @name
+{{annotation_value("name")}}  # same as annotation_value:name
+{{annotation_arg("name", N)}} # same as annotation_arg:name:N
 {{for field in fields}}...{{end}}   # iteration
 {{for step in steps}}...{{end}}     # iterate steps
 {{for action in step.actions}}...{{end}}  # nested iteration
@@ -100,6 +104,12 @@ match struct where field_typed("Pool")    # structs with a Pool-typed field
 {{emit_fn(node)}}           # call base emitter
 ```
 
+`emit_file` for the same path **replaces** an earlier scaffold/emit (e.g. bare
+`vite.config.ts` scaffold overridden when `@proxy` matches). Prefer
+`{{annotation_arg:name:N}}` in layer bodies to avoid nested-quote issues.
+
+**Framework config (Vite proxy, etc.) belongs in layers**, not `typescript.rs` /
+`rust.rs` — see MISSION and [IDE_AGENT_PLATFORM.md](./IDE_AGENT_PLATFORM.md).
 ### Section Composition
 
 ```

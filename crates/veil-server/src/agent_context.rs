@@ -51,6 +51,46 @@ You are the VEIL IDE built-in agent (Rig tools).
 - veil_outline — IR topology
 - read_source — active .veil text (truncated)
 - rename_construct — structured rename
+- wiki_* — Mind Palace knowledge (when MIND_PALACE=1): search before answering platform questions; create/update after durable learning
+"#;
+
+const TIER0_ACP: &str = r#"# Tier 0 — host rules (VEIL IDE agent via MCP tools)
+You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
+
+## How to edit
+- Use write_source to write/rewrite .veil and .layer files. Always provide the COMPLETE file content.
+- Use create_file to create new packages or layers in the project.
+- Use select_file to switch between files (use list_files to see what's available).
+- Use rename_construct for renames (preferred over manual text editing).
+- After ANY edit, call veil_check to validate the result.
+- Use veil_outline to understand existing structure before editing.
+- Use read_source to see the current file content when needed.
+- VEIL is layer-driven: only emit constructs/keywords from the loaded layers below.
+- Do NOT invent keywords from layers that are not listed.
+- Do NOT fix issues by switching to raw Rust/TS in .veil unless the package already uses escape hatches.
+- If you cannot fix something with available tools, say so and list exact diagnostics.
+
+## Available MCP Tools
+- veil_check — run dual-loop check pipeline (parse, validate, types, escape hatches)
+- veil_outline — compact IR topology of the active file
+- read_source — read active .veil/.layer text (truncated if large)
+- write_source(content) — replace entire active file with new content
+- rename_construct(from, to) — structured rename
+- list_files — list packages/layers in the project
+- select_file(index or name) — switch active file
+- create_file(name, kind, content?) — create new package or layer
+- wiki_search / wiki_read / wiki_traverse / wiki_create / wiki_update / wiki_list — Mind Palace long-term knowledge (when MIND_PALACE=1)
+
+## Mind Palace (when wiki tools work)
+- Before answering VEIL language/platform questions, wiki_search first.
+- After durable learning (patterns, decisions, SOPs), wiki_create or wiki_update.
+- Prefer progressive disclosure: summary → section → full.
+- Prefer updating existing pages over duplicates.
+
+## Important
+- write_source replaces the ENTIRE file. Always include the full content.
+- After create_file, the new file becomes active. Use write_source to populate it.
+- The active file is shown below. Switch with select_file if you need a different one.
 "#;
 
 /// Build preamble for the active package + registry.
@@ -58,6 +98,12 @@ You are the VEIL IDE built-in agent (Rig tools).
 /// Budget: `VEIL_AGENT_PREAMBLE_MAX_TOKENS` (default **12000** tokens ≈ 48k chars).
 /// Set to `0` for unlimited (only if the model context can hold it).
 pub fn assemble_preamble(source: &str, registry: &LayerRegistry) -> AgentPreamble {
+    let is_acp = crate::acp::acp_enabled();
+    let tier0_text = if is_acp { TIER0_ACP } else { TIER0 };
+    assemble_preamble_inner(source, registry, tier0_text)
+}
+
+fn assemble_preamble_inner(source: &str, registry: &LayerRegistry, tier0_text: &str) -> AgentPreamble {
     let max_tokens = std::env::var("VEIL_AGENT_PREAMBLE_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -74,7 +120,7 @@ pub fn assemble_preamble(source: &str, registry: &LayerRegistry) -> AgentPreambl
         Err(errs) => {
             let msg = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
             let text = format!(
-                "{TIER0}\n\n# PARSE ERROR — package did not load\n{msg}\n\
+                "{tier0_text}\n\n# PARSE ERROR — package did not load\n{msg}\n\
                  Fix parse errors before relying on layer teaching context.\n"
             );
             let used = approx_tokens(&text);
@@ -88,7 +134,7 @@ pub fn assemble_preamble(source: &str, registry: &LayerRegistry) -> AgentPreambl
                     name: "tier0".into(),
                     included: true,
                     truncated: false,
-                    chars: TIER0.len(),
+                    chars: tier0_text.len(),
                 }],
                 layers: registry.layers.clone(),
             };
@@ -103,7 +149,7 @@ pub fn assemble_preamble(source: &str, registry: &LayerRegistry) -> AgentPreambl
     let mut sections_raw: Vec<(&str, String, bool)> = Vec::new();
     // (name, body, critical) — critical sections refuse silent drop
 
-    sections_raw.push(("tier0", TIER0.to_string(), true));
+    sections_raw.push(("tier0", tier0_text.to_string(), true));
 
     // Layer prompts (Tier 1 — curriculum)
     let mut lp = String::from("# Tier 1 — layer prompts (loaded for this package)\n");

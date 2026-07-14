@@ -1,10 +1,24 @@
 # In-IDE agent & Rig SDK
 
-Agentic work in VEIL is built on **[Rig](https://rig.rs)** (`rig-core`).
+Agentic work in VEIL is built on **[Rig](https://rig.rs)** (`rig-core`) and
+optional **ACP (Kiro)**. Platform wiring (dock, Aether, dev-loop, chat memory)
+is summarized for implementers in **[IDE_AGENT_PLATFORM.md](./IDE_AGENT_PLATFORM.md)**.
 
 ## Built-in agent (AGT-001 / AGT-006)
 
-Toolbar **Agent** → `POST /api/agent/turn` with `{ "prompt": "…" }`.
+IDE **Agent** dock uses **AetherUI** over WebSocket (`/api/chat` or
+`/api/p/{project}/chat`). Legacy: `POST /api/agent/turn` / `…/turn/stream` (SSE).
+
+Viewer: `veil-viewer/src/lib/AetherAgentPanel.svelte` + `agentSession.ts`
+(in-memory transcript — **lost on full page reload**; survives Agent↔Split only).
+Each turn the FE sends full `messages[]`, but the ACP path uses only the **last
+user** message; multi-turn continuity while serve stays up is mostly Kiro’s
+process-wide ACP session. Details: [IDE_AGENT_PLATFORM.md](./IDE_AGENT_PLATFORM.md).
+
+### Mind Palace (optional knowledge tools)
+
+See [MIND_PALACE.md](./MIND_PALACE.md). Set `MIND_PALACE=1` + AWS profile/resources
+to attach `wiki_*` Rig tools for long-term VEIL platform knowledge.
 
 ### Backends
 
@@ -103,13 +117,18 @@ Budget: `VEIL_AGENT_PREAMBLE_MAX_TOKENS` (default **12000** ≈ 48k chars).
 **If truncated:** response sets `context_truncated: true`, fills `context_warning`, and
 **refuses the Rig model turn** by default (`ok: false`, backend `rig-*-refused`).
 The UI shows a red banner. Switch to a larger-context model, OpenAI flagship, or ACP
-— do not trust a 9B with a cut layer curriculum.| `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | OpenAI credentials |
+— do not trust a 9B with a cut layer curriculum.
+
+| Variable | Meaning |
+|----------|---------|
+| `VEIL_MODEL_API_KEY` / `OPENAI_API_KEY` | OpenAI credentials |
 | `VEIL_MODEL_BASE_URL` / `OPENAI_BASE_URL` | Compatible base URL |
 | `VEIL_AGENT_CONFIRM_WRITES=1` | Require `confirmed` on renames |
 | `VEIL_AGENT_ALLOWLIST` | Comma-separated write paths/prefixes/globs (default: loaded `.veil` files) |
 | `VEIL_AGENT_PLAN_ONLY=1` | Propose edits; never persist (`plan` field on response) |
 | `VEIL_CONTEXT_MAX_TOKENS` | Default budget for `GET /api/context` (also `?max_tokens=`) |
 | `VEIL_AUTH_TOKEN` | When set, require `Authorization: Bearer <token>` (or raw token) on all API routes (AGT-016) |
+| `VEIL_BIN` | Path to `veil` for dev-loop `veil gen` (default: running serve binary) |
 
 `GET /api/models` — provider + config (+ `"rig": true`).
 

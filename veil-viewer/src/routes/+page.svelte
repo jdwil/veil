@@ -21,6 +21,7 @@
   import ReviewDock from '$lib/ReviewDock.svelte';
   import OutlinePanel from '$lib/OutlinePanel.svelte';
   import DiffPanel from '$lib/DiffPanel.svelte';
+  import DevToolbar from '$lib/DevToolbar.svelte';
   import { layoutNodes, layoutByType } from '$lib/layout';
   import {
     irGraph,
@@ -127,9 +128,15 @@
     (typeof localStorage !== 'undefined' && localStorage.getItem('veil-theme') as 'dark' | 'light') || 'dark'
   );
 
+  function applyTheme(t: 'dark' | 'light') {
+    document.documentElement.setAttribute('data-theme', t);
+    // Aether components use Tailwind `dark:` variants (class strategy)
+    document.documentElement.classList.toggle('dark', t === 'dark');
+  }
+
   function toggleTheme() {
     theme = theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', theme);
+    applyTheme(theme);
     localStorage.setItem('veil-theme', theme);
   }
 
@@ -356,8 +363,8 @@
   }
 
   onMount(() => {
-    // Apply saved theme on mount
-    document.documentElement.setAttribute('data-theme', theme);
+    // Apply saved theme on mount (veil tokens + Aether dark: class)
+    applyTheme(theme);
 
     // Parent drill / file switch → recompute canvas.
     // Skip parent=null (used only as a force-refresh sentinel before set to root).
@@ -1282,6 +1289,7 @@
         {/each}
       </div>
     {/if}
+    <DevToolbar />
     <div class="main-layout">
       <Palette contextKind={currentContextKind} contextKindCore={currentContextKindCore} activeGroup={activeTab} />
       <div class="graph-wrapper">

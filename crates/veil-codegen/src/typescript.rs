@@ -122,8 +122,11 @@ fn field_type_ts(field: &Field) -> String {
 pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
     let pad = "  ".repeat(indent);
     match expr {
-        Expr::Ident(name) => to_camel(name),
-        Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_ts(base, indent), to_camel(field)),
+        // Keep VEIL idents as authored (snake_case matches state + templates + JSON APIs).
+        Expr::Ident(name) if name == "null" || name == "None" => "null".to_string(),
+        Expr::Ident(name) if name == "Ok" => "undefined /* Ok */".to_string(),
+        Expr::Ident(name) => name.clone(),
+        Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_ts(base, indent), field),
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
@@ -153,23 +156,26 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
             match ty_ann {
                 Some(ty) => format!(
                     "const {}: {} = {}",
-                    to_camel(name),
+                    name,
                     type_to_ts(ty),
                     expr_to_ts(value, indent)
                 ),
-                None => format!("{} = {}", to_camel(name), expr_to_ts(value, indent)),
+                None => format!("{} = {}", name, expr_to_ts(value, indent)),
             }
         }
         Expr::MutAssign(name, value, ty_ann) => {
             match ty_ann {
-                Some(ty) => format!("let {}: {} = {}", to_camel(name), type_to_ts(ty), expr_to_ts(value, indent)),
-                None => format!("let {} = {}", to_camel(name), expr_to_ts(value, indent)),
+                Some(ty) => format!("let {}: {} = {}", name, type_to_ts(ty), expr_to_ts(value, indent)),
+                None => format!("let {} = {}", name, expr_to_ts(value, indent)),
             }
         }
 
         Expr::Return(inner) => {
-            let val = expr_to_ts(inner, indent);
-            format!("return {}", val)
+            match inner.as_ref() {
+                Expr::Ident(n) if n == "Ok" => "return".to_string(),
+                Expr::Ident(n) if n == "null" || n == "None" => "return null".to_string(),
+                _ => format!("return {}", expr_to_ts(inner, indent)),
+            }
         }
 
         Expr::Await(inner) => {
@@ -243,21 +249,29 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
         }
 
         Expr::StructLit(_name, fields) => {
-            let fs = fields.iter()
+            let fs = fields
+                .iter()
                 .map(|(k, v)| {
                     let val = expr_to_ts(v, indent);
-                    let key = to_camel(k);
-                    if key == val { key } else { format!("{}: {}", key, val) }
+                    // Keep VEIL field names (snake_case) for JSON / state binding.
+                    if k == &val {
+                        k.clone()
+                    } else {
+                        format!("{}: {}", k, val)
+                    }
                 })
-                .collect::<Vec<_>>().join(", ");
-            format!("{{ {} }}", fs)  // anonymous object, type is `name`
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {} }}", fs)
         }
 
         Expr::StructUpdate { name: _, fields, base } => {
             let base_str = expr_to_ts(base, indent);
-            let fs = fields.iter()
-                .map(|(k, v)| format!("{}: {}", to_camel(k), expr_to_ts(v, indent)))
-                .collect::<Vec<_>>().join(", ");
+            let fs = fields
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, expr_to_ts(v, indent)))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{{ ...{}, {} }}", base_str, fs)
         }
 
@@ -343,9 +357,12 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
 
 /// Translate a function/method call to TypeScript.
 fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
-    let args = call.args.iter()
+    let args_list: Vec<String> = call
+        .args
+        .iter()
         .map(|a| expr_to_ts(a, indent))
-        .collect::<Vec<_>>().join(", ");
+        .collect();
+    let args = args_list.join(", ");
 
     // Skip .clone() calls — no ownership in TS
     if call.method == "clone" && call.args.is_empty() {
@@ -371,8 +388,81 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
         // bare function call: target(args)
         match call.target.as_str() {
             "now" => return "new Date()".to_string(),
-            _ => return format!("{}({})", to_camel(&call.target), args),
+            "goto" | "navigate" => {
+                let url = args_list.first().map(|s| s.as_str()).unwrap_or("\"/\"");
+                return format!("(window.location.href = {url})");
+            }
+            _ => return format!("{}({})", call.target, args),
         }
+    }
+
+    // ── Browser / Svelte layer builtins (declared on svelte5, lowered here) ──
+    // ApiClient: HTTPS REST — not the Bus.
+    if call.target == "ApiClient" {
+        match call.method.as_str() {
+            "fetch" if args_list.len() >= 1 => {
+                let url = &args_list[0];
+                let params = args_list.get(1).map(|s| s.as_str()).unwrap_or("{}");
+                return format!(
+                    "(async () => {{ const __u = new URL({url}, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {params} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) {{ if (v != null && v !== '') __u.searchParams.set(k, String(v)); }} const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); }})()"
+                );
+            }
+            "mutate" if args_list.len() >= 1 => {
+                let url = &args_list[0];
+                let body = args_list.get(1).map(|s| s.as_str()).unwrap_or("{}");
+                return format!(
+                    "(async () => {{ const __r = await fetch({url}, {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({body}) }}); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; }})()"
+                );
+            }
+            _ => {}
+        }
+    }
+    // LocalStorage helpers (layer-declared free fns or type methods)
+    if call.target == "LocalStorage" || call.target == "local_storage" {
+        match call.method.as_str() {
+            "get" | "get_opt" if args_list.len() == 1 => {
+                return format!("localStorage.getItem({})", args_list[0]);
+            }
+            "get_or" if args_list.len() == 2 => {
+                return format!(
+                    "(localStorage.getItem({}) ?? {})",
+                    args_list[0], args_list[1]
+                );
+            }
+            "set" if args_list.len() == 2 => {
+                return format!(
+                    "localStorage.setItem({}, {})",
+                    args_list[0], args_list[1]
+                );
+            }
+            _ => {}
+        }
+    }
+    if call.target == "Env" {
+        match call.method.as_str() {
+            "get_or" if args_list.len() == 2 => {
+                // Browser: prefer localStorage then default (no process.env in SPA)
+                return format!(
+                    "(localStorage.getItem({}) ?? {})",
+                    args_list[0], args_list[1]
+                );
+            }
+            _ => {}
+        }
+    }
+    // navigate / goto from svelte5 layer
+    if (call.target == "navigate" || call.method == "navigate" || call.target == "goto")
+        && !call.method.is_empty()
+        || call.target == "goto"
+    {
+        if call.method == "goto" || call.target == "goto" || call.method == "navigate" {
+            let url = args_list.first().map(|s| s.as_str()).unwrap_or("\"/\"");
+            return format!("(window.location.href = {url})");
+        }
+    }
+    if call.target == "navigate" && call.method.is_empty() {
+        let url = args_list.first().map(|s| s.as_str()).unwrap_or("\"/\"");
+        return format!("(window.location.href = {url})");
     }
 
     // target.method(args)
@@ -397,6 +487,57 @@ fn body_to_ts(exprs: &[Expr], indent: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// True if the body calls async-ish layer APIs (ApiClient, await, etc.).
+fn effect_body_needs_await(body: &[Expr]) -> bool {
+    fn walk(e: &Expr) -> bool {
+        match e {
+            Expr::Call(c) => {
+                if c.target == "ApiClient" {
+                    return true;
+                }
+                c.args.iter().any(walk)
+                    || c.receiver.as_ref().map(|r| walk(r)).unwrap_or(false)
+            }
+            Expr::Await(_) | Expr::Try(_) => true,
+            Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => walk(rhs),
+            Expr::Return(inner) => walk(inner),
+            Expr::BinaryOp(op) => walk(&op.left) || walk(&op.right),
+            Expr::IfExpr(ie) => {
+                walk(&ie.condition)
+                    || ie.then_body.iter().any(walk)
+                    || ie.else_body
+                        .as_ref()
+                        .map(|b| b.iter().any(walk))
+                        .unwrap_or(false)
+            }
+            Expr::Match(_, arms) => arms.iter().any(|a| a.body.iter().any(walk)),
+            Expr::ForLoop { body, iterable, .. } => walk(iterable) || body.iter().any(walk),
+            Expr::FieldAccess(base, _) => walk(base),
+            Expr::Index(base, idx) => walk(base) || walk(idx),
+            _ => false,
+        }
+    }
+    body.iter().any(walk)
+}
+
+/// Like `expr_to_ts` but awaits ApiClient / async IIFE results on assignment.
+fn expr_to_ts_async(expr: &Expr, indent: usize) -> String {
+    match expr {
+        Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
+            let r = expr_to_ts(rhs, indent);
+            if r.contains("await fetch") || r.contains("(async () =>") {
+                format!("{} = await {}", name, r)
+            } else {
+                expr_to_ts(expr, indent)
+            }
+        }
+        Expr::Call(c) if c.target == "ApiClient" => {
+            format!("await {}", expr_to_ts(expr, indent))
+        }
+        _ => expr_to_ts(expr, indent),
+    }
 }
 
 /// Convert a structured Pattern to TypeScript destructuring syntax.
@@ -508,8 +649,21 @@ pub fn generate_ts_with_packages(
     // Generate tsconfig.json
     files.push(gen_tsconfig());
 
-    // CAP-005: browser-ready SPA when package has UI constructs (app/page/comp).
-    if package_has_ui_constructs(solution) {
+    // Layer-driven codegen: if the registry has templates for "typescript",
+    // execute them and use their output (scaffold + per-construct files).
+    // This is how sveltekit5.layer emits a full SvelteKit project (including
+    // vite.config.ts when app has @proxy — see layers/sveltekit5.layer).
+    let template_output = crate::template::execute_templates(solution, registry, "typescript");
+    if !template_output.files.is_empty() {
+        // Layer templates produced files — use them instead of hardcoded SPA.
+        for tf in template_output.files {
+            files.push(TsFile {
+                path: tf.path,
+                content: tf.content,
+            });
+        }
+    } else if package_has_ui_constructs(solution) {
+        // Fallback: no layer templates but has UI constructs — use legacy SPA.
         files.extend(gen_spa_bundle(solution, &sol_name));
     }
 
@@ -850,9 +1004,13 @@ window.addEventListener("popstate", route);
 
     files.push(TsFile {
         path: "index.html".into(),
-        content: index_html.clone(),
+        // Dev-friendly: relative path so standalone servers (npx serve, vite) work.
+        content: index_html.replace(
+            "src=\"/static/dist/spa.js\"",
+            "src=\"./src/spa.js\"",
+        ),
     });
-    // dist/ is what ProductHost prefers as primary SPA
+    // dist/ is what ProductHost prefers as primary SPA (absolute path for embedding).
     files.push(TsFile {
         path: "dist/index.html".into(),
         content: index_html.clone(),
@@ -1139,11 +1297,14 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
 
     // Look for template and style — first from raw_blocks (preferred),
     // then fall back to fn template()/fn style() hack for backward compat
+    let mut client_script = String::new();
     for (name, content) in &comp.raw_blocks {
         if name == "template" {
             template_content = content.clone();
         } else if name == "style" {
             style_content = content.clone();
+        } else if name == "script" {
+            client_script = content.clone();
         }
     }
 
@@ -1232,7 +1393,7 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
         for field in &state.fields {
             let ty = field_type_ts(field);
             let default = default_value_for_ts(&ty);
-            script.push_str(&format!("  let {} = $state<{}>({});\n", to_camel(&field.name), ty, default));
+            script.push_str(&format!("  let {} = $state<{}>({});\n", field.name, ty, default));
         }
     }
 
@@ -1250,50 +1411,82 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
         }
     }
 
-    // Effects: $effect(() => { ... })
+    // Effects: $effect(() => { ... }) — VEIL bodies lowered to TS (not raw script).
+    // Mount-style loads use async IIFE so await works inside $effect.
     if !comp.effects.is_empty() {
         script.push('\n');
         for eff in &comp.effects {
-            if eff.cleanup.is_empty() {
-                script.push_str(&format!("  $effect(() => {{ // {}\n", eff.name));
+            let async_body = effect_body_needs_await(&eff.body);
+            if async_body {
+                script.push_str(&format!(
+                    "  $effect(() => {{ // {}\n    void (async () => {{\n",
+                    eff.name
+                ));
                 for expr in &eff.body {
-                    script.push_str(&format!("    {};\n", expr_to_ts(expr, 2)));
+                    script.push_str(&format!("      {};\n", expr_to_ts_async(expr, 3)));
                 }
-                script.push_str("  });\n");
+                script.push_str("    })();\n");
             } else {
                 script.push_str(&format!("  $effect(() => {{ // {}\n", eff.name));
                 for expr in &eff.body {
                     script.push_str(&format!("    {};\n", expr_to_ts(expr, 2)));
                 }
+            }
+            if !eff.cleanup.is_empty() {
                 script.push_str("    return () => {\n");
                 for expr in &eff.cleanup {
                     script.push_str(&format!("      {};\n", expr_to_ts(expr, 3)));
                 }
                 script.push_str("    };\n");
-                script.push_str("  });\n");
             }
+            script.push_str("  });\n");
         }
     }
 
-    // Methods: fn → function
+    // Methods: fn → function (VEIL → TypeScript)
     let method_fns: Vec<&FnDef> = comp.fns.iter()
-        .filter(|f| f.name != "template" && f.name != "style")
+        .filter(|f| f.name != "template" && f.name != "style" && f.name != "script")
         .collect();
     if !method_fns.is_empty() {
         script.push('\n');
         for f in &method_fns {
             let params = f.params.iter()
-                .map(|p| format!("{}: {}", to_camel(&p.name), type_to_ts(&p.type_expr)))
+                .map(|p| format!("{}: {}", p.name, type_to_ts(&p.type_expr)))
                 .collect::<Vec<_>>().join(", ");
             let is_async = f.return_type.as_ref()
                 .map(|t| matches!(t, TypeExpr::Result(_)))
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || effect_body_needs_await(&f.body);
             let async_kw = if is_async { "async " } else { "" };
-            script.push_str(&format!("  {}function {}({}) {{\n", async_kw, to_camel(&f.name), params));
+            // Keep snake_case names so templates can bind onclick={handle_submit}
+            script.push_str(&format!(
+                "  {}function {}({}) {{\n",
+                async_kw, f.name, params
+            ));
             for expr in &f.body {
-                script.push_str(&format!("    {};\n", expr_to_ts(expr, 2)));
+                let line = if is_async {
+                    expr_to_ts_async(expr, 2)
+                } else {
+                    expr_to_ts(expr, 2)
+                };
+                script.push_str(&format!("    {};\n", line));
             }
             script.push_str("  }\n");
+        }
+    }
+
+    // Raw `script` block is an escape hatch only (prefer effect/fn VEIL).
+    if !client_script.is_empty() {
+        script.push_str("\n  // raw script block (escape hatch — prefer VEIL fn/effect)\n");
+        for line in client_script.lines() {
+            let t = line.trim_end();
+            if t.is_empty() {
+                script.push('\n');
+            } else {
+                script.push_str("  ");
+                script.push_str(t.trim_start());
+                script.push('\n');
+            }
         }
     }
 
@@ -1319,7 +1512,8 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
 
     // Assemble the .svelte file
     let content = format!("{}{}{}", script, template_section, style_section);
-    let path = format!("src/components/{}.svelte", comp.name);
+    // SvelteKit convention: $lib/components
+    let path = format!("src/lib/components/{}.svelte", comp.name);
 
     TsFile { path, content }
 }

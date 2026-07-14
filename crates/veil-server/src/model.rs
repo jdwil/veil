@@ -245,6 +245,7 @@ fn flatten_messages(messages: &[ChatMessage]) -> String {
 }
 
 /// Build a Rig agent with VEIL tools attached (AGT-006).
+/// When Mind Palace is configured (`MIND_PALACE=1`), wiki tools are attached too.
 pub async fn prompt_with_tools(
     cfg: &ModelConfig,
     preamble: &str,
@@ -255,6 +256,12 @@ pub async fn prompt_with_tools(
         CheckTool, CreateFileTool, ListFilesTool, OutlineTool, ReadSourceTool, RenameTool,
         SelectFileTool, WriteSourceTool,
     };
+
+    let mut preamble = preamble.to_string();
+    let palace = crate::mind_palace_tools::try_palace().await;
+    if palace.is_some() {
+        preamble.push_str(crate::mind_palace_tools::preamble_addon());
+    }
 
     match cfg.kind {
         ProviderKind::OpenAi => {
@@ -271,9 +278,9 @@ pub async fn prompt_with_tools(
             } else {
                 openai::Client::from_env().map_err(|e| e.to_string())?
             };
-            let agent = client
+            let mut builder = client
                 .agent(&cfg.model)
-                .preamble(preamble)
+                .preamble(&preamble)
                 .tool(CheckTool { ws: ws.clone() })
                 .tool(OutlineTool { ws: ws.clone() })
                 .tool(ReadSourceTool { ws: ws.clone() })
@@ -281,15 +288,26 @@ pub async fn prompt_with_tools(
                 .tool(ListFilesTool { ws: ws.clone() })
                 .tool(SelectFileTool { ws: ws.clone() })
                 .tool(CreateFileTool { ws: ws.clone() })
-                .tool(WriteSourceTool { ws: ws.clone() })
-                .build();
+                .tool(WriteSourceTool { ws: ws.clone() });
+            if let Some(ref p) = palace {
+                let (search, read, traverse, create, update, list) =
+                    crate::mind_palace_tools::tools_for_agent(p);
+                builder = builder
+                    .tool(search)
+                    .tool(read)
+                    .tool(traverse)
+                    .tool(create)
+                    .tool(update)
+                    .tool(list);
+            }
+            let agent = builder.build();
             agent.prompt(user_prompt).await.map_err(|e| e.to_string())
         }
         ProviderKind::Ollama => {
             let client = ollama_client(cfg)?;
-            let agent = client
+            let mut builder = client
                 .agent(&cfg.model)
-                .preamble(preamble)
+                .preamble(&preamble)
                 .tool(CheckTool { ws: ws.clone() })
                 .tool(OutlineTool { ws: ws.clone() })
                 .tool(ReadSourceTool { ws: ws.clone() })
@@ -297,8 +315,19 @@ pub async fn prompt_with_tools(
                 .tool(ListFilesTool { ws: ws.clone() })
                 .tool(SelectFileTool { ws: ws.clone() })
                 .tool(CreateFileTool { ws: ws.clone() })
-                .tool(WriteSourceTool { ws: ws.clone() })
-                .build();
+                .tool(WriteSourceTool { ws: ws.clone() });
+            if let Some(ref p) = palace {
+                let (search, read, traverse, create, update, list) =
+                    crate::mind_palace_tools::tools_for_agent(p);
+                builder = builder
+                    .tool(search)
+                    .tool(read)
+                    .tool(traverse)
+                    .tool(create)
+                    .tool(update)
+                    .tool(list);
+            }
+            let agent = builder.build();
             agent.prompt(user_prompt).await.map_err(|e| e.to_string())
         }
         ProviderKind::Echo | ProviderKind::Bedrock | ProviderKind::Acp => Err(

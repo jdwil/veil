@@ -37,6 +37,7 @@ pub fn execute_templates(
     target: &str,
 ) -> TemplateOutput {
     let mut sections: HashMap<String, Vec<SectionContribution>> = HashMap::new();
+    let mut files: Vec<TemplateFile> = Vec::new();
     let mut file_fragments: Vec<String> = Vec::new();
 
     // Collect all templates for this target
@@ -53,19 +54,44 @@ pub fn execute_templates(
         };
     }
 
+    // Emit scaffold files from all matching templates.
+    for tpl in &templates {
+        for sf in &tpl.scaffold {
+            files.push(TemplateFile {
+                path: sf.path.clone(),
+                content: sf.content.clone(),
+            });
+        }
+    }
+
     // GEN-005: walk nested constructs (not only top-level items).
     fn visit_construct(
         construct: &Construct,
         templates: &[&CodegenTemplate],
         registry: &LayerRegistry,
         sections: &mut HashMap<String, Vec<SectionContribution>>,
+        files: &mut Vec<TemplateFile>,
         file_fragments: &mut Vec<String>,
     ) {
         for template in templates {
             for rule in &template.rules {
                 if matches_construct(construct, rule) {
                     let output = render_template(construct, rule, registry);
-                    if let Some(section_name) = &rule.emit_to {
+
+                    if let Some(ref file_pattern) = rule.emit_file {
+                        // Emit to a specific file path (expand pattern).
+                        // Later emits for the same path replace earlier ones
+                        // (e.g. scaffold vite.config.ts → @proxy override).
+                        let path = expand_file_path(file_pattern, construct);
+                        if let Some(existing) = files.iter_mut().find(|f| f.path == path) {
+                            existing.content = output;
+                        } else {
+                            files.push(TemplateFile {
+                                path,
+                                content: output,
+                            });
+                        }
+                    } else if let Some(section_name) = &rule.emit_to {
                         sections
                             .entry(section_name.clone())
                             .or_insert_with(Vec::new)
@@ -85,7 +111,7 @@ pub fn execute_templates(
             }
         }
         for child in &construct.children {
-            visit_construct(child, templates, registry, sections, file_fragments);
+            visit_construct(child, templates, registry, sections, files, file_fragments);
         }
     }
 
@@ -97,6 +123,7 @@ pub fn execute_templates(
                     &templates,
                     registry,
                     &mut sections,
+                    &mut files,
                     &mut file_fragments,
                 );
             }
@@ -109,7 +136,7 @@ pub fn execute_templates(
         contributions.sort_by_key(|c| c.priority);
     }
 
-    let mut files = Vec::new();
+    // Collect remaining fragments into a default file if any
     if !file_fragments.is_empty() {
         files.push(TemplateFile {
             path: format!("{}_generated.{}", solution.name, target_extension(target)),
@@ -148,9 +175,14 @@ pub fn compose_main_section(output: &TemplateOutput, target: &str) -> Option<Str
 
 /// Check if a construct matches a rule's conditions.
 fn matches_construct(construct: &Construct, rule: &CodegenRule) -> bool {
-    // Check shape match
+    // Check shape match — accept shape name, "*", or layer subkind.
     let shape_name = construct.shape.name();
-    if rule.match_shape != shape_name && rule.match_shape != "*" {
+    let subkind = &construct.subkind;
+    if rule.match_shape != shape_name
+        && rule.match_shape != "*"
+        && !rule.match_shape.eq_ignore_ascii_case(subkind)
+        && !rule.match_shape.eq_ignore_ascii_case(&construct.keyword)
+    {
         return false;
     }
 
@@ -171,13 +203,41 @@ fn matches_construct(construct: &Construct, rule: &CodegenRule) -> bool {
     if rule.condition.starts_with("subkind == ") {
         let target_subkind = extract_quoted_value(&rule.condition, "subkind == ");
         if let Some(sk) = target_subkind {
-            // subkind comes from the construct's layer-declared name
-            return construct.name == sk;
+            return construct.subkind.eq_ignore_ascii_case(&sk);
         }
     }
 
     // Unknown condition — don't match
     false
+}
+
+/// Expand a file path pattern with construct properties.
+///
+/// Supported placeholders:
+/// - `{{name}}` — construct name (as-is)
+/// - `{{name_lower}}` — lowercase construct name
+/// - `{{route}}` — @route annotation value (or `/name_lower`)
+/// - `{{subkind}}` — layer subkind
+fn expand_file_path(pattern: &str, construct: &Construct) -> String {
+    let name = &construct.name;
+    let name_lower = name.to_lowercase();
+    let route = construct
+        .annotations
+        .iter()
+        .find(|a| a.name == "route")
+        .and_then(|a| a.args.first())
+        .map(|s| {
+            let t = s.trim().trim_matches('"').trim_matches('\'');
+            // Strip leading / for path use
+            t.trim_start_matches('/').to_string()
+        })
+        .unwrap_or_else(|| name_lower.clone());
+
+    pattern
+        .replace("{{name}}", name)
+        .replace("{{name_lower}}", &name_lower)
+        .replace("{{route}}", &route)
+        .replace("{{subkind}}", &construct.subkind)
 }
 
 /// Render a template body with interpolation against a construct.
@@ -186,6 +246,127 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
 
     // Simple interpolations
     output = output.replace("{{name}}", &construct.name);
+    output = output.replace("{{subkind}}", &construct.subkind);
+    output = output.replace("{{keyword}}", &construct.keyword);
+
+    // {{route}} — from @route annotation
+    let route_val = construct
+        .annotations
+        .iter()
+        .find(|a| a.name == "route")
+        .and_then(|a| a.args.first())
+        .map(|s| strip_ann_arg(s))
+        .unwrap_or_else(|| format!("/{}", construct.name.to_lowercase()));
+    output = output.replace("{{route}}", &route_val);
+
+    // Generic annotation args (zero domain knowledge — any layer annotation):
+    //   {{annotation_value:name}}     → first arg of @name
+    //   {{annotation_arg:name:N}}     → Nth arg (0-based) of @name
+    //   {{annotation_value("name")}}  → same as annotation_value:name
+    //   {{annotation_arg("name", N)}} → same as annotation_arg:name:N
+    output = expand_annotation_placeholders(construct, output);
+
+    // {{raw_block:template}} — content of a named raw block (e.g. template, style)
+    while let Some(start) = output.find("{{raw_block:") {
+        let end = output[start..].find("}}").unwrap_or(output.len()) + start + 2;
+        let block_name = &output[start + 12..end - 2];
+        let block_content = construct
+            .raw_blocks
+            .iter()
+            .find(|(n, _)| n == block_name)
+            .map(|(_, c)| c.as_str())
+            .unwrap_or("");
+        output = format!("{}{}{}", &output[..start], block_content, &output[end..]);
+    }
+
+    // {{props_decl}} — Svelte $props() script from props block
+    if output.contains("{{props_decl}}") {
+        let props_block = construct.blocks.iter().find(|b| b.keyword == "props");
+        let props_script = if let Some(props) = props_block {
+            let mut s = String::new();
+            s.push_str("  interface Props {\n");
+            for field in &props.fields {
+                let ty = svelte_type_display(&field.type_expr);
+                s.push_str(&format!("    {}: {};\n", field.name, ty));
+            }
+            s.push_str("  }\n");
+            let names: Vec<&str> = props.fields.iter().map(|f| f.name.as_str()).collect();
+            if !names.is_empty() {
+                s.push_str(&format!("  let {{ {} }}: Props = $props();\n", names.join(", ")));
+            } else {
+                s.push_str("  let {}: Props = $props();\n");
+            }
+            s
+        } else {
+            String::new()
+        };
+        output = output.replace("{{props_decl}}", &props_script);
+    }
+
+    // {{state_decl}} — Svelte 5 $state() fields from state block
+    if output.contains("{{state_decl}}") {
+        let state_block = construct.blocks.iter().find(|b| b.keyword == "state");
+        let state_script = if let Some(state) = state_block {
+            let mut s = String::new();
+            for field in &state.fields {
+                let default = svelte_state_default(&field.type_expr);
+                s.push_str(&format!(
+                    "  let {}: {} = $state({});\n",
+                    field.name,
+                    svelte_type_display(&field.type_expr),
+                    default
+                ));
+            }
+            s
+        } else {
+            String::new()
+        };
+        output = output.replace("{{state_decl}}", &state_script);
+    }
+
+    // {{children_names}} — comma-separated child construct names
+    if output.contains("{{children_names}}") {
+        let names: Vec<&str> = construct.children.iter().map(|c| c.name.as_str()).collect();
+        output = output.replace("{{children_names}}", &names.join(", "));
+    }
+
+    // {{imports}} — auto-detect PascalCase component references in template
+    // and emit import statements for them.
+    if output.contains("{{imports}}") {
+        let template_content = construct
+            .raw_blocks
+            .iter()
+            .find(|(n, _)| n == "template")
+            .map(|(_, c)| c.as_str())
+            .unwrap_or("");
+        let mut imports = Vec::new();
+        let chars: Vec<char> = template_content.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1].is_uppercase() {
+                i += 1;
+                let mut comp_name = String::new();
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    comp_name.push(chars[i]);
+                    i += 1;
+                }
+                if !comp_name.is_empty()
+                    && comp_name != construct.name
+                    && !imports.contains(&comp_name)
+                {
+                    imports.push(comp_name);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        let import_stmts = imports
+            .iter()
+            .map(|name| format!("  import {name} from '$lib/components/{name}.svelte';"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        output = output.replace("{{imports}}", &import_stmts);
+    }
 
     // Handle {{for field in dep_fields}}...{{end}}
     // INV-001: dependency-role fields via registry; construct-level dependency
@@ -237,6 +418,101 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
         let steps: Vec<&FlowStep> = construct.steps.iter().collect();
 
         output = expand_step_loop(&output, &steps);
+    }
+
+    output
+}
+
+fn strip_ann_arg(s: &str) -> String {
+    let t = s.trim();
+    if (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
+        || (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
+    {
+        t[1..t.len() - 1].to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+fn annotation_arg_at(construct: &Construct, name: &str, index: usize) -> String {
+    construct
+        .annotations
+        .iter()
+        .find(|a| a.name == name)
+        .and_then(|a| a.args.get(index))
+        .map(|s| strip_ann_arg(s))
+        .unwrap_or_default()
+}
+
+/// Expand `{{annotation_value:…}}` / `{{annotation_arg:…}}` (and quoted forms).
+fn expand_annotation_placeholders(construct: &Construct, mut output: String) -> String {
+    // {{annotation_arg:name:N}}
+    while let Some(start) = output.find("{{annotation_arg:") {
+        let after = start + "{{annotation_arg:".len();
+        let Some(end_rel) = output[after..].find("}}") else {
+            break;
+        };
+        let end = after + end_rel;
+        let inner = &output[after..end]; // name:N
+        let replacement = if let Some((name, idx_s)) = inner.rsplit_once(':') {
+            let idx: usize = idx_s.parse().unwrap_or(0);
+            annotation_arg_at(construct, name, idx)
+        } else {
+            String::new()
+        };
+        output = format!("{}{}{}", &output[..start], replacement, &output[end + 2..]);
+    }
+
+    // {{annotation_value:name}}
+    while let Some(start) = output.find("{{annotation_value:") {
+        let after = start + "{{annotation_value:".len();
+        let Some(end_rel) = output[after..].find("}}") else {
+            break;
+        };
+        let end = after + end_rel;
+        let name = &output[after..end];
+        let replacement = annotation_arg_at(construct, name, 0);
+        output = format!("{}{}{}", &output[..start], replacement, &output[end + 2..]);
+    }
+
+    // {{annotation_arg("name", N)}}
+    while let Some(start) = output.find("{{annotation_arg(\"") {
+        let after = start + "{{annotation_arg(\"".len();
+        let Some(name_end) = output[after..].find('"') else {
+            break;
+        };
+        let name = &output[after..after + name_end];
+        let rest = &output[after + name_end..];
+        // ", N)}}
+        let Some(close) = rest.find("}}") else {
+            break;
+        };
+        let mid = &rest[..close]; // ", 0) or similar
+        let idx: usize = mid
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
+        let replacement = annotation_arg_at(construct, name, idx);
+        let abs_end = after + name_end + close + 2;
+        output = format!("{}{}{}", &output[..start], replacement, &output[abs_end..]);
+    }
+
+    // {{annotation_value("name")}}
+    while let Some(start) = output.find("{{annotation_value(\"") {
+        let after = start + "{{annotation_value(\"".len();
+        let Some(name_end) = output[after..].find('"') else {
+            break;
+        };
+        let name = &output[after..after + name_end];
+        let rest = &output[after + name_end..];
+        let Some(close) = rest.find("}}") else {
+            break;
+        };
+        let replacement = annotation_arg_at(construct, name, 0);
+        let abs_end = after + name_end + close + 2;
+        output = format!("{}{}{}", &output[..start], replacement, &output[abs_end..]);
     }
 
     output
@@ -416,5 +692,44 @@ fn target_extension(target: &str) -> &str {
         "swift" => "swift",
         "kotlin" => "kt",
         _ => "txt",
+    }
+}
+
+/// Default `$state(...)` initializer from a VEIL type.
+
+/// Map VEIL types to TypeScript-ish names for Svelte script blocks.
+fn svelte_type_display(ty: &veil_ir::TypeExpr) -> String {
+    use veil_ir::TypeExpr;
+    match ty {
+        TypeExpr::Named(n) => match n.as_str() {
+            "Str" | "String" => "string".into(),
+            "Bool" => "boolean".into(),
+            "Int" | "F64" | "Float" => "number".into(),
+            "Json" => "any".into(),
+            "Id" | "UUID" => "string".into(),
+            "Dt" | "DateTime" => "string".into(),
+            other => other.to_string(),
+        },
+        TypeExpr::List(inner) => format!("{}[]", svelte_type_display(inner)),
+        TypeExpr::Optional(inner) => format!("{} | null", svelte_type_display(inner)),
+        TypeExpr::Map(_, v) => format!("Record<string, {}>", svelte_type_display(v)),
+        _ => "any".into(),
+    }
+}
+
+fn svelte_state_default(ty: &veil_ir::TypeExpr) -> String {
+    use veil_ir::TypeExpr;
+    match ty {
+        TypeExpr::Named(n) => match n.as_str() {
+            "Str" | "String" => "''".into(),
+            "Bool" => "false".into(),
+            "Int" | "F64" | "Float" => "0".into(),
+            "Json" => "{}".into(),
+            _ => "undefined as any".into(),
+        },
+        TypeExpr::List(_) => "[]".into(),
+        TypeExpr::Map(_, _) => "{}".into(),
+        TypeExpr::Optional(_) => "null".into(),
+        _ => "undefined as any".into(),
     }
 }

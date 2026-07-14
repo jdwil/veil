@@ -4,33 +4,33 @@
 
   let { data } = $props();
 
-  const kind: NodeKind = data.kind;
-  const subkind: string | null = data.subkind ?? null;
-  const style = getNodeStyle(kind, subkind);
-  const hasChildren = data.hasChildren ?? false;
-  const annotations: string[] = data.annotations ?? [];
-  const refs: string[] = data.refs ?? [];
-  const isGhost = data.isGhost ?? false;
-  const properties: [string, string][] = data.properties ?? [];
-  const inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = data.inlineChildren ?? [];
+  const kind: NodeKind = $derived(data.kind);
+  const subkind: string | null = $derived(data.subkind ?? null);
+  const style = $derived(getNodeStyle(kind, subkind));
+  const hasChildren = $derived(data.hasChildren ?? false);
+  const annotations: string[] = $derived(data.annotations ?? []);
+  const refs: string[] = $derived(data.refs ?? []);
+  const isGhost = $derived(data.isGhost ?? false);
+  const properties: [string, string][] = $derived(data.properties ?? []);
+  const inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = $derived(data.inlineChildren ?? []);
   let detailsOpen = $state(false);
   let childrenOpen = $state(true);
 
   // Reference-line badge (e.g. `ctx Identity`, `contexts A, B`) — the builder
   // prefixes ref keys with `ref:` so this stays layer-agnostic.
-  const refProp = properties.find(([k]) => k.startsWith('ref:'));
-  const refKeyword = refProp ? refProp[0].slice(4) : null;
-  const refValue = refProp ? refProp[1] : null;
-  const hasCompensate = annotations.includes('has_compensate');
-  const isGroup = data.isGroup ?? false;
-  const isAbstract = properties.some(([k, v]) => k === 'abstract' && v === 'true');
-  const isCritical = data.critical ?? false;
-  const layerProvided = data.layerProvided ?? false;
-  const bodyPreview: { text: string; keyword: string | null }[] = data.bodyPreview ?? [];
-  const bodyEmpty: boolean = data.bodyEmpty ?? false;
-  const bodyMore: number = data.bodyMore ?? 0;
-  const routingTargets: string[] = data.routingTargets ?? [];
-  const isStep = kind === 'Step';
+  const refProp = $derived(properties.find(([k]) => k.startsWith('ref:')));
+  const refKeyword = $derived(refProp ? refProp[0].slice(4) : null);
+  const refValue = $derived(refProp ? refProp[1] : null);
+  const hasCompensate = $derived(annotations.includes('has_compensate'));
+  const isGroup = $derived(data.isGroup ?? false);
+  const isAbstract = $derived(properties.some(([k, v]) => k === 'abstract' && v === 'true'));
+  const isCritical = $derived(data.critical ?? false);
+  const layerProvided = $derived(data.layerProvided ?? false);
+  const bodyPreview: { text: string; keyword: string | null }[] = $derived(data.bodyPreview ?? []);
+  const bodyEmpty: boolean = $derived(data.bodyEmpty ?? false);
+  const bodyMore: number = $derived(data.bodyMore ?? 0);
+  const routingTargets: string[] = $derived(data.routingTargets ?? []);
+  const isStep = $derived(kind === 'Step');
 </script>
 
 <div

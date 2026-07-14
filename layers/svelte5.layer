@@ -15,6 +15,9 @@ pkg svelte5 v1
       icon "🔶"
       color "#ff3e00"
       label "Svelte App"
+    ann
+      # @proxy("/api", "http://127.0.0.1:3000") — dual-loop Vite proxy (sveltekit5.layer emits vite.config.ts)
+      proxy: "Dev-server proxy path → backend URL" path, target
     in top
     # IDE views (docs/PRESENTATION.md) — different shape than DDD Context
     present
@@ -39,7 +42,10 @@ pkg svelte5 v1
     mt struct
     desc "A routed page component (+page.svelte)"
     has
+      props: struct
+      state: struct
       template: raw
+      script: raw
       style: raw
       fn[]
     visual
@@ -87,6 +93,7 @@ pkg svelte5 v1
       derived: struct
       effect[]
       template: raw
+      script: raw
       style: raw
       fn[]
       Snippet[]
@@ -171,10 +178,17 @@ pkg svelte5 v1
   # ─── Declared infrastructure ────────────────────────────────────────────
 
   declare
-    # Typed fetch wrapper for calling backend APIs (generated from expose blocks)
+    # Typed fetch wrapper for calling backend APIs over HTTPS (not the Bus).
+    # Codegen lowers these to browser `fetch` in the TypeScript target.
     trait ApiClient
       fetch(endpoint: Str, params: Json) -> Res!<Json>
       mutate(endpoint: Str, body: Json) -> Res!<Json>
+
+    # Browser localStorage — lowered to localStorage.* in TS
+    struct LocalStorage
+      fn get_or(key: Str, default: Str) -> Str
+      fn get_opt(key: Str) -> Opt<Str>
+      fn set(key: Str, value: Str)
 
     # Form handling (Json payload until generics in declare are typecheck-clean)
     struct FormState
@@ -183,7 +197,7 @@ pkg svelte5 v1
       submitting: Bool
       valid: Bool
 
-    # Navigation
+    # Navigation — lowered to window.location / kit goto
     fn goto(url: Str) -> Res!
       navigate(url)
       ret Ok
@@ -210,6 +224,11 @@ pkg svelte5 v1
     ## Constraints
     - You MUST annotate pages with `@route("/path")` because SvelteKit uses
       file-based routing derived from these annotations.
+    - You SHOULD annotate dual-loop backends with
+      `@proxy("/api", "http://127.0.0.1:BACKEND_PORT")` **before** the `app` keyword
+      (leading annotations attach to the next construct). sveltekit5 codegen then
+      emits Vite `server.proxy` for relative `/api/*` in the browser.
+
     - You MUST declare component props as typed fields because they generate
       the `$props()` rune destructuring.
     - You SHOULD use `store` for shared state instead of module-level variables
@@ -226,15 +245,12 @@ pkg svelte5 v1
         page Dashboard
           @route("/dashboard")
           @load
-          input
+          props
             user: UserDTO
-          step render
-            items = store.items
-            ret items
 
       group components
         comp UserCard
-          input
+          props
             name: Str
             avatar: Str
             online: Bool
@@ -246,7 +262,18 @@ pkg svelte5 v1
     ```
 
     ## Common Mistakes
+    - Wrong: Using `input` on a comp — use `props` instead.
+    - Wrong: Defining data types as comp — use `type` alias.
+    - Wrong: Components outside an `app` — nest inside app.
     - Wrong: Using Svelte 4 `$:` reactive declarations — use `$derived` rune.
     - Wrong: Putting API calls directly in components — use a `@load` function
       on the page or call a service.
     - Right: Props are typed fields on components; state lives in stores.
+
+    ## CRITICAL CORRECTIONS
+    - You MUST use `props` (NOT `input`) for comp properties. `input` is for fn-shaped constructs only.
+    - You MUST place all UI constructs inside an `app` construct.
+    - You MUST NOT define data types as `comp` — use `type` aliases instead.
+    - `comp` named sub-blocks: props, state, derived, template, style, fn, effect.
+    - Logic is VEIL (`fn` / `effect`) lowered to TypeScript — NOT raw TS in a script block.
+    - Only `template` (HTML) and `style` (CSS) are raw, because VEIL has no HTML/CSS target.

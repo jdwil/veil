@@ -209,8 +209,22 @@ impl SourceProvider for MultiProjectProvider {
             .map_err(|_| {
                 "project scope missing — use /api/p/{project}/… routes".to_string()
             })?;
+        // Remember the active file before invalidating so we can restore it.
+        let prev_active_name = if let Ok(p) = self.session() {
+            let files = p.list_files().await;
+            files.into_iter().find(|f| f.active).map(|f| f.name)
+        } else {
+            None
+        };
         self.hub.invalidate(&name);
         let p = self.hub.open(&name)?;
+        // Restore the previously active file by name (index may have shifted).
+        if let Some(ref prev_name) = prev_active_name {
+            let files = p.list_files().await;
+            if let Some(f) = files.iter().find(|f| &f.name == prev_name) {
+                let _ = p.set_active(f.index);
+            }
+        }
         let n = p.list_files().await.len();
         Ok(n)
     }

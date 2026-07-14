@@ -22,9 +22,9 @@ pub mod struct_diff;
 pub mod validate;
 
 pub use adapt::{
-    build_adapt_chain, default_adapt_search_paths, find_package_source, is_adapt_denied,
-    merge_adapt_chain, merge_adapted_package, package_as_solution, path_exists, AdaptError,
-    MergeResult, ADAPT_DENYLIST,
+    build_adapt_chain, default_adapt_search_paths, find_package_source, inject_implicit_adapts,
+    is_adapt_denied, merge_adapt_chain, merge_adapted_package, package_as_solution, path_exists,
+    AdaptError, MergeResult, ADAPT_DENYLIST,
 };
 pub use ast::*;
 pub use builder::{build_ir, build_ir_with_registry};
@@ -37,8 +37,9 @@ pub use escape::{
 pub use edit::{apply_edit, apply_edit_with, apply_edits, apply_edits_with, EditError, EditOp};
 pub use ir::*;
 pub use layer::{
-    palette_from_registry, parse_layer_file, CodegenRule, CodegenTemplate, ConstructSpec,
-    ConstructorPolicy, LayerRegistry, RawLayer, Shape, StatementSpec, StmtShape,
+    palette_from_registry, parse_layer_file, parse_stub_file, CodegenRule, CodegenTemplate,
+    ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer, Shape, StatementSpec, StmtShape,
+    StubCrate, StubImpl, StubMethod, StubStruct,
 };
 pub use layer_graph::{build_layer_ir, check_layer, layer_prompt};
 pub use presentation::{

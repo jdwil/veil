@@ -47,6 +47,11 @@ pub struct GenCtx {
     /// generates qualified paths like `aws_sdk_s3::Client::new()` when VEIL
     /// writes `S3Client.new()` (aliased) or `Client.new()` (unaliased).
     pub stub_type_crate: HashMap<String, (String, String)>,
+    /// Methods whose stub return type is `Res!` / fallible (e.g. builder `send`).
+    pub fallible_methods: HashSet<String>,
+    /// Expected Rust return type of the enclosing fn (e.g. `Result<Option<T>, DomainError>`).
+    /// Used to wrap `ret x` as `Ok(Some(x))` when returning Option.
+    pub expected_return_rust: Option<String>,
 }
 
 impl GenCtx {
@@ -65,6 +70,8 @@ impl GenCtx {
             async_fns: HashSet::new(),
             state_locals: HashSet::new(),
             stub_type_crate: HashMap::new(),
+            fallible_methods: HashSet::new(),
+            expected_return_rust: None,
         }
     }
 
@@ -189,6 +196,10 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             // Register struct methods under the aliased name
             for method in &s.methods {
                 let ret = method.return_type.as_deref().unwrap_or("()");
+                let fallible = ret.starts_with("Res!") || ret.starts_with("Res!<");
+                if fallible {
+                    ctx.fallible_methods.insert(method.name.clone());
+                }
                 let inner = if ret.starts_with("Res!<") {
                     ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
                 } else if ret == "Res!" {
@@ -201,13 +212,21 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     inner.to_string(),
                 );
             }
-            // Register as a known struct with qualified crate path
+            // Register as a known struct with qualified crate path from stub
+            // metadata (`types_module` / `root_types`) — never crate-family hardcoding.
             ctx.name_to_shape.insert(type_name.clone(), Shape::Struct);
-            ctx.stub_type_crate.insert(type_name, (stub.name.replace('-', "_"), s.name.clone()));
+            let crate_name = stub.name.replace('-', "_");
+            let path_type = stub.rust_type_path(&s.name);
+            ctx.stub_type_crate
+                .insert(type_name, (crate_name, path_type));
         }
         for i in &stub.impls {
             for method in &i.methods {
                 let ret = method.return_type.as_deref().unwrap_or("()");
+                let fallible = ret.starts_with("Res!") || ret.starts_with("Res!<");
+                if fallible {
+                    ctx.fallible_methods.insert(method.name.clone());
+                }
                 let inner = if ret.starts_with("Res!<") {
                     ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
                 } else if ret == "Res!" {
@@ -295,6 +314,16 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 if ctx.state_locals.contains(name.as_str()) {
                     return format!("state[\"{}\"][\"{}\"]", name, field);
                 }
+                // Adapter / aggregate: `self.table` → clone so `&self` methods compile.
+                if name == "self" && ctx.in_aggregate_fn {
+                    let f = to_snake(field);
+                    if ctx.self_fields.contains(field.as_str())
+                        || ctx.self_fields.contains(&f)
+                    {
+                        return format!("self.{}.clone()", f);
+                    }
+                    return format!("self.{}", f);
+                }
                 // Enum variant access: EnumName.Variant → EnumName::Variant
                 if matches!(ctx.name_to_shape.get(name.as_str()), Some(Shape::Enum)) {
                     // Capitalize the variant name (field might be snake_case from parser)
@@ -333,6 +362,14 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     veil_ir::ast::BinOp::Eq => format!("{}.is_none()", r),
                     _ => format!("{} {} {}", l, binop_to_rust(&op.op), r),
                 };
+            }
+            // List append: `out + [x]` / `out + vec` → extend into owned Vec
+            if matches!(op.op, veil_ir::ast::BinOp::Add)
+                && (r.starts_with("vec![") || l.starts_with("vec!["))
+            {
+                return format!(
+                    "{{ let mut __v = {l}; __v.extend({r}); __v }}"
+                );
             }
             format!("{} {} {}", l, binop_to_rust(&op.op), r)
         }
@@ -416,7 +453,17 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 }
                 _ => {
                     let val = expr_to_rust(inner, ctx);
-                    format!("return Ok({})", val)
+                    // `ret null` → Ok(None); `ret x` into Result<Option<T>> → Ok(Some(x))
+                    let returns_option = ctx
+                        .expected_return_rust
+                        .as_deref()
+                        .map(|t| t.contains("Option<"))
+                        .unwrap_or(false);
+                    if returns_option && val != "None" && !val.starts_with("Some(") {
+                        format!("return Ok(Some({}))", val)
+                    } else {
+                        format!("return Ok({})", val)
+                    }
                 }
             }
         }
@@ -426,7 +473,20 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::Break => "break".to_string(),
         Expr::Continue => "continue".to_string(),
-        Expr::Index(base, idx) => format!("{}[{}]", expr_to_rust(base, ctx), expr_to_rust(idx, ctx)),
+        Expr::Index(base, idx) => {
+            let b = expr_to_rust(base, ctx);
+            // HashMap / Dynamo item: `.get("key").cloned().ok_or(NotFound)?`
+            // so subsequent `.as_s()` is on AttributeValue, not Option.
+            match idx.as_ref() {
+                Expr::StringLit(s) => format!(
+                    "{b}.get(\"{s}\").cloned().ok_or(DomainError::NotFound)?"
+                ),
+                other => {
+                    let i = expr_to_rust(other, ctx);
+                    format!("{b}[{i}]")
+                }
+            }
+        }
         Expr::ArrayLit(items) => { let s = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", "); format!("vec![{}]", s) }
         Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let e = end.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
         Expr::Loop(body) => { let b = body.iter().map(|e| format!("    {};", expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n"); format!("loop {{\n{}\n}}", b) }
@@ -481,9 +541,18 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // The match consumes the scrutinee's Result directly, so a fallible
             // call scrutinee must NOT auto-propagate with `?`.
             let raw = expr_to_rust(scrutinee, ctx);
-            let scrutinee_str = raw.strip_suffix(".await?")
+            let scrutinee_str = raw
+                .strip_suffix(".await.map_err(|e| DomainError::External(e.to_string()))?")
                 .map(|s| format!("{}.await", s))
-                .unwrap_or_else(|| raw.strip_suffix('?').map(|s| s.to_string()).unwrap_or(raw));
+                .or_else(|| {
+                    raw.strip_suffix(".await?")
+                        .map(|s| format!("{}.await", s))
+                })
+                .unwrap_or_else(|| {
+                    raw.strip_suffix('?')
+                        .map(|s| s.to_string())
+                        .unwrap_or(raw)
+                });
             // If arms contain string literal patterns, add .as_str() for String scrutinees
             let has_string_patterns = arms.iter().any(|a| a.pattern.starts_with('"'));
             let scrutinee_final = if has_string_patterns {
@@ -503,13 +572,24 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     Some(g) => format!(" if {}", expr_to_rust(g, ctx)),
                     None => String::new(),
                 };
+                // Match arm bodies get their own local set (bindings + assigns).
+                let mut arm_ctx = ctx.clone_for_inference();
+                // Bind pattern idents as locals (Some(item) → item)
+                for name in pattern_binding_names(&arm.pattern) {
+                    arm_ctx.locals.insert(name);
+                }
                 let body_str = if arm.body.len() == 1 {
-                    expr_to_rust(&arm.body[0], ctx)
+                    expr_to_rust(&arm.body[0], &arm_ctx)
                 } else {
-                    let stmts = arm.body.iter()
-                        .map(|e| format!("        {};", expr_to_rust(e, ctx)))
-                        .collect::<Vec<_>>().join("\n");
-                    format!("{{\n{}\n    }}", stmts)
+                    let mut stmts = Vec::new();
+                    for e in &arm.body {
+                        let line = expr_to_rust(e, &arm_ctx);
+                        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
+                            arm_ctx.locals.insert(name.clone());
+                        }
+                        stmts.push(format!("        {};", line));
+                    }
+                    format!("{{\n{}\n    }}", stmts.join("\n"))
                 };
                 out.push_str(&format!("        {}{} => {},\n", pattern, guard_str, body_str));
             }
@@ -534,11 +614,31 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             if let Some(idx) = index {
                 body_ctx.locals.insert(idx.clone());
             }
-            let body_str = body.iter()
-                .map(|e| format!("        {};", expr_to_rust(e, &body_ctx)))
-                .collect::<Vec<_>>().join("\n");
+            let mut body_lines = Vec::new();
+            for e in body {
+                let line = expr_to_rust(e, &body_ctx);
+                if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
+                    body_ctx.locals.insert(name.clone());
+                }
+                body_lines.push(format!("        {};", line));
+            }
+            let body_str = body_lines.join("\n");
             let enumerate = if index.is_some() { ".enumerate()" } else { "" };
-            format!("for {} in {}{} {{\n{}\n    }}", bind, iter_str, enumerate, body_str)
+            // If the iterable type is Option<_>, unwrap to empty default; else as-is.
+            let iter_expr = if let Expr::Ident(name) = iterable.as_ref() {
+                if ctx
+                    .local_type(name)
+                    .map(|t| t.starts_with("Option<"))
+                    .unwrap_or(false)
+                {
+                    format!("{iter_str}.unwrap_or_default()")
+                } else {
+                    iter_str
+                }
+            } else {
+                iter_str
+            };
+            format!("for {} in {}{} {{\n{}\n    }}", bind, iter_expr, enumerate, body_str)
         }
         Expr::WhileLoop { condition, body } => {
             let cond_str = expr_to_rust(condition, ctx);
@@ -628,14 +728,41 @@ fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
 }
 
 /// Determine the call suffix for a method invoked on a chained receiver.
-/// If the method is declared on any known trait (async_trait + Result), it
-/// needs `.await?`; otherwise no suffix (e.g. iterator adapters).
+///
+/// - Fluent `.send()` / `.send_with()` are async + Result → `.await?`
+/// - Other stub methods marked `Res!` are sync Result → `?` (e.g. `as_s`)
+/// - Trait methods (ports) are async_trait + Result → `.await?`
 fn receiver_call_suffix(_recv: &Expr, method: &str, ctx: &GenCtx) -> String {
+    if method == "send" || method == "send_with" {
+        // Map SDK / IO errors into DomainError (no blanket From impl).
+        return ".await.map_err(|e| DomainError::External(e.to_string()))?".to_string();
+    }
     let is_trait_method = ctx
         .method_returns
         .keys()
         .any(|(ty, m)| m == method && ctx.name_to_shape.get(ty) == Some(&Shape::Trait));
-    if is_trait_method { ".await?".to_string() } else { String::new() }
+    if is_trait_method {
+        return ".await?".to_string();
+    }
+    if ctx.fallible_methods.contains(method) {
+        return "?".to_string();
+    }
+    String::new()
+}
+
+/// Rust method/path segment for a call: keep PascalCase for enum variants /
+/// associated constructors (`AttributeValue::S`); snake_case for normal methods.
+fn rust_method_name(method: &str) -> String {
+    if method
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+    {
+        method.to_string()
+    } else {
+        to_snake(method)
+    }
 }
 
 /// Build a `serde_json::json!` object for a message (event/command) with a
@@ -716,7 +843,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         let recv_str = expr_to_rust(recv, ctx);
         // A trait method invoked on a chained receiver is async + fallible.
         let suffix = receiver_call_suffix(recv, &call.method, ctx);
-        return format!("{}.{}({}){}", recv_str, to_snake(&call.method), clone_args(&call.args, ctx), suffix);
+        let m = rust_method_name(&call.method);
+        return format!(
+            "{}.{}({}){}",
+            recv_str,
+            m,
+            clone_args(&call.args, ctx),
+            suffix
+        );
     }
 
     // Trait-shaped target → deps.target.method(args).await?
@@ -880,50 +1014,156 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             let suffix = if returns_result { "?" } else { "" };
             return format!("{}::{}({}){}", qualified, to_snake(method), final_args, suffix);
         }
-        // Non-new method on a struct: check if first arg is the instance
-        // e.g. call Email.validate(email) → email.validate()
-        if !call.args.is_empty() {
+        // Non-new method on a struct: UFCS instance form `Email.validate(email)`
+        // → `email.validate()`. Only when the first arg *names* the type
+        // (Email/email). Do NOT rewrite for any local — that breaks enum
+        // constructors: `AttributeValue.S(name)` must stay `AttributeValue::S(name)`.
+        // PascalCase methods are always associated constructors / variants.
+        let is_pascal_ctor = method
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
+        if !is_pascal_ctor && !call.args.is_empty() {
             if let Expr::Ident(first_arg) = &call.args[0] {
-                if first_arg.to_lowercase() == effective_target.to_lowercase() || ctx.is_local(first_arg) {
-                    let rest_args = call.args[1..].iter()
+                if first_arg.eq_ignore_ascii_case(&effective_target) {
+                    let rest_args = call.args[1..]
+                        .iter()
                         .map(|a| expr_to_rust(a, ctx))
-                        .collect::<Vec<_>>().join(", ");
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     return format!("{}.{}({})", first_arg, to_snake(method), rest_args);
                 }
             }
         }
         // Prefer stub-qualified path (aws_sdk_s3::Client) over VEIL alias (S3Client).
-        return format!("{}::{}({})", qualified, to_snake(method), args_str);
+        // Keep PascalCase for enum variants: AttributeValue::S(x), not ::s(x).
+        let m = rust_method_name(method);
+        let suffix = receiver_call_suffix(
+            &Expr::Ident(effective_target.clone()),
+            method,
+            ctx,
+        );
+        return format!("{}::{}({}){}", qualified, m, args_str, suffix);
+    }
+
+    // `local.field.method(args)` — parser keeps dotted target "initiative.id".
+    // Emit `initiative.id.method(...)`, never `id::method(...)`.
+    if call.target.contains('.') && !call.target.starts_with("self.") {
+        let first = call.target.split('.').next().unwrap_or("");
+        if ctx.is_local(first) {
+            let path = call
+                .target
+                .split('.')
+                .enumerate()
+                .map(|(i, seg)| {
+                    if i == 0 {
+                        seg.to_string()
+                    } else {
+                        to_snake(seg)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(".");
+            let method = rust_method_name(&call.method);
+            let suffix = receiver_call_suffix(
+                &Expr::Ident(first.to_string()),
+                &call.method,
+                ctx,
+            );
+            // Clone String fields when calling to_string-like methods is unnecessary;
+            // for by-value SDK args, Uuid/DateTime Display paths use to_string().
+            return format!(
+                "{}.{}({}){}",
+                path,
+                method,
+                clone_args(&call.args, ctx),
+                suffix
+            );
+        }
     }
 
     // Self field target (adapter bodies) → self.target.method(args)
-    if ctx.in_aggregate_fn && ctx.self_fields.contains(&call.target) {
-        let method = to_snake(&call.method);
-        return format!("self.{}.{}({})", to_snake(&call.target), method, clone_args(&call.args, ctx));
+    // Parser may produce target "client" or dotted "self.client".
+    if ctx.in_aggregate_fn {
+        let field = call
+            .target
+            .strip_prefix("self.")
+            .unwrap_or(call.target.as_str());
+        if ctx.self_fields.contains(field)
+            && (call.target == field || call.target.starts_with("self."))
+        {
+            let method = rust_method_name(&call.method);
+            let suffix = receiver_call_suffix(
+                &Expr::Ident(field.to_string()),
+                &call.method,
+                ctx,
+            );
+            return format!(
+                "self.{}.{}({}){}",
+                to_snake(field),
+                method,
+                clone_args(&call.args, ctx),
+                suffix
+            );
+        }
     }
 
     // Local variable target → target.method(args)?
     if ctx.is_local(&call.target) {
-        let method = to_snake(&call.method);
+        let method = rust_method_name(&call.method);
+        let method_snake = to_snake(&call.method);
         if let Some(type_name) = ctx.local_type(&call.target) {
             // If the local's type is a known trait, its methods are async and
             // fallible (`#[async_trait]` + `-> Result`): emit `.await?`.
             if ctx.name_to_shape.get(type_name) == Some(&Shape::Trait) {
-                return format!("{}.{}({}).await?", call.target, method, args_str);
+                return format!("{}.{}({}).await?", call.target, method_snake, args_str);
             }
             // Known concrete method (e.g. aggregate fn) — call with ?
             if ctx.method_returns.contains_key(&(type_name.to_string(), call.method.clone())) {
                 let cloned_args = clone_args(&call.args, ctx);
-                return format!("{}.{}({})?", call.target, method, cloned_args);
+                let suffix = receiver_call_suffix(
+                    &Expr::Ident(call.target.clone()),
+                    &call.method,
+                    ctx,
+                );
+                return format!("{}.{}({}){}", call.target, method_snake, cloned_args, suffix);
             }
+        }
+        // Stub getters that return Result<&str, _> (e.g. enum as_s): own a String.
+        if (call.method == "as_s" || call.method == "as_n" || call.method.starts_with("as_"))
+            && call.args.is_empty()
+            && ctx.fallible_methods.contains(&call.method)
+        {
+            return format!(
+                "{}.{}().map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{{:?}}\", e)))?",
+                call.target,
+                to_snake(&call.method)
+            );
         }
         // Unknown method on local — clone args to avoid move issues.
         // Collection predicate methods need .iter() prefix in Rust.
         let iter_methods = ["any", "all", "find", "filter", "map", "for_each", "count", "flat_map"];
-        if iter_methods.contains(&method.as_str()) {
-            return format!("{}.iter().{}({})", call.target, method, clone_args(&call.args, ctx));
+        if iter_methods.contains(&method_snake.as_str()) {
+            return format!(
+                "{}.iter().{}({})",
+                call.target,
+                method_snake,
+                clone_args(&call.args, ctx)
+            );
         }
-        return format!("{}.{}({})", call.target, method, clone_args(&call.args, ctx));
+        let suffix = receiver_call_suffix(
+            &Expr::Ident(call.target.clone()),
+            &call.method,
+            ctx,
+        );
+        return format!(
+            "{}.{}({}){}",
+            call.target,
+            method_snake,
+            clone_args(&call.args, ctx),
+            suffix
+        );
     }
     if call.method.is_empty() {
         // Bare call: now() → Utc::now(), others → as-is (cloning value args so
@@ -951,10 +1191,30 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         //
         // If target has dots (e.g. `sqlx.Query`), the last segment is the
         // struct name — emit `Struct::method(args)` (Rust path syntax).
-        if call.target.contains('.') {
+        // Skip `self.field` — already handled above when in_aggregate_fn.
+        if call.target.contains('.') && !call.target.starts_with("self.") {
             let parts: Vec<&str> = call.target.split('.').collect();
             let struct_name = parts.last().unwrap_or(&"");
-            return format!("{}::{}({})", struct_name, to_snake(&call.method), args_str);
+            // Qualify via stub map when present
+            let qualified = if let Some((crate_name, original_name)) =
+                ctx.stub_type_crate.get(*struct_name).or_else(|| {
+                    // case-insensitive match for Client vs client
+                    ctx.stub_type_crate
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(struct_name))
+                        .map(|(_, v)| v)
+                }) {
+                format!("{}::{}", crate_name, original_name)
+            } else {
+                (*struct_name).to_string()
+            };
+            let m = rust_method_name(&call.method);
+            let suffix = if call.method == "send" || ctx.fallible_methods.contains(&call.method) {
+                ".await?"
+            } else {
+                ""
+            };
+            return format!("{}::{}({}){}", qualified, m, args_str, suffix);
         }
         format!("{}_{}({})", to_snake(&call.target), to_snake(&call.method), args_str)
     }
@@ -970,12 +1230,22 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
             match a.condition.as_deref() {
                 // Fallible-call guard (`guard call X.method(...)`): the call
                 // returns a Result that must be Ok — propagate its error as a
-                // domain validation error. Only for port/trait calls (not local predicates).
-                Some(cond @ Expr::Call(c)) if ctx.name_to_shape.get(&c.target) == Some(&Shape::Trait) => {
+                // domain validation error. Ports/traits and Result-returning
+                // value methods (e.g. Email.validate) use map_err; bool
+                // predicates use the branch below.
+                Some(cond @ Expr::Call(c))
+                    if !c.method.is_empty()
+                        && (ctx.name_to_shape.contains_key(&c.target)
+                            || ctx.fallible_methods.contains(&c.method)
+                            || c.method == "validate") =>
+                {
                     let call_str = expr_to_rust(cond, ctx);
                     // translate_call may already append `?`; strip it so our
                     // map_err drives the propagation.
-                    let base = call_str.strip_suffix('?').unwrap_or(&call_str);
+                    let base = call_str
+                        .strip_suffix(".await?")
+                        .or_else(|| call_str.strip_suffix('?'))
+                        .unwrap_or(&call_str);
                     format!(
                         "{}.map_err(|_| DomainError::Validation(\"{}\".to_string()))?",
                         base, msg_escaped
@@ -1037,6 +1307,48 @@ pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
     }
 }
 
+/// Binding names introduced by a match arm pattern string (e.g. `Some(item)` → `item`).
+fn pattern_binding_names(pattern: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cur = String::new();
+    let mut in_ident = false;
+    for ch in pattern.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            cur.push(ch);
+            in_ident = true;
+        } else if in_ident {
+            // Skip keywords / constructors (Some, None, Ok, Err, true, false)
+            let skip = matches!(
+                cur.as_str(),
+                "Some" | "None" | "Ok" | "Err" | "true" | "false" | "_"
+            ) || cur
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false);
+            if !skip && !cur.is_empty() {
+                names.push(cur.clone());
+            }
+            cur.clear();
+            in_ident = false;
+        }
+    }
+    if in_ident {
+        let skip = matches!(
+            cur.as_str(),
+            "Some" | "None" | "Ok" | "Err" | "true" | "false" | "_"
+        ) || cur
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
+        if !skip && !cur.is_empty() {
+            names.push(cur);
+        }
+    }
+    names
+}
+
 /// Convert a structured Pattern to Rust pattern syntax.
 pub fn pattern_to_rust(pat: &Pattern) -> String {
     match pat {
@@ -1087,6 +1399,8 @@ impl GenCtx {
             async_fns: self.async_fns.clone(),
             state_locals: self.state_locals.clone(),
             stub_type_crate: self.stub_type_crate.clone(),
+            fallible_methods: self.fallible_methods.clone(),
+            expected_return_rust: self.expected_return_rust.clone(),
         }
     }
 }

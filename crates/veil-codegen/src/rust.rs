@@ -154,6 +154,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             &module_crates,
             &main_body,
             &resolved_links,
+            registry,
         ));
         if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
             if !ws.content.contains("crates/veil_bin") {
@@ -298,10 +299,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {{
     )
 }
 
+/// Look up a stub `harness_field Type` recipe. Returns (local_let_name, rust_expr).
+fn stub_harness_field_expr(
+    registry: &LayerRegistry,
+    type_name: &str,
+) -> Option<(String, String)> {
+    for stub in &registry.stubs {
+        if let Some(expr) = stub.harness_fields.get(type_name) {
+            let let_name = format!("_stub_{}", to_snake(type_name));
+            return Some((let_name, expr.trim().to_string()));
+        }
+        // Also match when type is aliased (e.g. S3Client) — strip common prefixes? skip.
+    }
+    None
+}
+
 fn gen_local_harness_main(
     sol: &Solution,
     modules: &[&Construct],
-    _registry: &LayerRegistry,
+    registry: &LayerRegistry,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -337,27 +353,85 @@ fn gen_local_harness_main(
         }
 
         out.push_str(&format!("    // ── context {} ──\n", module.name));
+        // Collect stub harness_field constructors needed by @field annotations.
+        // Construction recipes live on the .stub (not in the engine).
+        let mut emitted_harness_lets: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for ad in adapters {
+            for ann in &ad.annotations {
+                if ann.name != "field" {
+                    continue;
+                }
+                for arg in &ann.args {
+                    let ftype = arg
+                        .split_once(':')
+                        .map(|(_, t)| t.trim())
+                        .unwrap_or("")
+                        .to_string();
+                    if ftype.is_empty() {
+                        continue;
+                    }
+                    if emitted_harness_lets.contains(&ftype) {
+                        continue;
+                    }
+                    if let Some((let_name, expr)) =
+                        stub_harness_field_expr(registry, &ftype)
+                    {
+                        out.push_str(&format!(
+                            "    // stub harness_field {ftype}\n\
+                             let {let_name} = {expr};\n\n"
+                        ));
+                        emitted_harness_lets.insert(ftype);
+                    }
+                }
+            }
+        }
         for ad in adapters {
             let target = ad.target.as_deref().unwrap_or("Send");
             // Check if adapter has @env fields to populate from environment
             let env_ann = ad.annotations.iter().find(|a| a.name == "env");
-            let fields_init = if let Some(env_a) = env_ann {
-                env_a.args.iter().map(|arg| {
+            let mut fields_init = String::new();
+            // @field(name: Type) — wire from stub harness_field or Default
+            for ann in &ad.annotations {
+                if ann.name == "field" {
+                    for arg in &ann.args {
+                        let (fname, ftype) = if let Some((n, t)) = arg.split_once(':') {
+                            (n.trim(), t.trim())
+                        } else {
+                            (arg.trim(), "String")
+                        };
+                        if let Some((let_name, _)) =
+                            stub_harness_field_expr(registry, ftype)
+                        {
+                            fields_init.push_str(&format!(
+                                "        {fname}: {let_name}.clone(),\n"
+                            ));
+                        } else {
+                            fields_init.push_str(&format!(
+                                "        {fname}: Default::default(),\n"
+                            ));
+                        }
+                    }
+                }
+            }
+            if let Some(env_a) = env_ann {
+                for arg in &env_a.args {
                     // Match adapter struct field naming: last segment after '_'
-                    // DYNAMO_TABLE → table, APP_ID → id
                     let full = arg.to_lowercase();
                     let field_name = full.rsplit('_').next().unwrap_or(&full);
-                    format!("        {field_name}: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n")
-                }).collect::<String>()
+                    fields_init.push_str(&format!(
+                        "        {field_name}: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n"
+                    ));
+                }
             } else if !ad.fields.is_empty() {
-                ad.fields.iter().map(|f| {
+                for f in &ad.fields {
                     let field_name = to_snake(&f.name);
                     let env_key = f.name.to_uppercase();
-                    format!("        {field_name}: std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into()),\n")
-                }).collect::<String>()
-            } else {
-                String::new()
-            };
+                    fields_init.push_str(&format!(
+                        "        {field_name}: std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into()),\n"
+                    ));
+                }
+            }
             if fields_init.is_empty() {
                 out.push_str(&format!(
                     "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name}{{}});\n",
@@ -575,6 +649,7 @@ fn gen_bin_crate(
     module_crates: &[String],
     main_body: &str,
     links: &[crate::links::ResolvedLink],
+    registry: &LayerRegistry,
 ) -> Vec<GeneratedFile> {
     let mut deps = String::from(
         "tokio = { workspace = true }\nuuid = { workspace = true }\nserde_json = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\naxum = \"0.8\"\ntower-http = { version = \"0.6\", features = [\"cors\"] }\n",
@@ -585,6 +660,18 @@ fn gen_bin_crate(
     // CAP-001: external crate links on veil_bin (host / @main).
     for link in links {
         deps.push_str(&crate::links::cargo_workspace_dep_line(link));
+    }
+    // Companion crates + primary stubs used by harness_field / @field wiring.
+    for stub in &registry.stubs {
+        let crate_key = stub.name.clone();
+        if !deps.contains(&crate_key) {
+            deps.push_str(&format!("{crate_key} = {{ workspace = true }}\n"));
+        }
+        for (dep_name, _) in &stub.cargo_deps {
+            if !deps.contains(dep_name) {
+                deps.push_str(&format!("{dep_name} = {{ workspace = true }}\n"));
+            }
+        }
     }
     // Product host needs tracing-subscriber when linking veil-server.
     if links
@@ -657,7 +744,7 @@ fn gen_workspace_toml(
         }
     }
 
-    // GEN-006: deps/features from stub metadata only (no engine hardcode for sqlx).
+    // GEN-006: deps/features from stub metadata only (no engine hardcode).
     let mut extra_deps = String::new();
     for stub in &registry.stubs {
         if stub.cargo_features.is_empty() {
@@ -674,6 +761,12 @@ fn gen_workspace_toml(
                 stub.version,
                 feats.join(", ")
             ));
+        }
+        // Companion crates declared on the stub (e.g. aws-config for dynamodb).
+        for (dep_name, dep_ver) in &stub.cargo_deps {
+            if !extra_deps.contains(dep_name) {
+                extra_deps.push_str(&format!("{dep_name} = \"{dep_ver}\"\n"));
+            }
         }
     }
     // CAP-001: path deps from `link` declarations.
@@ -1763,6 +1856,7 @@ futures = "0.3"
     lib.push_str("    #[error(\"External service error: {0}\")]\n    External(String),\n");
     lib.push_str("}\n\n");
     lib.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for DomainError {\n    fn from(e: ValidationError) -> Self {\n        DomainError::Validation(e.0)\n    }\n}\n\n");
+    lib.push_str("impl From<serde_json::Error> for DomainError {\n    fn from(e: serde_json::Error) -> Self {\n        DomainError::External(e.to_string())\n    }\n}\n\n");
 
     // Trait names in scope — used to box value-position references (List<Trait>).
     let trait_names: std::collections::HashSet<String> =
@@ -2099,6 +2193,8 @@ fn gen_impls(
                 ctx.method_returns = seeded.method_returns;
                 ctx.struct_fields = seeded.struct_fields;
                 ctx.stub_type_crate = seeded.stub_type_crate;
+                ctx.fallible_methods = seeded.fallible_methods;
+                ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
                 // calls them, but fluent builder lowering is incomplete.
@@ -2139,7 +2235,9 @@ fn gen_impls(
                             // GEN-002: lower authored adapter bodies. If the last
                             // expr already returns (`ret Ok` → `return Ok(...)`),
                             // emit it as-is — do not wrap again.
-                            let is_return = rust_expr.trim_start().starts_with("return ");
+                            let is_return = rust_expr.trim_start().starts_with("return ")
+                                || rust_expr.contains("return Ok(")
+                                || rust_expr.contains("return Err(");
                             if is_return || rust_expr.contains("todo!") {
                                 out.push_str(&format!("        {rust_expr}\n"));
                             } else if ret_rust == "Result<(), DomainError>" {

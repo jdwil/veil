@@ -10,3 +10,6 @@ runtime/bootstrap/static/viewer/
 *.swp
 /target
 .veil-dev/
+
+# Git checkouts of sibling repos (see scripts/sync-git-deps.sh)
+vendor/

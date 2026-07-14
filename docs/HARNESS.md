@@ -88,21 +88,63 @@ emits `crates/veil_bin` as a small **axum REST harness** (RT-001 / RT-003):
 - Handlers call generated application `fn`s with wired `Deps` (port adapters).
 
 This is the intentional **local product API** surface for dual-loop / Vite proxy —
-not the Bus message protocol (that remains for multi-context / platform).
+not the Bus message protocol.
 
 Frontends should call **relative** `/api/...` and proxy to `dev_port` (see
-`veil.toml` + Vite `server.proxy`).
+`veil.toml` + Vite `server.proxy`). Use normal `fetch` / WebSocket clients in UI
+stores — do **not** route browser traffic through the Bus.
 
-### Cloud SDK adapters (Dynamo, S3, …)
+**Author `@proxy` on the UI package** so typescript/sveltekit5 gen emits Vite
+proxy config (do not hand-edit forever under `generated/`):
 
-`.stub` files teach the **type checker** about external crates. Adapter `impl`
-bodies that call stub types used to emit a hard `Err(External("not configured"))`
-so pure-runtime crates always linked. Non-empty bodies now attempt expression
-lowering; **fluent AWS builders are still incomplete**. Until RT-cloud work:
+```veil
+@proxy("/api", "http://127.0.0.1:3000")   # BEFORE `app` — leading annotation
+app MyUi
+  …
+```
 
-1. Prefer **memory / local** adapters for local harness.
-2. Or hand-write Rust adapters behind `impl` escape (tracked debt).
-3. Do not invent `self.client` without `@field(client: Client)` + construction.
+Layer: `layers/sveltekit5.layer` (`match * where has_annotation("proxy")`).
+IDE dual-loop ▶ toolbar: `veil.toml` `[[targets]]` + `/api/dev/*` — see
+[IDE_AGENT_PLATFORM.md](./IDE_AGENT_PLATFORM.md).
+
+### Bus (backend) vs REST/WebSocket (frontend)
+
+| Surface | Who | Role |
+|---------|-----|------|
+| **Bus** | Backend services / contexts | Inter-process & multi-context messaging (commands, events, sagas). Not a browser transport. |
+| **HTTP REST harness** | `@main` product bin | Local dual-loop + product API (`/api/...`). What Vite proxies to. |
+| **WebSockets / auth** | App / host layer | Session auth, cookies, JWT, WS upgrades — sit on the HTTP host, not on Bus envelopes. |
+
+Elevating REST/auth into the Bus would force a paradigm on frontend developers who
+already code `fetch` into stores. Keep Bus for **server-side** IPC; keep HTTPS +
+auth middleware on the **product host** edge.
+
+### Cloud SDK adapters (via `.stub` only)
+
+`.stub` files declare third-party crate APIs. The engine has **no SDK-specific
+knowledge** (no hard-coded Dynamo/S3/aws-config). Stubs may also declare:
+
+| Stub directive | Purpose |
+|----------------|---------|
+| `cargo_features a, b` | Cargo features for the crate |
+| `cargo_deps name=ver` | Companion crates (e.g. `aws-config=1`) |
+| `types_module types` | Model types live under `crate::types::…` |
+| `root_types Client, Config` | Types that stay at crate root |
+| `harness_field Client """…"""` | Rust expr for `@field(client: Client)` in the local harness |
+
+Adapter `impl` bodies that call stub types are lowered generically (fluent
+chains, PascalCase enum variants, fallible `.send()` → `.await.map_err(...)?`).
+
+```bash
+# Example dual-loop (env vars are whatever your stub's harness_field expects)
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1
+export DYNAMO_ENDPOINT=http://127.0.0.1:4566 DYNAMO_TABLE=wear_test_initiatives
+VEIL_LAYERS_DIR=…/veil/layers veil gen wear_test.veil -t rust -o generated/backend
+cd generated/backend && cargo run -p veil_bin
+```
+
+Empty bodies still emit `Err(External("not configured"))` for pure-runtime placeholders.
+Do not invent `self.client` without `@field` + a stub `harness_field` (or `Default`).
 
 ## Product host (CAP-002 / CAP-006)
 

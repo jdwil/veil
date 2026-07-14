@@ -196,15 +196,23 @@ impl AcpProcess {
                         }
                     }
                 }
-                // Agent may send requests we should auto-ack (fs read/write)
+                // Agent may send requests (fs read/write, tool approval, etc.).
+                // With MCP tools registered, Kiro routes tool calls through MCP.
+                // For any remaining host requests, return method-not-found gracefully.
                 if let Some(req_id) = msg.get("id").cloned() {
                     if msg.get("method").is_some() && msg.get("result").is_none() {
-                        // Best-effort cancel/allow — Kiro with --trust-all-tools
-                        // rarely needs this; answer with empty error ignore.
+                        let req_method = msg
+                            .get("method")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        // Log for debugging but don't break the session.
+                        eprintln!(
+                            "[veil-acp] unhandled agent request: {req_method} (responding method_not_found)"
+                        );
                         let _ = self.write_msg(&json!({
                             "jsonrpc": "2.0",
                             "id": req_id,
-                            "error": { "code": -32601, "message": "not implemented by VEIL host" }
+                            "error": { "code": -32601, "message": format!("method not supported by VEIL host: {req_method}") }
                         }));
                     }
                 }
@@ -250,7 +258,7 @@ impl AcpProcess {
 
     fn initialize(&mut self) -> Result<(), String> {
         let timeout = Duration::from_secs(30);
-        let _ = self.request(
+        self.request(
             "initialize",
             json!({
                 "protocolVersion": 1,
@@ -269,10 +277,16 @@ impl AcpProcess {
         if let Some(ref s) = self.session_id {
             return Ok(s.clone());
         }
+        // Use project directory as session cwd so Kiro loads .kiro/settings/mcp.json.
+        // IMPORTANT: Do NOT pass a non-empty mcpServers array in session/new —
+        // Kiro 2.12 exits (stdout closed) on that shape. Workspace mcp.json
+        // with `{ "mcpServers": { "name": { "url": "http://..." } } }` works.
+        let session_cwd = resolve_acp_cwd();
+        write_workspace_mcp_json(&session_cwd);
         let result = self.request(
             "session/new",
             json!({
-                "cwd": self.cwd,
+                "cwd": session_cwd,
                 "mcpServers": []
             }),
             timeout,
@@ -403,6 +417,91 @@ fn extract_text(v: &Value) -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve the cwd for ACP sessions — use the active project directory.
+///
+/// Kiro loads MCP server config from `.kiro/settings/mcp.json` relative to cwd,
+/// so pointing at the project root ensures it finds the VEIL tools config.
+fn resolve_acp_cwd() -> String {
+    // If we have a project name, resolve its path from projects_dir.
+    if let Some(project) = ACP_PROJECT.lock().ok().and_then(|g| g.clone()) {
+        let projects_dir = crate::config::resolve_projects_dir();
+        let project_path = projects_dir.join(&project);
+        if project_path.is_dir() {
+            return project_path.to_string_lossy().to_string();
+        }
+    }
+    // Fallback to env or process cwd.
+    std::env::var("VEIL_ACP_CWD").unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".into())
+    })
+}
+
+/// Write `.kiro/settings/mcp.json` so Kiro discovers VEIL MCP (incl. wiki_*).
+///
+/// Proven working shape (Kiro 2.12): map of name → `{ "url": "http://host/api/mcp" }`.
+/// Do not put non-empty mcpServers in session/new — that crashes the agent.
+fn write_workspace_mcp_json(session_cwd: &str) {
+    let dir = std::path::Path::new(session_cwd).join(".kiro/settings");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let port = std::env::var("VEIL_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .or_else(|| {
+            std::env::var("PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+        })
+        .unwrap_or(3001);
+    let project = ACP_PROJECT.lock().ok().and_then(|g| g.clone());
+    let mcp_url = if let Some(ref proj) = project {
+        format!("http://127.0.0.1:{port}/api/p/{proj}/mcp")
+    } else {
+        format!("http://127.0.0.1:{port}/api/mcp")
+    };
+    let tool_names = [
+        "veil_check",
+        "veil_outline",
+        "read_source",
+        "write_source",
+        "rename_construct",
+        "list_files",
+        "select_file",
+        "create_file",
+        "wiki_search",
+        "wiki_read",
+        "wiki_traverse",
+        "wiki_create",
+        "wiki_update",
+        "wiki_list",
+    ];
+    let doc = json!({
+        "mcpServers": {
+            "veil-ide-tools": {
+                "url": mcp_url,
+                "autoApprove": tool_names
+            }
+        }
+    });
+    let path = dir.join("mcp.json");
+    if let Ok(s) = serde_json::to_string_pretty(&doc) {
+        let _ = std::fs::write(path, s);
+    }
+}
+
+/// Active project name for ACP sessions (set before spawn_blocking).
+static ACP_PROJECT: Mutex<Option<String>> = Mutex::new(None);
+
+/// Set the active project for ACP tool routing. Call before prompting.
+pub fn set_acp_project(name: Option<String>) {
+    if let Ok(mut g) = ACP_PROJECT.lock() {
+        *g = name;
+    }
 }
 
 /// Process-wide ACP session (one agent child).
