@@ -305,13 +305,16 @@ fn gen_local_harness_main(
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "//! Local harness for package `{}` (RT-001 / RT-003).\n\
-         //! Wires InProcessBus + generated context crates; runs a demo path.\n\
+        "//! HTTP harness for package `{}` (RT-001 / RT-003).\n\
+         //! Wires adapters + exposes services as REST endpoints.\n\
          //! `cargo run -p veil_bin` from the generated workspace root.\n\n",
         sol.name
     ));
     out.push_str("use std::sync::Arc;\n");
+    out.push_str("use axum::{Router, Json, extract::State, extract::Query, routing::{get, post}, http::StatusCode};\n");
+    out.push_str("use tower_http::cors::CorsLayer;\n");
     out.push_str("use uuid::Uuid;\n");
+    out.push_str("use serde_json::Value;\n");
     out.push_str("use veil_shared::*;\n\n");
     for m in modules {
         let cn = to_snake(&m.name);
@@ -322,11 +325,7 @@ fn gen_local_harness_main(
         out.push_str(&format!("use {cn}::ports::*;\n"));
     }
     out.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
-    out.push_str(&format!(
-        "    println!(\"veil_bin: starting local harness for {}\");\n",
-        sol.name
-    ));
-    out.push_str("    let bus = Arc::new(InProcessBus::new());\n\n");
+    out.push_str("    let port: u16 = std::env::var(\"PORT\").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);\n\n");
 
     for module in modules {
         let crate_name = to_snake(&module.name);
@@ -340,21 +339,45 @@ fn gen_local_harness_main(
         out.push_str(&format!("    // ── context {} ──\n", module.name));
         for ad in adapters {
             let target = ad.target.as_deref().unwrap_or("Send");
-            out.push_str(&format!(
-                "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name}{{}});\n",
-                sn = to_snake(&ad.name),
-                name = ad.name,
-            ));
+            // Check if adapter has @env fields to populate from environment
+            let env_ann = ad.annotations.iter().find(|a| a.name == "env");
+            let fields_init = if let Some(env_a) = env_ann {
+                env_a.args.iter().map(|arg| {
+                    // Match adapter struct field naming: last segment after '_'
+                    // DYNAMO_TABLE → table, APP_ID → id
+                    let full = arg.to_lowercase();
+                    let field_name = full.rsplit('_').next().unwrap_or(&full);
+                    format!("        {field_name}: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n")
+                }).collect::<String>()
+            } else if !ad.fields.is_empty() {
+                ad.fields.iter().map(|f| {
+                    let field_name = to_snake(&f.name);
+                    let env_key = f.name.to_uppercase();
+                    format!("        {field_name}: std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into()),\n")
+                }).collect::<String>()
+            } else {
+                String::new()
+            };
+            if fields_init.is_empty() {
+                out.push_str(&format!(
+                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name}{{}});\n",
+                    sn = to_snake(&ad.name),
+                    name = ad.name,
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name} {{\n{fields_init}    }});\n",
+                    sn = to_snake(&ad.name),
+                    name = ad.name,
+                ));
+            }
         }
 
         if services.is_empty() {
             continue;
         }
 
-        // Deps fields: one per adapter target (to_snake of trait name).
-        // Bus is only included when a service has @dep bus or calls bus —
-        // gen_deps_struct omits unused ports; match adapters only here.
-        out.push_str(&format!("    let {crate_name}_deps = {crate_name}_Deps {{\n"));
+        out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
         for ad in adapters {
             if let Some(target) = &ad.target {
                 out.push_str(&format!(
@@ -364,32 +387,137 @@ fn gen_local_harness_main(
                 ));
             }
         }
-        out.push_str("    };\n");
-        // Keep bus live for multi-context registration demos (RT-004).
-        out.push_str("    let _bus = &bus;\n");
+        out.push_str("    });\n\n");
 
-        if let Some(svc) = services.first() {
+        // Generate RESTful route handlers for each service.
+        // Detect CRUD patterns: List* → GET /resource, Get* → GET /resource/:id,
+        // Create* → POST /resource, Update* → PUT /resource/:id, Delete* → DELETE /resource/:id
+        out.push_str("    let app = Router::new()\n");
+        let mut routes_emitted: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for svc in services {
             let fn_name = to_snake(&svc.name);
-            let mut args = vec![format!("&{crate_name}_deps")];
+            let svc_name = &svc.name;
+            let (method, path) = derive_rest_route(svc_name);
+            routes_emitted.entry(path.clone()).or_default().push(format!("{method}({fn_name}_handler)"));
+        }
+        for (path, handlers) in &routes_emitted {
+            let combined = handlers.join(".").replace("get(", "get(").replace("post(", "post(").replace("put(", "put(").replace("delete(", "delete(");
+            out.push_str(&format!("        .route(\"{path}\", {})\n", handlers.join(".")));
+        }
+        out.push_str("        .route(\"/health\", get(|| async { \"ok\" }))\n");
+        out.push_str("        .layer(CorsLayer::permissive())\n");
+        out.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
+    }
+
+    out.push_str(&format!(
+        "    println!(\"veil_bin: listening on :{{}}\", port);\n"
+    ));
+    out.push_str("    let listener = tokio::net::TcpListener::bind(format!(\"0.0.0.0:{}\", port)).await?;\n");
+    out.push_str("    axum::serve(listener, app).await?;\n");
+    out.push_str("    Ok(())\n}\n\n");
+
+    // Generate handler functions for each service
+    for module in modules {
+        let crate_name = to_snake(&module.name);
+        let flat = flatten_module(module);
+        for svc in &flat.fns {
+            let fn_name = to_snake(&svc.name);
+            let (method, _) = derive_rest_route(&svc.name);
+            let needs_path_id = method == "get" && !svc.name.starts_with("List")
+                || method == "put" || method == "delete";
+            let needs_body = method == "post" || method == "put";
+
+            // Function signature
+            // List* GET: Query params (not random Uuid defaults — that silently broke local APIs).
+            let is_list_get = method == "get" && svc.name.starts_with("List");
+            if needs_path_id && needs_body {
+                out.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(id): axum::extract::Path<String>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            } else if needs_path_id {
+                out.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(id): axum::extract::Path<String>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            } else if needs_body {
+                out.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            } else if is_list_get {
+                out.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Query(q): Query<std::collections::HashMap<String, String>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            }
+
+            // Extract input args
+            let mut args = vec!["&deps".to_string()];
             for input in &svc.inputs {
                 if input.annotations.iter().any(|a| a.name == "dep") {
                     continue;
                 }
-                args.push(demo_value_for_type(&input.type_expr));
+                let field = to_snake(&input.name);
+                let rust_type = crate::rust::type_to_rust(&input.type_expr);
+
+                // If this is the 'id' field and we have path extraction, use that
+                if field == "id" && needs_path_id {
+                    if rust_type == "Uuid" {
+                        out.push_str(&format!(
+                            "    let {field} = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    } else {
+                        out.push_str(&format!("    let {field} = id.clone();\n"));
+                    }
+                } else if is_list_get {
+                    // GET List*: query string ?tenant_id=… (required for Uuid)
+                    if rust_type == "Uuid" {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok())\
+                             .ok_or(StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    } else if rust_type == "String" {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").cloned().unwrap_or_default();\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").and_then(|s| serde_json::from_str(s).ok())\
+                             .ok_or(StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    }
+                } else if needs_body {
+                    // Extract from JSON body (POST/PUT)
+                    let extract = match rust_type.as_str() {
+                        "Uuid" => format!(
+                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
+                        ),
+                        "String" => format!(
+                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
+                        ),
+                        _ => format!(
+                            "    let {field} = serde_json::from_value(body.get(\"{field}\").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+                        ),
+                    };
+                    out.push_str(&extract);
+                }
+                args.push(field);
             }
             out.push_str(&format!(
-                "    let result = {crate_name}_app::{fn_name}({}).await?;\n",
+                "    match {crate_name}_app::{fn_name}({}).await {{\n",
                 args.join(", ")
             ));
-            out.push_str(&format!(
-                "    println!(\"veil_bin: handler `{fn_name}` result = {{:?}}\", result);\n"
-            ));
+            if method == "delete" {
+                out.push_str("        Ok(_) => Ok(Json(serde_json::json!({\"ok\": true}))),\n");
+            } else {
+                out.push_str("        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_default())),\n");
+            }
+            out.push_str("        Err(e) => { eprintln!(\"error: {e}\"); Err(StatusCode::INTERNAL_SERVER_ERROR) }\n");
+            out.push_str("    }\n}\n\n");
         }
-        out.push('\n');
     }
 
-    out.push_str("    println!(\"veil_bin: local harness OK\");\n");
-    out.push_str("    Ok(())\n}\n");
     out
 }
 
@@ -404,6 +532,43 @@ fn demo_value_for_type(ty: &TypeExpr) -> String {
     }
 }
 
+/// Derive a RESTful (method, path) from a service name.
+/// ListInitiatives → (get, /api/initiatives)
+/// GetInitiative → (get, /api/initiatives/{id})
+/// CreateInitiative → (post, /api/initiatives)
+/// UpdateInitiative → (put, /api/initiatives/{id})
+/// DeleteInitiative → (delete, /api/initiatives/{id})
+fn derive_rest_route(service_name: &str) -> (String, String) {
+    // Strip prefix and pluralize resource
+    let prefixes = [
+        ("List", "get"),
+        ("Get", "get"),
+        ("Create", "post"),
+        ("Update", "put"),
+        ("Delete", "delete"),
+    ];
+    for (prefix, method) in prefixes {
+        if let Some(resource) = service_name.strip_prefix(prefix) {
+            let resource_snake = to_snake(resource);
+            // Pluralize: Initiative → initiatives (simple 's' suffix if not already plural)
+            let resource_plural = if resource_snake.ends_with('s') {
+                resource_snake.clone()
+            } else {
+                format!("{resource_snake}s")
+            };
+            let path = match method {
+                "get" if prefix == "List" => format!("/api/{resource_plural}"),
+                "post" => format!("/api/{resource_plural}"),
+                _ => format!("/api/{resource_plural}/{{id}}"),
+            };
+            return (method.to_string(), path);
+        }
+    }
+    // Fallback: POST to kebab-case name
+    let fallback_path = format!("/api/{}", to_snake(service_name).replace('_', "-"));
+    ("post".to_string(), fallback_path)
+}
+
 /// RT-001b: dedicated binary crate for `@main` / composition root.
 fn gen_bin_crate(
     sol: &Solution,
@@ -412,7 +577,7 @@ fn gen_bin_crate(
     links: &[crate::links::ResolvedLink],
 ) -> Vec<GeneratedFile> {
     let mut deps = String::from(
-        "tokio = { workspace = true }\nuuid = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\n",
+        "tokio = { workspace = true }\nuuid = { workspace = true }\nserde_json = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\naxum = \"0.8\"\ntower-http = { version = \"0.6\", features = [\"cors\"] }\n",
     );
     for c in module_crates {
         deps.push_str(&format!("{c} = {{ path = \"../{c}\" }}\n"));
@@ -1935,15 +2100,21 @@ fn gen_impls(
                 ctx.struct_fields = seeded.struct_fields;
                 ctx.stub_type_crate = seeded.stub_type_crate;
 
-                // Cloud/stub SDK bodies (S3Client::…, DdbClient::…) are VEIL
-                // pseudo-API, not real Rust. Emit a compiling Err placeholder so
-                // pure-runtime (local ports) can link the crate. Real cloud
-                // adapters land behind a future RT/cloud story.
+                // Cloud SDK types from .stub files: we can *parse* VEIL that
+                // calls them, but fluent builder lowering is incomplete.
+                // Prefer emitting the lowered body so `link`/`use` packages that
+                // depend on the real crate can compile when expressions lower
+                // cleanly. When the body is empty, keep the pure-runtime
+                // placeholder (local ports). When body refs stubs *and* every
+                // line still lowers to a stub hook (result_item), use Err.
                 let uses_stub_sdk = mimpl
                     .body
                     .iter()
                     .any(|e| expr_refs_stub_type(e, &ctx.stub_type_crate));
-                if uses_stub_sdk {
+                // Only short-circuit empty bodies that *would* be cloud SDKs with
+                // no authored lines. Non-empty bodies always try expr_to_rust —
+                // that is the real adapter path (GEN-002 / RT cloud).
+                if uses_stub_sdk && mimpl.body.is_empty() {
                     out.push_str(&format!(
                         "        Err(DomainError::External(\
                          \"cloud adapter {}::{} not configured (pure-runtime uses local ports)\"\

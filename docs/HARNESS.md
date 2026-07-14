@@ -70,6 +70,40 @@ Local harness (`veil_bin`) supplies Bus (and allow-all Auth when declared)
 without a handwritten host. Manifest still lists `provided_by: runtime` for
 platform hosts; local gen emits concrete impls so `cargo run -p veil_bin` works.
 
+## HTTP local harness (`@main` without `link veil_server`)
+
+When a product package has `@main` and does **not** link `veil_server`, codegen
+emits `crates/veil_bin` as a small **axum REST harness** (RT-001 / RT-003):
+
+| Service name pattern | Method | Path |
+|---------------------|--------|------|
+| `ListThings` | GET | `/api/things?…` |
+| `GetThing` | GET | `/api/things/{id}` |
+| `CreateThing` | POST | `/api/things` |
+| `UpdateThing` | PUT | `/api/things/{id}` |
+| `DeleteThing` | DELETE | `/api/things/{id}` |
+
+- **List\*** inputs are taken from **query string** (e.g. `?tenant_id=`), not random UUIDs.
+- **Create/Update** inputs from JSON body.
+- Handlers call generated application `fn`s with wired `Deps` (port adapters).
+
+This is the intentional **local product API** surface for dual-loop / Vite proxy —
+not the Bus message protocol (that remains for multi-context / platform).
+
+Frontends should call **relative** `/api/...` and proxy to `dev_port` (see
+`veil.toml` + Vite `server.proxy`).
+
+### Cloud SDK adapters (Dynamo, S3, …)
+
+`.stub` files teach the **type checker** about external crates. Adapter `impl`
+bodies that call stub types used to emit a hard `Err(External("not configured"))`
+so pure-runtime crates always linked. Non-empty bodies now attempt expression
+lowering; **fluent AWS builders are still incomplete**. Until RT-cloud work:
+
+1. Prefer **memory / local** adapters for local harness.
+2. Or hand-write Rust adapters behind `impl` escape (tracked debt).
+3. Do not invent `self.client` without `@field(client: Client)` + construction.
+
 ## Product host (CAP-002 / CAP-006)
 
 ```bash

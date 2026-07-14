@@ -276,6 +276,10 @@ fn type_name_simple(ty: &TypeExpr) -> String {
 pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
     match expr {
         Expr::Ident(name) => {
+            // VEIL null → Rust None
+            if name == "null" {
+                return "None".to_string();
+            }
             if ctx.state_locals.contains(name.as_str()) {
                 // Shared saga state: read from the threaded JSON state.
                 format!("state[\"{}\"]", name)
@@ -315,6 +319,21 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::BinaryOp(op) => {
             let l = expr_to_rust(&op.left, ctx);
             let r = expr_to_rust(&op.right, ctx);
+            // Special case: x != None → x.is_some(), x == None → x.is_none()
+            if r == "None" {
+                return match op.op {
+                    veil_ir::ast::BinOp::NotEq => format!("{}.is_some()", l),
+                    veil_ir::ast::BinOp::Eq => format!("{}.is_none()", l),
+                    _ => format!("{} {} {}", l, binop_to_rust(&op.op), r),
+                };
+            }
+            if l == "None" {
+                return match op.op {
+                    veil_ir::ast::BinOp::NotEq => format!("{}.is_some()", r),
+                    veil_ir::ast::BinOp::Eq => format!("{}.is_none()", r),
+                    _ => format!("{} {} {}", l, binop_to_rust(&op.op), r),
+                };
+            }
             format!("{} {} {}", l, binop_to_rust(&op.op), r)
         }
         Expr::UnaryOp(op) => {
