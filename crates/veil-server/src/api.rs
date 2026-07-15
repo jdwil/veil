@@ -114,11 +114,13 @@ where
 
 /// Single-project IDE API (`/api/ir`, …) — current dual-loop default.
 pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
+    crate::chat_log::init_logger();
     let state = Arc::new(provider);
     // Same DevLoop extension as multi-project — without it `/dev/*` 500s and the
     // IDE launcher (DevToolbar) hides itself.
     let dev_loops: crate::devloop_api::DevLoopState =
         crate::devloop::SharedDevLoops::default();
+    crate::devloop::set_global_dev_loops(dev_loops.clone());
     let router = hub_routes::<Arc<P>>()
         .nest(
             "/api",
@@ -136,6 +138,7 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     let multi = Arc::new(MultiProjectProvider::new(hub));
     let dev_loops: crate::devloop_api::DevLoopState =
         crate::devloop::SharedDevLoops::default();
+    crate::devloop::set_global_dev_loops(dev_loops.clone());
     let ide = ide_routes::<MultiProjectProvider>()
         .layer(axum::Extension(dev_loops))
         .layer(middleware::from_fn_with_state(
@@ -1375,6 +1378,7 @@ async fn get_events<P: SourceProvider>(
         bytes: src.len(),
         path: String::new(),
         reason: "subscribe".into(),
+        active_file: None,
     };
     let mut init_json = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
     if let Some(ref u) = remote {

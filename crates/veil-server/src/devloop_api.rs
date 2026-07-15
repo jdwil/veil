@@ -55,6 +55,25 @@ pub async fn get_dev_targets<P: SourceProvider>(
         return Json(json!({"error": e, "hint": "Add [[targets]] to veil.toml"}));
     }
 
+    // Poll process health + re-probe attached targets before reporting status.
+    let needs_watcher = {
+        let mut map = loops.lock().unwrap();
+        if let Some(dev) = map.get_mut(&project) {
+            dev.poll_health();
+            // If we just discovered running targets, ensure the file watcher is live.
+            dev.any_running() && dev.stop_tx_active() == false
+        } else {
+            false
+        }
+    };
+    if needs_watcher {
+        let _ = devloop::start_file_watcher(
+            loops.clone(),
+            project.clone(),
+            project_root.clone(),
+        );
+    }
+
     let map = loops.lock().unwrap();
     if let Some(dev) = map.get(&project) {
         let targets: Vec<_> = dev.status().iter().map(|s| {
@@ -68,6 +87,7 @@ pub async fn get_dev_targets<P: SourceProvider>(
                 "dev_port": s.config.dev_port,
                 "last_gen": s.last_gen,
                 "last_error": s.last_error,
+                "attached": s.attached,
             })
         }).collect();
         Json(json!({"targets": targets}))

@@ -32,10 +32,12 @@ pub mod acp;
 pub mod mcp;
 pub mod devloop;
 pub mod devloop_api;
+pub mod agent_runtime_tools;
 pub mod layer_edit;
 pub mod project_layout;
 pub mod config;
 pub mod product_host;
+pub mod chat_log;
 
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;

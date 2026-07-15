@@ -15,8 +15,71 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::{json, Value};
 
+use crate::agent_runtime_tools;
 use crate::provider::SourceProvider;
 use crate::rig_tools;
+
+async fn dispatch_runtime_tool(
+    project_root: &std::path::Path,
+    tool_name: &str,
+    arguments: &Value,
+    project_name: Option<&str>,
+) -> Result<String, String> {
+    match tool_name {
+        "dev_status" => {
+            let name = arguments.get("name").and_then(|v| v.as_str());
+            agent_runtime_tools::tool_dev_status(project_root, name, project_name)
+        }
+        "dev_logs" => {
+            let name = arguments.get("name").and_then(|v| v.as_str());
+            let tail = arguments
+                .get("tail")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize);
+            agent_runtime_tools::tool_dev_logs(project_root, name, tail, project_name)
+        }
+        "read_generated" => {
+            let path = arguments.get("path").and_then(|v| v.as_str());
+            let what = arguments.get("what").and_then(|v| v.as_str());
+            let max_chars = arguments
+                .get("max_chars")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize);
+            let list = arguments
+                .get("list")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            agent_runtime_tools::tool_read_generated(project_root, path, what, max_chars, list)
+        }
+        "list_routes" => agent_runtime_tools::tool_list_routes(project_root),
+        "http_request" => {
+            let method = arguments.get("method").and_then(|v| v.as_str());
+            let path = arguments.get("path").and_then(|v| v.as_str());
+            let target = arguments.get("target").and_then(|v| v.as_str());
+            let url = arguments.get("url").and_then(|v| v.as_str());
+            let body = arguments.get("body").and_then(|v| v.as_str());
+            let timeout_ms = arguments.get("timeout_ms").and_then(|v| v.as_u64());
+            agent_runtime_tools::tool_http_request(
+                project_root,
+                method,
+                path,
+                target,
+                url,
+                body,
+                timeout_ms,
+            )
+            .await
+        }
+        "dev_restart" => {
+            let name = arguments.get("name").and_then(|v| v.as_str());
+            agent_runtime_tools::tool_dev_restart(project_root, name, project_name)
+        }
+        "smoke_status" => {
+            agent_runtime_tools::tool_smoke_status(project_root, project_name)
+        }
+        other => Err(format!("unknown runtime tool: {other}")),
+    }
+}
 
 /// MCP protocol version we implement.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -123,6 +186,81 @@ fn mcp_tools() -> Vec<Value> {
                 },
                 "required": ["name"]
             }
+        }),
+        // Runtime observability (AGT-020–028)
+        json!({
+            "name": "dev_status",
+            "description": "Dual-loop target status (running/stopped, ports, last_error). Call when unsure if the backend is up or after smoke failures.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Optional target name filter (e.g. backend)" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "dev_logs",
+            "description": "Read dual-loop gen/check/smoke log lines. After WRITE REJECTED or a 404, call this to see cargo errors.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Target name (e.g. backend)" },
+                    "tail": { "type": "integer", "description": "Last N lines (default 40, max 200)" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "read_generated",
+            "description": "Read files under codegen output dirs (veil.toml [[targets]].output). Use what=harness|routes or path= relative under outputs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path under project (must be under a target output)" },
+                    "what": { "type": "string", "enum": ["harness", "routes"], "description": "Preset: harness main.rs or route lines" },
+                    "max_chars": { "type": "integer" },
+                    "list": { "type": "boolean", "description": "List files under path instead of reading" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "list_routes",
+            "description": "Structured JSON list of axum routes from generated veil_bin harness. Prefer this before inventing API paths.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "http_request",
+            "description": "HTTP request to local dual-loop servers only (127.0.0.1 + configured dev_port). Verify /health and APIs after gen/restart.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "method": { "type": "string", "description": "GET (default), POST, PUT, DELETE, …" },
+                    "path": { "type": "string", "description": "Path e.g. /health or /api/wear_tests" },
+                    "target": { "type": "string", "description": "veil.toml target name (uses its dev_port)" },
+                    "url": { "type": "string", "description": "Absolute http://127.0.0.1:PORT/… (optional)" },
+                    "body": { "type": "string", "description": "Optional JSON body" },
+                    "timeout_ms": { "type": "integer" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "dev_restart",
+            "description": "Stop and start a dual-loop target so cargo run picks up newly generated code after a successful smoke.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Target name (default: all with dev_command)" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "smoke_status",
+            "description": "Last check/smoke log excerpt and VEIL_AGENT_SMOKE flag. Use after writes.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
         }),
         // Mind Palace wiki tools (when MIND_PALACE=1 + AWS configured)
         json!({
@@ -332,6 +470,26 @@ async fn dispatch_tool<P: SourceProvider>(
     tool_name: &str,
     arguments: &Value,
 ) -> Result<String, String> {
+    // Runtime observability tools need project_root only (no active source).
+    let proj = crate::provider::hub::CURRENT_PROJECT
+        .try_with(|n| n.clone())
+        .ok();
+    if matches!(
+        tool_name,
+        "dev_status"
+            | "dev_logs"
+            | "read_generated"
+            | "list_routes"
+            | "http_request"
+            | "dev_restart"
+            | "smoke_status"
+    ) {
+        let root = provider
+            .project_root()
+            .ok_or_else(|| "no project root — open a project first".to_string())?;
+        return dispatch_runtime_tool(&root, tool_name, arguments, proj.as_deref()).await;
+    }
+
     let source = provider.read_source("").await.map_err(|e| format!("read_source: {e}"))?;
     let registry = provider.registry();
 
@@ -362,12 +520,68 @@ async fn dispatch_tool<P: SourceProvider>(
                 .get("content")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "write_source requires 'content' string argument".to_string())?;
+            // Guardrail: verify the new content parses before persisting.
+            // If it has parse errors, reject the write and return the errors.
+            let tokens = veil_parser::lex(content);
+            let parse_result = veil_parser::parse_file_with_registry(&tokens, registry.clone());
+            if let Err(errors) = parse_result {
+                let err_msg = errors
+                    .iter()
+                    .take(5)
+                    .map(|e| format!("  {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Ok(format!(
+                    "WRITE REJECTED — parse errors in new content (file NOT saved):\n{err_msg}\n\n\
+                     Fix the syntax errors and try again. Do NOT use JavaScript/TypeScript syntax \
+                     in VEIL effect/fn bodies. Use VEIL expression forms only."
+                ));
+            }
+            let prev = provider.read_source("").await.ok();
+            let files = provider.list_files().await;
+            let active_path = files
+                .iter()
+                .find(|f| f.active)
+                .map(|f| f.path.clone())
+                .unwrap_or_default();
+            let active_name = files
+                .iter()
+                .find(|f| f.active)
+                .map(|f| f.name.clone())
+                .unwrap_or_default();
             provider
                 .write_source("", content)
                 .await
                 .map_err(|e| format!("write failed: {e}"))?;
+            // Backend smoke (gen + cargo check). Restore file if broken.
+            if let Some(root) = provider.project_root() {
+                let proj = crate::provider::hub::CURRENT_PROJECT
+                    .try_with(|n| n.clone())
+                    .ok();
+                if let Err(smoke_err) =
+                    crate::devloop::smoke_agent_write(&root, &active_path, proj.as_deref())
+                {
+                    if let Some(prev) = prev {
+                        let _ = provider.write_source("", &prev).await;
+                        let _ = crate::devloop::smoke_agent_write(
+                            &root,
+                            &active_path,
+                            proj.as_deref(),
+                        );
+                    }
+                    return Ok(format!(
+                        "WRITE REJECTED — backend smoke test failed (file restored).\n\
+                         Active file: {active_name}\n\n{smoke_err}\n\n\
+                         Next: call dev_logs / smoke_status, fix the VEIL, retry write_source.\n\
+                         After success: list_routes → dev_restart → http_request."
+                    ));
+                }
+            }
             let check = rig_tools::run_check(content, &registry);
-            Ok(format!("Wrote {} bytes to active file.\n\n{check}", content.len()))
+            Ok(format!(
+                "Wrote {} bytes to active file.\nSmoke: backend gen + cargo check OK.\n\n{check}",
+                content.len()
+            ))
         }
 
         "rename_construct" => {

@@ -40,6 +40,14 @@ pub trait AgentHost: Send + Sync {
     /// Active file layer registry (async so multi-project can re-scope).
     async fn registry(&self) -> LayerRegistry;
     async fn reload_from_disk(&self) -> Result<usize, String>;
+    /// Project root for dual-loop / generated tree tools (AGT-020+).
+    fn project_root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+    /// Multi-project name when known.
+    fn project_name(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Shared mutable workspace for a single agent turn.
@@ -585,6 +593,313 @@ impl Tool for WriteSourceTool {
         let reg = self.ws.registry_snapshot();
         let check = run_check(&args.content, &reg);
         Ok(format!("Wrote {len} bytes to active file.\n\n{check}"))
+    }
+}
+
+// ─── Runtime observability (AGT-020–028) ───────────────────────────────────
+
+fn host_project(ws: &Workspace) -> Result<(std::path::PathBuf, Option<String>), ToolErr> {
+    let host = ws
+        .host
+        .as_ref()
+        .ok_or_else(|| ToolErr("no project host — open a project".into()))?;
+    let root = host
+        .project_root()
+        .ok_or_else(|| ToolErr("no project root".into()))?;
+    Ok((root, host.project_name()))
+}
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct DevStatusArgs {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct DevStatusTool {
+    pub ws: Workspace,
+}
+
+impl Tool for DevStatusTool {
+    const NAME: &'static str = "dev_status";
+    type Error = ToolErr;
+    type Args = DevStatusArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Dual-loop target status (ports, running/stopped, last_error).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Optional target filter" }
+                }
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (root, proj) = host_project(&self.ws)?;
+        self.ws.log("dev_status", args.name.as_deref().unwrap_or("*"));
+        crate::agent_runtime_tools::tool_dev_status(
+            &root,
+            args.name.as_deref(),
+            proj.as_deref(),
+        )
+        .map_err(ToolErr)
+    }
+}
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct DevLogsArgs {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub tail: Option<usize>,
+}
+
+#[derive(Clone)]
+pub struct DevLogsTool {
+    pub ws: Workspace,
+}
+
+impl Tool for DevLogsTool {
+    const NAME: &'static str = "dev_logs";
+    type Error = ToolErr;
+    type Args = DevLogsArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Dual-loop gen/check/smoke logs. Use after WRITE REJECTED or 404.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "tail": { "type": "integer" }
+                }
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (root, proj) = host_project(&self.ws)?;
+        self.ws.log("dev_logs", args.name.as_deref().unwrap_or("*"));
+        crate::agent_runtime_tools::tool_dev_logs(
+            &root,
+            args.name.as_deref(),
+            args.tail,
+            proj.as_deref(),
+        )
+        .map_err(ToolErr)
+    }
+}
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct ReadGeneratedArgs {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub what: Option<String>,
+    #[serde(default)]
+    pub max_chars: Option<usize>,
+    #[serde(default)]
+    pub list: bool,
+}
+
+#[derive(Clone)]
+pub struct ReadGeneratedTool {
+    pub ws: Workspace,
+}
+
+impl Tool for ReadGeneratedTool {
+    const NAME: &'static str = "read_generated";
+    type Error = ToolErr;
+    type Args = ReadGeneratedArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Read codegen output (what=harness|routes or path under target output).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "what": { "type": "string", "enum": ["harness", "routes"] },
+                    "max_chars": { "type": "integer" },
+                    "list": { "type": "boolean" }
+                }
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (root, _) = host_project(&self.ws)?;
+        self.ws.log(
+            "read_generated",
+            args.what
+                .clone()
+                .or(args.path.clone())
+                .unwrap_or_else(|| "—".into()),
+        );
+        crate::agent_runtime_tools::tool_read_generated(
+            &root,
+            args.path.as_deref(),
+            args.what.as_deref(),
+            args.max_chars,
+            args.list,
+        )
+        .map_err(ToolErr)
+    }
+}
+
+#[derive(Clone)]
+pub struct ListRoutesTool {
+    pub ws: Workspace,
+}
+
+impl Tool for ListRoutesTool {
+    const NAME: &'static str = "list_routes";
+    type Error = ToolErr;
+    type Args = EmptyArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "JSON list of routes from generated veil_bin harness.".into(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+        }
+    }
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (root, _) = host_project(&self.ws)?;
+        self.ws.log("list_routes", "harness");
+        crate::agent_runtime_tools::tool_list_routes(&root).map_err(ToolErr)
+    }
+}
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct HttpRequestArgs {
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone)]
+pub struct HttpRequestTool {
+    pub ws: Workspace,
+}
+
+impl Tool for HttpRequestTool {
+    const NAME: &'static str = "http_request";
+    type Error = ToolErr;
+    type Args = HttpRequestArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "HTTP to local dual-loop ports only (127.0.0.1 + dev_port).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "method": { "type": "string" },
+                    "path": { "type": "string" },
+                    "target": { "type": "string" },
+                    "url": { "type": "string" },
+                    "body": { "type": "string" },
+                    "timeout_ms": { "type": "integer" }
+                }
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (root, _) = host_project(&self.ws)?;
+        self.ws.log(
+            "http_request",
+            format!(
+                "{} {}",
+                args.method.as_deref().unwrap_or("GET"),
+                args.path.as_deref().or(args.url.as_deref()).unwrap_or("/health")
+            ),
+        );
+        crate::agent_runtime_tools::tool_http_request(
+            &root,
+            args.method.as_deref(),
+            args.path.as_deref(),
+            args.target.as_deref(),
+            args.url.as_deref(),
+            args.body.as_deref(),
+            args.timeout_ms,
+        )
+        .await
+        .map_err(ToolErr)
+    }
+}
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct DevRestartArgs {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct DevRestartTool {
+    pub ws: Workspace,
+}
+
+impl Tool for DevRestartTool {
+    const NAME: &'static str = "dev_restart";
+    type Error = ToolErr;
+    type Args = DevRestartArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Restart dual-loop target so cargo run loads new gen.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } }
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (root, proj) = host_project(&self.ws)?;
+        self.ws.log("dev_restart", args.name.as_deref().unwrap_or("*"));
+        crate::agent_runtime_tools::tool_dev_restart(
+            &root,
+            args.name.as_deref(),
+            proj.as_deref(),
+        )
+        .map_err(ToolErr)
+    }
+}
+
+#[derive(Clone)]
+pub struct SmokeStatusTool {
+    pub ws: Workspace,
+}
+
+impl Tool for SmokeStatusTool {
+    const NAME: &'static str = "smoke_status";
+    type Error = ToolErr;
+    type Args = EmptyArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Last smoke/check status for dual-loop targets.".into(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+        }
+    }
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let (root, proj) = host_project(&self.ws)?;
+        self.ws.log("smoke_status", "query");
+        crate::agent_runtime_tools::tool_smoke_status(&root, proj.as_deref()).map_err(ToolErr)
     }
 }
 

@@ -253,8 +253,9 @@ pub async fn prompt_with_tools(
     ws: crate::rig_tools::Workspace,
 ) -> Result<String, String> {
     use crate::rig_tools::{
-        CheckTool, CreateFileTool, ListFilesTool, OutlineTool, ReadSourceTool, RenameTool,
-        SelectFileTool, WriteSourceTool,
+        CheckTool, CreateFileTool, DevLogsTool, DevRestartTool, DevStatusTool, HttpRequestTool,
+        ListFilesTool, ListRoutesTool, OutlineTool, ReadGeneratedTool, ReadSourceTool, RenameTool,
+        SelectFileTool, SmokeStatusTool, WriteSourceTool,
     };
 
     let mut preamble = preamble.to_string();
@@ -288,7 +289,14 @@ pub async fn prompt_with_tools(
                 .tool(ListFilesTool { ws: ws.clone() })
                 .tool(SelectFileTool { ws: ws.clone() })
                 .tool(CreateFileTool { ws: ws.clone() })
-                .tool(WriteSourceTool { ws: ws.clone() });
+                .tool(WriteSourceTool { ws: ws.clone() })
+                .tool(DevStatusTool { ws: ws.clone() })
+                .tool(DevLogsTool { ws: ws.clone() })
+                .tool(ReadGeneratedTool { ws: ws.clone() })
+                .tool(ListRoutesTool { ws: ws.clone() })
+                .tool(HttpRequestTool { ws: ws.clone() })
+                .tool(DevRestartTool { ws: ws.clone() })
+                .tool(SmokeStatusTool { ws: ws.clone() });
             if let Some(ref p) = palace {
                 let (search, read, traverse, create, update, list) =
                     crate::mind_palace_tools::tools_for_agent(p);
@@ -315,7 +323,14 @@ pub async fn prompt_with_tools(
                 .tool(ListFilesTool { ws: ws.clone() })
                 .tool(SelectFileTool { ws: ws.clone() })
                 .tool(CreateFileTool { ws: ws.clone() })
-                .tool(WriteSourceTool { ws: ws.clone() });
+                .tool(WriteSourceTool { ws: ws.clone() })
+                .tool(DevStatusTool { ws: ws.clone() })
+                .tool(DevLogsTool { ws: ws.clone() })
+                .tool(ReadGeneratedTool { ws: ws.clone() })
+                .tool(ListRoutesTool { ws: ws.clone() })
+                .tool(HttpRequestTool { ws: ws.clone() })
+                .tool(DevRestartTool { ws: ws.clone() })
+                .tool(SmokeStatusTool { ws: ws.clone() });
             if let Some(ref p) = palace {
                 let (search, read, traverse, create, update, list) =
                     crate::mind_palace_tools::tools_for_agent(p);

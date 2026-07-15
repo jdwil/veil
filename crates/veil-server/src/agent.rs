@@ -186,11 +186,31 @@ pub async fn run_turn<P: SourceProvider>(
         } else {
             prompt.to_string()
         };
-        let composed = format!(
-            "{}\n\n# User request\n{}\n\n# Active VEIL file: `{active_name}`\n\
-             Prefer editing this file with your tools. After edits, the IDE reloads from disk.\n",
-            preamble_pack.text, user_prompt
-        );
+        let composed = {
+            // Build project file map so the agent knows what's available
+            let all_files = provider.list_files().await;
+            let file_map: String = all_files
+                .iter()
+                .map(|f| {
+                    let mark = if f.active { " ← active" } else { "" };
+                    format!("  - {} ({}){}", f.name, f.kind.as_str(), mark)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let mut c = format!(
+                "{}\n\n# Project files\n{}\n\
+                 Use `select_file` to switch between them. Frontend UI is typically in a `*_ui.veil` package.\n\n\
+                 # User request\n{}\n\n# Active VEIL file: `{active_name}`\n\
+                 If the request involves a different file (e.g. UI changes → *_ui.veil), switch to it first.\n",
+                preamble_pack.text, file_map, user_prompt
+            );
+            // Inject full Mind Palace instructions when palace is enabled.
+            if crate::mind_palace_tools::enabled() {
+                c.push_str(crate::mind_palace_tools::preamble_addon());
+            }
+            c
+        };
         // Set project context for ACP MCP server URL routing.
         let project_name = crate::provider::hub::CURRENT_PROJECT
             .try_with(|n| n.clone())
@@ -319,6 +339,8 @@ pub async fn run_turn<P: SourceProvider>(
 
         // Mid-turn live flush: each tool write hits SourceProvider immediately
         // (SSE revision events fire from write_source → IDE badge updates).
+        // After write: smoke-test Rust backend (gen + cargo check). On failure,
+        // restore previous source and return the compile errors to the agent.
         let writer: Option<crate::rig_tools::LiveWriter> = if plan_only {
             None
         } else {
@@ -328,11 +350,49 @@ pub async fn run_turn<P: SourceProvider>(
                 let p = p.clone();
                 let proj = proj.clone();
                 Box::pin(async move {
-                    let write = async {
+                    let proj_for_smoke = proj.clone();
+                    let write = async move {
                         let files = p.list_files().await;
                         let allow = crate::safety::allowlist_from_env(&files);
                         crate::safety::check_write_allowed("", &allow, &files)?;
-                        p.write_source("", &src).await
+                        let prev = p.read_source("").await.ok();
+                        let active_name = files
+                            .iter()
+                            .find(|f| f.active)
+                            .map(|f| f.name.clone())
+                            .unwrap_or_default();
+                        let active_path = files
+                            .iter()
+                            .find(|f| f.active)
+                            .map(|f| f.path.clone())
+                            .unwrap_or_default();
+                        p.write_source("", &src).await?;
+
+                        // Smoke: gen + cargo check; rollback source on failure.
+                        if let Some(root) = p.project_root() {
+                            if let Err(smoke_err) = crate::devloop::smoke_agent_write(
+                                &root,
+                                &active_path,
+                                proj_for_smoke.as_deref(),
+                            ) {
+                                if let Some(prev) = prev {
+                                    let _ = p.write_source("", &prev).await;
+                                    // Re-gen from restored source so backend stays good.
+                                    let _ = crate::devloop::smoke_agent_write(
+                                        &root,
+                                        &active_path,
+                                        proj_for_smoke.as_deref(),
+                                    );
+                                }
+                                return Err(format!(
+                                    "WRITE REJECTED — backend smoke test failed (file restored).\n\
+                                     Active file: {active_name}\n\n{smoke_err}\n\n\
+                                     Next: call dev_logs / smoke_status, fix the VEIL, retry write_source.\
+                                     After success: list_routes → dev_restart → http_request."
+                                ));
+                            }
+                        }
+                        Ok(())
                     };
                     if let Some(name) = proj {
                         crate::provider::hub::CURRENT_PROJECT
@@ -418,6 +478,12 @@ pub async fn run_turn<P: SourceProvider>(
                     self.with_scope(|p| async move { p.reload_from_disk().await })
                         .await
                 }
+                fn project_root(&self) -> Option<std::path::PathBuf> {
+                    self.provider.project_root()
+                }
+                fn project_name(&self) -> Option<String> {
+                    self.project.clone()
+                }
             }
             ws = ws.with_host(std::sync::Arc::new(ProviderHost {
                 provider: provider.clone(),
@@ -488,6 +554,14 @@ pub async fn run_turn<P: SourceProvider>(
                         };
                     }
                     let new_src = ws.source_snapshot();
+                    // Final flush (if tools skipped live write). Smoke-gate like live writer.
+                    let prev = provider.read_source("").await.ok();
+                    let files = provider.list_files().await;
+                    let active_path = files
+                        .iter()
+                        .find(|f| f.active)
+                        .map(|f| f.path.clone())
+                        .unwrap_or_default();
                     if let Err(e) = provider.write_source("", &new_src).await {
                         return AgentTurnResponse {
                             turn_id,
@@ -504,6 +578,39 @@ pub async fn run_turn<P: SourceProvider>(
                             context_budget_tokens: preamble_pack.max_tokens,
                             context_layers: preamble_pack.layers.clone(),
                         };
+                    }
+                    if let Some(root) = provider.project_root() {
+                        if let Err(smoke_err) = crate::devloop::smoke_agent_write(
+                            &root,
+                            &active_path,
+                            project_name.as_deref(),
+                        ) {
+                            if let Some(prev) = prev {
+                                let _ = provider.write_source("", &prev).await;
+                                let _ = crate::devloop::smoke_agent_write(
+                                    &root,
+                                    &active_path,
+                                    project_name.as_deref(),
+                                );
+                            }
+                            return AgentTurnResponse {
+                                turn_id,
+                                messages,
+                                tool_calls,
+                                source_changed: false,
+                                ok: false,
+                                error: Some(format!(
+                                    "WRITE REJECTED — backend smoke test failed (restored):\n{smoke_err}"
+                                )),
+                                backend: format!("rig-{}", cfg.kind_name()),
+                                plan: None,
+                                context_truncated: preamble_pack.truncated,
+                                context_warning: preamble_pack.warning.clone(),
+                                context_tokens: preamble_pack.tokens_used,
+                                context_budget_tokens: preamble_pack.max_tokens,
+                                context_layers: preamble_pack.layers.clone(),
+                            };
+                        }
                     }
                 }
                 let content = if let Some(ref w) = preamble_pack.warning {
