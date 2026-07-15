@@ -172,7 +172,7 @@ impl Tool for CheckTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Run the VEIL dual-loop check pipeline (parse, validate, types, escape hatches) on the active package. Prefer this after any edit.".into(),
+            description: "Run the VEIL dual-loop check pipeline. Returns summary + JSON diagnostics [{ code, severity, message, span?, hint? }]. Prefer fixing by code+span after any edit.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -912,6 +912,11 @@ fn looks_like_layer(source: &str) -> bool {
     }) && !source.contains("\n  ctx ") && !source.contains("\n    group ")
 }
 
+/// Run check and return **structured JSON** diagnostics (ACS-008).
+///
+/// Agents should parse the JSON body: `{ ok, error_count, warning_count, diagnostics[] }`
+/// where each diagnostic is `{ code, severity, message, span?, hint?, node_name? }`.
+/// Prefer fixing by `code` + `span` rather than rewriting whole files.
 pub fn run_check(source: &str, registry: &LayerRegistry) -> String {
     // Layer files (DSL-003 / DSL-011)
     if looks_like_layer(source) || veil_ir::parse_layer_file(source, "active").is_ok() {
@@ -924,54 +929,41 @@ pub fn run_check(source: &str, registry: &LayerRegistry) -> String {
             })
             .unwrap_or_else(|| "layer".into());
         let diags = veil_ir::check_layer(source, &name);
-        let errs = diags
-            .iter()
-            .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
-            .count();
-        let warns = diags
-            .iter()
-            .filter(|d| matches!(d.severity, veil_ir::Severity::Warning))
-            .count();
-        let mut lines = vec![format!(
-            "layer check: {} error(s), {} warning(s) — {}",
-            errs,
-            warns,
-            if errs > 0 { "FAIL" } else { "OK" }
-        )];
-        for d in diags.iter().take(12) {
-            lines.push(format!("  [{:?}] {}", d.severity, d.message));
-        }
-        return lines.join("\n");
+        let report = veil_ir::StructuredCheckReport::from_diagnostics(&diags);
+        return format_structured_check("layer", &report);
     }
-    match parse_source(source, registry) {
+    // Prefer parse errors with spans (do not collapse to a bare string).
+    let tokens = veil_parser::lex(source);
+    match veil_parser::parse_with_registry(&tokens, registry.clone()) {
         Ok(sol) => {
             let result = check_solution(&sol, registry);
-            let errs = result.error_count();
-            let warns = result.warning_count();
-            let mut lines = vec![format!(
-                "check: {} error(s), {} warning(s) — {}",
-                errs,
-                warns,
-                if result.has_errors() { "FAIL" } else { "OK" }
-            )];
-            for d in result.diagnostics.iter().take(12) {
-                lines.push(format!(
-                    "  [{:?}] {}{}",
-                    d.severity,
-                    d.message,
-                    d.node_name
-                        .as_ref()
-                        .map(|n| format!(" ({n})"))
-                        .unwrap_or_default()
-                ));
-            }
-            if result.diagnostics.len() > 12 {
-                lines.push(format!("  … +{} more", result.diagnostics.len() - 12));
-            }
-            lines.join("\n")
+            let report = veil_ir::StructuredCheckReport::from_check_result(&result);
+            format_structured_check("package", &report)
         }
-        Err(e) => format!("parse error: {e}"),
+        Err(errs) => {
+            let diags: Vec<veil_ir::Diagnostic> = errs
+                .iter()
+                .map(|e| {
+                    veil_ir::parse_error_diagnostic(
+                        e.message.clone(),
+                        e.span.start,
+                        e.span.end,
+                    )
+                })
+                .collect();
+            let report = veil_ir::StructuredCheckReport::from_diagnostics(&diags);
+            format_structured_check("package", &report)
+        }
     }
+}
+
+fn format_structured_check(kind: &str, report: &veil_ir::StructuredCheckReport) -> String {
+    // One human line + JSON body so logs stay scannable and agents get machine fields.
+    format!(
+        "{kind} {}\n{}",
+        report.summary_line(),
+        report.to_json_pretty()
+    )
 }
 
 pub fn run_outline(source: &str, registry: &LayerRegistry) -> String {

@@ -79,6 +79,40 @@ the whole file again.
   See [HARNESS.md](./HARNESS.md).
 - Stories: [160](../stories/160-agent-runtime-observability.md), [170](../stories/170-agent-complexity-shoreup.md).
 
+### Structured check diagnostics (ACS-008)
+
+`veil_check` (MCP / Rig / ACP) returns a one-line summary **plus** JSON:
+
+```json
+{
+  "ok": false,
+  "error_count": 1,
+  "warning_count": 0,
+  "diagnostics": [
+    {
+      "code": "type_mismatch",
+      "severity": "error",
+      "message": "…",
+      "span": { "start": 120, "end": 145 },
+      "hint": "…",
+      "node_name": "CreateItem"
+    }
+  ]
+}
+```
+
+| Field | Use |
+|-------|-----|
+| `code` | Stable rule id (`type_mismatch`, `parse_error`, `must_have`, …) |
+| `severity` | `error` \| `warning` |
+| `message` | Human text |
+| `span` | Byte offsets into the active source when known — **edit that region** |
+| `hint` | Optional remediation |
+
+**CLI:** `veil check path.veil --json` includes the same structured `diagnostics` array.
+
+**Do:** fix the reported span / code. **Don't:** rewrite the whole package for one type error.
+
 ### Env
 
 | Variable | Meaning |

@@ -150,6 +150,112 @@ pub fn format_diagnostic_line(d: &Diagnostic) -> String {
     line
 }
 
+/// Machine-friendly diagnostic item (ACS-008).
+///
+/// Shape: `{ code, severity, message, span?, hint?, node_name? }`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredDiagnostic {
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<StructuredSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+}
+
+/// Byte-offset span for agent-targeted fixes.
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl From<&Diagnostic> for StructuredDiagnostic {
+    fn from(d: &Diagnostic) -> Self {
+        let span = match (d.span_start, d.span_end) {
+            (Some(start), Some(end)) => Some(StructuredSpan { start, end }),
+            _ => None,
+        };
+        StructuredDiagnostic {
+            code: d.code.clone(),
+            severity: match d.severity {
+                Severity::Error => "error".into(),
+                Severity::Warning => "warning".into(),
+            },
+            message: d.message.clone(),
+            span,
+            hint: d.hint.clone(),
+            node_name: d.node_name.clone(),
+        }
+    }
+}
+
+/// Full structured check report for agents (ACS-008).
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredCheckReport {
+    pub ok: bool,
+    pub error_count: usize,
+    pub warning_count: usize,
+    pub diagnostics: Vec<StructuredDiagnostic>,
+}
+
+impl StructuredCheckReport {
+    pub fn from_diagnostics(diagnostics: &[Diagnostic]) -> Self {
+        let error_count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, Severity::Error))
+            .count();
+        let warning_count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, Severity::Warning))
+            .count();
+        Self {
+            ok: error_count == 0,
+            error_count,
+            warning_count,
+            diagnostics: diagnostics.iter().map(StructuredDiagnostic::from).collect(),
+        }
+    }
+
+    pub fn from_check_result(result: &CheckResult) -> Self {
+        Self::from_diagnostics(&result.diagnostics)
+    }
+
+    /// Pretty JSON for tool / CLI output.
+    pub fn to_json_pretty(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
+    }
+
+    /// Compact one-line summary (optional prefix before JSON body).
+    pub fn summary_line(&self) -> String {
+        format!(
+            "check: {} error(s), {} warning(s) — {}",
+            self.error_count,
+            self.warning_count,
+            if self.ok { "OK" } else { "FAIL" }
+        )
+    }
+}
+
+/// Build a parse-error diagnostic with span when available (ACS-008).
+pub fn parse_error_diagnostic(message: impl Into<String>, start: usize, end: usize) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        message: message.into(),
+        node_id: None,
+        node_name: None,
+        code: "parse_error".into(),
+        constraint: "parse_error".into(),
+        parent: None,
+        hint: Some("Fix syntax at the reported span before re-running check.".into()),
+        span_start: Some(start),
+        span_end: Some(end),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +318,33 @@ mod tests {
 items: vec![TopLevelItem::Construct(root)],
             expose: None,
         }
+    }
+
+    #[test]
+    fn structured_report_includes_code_severity_span() {
+        let d = Diagnostic {
+            severity: Severity::Error,
+            message: "expected Int, found Str".into(),
+            node_id: None,
+            node_name: Some("svc".into()),
+            code: "type_mismatch".into(),
+            constraint: "type_mismatch".into(),
+            parent: None,
+            hint: Some("coerce or change the type".into()),
+            span_start: Some(10),
+            span_end: Some(20),
+        };
+        let report = StructuredCheckReport::from_diagnostics(&[d]);
+        assert!(!report.ok);
+        assert_eq!(report.error_count, 1);
+        let json = report.to_json_pretty();
+        assert!(json.contains("type_mismatch"));
+        assert!(json.contains("\"start\": 10"));
+        assert!(json.contains("\"end\": 20"));
+        assert!(json.contains("coerce or change"));
+        let pe = parse_error_diagnostic("unexpected token", 5, 6);
+        assert_eq!(pe.code, "parse_error");
+        assert_eq!(pe.span_start, Some(5));
     }
 
     #[test]

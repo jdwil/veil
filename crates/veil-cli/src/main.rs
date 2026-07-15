@@ -88,6 +88,20 @@ enum Commands {
         /// Target language (rust, typescript)
         #[arg(short, long, default_value = "rust")]
         target: String,
+        /// Keep existing `crates/*` that this gen did not emit.
+        /// Used by multi-package devloop so intermediate package gens do not
+        /// delete sibling context crates before gen-harness runs.
+        #[arg(long, default_value_t = false)]
+        no_prune: bool,
+    },
+    /// Generate a combined harness binary for multiple VEIL packages (local dev).
+    /// Used by the devloop for multi-package workspaces.
+    GenHarness {
+        /// Paths to .veil package files
+        files: Vec<PathBuf>,
+        /// Output directory (the workspace root, e.g. generated/backend)
+        #[arg(short, long, default_value = "./output")]
+        output: PathBuf,
     },
     /// Start the visualization server for a **single project** root
     /// (packages + project layers). Multi-project hub is runtime UX —
@@ -159,6 +173,9 @@ enum Commands {
         /// Path to a Cargo project that has the crate as a dependency
         #[arg(short, long, default_value = ".")]
         project: PathBuf,
+        /// Cargo features to enable when creating a temp project (`cargo add --features`)
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
     },
 }
 
@@ -195,6 +212,188 @@ fn registry_for(file: &std::path::Path) -> LayerRegistry {
             std::process::exit(1);
         }
     }
+}
+
+/// After single-file `veil gen`, remove `crates/<name>/` directories that this
+/// generation did not emit. Prevents leftover crates (e.g. `iaaa` from an old
+/// multi-package harness) from cluttering the output and confusing builds.
+fn prune_stale_gen_crates(output: &std::path::Path, files: &[veil_codegen::GeneratedFile]) {
+    let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for f in files {
+        let path = f.path.replace('\\', "/");
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() >= 2 && parts[0] == "crates" && !parts[1].is_empty() {
+            keep.insert(parts[1].to_string());
+        }
+    }
+    prune_crates_except(output, &keep);
+}
+
+/// Remove `crates/<name>/` entries not listed in `keep`.
+fn prune_crates_except(output: &std::path::Path, keep: &std::collections::HashSet<String>) {
+    let crates_dir = output.join("crates");
+    if !crates_dir.is_dir() || keep.is_empty() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&crates_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if keep.contains(name) {
+            continue;
+        }
+        let path = entry.path();
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => eprintln!(
+                "  pruned stale crate not in this gen: {}",
+                path.strip_prefix(output).unwrap_or(&path).display()
+            ),
+            Err(e) => eprintln!("  warning: could not prune {}: {e}", path.display()),
+        }
+    }
+}
+
+/// After multi-package gen-harness: set workspace `members` to every crate under
+/// `crates/`, and ensure veil_bin path-depends on each context crate.
+fn finalize_multi_package_workspace(output: &std::path::Path) {
+    let crates_dir = output.join("crates");
+    if !crates_dir.is_dir() {
+        return;
+    }
+    let mut members: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&crates_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("Cargo.toml").is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    members.push(name.to_string());
+                }
+            }
+        }
+    }
+    if members.is_empty() {
+        return;
+    }
+    members.sort_by(|a, b| {
+        let order = |s: &str| -> u8 {
+            match s {
+                "veil_shared" => 0,
+                "veil_bin" => 1,
+                _ => 2,
+            }
+        };
+        order(a).cmp(&order(b)).then(a.cmp(b))
+    });
+
+    let cargo_path = output.join("Cargo.toml");
+    if let Ok(content) = std::fs::read_to_string(&cargo_path) {
+        let members_str = members
+            .iter()
+            .map(|m| format!("    \"crates/{m}\""))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        if let Some(start) = content.find("members = [") {
+            if let Some(end) = content[start..].find(']') {
+                let before = &content[..start];
+                let after = &content[start + end + 1..];
+                let new_content = format!("{before}members = [\n{members_str}\n]{after}");
+                let _ = std::fs::write(&cargo_path, new_content);
+            }
+        }
+    }
+
+    // veil_bin should path-depend on every context crate (gen-harness usually
+    // already wrote these; fill gaps if a crate exists without a dep line).
+    let bin_cargo = crates_dir.join("veil_bin").join("Cargo.toml");
+    if let Ok(bin_content) = std::fs::read_to_string(&bin_cargo) {
+        let mut new_bin = bin_content.clone();
+        for m in &members {
+            if m == "veil_shared" || m == "veil_bin" {
+                continue;
+            }
+            let key_start = format!("{m} = ");
+            if new_bin.lines().any(|l| l.trim_start().starts_with(&key_start)) {
+                continue;
+            }
+            let dep_line = format!("{m} = {{ path = \"../{m}\" }}\n");
+            if let Some(deps_pos) = new_bin.find("[dependencies]") {
+                let insert_pos = new_bin[deps_pos..]
+                    .find('\n')
+                    .map(|p| deps_pos + p + 1)
+                    .unwrap_or(new_bin.len());
+                let after_deps = &new_bin[insert_pos..];
+                let section_end = after_deps.find("\n[").unwrap_or(after_deps.len());
+                new_bin.insert_str(insert_pos + section_end, &dep_line);
+            }
+        }
+        if new_bin != bin_content {
+            let _ = std::fs::write(&bin_cargo, new_bin);
+        }
+    }
+}
+
+/// Merge stub crate declarations into `[workspace.dependencies]` of an existing
+/// workspace Cargo.toml (used by gen-harness so veil_bin workspace=true deps resolve).
+fn merge_stub_workspace_deps(workspace_toml: &str, stubs: &[(String, String, Vec<String>, Vec<(String, String)>)]) -> String {
+    // stubs: (name, version, features, cargo_deps)
+    if stubs.is_empty() {
+        return workspace_toml.to_string();
+    }
+    let Some(pos) = workspace_toml.find("[workspace.dependencies]") else {
+        return workspace_toml.to_string();
+    };
+    let after_header = pos + "[workspace.dependencies]".len();
+    let rest = &workspace_toml[after_header..];
+    let section_end_rel = rest.find("\n[").unwrap_or(rest.len());
+    let section = &rest[..section_end_rel];
+    let after_section = &rest[section_end_rel..];
+
+    let mut extra = String::new();
+    for (name, version, features, cargo_deps) in stubs {
+        if !section.contains(name) && !extra.contains(name) {
+            if features.is_empty() {
+                extra.push_str(&format!("\n{name} = \"{version}\""));
+            } else {
+                let feats: Vec<String> = features.iter().map(|f| format!("\"{f}\"")).collect();
+                extra.push_str(&format!(
+                    "\n{name} = {{ version = \"{version}\", features = [{}] }}",
+                    feats.join(", ")
+                ));
+            }
+        }
+        for (dep_name, dep_ver) in cargo_deps {
+            if !section.contains(dep_name) && !extra.contains(dep_name) {
+                extra.push_str(&format!("\n{dep_name} = \"{dep_ver}\""));
+            }
+        }
+    }
+    if extra.is_empty() {
+        return workspace_toml.to_string();
+    }
+    // Insert before end of workspace.dependencies section
+    let mut out = String::with_capacity(workspace_toml.len() + extra.len());
+    out.push_str(&workspace_toml[..after_header]);
+    out.push_str(section);
+    if !section.ends_with('\n') && !section.is_empty() {
+        out.push('\n');
+    }
+    // extra starts with \n
+    out.push_str(extra.trim_start_matches('\n'));
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(after_section);
+    out
 }
 
 fn env_flag_true(name: &str) -> bool {
@@ -383,7 +582,11 @@ fn merge_package_or_exit(
 /// Generate a .stub file by running `cargo +nightly rustdoc --output-format json`
 /// and converting the JSON into VEIL stub format.
 /// Creates a temporary Cargo project with the crate as a dependency if no project is specified.
-fn generate_stub(crate_name: &str, project_dir: &std::path::Path) -> Result<String, String> {
+fn generate_stub(
+    crate_name: &str,
+    project_dir: &std::path::Path,
+    features: &[String],
+) -> Result<String, String> {
     use std::process::Command;
 
     // If project_dir is "." and doesn't have a Cargo.toml with this crate,
@@ -403,8 +606,13 @@ fn generate_stub(crate_name: &str, project_dir: &std::path::Path) -> Result<Stri
         }
 
         // Add the target crate as a dependency
+        let mut add_args = vec!["add".to_string(), crate_name.to_string()];
+        if !features.is_empty() {
+            add_args.push("--features".into());
+            add_args.push(features.join(","));
+        }
         let add = Command::new("cargo")
-            .args(["add", crate_name])
+            .args(&add_args)
             .current_dir(&tmp_path)
             .output()
             .map_err(|e| format!("Failed to add dep: {}", e))?;
@@ -419,40 +627,160 @@ fn generate_stub(crate_name: &str, project_dir: &std::path::Path) -> Result<Stri
     };
 
     eprintln!("  Running cargo +nightly rustdoc...");
+    let features = read_dep_features(&work_dir, crate_name);
 
-    // Run cargo rustdoc to generate JSON
+    // Primary package (may be a thin re-export facade, e.g. sqlx → sqlx-core).
+    let primary = rustdoc_json_for_package(&work_dir, crate_name)?;
+    let mut stub = convert_rustdoc_json_to_stub(&primary, crate_name, &features)?;
+
+    // Facade crates (sqlx, etc.) re-export from *-core; rustdoc index is almost empty.
+    // When sparse, also document the -core package and merge API shapes under the
+    // original stub name so `use sqlx` still works.
+    if stub_is_sparse(&stub) {
+        let core_pkg = format!("{crate_name}-core");
+        eprintln!("  Primary stub sparse — trying dependency {core_pkg}…");
+        match rustdoc_json_for_package(&work_dir, &core_pkg) {
+            Ok(core_json) => {
+                // Keep user-facing crate name / features; take API from core.
+                let core_stub =
+                    convert_rustdoc_json_to_stub(&core_json, crate_name, &features)?;
+                stub = merge_stub_prefer_richer(stub, core_stub);
+            }
+            Err(e) => {
+                eprintln!("  warning: could not document {core_pkg}: {e}");
+            }
+        }
+    }
+
+    Ok(stub)
+}
+
+fn rustdoc_json_for_package(work_dir: &std::path::Path, package: &str) -> Result<String, String> {
+    use std::process::Command;
     let output = Command::new("cargo")
-        .args(["+nightly", "rustdoc", "-p", crate_name, "--", "--output-format", "json", "-Z", "unstable-options"])
-        .current_dir(&work_dir)
+        .args([
+            "+nightly",
+            "rustdoc",
+            "-p",
+            package,
+            "--",
+            "--output-format",
+            "json",
+            "-Z",
+            "unstable-options",
+        ])
+        .current_dir(work_dir)
         .output()
-        .map_err(|e| format!("Failed to run cargo: {}", e))?;
+        .map_err(|e| format!("Failed to run cargo rustdoc -p {package}: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("cargo rustdoc failed: {}", stderr));
+        return Err(format!("cargo rustdoc -p {package} failed: {stderr}"));
     }
 
-    // Find the generated JSON file
-    let crate_file_name = crate_name.replace('-', "_");
-    let json_path = work_dir.join("target").join("doc").join(format!("{}.json", crate_file_name));
-    if !json_path.exists() {
-        // Try original name
-        let alt_path = work_dir.join("target").join("doc").join(format!("{}.json", crate_name));
-        if !alt_path.exists() {
-            return Err(format!("JSON file not found at {:?}", json_path));
+    let file_name = package.replace('-', "_");
+    let json_path = work_dir
+        .join("target")
+        .join("doc")
+        .join(format!("{file_name}.json"));
+    if json_path.exists() {
+        return std::fs::read_to_string(&json_path)
+            .map_err(|e| format!("Cannot read {}: {e}", json_path.display()));
+    }
+    let alt = work_dir
+        .join("target")
+        .join("doc")
+        .join(format!("{package}.json"));
+    std::fs::read_to_string(&alt).map_err(|e| {
+        format!(
+            "JSON not found for {package} at {} or {}: {e}",
+            json_path.display(),
+            alt.display()
+        )
+    })
+}
+
+/// True when rustdoc produced almost no API surface (typical re-export facade).
+fn stub_is_sparse(stub: &str) -> bool {
+    let struct_count = stub.lines().filter(|l| l.trim_start().starts_with("struct ")).count();
+    let trait_count = stub.lines().filter(|l| l.trim_start().starts_with("trait ")).count();
+    struct_count + trait_count < 5
+}
+
+/// Prefer the richer stub for structs/traits; keep header/policy from either.
+fn merge_stub_prefer_richer(a: String, b: String) -> String {
+    if stub_is_sparse(&a) && !stub_is_sparse(&b) {
+        b
+    } else if stub_is_sparse(&b) {
+        a
+    } else {
+        // Both rich — prefer b (core) but keep a's header if versions differ
+        b
+    }
+}
+
+/// Read enabled features for `crate_name` from a workspace Cargo.toml (post `cargo add`).
+fn read_dep_features(work_dir: &std::path::Path, crate_name: &str) -> Vec<String> {
+    let cargo_toml = work_dir.join("Cargo.toml");
+    let Ok(text) = std::fs::read_to_string(cargo_toml) else {
+        return Vec::new();
+    };
+    // Match [dependencies.crate] features = [...]  or crate = { features = [...] }
+    let mut features = Vec::new();
+    let mut in_dep_table = false;
+    let table_hdr = format!("[dependencies.{}]", crate_name);
+    for line in text.lines() {
+        let t = line.trim();
+        if t == table_hdr {
+            in_dep_table = true;
+            continue;
         }
-        let content = std::fs::read_to_string(&alt_path)
-            .map_err(|e| format!("Cannot read JSON: {}", e))?;
-        return convert_rustdoc_json_to_stub(&content, crate_name);
+        if t.starts_with('[') {
+            in_dep_table = false;
+        }
+        if in_dep_table {
+            if let Some(rest) = t.strip_prefix("features") {
+                let rest = rest.trim().trim_start_matches('=').trim();
+                if let Some(inner) = rest.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                    for f in inner.split(',') {
+                        let f = f.trim().trim_matches('"').trim_matches('\'').to_string();
+                        if !f.is_empty() {
+                            features.push(f);
+                        }
+                    }
+                }
+            }
+        }
+        // Inline: sqlx = { version = "…", features = ["a", "b"] }
+        if t.starts_with(crate_name) && t.contains("features") {
+            if let Some(idx) = t.find("features") {
+                let rest = &t[idx..];
+                if let Some(lb) = rest.find('[') {
+                    if let Some(rb) = rest.find(']') {
+                        for f in rest[lb + 1..rb].split(',') {
+                            let f = f.trim().trim_matches('"').trim_matches('\'').to_string();
+                            if !f.is_empty() && !features.contains(&f) {
+                                features.push(f);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-
-    let content = std::fs::read_to_string(&json_path)
-        .map_err(|e| format!("Cannot read JSON: {}", e))?;
-    convert_rustdoc_json_to_stub(&content, crate_name)
+    features
 }
 
 /// Convert rustdoc JSON to .stub file format.
-fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<String, String> {
+///
+/// Emits API shapes **plus** generic codegen policy inferred from the crate
+/// (traits like `FromRow`/`Type`, free fns `query`/`query_as`, type aliases).
+/// The engine consumes that policy without naming any particular crate.
+fn convert_rustdoc_json_to_stub(
+    json_str: &str,
+    crate_name: &str,
+    cargo_features: &[String],
+) -> Result<String, String> {
     let data: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
 
@@ -464,12 +792,16 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
         .and_then(|v| v.as_object())
         .ok_or("No index in JSON")?;
 
-    let mut out = format!("stub {} {}\n", crate_name, version);
+    let rust_crate = crate_name.replace('-', "_");
 
     // Collect structs and their impl items
     let mut struct_ids: Vec<(String, String)> = Vec::new(); // (id, name)
     let mut struct_impls: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new(); // name → method signatures
     let mut enum_defs: Vec<(String, Vec<String>)> = Vec::new(); // (name, variants)
+    let mut trait_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut free_fns: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new(); // name → veil sig
+    // Type alias: alias_name → last segment of target (e.g. PgPool → Pool)
+    let mut type_aliases: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
 
     for (id, item) in index {
         let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -480,6 +812,34 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
             Some(i) => i,
             None => continue,
         };
+
+        // Public free functions (crate-level)
+        if inner.contains_key("function") {
+            // Skip associated items that still show as function (methods already handled via impl)
+            // Free functions typically have no parent or are module items — rustdoc marks them as function.
+            // Heuristic: if name is snake_case and not already a method-only noise, keep it.
+            if name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+                if let Some(sig) = extract_method_sig(item) {
+                    free_fns.insert(name.to_string(), sig);
+                }
+            }
+        }
+
+        // Type aliases (e.g. PgPool = Pool<Postgres>)
+        if let Some(alias_data) = inner.get("type_alias").or_else(|| inner.get("typedef")) {
+            if let Some(target) = alias_data
+                .as_object()
+                .and_then(|o| o.get("type_"))
+                .or_else(|| alias_data.as_object().and_then(|o| o.get("type")))
+            {
+                let target_veil = rustdoc_type_to_veil(target);
+                // Base name without generics: Pool<…> → Pool
+                let base = target_veil.split('<').next().unwrap_or(&target_veil).to_string();
+                if !name.is_empty() && !base.is_empty() && name != base {
+                    type_aliases.insert(name.to_string(), base);
+                }
+            }
+        }
 
         // Collect public structs
         if inner.contains_key("struct") {
@@ -612,11 +972,146 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
                 }
             }
         }
+
+        // Public traits (names for policy + method listing later)
+        if inner.contains_key("trait") {
+            if !name.is_empty() {
+                trait_names.insert(name.to_string());
+            }
+        }
     }
+
+    let mut out = format!("stub {} {}\n", crate_name, version);
+
+    // ── Crate-level codegen policy (inferred; engine applies generically) ──
+    out.push_str("  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)\n");
+    if !cargo_features.is_empty() {
+        out.push_str(&format!(
+            "  cargo_features {}\n",
+            cargo_features.join(", ")
+        ));
+    }
+    if trait_names.contains("FromRow") {
+        out.push_str(&format!("  row_type_derives {rust_crate}::FromRow\n"));
+    }
+    if trait_names.contains("Type") {
+        out.push_str(&format!("  wrapper_type_derives {rust_crate}::Type\n"));
+        // Transparent newtypes are the usual pairing for Type on single-field wrappers.
+        out.push_str(&format!("  wrapper_type_attrs {rust_crate}(transparent)\n"));
+    }
+    // Type aliases: only meaningful newtype aliases to a real stub struct
+    // (e.g. PgPool → Pool). Skip Box/Result/etc. noise from rustdoc.
+    let struct_names: std::collections::HashSet<&str> =
+        struct_ids.iter().map(|(_, n)| n.as_str()).collect();
+    let skip_alias_bases = [
+        "Box", "Result", "Option", "Vec", "Arc", "Rc", "Str", "Res!", "Unknown", "Error",
+    ];
+    // base → best alias (prefer non-Any* names: PgPool over AnyPool)
+    let mut best_alias: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for (alias, base) in &type_aliases {
+        if skip_alias_bases.iter().any(|s| *s == base.as_str()) {
+            continue;
+        }
+        if !struct_names.contains(base.as_str()) {
+            continue;
+        }
+        // Alias should look like a refined name of the base (PgPool / MyPool).
+        if !alias.ends_with(base.as_str()) {
+            continue;
+        }
+        match best_alias.get(base) {
+            None => {
+                best_alias.insert(base.clone(), alias.clone());
+            }
+            Some(prev) if prev.starts_with("Any") && !alias.starts_with("Any") => {
+                best_alias.insert(base.clone(), alias.clone());
+            }
+            Some(prev) if prev.starts_with("Any") == alias.starts_with("Any") && alias.len() < prev.len() => {
+                best_alias.insert(base.clone(), alias.clone());
+            }
+            _ => {}
+        }
+    }
+    for (base, alias) in &best_alias {
+        // Prefer feature-specific pool aliases over generic Any*
+        if base == "Pool"
+            && alias.starts_with("Any")
+            && cargo_features.iter().any(|f| f == "postgres")
+        {
+            continue;
+        }
+        out.push_str(&format!("  rust_name {base} {alias}\n"));
+        out.push_str(&format!("  codegen_imports {rust_crate}::{alias}\n"));
+    }
+    // postgres feature ⇒ conventional PgPool alias (often only on facade, not in core rustdoc)
+    if cargo_features.iter().any(|f| f == "postgres") && struct_names.contains("Pool") {
+        if !best_alias
+            .get("Pool")
+            .map(|a| a == "PgPool")
+            .unwrap_or(false)
+        {
+            out.push_str("  rust_name Pool PgPool\n");
+            out.push_str(&format!("  codegen_imports {rust_crate}::PgPool\n"));
+        }
+    }
+    // Connection pool harness when Pool exists
+    let has_pool = struct_names.contains("Pool");
+    let pool_rust = if cargo_features.iter().any(|f| f == "postgres") {
+        "PgPool"
+    } else {
+        best_alias
+            .get("Pool")
+            .map(|s| s.as_str())
+            .unwrap_or("Pool")
+    };
+    if has_pool {
+        let methods = struct_impls.get("Pool").cloned().unwrap_or_default();
+        let has_connect_lazy = methods.iter().any(|m| m.contains("fn connect_lazy"));
+        if has_connect_lazy || pool_rust != "Pool" {
+            out.push_str(&format!(
+                "  harness_field Pool \"\"\"\n{{\n    let url = std::env::var(\"DATABASE_URL\").unwrap_or_else(|_| \"postgres://localhost/test\".into());\n    {rust_crate}::{pool_rust}::connect_lazy(&url).expect(\"pool\")\n}}\n\"\"\"\n"
+            ));
+        }
+    }
+    // Free-fn → struct constructor map: query → Query, with typed_variant query_as
+    let free_fn_bases: std::collections::HashMap<String, String> = free_fns
+        .keys()
+        .filter(|n| !n.ends_with("_as"))
+        .map(|n| {
+            let struct_name = snake_to_pascal(n);
+            (struct_name, n.clone())
+        })
+        .collect();
 
     // Emit structs with their methods
     for (_, name) in &struct_ids {
         out.push_str(&format!("\n  struct {}\n", name));
+        // Typed free-fn constructor only when both free fns exist (query + query_as).
+        // Avoids mapping arbitrary free fns (e.g. map) onto structs (Map).
+        if let Some(base_fn) = free_fn_bases.get(name) {
+            let typed_fn = format!("{base_fn}_as");
+            if free_fns.contains_key(&typed_fn) {
+                out.push_str(&format!("    typed_variant {typed_fn}\n"));
+                out.push_str("    typed_type_params _, return_type\n");
+                let already_has_new = struct_impls
+                    .get(name)
+                    .map(|ms| ms.iter().any(|m| m.starts_with("fn new(")))
+                    .unwrap_or(false);
+                if !already_has_new {
+                    if let Some(sig) = free_fns.get(base_fn) {
+                        if let Some(params) = sig
+                            .strip_prefix(&format!("fn {base_fn}("))
+                            .and_then(|s| s.split(')').next())
+                        {
+                            out.push_str(&format!("    fn new({params}) -> Self\n"));
+                        } else {
+                            out.push_str("    fn new(sql: Str) -> Self\n");
+                        }
+                    }
+                }
+            }
+        }
         if let Some(methods) = struct_impls.get(name) {
             for sig in methods {
                 out.push_str(&format!("    {}\n", sig));
@@ -681,6 +1176,19 @@ fn convert_rustdoc_json_to_stub(json_str: &str, crate_name: &str) -> Result<Stri
     }
 
     Ok(out)
+}
+
+fn snake_to_pascal(s: &str) -> String {
+    s.split('_')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut c = p.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect()
 }
 
 /// Extract a method signature from a rustdoc JSON item.
@@ -953,12 +1461,12 @@ fn main() {
                         "json_boundary": hatch_counts.json_boundary,
                         "total": hatch_counts.total(),
                     },
-                    "diagnostics": result.diagnostics.iter().map(|d| serde_json::json!({
-                        "severity": format!("{:?}", d.severity),
-                        "code": d.code,
-                        "message": d.message,
-                        "node_name": d.node_name,
-                    })).collect::<Vec<_>>(),
+                    // ACS-008: full structured items (code, severity, message, span, hint)
+                    "diagnostics": result
+                        .diagnostics
+                        .iter()
+                        .map(veil_ir::StructuredDiagnostic::from)
+                        .collect::<Vec<_>>(),
                 });
                 println!("{}", serde_json::to_string_pretty(&report).unwrap());
                 if result.has_errors() {
@@ -1035,7 +1543,104 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Gen { file, output, target } => {
+        Commands::GenHarness { files, output } => {
+            if files.is_empty() {
+                eprintln!("error: at least one .veil file required");
+                std::process::exit(1);
+            }
+            // Parse all packages
+            let mut packages: Vec<(veil_ir::ast::Solution, veil_ir::LayerRegistry)> = Vec::new();
+            for file in &files {
+                let source = std::fs::read_to_string(file)
+                    .unwrap_or_else(|e| { eprintln!("cannot read {}: {e}", file.display()); std::process::exit(1); });
+                let registry = registry_for(file);
+                let tokens = veil_parser::lex(&source);
+                let veil_file = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
+                    Ok(f) => f,
+                    Err(errors) => {
+                        eprintln!("Parse errors in {}:", file.display());
+                        for err in &errors { eprintln!("  {}", err); }
+                        std::process::exit(1);
+                    }
+                };
+                let sol = match veil_file {
+                    veil_ir::ast::VeilFile::Solution(s) => s,
+                    veil_ir::ast::VeilFile::Package(pkg) => {
+                        veil_ir::ast::Solution {
+                            name: pkg.name.clone(),
+                            span: pkg.span,
+                            uses: pkg.uses.clone(),
+                            links: pkg.links.clone(),
+                            items: pkg.items.clone(),
+                            expose: pkg.expose.clone(),
+                        }
+                    }
+                    _ => {
+                        eprintln!("{}: not a package file", file.display());
+                        std::process::exit(1);
+                    }
+                };
+                packages.push((sol, registry));
+            }
+
+            let refs: Vec<(&veil_ir::ast::Solution, &veil_ir::LayerRegistry)> =
+                packages.iter().map(|(s, r)| (s, r)).collect();
+            let harness_files = veil_codegen::generate_multi_harness(&refs);
+
+            for f in &harness_files {
+                let path = output.join(&f.path);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).expect("Failed to create directory");
+                }
+                std::fs::write(&path, &f.content).expect("Failed to write file");
+            }
+
+            // Ensure workspace.dependencies includes every stub (and cargo_deps
+            // companions) referenced by the multi-package veil_bin — last package
+            // gen alone may have left only one package's stubs (e.g. sqlx without
+            // aws-config).
+            let mut stub_specs: Vec<(String, String, Vec<String>, Vec<(String, String)>)> =
+                Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for (_, reg) in &packages {
+                for stub in &reg.stubs {
+                    if !seen.insert(stub.name.clone()) {
+                        continue;
+                    }
+                    stub_specs.push((
+                        stub.name.clone(),
+                        stub.version.clone(),
+                        stub.cargo_features.clone(),
+                        stub.cargo_deps.clone(),
+                    ));
+                }
+            }
+            let ws_path = output.join("Cargo.toml");
+            if ws_path.is_file() && !stub_specs.is_empty() {
+                if let Ok(ws) = std::fs::read_to_string(&ws_path) {
+                    let patched = merge_stub_workspace_deps(&ws, &stub_specs);
+                    if patched != ws {
+                        let _ = std::fs::write(&ws_path, patched);
+                    }
+                }
+            }
+
+            // Finalize workspace members so every context crate under crates/
+            // is listed (last single-package gen only had its own members).
+            finalize_multi_package_workspace(&output);
+
+            // Format
+            for f in &harness_files {
+                if f.path.ends_with(".rs") {
+                    let path = output.join(&f.path);
+                    let _ = std::process::Command::new("rustfmt")
+                        .args(["--edition", "2024", &path.to_string_lossy()])
+                        .output();
+                }
+            }
+            println!("✓ Generated multi-package harness ({} files) in {}", harness_files.len(), output.display());
+        }
+        Commands::Gen { file, output, target, no_prune } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let registry = registry_for(&file);
             let tokens = veil_parser::lex(&source);
@@ -1147,6 +1752,15 @@ fn main() {
                 std::fs::write(&path, &f.content).expect("Failed to write file");
             }
 
+            // Single-file gen must not leave crates from a prior multi-package
+            // or different package gen (e.g. stale `crates/iaaa` after removing
+            // dlx_core). Prune crates/ entries not present in this gen's files.
+            // Multi-package devloop passes --no-prune so sibling packages survive
+            // intermediate gens; it prunes once after gen-harness.
+            if !no_prune {
+                prune_stale_gen_crates(&output, &files);
+            }
+
             // Run formatters on generated files (spikes skip formatters)
             match codegen_target {
                 veil_codegen::CodegenTarget::Rust => {
@@ -1181,9 +1795,14 @@ fn main() {
             let output = veil_ir::serialize_solution(&sol);
             print!("{}", output);
         }
-        Commands::StubGen { crate_name, output, project } => {
+        Commands::StubGen {
+            crate_name,
+            output,
+            project,
+            features,
+        } => {
             let output_path = output.unwrap_or_else(|| PathBuf::from(format!("{}.stub", crate_name)));
-            match generate_stub(&crate_name, &project) {
+            match generate_stub(&crate_name, &project, &features) {
                 Ok(content) => {
                     std::fs::write(&output_path, &content)
                         .expect("Failed to write .stub file");

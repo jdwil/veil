@@ -230,7 +230,7 @@ Agents fail on complex systems because:
 
 ---
 
-### ACS-008: Structured check diagnostics for agents — Todo · P2
+### ACS-008: Structured check diagnostics for agents — Done · P2
 
 **As an** IDE agent  
 **I want** `veil_check` / tool output to be machine-friendly  
@@ -238,10 +238,10 @@ Agents fail on complex systems because:
 
 **Acceptance criteria:**
 
-- [ ] Tool or flag returns structured items: `{ code, severity, message, span?, hint? }` (JSON) in addition to or instead of prose
-- [ ] ACP/Rig path can surface codes in tool result
-- [ ] At least type_mismatch + parse errors include span when available
-- [ ] Docs: how agents should consume structured diagnostics
+- [x] Tool or flag returns structured items: `{ code, severity, message, span?, hint? }` (JSON) in addition to or instead of prose
+- [x] ACP/Rig path can surface codes in tool result
+- [x] At least type_mismatch + parse errors include span when available
+- [x] Docs: how agents should consume structured diagnostics
 
 **Depends:** existing check diagnostics  
 **Mission impact:** Targeted fix loops  
@@ -372,8 +372,8 @@ An agent can, without human log-paste:
 | ACS-004 | Auto-restart after smoke | Done | P1 |
 | ACS-005 | @route on stock handlers | Done | P1 |
 | ACS-006 | Complexity ladder L0–L3 | Done | P1 |
-| ACS-007 | Pipeline rule (3-phase sugar) | Todo | P1 |
-| ACS-008 | Structured check diagnostics | Todo | P2 |
+| ACS-007 | Pipeline rule (3-phase sugar) | Done | P1 |
+| ACS-008 | Structured check diagnostics | Done | P2 |
 | ACS-009 | Mind Palace five contracts | Todo | P2 |
 | ACS-010 | Bang portable semantics split | Todo | P2 |
 | ACS-011 | list_routes from IR | Todo | P2 |

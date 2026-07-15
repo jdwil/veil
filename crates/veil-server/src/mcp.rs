@@ -97,7 +97,7 @@ fn mcp_tools() -> Vec<Value> {
     vec![
         json!({
             "name": "veil_check",
-            "description": "Run the VEIL dual-loop check pipeline (parse, validate, types, escape hatches) on the active package or layer. Call this after any edit to verify correctness.",
+            "description": "Run the VEIL dual-loop check pipeline (parse, validate, types, escape hatches) on the active package or layer. Call after any edit. Returns a one-line summary plus JSON: { ok, error_count, warning_count, diagnostics: [{ code, severity, message, span?, hint?, node_name? }] }. Prefer fixing by code+span (e.g. type_mismatch, parse_error) instead of rewriting whole files.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},

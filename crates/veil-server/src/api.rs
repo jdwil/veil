@@ -1261,7 +1261,7 @@ async fn get_agent_tools() -> axum::response::Response {
     let tools = serde_json::json!([
         {
             "name": "veil_check",
-            "description": "Run check on the active file (package dual-loop or layer validate).",
+            "description": "Run check on the active file. Returns summary + JSON diagnostics [{ code, severity, message, span?, hint? }] (ACS-008).",
             "parameters": { "type": "object", "properties": {} }
         },
         {
