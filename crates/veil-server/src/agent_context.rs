@@ -67,6 +67,10 @@ You are the VEIL IDE built-in agent (Rig tools).
 - http_request — probe 127.0.0.1:dev_port only
 - dev_restart — reload cargo run after successful smoke
 - wiki_* — Mind Palace (when MIND_PALACE=1)
+
+## Mind Palace contracts (when MIND_PALACE=1)
+- wiki_search these slugs before platform answers: veil-contract-bang-opt-res, veil-contract-dual-loop-smoke, veil-contract-multi-package, veil-contract-stubs, veil-contract-routes
+- Offline copies: fixtures/palace_contracts/
 "#;
 
 const TIER0_ACP: &str = r#"# Tier 0 — host rules (VEIL IDE agent via MCP tools)

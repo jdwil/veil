@@ -90,7 +90,23 @@ aws s3vectors list-indexes --vector-bucket-name mind-palace-vectors-dev-08626122
    Or: `./scripts/seed_mind_palace.sh`
 3. Host expands that into a full seed task; agent uses `wiki_*`.
 
-Target slugs: `veil-language-overview`, `veil-stubs-and-sdks`, `veil-bus-vs-rest`,
+### ACS-009 durable contracts (seed first)
+
+Offline fixtures (CI / palace off): [`fixtures/palace_contracts/`](../fixtures/palace_contracts/).
+
+| Slug | Topic |
+|------|--------|
+| `veil-contract-bang-opt-res` | Bang / Opt / Res |
+| `veil-contract-dual-loop-smoke` | Dual-loop + smoke |
+| `veil-contract-multi-package` | `[dev].packages` multi-package harness |
+| `veil-contract-stubs` | Stubs / cargo_deps / harness_field |
+| `veil-contract-routes` | `@route` + `list_routes` |
+
+Tier-0 tells agents to `wiki_search` these when `MIND_PALACE=1`.
+
+### Additional platform slugs
+
+`veil-language-overview`, `veil-stubs-and-sdks`, `veil-bus-vs-rest`,
 `veil-dual-loop`, `veil-ui-sveltekit5`, `sop-seed-and-extend-wiki`, `sop-add-cloud-adapter`.
 
 ## Environment promotion

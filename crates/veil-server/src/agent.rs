@@ -1153,40 +1153,58 @@ that future agents will search before writing VEIL.
 
 ## Pages to ensure (slug → focus)
 
-1. **veil-language-overview** (Index)
+### ACS-009 durable contracts (MUST seed first — short, bullets + example)
+
+Use body from repo fixtures when available: `fixtures/palace_contracts/<slug>.md`.
+
+1. **veil-contract-bang-opt-res** (Concept)
+   - Decl `name!` = fallible; call `find!` → T; NEVER .unwrap()/.is_some() after bang
+   - Link: docs/BANG_CONTRACT.md
+
+2. **veil-contract-dual-loop-smoke** (Concept)
+   - write → smoke → list_routes → restart → http_request; on reject: dev_logs first
+
+3. **veil-contract-multi-package** (Concept)
+   - [dev].packages + gen-harness; multi-package ≠ multi-project hub
+   - fixtures/multi_harness/
+
+4. **veil-contract-stubs** (Concept)
+   - .stub + harness_field + @field/@env; engine does not hardcode SDKs
+
+5. **veil-contract-routes** (Concept)
+   - @route authoritative; list_routes; name-derived = fallback only
+
+### Platform overview (also ensure)
+
+6. **veil-language-overview** (Index)
    - pkg/ctx/port/impl/svc, layers (`use ddd`), dual-loop idea
    - What belongs in domain vs infrastructure
 
-2. **veil-stubs-and-sdks** (Concept)
-   - `.stub` files declare third-party crate shapes; engine does not hardcode SDKs
-   - `cargo_deps`, `types_module`, `root_types`, `harness_field Type """…"""`
-   - Adapter `@field(client: Client)` + `@env` wiring
-   - Fluent builders lower to real Rust; PascalCase enum variants (AttributeValue.S)
+7. **veil-stubs-and-sdks** (Concept) — may merge with veil-contract-stubs if one page is enough
+   - cargo_deps, types_module, root_types, harness_field
+   - Fluent builders; PascalCase enum variants
 
-3. **veil-bus-vs-rest** (Concept)
-   - Bus = backend inter-process / multi-context only
-   - Frontends use HTTPS REST/WebSockets + fetch — not the Bus
-   - Local harness exposes `/api/...` for dual-loop / Vite proxy
+8. **veil-bus-vs-rest** (Concept)
+   - Bus = backend only; frontends use HTTPS REST/WebSockets
+   - Local harness `/api/...` for dual-loop / Vite proxy
 
-4. **veil-dual-loop** (Concept)
-   - gen → cargo/npm run; veil.toml targets; relative `/api` + proxy
-   - LocalStack-style env for cloud adapters is declared on the stub harness_field, not the engine
+9. **veil-dual-loop** (Concept) — may link veil-contract-dual-loop-smoke
+   - gen → cargo/npm; veil.toml targets; relative `/api` + proxy
 
-5. **veil-ui-sveltekit5** (Concept)
-   - Only `template` (HTML) and `style` (CSS) are raw
-   - Logic is VEIL `fn` / `effect` / `state` lowered to TypeScript
-   - ApiClient.fetch/mutate for REST; LocalStorage helpers
-   - Layer = tech commitment (SvelteKit), not framework-neutral DOM IR
+10. **veil-ui-sveltekit5** (Concept)
+   - Only template/style raw; logic is VEIL fn/effect/state → TS
+   - ApiClient.fetch/mutate; layer = tech commitment
 
-6. **sop-seed-and-extend-wiki** (Sop)
-   - Prerequisites: MIND_PALACE=1, AWS profile, wiki tools available
-   - Steps: search → read summary → create/update → link → list to verify
-   - Constraints: MUST use progressive disclosure; SHOULD update before create
+11. **sop-seed-and-extend-wiki** (Sop)
+   - Prerequisites: MIND_PALACE=1, AWS profile, wiki tools
+   - Steps: search → read → create/update → link → list
+   - MUST progressive disclosure; SHOULD update before create
 
-7. **sop-add-cloud-adapter** (Sop)
-   - Port in domain, impl with @dep @field @env, use stub types, gen + LocalStack/env smoke test
+12. **sop-add-cloud-adapter** (Sop)
+   - Port + @dep @field @env + stub; gen + env smoke
 
 After each create/update, note lint_issues. Finish with wiki_list summarizing what exists.
+Link all five **veil-contract-*** pages to each other and to veil-language-overview.
 
 If wiki_* tools return "disabled" or init errors, report the env fix from docs/MIND_PALACE.md and stop.
 "#;

@@ -249,7 +249,7 @@ Agents fail on complex systems because:
 
 ---
 
-### ACS-009: Mind Palace durable contracts (five pages) — Todo · P2
+### ACS-009: Mind Palace durable contracts (five pages) — Done · P2
 
 **As an** agent with Mind Palace enabled  
 **I want** five short contract pages  
@@ -257,15 +257,15 @@ Agents fail on complex systems because:
 
 **Acceptance criteria:**
 
-- [ ] Pages (or equivalent fixtures if palace off in CI):
+- [x] Pages (or equivalent fixtures if palace off in CI):
   1. Bang / Opt / Res (ACS-001)
   2. Dual-loop + smoke
   3. Multi-package `[dev].packages` (ACS-003)
   4. Stubs / cargo_deps
   5. `@route` + list_routes
-- [ ] Each page: contract bullets + one example — not essays
-- [ ] Tier-0: wiki_search these topics when MIND_PALACE=1
-- [ ] Seed script or documented manual seed
+- [x] Each page: contract bullets + one example — not essays
+- [x] Tier-0: wiki_search these topics when MIND_PALACE=1
+- [x] Seed script or documented manual seed
 
 **Depends:** ACS-001, ACS-003, Mind Palace optional path  
 **Mission impact:** Durable memory of contracts  
