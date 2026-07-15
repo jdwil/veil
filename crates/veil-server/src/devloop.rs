@@ -86,6 +86,18 @@ pub fn smoke_enabled() -> bool {
     }
 }
 
+/// When false (`VEIL_AGENT_AUTO_RESTART=0`), do not restart owned processes after smoke (ACS-004).
+/// Default ON so dual-loop picks up new gen after successful smoke.
+pub fn auto_restart_enabled() -> bool {
+    match std::env::var("VEIL_AGENT_AUTO_RESTART") {
+        Ok(v) => {
+            let t = v.trim();
+            !(t == "0" || t.eq_ignore_ascii_case("false") || t.eq_ignore_ascii_case("off"))
+        }
+        Err(_) => true,
+    }
+}
+
 // ─── Config (veil.toml) ────────────────────────────────────────────────────
 
 /// Parsed `veil.toml` project config with dev targets.
@@ -362,6 +374,47 @@ impl DevLoop {
         if let Some(bak) = backup {
             let _ = std::fs::remove_dir_all(bak);
         }
+
+        // ACS-004: reload owned cargo run so routes match new gen (not attached externals).
+        if auto_restart_enabled()
+            && target.target == "rust"
+            && self.processes.contains_key(target_name)
+            && !self
+                .states
+                .get(target_name)
+                .map(|s| s.attached)
+                .unwrap_or(false)
+        {
+            if let Some(state) = self.states.get_mut(target_name) {
+                state
+                    .logs
+                    .push("[dev] restart after smoke (VEIL_AGENT_AUTO_RESTART)".into());
+            }
+            if let Err(e) = self.start(target_name) {
+                if let Some(state) = self.states.get_mut(target_name) {
+                    state
+                        .logs
+                        .push(format!("[dev] restart after smoke failed: {e}"));
+                }
+                // Smoke itself succeeded — surface restart failure without failing smoke.
+                tracing::warn!(target = %target_name, %e, "auto-restart after smoke failed");
+            }
+        } else if auto_restart_enabled()
+            && target.target == "rust"
+            && self
+                .states
+                .get(target_name)
+                .map(|s| s.attached)
+                .unwrap_or(false)
+        {
+            if let Some(state) = self.states.get_mut(target_name) {
+                state.logs.push(
+                    "[dev] smoke OK but target is attached (external) — restart manually or use dev_restart"
+                        .into(),
+                );
+            }
+        }
+
         Ok(())
     }
 

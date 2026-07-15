@@ -86,6 +86,7 @@ the whole file again.
 | `VEIL_MODEL_PROVIDER` | `echo` \| `openai` \| `ollama` \| **`acp`** / `kiro` |
 | `VEIL_MODEL_NAME` | Model id (defaults: `gpt-4o-mini`, `llama3.2`; **make serve** defaults to `qwen3.5:9b`) |
 | `VEIL_AGENT_SMOKE` | `0`/`false`/`off` disables post-write gen+check (default on) |
+| `VEIL_AGENT_AUTO_RESTART` | `0`/`false`/`off` disables restart after successful smoke (default on) |
 | `VEIL_AGENT_HTTP_PORTS` | Extra ports allowed for `http_request` (comma-separated) |
 
 ### Local make serve (Ollama)
