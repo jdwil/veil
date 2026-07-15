@@ -375,7 +375,8 @@ impl DevLoop {
             let _ = std::fs::remove_dir_all(bak);
         }
 
-        // ACS-004: reload owned cargo run so routes match new gen (not attached externals).
+        // ACS-004: reload owned cargo run so routes match new gen (not attached).
+        // Only stop + start_dev_server — do NOT call start() (would re-enter generate_checked).
         if auto_restart_enabled()
             && target.target == "rust"
             && self.processes.contains_key(target_name)
@@ -390,13 +391,13 @@ impl DevLoop {
                     .logs
                     .push("[dev] restart after smoke (VEIL_AGENT_AUTO_RESTART)".into());
             }
-            if let Err(e) = self.start(target_name) {
+            self.stop_dev_server(target_name);
+            if let Err(e) = self.start_dev_server(target_name) {
                 if let Some(state) = self.states.get_mut(target_name) {
                     state
                         .logs
                         .push(format!("[dev] restart after smoke failed: {e}"));
                 }
-                // Smoke itself succeeded — surface restart failure without failing smoke.
                 tracing::warn!(target = %target_name, %e, "auto-restart after smoke failed");
             }
         } else if auto_restart_enabled()
