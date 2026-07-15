@@ -128,4 +128,6 @@ handler HandleListWearTests
 | Typecheck | Bang call: strip `Res!` then `Opt` → `T` (matches dual-loop codegen) |
 | Codegen | Port bang + Option: `.await?.ok_or(NotFound)?`; method name without `!` |
 
-Sugar changes must update **parser + typecheck + codegen + test** in one PR (ACS-007).
+Sugar changes must update **parser + typecheck + codegen + test** in one PR
+([ACS-007](./ENGINE.md#sugar-changes-hit-three-phases--one-test-acs-007) —
+[`docs/ENGINE.md`](./ENGINE.md)).

@@ -4,6 +4,10 @@ This document captures architectural decisions made during development.
 Agents working on VEIL should read this to understand WHY things are
 structured the way they are.
 
+**Language pipeline rule (sugar):** any surface sugar change updates
+**parser + typecheck + codegen + test** in the same PR — see
+[`docs/ENGINE.md`](./ENGINE.md) (ACS-007).
+
 ---
 
 ## File Types and Their Purposes

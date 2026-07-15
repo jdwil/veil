@@ -211,7 +211,7 @@ Agents fail on complex systems because:
 
 ---
 
-### ACS-007: Pipeline rule — sugar changes hit three phases + test — Todo · P1
+### ACS-007: Pipeline rule — sugar changes hit three phases + test — Done · P1
 
 **As a** language implementer  
 **I want** a hard rule that sugar never lands half-implemented  
@@ -219,10 +219,10 @@ Agents fail on complex systems because:
 
 **Acceptance criteria:**
 
-- [ ] Doc in CONTRIBUTING or `docs/ENGINE.md`: any sugar change updates **parser + typecheck + codegen + one test** in the same PR
-- [ ] Checklist snippet for PR template (if repo uses one)
-- [ ] Reference the bang desync as the motivating incident
-- [ ] Reviewers reject “codegen-only” sugar PRs
+- [x] Doc in CONTRIBUTING or `docs/ENGINE.md`: any sugar change updates **parser + typecheck + codegen + one test** in the same PR
+- [x] Checklist snippet for PR template (if repo uses one)
+- [x] Reference the bang desync as the motivating incident
+- [x] Reviewers reject “codegen-only” sugar PRs
 
 **Depends:** none  
 **Mission impact:** Prevents three-brain language  
