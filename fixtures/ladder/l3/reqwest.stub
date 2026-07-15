@@ -1,0 +1,24 @@
+# Minimal reqwest surface for L3 ladder (harness_field + Client).
+stub reqwest 0.12
+harness_field Client """
+{
+    reqwest::Client::new()
+}
+"""
+
+  struct Client
+    fn new() -> Client
+    fn get(url: Str) -> RequestBuilder
+    fn post(url: Str) -> RequestBuilder
+
+  struct RequestBuilder
+    fn header(name: Str, value: Str) -> RequestBuilder
+    fn send() -> Res!<Response>
+
+  struct Response
+    fn text() -> Res!<Str>
+    fn status() -> StatusCode
+
+  struct StatusCode
+    fn is_success() -> Bool
+    fn as_u16() -> Int

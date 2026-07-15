@@ -1,0 +1,59 @@
+# L1 — CRUD + bang find/list/save
+# Skills: Opt/Res bang, guards (no unwrap after !)
+
+pkg LadderL1
+  use ddd
+  use di
+
+  ctx Catalog
+    group domain
+      agg Item
+        root
+          id: Id
+          name: Str
+
+      port ItemRepo
+        find!(id: Id) -> Opt<Item>
+        list_all!() -> List<Item>
+        save!(item: Item)
+
+    group application
+      @route("GET /api/items")
+      svc ListItems
+        input
+          @dep item_repo: ItemRepo
+        step query
+          items = item_repo.list_all!()
+          ret items
+
+      @route("GET /api/items/:id")
+      svc GetItem
+        input
+          id: Id
+          @dep item_repo: ItemRepo
+        step load
+          # bang call forces T — do NOT .unwrap() / .is_some()
+          item = item_repo.find!(id)
+          ret item
+
+      @route("POST /api/items")
+      svc CreateItem
+        input
+          name: Str
+          @dep item_repo: ItemRepo
+        step validate
+          guard name != "", "name required"
+        step persist
+          item = Item.new(name)
+          item_repo.save!(item)
+          ret item
+
+    group infrastructure
+      impl MemItemRepo for ItemRepo
+        @dep
+        impl find(id)
+          ret null
+        impl list_all()
+          ret []
+        impl save(item)
+          ret Ok

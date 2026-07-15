@@ -1,4 +1,4 @@
-# Minimal CI: unit tests + multi-package harness fixture (ACS-003)
+# Minimal CI: unit tests + multi-package harness + complexity ladder (ACS-003/006)
 name: ci
 
 on:
@@ -19,3 +19,5 @@ jobs:
         run: |
           cargo build -p veil-cli
           make fixture-multi-harness VEIL_BIN=target/debug/veil
+      - name: complexity ladder L0–L3 (ACS-006)
+        run: make fixture-ladder VEIL_BIN=target/debug/veil

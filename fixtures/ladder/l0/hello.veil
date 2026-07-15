@@ -1,0 +1,44 @@
+# L0 — hello svc + memory repo
+# Skills: ctx, port, handler, ret
+
+pkg LadderL0
+  use ddd
+  use di
+
+  ctx Greet
+    group domain
+      agg Greeting
+        root
+          id: Id
+          message: Str
+
+      port GreetingRepo
+        list_all!() -> List<Greeting>
+        save!(greeting: Greeting)
+
+    group application
+      @route("GET /api/greetings")
+      svc ListGreetings
+        input
+          @dep greeting_repo: GreetingRepo
+        step query
+          items = greeting_repo.list_all!()
+          ret items
+
+      @route("POST /api/greetings")
+      svc CreateGreeting
+        input
+          message: Str
+          @dep greeting_repo: GreetingRepo
+        step persist
+          g = Greeting.new(message)
+          greeting_repo.save!(g)
+          ret g
+
+    group infrastructure
+      impl MemGreetingRepo for GreetingRepo
+        @dep
+        impl list_all()
+          ret []
+        impl save(greeting)
+          ret Ok

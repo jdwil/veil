@@ -1,0 +1,58 @@
+# L3 — one stub SDK + adapter (@field / @env)
+# Skills: .stub, harness_field, @field, @env
+
+pkg LadderL3
+  use ddd
+  use di
+  use reqwest
+
+  ctx Ping
+    group domain
+      agg Note
+        root
+          id: Id
+          title: Str
+
+      port NoteRepo
+        find!(id: Id) -> Opt<Note>
+        list_all!() -> List<Note>
+        save!(note: Note)
+
+      port Pinger
+        ping!(url: Str)
+
+    group application
+      @route("GET /api/notes")
+      svc ListNotes
+        input
+          @dep note_repo: NoteRepo
+        step query
+          items = note_repo.list_all!()
+          ret items
+
+      @route("POST /api/ping")
+      svc DoPing
+        input
+          url: Str
+          @dep pinger: Pinger
+        step go
+          pinger.ping!(url)
+          ret Ok
+
+    group infrastructure
+      impl MemNoteRepo for NoteRepo
+        @dep
+        impl find(id)
+          ret null
+        impl list_all()
+          ret []
+        impl save(note)
+          ret Ok
+
+      # Stub SDK adapter: Client from .stub harness_field + env API_BASE
+      impl HttpPinger for Pinger
+        @dep
+        @field(client: Client)
+        @env(API_BASE)
+        impl ping(url)
+          ret Ok

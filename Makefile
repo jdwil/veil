@@ -322,6 +322,37 @@ fixture-multi-harness: veil
 	cd "$$OUT" && cargo check -p veil_bin; \
 	echo "✓ multi_harness fixture OK ($$OUT)"
 
+# ACS-006: complexity ladder L0–L3
+fixture-ladder-l0: veil
+	@OUT=$${OUT:-/tmp/veil-ladder-l0}; \
+	rm -rf "$$OUT"; \
+	$(VEIL_BIN) check fixtures/ladder/l0/hello.veil; \
+	$(VEIL_BIN) gen fixtures/ladder/l0/hello.veil -o "$$OUT" -t rust; \
+	cd "$$OUT" && cargo check -p veil_bin; \
+	echo "✓ ladder L0 OK ($$OUT)"
+
+fixture-ladder-l1: veil
+	@OUT=$${OUT:-/tmp/veil-ladder-l1}; \
+	rm -rf "$$OUT"; \
+	$(VEIL_BIN) check fixtures/ladder/l1/crud.veil; \
+	$(VEIL_BIN) gen fixtures/ladder/l1/crud.veil -o "$$OUT" -t rust; \
+	cd "$$OUT" && cargo check -p veil_bin; \
+	echo "✓ ladder L1 OK ($$OUT)"
+
+fixture-ladder-l2: fixture-multi-harness
+	@echo "✓ ladder L2 OK (multi_harness)"
+
+fixture-ladder-l3: veil
+	@OUT=$${OUT:-/tmp/veil-ladder-l3}; \
+	rm -rf "$$OUT"; \
+	$(VEIL_BIN) check fixtures/ladder/l3/app.veil; \
+	$(VEIL_BIN) gen fixtures/ladder/l3/app.veil -o "$$OUT" -t rust; \
+	cd "$$OUT" && cargo check -p veil_bin; \
+	echo "✓ ladder L3 OK ($$OUT)"
+
+fixture-ladder: fixture-ladder-l0 fixture-ladder-l1 fixture-ladder-l2 fixture-ladder-l3
+	@echo "✓ ladder L0–L3 all green"
+
 # Round-trip suite only (examples/** + runtime/src/**)
 test-roundtrip:
 	cargo test -p veil-parser --test roundtrip_suite

@@ -153,7 +153,8 @@ After editing a package that affects the backend:
 5. `http_request(path, target=backend)` — live probe (127.0.0.1 + `dev_port` only).
 
 **Bang / Opt / Res:** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md).  
-**Multi-package local harness fixture:** `fixtures/multi_harness/` (ACS-003).
+**Multi-package local harness fixture:** `fixtures/multi_harness/` (ACS-003).  
+**Complexity ladder L0–L3:** `fixtures/ladder/` (ACS-006) — `make fixture-ladder`.
 
 Set `VEIL_AGENT_SMOKE=0` only as an escape hatch.
 
