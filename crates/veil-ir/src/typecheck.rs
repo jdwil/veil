@@ -1112,6 +1112,23 @@ fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
     }
 }
 
+/// Unwrap the return type for a bang `!` call.
+/// Codegen adds `?` (strips Res!) and `.ok_or()?` (strips Opt<>).
+/// Res!<Opt<T>> → T, Res!<T> → T, Opt<T> → T, T → T.
+fn unwrap_bang_return(ty: Ty) -> Ty {
+    // Strip Res! wrapper (the ? propagates the error)
+    let inner = match ty {
+        Ty::Res(Some(t)) => *t,
+        Ty::Res(None) => Ty::Unit,
+        other => other,
+    };
+    // Strip Opt wrapper (the .ok_or()? unwraps the Option)
+    match inner {
+        Ty::Opt(t) => *t,
+        other => other,
+    }
+}
+
 fn infer_call(
     call: &CallExpr,
     scope: &mut Scope,
@@ -1145,10 +1162,16 @@ fn infer_call(
             _ => None,
         };
         let method = call.method.trim_end_matches('!');
+        let is_bang = call.method.ends_with('!');
         if let Some(type_name) = base {
             if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
                 check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
-                return sig.ret.clone();
+                let ret = sig.ret.clone();
+                // Bang: codegen emits `?` (Res!) and often `.ok_or()?` (Opt)
+                if is_bang {
+                    return unwrap_bang_return(ret);
+                }
+                return ret;
             }
         }
         return Ty::Unknown;
@@ -1177,9 +1200,14 @@ fn infer_call(
             });
         if let Some(Ty::Named(type_name)) = fty {
             let method = call.method.trim_end_matches('!');
+            let is_bang = call.method.ends_with('!');
             if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
                 check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
-                return sig.ret.clone();
+                let ret = sig.ret.clone();
+                if is_bang {
+                    return unwrap_bang_return(ret);
+                }
+                return ret;
             }
         }
         return Ty::Unknown;
@@ -1188,11 +1216,17 @@ fn infer_call(
     // Local.method (incl. List/Opt/Res intrinsics)
     if scope.locals.contains_key(&call.target) && !call.method.is_empty() {
         let method = call.method.trim_end_matches('!');
+        let is_bang = call.method.ends_with('!');
         match scope.get(&call.target) {
             Ty::Named(type_name) => {
                 if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
                     check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
-                    return sig.ret.clone();
+                    let ret = sig.ret.clone();
+                    // Bang calls: codegen adds `?` (unwraps Res!) then `.ok_or()?` (unwraps Opt)
+                    if is_bang {
+                        return unwrap_bang_return(ret);
+                    }
+                    return ret;
                 }
             }
             Ty::List(elem) => {
@@ -1252,6 +1286,7 @@ fn infer_call(
             return Ty::Named(call.target.clone());
         }
         let method = call.method.trim_end_matches('!');
+        let is_bang = call.method.ends_with('!');
         if method == "new" {
             if let Some(sig) = info.methods.get("new") {
                 // skip strict arg check for new
@@ -1261,7 +1296,12 @@ fn infer_call(
         }
         if let Some(sig) = info.methods.get(method) {
             check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
-            return sig.ret.clone();
+            let ret = sig.ret.clone();
+            // Bang calls: codegen adds `?` (unwraps Res!) then `.ok_or()?` (unwraps Opt)
+            if is_bang {
+                return unwrap_bang_return(ret);
+            }
+            return ret;
         }
     }
 
@@ -1625,6 +1665,83 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == "type_mismatch" && d.message.contains("user")),
             "{:?}",
+            diags
+        );
+    }
+
+    /// Bang call on port method returning Opt<T>: after Res! + Opt unwrap, result is T
+    /// so it can be passed to another bang method expecting T (matches codegen ? + ok_or).
+    #[test]
+    fn bang_call_strips_res_and_opt() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Repo".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "find!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "id".into(),
+                type_expr: TypeExpr::Named("Id".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named("User".into())))),
+        });
+        port.methods.push(Method {
+            name: "save!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "user".into(),
+                type_expr: TypeExpr::Named("User".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: None,
+        });
+        let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
+        // @dep-style local: repo: Repo
+        svc.inputs.push(Field {
+            name: "repo".into(),
+            type_expr: TypeExpr::Named("Repo".into()),
+            span: Span::new(0, 0),
+            annotations: Vec::new(),
+            default_expr: None,
+        });
+        svc.inputs.push(Field {
+            name: "id".into(),
+            type_expr: TypeExpr::Named("Id".into()),
+            span: Span::new(0, 0),
+            annotations: Vec::new(),
+            default_expr: None,
+        });
+        svc.steps.push(step(vec![
+            Expr::Assign(
+                "u".into(),
+                Box::new(Expr::Call(CallExpr {
+                    target: "repo".into(),
+                    method: "find!".into(),
+                    args: vec![Expr::Ident("id".into())],
+                    receiver: None,
+                    sugar: None,
+                    span: Span::new(0, 0),
+                })),
+                None,
+            ),
+            Expr::Call(CallExpr {
+                target: "repo".into(),
+                method: "save!".into(),
+                args: vec![Expr::Ident("u".into())],
+                receiver: None,
+                sugar: None,
+                span: Span::new(10, 20),
+            }),
+        ]));
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(svc),
+            ]),
+            &reg(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "expected no type_mismatch after bang Opt unwrap, got: {:?}",
             diags
         );
     }

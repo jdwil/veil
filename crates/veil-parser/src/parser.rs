@@ -2961,6 +2961,26 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::Dot) {
             self.advance();
             method = self.expect_ident()?;
+            // call Repo.find!(id) — keep bang on method name for typecheck
+            if self.at(&TokenKind::Bang)
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .map(|t| t.kind == TokenKind::LParen || t.kind == TokenKind::LBrace)
+                    .unwrap_or(false)
+            {
+                self.advance();
+                method.push('!');
+            } else if self.at(&TokenKind::Question)
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .map(|t| t.kind == TokenKind::LParen || t.kind == TokenKind::LBrace)
+                    .unwrap_or(false)
+            {
+                self.advance();
+                method.push('?');
+            }
         }
 
         let mut args = Vec::new();
@@ -3136,7 +3156,8 @@ impl<'a> Parser<'a> {
 
             let field = self.expect_ident()?;
 
-            // Handle method!(args) — the ! is part of the method name (fallible shorthand)
+            // Handle method!(args) — the ! is part of the method name (fallible shorthand).
+            // Must keep `!` on CallExpr.method so typecheck can unwrap Res!/Opt (codegen ? + ok_or).
             let is_bang_call = self.at(&TokenKind::Bang)
                 && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
             if is_bang_call {
@@ -3150,6 +3171,14 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume ?
             }
 
+            let method_name = if is_bang_call {
+                format!("{field}!")
+            } else if is_question_call {
+                format!("{field}?")
+            } else {
+                field.clone()
+            };
+
             if self.at(&TokenKind::LParen) {
                 let args = self.parse_paren_args();
                 let span = start_span.merge(self.current().span);
@@ -3158,7 +3187,7 @@ impl<'a> Parser<'a> {
                 expr = match expr {
                     Expr::Ident(target) => Expr::Call(CallExpr {
                         target,
-                        method: field,
+                        method: method_name.clone(),
                         args,
                         receiver: None,
                         sugar: None,
@@ -3170,7 +3199,7 @@ impl<'a> Parser<'a> {
                         match target {
                             Some(t) => Expr::Call(CallExpr {
                                 target: t,
-                                method: field,
+                                method: method_name.clone(),
                                 args,
                                 receiver: None,
                                 sugar: None,
@@ -3178,7 +3207,7 @@ impl<'a> Parser<'a> {
                             }),
                             None => Expr::Call(CallExpr {
                                 target: String::new(),
-                                method: field,
+                                method: method_name.clone(),
                                 args,
                                 receiver: Some(Box::new(Expr::FieldAccess(base, last))),
                                 sugar: None,
@@ -3189,7 +3218,7 @@ impl<'a> Parser<'a> {
                     // Chain link on a call/other expression → receiver form.
                     other => Expr::Call(CallExpr {
                         target: String::new(),
-                        method: field,
+                        method: method_name,
                         args,
                         receiver: Some(Box::new(other)),
                         sugar: None,
