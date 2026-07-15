@@ -750,6 +750,51 @@ fn demo_value_for_type(ty: &TypeExpr) -> String {
     }
 }
 
+/// One intended HTTP route from package IR (ACS-011 / AGT-026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrRestRoute {
+    pub method: String,
+    pub path: String,
+    pub handler: String,
+    /// `route` when from `@route`; `name` when name-derived fallback.
+    pub via: &'static str,
+}
+
+/// Collect REST routes from package IR: `@route` first, else name-derived
+/// (same policy as local harness). Works without gen (ACS-011).
+pub fn list_rest_routes_from_solution(sol: &Solution) -> Vec<IrRestRoute> {
+    let mut out = Vec::new();
+    for item in &sol.items {
+        let TopLevelItem::Construct(c) = item else {
+            continue;
+        };
+        if c.shape != Shape::Mod {
+            continue;
+        }
+        let flat = flatten_module(c);
+        for svc in &flat.fns {
+            // Skip non-HTTP helpers (@main bootstrap, pure fns without svc/handler shape)
+            let is_svc = svc.subkind.eq_ignore_ascii_case("Service")
+                || svc.subkind.eq_ignore_ascii_case("Handler")
+                || svc.keyword == "svc"
+                || svc.keyword == "handler"
+                || svc.annotations.iter().any(|a| a.name == "route");
+            if !is_svc {
+                continue;
+            }
+            let has_route = svc.annotations.iter().any(|a| a.name == "route");
+            let (method, path) = rest_route_for_service(svc);
+            out.push(IrRestRoute {
+                method,
+                path,
+                handler: svc.name.clone(),
+                via: if has_route { "route" } else { "name" },
+            });
+        }
+    }
+    out
+}
+
 /// Derive a RESTful (method, path) from a service name.
 /// ListInitiatives → (get, /api/initiatives)
 /// GetInitiative → (get, /api/initiatives/{id})
@@ -758,7 +803,7 @@ fn demo_value_for_type(ty: &TypeExpr) -> String {
 /// Annotation forms (first arg):
 /// - `"GET /api/foo"` / `"POST /api/foo"` …
 /// - `"/api/foo"` alone → method from service name (`derive_rest_route`)
-fn rest_route_for_service(svc: &Construct) -> (String, String) {
+pub fn rest_route_for_service(svc: &Construct) -> (String, String) {
     if let Some(ann) = svc.annotations.iter().find(|a| a.name == "route") {
         if let Some(raw) = ann.args.first() {
             let s = raw.trim().trim_matches('"').trim_matches('\'');

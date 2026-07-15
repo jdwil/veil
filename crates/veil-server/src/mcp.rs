@@ -51,7 +51,6 @@ async fn dispatch_runtime_tool(
                 .unwrap_or(false);
             agent_runtime_tools::tool_read_generated(project_root, path, what, max_chars, list)
         }
-        "list_routes" => agent_runtime_tools::tool_list_routes(project_root),
         "http_request" => {
             let method = arguments.get("method").and_then(|v| v.as_str());
             let path = arguments.get("path").and_then(|v| v.as_str());
@@ -227,8 +226,18 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "list_routes",
-            "description": "Structured JSON list of axum routes from generated veil_bin harness. Prefer this before inventing API paths.",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+            "description": "JSON routes before inventing paths. source=auto|generated|ir (default auto: generated harness if present, else package IR @route/name). Use ir when gen failed (ACS-011).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "enum": ["auto", "generated", "ir"],
+                        "description": "auto (default) | generated | ir"
+                    }
+                },
+                "required": []
+            }
         }),
         json!({
             "name": "http_request",
@@ -479,7 +488,6 @@ async fn dispatch_tool<P: SourceProvider>(
         "dev_status"
             | "dev_logs"
             | "read_generated"
-            | "list_routes"
             | "http_request"
             | "dev_restart"
             | "smoke_status"
@@ -488,6 +496,24 @@ async fn dispatch_tool<P: SourceProvider>(
             .project_root()
             .ok_or_else(|| "no project root — open a project first".to_string())?;
         return dispatch_runtime_tool(&root, tool_name, arguments, proj.as_deref()).await;
+    }
+
+    // ACS-011: list_routes may need active source for IR mode
+    if tool_name == "list_routes" {
+        let root = provider
+            .project_root()
+            .ok_or_else(|| "no project root — open a project first".to_string())?;
+        let mode = agent_runtime_tools::ListRoutesSource::parse(
+            arguments.get("source").and_then(|v| v.as_str()),
+        )?;
+        let source = provider.read_source("").await.ok();
+        let registry = provider.registry();
+        return agent_runtime_tools::tool_list_routes_with(
+            &root,
+            source.as_deref(),
+            Some(&registry),
+            mode,
+        );
     }
 
     let source = provider.read_source("").await.map_err(|e| format!("read_source: {e}"))?;

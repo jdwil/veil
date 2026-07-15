@@ -750,6 +750,13 @@ impl Tool for ReadGeneratedTool {
     }
 }
 
+#[derive(Deserialize, Serialize, Default)]
+pub struct ListRoutesArgs {
+    /// `auto` (default) | `generated` | `ir` — ACS-011
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct ListRoutesTool {
     pub ws: Workspace,
@@ -758,19 +765,45 @@ pub struct ListRoutesTool {
 impl Tool for ListRoutesTool {
     const NAME: &'static str = "list_routes";
     type Error = ToolErr;
-    type Args = EmptyArgs;
+    type Args = ListRoutesArgs;
     type Output = String;
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "JSON list of routes from generated veil_bin harness.".into(),
-            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            description: "JSON routes: source=auto|generated|ir. Prefer generated when present; use ir after bad gen to see @route intent (ACS-011).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "enum": ["auto", "generated", "ir"],
+                        "description": "auto (default): generated if present else IR; ir derives from active package"
+                    }
+                }
+            }),
         }
     }
-    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let (root, _) = host_project(&self.ws)?;
-        self.ws.log("list_routes", "harness");
-        crate::agent_runtime_tools::tool_list_routes(&root).map_err(ToolErr)
+        let mode = crate::agent_runtime_tools::ListRoutesSource::parse(args.source.as_deref())
+            .map_err(ToolErr)?;
+        self.ws.log(
+            "list_routes",
+            match mode {
+                crate::agent_runtime_tools::ListRoutesSource::Auto => "auto",
+                crate::agent_runtime_tools::ListRoutesSource::Generated => "generated",
+                crate::agent_runtime_tools::ListRoutesSource::Ir => "ir",
+            },
+        );
+        let src = self.ws.source_snapshot();
+        let reg = self.ws.registry_snapshot();
+        crate::agent_runtime_tools::tool_list_routes_with(
+            &root,
+            Some(&src),
+            Some(&reg),
+            mode,
+        )
+        .map_err(ToolErr)
     }
 }
 

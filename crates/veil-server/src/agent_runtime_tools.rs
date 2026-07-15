@@ -324,8 +324,71 @@ fn collect_files(
     Ok(())
 }
 
-/// Structured route list from generated harness (AGT-027).
+/// Route list source: generated harness, package IR, or auto (ACS-011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListRoutesSource {
+    /// Prefer generated when present; else IR (default).
+    #[default]
+    Auto,
+    Generated,
+    Ir,
+}
+
+impl ListRoutesSource {
+    pub fn parse(s: Option<&str>) -> Result<Self, String> {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("") | Some("auto") => Ok(Self::Auto),
+            Some("generated") | Some("gen") | Some("harness") => Ok(Self::Generated),
+            Some("ir") | Some("source") | Some("package") => Ok(Self::Ir),
+            Some(other) => Err(format!(
+                "unknown source={other:?}; use auto | generated | ir"
+            )),
+        }
+    }
+}
+
+/// Structured route list (AGT-027 / ACS-011).
+///
+/// - `source=generated` — parse `veil_bin` main.rs under target outputs
+/// - `source=ir` — derive from package IR (`@route` first, else name fallback)
+/// - `source=auto` (default) — generated when present, else IR
 pub fn tool_list_routes(project_root: &Path) -> Result<String, String> {
+    tool_list_routes_with(project_root, None, None, ListRoutesSource::Auto)
+}
+
+/// List routes with explicit mode and optional active package source for IR.
+pub fn tool_list_routes_with(
+    project_root: &Path,
+    active_source: Option<&str>,
+    registry: Option<&veil_ir::LayerRegistry>,
+    source: ListRoutesSource,
+) -> Result<String, String> {
+    match source {
+        ListRoutesSource::Generated => list_routes_from_generated(project_root),
+        ListRoutesSource::Ir => list_routes_from_ir(active_source, registry),
+        ListRoutesSource::Auto => {
+            let from_gen = list_routes_from_generated(project_root)?;
+            // Empty array or comment-only → try IR
+            let trimmed = from_gen.trim();
+            if trimmed.starts_with('[') && !trimmed.starts_with("[]") {
+                return Ok(from_gen);
+            }
+            if active_source.is_some() {
+                match list_routes_from_ir(active_source, registry) {
+                    Ok(ir) if !ir.trim().starts_with("[]") => Ok(format!(
+                        "{ir}\n(source=ir — no generated harness routes; generate when smoke is green)"
+                    )),
+                    Ok(ir) => Ok(ir),
+                    Err(_) => Ok(from_gen),
+                }
+            } else {
+                Ok(from_gen)
+            }
+        }
+    }
+}
+
+fn list_routes_from_generated(project_root: &Path) -> Result<String, String> {
     let roots = output_roots(project_root);
     let mut routes: Vec<serde_json::Value> = Vec::new();
     for root in &roots {
@@ -359,18 +422,62 @@ pub fn tool_list_routes(project_root: &Path) -> Result<String, String> {
                     "method": method,
                     "path": path,
                     "handler": handler,
-                    "source": rel,
+                    "source": "generated",
+                    "file": rel,
                 }));
             }
         }
     }
     if routes.is_empty() {
         return Ok(
-            "[]\n(no .route( lines found — generate backend first or check output paths)"
+            "[]\n(no .route( lines found — try source=ir or generate backend first)"
                 .into(),
         );
     }
     Ok(serde_json::to_string_pretty(&routes).unwrap_or_else(|_| "[]".into()))
+}
+
+fn list_routes_from_ir(
+    active_source: Option<&str>,
+    registry: Option<&veil_ir::LayerRegistry>,
+) -> Result<String, String> {
+    let source = active_source.ok_or_else(|| {
+        "source=ir requires active package source (select a .veil file)".to_string()
+    })?;
+    if source.trim().is_empty() {
+        return Err("active source is empty".into());
+    }
+    let reg = registry.cloned().unwrap_or_else(veil_ir::LayerRegistry::builtin);
+    let tokens = veil_parser::lex(source);
+    let sol = veil_parser::parse_with_registry(&tokens, reg).map_err(|errs| {
+        format!(
+            "parse for IR routes: {}",
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
+    let routes = veil_codegen::list_rest_routes_from_solution(&sol);
+    if routes.is_empty() {
+        return Ok(
+            "[]\n(no svc/handler routes in package IR — add @route or List/Get/Create names)"
+                .into(),
+        );
+    }
+    let json: Vec<serde_json::Value> = routes
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "method": r.method,
+                "path": r.path,
+                "handler": r.handler,
+                "source": "ir",
+                "via": r.via,
+            })
+        })
+        .collect();
+    Ok(serde_json::to_string_pretty(&json).unwrap_or_else(|_| "[]".into()))
 }
 
 fn extract_quoted_path(line: &str) -> Option<String> {
@@ -668,6 +775,19 @@ pub fn tool_smoke_status(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn list_routes_from_ir_fixture_l1() {
+        let src = include_str!("../../../fixtures/ladder/l1/crud.veil");
+        let mut reg = veil_ir::LayerRegistry::builtin();
+        let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
+        let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+        let out = list_routes_from_ir(Some(src), Some(&reg)).expect("ir routes");
+        assert!(out.contains("/api/items"), "{out}");
+        assert!(out.contains("\"source\": \"ir\""), "{out}");
+        assert!(out.contains("ListItems") || out.contains("list"), "{out}");
+        assert!(out.contains("\"via\": \"route\""), "expected @route via: {out}");
+    }
 
     #[test]
     fn extract_route_parses_axum_line() {

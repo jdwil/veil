@@ -16,7 +16,7 @@ pub use links::{cargo_dep_line, resolve_link, resolve_links, ResolvedLink};
 pub use capabilities::{
     check_multi_target_debt, check_target_capabilities, target_capability_summary, Feature,
 };
-pub use rust::generate;
+pub use rust::{generate, list_rest_routes_from_solution, rest_route_for_service, IrRestRoute};
 pub use template::execute_templates;
 pub use typescript::generate_ts;
 
@@ -109,4 +109,18 @@ pub fn generate_for_target_with_packages(
         }
         other => generate_for_target(solution, registry, other),
     }
+}
+
+/// Generate a combined `veil_bin` harness that wires multiple packages together.
+/// Each package contributes its contexts (modules) as separate axum route groups
+/// sharing a single HTTP server. Used by the devloop for multi-package local dev.
+///
+/// Returns generated files for `crates/veil_bin/` only (Cargo.toml + src/main.rs).
+pub fn generate_multi_harness(
+    packages: &[(&Solution, &LayerRegistry)],
+) -> Vec<GeneratedFile> {
+    rust::generate_multi_package_harness(packages)
+        .into_iter()
+        .map(|f| GeneratedFile { path: f.path, content: f.content })
+        .collect()
 }

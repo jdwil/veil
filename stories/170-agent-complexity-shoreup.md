@@ -300,7 +300,7 @@ landed; flip default is a later phase after package migration.
 
 ---
 
-### ACS-011: list_routes from IR (pre-gen) — Todo · P2
+### ACS-011: list_routes from IR (pre-gen) — Done · P2
 
 **As an** agent  
 **I want** intended routes even when gen failed  
@@ -308,10 +308,10 @@ landed; flip default is a later phase after package migration.
 
 **Acceptance criteria:**
 
-- [ ] `list_routes` (or sibling tool) can derive from package IR: `@route` first, else name-derived fallback
-- [ ] Flag or mode: `source=ir|generated` (default generated when present)
-- [ ] Matches harness policy when both available
-- [ ] Test against fixture package
+- [x] `list_routes` (or sibling tool) can derive from package IR: `@route` first, else name-derived fallback
+- [x] Flag or mode: `source=ir|generated` (default generated when present)
+- [x] Matches harness policy when both available
+- [x] Test against fixture package
 
 **Depends:** ACS-005, [160](160-agent-runtime-observability.md)  
 **Mission impact:** Observe intent without green gen  
@@ -378,6 +378,6 @@ An agent can, without human log-paste:
 | ACS-007 | Pipeline rule (3-phase sugar) | Done | P1 |
 | ACS-008 | Structured check diagnostics | Done | P2 |
 | ACS-009 | Mind Palace five contracts | Done | P2 |
-| ACS-010 | Bang portable semantics split | Todo | P2 |
+| ACS-010 | Bang portable semantics split | Done | P2 |
 | ACS-011 | list_routes from IR | Todo | P2 |
 | ACS-012 | Multi-package scoped smoke | Todo | P2 |

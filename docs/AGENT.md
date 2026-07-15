@@ -113,6 +113,16 @@ the whole file again.
 
 **Do:** fix the reported span / code. **Don't:** rewrite the whole package for one type error.
 
+### list_routes source modes (ACS-011)
+
+| `source` | Behavior |
+|----------|----------|
+| `auto` (default) | Generated harness if present; else package IR |
+| `generated` | Parse `veil_bin` only |
+| `ir` | Derive from active package: `@route` first, else name fallback |
+
+Use **`source=ir`** when gen failed so you still see intended paths.
+
 ### Env
 
 | Variable | Meaning |
