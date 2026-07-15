@@ -30,13 +30,23 @@ pkg harness v1
     You are writing a VEIL-authored local harness (not handwritten bootstrap).
 
     ## Overview
-    Use `@main` (from di.layer) for composition roots. The engine generates
-    `InProcessBus` into `veil_shared` when the package uses a layer that
-    declares `trait Bus` (e.g. ddd). Register handlers and call application
-    services from `@main` steps.
+    Packages with **context modules** get a generated `veil_bin` HTTP harness
+    for local dual-loop even **without** `@main`. Use `@main` (di.layer) when
+    you need Bus composition roots or ProductHost.
+
+    The engine generates `InProcessBus` into `veil_shared` when the package uses
+    a layer that declares `trait Bus` (e.g. ddd).
 
     For the product host: `link veil_server` + `@main` emits ProductHost listen
     (CAP-002/006). FileSystem / GitRepo are provided_by runtime (CAP-004).
+
+    ## Local REST routes (axum harness)
+    - Prefer `@route("GET /api/…")` / `@route("POST /api/…")` on application
+      services so paths match the running server.
+    - Without `@route`, names drive paths: ListX → GET /api/{x}s, GetX →
+      GET /api/{x}s/{id}, CreateX → POST, Update/Delete → PUT/DELETE.
+    - Inspect generated routes via agent tools `list_routes` /
+      `read_generated(what=harness)` — do not invent paths.
 
     ## Patterns
     - Construct `InProcessBus.new()` in `@main` when you need multi-context
@@ -48,3 +58,4 @@ pkg harness v1
     ## Constraints
     - You MUST NOT rely on eternal handwritten bootstrap for new apps
     - You SHOULD keep `@main` thin: wire + one demo invoke
+    - For dual-loop REST APIs, modules + services (+ optional @route) are enough

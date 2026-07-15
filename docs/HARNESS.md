@@ -70,10 +70,69 @@ Local harness (`veil_bin`) supplies Bus (and allow-all Auth when declared)
 without a handwritten host. Manifest still lists `provided_by: runtime` for
 platform hosts; local gen emits concrete impls so `cargo run -p veil_bin` works.
 
-## HTTP local harness (`@main` without `link veil_server`)
+## Multi-package local harness (`[dev].packages`)
 
-When a product package has `@main` and does **not** link `veil_server`, codegen
-emits `crates/veil_bin` as a small **axum REST harness** (RT-001 / RT-003):
+Local dual-loop often needs **several product packages in one process** so they
+can share an HTTP surface (e.g. `wear_test` + `dlx_core` / IAAA). Production
+still deploys packages independently.
+
+### `veil.toml`
+
+```toml
+[dev]
+# Absolute or project-relative paths to additional .veil packages
+packages = ["/path/to/dlx_core/dlx_core.veil"]
+# packages = ["../dlx_core/dlx_core.veil"]
+```
+
+When `packages` is **non-empty** and the backend target is `rust`, dual-loop:
+
+1. `veil gen <primary> -o generated/backend --no-prune`
+2. `veil gen <each dev package> -o … --no-prune` (keeps sibling crates)
+3. `veil gen-harness <primary> <dev…> -o …` — one combined `veil_bin`
+4. Prune crates not path-dep’d by that harness; merge workspace members/deps
+
+When `packages` is **empty / omitted**, single-package gen only (prunes stale
+crates from prior multi gens).
+
+### Manual CLI (same as dual-loop)
+
+```bash
+veil gen wear_test.veil -o generated/backend --no-prune
+veil gen /path/to/dlx_core/dlx_core.veil -o generated/backend --no-prune
+veil gen-harness wear_test.veil /path/to/dlx_core/dlx_core.veil -o generated/backend
+cd generated/backend && cargo run -p veil_bin
+```
+
+Combined `veil_bin` wires **all** context crates’ adapters and merges REST
+routes into one axum server (`/health` + each package’s `/api/…`).
+
+### Flags
+
+| Flag / command | Role |
+|----------------|------|
+| `[dev].packages` in `veil.toml` | Declares which extra packages join the local harness |
+| `veil gen --no-prune` | Keep other packages’ crates while genning the next one |
+| `veil gen-harness A.veil B.veil -o dir` | Rewrite `veil_bin` to wire A+B together |
+
+Reload: dual-loop re-reads `veil.toml` on each gen, so toggling `[dev].packages`
+does not require a full IDE restart (restart `veil serve` after rebuilding the
+binary).
+
+---
+
+## HTTP local harness (modules → `veil_bin`)
+
+Packages with **context modules** get `crates/veil_bin` as a small **axum REST
+harness** for local dual-loop (RT-001 / RT-003). **`@main` is optional** for
+this path. `@main` is still used for Bus composition demos and ProductHost
+(`link veil_server`).
+
+### Route selection (AGT-026)
+
+1. If the service has `@route("METHOD /path")`, that method and path win.
+2. Path-only `@route("/path")` keeps the name-derived method.
+3. Otherwise name prefixes:
 
 | Service name pattern | Method | Path |
 |---------------------|--------|------|
@@ -82,6 +141,18 @@ emits `crates/veil_bin` as a small **axum REST harness** (RT-001 / RT-003):
 | `CreateThing` | POST | `/api/things` |
 | `UpdateThing` | PUT | `/api/things/{id}` |
 | `DeleteThing` | DELETE | `/api/things/{id}` |
+
+### Agent closed loop (AGT-020–028)
+
+After editing a package that affects the backend:
+
+1. Host **smoke**: gen + `cargo check` (rejected writes restore previous file).
+2. `dev_logs` / `smoke_status` — see gen/check output.
+3. `list_routes` / `read_generated(what=harness)` — real paths.
+4. `dev_restart` — reload `cargo run` so the process is not stale.
+5. `http_request(path, target=backend)` — live probe (127.0.0.1 + `dev_port` only).
+
+Set `VEIL_AGENT_SMOKE=0` only as an escape hatch.
 
 - **List\*** inputs are taken from **query string** (e.g. `?tenant_id=`), not random UUIDs.
 - **Create/Update** inputs from JSON body.
@@ -131,6 +202,16 @@ knowledge** (no hard-coded Dynamo/S3/aws-config). Stubs may also declare:
 | `types_module types` | Model types live under `crate::types::…` |
 | `root_types Client, Config` | Types that stay at crate root |
 | `harness_field Client """…"""` | Rust expr for `@field(client: Client)` in the local harness |
+| `row_type_derives Path` | Multi-field domain types get these derives (e.g. `sqlx::FromRow`) |
+| `wrapper_type_derives Path` | Single-field wrappers get these derives (e.g. `sqlx::Type`) |
+| `wrapper_type_attrs inner` | Extra attrs on wrappers (e.g. `sqlx(transparent)` → `#[sqlx(transparent)]`) |
+| `codegen_imports Path` | Extra `use` lines when the stub is active (e.g. `sqlx::PgPool`) |
+| `rust_name VeilName RustName` | VEIL type → Rust type when names differ (`Pool` → `PgPool`) |
+| (on struct) `typed_variant name` | Free-fn for typed `new` (e.g. `query_as` when return is a domain type) |
+| (on struct) `typed_type_params …` | Turbofish template; `return_type` = enclosing domain type (default `_, return_type`) |
+
+**Engine invariant:** rust codegen never hardcodes `sqlx::…` / AWS symbols. Drivers
+declare policy on the `.stub`; `rust.rs` / `expr.rs` apply it generically.
 
 Adapter `impl` bodies that call stub types are lowered generically (fluent
 chains, PascalCase enum variants, fallible `.send()` → `.await.map_err(...)?`).
