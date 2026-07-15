@@ -130,7 +130,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // Prefer a generated InProcessBus harness (RT-001/003/004) over raw
     // template fragments when we have context modules.
     let has_main = crate::template::compose_main_section(&template_output, "rust").is_some()
-        || package_has_main_annotation(solution);
+        || package_has_main_annotation(solution)
+        || !modules.is_empty(); // Packages with modules always get a harness binary.
     if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| to_snake(&m.name)).collect();
         // CAP-002/006: product host bin when package links veil_server.
@@ -158,9 +159,10 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         ));
         if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
             if !ws.content.contains("crates/veil_bin") {
+                // Insert veil_bin after veil_shared in the members list.
                 ws.content = ws.content.replacen(
-                    "members = [\n    \"crates/veil_shared\"",
-                    "members = [\n    \"crates/veil_shared\",\n    \"crates/veil_bin\"",
+                    "    \"crates/veil_shared\"",
+                    "    \"crates/veil_shared\",\n    \"crates/veil_bin\"",
                     1,
                 );
             }
@@ -228,6 +230,38 @@ fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
     }
     walk(module, &mut contents);
     contents
+}
+
+/// Check if any expression in a tree references `self.<field_name>`.
+fn expr_mentions_self_field(expr: &Expr, field_name: &str) -> bool {
+    match expr {
+        Expr::Call(call) => {
+            let target_matches = call.target == format!("self.{}", field_name)
+                || (call.target.starts_with("self.") && call.target.split('.').nth(1) == Some(field_name));
+            if target_matches {
+                return true;
+            }
+            if let Some(recv) = &call.receiver {
+                if expr_mentions_self_field(recv, field_name) {
+                    return true;
+                }
+            }
+            call.args.iter().any(|a| expr_mentions_self_field(a, field_name))
+        }
+        Expr::FieldAccess(base, field) => {
+            if field == field_name {
+                if let Expr::Ident(id) = base.as_ref() {
+                    return id == "self";
+                }
+            }
+            expr_mentions_self_field(base, field_name)
+        }
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => {
+            expr_mentions_self_field(rhs, field_name)
+        }
+        Expr::Return(inner) => expr_mentions_self_field(inner, field_name),
+        _ => false,
+    }
 }
 
 fn package_has_main_annotation(sol: &Solution) -> bool {
@@ -299,6 +333,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {{
     )
 }
 
+/// Whether a stub contributes Cargo deps / workspace entries (not a hollow parse).
+fn stub_is_active_cargo(stub: &veil_ir::StubCrate) -> bool {
+    !stub.row_type_derives.is_empty()
+        || !stub.wrapper_type_derives.is_empty()
+        || !stub.cargo_features.is_empty()
+        || !stub.cargo_deps.is_empty()
+        || !stub.codegen_imports.is_empty()
+        || !stub.structs.is_empty()
+        || !stub.harness_fields.is_empty()
+}
+
+/// Resolve a stub type to `(crate_name, path_under_crate)` (e.g. Pool → sqlx, PgPool path).
+fn stub_type_path(registry: &LayerRegistry, type_name: &str) -> Option<(String, String)> {
+    for stub in &registry.stubs {
+        if stub.structs.iter().any(|s| s.name == type_name) {
+            let crate_name = stub.name.replace('-', "_");
+            return Some((crate_name, stub.rust_type_path(type_name)));
+        }
+    }
+    None
+}
+
 /// Look up a stub `harness_field Type` recipe. Returns (local_let_name, rust_expr).
 fn stub_harness_field_expr(
     registry: &LayerRegistry,
@@ -327,7 +383,7 @@ fn gen_local_harness_main(
         sol.name
     ));
     out.push_str("use std::sync::Arc;\n");
-    out.push_str("use axum::{Router, Json, extract::State, extract::Query, routing::{get, post}, http::StatusCode};\n");
+    out.push_str("use axum::{Router, Json, extract::State, extract::Query, routing::{get, post, put, delete}, http::StatusCode};\n");
     out.push_str("use tower_http::cors::CorsLayer;\n");
     out.push_str("use uuid::Uuid;\n");
     out.push_str("use serde_json::Value;\n");
@@ -423,6 +479,28 @@ fn gen_local_harness_main(
                         "        {field_name}: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n"
                     ));
                 }
+            }
+            // Auto-init client field when adapter body uses self.client
+            // and no @field(client: ...) already provides it.
+            let has_explicit_client_field = ad.annotations.iter().any(|a| {
+                a.name == "field"
+                    && a.args.iter().any(|arg| {
+                        arg.split(':').next().unwrap_or("").trim() == "client"
+                    })
+            });
+            let body_uses_client = ad.impls.iter().any(|m| {
+                m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
+            });
+            if body_uses_client && !has_explicit_client_field {
+                let has_dynamo = ad.annotations.iter().any(|a| {
+                    a.name == "env"
+                        && a.args.iter().any(|arg| arg.contains("DYNAMO") || arg.contains("DDB"))
+                });
+                if has_dynamo {
+                    fields_init.push_str(
+                        "        client: aws_sdk_dynamodb::Client::new(&aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await),\n"
+                    );
+                }
             } else if !ad.fields.is_empty() {
                 for f in &ad.fields {
                     let field_name = to_snake(&f.name);
@@ -470,8 +548,7 @@ fn gen_local_harness_main(
         let mut routes_emitted: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
         for svc in services {
             let fn_name = to_snake(&svc.name);
-            let svc_name = &svc.name;
-            let (method, path) = derive_rest_route(svc_name);
+            let (method, path) = rest_route_for_service(svc);
             routes_emitted.entry(path.clone()).or_default().push(format!("{method}({fn_name}_handler)"));
         }
         for (path, handlers) in &routes_emitted {
@@ -496,14 +573,17 @@ fn gen_local_harness_main(
         let flat = flatten_module(module);
         for svc in &flat.fns {
             let fn_name = to_snake(&svc.name);
-            let (method, _) = derive_rest_route(&svc.name);
-            let needs_path_id = method == "get" && !svc.name.starts_with("List")
-                || method == "put" || method == "delete";
+            let (method, path) = rest_route_for_service(svc);
+            let needs_path_id = path.contains("{id}")
+                || (method == "get" && !svc.name.starts_with("List") && !path.contains('{'))
+                || method == "put"
+                || method == "delete";
+            let needs_path_id = needs_path_id && path.contains('{');
             let needs_body = method == "post" || method == "put";
 
             // Function signature
             // List* GET: Query params (not random Uuid defaults — that silently broke local APIs).
-            let is_list_get = method == "get" && svc.name.starts_with("List");
+            let is_list_get = method == "get" && (svc.name.starts_with("List") || !path.contains('{'));
             if needs_path_id && needs_body {
                 out.push_str(&format!(
                     "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(id): axum::extract::Path<String>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
@@ -609,6 +689,42 @@ fn demo_value_for_type(ty: &TypeExpr) -> String {
 /// Derive a RESTful (method, path) from a service name.
 /// ListInitiatives → (get, /api/initiatives)
 /// GetInitiative → (get, /api/initiatives/{id})
+/// Prefer `@route` annotation when present (AGT-026); else name-derived REST.
+///
+/// Annotation forms (first arg):
+/// - `"GET /api/foo"` / `"POST /api/foo"` …
+/// - `"/api/foo"` alone → method from service name (`derive_rest_route`)
+fn rest_route_for_service(svc: &Construct) -> (String, String) {
+    if let Some(ann) = svc.annotations.iter().find(|a| a.name == "route") {
+        if let Some(raw) = ann.args.first() {
+            let s = raw.trim().trim_matches('"').trim_matches('\'');
+            if let Some((method, path)) = parse_route_annotation(s) {
+                return (method, path);
+            }
+            // Path-only: keep derived method
+            if s.starts_with('/') {
+                let (method, _) = derive_rest_route(&svc.name);
+                return (method, s.to_string());
+            }
+        }
+    }
+    derive_rest_route(&svc.name)
+}
+
+fn parse_route_annotation(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    let mut parts = s.splitn(2, char::is_whitespace);
+    let first = parts.next()?.trim();
+    let rest = parts.next().map(|r| r.trim()).filter(|r| !r.is_empty());
+    let methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"];
+    if let Some(path) = rest {
+        if methods.iter().any(|m| first.eq_ignore_ascii_case(m)) && path.starts_with('/') {
+            return Some((first.to_lowercase(), path.to_string()));
+        }
+    }
+    None
+}
+
 /// CreateInitiative → (post, /api/initiatives)
 /// UpdateInitiative → (put, /api/initiatives/{id})
 /// DeleteInitiative → (delete, /api/initiatives/{id})
@@ -662,9 +778,14 @@ fn gen_bin_crate(
         deps.push_str(&crate::links::cargo_workspace_dep_line(link));
     }
     // Companion crates + primary stubs used by harness_field / @field wiring.
+    // Cargo package keys use the stub name as published (hyphens), not snake_case.
+    // Only active stubs (features/deps/types/harness metadata) — matches multi-package harness.
     for stub in &registry.stubs {
-        let crate_key = stub.name.clone();
-        if !deps.contains(&crate_key) {
+        if !stub_is_active_cargo(stub) {
+            continue;
+        }
+        let crate_key = &stub.name;
+        if !deps.contains(crate_key) {
             deps.push_str(&format!("{crate_key} = {{ workspace = true }}\n"));
         }
         for (dep_name, _) in &stub.cargo_deps {
@@ -745,8 +866,13 @@ fn gen_workspace_toml(
     }
 
     // GEN-006: deps/features from stub metadata only (no engine hardcode).
+    // Emit every stub the package loaded via `use` plus cargo_deps companions
+    // (e.g. aws-config for aws-sdk-dynamodb) so veil_bin workspace=true resolves.
     let mut extra_deps = String::new();
     for stub in &registry.stubs {
+        if !stub_is_active_cargo(stub) {
+            continue;
+        }
         if stub.cargo_features.is_empty() {
             extra_deps.push_str(&format!("{} = \"{}\"\n", stub.name, stub.version));
         } else {
@@ -849,8 +975,11 @@ uuid.workspace = true"#);
             cargo.push_str("chrono.workspace = true\ntracing.workspace = true\nserde_json.workspace = true\n");
             // Shared error types + Bus trait, defined once.
             cargo.push_str("veil_shared = { path = \"../veil_shared\" }\n");
-            // Stub crate dependencies
+            // Stub crate dependencies (active only — same policy as veil_bin / workspace)
             for stub in &registry.stubs {
+                if !stub_is_active_cargo(stub) {
+                    continue;
+                }
                 cargo.push_str(&format!("{}.workspace = true\n", stub.name));
             }
             // CAP-001: external crate links
@@ -1143,6 +1272,49 @@ fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
     }
 }
 
+/// Collect stub-declared derives/attrs for domain structs used with that SDK.
+/// Multi-field → `row_type_derives`; single-field → `wrapper_type_derives` + attrs.
+fn stub_domain_type_attrs(registry: &LayerRegistry, is_single_field: bool) -> (String, String) {
+    let mut row_derives: Vec<String> = Vec::new();
+    let mut wrap_derives: Vec<String> = Vec::new();
+    let mut wrap_attrs: Vec<String> = Vec::new();
+    for stub in &registry.stubs {
+        for d in &stub.row_type_derives {
+            if !row_derives.contains(d) {
+                row_derives.push(d.clone());
+            }
+        }
+        for d in &stub.wrapper_type_derives {
+            if !wrap_derives.contains(d) {
+                wrap_derives.push(d.clone());
+            }
+        }
+        for a in &stub.wrapper_type_attrs {
+            if !wrap_attrs.contains(a) {
+                wrap_attrs.push(a.clone());
+            }
+        }
+    }
+    if is_single_field && (!wrap_derives.is_empty() || !wrap_attrs.is_empty()) {
+        let derive = if wrap_derives.is_empty() {
+            String::new()
+        } else {
+            format!("\n#[derive({})]", wrap_derives.join(", "))
+        };
+        let attrs: String = wrap_attrs
+            .iter()
+            .map(|a| format!("\n#[{a}]"))
+            .collect();
+        // Wrapper derives are separate from Debug/Clone line when they're Type-only.
+        // Wrapper derives on their own line; extra_derive on main Debug line stays empty.
+        (String::new(), format!("{derive}{attrs}"))
+    } else if !row_derives.is_empty() {
+        (format!(", {}", row_derives.join(", ")), String::new())
+    } else {
+        (String::new(), String::new())
+    }
+}
+
 /// Generate a struct-shaped construct: struct + enum blocks + invariant impl.
 fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
     let mut out = String::new();
@@ -1156,9 +1328,15 @@ fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
         }
     }
 
+    // Stub-driven derives/attrs (row drivers, serde crates, …) — no crate names here.
+    let is_single_field = fields.len() == 1;
+    let (extra_derive, extra_attr) = stub_domain_type_attrs(registry, is_single_field);
     out.push_str(&format!(
-        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub struct {}{} {{\n",
-        c.subkind, c.name, c.name, generic_params_rust(&c.type_params)
+        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize{})]{}\npub struct {}{} {{\n",
+        c.subkind, c.name,
+        extra_derive,
+        extra_attr,
+        c.name, generic_params_rust(&c.type_params)
     ));
     for field in &fields {
         let mut ty = type_to_rust(&field.type_expr);
@@ -2024,12 +2202,15 @@ fn gen_impls(
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n");
 
-    // Add sqlx import if any adapter uses DATABASE_URL (i.e., is a sqlx adapter)
-    let uses_sqlx = impls.iter().any(|c| c.annotations.iter().any(|a| {
-        a.name == "env" && a.args.iter().any(|arg| arg.contains("DATABASE"))
-    }));
-    if uses_sqlx {
-        out.push_str("use sqlx::PgPool;\n");
+    // Stub-declared `codegen_imports` when any registered stub provides them.
+    // (Adapters that use the stub get these uses; engine does not name crates.)
+    let mut seen_imports = std::collections::BTreeSet::new();
+    for stub in &registry.stubs {
+        for imp in &stub.codegen_imports {
+            if seen_imports.insert(imp.clone()) {
+                out.push_str(&format!("use {imp};\n"));
+            }
+        }
     }
     out.push('\n');
 
@@ -2074,9 +2255,15 @@ fn gen_impls(
             for ann in &c.annotations {
                 if ann.name == "env" {
                     for arg in &ann.args {
+                        // DATABASE_* env → `pool` field typed from stub `Pool` if present.
                         if arg.contains("DATABASE") {
-                            // DATABASE_URL → pool: PgPool (the adapter holds a connection pool)
-                            out.push_str("    pub pool: PgPool,\n");
+                            if let Some((crate_name, path)) = stub_type_path(registry, "Pool") {
+                                out.push_str(&format!(
+                                    "    pub pool: {crate_name}::{path},\n"
+                                ));
+                            } else {
+                                out.push_str("    pub pool: String,\n");
+                            }
                         } else {
                             // Use the short suffix (after last _) as the field name,
                             // matching what the body references via self.field.
@@ -2108,6 +2295,37 @@ fn gen_impls(
                         }
                     }
                 }
+            }
+            // Auto-detect self.client usage in impl bodies → generate SDK client field.
+            // Only when no @field(client: ...) annotation already provides it.
+            let has_explicit_client_field = c.annotations.iter().any(|a| {
+                a.name == "field"
+                    && a.args.iter().any(|arg| {
+                        arg.split(':').next().unwrap_or("").trim() == "client"
+                    })
+            });
+            let body_uses_client = c.impls.iter().any(|m| {
+                m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
+            });
+            if body_uses_client && !has_explicit_client_field {
+                // Determine which SDK client to use from env annotations
+                let has_dynamo = c.annotations.iter().any(|a| {
+                    a.name == "env"
+                        && a.args
+                            .iter()
+                            .any(|arg| arg.contains("DYNAMO") || arg.contains("DDB"))
+                });
+                let has_s3 = c.annotations.iter().any(|a| {
+                    a.name == "env"
+                        && a.args.iter().any(|arg| arg.contains("S3"))
+                });
+                if has_dynamo {
+                    out.push_str("    pub client: aws_sdk_dynamodb::Client,\n");
+                } else if has_s3 {
+                    out.push_str("    pub client: aws_sdk_s3::Client,\n");
+                }
+                // When neither DYNAMO nor S3 is in @env, trust @field or stub resolution
+                // to provide the correct type — do not hardcode an SDK client.
             }
             out.push_str("}\n\n");
 
@@ -2194,6 +2412,7 @@ fn gen_impls(
                 ctx.struct_fields = seeded.struct_fields;
                 ctx.stub_type_crate = seeded.stub_type_crate;
                 ctx.fallible_methods = seeded.fallible_methods;
+                ctx.async_fallible_methods = seeded.async_fallible_methods;
                 ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
@@ -2244,8 +2463,11 @@ fn gen_impls(
                                 out.push_str(&format!("        {rust_expr};\n"));
                                 out.push_str("        Ok(())\n");
                             } else if ret_rust.starts_with("Result<") {
-                                if rust_expr.ends_with('?') || rust_expr.starts_with("Ok(") {
+                                if rust_expr.starts_with("Ok(") {
                                     out.push_str(&format!("        {rust_expr}\n"));
+                                } else if rust_expr.ends_with('?') {
+                                    // `?` unwraps the inner Result — value is now T, needs Ok(T)
+                                    out.push_str(&format!("        Ok({rust_expr})\n"));
                                 } else if rust_expr.contains(".await") {
                                     out.push_str(&format!(
                                         "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
@@ -3143,4 +3365,298 @@ fn infer_field_type(name: &str) -> String {
         return "String".to_string();
     }
     "String".to_string()
+}
+
+// ─── Multi-package harness (local dev) ─────────────────────────────────────
+
+/// Generate a combined `veil_bin` that wires multiple packages into one HTTP server.
+/// Each package's contexts get their own adapters + deps, and all routes merge.
+pub fn generate_multi_package_harness(
+    packages: &[(&Solution, &LayerRegistry)],
+) -> Vec<GeneratedFile> {
+    let mut all_modules: Vec<(&Construct, &str, &LayerRegistry)> = Vec::new(); // (module, crate_name_of_module, registry)
+    let mut all_crate_names: Vec<String> = Vec::new();
+
+    for (sol, reg) in packages {
+        for item in &sol.items {
+            if let TopLevelItem::Construct(c) = item {
+                if c.shape == Shape::Mod {
+                    let cn = to_snake(&c.name);
+                    all_modules.push((c, Box::leak(cn.clone().into_boxed_str()), reg));
+                    if !all_crate_names.contains(&cn) {
+                        all_crate_names.push(cn);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut main_rs = String::new();
+    main_rs.push_str("//! Multi-package HTTP harness (local dev).\n");
+    main_rs.push_str("//! Wires adapters from multiple VEIL packages into one server.\n");
+    main_rs.push_str("//! Auto-generated by devloop multi-package gen.\n\n");
+    main_rs.push_str("use std::sync::Arc;\n");
+    main_rs.push_str("use axum::{Router, Json, extract::State, extract::Query, routing::{get, post, put, delete}, http::StatusCode};\n");
+    main_rs.push_str("use tower_http::cors::CorsLayer;\n");
+    main_rs.push_str("use uuid::Uuid;\n");
+    main_rs.push_str("use serde_json::Value;\n");
+    main_rs.push_str("use veil_shared::*;\n\n");
+
+    for cn in &all_crate_names {
+        main_rs.push_str(&format!(
+            "use {cn}::application::{{self as {cn}_app, Deps as {cn}_Deps}};\n"
+        ));
+        main_rs.push_str(&format!("use {cn}::adapters::*;\n"));
+        main_rs.push_str(&format!("use {cn}::ports::*;\n"));
+    }
+
+    main_rs.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
+    main_rs.push_str("    let port: u16 = std::env::var(\"PORT\").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);\n\n");
+
+    // For each module: wire adapters + deps (same logic as gen_local_harness_main)
+    let mut router_names: Vec<String> = Vec::new();
+    for (module, crate_name, registry) in &all_modules {
+        let flat = flatten_module(module);
+        let adapters = &flat.impls;
+        let services = &flat.fns;
+        if adapters.is_empty() && services.is_empty() {
+            continue;
+        }
+
+        main_rs.push_str(&format!("    // ── context {} ──\n", module.name));
+
+        // Shared stub harness_field constructors for this context (same as single-package).
+        let mut emitted_harness_lets: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for ad in adapters {
+            for ann in &ad.annotations {
+                if ann.name != "field" {
+                    continue;
+                }
+                for arg in &ann.args {
+                    let ftype = arg
+                        .split_once(':')
+                        .map(|(_, t)| t.trim())
+                        .unwrap_or("")
+                        .to_string();
+                    if ftype.is_empty() || emitted_harness_lets.contains(&ftype) {
+                        continue;
+                    }
+                    if let Some((let_name, expr)) = stub_harness_field_expr(registry, &ftype) {
+                        main_rs.push_str(&format!(
+                            "    // stub harness_field {ftype}\n\
+                             let {let_name} = {expr};\n\n"
+                        ));
+                        emitted_harness_lets.insert(ftype);
+                    }
+                }
+            }
+        }
+
+        // Emit adapter instantiations
+        for ad in adapters {
+            let target = ad.target.as_deref().unwrap_or("Send");
+            let env_ann = ad.annotations.iter().find(|a| a.name == "env");
+            let mut fields_init = String::new();
+
+            // @field annotations
+            for ann in &ad.annotations {
+                if ann.name == "field" {
+                    for arg in &ann.args {
+                        let (fname, ftype) = if let Some((n, t)) = arg.split_once(':') {
+                            (n.trim(), t.trim())
+                        } else {
+                            (arg.trim(), "String")
+                        };
+                        if let Some((let_name, _)) = stub_harness_field_expr(registry, ftype) {
+                            fields_init.push_str(&format!("        {fname}: {let_name}.clone(),\n"));
+                        } else {
+                            fields_init.push_str(&format!("        {fname}: Default::default(),\n"));
+                        }
+                    }
+                }
+            }
+
+            // @env annotations
+            if let Some(env_a) = env_ann {
+                for arg in &env_a.args {
+                    let full = arg.to_lowercase();
+                    let field_name = full.rsplit('_').next().unwrap_or(&full);
+                    if arg.contains("DATABASE") {
+                        // Prefer stub harness_field Pool (declared on the DB driver stub).
+                        if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
+                            fields_init.push_str(&format!("        pool: {expr},\n"));
+                        } else {
+                            fields_init.push_str(&format!(
+                                "        pool: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n"
+                            ));
+                        }
+                    } else {
+                        fields_init.push_str(&format!(
+                            "        {field_name}: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n"
+                        ));
+                    }
+                }
+            }
+
+            // Auto-init client field
+            let has_explicit_client = ad.annotations.iter().any(|a| {
+                a.name == "field" && a.args.iter().any(|arg| arg.split(':').next().unwrap_or("").trim() == "client")
+            });
+            let body_uses_client = ad.impls.iter().any(|m| {
+                m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
+            });
+            if body_uses_client && !has_explicit_client {
+                let has_dynamo = ad.annotations.iter().any(|a| {
+                    a.name == "env" && a.args.iter().any(|arg| arg.contains("DYNAMO") || arg.contains("DDB"))
+                });
+                if has_dynamo {
+                    fields_init.push_str(
+                        "        client: aws_sdk_dynamodb::Client::new(&aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await),\n"
+                    );
+                }
+            }
+
+            if fields_init.is_empty() {
+                main_rs.push_str(&format!(
+                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name} {{}});\n",
+                    sn = to_snake(&ad.name), name = ad.name,
+                ));
+            } else {
+                main_rs.push_str(&format!(
+                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name} {{\n{fields_init}    }});\n",
+                    sn = to_snake(&ad.name), name = ad.name,
+                ));
+            }
+        }
+
+        if services.is_empty() {
+            main_rs.push('\n');
+            continue;
+        }
+
+        // Build Deps struct
+        main_rs.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
+        for ad in adapters {
+            if let Some(target) = &ad.target {
+                main_rs.push_str(&format!(
+                    "        {field}: {sn}_inst.clone(),\n",
+                    field = to_snake(target), sn = to_snake(&ad.name),
+                ));
+            }
+        }
+        main_rs.push_str("    });\n\n");
+
+        // Build routes for this context
+        let router_name = format!("{crate_name}_routes");
+        main_rs.push_str(&format!("    let {router_name} = Router::new()\n"));
+        for svc in services {
+            let fn_name = to_snake(&svc.name);
+            let (method, path) = rest_route_for_service(svc);
+            main_rs.push_str(&format!("        .route(\"{path}\", {method}({fn_name}_handler))\n"));
+        }
+        main_rs.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
+        router_names.push(router_name);
+    }
+
+    // Merge all routers
+    main_rs.push_str("    let app = Router::new()\n");
+    for rn in &router_names {
+        main_rs.push_str(&format!("        .merge({rn})\n"));
+    }
+    main_rs.push_str("        .route(\"/health\", get(|| async { \"ok\" }))\n");
+    main_rs.push_str("        .layer(CorsLayer::permissive());\n\n");
+
+    main_rs.push_str("    println!(\"veil_bin: listening on :{}\", port);\n");
+    main_rs.push_str("    let listener = tokio::net::TcpListener::bind(format!(\"0.0.0.0:{}\", port)).await?;\n");
+    main_rs.push_str("    axum::serve(listener, app).await?;\n");
+    main_rs.push_str("    Ok(())\n}\n\n");
+
+    // Generate handler functions for each service across all modules
+    for (module, crate_name, _) in &all_modules {
+        let flat = flatten_module(module);
+        for svc in &flat.fns {
+            let fn_name = to_snake(&svc.name);
+            let (_method, _path) = rest_route_for_service(svc);
+
+            // Simple POST handler with JSON body for all handlers
+            main_rs.push_str(&format!(
+                "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+            ));
+
+            // Extract input args from body
+            let mut args = vec!["&deps".to_string()];
+            for input in &svc.inputs {
+                if input.annotations.iter().any(|a| a.name == "dep") {
+                    continue;
+                }
+                let field = to_snake(&input.name);
+                let rust_type = type_to_rust(&input.type_expr);
+                if rust_type == "Uuid" {
+                    main_rs.push_str(&format!(
+                        "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
+                    ));
+                } else if rust_type == "String" {
+                    main_rs.push_str(&format!(
+                        "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
+                    ));
+                } else {
+                    main_rs.push_str(&format!(
+                        "    let {field} = serde_json::from_value(body.get(\"{field}\").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+                    ));
+                }
+                args.push(field);
+            }
+
+            main_rs.push_str(&format!(
+                "    match {crate_name}_app::{}({}).await {{\n",
+                fn_name,
+                args.join(", ")
+            ));
+            main_rs.push_str("        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_default())),\n");
+            main_rs.push_str("        Err(e) => { eprintln!(\"error: {e}\"); Err(StatusCode::INTERNAL_SERVER_ERROR) }\n");
+            main_rs.push_str("    }\n}\n\n");
+        }
+    }
+
+    // Build Cargo.toml for veil_bin
+    let mut cargo_toml = String::new();
+    cargo_toml.push_str("[package]\nname = \"veil_bin\"\nversion.workspace = true\nedition.workspace = true\n\n");
+    cargo_toml.push_str("[[bin]]\nname = \"veil_bin\"\npath = \"src/main.rs\"\n\n");
+    cargo_toml.push_str("[dependencies]\ntokio = { workspace = true }\nuuid = { workspace = true }\nserde_json = { workspace = true }\n");
+    cargo_toml.push_str("veil_shared = { path = \"../veil_shared\" }\n");
+    cargo_toml.push_str("axum = \"0.8\"\ntower-http = { version = \"0.6\", features = [\"cors\"] }\n");
+
+    // Stub crates from the packages being harnessed — Cargo keys use published names (hyphens).
+    let mut seen_stub = std::collections::BTreeSet::new();
+    for (_, reg) in packages {
+        for stub in &reg.stubs {
+            if !seen_stub.insert(stub.name.clone()) {
+                continue;
+            }
+            if !stub_is_active_cargo(stub) {
+                continue;
+            }
+            // `name.workspace = true` is invalid; use `name = { workspace = true }`.
+            let key = &stub.name;
+            if !cargo_toml.contains(key) {
+                cargo_toml.push_str(&format!("{key} = {{ workspace = true }}\n"));
+            }
+            for (dep_name, _) in &stub.cargo_deps {
+                if !cargo_toml.contains(dep_name) {
+                    cargo_toml.push_str(&format!("{dep_name} = {{ workspace = true }}\n"));
+                }
+            }
+        }
+    }
+
+    // Add all context crates as deps
+    for cn in &all_crate_names {
+        cargo_toml.push_str(&format!("{cn} = {{ path = \"../{cn}\" }}\n"));
+    }
+
+    vec![
+        GeneratedFile { path: "crates/veil_bin/Cargo.toml".to_string(), content: cargo_toml },
+        GeneratedFile { path: "crates/veil_bin/src/main.rs".to_string(), content: main_rs },
+    ]
 }

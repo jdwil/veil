@@ -497,6 +497,63 @@ pkg HostApp
     );
 }
 
+/// AGT-026: @route on services drives veil_bin paths.
+#[test]
+fn harness_honors_route_annotation() {
+    let src = r#"
+pkg RouteApp
+  use ddd
+  use di
+
+  ctx Store
+    group domain
+      port ThingRepo
+        list!() -> List<Str>
+
+    group application
+      @route("GET /api/custom-things")
+      svc ListThings
+        input
+        step q
+          items = ThingRepo.list!()
+          ret items
+
+    group infrastructure
+      impl MemRepo for ThingRepo
+        @dep
+        impl list()
+          ret Ok
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
+    let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+    // examples path fallback
+    if reg.constructs.iter().all(|c| c.keyword != "ctx") {
+        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+            .expect("ddd");
+        reg.load_content("di", include_str!("../../../examples/di.layer"))
+            .expect("di");
+    }
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate(&sol, &reg);
+    let main = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("veil_bin/src/main.rs"))
+        .expect("veil_bin main");
+    assert!(
+        main.content.contains("/api/custom-things"),
+        "expected @route path in harness:\n{}",
+        main.content
+    );
+    assert!(
+        !main.content.contains("/api/thingss") && !main.content.contains("\"/api/things\""),
+        "should not use name-derived path when @route present:\n{}",
+        main.content
+    );
+}
+
 /// CAP-005: UI package emits SPA dist/index.html + spa.js.
 #[test]
 fn spa_bundle_for_ui_package() {
@@ -577,25 +634,25 @@ pkg WearUi
     );
 
     let project = veil_codegen::generate_ts(&sol, &reg);
-    let vite = project
+    let hooks = project
         .files
         .iter()
-        .find(|f| f.path == "vite.config.ts")
-        .expect("vite.config.ts missing");
+        .find(|f| f.path == "src/hooks.server.ts")
+        .expect("src/hooks.server.ts missing");
     assert!(
-        vite.content.contains("server") && vite.content.contains("proxy"),
-        "proxy block missing:\n{}",
-        vite.content
+        hooks.content.contains("API_PREFIX") && hooks.content.contains("BACKEND"),
+        "proxy constants missing:\n{}",
+        hooks.content
     );
     assert!(
-        vite.content.contains("/api") && vite.content.contains("http://127.0.0.1:3000"),
+        hooks.content.contains("/api") && hooks.content.contains("http://127.0.0.1:3000"),
         "proxy path/target missing:\n{}",
-        vite.content
+        hooks.content
     );
     assert!(
-        !vite.content.contains("annotation_arg"),
+        !hooks.content.contains("annotation_arg"),
         "placeholder not expanded:\n{}",
-        vite.content
+        hooks.content
     );
 }
 
