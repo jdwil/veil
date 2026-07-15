@@ -9,7 +9,9 @@
 - `Opt<T>` = maybe absent; `Res!` / `Res!<T>` = fallible.
 - **Call site (current engine):** `x = repo.find!(id)` yields **T** (try + NotFound for Opt).
 - **Forbidden after bang:** `.unwrap()`, `.is_some()`, `.is_none()` on the bound result.
-- Opt/Res are portable; Opt→NotFound on bang is product dual-loop policy (see ACS-010).
+- Opt/Res are portable. **ACS-010 preferred (not default yet):** bang = Res try only;
+  Opt stays Opt; force-present via `require` / layer policy — not silent NotFound on every `!`.
+  **Current engine:** still Opt→NotFound on bang (transitional).
 
 ## Example
 

@@ -1112,19 +1112,37 @@ fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
     }
 }
 
-/// Unwrap the return type for a bang `!` call.
-/// Codegen adds `?` (strips Res!) and `.ok_or()?` (strips Opt<>).
-/// Res!<Opt<T>> → T, Res!<T> → T, Opt<T> → T, T → T.
+/// Unwrap return type for a bang `!` call under the **current dual-loop law**
+/// (ACS-001 transitional): strip Res then Opt → T.
+///
+/// Codegen: `.await?` + `.ok_or(NotFound)?` for port Opt returns.
+///
+/// ACS-010 preferred portable law is [`unwrap_bang_return_portable`] (Res only).
+/// Default engine still uses this transitional unwrap until migration flips.
 fn unwrap_bang_return(ty: Ty) -> Ty {
-    // Strip Res! wrapper (the ? propagates the error)
+    unwrap_bang_return_transitional(ty)
+}
+
+/// Transitional dual-loop: Res!<Opt<T>> → T, Res!<T> → T, Opt<T> → T.
+pub fn unwrap_bang_return_transitional(ty: Ty) -> Ty {
     let inner = match ty {
         Ty::Res(Some(t)) => *t,
         Ty::Res(None) => Ty::Unit,
         other => other,
     };
-    // Strip Opt wrapper (the .ok_or()? unwraps the Option)
     match inner {
         Ty::Opt(t) => *t,
+        other => other,
+    }
+}
+
+/// ACS-010 preferred portable law: bang = try/Res only. Opt stays Opt.
+/// Force-present is a separate construct (`require` / layer policy) — not `!`.
+/// Res!<Opt<T>> → Opt<T>, Res!<T> → T, Opt<T> → Opt<T>.
+pub fn unwrap_bang_return_portable(ty: Ty) -> Ty {
+    match ty {
+        Ty::Res(Some(t)) => *t,
+        Ty::Res(None) => Ty::Unit,
         other => other,
     }
 }
@@ -1667,6 +1685,30 @@ mod tests {
             "{:?}",
             diags
         );
+    }
+
+    /// ACS-010: document before/after call-site types (pure unwrap helpers).
+    #[test]
+    fn bang_unwrap_transitional_vs_portable() {
+        let res_opt = Ty::Res(Some(Box::new(Ty::Opt(Box::new(Ty::Named("User".into()))))));
+        let res_t = Ty::Res(Some(Box::new(Ty::Named("User".into()))));
+        let opt = Ty::Opt(Box::new(Ty::Named("User".into())));
+
+        // Before / transitional (current engine): Opt forced to T
+        assert_eq!(
+            unwrap_bang_return_transitional(res_opt.clone()).display(),
+            "User"
+        );
+        assert_eq!(unwrap_bang_return_transitional(opt.clone()).display(), "User");
+        assert_eq!(unwrap_bang_return_transitional(res_t.clone()).display(), "User");
+
+        // After / portable (ACS-010 preferred): bang strips Res only
+        assert_eq!(
+            unwrap_bang_return_portable(res_opt).display(),
+            "Opt<User>"
+        );
+        assert_eq!(unwrap_bang_return_portable(opt).display(), "Opt<User>");
+        assert_eq!(unwrap_bang_return_portable(res_t).display(), "User");
     }
 
     /// Bang call on port method returning Opt<T>: after Res! + Opt unwrap, result is T

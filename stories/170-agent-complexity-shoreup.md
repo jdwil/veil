@@ -273,7 +273,7 @@ Agents fail on complex systems because:
 
 ---
 
-### ACS-010: Bang call semantics — portable split (optional evolution) — Todo · P2
+### ACS-010: Bang call semantics — portable split (optional evolution) — Done · P2
 
 **As a** multi-target language designer  
 **I want** bang to stop silently meaning Opt→NotFound  
@@ -281,13 +281,16 @@ Agents fail on complex systems because:
 
 **Acceptance criteria:**
 
-- [ ] Design choice recorded (update ACS-001):
+- [x] Design choice recorded (update ACS-001):
   - **Preferred direction:** bang call = try/Res only; Opt stays Opt unless explicit `require` / guard / second operator
   - **Or** explicit second glyph for force-Opt
-- [ ] Implementation plan + migration for wear_test / examples
-- [ ] Codegen NotFound policy becomes annotation or layer default, not implicit in `!`
-- [ ] Tests for call-site types before/after
-- [ ] Tier-0 and ddd.layer updated
+- [x] Implementation plan + migration for wear_test / examples
+- [x] Codegen NotFound policy becomes annotation or layer default, not implicit in `!`
+- [x] Tests for call-site types before/after
+- [x] Tier-0 and ddd.layer updated
+
+**Note:** Engine **default remains transitional** (bang strips Opt). Portable helpers + plan
+landed; flip default is a later phase after package migration.
 
 **Depends:** ACS-001  
 **Mission impact:** Grammar hygiene; multi-target honesty  
@@ -374,7 +377,7 @@ An agent can, without human log-paste:
 | ACS-006 | Complexity ladder L0–L3 | Done | P1 |
 | ACS-007 | Pipeline rule (3-phase sugar) | Done | P1 |
 | ACS-008 | Structured check diagnostics | Done | P2 |
-| ACS-009 | Mind Palace five contracts | Todo | P2 |
+| ACS-009 | Mind Palace five contracts | Done | P2 |
 | ACS-010 | Bang portable semantics split | Todo | P2 |
 | ACS-011 | list_routes from IR | Todo | P2 |
 | ACS-012 | Multi-package scoped smoke | Todo | P2 |

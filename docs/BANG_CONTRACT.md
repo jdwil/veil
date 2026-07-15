@@ -86,11 +86,56 @@ ret wt
 | Opt / Res types | Yes | Same |
 | Decl `name!` | Fallible method | Same |
 | Call bang = try Res | Portable idea | `.await?` |
-| Call bang = Opt→NotFound | **Product policy** (ACS-010 may split) | `.ok_or(NotFound)?` |
+| Call bang = Opt→NotFound | **Transitional product policy** | `.ok_or(NotFound)?` |
 
-Longer term (ACS-010): prefer bang = try only; explicit `require` / annotation for NotFound.
-Until then, **current law above is what agents must follow**.
+**Agents must follow the current engine law above** until migration (below) lands.
 
+---
+
+## ACS-010: portable bang (design choice)
+
+### Decision (preferred end state)
+
+| Call form | Meaning | Success type |
+|-----------|---------|--------------|
+| `repo.find!(id)` | **try / Res only** | after Res unwrap: still `Opt<T>` if declared `-> Opt<T>` |
+| `require repo.find!(id)` (or layer default / annotation) | Force present | `T` (maps to NotFound / equivalent on target) |
+| `repo.find(id)` | No bang unwrap | as declared |
+
+**Rationale:** `Opt` and `Res!` stay generic constructs (Maybe / Result). Silencing
+Opt→NotFound inside `!` couples the language to one product policy and hurts
+multi-target honesty.
+
+**Rejected for now:** a second glyph (e.g. `find!!`) — harder to teach; prefer
+named `require` / annotation.
+
+### Implementation plan + migration
+
+| Phase | Work |
+|-------|------|
+| **1 — Contract (done)** | This section; Tier-0 notes transitional vs preferred |
+| **2 — Typecheck flag** | `portable_bang` (or package/layer ann): bang strips **Res only** |
+| **3 — Codegen** | NotFound only for `require` / `@force` / layer `opt_force_policy not_found` — **not** implicit on every bang |
+| **4 — Migrate examples** | Replace `x = repo.find!(id)` used as `T` with `x = require repo.find!(id)` (or keep transitional bang until package opt-in) |
+| **5 — Flip default** | After ladder + wear_test green under portable_bang, make preferred law the default |
+
+**Before (transitional types):** `find!` → `T`  
+**After (portable types):** `find!` → `Opt<T>`; `require find!` → `T`
+
+### Tests
+
+Unit tests in `veil-ir` document **current** call-site types
+(`bang_call_strips_res_and_opt`). When phase 2 lands, add
+`bang_call_portable_keeps_opt` and keep a transitional-mode test.
+
+### Codegen NotFound policy
+
+Target mapping for “force present” becomes:
+
+- layer / package annotation (e.g. dual-loop default `not_found`), **or**
+- explicit `require` lowering
+
+Not an invisible side effect of every bang call.
 ---
 
 ## Golden example
