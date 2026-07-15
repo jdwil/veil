@@ -503,6 +503,18 @@ all routes when set; local open when unset. Docs AGENT/SERVER.
 
 ---
 
+## Follow-on: runtime observability (AGT-020+)
+
+Agent **source** tools (check/outline/write) are Done. Agents still cannot see
+**gen/logs/live HTTP**, so they guess routes and break dual-loop. Tracked as a
+new epic:
+
+→ **[160-agent-runtime-observability.md](160-agent-runtime-observability.md)**
+(`dev_status`, `dev_logs`, `read_generated`, `http_request`, harness teaching,
+`@route` harness, restart).
+
+---
+
 ## AGT-017: Remote structured EditOp path
 
 **Status:** Done · **Priority:** P2  

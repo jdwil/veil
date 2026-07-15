@@ -57,6 +57,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | [140-pure-veil-runtime.md](140-pure-veil-runtime.md) | **Pure VEIL runtime** — front+back VEIL, full product (PVR-*) |
 | [141-pure-runtime-capability-gaps.md](141-pure-runtime-capability-gaps.md) | **What it takes** — CAP-001–007 engine gaps + sprint plan |
 | [150-package-adapt.md](150-package-adapt.md) | **Package adapt** — specialize stock products (`adapt` / `ins` / `rfn` / `rpl` / `omit` / `ren`) |
+| [160-agent-runtime-observability.md](160-agent-runtime-observability.md) | **Agent runtime observability** — logs, generated code, HTTP probe, harness teaching (AGT-020–028) |
 
 ## Suggested first slice (P0)
 
@@ -86,6 +87,7 @@ board (or `**Status:**` lines) as source of truth.
 | **PVR-042** remote multi-tenant | **Done (deferred)** | non-goal for pure-local; AGT remote paths exist |
 | **ADP-000–013** package adapt | **Done** | [150](150-package-adapt.md) · [ADAPT.md](../docs/ADAPT.md) |
 | **AGT-*** in-IDE agent | **Done** | [100](100-ide-agent.md) |
+| **AGT-020–028** agent runtime observability | **Done** | [160](160-agent-runtime-observability.md) |
 | **RT-021–023** harness layout / bus / provided_by | **Done** | [70](70-runtime-harness.md) |
 | Projects hub / multi-project kernel | **Done** | [120](120-projects-config-init.md) · [130](130-runtime-ux-audit.md) |
 
