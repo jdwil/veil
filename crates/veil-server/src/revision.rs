@@ -14,9 +14,12 @@ pub struct RevisionEvent {
     pub bytes: usize,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub path: String,
-    /// Optional hint: `"agent"`, `"edit"`, `"source"`, …
+    /// Optional hint: `"agent"`, `"edit"`, `"source"`, `"select_file"`, …
     #[serde(skip_serializing_if = "String::is_empty")]
     pub reason: String,
+    /// Set when reason is `"select_file"` — the name of the newly active file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_file: Option<String>,
 }
 
 /// Process-wide bus so any write path can notify without threading AppState.
@@ -46,6 +49,21 @@ impl RevisionBus {
             bytes,
             path: path.to_string(),
             reason: reason.to_string(),
+            active_file: None,
+        };
+        let _ = self.tx.send(ev.clone());
+        ev
+    }
+
+    /// Publish a file-selection event so the viewer switches to the new file.
+    pub fn publish_select(&self, file_name: &str) -> RevisionEvent {
+        let revision = self.rev.fetch_add(1, Ordering::SeqCst) + 1;
+        let ev = RevisionEvent {
+            revision,
+            bytes: 0,
+            path: String::new(),
+            reason: "select_file".to_string(),
+            active_file: Some(file_name.to_string()),
         };
         let _ = self.tx.send(ev.clone());
         ev
