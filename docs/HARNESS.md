@@ -154,7 +154,10 @@ After editing a package that affects the backend:
 
 **Bang / Opt / Res:** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md).  
 **Multi-package local harness fixture:** `fixtures/multi_harness/` (ACS-003).  
-**Complexity ladder L0–L3:** `fixtures/ladder/` (ACS-006) — `make fixture-ladder`.
+**Complexity ladder L0–L3:** `fixtures/ladder/` (ACS-006) — `make fixture-ladder`.  
+**Smoke scope (ACS-012):** after a package edit, dual-loop checks primary context
+crate(s) of the changed file (`cargo check -p …`), not the whole workspace /
+`veil_bin`, unless `VEIL_AGENT_SMOKE_FULL=1`. See [AGENT.md](./AGENT.md).
 
 Set `VEIL_AGENT_SMOKE=0` only as an escape hatch.
 

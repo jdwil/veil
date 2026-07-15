@@ -335,7 +335,13 @@ impl DevLoop {
                 }
                 return Ok(());
             }
-            let pkgs = check_packages_for_change(&output_path, changed_rel);
+            let (pkgs, scope_note) =
+                check_packages_for_change(&output_path, &self.project_root, changed_rel);
+            if let Some(ref note) = scope_note {
+                if let Some(state) = self.states.get_mut(target_name) {
+                    state.logs.push(note.clone());
+                }
+            }
             if !self.check_build_pkgs(&output_path, target_name, &pkgs) {
                 let err = self
                     .states
@@ -1251,10 +1257,30 @@ pub fn start_file_watcher(
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-/// Pick `-p` crates for smoke after a source change.
-/// Prefer a context crate whose name matches the .veil stem (e.g. wear_test.veil
-/// → wear_test) so a broken multi-package sibling (iaaa) doesn't block edits.
-fn check_packages_for_change(output_path: &Path, changed_rel: Option<&str>) -> Vec<String> {
+/// Full workspace smoke including `veil_bin` (ACS-012). Default off for multi-package
+/// scoped edits — set `VEIL_AGENT_SMOKE_FULL=1` to always check the whole workspace.
+fn smoke_full_workspace() -> bool {
+    match std::env::var("VEIL_AGENT_SMOKE_FULL") {
+        Ok(v) => {
+            let t = v.trim().to_ascii_lowercase();
+            t == "1" || t == "true" || t == "on" || t == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
+/// Pick `-p` crates for smoke after a source change (ACS-012).
+///
+/// Prefer primary context crate(s) of the changed package so a broken multi-package
+/// sibling does not block product edits. Skips `veil_bin` unless
+/// `VEIL_AGENT_SMOKE_FULL=1`.
+///
+/// Returns `(packages, optional agent-facing note)`.
+fn check_packages_for_change(
+    output_path: &Path,
+    project_root: &Path,
+    changed_rel: Option<&str>,
+) -> (Vec<String>, Option<String>) {
     let crates_dir = output_path.join("crates");
     let mut members: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&crates_dir) {
@@ -1269,27 +1295,133 @@ fn check_packages_for_change(output_path: &Path, changed_rel: Option<&str>) -> V
         }
     }
     members.sort();
+
+    if smoke_full_workspace() {
+        // Include veil_bin when present for full dual-loop harness check.
+        let mut full = members;
+        if crates_dir.join("veil_bin/Cargo.toml").is_file() {
+            full.push("veil_bin".into());
+        }
+        return (
+            full,
+            Some("[smoke] VEIL_AGENT_SMOKE_FULL=1 — checking full workspace".into()),
+        );
+    }
+
     let Some(rel) = changed_rel else {
-        return members;
+        // No change path: check all context crates (still not veil_bin by default).
+        let note = if members.len() > 1 {
+            Some(format!(
+                "[smoke] scoped to context crates ({}); veil_bin skipped (VEIL_AGENT_SMOKE_FULL=1 for full harness)",
+                members.join(", ")
+            ))
+        } else {
+            None
+        };
+        return (members, note);
     };
     let rel = rel.replace('\\', "/");
     if rel.ends_with(".layer") {
         // Layers affect all packages — check every context crate.
-        return members;
+        return (
+            members,
+            Some(
+                "[smoke] layer change — checking all context crates; veil_bin skipped unless VEIL_AGENT_SMOKE_FULL=1"
+                    .into(),
+            ),
+        );
     }
+
+    // 1) stem match (wear_test.veil → wear_test crate)
     let stem = Path::new(&rel)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
-    if !stem.is_empty() {
-        if members.iter().any(|m| m == &stem) {
-            return vec![stem];
-        }
-        // e.g. dlx_core.veil → crate iaaa: fall back to all context crates
-        // but still avoid requiring veil_bin if we can check members.
+    if !stem.is_empty() && members.iter().any(|m| m == &stem) {
+        let note = if members.len() > 1 {
+            Some(format!(
+                "[smoke] scoped to package crate `{stem}` (siblings not checked; VEIL_AGENT_SMOKE_FULL=1 for full harness)"
+            ))
+        } else {
+            None
+        };
+        return (vec![stem], note);
     }
-    members
+
+    // 2) IR: context modules in the changed .veil → snake crate names (product.veil → storefront)
+    if let Some(ctx_crates) = context_crates_from_veil_file(&project_root.join(&rel)) {
+        let matched: Vec<String> = ctx_crates
+            .into_iter()
+            .filter(|c| members.iter().any(|m| m == c))
+            .collect();
+        if !matched.is_empty() {
+            let note = if members.len() > matched.len() {
+                Some(format!(
+                    "[smoke] scoped to primary crate(s) {} from {}; sibling context crates not checked (VEIL_AGENT_SMOKE_FULL=1 for full harness)",
+                    matched.join(", "),
+                    rel
+                ))
+            } else {
+                None
+            };
+            return (matched, note);
+        }
+    }
+
+    // 3) Fall back: all context crates (still skip veil_bin)
+    let note = if members.len() > 1 {
+        Some(format!(
+            "[smoke] could not map {rel} to a single crate — checking all context crates ({}); veil_bin skipped",
+            members.join(", ")
+        ))
+    } else {
+        None
+    };
+    (members, note)
+}
+
+/// Parse a package file for top-level module (ctx) names → snake_case crate names.
+fn context_crates_from_veil_file(path: &Path) -> Option<Vec<String>> {
+    let src = std::fs::read_to_string(path).ok()?;
+    let tokens = veil_parser::lex(&src);
+    let mut reg = veil_ir::LayerRegistry::builtin();
+    // Best-effort layers from project; builtins still parse ddd keywords if loaded
+    // via ambient registry when serve is running — for smoke path use builtin + common.
+    let _ = reg.load_content(
+        "ddd",
+        include_str!("../../../layers/ddd.layer"),
+    );
+    let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+    let sol = veil_parser::parse_with_registry(&tokens, reg).ok()?;
+    let mut names = Vec::new();
+    for item in &sol.items {
+        if let veil_ir::TopLevelItem::Construct(c) = item {
+            if c.shape == veil_ir::layer::Shape::Mod {
+                names.push(to_snake_ident(&c.name));
+            }
+        }
+    }
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
+    }
+}
+
+fn to_snake_ident(name: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Copy a directory tree to a temp backup path (for smoke-test rollback).
@@ -1601,4 +1733,70 @@ fn now_iso() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}s", dur.as_secs())
+}
+
+#[cfg(test)]
+mod smoke_scope_tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    /// Serialize env-touching smoke tests (process-global env).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn make_workspace(names: &[&str]) -> PathBuf {
+        let out = std::env::temp_dir().join(format!(
+            "veil-smoke-scope-{}-{}",
+            std::process::id(),
+            names.join("-")
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        for name in names {
+            std::fs::create_dir_all(out.join(format!("crates/{name}"))).unwrap();
+            let mut f = std::fs::File::create(out.join(format!("crates/{name}/Cargo.toml"))).unwrap();
+            writeln!(f, "[package]\nname = \"{name}\"\nversion = \"0.1.0\"").unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn product_veil_maps_to_storefront_crate() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // Ensure full mode is off (other tests may leave it set).
+        unsafe {
+            std::env::remove_var("VEIL_AGENT_SMOKE_FULL");
+        }
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let out = make_workspace(&["storefront", "catalog", "veil_bin"]);
+        let (pkgs, note) = check_packages_for_change(
+            &out,
+            &root,
+            Some("fixtures/multi_harness/product.veil"),
+        );
+        assert_eq!(pkgs, vec!["storefront".to_string()], "got {pkgs:?}");
+        if let Some(n) = note {
+            assert!(
+                n.contains("scoped") || n.contains("storefront"),
+                "unexpected note: {n}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    #[test]
+    fn smoke_full_includes_veil_bin() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("VEIL_AGENT_SMOKE_FULL", "1");
+        }
+        let out = make_workspace(&["storefront", "veil_bin"]);
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (pkgs, _) =
+            check_packages_for_change(&out, &root, Some("fixtures/multi_harness/product.veil"));
+        unsafe {
+            std::env::remove_var("VEIL_AGENT_SMOKE_FULL");
+        }
+        assert!(pkgs.contains(&"veil_bin".to_string()), "got {pkgs:?}");
+        let _ = std::fs::remove_dir_all(&out);
+    }
 }

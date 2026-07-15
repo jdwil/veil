@@ -89,7 +89,7 @@ board (or `**Status:**` lines) as source of truth.
 | **ADP-000–013** package adapt | **Done** | [150](150-package-adapt.md) · [ADAPT.md](../docs/ADAPT.md) |
 | **AGT-*** in-IDE agent | **Done** | [100](100-ide-agent.md) |
 | **AGT-020–028** agent runtime observability | **Done** | [160](160-agent-runtime-observability.md) |
-| **ACS-001–012** agent complexity shore-up | **In progress** (001–011 Done) | [170](170-agent-complexity-shoreup.md) |
+| **ACS-001–012** agent complexity shore-up | **Done** | [170](170-agent-complexity-shoreup.md) |
 | **RT-021–023** harness layout / bus / provided_by | **Done** | [70](70-runtime-harness.md) |
 | Projects hub / multi-project kernel | **Done** | [120](120-projects-config-init.md) · [130](130-runtime-ux-audit.md) |
 

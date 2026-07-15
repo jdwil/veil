@@ -4,7 +4,7 @@
 complex** VEIL systems by composing stable patterns — not by fighting sugar
 desync, stale dual-loop, or missing multi-package fixtures.
 
-**Status:** In progress · P1  
+**Status:** Done · P1  
 
 **Depends on:** Agent observability ([160](160-agent-runtime-observability.md)),
 multi-package harness / dual-loop ([70](70-runtime-harness.md), `[dev].packages`),
@@ -319,7 +319,7 @@ landed; flip default is a later phase after package migration.
 
 ---
 
-### ACS-012: Multi-package smoke when sibling is red — Todo · P2
+### ACS-012: Multi-package smoke when sibling is red — Done · P2
 
 **As a** dual-loop user with product + platform  
 **I want** smoke to check the package I edited  
@@ -327,10 +327,10 @@ landed; flip default is a later phase after package migration.
 
 **Acceptance criteria:**
 
-- [ ] Document current behavior (`cargo check -p <stem>` when possible)
-- [ ] Multi-package: smoke checks primary crate(s) of changed package; optional full `veil_bin` check behind flag
-- [ ] Agent message when full harness check skipped due to known sibling failure
-- [ ] Align with ACS-003 green fixture (sibling should be green in CI)
+- [x] Document current behavior (`cargo check -p <stem>` when possible)
+- [x] Multi-package: smoke checks primary crate(s) of changed package; optional full `veil_bin` check behind flag
+- [x] Agent message when full harness check skipped due to known sibling failure
+- [x] Align with ACS-003 green fixture (sibling should be green in CI)
 
 **Depends:** ACS-003, existing package-scoped smoke  
 **Mission impact:** Product iteration unblocked  
@@ -379,5 +379,5 @@ An agent can, without human log-paste:
 | ACS-008 | Structured check diagnostics | Done | P2 |
 | ACS-009 | Mind Palace five contracts | Done | P2 |
 | ACS-010 | Bang portable semantics split | Done | P2 |
-| ACS-011 | list_routes from IR | Todo | P2 |
-| ACS-012 | Multi-package scoped smoke | Todo | P2 |
+| ACS-011 | list_routes from IR | Done | P2 |
+| ACS-012 | Multi-package scoped smoke | Done | P2 |

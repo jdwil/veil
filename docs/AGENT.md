@@ -130,8 +130,21 @@ Use **`source=ir`** when gen failed so you still see intended paths.
 | `VEIL_MODEL_PROVIDER` | `echo` \| `openai` \| `ollama` \| **`acp`** / `kiro` |
 | `VEIL_MODEL_NAME` | Model id (defaults: `gpt-4o-mini`, `llama3.2`; **make serve** defaults to `qwen3.5:9b`) |
 | `VEIL_AGENT_SMOKE` | `0`/`false`/`off` disables post-write gen+check (default on) |
+| `VEIL_AGENT_SMOKE_FULL` | `1`/`true` checks full workspace including `veil_bin` (ACS-012; default off — scoped to changed package crates) |
 | `VEIL_AGENT_AUTO_RESTART` | `0`/`false`/`off` disables restart after successful smoke (default on) |
 | `VEIL_AGENT_HTTP_PORTS` | Extra ports allowed for `http_request` (comma-separated) |
+
+### Multi-package smoke scope (ACS-012)
+
+After editing a package in a multi-package harness:
+
+1. Smoke runs `cargo check -p <primary_context_crates>` for the **changed** `.veil`
+   (stem match, or IR context modules e.g. `product.veil` → `storefront`).
+2. Sibling context crates and `veil_bin` are **not** required green (so a red platform
+   does not block product edits forever).
+3. Logs: `[smoke] scoped to …` when siblings are skipped.
+4. Set `VEIL_AGENT_SMOKE_FULL=1` for full workspace + `veil_bin` (CI-style).
+5. Green fixture: `fixtures/multi_harness/` keeps both packages green in CI.
 
 ### Local make serve (Ollama)
 
