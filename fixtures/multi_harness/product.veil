@@ -1,0 +1,56 @@
+# Minimal product package co-hosted with platform.veil (ACS-003).
+# Multi-package local harness ≠ multi-project IDE hub.
+
+pkg ProductApp
+  use ddd
+  use di
+
+  ctx Storefront
+    group domain
+      agg Widget
+        root
+          id: Id
+          name: Str
+
+      port WidgetRepo
+        find!(id: Id) -> Opt<Widget>
+        list_all!() -> List<Widget>
+        save!(widget: Widget)
+
+    group application
+      @route("GET /api/widgets")
+      svc ListWidgets
+        input
+          @dep widget_repo: WidgetRepo
+        step query
+          items = widget_repo.list_all!()
+          ret items
+
+      @route("GET /api/widgets/:id")
+      svc GetWidget
+        input
+          id: Id
+          @dep widget_repo: WidgetRepo
+        step load
+          w = widget_repo.find!(id)
+          ret w
+
+      @route("POST /api/widgets")
+      svc CreateWidget
+        input
+          name: Str
+          @dep widget_repo: WidgetRepo
+        step persist
+          w = Widget.new(name)
+          widget_repo.save!(w)
+          ret w
+
+    group infrastructure
+      impl MemWidgetRepo for WidgetRepo
+        @dep
+        impl find(id)
+          ret null
+        impl list_all()
+          ret []
+        impl save(widget)
+          ret Ok

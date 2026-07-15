@@ -1,0 +1,14 @@
+name = "multi_harness"
+
+# Multi-package local harness (ACS-003): product + platform share one veil_bin.
+# This is NOT multi-project IDE hub — one product root, extra packages in [dev].
+[dev]
+packages = ["platform.veil"]
+
+[[targets]]
+name = "backend"
+package = "product.veil"
+target = "rust"
+output = "generated/backend"
+dev_command = "cargo run -p veil_bin"
+dev_port = 3099

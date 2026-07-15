@@ -1,0 +1,21 @@
+# Minimal CI: unit tests + multi-package harness fixture (ACS-003)
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test (workspace)
+        run: cargo test --workspace --no-fail-fast
+      - name: multi-package fixture (ACS-003)
+        run: |
+          cargo build -p veil-cli
+          make fixture-multi-harness VEIL_BIN=target/debug/veil

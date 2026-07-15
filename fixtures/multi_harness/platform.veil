@@ -1,0 +1,56 @@
+# Minimal platform package for multi-package dual-loop (ACS-003).
+# Memory adapter only — no Dynamo/sqlx. Co-hosted with product via gen-harness.
+
+pkg PlatformSlice
+  use ddd
+  use di
+
+  ctx Catalog
+    group domain
+      agg Note
+        root
+          id: Id
+          title: Str
+
+      port NoteRepo
+        find!(id: Id) -> Opt<Note>
+        list_all!() -> List<Note>
+        save!(note: Note)
+
+    group application
+      @route("GET /api/notes")
+      svc ListNotes
+        input
+          @dep note_repo: NoteRepo
+        step query
+          items = note_repo.list_all!()
+          ret items
+
+      @route("GET /api/notes/:id")
+      svc GetNote
+        input
+          id: Id
+          @dep note_repo: NoteRepo
+        step load
+          n = note_repo.find!(id)
+          ret n
+
+      @route("POST /api/notes")
+      svc CreateNote
+        input
+          title: Str
+          @dep note_repo: NoteRepo
+        step persist
+          n = Note.new(title)
+          note_repo.save!(n)
+          ret n
+
+    group infrastructure
+      impl MemNoteRepo for NoteRepo
+        @dep
+        impl find(id)
+          ret null
+        impl list_all()
+          ret []
+        impl save(note)
+          ret Ok

@@ -309,6 +309,19 @@ check: veil
 test:
 	cargo test --workspace
 
+# ACS-003: multi-package dual-loop fixture (product + platform → one veil_bin)
+# Not multi-project hub. Requires debug/release veil binary.
+fixture-multi-harness: veil
+	@OUT=$${OUT:-/tmp/veil-multi-harness}; \
+	rm -rf "$$OUT"; \
+	$(VEIL_BIN) check fixtures/multi_harness/product.veil; \
+	$(VEIL_BIN) check fixtures/multi_harness/platform.veil; \
+	$(VEIL_BIN) gen fixtures/multi_harness/product.veil -o "$$OUT" -t rust --no-prune; \
+	$(VEIL_BIN) gen fixtures/multi_harness/platform.veil -o "$$OUT" -t rust --no-prune; \
+	$(VEIL_BIN) gen-harness fixtures/multi_harness/product.veil fixtures/multi_harness/platform.veil -o "$$OUT"; \
+	cd "$$OUT" && cargo check -p veil_bin; \
+	echo "✓ multi_harness fixture OK ($$OUT)"
+
 # Round-trip suite only (examples/** + runtime/src/**)
 test-roundtrip:
 	cargo test -p veil-parser --test roundtrip_suite
