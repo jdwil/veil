@@ -60,7 +60,7 @@ response. `rename_construct` is **format-preserving** (identifier token patch �
 does not re-serialize the whole package). `create_file` writes under the project
 root and selects the new file (same as the UI).
 
-### Closed loop: edit → smoke → observe → verify (AGT-020–028)
+### Closed loop: edit → smoke → observe → verify (AGT-020–028 · ACS-002)
 
 ```text
 write_source → gen + cargo check (smoke)
@@ -68,9 +68,16 @@ write_source → gen + cargo check (smoke)
     └─ ok   → list_routes / read_generated → dev_restart → http_request
 ```
 
+**Mandatory after WRITE REJECTED:** call `dev_logs` / `smoke_status` before rewriting
+the whole file again.
+
 - **Smoke** is on by default (`VEIL_AGENT_SMOKE=0` disables — escape hatch only).
-- **Routes:** prefer `@route("GET /api/…")`; else List/Get/Create name rules.
-  See [HARNESS.md](./HARNESS.md). Stories: [160-agent-runtime-observability](../stories/160-agent-runtime-observability.md).
+- **Auto-restart** after successful smoke when backend is owned Running:
+  default on (`VEIL_AGENT_AUTO_RESTART=0` to disable) — ACS-004.
+- **Bang / Opt / Res:** [BANG_CONTRACT.md](./BANG_CONTRACT.md) — never `.unwrap()` after `find!`.
+- **Routes:** prefer `@route("GET /api/…")`; name-derived List/Get/Create = fallback only.
+  See [HARNESS.md](./HARNESS.md).
+- Stories: [160](../stories/160-agent-runtime-observability.md), [170](../stories/170-agent-complexity-shoreup.md).
 
 ### Env
 

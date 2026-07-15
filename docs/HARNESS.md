@@ -142,15 +142,18 @@ this path. `@main` is still used for Bus composition demos and ProductHost
 | `UpdateThing` | PUT | `/api/things/{id}` |
 | `DeleteThing` | DELETE | `/api/things/{id}` |
 
-### Agent closed loop (AGT-020–028)
+### Agent closed loop (AGT-020–028 · ACS-002)
 
 After editing a package that affects the backend:
 
 1. Host **smoke**: gen + `cargo check` (rejected writes restore previous file).
-2. `dev_logs` / `smoke_status` — see gen/check output.
+2. On WRITE REJECTED: `dev_logs` / `smoke_status` **before** large rewrites.
 3. `list_routes` / `read_generated(what=harness)` — real paths.
-4. `dev_restart` — reload `cargo run` so the process is not stale.
+4. `dev_restart` (or auto-restart after smoke — ACS-004) — reload `cargo run`.
 5. `http_request(path, target=backend)` — live probe (127.0.0.1 + `dev_port` only).
+
+**Bang / Opt / Res:** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md).  
+**Multi-package local harness fixture:** `fixtures/multi_harness/` (ACS-003).
 
 Set `VEIL_AGENT_SMOKE=0` only as an escape hatch.
 

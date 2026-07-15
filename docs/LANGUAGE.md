@@ -634,8 +634,13 @@ A `.stub` file declares a third-party Rust crate's public API so VEIL's type
 inference and codegen can use it. The `veil stub-gen <crate_name>` CLI command
 generates these automatically from rustdoc JSON (requires nightly).
 
-Keywords: `stub <name> <version>`, then `struct` / `impl` blocks with `fn`
-signature lines.
+**Do not hand-edit generated stubs for policy** — re-run `veil stub-gen`. The
+generator emits both API shapes and **codegen policy** inferred from the crate
+(traits, free functions, type aliases). The engine applies that policy
+generically (no `sqlx::…` hardcoding in `rust.rs`).
+
+Keywords: `stub <name> <version>`, crate-level policy lines, then `struct` /
+`impl` / `trait` blocks with `fn` signature lines.
 
 ```
 stub reqwest 0.12
@@ -656,12 +661,33 @@ stub reqwest 0.12
     fn send() -> Res!<Response>
 ```
 
+**Crate-level policy (auto-inferred by stub-gen when possible):**
+
+| Directive | Meaning |
+|-----------|---------|
+| `cargo_features a, b` | Features for workspace `Cargo.toml` |
+| `row_type_derives Path` | Multi-field domain types get these derives (`FromRow` trait present) |
+| `wrapper_type_derives Path` | Single-field wrappers get these derives (`Type` trait present) |
+| `wrapper_type_attrs inner` | Extra attrs on wrappers (e.g. `crate(transparent)`) |
+| `codegen_imports Path` | Extra `use` lines (from type aliases like `PgPool`) |
+| `rust_name Veil Rust` | VEIL type → Rust name (`Pool` → `PgPool`) |
+| `harness_field Type """…"""` | Local harness construction recipe |
+
+**On a struct (auto when free fns `query` + `query_as` exist for `Query`):**
+
+```
+struct Query
+  typed_variant query_as
+  typed_type_params _, return_type
+  fn new(sql: Str) -> Self   # VEIL sugar → free fn `query`
+```
+
 **How stubs integrate:**
 - Referenced via `use reqwest` in a `.veil` file (loads `reqwest.stub`)
 - Type inference learns method return types (e.g. `Client.get()` → `RequestBuilder`)
 - Codegen adds the crate to `Cargo.toml` dependencies
 - The `veil stub-gen` command creates a temp project, runs `cargo +nightly rustdoc
-  --output-format json`, and converts the JSON to `.stub` format automatically.
+  --output-format json`, and converts the JSON to `.stub` format automatically
 
 ---
 
@@ -712,11 +738,15 @@ CustomerRepo.save(c)
 ```
 
 ### `!` marks fallible methods
-A `!` after the method name means `-> Res!`:
+A `!` after the method name means fallible (`-> Res!` / wrap return in `Res!<…>`):
 ```
 save!(customer: Customer)
 find!(id: Id) -> Opt<Customer>
 ```
+
+**Full law (decl + call + Opt unwrap policy):** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md).  
+Do not call `.unwrap()` / `.is_some()` on the result of a bang call when dual-loop
+codegen has already forced `Opt` to `T`.
 
 ### Preferred type names
 | Use | Meaning |
