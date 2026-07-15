@@ -106,25 +106,47 @@ pkg sveltekit5 v1
         {{raw_block:template}}
       """
 
-    # Dual-loop: @proxy(path, target) on app (prefer before `app` keyword) → Vite server.proxy.
-    # Match any construct so body-leading annotations that attach to a child still work.
-    # Uses generic {{annotation_arg:name:N}} — engine has no Vite vocabulary.
+    # Dual-loop: @proxy(path, target) on app → SvelteKit hooks.server.ts proxy.
+    # NOTE: Vite `server.proxy` does NOT work in SvelteKit — the SvelteKit dev
+    # server middleware intercepts all requests before Vite's proxy runs.
+    # The correct approach is a `hooks.server.ts` that proxies matching paths.
     match * where has_annotation("proxy")
       emit_file "vite.config.ts"
       emit """
         import { sveltekit } from '@sveltejs/kit/vite';
         import { defineConfig } from 'vite';
-        export default defineConfig({
-          plugins: [sveltekit()],
-          server: {
-            proxy: {
-              "{{annotation_arg:proxy:0}}": {
-                target: "{{annotation_arg:proxy:1}}",
-                changeOrigin: true,
-              },
-            },
-          },
-        });
+        export default defineConfig({ plugins: [sveltekit()] });
+      """
+
+      emit_file "src/hooks.server.ts"
+      emit """
+        // Auto-generated API proxy — forwards {{annotation_arg:proxy:0}} requests to {{annotation_arg:proxy:1}}
+        import type { Handle } from '@sveltejs/kit';
+
+        const API_PREFIX = '{{annotation_arg:proxy:0}}';
+        const BACKEND = '{{annotation_arg:proxy:1}}';
+
+        export const handle: Handle = async ({ event, resolve }) => {
+          if (event.url.pathname.startsWith(API_PREFIX)) {
+            const target = BACKEND + event.url.pathname + event.url.search;
+            const headers = new Headers(event.request.headers);
+            headers.delete('host');
+            const resp = await fetch(target, {
+              method: event.request.method,
+              headers,
+              body: event.request.method !== 'GET' && event.request.method !== 'HEAD'
+                ? await event.request.arrayBuffer()
+                : undefined,
+              duplex: 'half' as any,
+            });
+            return new Response(resp.body, {
+              status: resp.status,
+              statusText: resp.statusText,
+              headers: resp.headers,
+            });
+          }
+          return resolve(event);
+        };
       """
 
     # Component bodies (props/state/effect/fn → TS) are emitted by the TypeScript
@@ -142,4 +164,4 @@ pkg sveltekit5 v1
     All constructs must be inside an `app`.
     Pages must have @route annotation.
     For local dual-loop backends, annotate app with
-    `@proxy("/api", "http://127.0.0.1:BACKEND_PORT")` so gen emits Vite server.proxy.
+    `@proxy("/api", "http://127.0.0.1:BACKEND_PORT")` so gen emits a SvelteKit hooks.server.ts proxy.
