@@ -232,6 +232,53 @@ fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
     contents
 }
 
+/// True if expr tree contains a port method call that requires a Deps parameter.
+/// Matches `PortName.method!(…)` / dep-local calls; ignores `Type.new(...)` constructors.
+fn expr_mentions_port_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call(call) => {
+            let method = call.method.trim_end_matches(['!', '?']);
+            // Skip constructors (Type.new / Type{})
+            let is_ctor = method.is_empty() || method == "new";
+            if !is_ctor && !call.method.is_empty() {
+                let t = call.target.as_str();
+                // Port/trait calls: PascalCase target, or snake_case @dep local ending in _repo/_port/_svc
+                let pascal = t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                let dep_local = t.ends_with("_repo")
+                    || t.ends_with("_port")
+                    || t.ends_with("_svc")
+                    || t.ends_with("_client");
+                if pascal || dep_local {
+                    return true;
+                }
+            }
+            if let Some(recv) = &call.receiver {
+                if expr_mentions_port_call(recv) {
+                    return true;
+                }
+            }
+            call.args.iter().any(expr_mentions_port_call)
+        }
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => expr_mentions_port_call(rhs),
+        Expr::Return(inner) | Expr::Try(inner) | Expr::Await(inner) | Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) => {
+            expr_mentions_port_call(inner)
+        }
+        Expr::BinaryOp(b) => {
+            expr_mentions_port_call(&b.left) || expr_mentions_port_call(&b.right)
+        }
+        Expr::IfExpr(i) => {
+            expr_mentions_port_call(&i.condition)
+                || i.then_body.iter().any(expr_mentions_port_call)
+                || i.else_body
+                    .as_ref()
+                    .map(|b| b.iter().any(expr_mentions_port_call))
+                    .unwrap_or(false)
+        }
+        Expr::ArrayLit(items) => items.iter().any(expr_mentions_port_call),
+        _ => false,
+    }
+}
+
 /// Check if any expression in a tree references `self.<field_name>`.
 fn expr_mentions_self_field(expr: &Expr, field_name: &str) -> bool {
     match expr {
@@ -606,8 +653,25 @@ fn gen_local_harness_main(
                 ));
             }
 
-            // Extract input args
-            let mut args = vec!["&deps".to_string()];
+            // Only pass &deps when the application fn actually takes deps
+            // (has @dep inputs or body references ports).
+            let svc_has_deps = svc.inputs.iter().any(|i| {
+                i.annotations.iter().any(|a| a.name == "dep")
+            }) || {
+                // Port calls as Type.method in body imply Deps
+                svc.steps.iter().any(|st| {
+                    if let FlowStep::Step(s) = st {
+                        s.body.iter().any(|e| expr_mentions_port_call(e))
+                    } else {
+                        false
+                    }
+                })
+            };
+            let mut args: Vec<String> = if svc_has_deps {
+                vec!["&deps".to_string()]
+            } else {
+                Vec::new()
+            };
             for input in &svc.inputs {
                 if input.annotations.iter().any(|a| a.name == "dep") {
                     continue;
@@ -3584,8 +3648,21 @@ pub fn generate_multi_package_harness(
                 "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
             ));
 
-            // Extract input args from body
-            let mut args = vec!["&deps".to_string()];
+            // Only pass &deps when the application fn has @dep inputs or port calls
+            let svc_has_deps = svc.inputs.iter().any(|i| {
+                i.annotations.iter().any(|a| a.name == "dep")
+            }) || svc.steps.iter().any(|st| {
+                if let FlowStep::Step(s) = st {
+                    s.body.iter().any(|e| expr_mentions_port_call(e))
+                } else {
+                    false
+                }
+            });
+            let mut args: Vec<String> = if svc_has_deps {
+                vec!["&deps".to_string()]
+            } else {
+                Vec::new()
+            };
             for input in &svc.inputs {
                 if input.annotations.iter().any(|a| a.name == "dep") {
                     continue;

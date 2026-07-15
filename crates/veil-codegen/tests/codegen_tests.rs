@@ -840,3 +840,105 @@ fn ts_svelte_demo_generates_project() {
     );
 }
 
+/// GEN: bang port list call → flow return Result<Vec<T>, DomainError>
+#[test]
+fn flow_return_type_from_bang_list_call() {
+    let src = r#"
+pkg App
+  use ddd
+  use di
+  ctx Store
+    group domain
+      val Item
+        id: Id
+      port Repo
+        list_by_tenant!(tenant_id: Id) -> List<Item>
+        find!(id: Id) -> Opt<Item>
+      group application
+        svc ListItems
+          input
+            tenant_id: Id
+          step query
+            items = Repo.list_by_tenant!(tenant_id)
+            ret items
+        svc GetItem
+          input
+            id: Id
+          step load
+            it = Repo.find!(id)
+            ret it
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
+    let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+    if reg.constructs.iter().all(|c| c.keyword != "ctx") {
+        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+            .unwrap();
+        reg.load_content("di", include_str!("../../../examples/di.layer"))
+            .unwrap();
+    }
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).unwrap();
+    let project = veil_codegen::generate(&sol, &reg);
+    let app = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("application/mod.rs"))
+        .expect("application");
+    assert!(
+        app.content.contains("Result<Vec<Item>, DomainError>"),
+        "list should return Vec:\n{}",
+        app.content
+    );
+    assert!(
+        app.content.contains("Result<Item, DomainError>"),
+        "find bang should return Item not Option:\n{}",
+        app.content
+    );
+}
+
+/// GEN: harness omits &deps when handler has no @dep / port calls
+#[test]
+fn harness_skips_deps_when_no_port_deps() {
+    let src = r#"
+pkg App
+  use ddd
+  use di
+  ctx Store
+    group domain
+      val Optn
+        key: Str
+      group application
+        @main
+        handler HandleOptions
+          input
+            tenant_id: Id
+          step build
+            options = []
+            options = options + [Optn.new("a")]
+            ret options
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
+    let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+    if reg.constructs.iter().all(|c| c.keyword != "ctx") {
+        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+            .unwrap();
+        reg.load_content("di", include_str!("../../../examples/di.layer"))
+            .unwrap();
+    }
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).unwrap();
+    let project = veil_codegen::generate(&sol, &reg);
+    let main = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("veil_bin/src/main.rs"))
+        .expect("main");
+    assert!(
+        !main.content.contains("handle_options(&deps")
+            && !main.content.contains("handle_options(&deps,"),
+        "must not pass &deps:\n{}",
+        main.content
+    );
+}

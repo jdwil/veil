@@ -54,6 +54,7 @@ You are the VEIL IDE built-in agent (Rig tools).
 - Closed loop: edit → (smoke) → dev_logs / list_routes / read_generated(what=harness) → http_request → dev_restart if needed.
 - Frontend uses relative /api + Vite @proxy. Bus is server-side only — not browser transport.
 - Do not claim a route works until list_routes or http_request shows it.
+- Bang port calls: `wt = repo.find!(id)` already unwraps Res! and Opt — never .unwrap() / .is_some() after !.
 
 ## Tools
 - veil_check — dual-loop diagnostics
@@ -90,6 +91,7 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - After write_source: gen + cargo check smoke. Failures REJECT the write and restore the previous file.
 - Closed loop: edit → smoke → dev_logs / list_routes / read_generated → http_request → dev_restart.
 - Do not invent paths — call list_routes or read_generated(what=routes). Do not claim success without http_request.
+- Bang port calls: `wt = repo.find!(id)` already unwraps Res! and Opt — never .unwrap() / .is_some() after !.
 - Frontend: relative /api + Vite proxy. Bus is not a browser transport.
 
 ## Available MCP Tools

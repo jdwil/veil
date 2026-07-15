@@ -367,6 +367,14 @@ pkg ddd v1
     - Use `ret variable` to return query results from handlers.
     - Cross-context communication uses `dispatch`, `invoke`, or `request` (routed via Bus).
     - Sagas use the `saga` keyword with `step`/`compensate` blocks for distributed transactions.
+    - **Bang calls unwrap Opt and Res:** `entity = repo.find!(id)` yields `T` after codegen
+      (`.await?.ok_or(NotFound)?`). Never call `.unwrap()`, `.is_some()`, or `.is_none()` on
+      the result of a `!` call — that is already unwrapped. Write:
+        ```
+        wt = wear_test_repo.find!(id)
+        wear_test_repo.save!(wt)
+        ```
+      Not `guard existing.is_some()` / `existing.unwrap()`.
 
     ## Example Handler
     ```

@@ -106,17 +106,33 @@ impl GenCtx {
 
     /// Infer the return type of calling target.method().
     /// Returns the inner type (unwrapping Result).
+    /// Call-site method names may include bang/query suffixes (`find!`); keys are
+    /// stored without them (signature name is `find`, bang only wraps return type).
     pub fn return_type_of(&self, target: &str, method: &str) -> Option<&str> {
-        // Direct lookup
-        if let Some(t) = self.method_returns.get(&(target.to_string(), method.to_string())) {
-            return Some(t.as_str());
-        }
-        // If target is a local, look up its type and check struct methods
-        if let Some(type_name) = self.local_types.get(target) {
-            if let Some(t) = self.method_returns.get(&(type_name.clone(), method.to_string())) {
+        let method_key = method.trim_end_matches(['!', '?']);
+        let keys = [
+            method.to_string(),
+            method_key.to_string(),
+            format!("{method_key}!"),
+        ];
+        for m in &keys {
+            if let Some(t) = self.method_returns.get(&(target.to_string(), m.clone())) {
                 return Some(t.as_str());
             }
         }
+        // If target is a local, look up its type and check struct methods
+        if let Some(type_name) = self.local_types.get(target) {
+            for m in &keys {
+                if let Some(t) = self
+                    .method_returns
+                    .get(&(type_name.clone(), m.clone()))
+                {
+                    return Some(t.as_str());
+                }
+            }
+        }
+        // Dep local registered as Trait shape but not in local_types — try snake_case target
+        // (already covered by direct key) and PascalCase conversion is not needed.
         None
     }
 
@@ -1724,28 +1740,64 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             if ctx.is_trait_target(&call.target) {
                 let method = if call.method.is_empty() { "call" } else { &call.method };
                 let ret = ctx.return_type_of(&call.target, method).map(|s| s.to_string());
-                // If the return type is Option<T> and this is a dep call (which gets .ok_or()),
-                // the effective type after unwrap is T
-                if let Some(ref t) = ret {
-                    if let Some(inner) = t.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-                        return Some(inner.to_string());
-                    }
-                }
-                return ret;
+                // Bang / dep port calls: codegen does `.await?` and for Option
+                // `.ok_or(NotFound)?` — effective type is the unwrapped value.
+                return ret.map(|t| unwrap_codegen_call_return(&t, method));
             }
             // If calling a struct constructor
             if ctx.is_struct_target(&call.target) {
                 let method = if call.method.is_empty() { "new" } else { &call.method };
                 return ctx.return_type_of(&call.target, method).map(|s| s.to_string());
             }
-            // If calling a method on a local
-            if ctx.is_local(&call.target) {
-                return ctx.return_type_of(&call.target, &call.method).map(|s| s.to_string());
+            // If calling a method on a local (e.g. @dep wear_test_repo typed as trait via name_to_shape)
+            if ctx.is_local(&call.target) || ctx.is_trait_target(&call.target) {
+                if let Some(t) = ctx.return_type_of(&call.target, &call.method) {
+                    return Some(unwrap_codegen_call_return(t, &call.method));
+                }
             }
             None
         }
+        // Empty list `[]` — element unknown until append
+        Expr::ArrayLit(items) if items.is_empty() => Some("Vec<()>".to_string()),
+        Expr::ArrayLit(items) => items
+            .first()
+            .and_then(|e| infer_expr_type(e, ctx))
+            .map(|t| format!("Vec<{t}>")),
+        Expr::BinaryOp(bin) if matches!(bin.op, BinOp::Add) => {
+            // options + [x] → keep/upgrade Vec type
+            let left = infer_expr_type(&bin.left, ctx);
+            let right = infer_expr_type(&bin.right, ctx);
+            match (left.as_deref(), right.as_deref()) {
+                (Some("Vec<()>"), Some(r)) if r.starts_with("Vec<") => right,
+                (Some(l), _) if l.starts_with("Vec<") && l != "Vec<()>" => left,
+                (_, Some(r)) if r.starts_with("Vec<") => right,
+                _ => left.or(right),
+            }
+        }
+        Expr::StructLit(name, _) => Some(name.clone()),
         _ => None,
     }
+}
+
+/// Match codegen for bang/port calls: strip Option after Res (already unwrapped
+/// in method_returns via extract_inner_type). Option stays only for non-bang.
+fn unwrap_codegen_call_return(ty: &str, method: &str) -> String {
+    let is_bang = method.ends_with('!');
+    // method_returns already stores inner of Result (extract_inner_type).
+    // For bang + Option return, codegen adds `.ok_or()?` → strip Option.
+    if is_bang {
+        if let Some(inner) = ty
+            .strip_prefix("Option<")
+            .and_then(|s| s.strip_suffix('>'))
+        {
+            return inner.to_string();
+        }
+    }
+    // Also strip Option for non-bang when we know codegen always ok_or on
+    // trait methods — currently only bang paths use ok_or consistently.
+    // Keep Option for non-bang so `existing.is_some()` typechecks if someone
+    // writes non-bang find.
+    ty.to_string()
 }
 
 /// Collect all trait-shaped construct names referenced in flow step bodies.
