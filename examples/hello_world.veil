@@ -58,6 +58,7 @@ pkg HelloWorld
         send_email!(to: Str, subject: Str, body: Str)
 
     group application
+      @route("POST /api/users")
       svc CreateUser
         input
           name: Str
@@ -70,6 +71,7 @@ pkg HelloWorld
           dispatch UserGreeted{user.id, email, now()}
         ret user.id
 
+      @route("POST /api/users/greet")
       svc GreetUser
         input
           user_id: UUID

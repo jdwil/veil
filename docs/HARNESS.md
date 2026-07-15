@@ -128,11 +128,11 @@ harness** for local dual-loop (RT-001 / RT-003). **`@main` is optional** for
 this path. `@main` is still used for Bus composition demos and ProductHost
 (`link veil_server`).
 
-### Route selection (AGT-026)
+### Route selection (AGT-026 · ACS-005)
 
-1. If the service has `@route("METHOD /path")`, that method and path win.
+1. **Authoritative:** `@route("METHOD /path")` on the svc/handler — prefer this on all public HTTP surface.
 2. Path-only `@route("/path")` keeps the name-derived method.
-3. Otherwise name prefixes:
+3. **Fallback only** (legacy): name prefixes when no `@route`:
 
 | Service name pattern | Method | Path |
 |---------------------|--------|------|

@@ -23,6 +23,7 @@ pkg LocalRun
         find(id: UUID) -> Res!<Opt<Item>>
 
     group application
+      @route("POST /api/items")
       svc CreateItem
         input
           name: Str
