@@ -922,14 +922,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     };
     if let Some(base) = list_base {
         if call.method == "get" && call.args.len() == 1 {
-            // Only translate to index access if the arg is numeric.
             // String args (HashMap key lookup) stay as .get("key").
-            let is_numeric_arg = matches!(&call.args[0], Expr::IntLit(_) | Expr::FloatLit(_));
-            if is_numeric_arg {
+            // Numeric / Int locals (including loop indices) → slice index with `as usize`
+            // so saga `steps.get(i)` and list access compile (i64 is not SliceIndex).
+            let is_string_arg = matches!(&call.args[0], Expr::StringLit(_));
+            if !is_string_arg {
                 let idx = expr_to_rust(&call.args[0], ctx);
                 return format!("{}[({}) as usize]", base, idx);
             }
-            // Otherwise emit as a normal method call: base.get(arg)
         }
         if call.method == "len" && call.args.is_empty() {
             return format!("({}.len() as i64)", base);

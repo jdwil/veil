@@ -900,12 +900,29 @@ pub struct StubCrate {
     /// Type names that live at the crate root (not under `types_module`).
     #[serde(default)]
     pub root_types: Vec<String>,
+    /// VEIL type name → Rust type name when they differ (e.g. `Pool` → `PgPool`).
+    /// Line: `rust_name Pool PgPool`
+    #[serde(default)]
+    pub rust_names: std::collections::HashMap<String, String>,
     /// Harness field constructors: type name → Rust expr that yields a value.
     /// Line form (multi-line raw): `harness_field Client """ ... """`.
     /// Used by the local `@main` harness for `@field(name: Type)` wiring —
     /// engine never invents SDK-specific construction.
     #[serde(default)]
     pub harness_fields: std::collections::HashMap<String, String>,
+    /// Derives for multi-field domain types used as typed row/result types
+    /// (e.g. `sqlx::FromRow`). Applied generically by rust codegen — no crate names in the engine.
+    #[serde(default)]
+    pub row_type_derives: Vec<String>,
+    /// Derives for single-field wrapper domain types (e.g. `sqlx::Type`).
+    #[serde(default)]
+    pub wrapper_type_derives: Vec<String>,
+    /// Extra attributes for single-field wrappers (inner of `#[…]`, e.g. `sqlx(transparent)`).
+    #[serde(default)]
+    pub wrapper_type_attrs: Vec<String>,
+    /// Extra `use` lines when this stub is active (e.g. `sqlx::PgPool`).
+    #[serde(default)]
+    pub codegen_imports: Vec<String>,
     /// Struct declarations with their methods.
     pub structs: Vec<StubStruct>,
     /// Impl blocks (methods grouped by target type).
@@ -915,15 +932,20 @@ pub struct StubCrate {
 impl StubCrate {
     /// Rust path segment after `crate_name::` for a type (e.g. `types::AttributeValue`).
     pub fn rust_type_path(&self, type_name: &str) -> String {
-        if self.root_types.iter().any(|t| t == type_name) {
-            return type_name.to_string();
+        let rust_name = self
+            .rust_names
+            .get(type_name)
+            .cloned()
+            .unwrap_or_else(|| type_name.to_string());
+        if self.root_types.iter().any(|t| t == type_name || t == &rust_name) {
+            return rust_name;
         }
         if let Some(module) = &self.types_module {
             if !module.is_empty() {
-                return format!("{module}::{type_name}");
+                return format!("{module}::{rust_name}");
             }
         }
-        type_name.to_string()
+        rust_name
     }
 }
 
@@ -933,6 +955,15 @@ pub struct StubStruct {
     pub name: String,
     /// Methods declared directly on the struct (instance methods).
     pub methods: Vec<StubMethod>,
+    /// When `new` lowers to a free function, optional typed free-fn name used when
+    /// the enclosing method has a domain return type (e.g. `query_as` for `Query`).
+    #[serde(default)]
+    pub typed_variant: Option<String>,
+    /// Turbofish type-param template for the typed free fn. Tokens:
+    /// `_` = inferred, `return_type` = domain type from enclosing return.
+    /// Default: `_, return_type` → `::<_, CohortDTO>`.
+    #[serde(default)]
+    pub typed_type_params: Option<String>,
 }
 
 /// An impl block in a stub file (associated functions/constructors).
@@ -1053,6 +1084,65 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             continue;
         }
 
+        // rust_name Pool PgPool  (VEIL name → Rust name)
+        if trimmed.starts_with("rust_name ") {
+            let rest = trimmed.strip_prefix("rust_name ").unwrap_or("").trim();
+            let mut parts = rest.split_whitespace();
+            if let (Some(veil), Some(rust)) = (parts.next(), parts.next()) {
+                stub.rust_names
+                    .insert(veil.to_string(), rust.to_string());
+            }
+            continue;
+        }
+
+        // row_type_derives sqlx::FromRow
+        if trimmed.starts_with("row_type_derives ") {
+            stub.row_type_derives = trimmed
+                .strip_prefix("row_type_derives ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            continue;
+        }
+
+        // wrapper_type_derives sqlx::Type
+        if trimmed.starts_with("wrapper_type_derives ") {
+            stub.wrapper_type_derives = trimmed
+                .strip_prefix("wrapper_type_derives ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            continue;
+        }
+
+        // wrapper_type_attrs sqlx(transparent)
+        if trimmed.starts_with("wrapper_type_attrs ") {
+            stub.wrapper_type_attrs = trimmed
+                .strip_prefix("wrapper_type_attrs ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().trim_start_matches("#[").trim_end_matches(']').to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            continue;
+        }
+
+        // codegen_imports sqlx::PgPool, other::Thing
+        if trimmed.starts_with("codegen_imports ") {
+            stub.codegen_imports = trimmed
+                .strip_prefix("codegen_imports ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            continue;
+        }
+
         // harness_field Client """ ... """  (same line or multi-line)
         if trimmed.starts_with("harness_field ") {
             let rest = trimmed.strip_prefix("harness_field ").unwrap_or("").trim();
@@ -1081,7 +1171,12 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             if let Some(s) = current_struct.take() { stub.structs.push(s); }
             if let Some(i) = current_impl.take() { stub.impls.push(i); }
             let name = trimmed.strip_prefix("struct ").unwrap().trim().to_string();
-            current_struct = Some(StubStruct { name, methods: Vec::new() });
+            current_struct = Some(StubStruct {
+                name,
+                methods: Vec::new(),
+                typed_variant: None,
+                typed_type_params: None,
+            });
             continue;
         }
 
@@ -1091,8 +1186,39 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             if let Some(s) = current_struct.take() { stub.structs.push(s); }
             if let Some(i) = current_impl.take() { stub.impls.push(i); }
             let name = trimmed.strip_prefix("enum ").unwrap().trim().to_string();
-            current_struct = Some(StubStruct { name, methods: Vec::new() });
+            current_struct = Some(StubStruct {
+                name,
+                methods: Vec::new(),
+                typed_variant: None,
+                typed_type_params: None,
+            });
             continue;
+        }
+
+        // Struct-level metadata (indented under struct, not a method)
+        if indent >= 4 && current_struct.is_some() && !trimmed.starts_with("fn ") {
+            if trimmed.starts_with("typed_variant ") {
+                let v = trimmed
+                    .strip_prefix("typed_variant ")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if let Some(ref mut s) = current_struct {
+                    s.typed_variant = Some(v);
+                }
+                continue;
+            }
+            if trimmed.starts_with("typed_type_params ") {
+                let v = trimmed
+                    .strip_prefix("typed_type_params ")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if let Some(ref mut s) = current_struct {
+                    s.typed_type_params = Some(v);
+                }
+                continue;
+            }
         }
 
         // Top-level impl declaration

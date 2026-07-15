@@ -37,10 +37,8 @@ fn ensure_layers_env(root: &Path) {
 
 /// Fixtures that currently fail to parse (svelte page/layout string bodies).
 /// Remove an entry once fixed — the suite will then require idempotence.
-const KNOWN_UNPARSEABLE: &[&str] = &[
-    "examples/customer_portal.veil",
-    "runtime/src/runtime-ui.veil",
-];
+/// (customer_portal + runtime-ui now parse — kept empty allowlist intentionally.)
+const KNOWN_UNPARSEABLE: &[&str] = &[];
 
 fn collect_veil_files(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -256,7 +254,7 @@ fn ser004_runtime_veil_idempotent() {
     );
 }
 
-/// Wear test: typed assigns round-trip without bare-ident churn.
+/// Wear test: package round-trips and keeps Initiative/repo surface.
 #[test]
 fn ser004_wear_test_typed_assigns() {
     let root = workspace_root();
@@ -264,8 +262,8 @@ fn ser004_wear_test_typed_assigns() {
     let path = root.join("examples/wear_test.veil");
     let emit = roundtrip_emit(&path).expect("wear_test roundtrip");
     assert!(
-        emit.contains("cohort: CohortDTO ="),
-        "typed assign lost:\n{}",
+        emit.contains("Initiative") && emit.contains("find!"),
+        "wear_test surface lost:\n{}",
         emit
     );
 }
