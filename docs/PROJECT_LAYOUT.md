@@ -30,12 +30,23 @@ Related: [`VCS_MODEL.md`](VCS_MODEL.md), [`STORAGE.md`](STORAGE.md),
 Layout for an application or library the user owns:
 
 ```text
-my-app/                    # git repository root
-  veil.toml                # optional: name, members, path overrides
-  *.veil                   # packages (flat at root is fine to start)
-  layers/                  # this project’s layers only (family / client DSL)
+my-app/                    # git repository root (hub folder id)
+  veil.toml                # name, [package] entry, [dependencies], [[targets]]
+  main.veil                # primary package (R21)
+  layers/
+    main.layer             # primary language (R21)
   stubs/                   # external crate stubs for this project
   generated/               # codegen output (IDE readonly)
+  # optional extra packages:
+  # other_ui.veil
+```
+
+```toml
+name = "my-app"
+[package]
+name = "my_app"              # use name (may differ from folder)
+veil = "main.veil"
+layer = "layers/main.layer"
 ```
 
 - `use ddd` / `use rust` resolve from the **installed** core layers, not from
@@ -127,8 +138,40 @@ playground; product and runtime docs should not treat `examples/` as home.
 | Family / client (`wear_test`, `crm`, …) | **Project** `layers/` | **Yes** |
 | Stubs | Project `stubs/` (or package-adjacent) | Browse / palette only |
 
-Registry resolution for `use <name>` always walks: project → install layers →
-ancestors; editing is a separate concern from resolution.
+Registry resolution for `use <name>` walks:
+
+1. Project dir + `layers/`
+2. Ancestor `layers/` and hub **sibling product dirs** (local multi-product hub)
+3. **`veil.toml` `[dependencies]`** product roots (R20 — path / project / git)
+4. Install / system layers (`VEIL_LAYERS_DIR`)
+
+Editing is a separate concern from resolution.
+
+### Product dependencies (R20)
+
+Cross-product `use` / `adapt` (e.g. wear_test → designkit, engagement) must be
+**declared** so cloud gen and isolated checkouts do not rely only on ambient
+siblings:
+
+```toml
+# wear_test/veil.toml
+[dependencies]
+designkit = { project = "dlx-designkit" }   # under VEIL_PROJECTS_DIR / hub
+application = { path = "../application" }     # relative to this project
+# mylib = { git = "https://…", rev = "main" }  # cloned to hub/.veil-deps/<use>
+```
+
+| Field | Meaning |
+|-------|---------|
+| **map key** | `use` name (layer/package stem), unless table has `use = "…"` |
+| `project` | Directory name under projects hub |
+| `path` | Absolute or relative product root |
+| `git` + `rev` | Materialize into `{hub}/.veil-deps/{use_name}` |
+
+Distinct from **`[dev].packages`** (local multi-package *harness* gen only).
+
+After adapt merge, generated artifacts are self-contained (gen-time flatten).
+Runtime still materializes dep sources when running check/gen without a full hub.
 
 ---
 

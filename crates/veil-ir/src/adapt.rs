@@ -313,8 +313,8 @@ pub fn merge_adapt_chain(chain: &[Package]) -> Result<MergeResult, AdaptError> {
 /// Unified `use` resolution: if a `use X` has a companion `.veil` file alongside
 /// the resolved `.layer`, implicitly add `adapt X` (source merge).
 ///
-/// This enables the pattern where `use engagement` loads both `engagement.layer`
-/// (vocabulary) and implicitly adapts `engagement.veil` (stock domain logic).
+/// This enables the pattern where `use application` loads both `main.layer`
+/// (vocabulary) and implicitly adapts `main.veil` (stock domain logic).
 ///
 /// Does NOT add a duplicate if the user already explicitly wrote `adapt X`.
 pub fn inject_implicit_adapts(pkg: &mut Package, search_paths: &[PathBuf]) {

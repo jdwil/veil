@@ -104,12 +104,26 @@ pub fn auto_restart_enabled() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub project: Option<ProjectMeta>,
     #[serde(default, rename = "targets")]
     pub targets: Vec<TargetConfig>,
     /// Dev-only configuration: extra packages wired into the local harness.
     #[serde(default)]
     pub dev: Option<DevConfig>,
+    /// Product dependencies for `use` / adapt resolution (R20).
+    ///
+    /// ```toml
+    /// [dependencies]
+    /// designkit = { project = "dlx-designkit" }
+    /// application = { path = "../application" }
+    /// ```
+    ///
+    /// Values may be a path string or a table with `project` / `path` / `git` / `rev`.
+    /// Parsed fully by `veil_ir::deps`; this field preserves raw TOML for tooling.
+    #[serde(default)]
+    pub dependencies: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -41,7 +41,7 @@ VEIL is a **transpiler**: specialization should produce **one flattened IR** and
 ```veil
 pkg AcmeWearTest
   use ddd
-  use engagement
+  use application
   use dlx_core
   adapt wear_test
 ```

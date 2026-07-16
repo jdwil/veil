@@ -3,7 +3,7 @@
 //! ```toml
 //! [dependencies]
 //! designkit = { project = "dlx-designkit" }
-//! engagement = { path = "../engagement" }
+//! application = { path = "../application" }
 //! # future: mylib = { git = "https://…", rev = "main" }
 //! ```
 //!
@@ -336,7 +336,7 @@ fn looks_like_product_root(dir: &Path) -> bool {
             .file_name()
             .and_then(|n| n.to_str())
             .map(|name| {
-                // engagement/engagement.veil or designkit.veil at root of dlx-designkit
+                // application/main.veil or designkit.veil at root of dlx-designkit
                 dir.join(format!("{name}.veil")).is_file()
             })
             .unwrap_or(false)
@@ -533,7 +533,7 @@ mod tests {
 name = "app"
 [dependencies]
 designkit = {{ project = "dlx-designkit" }}
-engagement = "../engagement"
+application = "../application"
 mylib = {{ path = "/tmp/mylib", use = "lib" }}
 "#
         )
@@ -542,10 +542,10 @@ mylib = {{ path = "/tmp/mylib", use = "lib" }}
         assert_eq!(deps.len(), 3);
         let dk = deps.iter().find(|d| d.use_name == "designkit").unwrap();
         assert_eq!(dk.project.as_deref(), Some("dlx-designkit"));
-        let eng = deps.iter().find(|d| d.use_name == "engagement").unwrap();
+        let eng = deps.iter().find(|d| d.use_name == "application").unwrap();
         assert_eq!(
             eng.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
-            Some("../engagement".into())
+            Some("../application".into())
         );
         let lib = deps.iter().find(|d| d.use_name == "lib").unwrap();
         assert!(lib.path.is_some());
@@ -554,33 +554,33 @@ mylib = {{ path = "/tmp/mylib", use = "lib" }}
     #[test]
     fn resolve_path_dep() {
         let hub = tempfile_dir();
-        let eng = hub.join("engagement");
+        let eng = hub.join("application");
         std::fs::create_dir_all(&eng).unwrap();
-        std::fs::write(eng.join("veil.toml"), "name = \"engagement\"\n").unwrap();
-        std::fs::write(eng.join("engagement.veil"), "pkg engagement\n  use ddd\n").unwrap();
+        std::fs::write(eng.join("veil.toml"), "name = \"application\"\n").unwrap();
+        std::fs::write(eng.join("main.veil"), "pkg application\n  use ddd\n").unwrap();
 
         let app = hub.join("app");
         std::fs::create_dir_all(&app).unwrap();
         std::fs::write(
             app.join("veil.toml"),
-            "[dependencies]\nengagement = { path = \"../engagement\" }\n",
+            "[dependencies]\napplication = { path = \"../application\" }\n",
         )
         .unwrap();
 
         let roots = resolve_dependency_roots(&app).unwrap();
         assert_eq!(roots.len(), 1);
-        assert!(roots[0].ends_with("engagement") || roots[0].file_name().unwrap() == "engagement");
+        assert!(roots[0].ends_with("application") || roots[0].file_name().unwrap() == "application");
     }
 
     #[test]
     fn resolve_project_dep_via_hub() {
         let hub = tempfile_dir();
-        let eng = hub.join("engagement");
+        let eng = hub.join("application");
         std::fs::create_dir_all(eng.join("layers")).unwrap();
-        std::fs::write(eng.join("veil.toml"), "name = \"engagement\"\n").unwrap();
+        std::fs::write(eng.join("veil.toml"), "name = \"application\"\n").unwrap();
         std::fs::write(
-            eng.join("layers").join("engagement.layer"),
-            "pkg engagement v1\n  use ddd\n",
+            eng.join("layers").join("main.layer"),
+            "pkg application v1\n  use ddd\n",
         )
         .unwrap();
 
@@ -588,7 +588,7 @@ mylib = {{ path = "/tmp/mylib", use = "lib" }}
         std::fs::create_dir_all(&app).unwrap();
         std::fs::write(
             app.join("veil.toml"),
-            "[dependencies]\nengagement = { project = \"engagement\" }\n",
+            "[dependencies]\napplication = { project = \"application\" }\n",
         )
         .unwrap();
 
@@ -638,18 +638,18 @@ layer = "layers/main.layer"
         std::fs::create_dir_all(root.join("layers")).unwrap();
         std::fs::write(
             root.join("veil.toml"),
-            "name = \"engagement\"\n[package]\nname = \"engagement\"\n",
+            "name = \"application\"\n[package]\nname = \"application\"\n",
         )
         .unwrap();
         // Defaults prefer main.veil when present
-        std::fs::write(root.join("main.veil"), "pkg engagement\n  use ddd\n").unwrap();
+        std::fs::write(root.join("main.veil"), "pkg application\n  use ddd\n").unwrap();
         std::fs::write(
             root.join("layers/main.layer"),
-            "pkg engagement v1\n  use ddd\n",
+            "pkg application v1\n  use ddd\n",
         )
         .unwrap();
 
-        let found = crate::adapt::find_package_source("engagement", &[root.clone()]);
+        let found = crate::adapt::find_package_source("application", &[root.clone()]);
         assert!(found.unwrap().ends_with("main.veil"));
     }
 

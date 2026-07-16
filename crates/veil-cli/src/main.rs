@@ -1565,7 +1565,7 @@ fn main() {
                     }
                 };
                 // Same adapt merge as `veil gen` so product packages that
-                // `use engagement` (etc.) carry stock handlers into the harness.
+                // `use application` (etc.) carry stock handlers into the harness.
                 let sol = match veil_file {
                     veil_ir::ast::VeilFile::Solution(s) => s,
                     veil_ir::ast::VeilFile::Package(pkg) => {
