@@ -3683,6 +3683,8 @@ pub fn generate_multi_package_harness(
         for svc in services {
             let fn_name = to_snake(&svc.name);
             let (method, path) = rest_route_for_service(svc);
+            // Path strings come from `@route` / name-derived policy as authored
+            // (brace params `{id}`). No target-framework rewrite in the engine.
             main_rs.push_str(&format!("        .route(\"{path}\", {method}({fn_name}_handler))\n"));
         }
         main_rs.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
@@ -3703,18 +3705,50 @@ pub fn generate_multi_package_harness(
     main_rs.push_str("    Ok(())\n}\n\n");
 
     // Generate handler functions for each service across all modules
+    // (same path/query/body policy as single-package local harness).
     for (module, crate_name, _) in &all_modules {
         let flat = flatten_module(module);
         for svc in &flat.fns {
             let fn_name = to_snake(&svc.name);
-            let (_method, _path) = rest_route_for_service(svc);
+            let (method, path) = rest_route_for_service(svc);
+            // Same binding policy as single-package local harness: path segments
+            // use brace form `{id}` in `@route` (and name-derived paths). Engine
+            // does not rewrite foreign path dialects.
+            let path_param_count = path.matches('{').count();
+            let needs_path_id = path_param_count > 0;
+            let needs_body = method == "post" || method == "put";
+            // GET without path param → query string (List* / tenant-scoped lists)
+            let is_list_get = method == "get" && !needs_path_id;
 
-            // Simple POST handler with JSON body for all handlers
-            main_rs.push_str(&format!(
-                "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
-            ));
+            if needs_path_id && needs_body {
+                main_rs.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(id): axum::extract::Path<String>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            } else if needs_path_id {
+                if path_param_count == 1 {
+                    main_rs.push_str(&format!(
+                        "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(id): axum::extract::Path<String>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                    ));
+                } else {
+                    // Multiple path params — map of segment names
+                    main_rs.push_str(&format!(
+                        "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(path_params): axum::extract::Path<std::collections::HashMap<String, String>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                    ));
+                }
+            } else if needs_body {
+                main_rs.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            } else if is_list_get {
+                main_rs.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Query(q): Query<std::collections::HashMap<String, String>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            } else {
+                main_rs.push_str(&format!(
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                ));
+            }
 
-            // Only pass &deps when the application fn has @dep inputs or port calls
             let svc_has_deps = svc.inputs.iter().any(|i| {
                 i.annotations.iter().any(|a| a.name == "dep")
             }) || svc.steps.iter().any(|st| {
@@ -3729,24 +3763,75 @@ pub fn generate_multi_package_harness(
             } else {
                 Vec::new()
             };
+
+            // Path param parse when signature has Path(id)
+            if needs_path_id && path_param_count == 1 {
+                // Prefer first non-dep input that is Id for path
+                if let Some(input) = svc.inputs.iter().find(|i| {
+                    !i.annotations.iter().any(|a| a.name == "dep")
+                        && type_to_rust(&i.type_expr) == "Uuid"
+                }) {
+                    let field = to_snake(&input.name);
+                    main_rs.push_str(&format!(
+                        "    let {field} = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+                    ));
+                    args.push(field);
+                }
+            }
+
             for input in &svc.inputs {
                 if input.annotations.iter().any(|a| a.name == "dep") {
                     continue;
                 }
                 let field = to_snake(&input.name);
+                // Skip if already bound from path
+                if args.iter().any(|a| a == &field) {
+                    continue;
+                }
                 let rust_type = type_to_rust(&input.type_expr);
-                if rust_type == "Uuid" {
-                    main_rs.push_str(&format!(
-                        "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
-                    ));
-                } else if rust_type == "String" {
-                    main_rs.push_str(&format!(
-                        "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
-                    ));
+                if is_list_get {
+                    // Query string
+                    if rust_type == "Uuid" {
+                        main_rs.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok()).ok_or(StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    } else if rust_type == "String" {
+                        main_rs.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").cloned().unwrap_or_default();\n"
+                        ));
+                    } else {
+                        main_rs.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").and_then(|s| serde_json::from_str(s).ok()).ok_or(StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    }
+                } else if needs_body {
+                    if rust_type == "Uuid" {
+                        main_rs.push_str(&format!(
+                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
+                        ));
+                    } else if rust_type == "String" {
+                        main_rs.push_str(&format!(
+                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
+                        ));
+                    } else {
+                        main_rs.push_str(&format!(
+                            "    let {field} = serde_json::from_value(body.get(\"{field}\").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    }
+                } else if needs_path_id && path.matches('{').count() > 1 {
+                    // multi path params map
+                    if rust_type == "Uuid" {
+                        main_rs.push_str(&format!(
+                            "    let {field} = path_params.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok()).ok_or(StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    } else {
+                        main_rs.push_str(&format!(
+                            "    let {field} = path_params.get(\"{field}\").cloned().unwrap_or_default();\n"
+                        ));
+                    }
                 } else {
-                    main_rs.push_str(&format!(
-                        "    let {field} = serde_json::from_value(body.get(\"{field}\").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
-                    ));
+                    // no inputs left
+                    continue;
                 }
                 args.push(field);
             }
@@ -3756,8 +3841,18 @@ pub fn generate_multi_package_harness(
                 fn_name,
                 args.join(", ")
             ));
-            main_rs.push_str("        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_default())),\n");
-            main_rs.push_str("        Err(e) => { eprintln!(\"error: {e}\"); Err(StatusCode::INTERNAL_SERVER_ERROR) }\n");
+            if method == "delete" {
+                main_rs.push_str(
+                    "        Ok(_) => Ok(Json(serde_json::json!({\"ok\": true}))),\n",
+                );
+            } else {
+                main_rs.push_str(
+                    "        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_default())),\n",
+                );
+            }
+            main_rs.push_str(
+                "        Err(e) => { eprintln!(\"error: {e}\"); Err(StatusCode::INTERNAL_SERVER_ERROR) }\n",
+            );
             main_rs.push_str("    }\n}\n\n");
         }
     }
