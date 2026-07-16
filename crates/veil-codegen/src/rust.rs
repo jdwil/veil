@@ -4308,6 +4308,8 @@ pub fn generate_multi_package_harness(
 
         // Build Deps struct — only ports the application crate expects
         main_rs.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
+        let mut wired_fields: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for ad in adapters {
             if is_pure_generic_adapter_template(ad) {
                 continue;
@@ -4328,6 +4330,9 @@ pub fn generate_multi_package_harness(
                     if !alias_match {
                         continue;
                     }
+                }
+                if !wired_fields.insert(field.clone()) {
+                    continue;
                 }
                 main_rs.push_str(&format!(
                     "        {field}: {sn}_inst.clone(),\n",
