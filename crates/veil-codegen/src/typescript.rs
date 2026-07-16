@@ -523,6 +523,7 @@ fn effect_body_needs_await(body: &[Expr]) -> bool {
 }
 
 /// Like `expr_to_ts` but awaits ApiClient / async IIFE results on assignment.
+/// Recurses into `if` / blocks so nested `membership_options = ApiClient.fetch(...)` awaits.
 fn expr_to_ts_async(expr: &Expr, indent: usize) -> String {
     match expr {
         Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
@@ -535,6 +536,26 @@ fn expr_to_ts_async(expr: &Expr, indent: usize) -> String {
         }
         Expr::Call(c) if c.target == "ApiClient" => {
             format!("await {}", expr_to_ts(expr, indent))
+        }
+        Expr::IfExpr(data) => {
+            let pad = "  ".repeat(indent);
+            let cond = expr_to_ts(&data.condition, indent);
+            let then_body = data
+                .then_body
+                .iter()
+                .map(|e| format!("{}  {};", pad, expr_to_ts_async(e, indent + 1)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut out = format!("if ({}) {{\n{}\n{}}}", cond, then_body, pad);
+            if let Some(else_body) = &data.else_body {
+                let else_str = else_body
+                    .iter()
+                    .map(|e| format!("{}  {};", pad, expr_to_ts_async(e, indent + 1)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                out.push_str(&format!(" else {{\n{}\n{}}}", else_str, pad));
+            }
+            out
         }
         _ => expr_to_ts(expr, indent),
     }

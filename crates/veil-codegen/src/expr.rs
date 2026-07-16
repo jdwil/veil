@@ -820,12 +820,19 @@ fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
 /// Determine the call suffix for a method invoked on a chained receiver.
 ///
 /// - Fluent `.send()` / `.send_with()` are async + Result → `.await?`
+/// - Stub methods marked async+fallible (BoxFuture / executor param) → `.await.map_err…?`
 /// - Other stub methods marked `Res!` are sync Result → `?` (e.g. `as_s`)
 /// - Trait methods (ports) are async_trait + Result → `.await?`
+///
+/// Method names may carry VEIL bang/query suffixes (`fetch_all!`); strip before lookup.
 fn receiver_call_suffix(_recv: &Expr, method: &str, ctx: &GenCtx) -> String {
+    let method = method.trim_end_matches(['!', '?']);
     // Stub-declared async+fallible methods (return type BoxFuture<Res!<...>> or
     // takes an executor param). These get `.await.map_err(...)? `.
-    if method == "send" || method == "send_with" || ctx.async_fallible_methods.contains(method) {
+    if method == "send"
+        || method == "send_with"
+        || ctx.async_fallible_methods.contains(method)
+    {
         return ".await.map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
     let is_trait_method = ctx
@@ -1396,8 +1403,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 (*struct_name).to_string()
             };
             let m = rust_method_name(&call.method);
-            let suffix = if call.method == "send" || ctx.fallible_methods.contains(&call.method) {
-                ".await?"
+            let bare = call.method.trim_end_matches(['!', '?']);
+            let suffix = if bare == "send"
+                || bare == "send_with"
+                || ctx.async_fallible_methods.contains(bare)
+            {
+                ".await.map_err(|e| DomainError::External(e.to_string()))?"
+            } else if ctx.fallible_methods.contains(bare) {
+                "?"
             } else {
                 ""
             };

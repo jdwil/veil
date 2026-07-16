@@ -3562,9 +3562,27 @@ pub fn generate_multi_package_harness(
             }
         }
 
-        // Emit adapter instantiations
+        // Ports actually required by application Deps (`@dep` inputs).
+        // Do not wire unused adapters (e.g. TenantRepo) into Deps — mismatch fails compile.
+        let mut needed_ports: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for svc in services {
+            for field in &svc.inputs {
+                if registry.field_is_dependency(field) {
+                    if let TypeExpr::Named(type_name) = &field.type_expr {
+                        needed_ports.insert(type_name.clone());
+                    }
+                }
+            }
+        }
+        // Fallback: if nothing discovered, keep previous "all adapters" behavior
+        let filter_ports = !needed_ports.is_empty();
+
+        // Emit adapter instantiations (only for needed ports when known)
         for ad in adapters {
             let target = ad.target.as_deref().unwrap_or("Send");
+            if filter_ports && !needed_ports.contains(target) {
+                continue;
+            }
             let env_ann = ad.annotations.iter().find(|a| a.name == "env");
             let mut fields_init = String::new();
 
@@ -3644,10 +3662,13 @@ pub fn generate_multi_package_harness(
             continue;
         }
 
-        // Build Deps struct
+        // Build Deps struct — only ports the application crate expects
         main_rs.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
         for ad in adapters {
             if let Some(target) = &ad.target {
+                if filter_ports && !needed_ports.contains(target) {
+                    continue;
+                }
                 main_rs.push_str(&format!(
                     "        {field}: {sn}_inst.clone(),\n",
                     field = to_snake(target), sn = to_snake(&ad.name),
