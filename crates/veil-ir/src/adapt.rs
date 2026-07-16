@@ -60,13 +60,22 @@ pub fn package_as_solution(pkg: &Package) -> Solution {
     }
 }
 
-/// Search for `{name}.veil` under the given directories (first hit wins).
+/// Search for package source providing `use name` under the given directories.
+///
+/// Resolution per directory (R21):
+/// 1. Product root with `veil.toml` `[package]` → `main.veil` / configured path
+/// 2. Legacy `{name}.veil` in that directory
+/// 3. `main.veil` whose `pkg` line matches `name`
 pub fn find_package_source(name: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
-    let filename = format!("{name}.veil");
     for dir in search_paths {
-        let candidate = dir.join(&filename);
-        if candidate.is_file() {
-            return Some(candidate);
+        // Product root (dep root or hub sibling)
+        if let Some(path) = crate::deps::package_source_in_root(dir, name) {
+            return Some(path);
+        }
+        // Legacy: flat search dir with name.veil
+        let legacy = dir.join(format!("{name}.veil"));
+        if legacy.is_file() {
+            return Some(legacy);
         }
     }
     None
@@ -86,6 +95,26 @@ pub fn default_adapt_search_paths(
             paths.push(gp.to_path_buf());
             paths.push(gp.join("examples"));
             paths.push(gp.join("adapt"));
+            // Projects hub: each sibling product dir (e.g. …/veil-projects/dlx-designkit)
+            // so `use designkit` can find designkit.veil next to that product.
+            if let Ok(entries) = std::fs::read_dir(gp) {
+                let mut kids: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                kids.sort_by_key(|e| e.file_name());
+                for ent in kids {
+                    let p = ent.path();
+                    if !p.is_dir() {
+                        continue;
+                    }
+                    let name = ent.file_name();
+                    let name_s = name.to_string_lossy();
+                    if name_s.starts_with('.') || name_s == "node_modules" || name_s == "target" {
+                        continue;
+                    }
+                    if !paths.contains(&p) {
+                        paths.push(p);
+                    }
+                }
+            }
         }
     }
     for e in extra {
@@ -209,11 +238,21 @@ pub fn merge_adapt_chain(chain: &[Package]) -> Result<MergeResult, AdaptError> {
             apply_patch(&mut merged, patch)?;
         }
         // Merge new top-level items (implicit add).
+        // If a construct with the same name already exists (e.g. after `ren Initiative WearTest`),
+        // extend it with leaf root/state fields, enums variants, and nested children instead of
+        // dropping the leaf definition — products specialize stock types this way.
         for item in &pkg.items {
             if let Some(name) = item_name(item) {
                 if top_level_names(&merged).contains(&name) {
-                    // Already present (from base or earlier ins) — skip re-add;
-                    // patches own structural changes.
+                    if let TopLevelItem::Construct(leaf_c) = item {
+                        if let Some(base_c) = find_construct_mut(&mut merged, &name) {
+                            extend_construct(base_c, leaf_c);
+                            provenance
+                                .entry(name.clone())
+                                .or_default()
+                                .push(pkg.name.clone());
+                        }
+                    }
                     continue;
                 }
                 provenance
@@ -315,12 +354,10 @@ pub fn inject_implicit_adapts(pkg: &mut Package, search_paths: &[PathBuf]) {
                     }
                 }
             }
-            // Only inject if a .layer was actually loaded (don't auto-adapt
-            // packages that are purely `use`d for their expose/Bus API).
-            let has_layer = search_paths.iter().any(|dir| {
-                dir.join(format!("{name}.layer")).is_file()
-                    || dir.join("layers").join(format!("{name}.layer")).is_file()
-            });
+            // Only inject if a companion .layer exists (don't auto-adapt pure API uses).
+            let has_layer = search_paths
+                .iter()
+                .any(|dir| crate::deps::layer_source_in_root(dir, name).is_some());
             if has_layer {
                 pkg.adapts.push(AdaptDecl {
                     package_name: name.clone(),
@@ -371,6 +408,100 @@ fn item_name(item: &TopLevelItem) -> Option<String> {
 }
 
 /// Find a construct by name anywhere in the package (top-level or nested children).
+/// Merge leaf specialization into an existing base construct (same name).
+/// - Named blocks (`root`, `state`, …): append fields/variants not already present (leaf overrides type).
+/// - Direct fields, fns, children, raw_blocks, effects: append if name/key missing.
+fn extend_construct(base: &mut Construct, leaf: &Construct) {
+    // Top-level fields on construct
+    for f in &leaf.fields {
+        if let Some(existing) = base.fields.iter_mut().find(|x| x.name == f.name) {
+            *existing = f.clone();
+        } else {
+            base.fields.push(f.clone());
+        }
+    }
+    // Named blocks (root, state, …)
+    for lb in &leaf.blocks {
+        if let Some(bb) = base.blocks.iter_mut().find(|b| b.keyword == lb.keyword) {
+            for f in &lb.fields {
+                if let Some(existing) = bb.fields.iter_mut().find(|x| x.name == f.name) {
+                    *existing = f.clone();
+                } else {
+                    bb.fields.push(f.clone());
+                }
+            }
+            // Enum variants in a named block if any
+            for v in &lb.variants {
+                if !bb.variants.contains(v) {
+                    bb.variants.push(v.clone());
+                }
+            }
+            for t in &lb.transitions {
+                if !bb.transitions.iter().any(|x| x.from == t.from && x.to == t.to) {
+                    bb.transitions.push(t.clone());
+                }
+            }
+        } else {
+            base.blocks.push(lb.clone());
+        }
+    }
+    // Enum shape at construct level
+    for v in &leaf.variants {
+        if !base.variants.contains(v) {
+            base.variants.push(v.clone());
+        }
+    }
+    for rv in &leaf.rich_variants {
+        let rv_name = rv.name();
+        if !base.rich_variants.iter().any(|x| x.name() == rv_name) {
+            base.rich_variants.push(rv.clone());
+        }
+    }
+    for t in &leaf.transitions {
+        if !base.transitions.iter().any(|x| {
+            x.from == t.from && x.to == t.to
+        }) {
+            base.transitions.push(t.clone());
+        }
+    }
+    // Methods / fns
+    for f in &leaf.fns {
+        if let Some(i) = base.fns.iter().position(|x| x.name == f.name) {
+            base.fns[i] = f.clone();
+        } else {
+            base.fns.push(f.clone());
+        }
+    }
+    // Nested constructs
+    for ch in &leaf.children {
+        if let Some(bc) = base.children.iter_mut().find(|c| c.name == ch.name) {
+            extend_construct(bc, ch);
+        } else {
+            base.children.push(ch.clone());
+        }
+    }
+    // Raw blocks / effects — append missing keys
+    for (k, v) in &leaf.raw_blocks {
+        if let Some((_, existing)) = base.raw_blocks.iter_mut().find(|(ek, _)| ek == k) {
+            *existing = v.clone();
+        } else {
+            base.raw_blocks.push((k.clone(), v.clone()));
+        }
+    }
+    for ef in &leaf.effects {
+        if let Some(i) = base.effects.iter().position(|x| x.name == ef.name) {
+            base.effects[i] = ef.clone();
+        } else {
+            base.effects.push(ef.clone());
+        }
+    }
+    // Keyword/subkind: prefer leaf if more specific (e.g. initiative over agg)
+    if !leaf.keyword.is_empty() && leaf.keyword != base.keyword {
+        base.keyword = leaf.keyword.clone();
+        base.subkind = leaf.subkind.clone();
+    }
+}
+
 fn find_construct_mut<'a>(pkg: &'a mut Package, name: &str) -> Option<&'a mut Construct> {
     for item in &mut pkg.items {
         if let TopLevelItem::Construct(c) = item {

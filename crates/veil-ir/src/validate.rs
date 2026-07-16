@@ -330,6 +330,9 @@ fn validate_construct(
                 }
                 // `must_implement_port` — impl must cover all methods of its target trait.
                 // Trait is resolved by name across the package (siblings, groups, etc.).
+                // Empty monomorphized adapters (`adapter Foo for Trait<WearTest>`) may
+                // inherit bodies from a pure generic template (`adapter Bar<T> for Trait<T>`)
+                // — treat those template methods as covering the port.
                 Some("must_implement_port") => {
                     if c.shape == Shape::Impl {
                         if let Some(target_name) = &c.target {
@@ -339,11 +342,53 @@ fn validate_construct(
                                 .copied()
                                 .filter(|t| t.shape == Shape::Trait);
                             if let Some(trait_construct) = target_trait {
-                                let impl_methods: Vec<&str> = c.impls.iter()
-                                    .map(|m| m.method_name.as_str())
+                                let mut impl_methods: std::collections::HashSet<String> = c
+                                    .impls
+                                    .iter()
+                                    .map(|m| m.method_name.clone())
                                     .collect();
+                                // Inherit methods from a pure-generic template adapter
+                                // for the same trait (codegen monomorphizes those bodies).
+                                if !c.target_type_args.is_empty() {
+                                    for other in by_name.values() {
+                                        if other.name == c.name
+                                            || other.shape != Shape::Impl
+                                            || other.target.as_deref() != Some(target_name.as_str())
+                                            || other.type_params.is_empty()
+                                        {
+                                            continue;
+                                        }
+                                        // Pure generic: all target args are type params.
+                                        let tp: std::collections::HashSet<&str> = other
+                                            .type_params
+                                            .iter()
+                                            .map(|p| p.split(':').next().unwrap_or(p).trim())
+                                            .collect();
+                                        let pure = other.target_type_args.is_empty()
+                                            || other.target_type_args.iter().all(|a| {
+                                                matches!(
+                                                    a,
+                                                    crate::ast::TypeExpr::Named(n)
+                                                        if tp.contains(n.as_str())
+                                                )
+                                            });
+                                        if pure {
+                                            for m in &other.impls {
+                                                if !m.body.is_empty() {
+                                                    impl_methods.insert(m.method_name.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 for method in &trait_construct.methods {
-                                    if !impl_methods.contains(&method.name.as_str()) {
+                                    let name = method.name.as_str();
+                                    let covered = impl_methods.contains(name)
+                                        || impl_methods.iter().any(|m| {
+                                            m.trim_end_matches(['!', '?'])
+                                                == name.trim_end_matches(['!', '?'])
+                                        });
+                                    if !covered {
                                         errors.push(ValidationError::new(
                                             "must_implement_port",
                                             format!(

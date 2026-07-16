@@ -164,8 +164,10 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 // so lookups from @dep variable names resolve without conversion
                 ctx.method_returns.insert(
                     (to_snake(&c.name), method.name.clone()),
-                    ret_type,
+                    ret_type.clone(),
                 );
+                // Type aliases (WearTestRepo = EntityRepo<WearTest>) share methods —
+                // also register under any alias that monomorphizes this trait.
             }
         }
 
@@ -205,6 +207,65 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
             visit_constructs(c, &mut ctx);
+        }
+    }
+
+    // Type aliases like `type WearTestRepo = EntityRepo<WearTest>` are ports
+    // for call resolution (deps.wear_test_repo) and share method return types
+    // with the generic base trait (find → Option after monomorphize).
+    for item in &solution.items {
+        if let TopLevelItem::TypeAlias { name, target } = item {
+            if let TypeExpr::Generic(base, args) = target {
+                ctx.name_to_shape.insert(name.clone(), Shape::Trait);
+                // Copy method_returns from base trait, monomorphizing T → arg.
+                let entity = args
+                    .first()
+                    .map(|a| match a {
+                        TypeExpr::Named(n) => n.clone(),
+                        _ => "T".into(),
+                    })
+                    .unwrap_or_else(|| "T".into());
+                let base_keys: Vec<_> = ctx
+                    .method_returns
+                    .keys()
+                    .filter(|(t, _)| t == base || t == &to_snake(base))
+                    .cloned()
+                    .collect();
+                for (t, method) in base_keys {
+                    if let Some(ret) = ctx.method_returns.get(&(t, method.clone())).cloned() {
+                        // Option<T> → Option<WearTest>
+                        let mono = ret.replace("<T>", &format!("<{entity}>")).replace(
+                            "Option<T>",
+                            &format!("Option<{entity}>"),
+                        );
+                        let mono = if mono == "T" {
+                            entity.clone()
+                        } else {
+                            mono
+                        };
+                        ctx.method_returns
+                            .insert((name.clone(), method.clone()), mono.clone());
+                        ctx.method_returns
+                            .insert((to_snake(name), method), mono);
+                    }
+                }
+            } else if let TypeExpr::Named(base) = target {
+                ctx.name_to_shape.insert(name.clone(), Shape::Trait);
+                let base_keys: Vec<_> = ctx
+                    .method_returns
+                    .keys()
+                    .filter(|(t, _)| t == base || t == &to_snake(base))
+                    .cloned()
+                    .collect();
+                for (t, method) in base_keys {
+                    if let Some(ret) = ctx.method_returns.get(&(t, method.clone())).cloned() {
+                        ctx.method_returns
+                            .insert((name.clone(), method.clone()), ret.clone());
+                        ctx.method_returns
+                            .insert((to_snake(name), method), ret);
+                    }
+                }
+            }
         }
     }
 
@@ -483,6 +544,23 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::Assign(name, rhs, ty_ann) => {
             let rhs_str = expr_to_rust(rhs, ctx);
+            // Field assignment: `wt.name = x` stored as Assign("wt.name", …)
+            // Emit path with snake_case fields; never introduce a `let` binding.
+            if name.contains('.') {
+                let path = name
+                    .split('.')
+                    .enumerate()
+                    .map(|(i, seg)| {
+                        if i == 0 {
+                            seg.to_string()
+                        } else {
+                            to_snake(seg)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(".");
+                return format!("{} = {}", path, rhs_str);
+            }
             if ctx.state_locals.contains(name.as_str()) {
                 // Write the result into the threaded saga state as JSON.
                 format!("state[\"{}\"] = serde_json::json!({})", name, rhs_str)
@@ -675,7 +753,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     for e in &arm.body {
                         let line = expr_to_rust(e, &arm_ctx);
                         if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
-                            arm_ctx.locals.insert(name.clone());
+                            if !name.contains('.') {
+                                arm_ctx.locals.insert(name.clone());
+                            }
                         }
                         stmts.push(format!("        {};", line));
                     }
@@ -708,7 +788,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             for e in body {
                 let line = expr_to_rust(e, &body_ctx);
                 if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
-                    body_ctx.locals.insert(name.clone());
+                    if !name.contains('.') {
+                        body_ctx.locals.insert(name.clone());
+                    }
                 }
                 body_lines.push(format!("        {};", line));
             }
@@ -1295,8 +1377,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 
     // Local variable target → target.method(args)?
     if ctx.is_local(&call.target) {
+        // Always strip VEIL `!`/`?` fallible/query suffixes (typecheck sugar only).
         let method = rust_method_name(&call.method);
-        let method_snake = to_snake(&call.method);
 
         // HashMap/DynamoDB item .get("key") pattern: emit as &str arg + unwrap Option.
         if call.method == "get" && call.args.len() == 1 {
@@ -1311,17 +1393,22 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             // If the local's type is a known trait, its methods are async and
             // fallible (`#[async_trait]` + `-> Result`): emit `.await?`.
             if ctx.name_to_shape.get(type_name) == Some(&Shape::Trait) {
-                return format!("{}.{}({}).await?", call.target, method_snake, args_str);
+                return format!("{}.{}({}).await?", call.target, method, args_str);
             }
             // Known concrete method (e.g. aggregate fn) — call with ?
-            if ctx.method_returns.contains_key(&(type_name.to_string(), call.method.clone())) {
+            if ctx.method_returns.contains_key(&(type_name.to_string(), call.method.clone()))
+                || ctx.method_returns.contains_key(&(
+                    type_name.to_string(),
+                    call.method.trim_end_matches(['!', '?']).to_string(),
+                ))
+            {
                 let cloned_args = clone_args(&call.args, ctx);
                 let suffix = receiver_call_suffix(
                     &Expr::Ident(call.target.clone()),
                     &call.method,
                     ctx,
                 );
-                return format!("{}.{}({}){}", call.target, method_snake, cloned_args, suffix);
+                return format!("{}.{}({}){}", call.target, method, cloned_args, suffix);
             }
         }
         // Stub getters that return Result<&str, _> (e.g. enum as_s): own a String.
@@ -1332,17 +1419,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             return format!(
                 "{}.{}().map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{{:?}}\", e)))?",
                 call.target,
-                to_snake(&call.method)
+                method
             );
         }
         // Unknown method on local — clone args to avoid move issues.
         // Collection predicate methods need .iter() prefix in Rust.
         let iter_methods = ["any", "all", "find", "filter", "map", "for_each", "count", "flat_map"];
-        if iter_methods.contains(&method_snake.as_str()) {
+        if iter_methods.contains(&method.as_str()) {
             return format!(
                 "{}.iter().{}({})",
                 call.target,
-                method_snake,
+                method,
                 clone_args(&call.args, ctx)
             );
         }
@@ -1354,7 +1441,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         return format!(
             "{}.{}({}){}",
             call.target,
-            method_snake,
+            method,
             clone_args(&call.args, ctx),
             suffix
         );
@@ -1539,13 +1626,14 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
 pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
     match expr {
         Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
-            // Infer the type of the RHS
-            let inferred_type = infer_expr_type(rhs, ctx);
             let s = expr_to_rust(expr, ctx);
-            // Track as local for future lookups
-            ctx.locals.insert(name.clone());
-            if let Some(t) = inferred_type {
-                ctx.local_types.insert(name.clone(), t);
+            // Field assigns (`wt.name = x`) are not new locals.
+            if !name.contains('.') {
+                let inferred_type = infer_expr_type(rhs, ctx);
+                ctx.locals.insert(name.clone());
+                if let Some(t) = inferred_type {
+                    ctx.local_types.insert(name.clone(), t);
+                }
             }
             format!("    {};", s)
         }

@@ -492,24 +492,26 @@ fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Sol
         }
     };
     match veil_file {
-        veil_ir::VeilFile::Package(pkg)
-            if !pkg.adapts.is_empty() || !pkg.patches.is_empty() =>
-        {
-            match merge_package_or_exit(&pkg, file) {
-                Ok(sol) => (sol, registry),
-                Err(()) => std::process::exit(1),
-            }
-        }
-        veil_ir::VeilFile::Package(_pkg) => {
-            // Lower package → solution + inject declarations (same as parse_with_registry).
-            match veil_parser::parse_with_registry(&tokens, registry.clone()) {
-                Ok(sol) => (sol, registry),
-                Err(errors) => {
-                    eprintln!("Parse errors:");
-                    for err in &errors {
-                        eprintln!("  {}", err);
+        veil_ir::VeilFile::Package(mut pkg) => {
+            // Implicit adapt: `use X` + companion X.veil (hub siblings + [dependencies]).
+            let search = veil_ir::adapt_search_paths_for_file(file);
+            veil_ir::inject_implicit_adapts(&mut pkg, &search);
+            if !pkg.adapts.is_empty() || !pkg.patches.is_empty() {
+                match merge_package_or_exit(&pkg, file) {
+                    Ok(sol) => (sol, registry),
+                    Err(()) => std::process::exit(1),
+                }
+            } else {
+                // Lower package → solution + inject declarations (same as parse_with_registry).
+                match veil_parser::parse_with_registry(&tokens, registry.clone()) {
+                    Ok(sol) => (sol, registry),
+                    Err(errors) => {
+                        eprintln!("Parse errors:");
+                        for err in &errors {
+                            eprintln!("  {}", err);
+                        }
+                        std::process::exit(1);
                     }
-                    std::process::exit(1);
                 }
             }
         }
@@ -533,13 +535,16 @@ fn merge_package_or_exit(
     leaf: &veil_ir::Package,
     leaf_path: &std::path::Path,
 ) -> Result<veil_ir::Solution, ()> {
-    let search = veil_ir::default_adapt_search_paths(leaf_path, &[]);
+    // R20: hub siblings + veil.toml [dependencies] roots
+    let search = veil_ir::adapt_search_paths_for_file(leaf_path);
+    let project_root = veil_ir::find_project_root(leaf_path);
     // Unified use resolution: inject implicit adapts for uses with companion .veil.
     let mut leaf = leaf.clone();
     veil_ir::inject_implicit_adapts(&mut leaf, &search);
     let load = |name: &str| -> Result<veil_ir::Package, String> {
-        let path = veil_ir::find_package_source(name, &search)
-            .ok_or_else(|| format!("not found in {:?}", search))?;
+        let path = veil_ir::find_package_source(name, &search).ok_or_else(|| {
+            veil_ir::missing_package_hint(name, project_root.as_deref())
+        })?;
         let src = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let tokens = veil_parser::lex(&src);
         let reg = veil_ir::LayerRegistry::for_veil_file(&path)
@@ -562,14 +567,10 @@ fn merge_package_or_exit(
                     merged.chain.join(" → ")
                 );
             }
-            // Re-inject layer declarations on flattened IR via serialize → parse.
-            let registry = registry_for(leaf_path);
-            let emitted = veil_ir::serialize_package(&merged.package);
-            let tokens = veil_parser::lex(&emitted);
-            match veil_parser::parse_with_registry(&tokens, registry) {
-                Ok(s) => Ok(s),
-                Err(_) => Ok(veil_ir::package_as_solution(&merged.package)),
-            }
+            // Prefer package_as_solution so raw blocks (template/script/style)
+            // survive adapt flatten. serialize→parse drops raw surfaces and was
+            // emptying designkit components after `use designkit` merge.
+            Ok(veil_ir::package_as_solution(&merged.package))
         }
         Err(e) => {
             eprintln!("adapt error [{}]: {}", e.code, e.message);
@@ -1691,8 +1692,13 @@ fn main() {
                 }
                 veil_ir::ast::VeilFile::Package(pkg) => {
                     // ADP-010/011: adapt chain → flatten before codegen.
+                    // Also inject implicit adapts for `use X` + companion X.veil
+                    // (hub siblings + veil.toml [dependencies] — R20).
+                    let mut pkg = pkg.clone();
+                    let search = veil_ir::adapt_search_paths_for_file(&file);
+                    veil_ir::inject_implicit_adapts(&mut pkg, &search);
                     let sol = if !pkg.adapts.is_empty() || !pkg.patches.is_empty() {
-                        match merge_package_or_exit(pkg, &file) {
+                        match merge_package_or_exit(&pkg, &file) {
                             Ok(s) => s,
                             Err(()) => std::process::exit(1),
                         }
@@ -1718,7 +1724,7 @@ fn main() {
                             } else if sol.expose.is_some() {
                                 // API client from pre-merge package expose when no constructs
                                 let project =
-                                    veil_codegen::typescript::generate_api_client_from_package(pkg);
+                                    veil_codegen::typescript::generate_api_client_from_package(&pkg);
                                 project
                                     .files
                                     .into_iter()

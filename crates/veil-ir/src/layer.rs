@@ -263,6 +263,47 @@ pub struct ConstructorPolicy {
     pub type_defaults: Vec<(String, String)>,
 }
 
+/// UI-framework reactivity emission forms (MISSION: framework APIs in layers).
+/// Declared by `svelte5.layer` (or similar) — engine never hardcodes `$state` / `$derived`.
+///
+/// Placeholders in templates:
+/// - `state_line`: `{name}` `{type}` `{default}`
+/// - `derived_line`: `{name}` `{expr}`
+/// - `effect_sync` / `effect_async`: `{name}` `{body}`
+/// - `props_call`: no placeholders (e.g. `$props()`)
+/// - `bindable` / `bindable_default`: `{default}` for the latter
+#[derive(Debug, Clone, Default)]
+pub struct ReactivityPolicy {
+    /// e.g. `$props()`
+    pub props_call: String,
+    /// e.g. `let {name}: {type} = $state({default});`
+    pub state_line: String,
+    /// e.g. `let {name} = $derived({expr});`
+    pub derived_line: String,
+    /// e.g. `$effect(() => { // {name}\n{body}\n  });`
+    pub effect_sync: String,
+    /// e.g. `$effect(() => { // {name}\n    void (async () => {\n{body}\n    })();\n  });`
+    pub effect_async: String,
+    /// e.g. `$bindable()`
+    pub bindable: String,
+    /// e.g. `$bindable({default})`
+    pub bindable_default: String,
+}
+
+impl ReactivityPolicy {
+    pub fn is_empty(&self) -> bool {
+        self.state_line.is_empty() && self.props_call.is_empty()
+    }
+
+    pub fn fill(template: &str, vars: &[(&str, &str)]) -> String {
+        let mut out = template.to_string();
+        for (k, v) in vars {
+            out = out.replace(&format!("{{{k}}}"), v);
+        }
+        out
+    }
+}
+
 impl ConstructorPolicy {
     /// Built-in Rust defaults — used only until a target layer overrides.
     /// Living here (layer policy) rather than in rust.rs (INV-002).
@@ -320,8 +361,13 @@ pub struct LayerRegistry {
     pub external_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     /// Smart-constructor / field-default policy (INV-002). Filled from target layers.
     pub constructor_policy: ConstructorPolicy,
+    /// UI framework reactivity forms (Svelte runes, etc.). From layers only.
+    pub reactivity_policy: ReactivityPolicy,
     /// Identity / FK inference policy (INV-006). Default off.
     pub identity_policy: IdentityPolicy,
+    /// Extra product roots from `veil.toml` `[dependencies]` (R20).
+    /// Each root may contain `layers/<name>.layer` or `<name>.layer`.
+    pub extra_layer_roots: Vec<std::path::PathBuf>,
 }
 
 impl Default for LayerRegistry {
@@ -336,7 +382,9 @@ impl Default for LayerRegistry {
             stubs: Vec::new(),
             external_resolver: None,
             constructor_policy: ConstructorPolicy::default(),
+            reactivity_policy: ReactivityPolicy::default(),
             identity_policy: IdentityPolicy::default(),
+            extra_layer_roots: Vec::new(),
         }
     }
 }
@@ -353,7 +401,9 @@ impl Clone for LayerRegistry {
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
             constructor_policy: self.constructor_policy.clone(),
+            reactivity_policy: self.reactivity_policy.clone(),
             identity_policy: self.identity_policy.clone(),
+            extra_layer_roots: self.extra_layer_roots.clone(),
         }
     }
 }
@@ -541,6 +591,9 @@ impl LayerRegistry {
         } else if name == "rust" && self.constructor_policy.auto_fields.is_empty() {
             self.constructor_policy = ConstructorPolicy::rust_defaults();
         }
+        if let Some(rp) = parse_reactivity_policy(&content) {
+            self.reactivity_policy = rp;
+        }
         if let Some(id_pol) = parse_identity_policy(&content) {
             self.identity_policy = id_pol;
         }
@@ -562,6 +615,13 @@ impl LayerRegistry {
             return Ok(content);
         }
 
+        // 1c. Declared product deps (veil.toml [dependencies]) — R20
+        for root in &self.extra_layer_roots {
+            if let Some(content) = Self::load_layer_from_product_root(name, root) {
+                return Ok(content);
+            }
+        }
+
         // 2. System layers directory
         if let Some(content) = Self::load_system_layer(name) {
             return Ok(content);
@@ -574,13 +634,36 @@ impl LayerRegistry {
             }
         }
 
+        let dep_hint = if self.extra_layer_roots.is_empty() {
+            format!(
+                " (no [dependencies] roots — declare e.g. {name} = {{ project = \"…\" }} in veil.toml)"
+            )
+        } else {
+            format!(
+                " (also searched {} dependency root(s))",
+                self.extra_layer_roots.len()
+            )
+        };
         Err(format!(
-            "layer '{}' not found (searched: {}, ancestors/layers, system layers)",
-            name, local_dir.display()
+            "layer '{}' not found (searched: {}, ancestors/layers, system layers){}",
+            name,
+            local_dir.display(),
+            dep_hint
         ))
     }
 
+    /// Load primary layer for `use name` from a product root (R21 package entry).
+    fn load_layer_from_product_root(name: &str, root: &Path) -> Option<String> {
+        if let Some(p) = crate::deps::layer_source_in_root(root, name) {
+            return std::fs::read_to_string(p).ok();
+        }
+        None
+    }
+
     /// Search `dir`, then each ancestor, for `layers/<name>.layer`.
+    /// Also checks **sibling project** folders under a projects hub
+    /// (e.g. `veil-projects/dlx-designkit/layers/designkit.layer` when the
+    /// leaf package lives in `veil-projects/wear_test/`).
     fn load_layer_walking_ancestors(name: &str, dir: &Path) -> Option<String> {
         let mut cur = Some(dir);
         while let Some(d) = cur {
@@ -593,6 +676,27 @@ impl LayerRegistry {
             let sibling = d.join(format!("{}.layer", name));
             if sibling.exists() {
                 return std::fs::read_to_string(&sibling).ok();
+            }
+            // Projects hub: sibling product dirs (each may own layers/)
+            if let Ok(entries) = std::fs::read_dir(d) {
+                let mut kids: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                kids.sort_by_key(|e| e.file_name());
+                for ent in kids {
+                    let p = ent.path();
+                    if !p.is_dir() {
+                        continue;
+                    }
+                    // Skip hidden / common non-product dirs
+                    let fname = ent.file_name();
+                    let name_s = fname.to_string_lossy();
+                    if name_s.starts_with('.') || name_s == "node_modules" || name_s == "target" {
+                        continue;
+                    }
+                    // R21: package entry main.layer / named layer
+                    if let Some(s) = Self::load_layer_from_product_root(name, &p) {
+                        return Some(s);
+                    }
+                }
             }
             cur = d.parent();
         }
@@ -658,6 +762,10 @@ impl LayerRegistry {
             // rust.layer documents policy; apply canonical Rust defaults.
             self.constructor_policy = ConstructorPolicy::rust_defaults();
         }
+        // Framework reactivity (Svelte runes, etc.) — never hardcoded in backends.
+        if let Some(rp) = parse_reactivity_policy(content) {
+            self.reactivity_policy = rp;
+        }
         // INV-006: identity / FK policy (ddd opts in; default is off).
         if let Some(id_pol) = parse_identity_policy(content) {
             self.identity_policy = id_pol;
@@ -669,6 +777,8 @@ impl LayerRegistry {
     /// file references via `use` lines. Layer resolution is transitive.
     pub fn for_veil_file(veil_path: &Path) -> Result<Self, String> {
         let mut reg = LayerRegistry::builtin();
+        // R20: product deps from veil.toml feed layer search roots
+        reg.extra_layer_roots = crate::deps::resolve_dependency_roots_for(veil_path);
         let dir = veil_path.parent().unwrap_or(Path::new("."));
         let content = std::fs::read_to_string(veil_path)
             .map_err(|e| format!("cannot read {}: {}", veil_path.display(), e))?;
@@ -2099,6 +2209,118 @@ pub fn shape_to_node_kind(shape: Shape) -> &'static str {
         Shape::Impl => "Implementation",
         Shape::Fn => "Flow",
         Shape::Group => "Group",
+    }
+}
+
+/// Parse UI-framework reactivity emission forms from a layer (e.g. svelte5):
+/// ```text
+/// reactivity_policy
+///   props_call $props()
+///   state_line let {name}: {type} = $state({default});
+///   derived_line let {name} = $derived({expr});
+///   effect_sync $effect(() => { // {name}
+/// {body}
+///   });
+///   bindable $bindable()
+///   bindable_default $bindable({default})
+/// ```
+pub fn parse_reactivity_policy(content: &str) -> Option<ReactivityPolicy> {
+    let mut in_block = false;
+    let mut pol = ReactivityPolicy::default();
+    let mut found = false;
+    let mut multiline_key: Option<String> = None;
+    let mut multiline_buf = String::new();
+
+    let keys = [
+        "props_call",
+        "state_line",
+        "derived_line",
+        "effect_sync",
+        "effect_async",
+        "bindable",
+        "bindable_default",
+    ];
+
+    let flush = |pol: &mut ReactivityPolicy, key: &str, val: String| {
+        let v = val.trim_end().to_string();
+        match key {
+            "props_call" => pol.props_call = v,
+            "state_line" => pol.state_line = v,
+            "derived_line" => pol.derived_line = v,
+            "effect_sync" => pol.effect_sync = v,
+            "effect_async" => pol.effect_async = v,
+            "bindable" => pol.bindable = v,
+            "bindable_default" => pol.bindable_default = v,
+            _ => {}
+        }
+    };
+
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            if multiline_key.is_some() && in_block {
+                multiline_buf.push('\n');
+            }
+            continue;
+        }
+        if t == "reactivity_policy" {
+            in_block = true;
+            found = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        // Leave block on de-dent to a non-policy top-level line
+        if !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && !keys.iter().any(|k| t.starts_with(k))
+            && multiline_key.is_none()
+        {
+            break;
+        }
+
+        // Continuation of a multi-line value (effect bodies)
+        if let Some(ref key) = multiline_key {
+            let is_new_key = keys.iter().any(|k| t.starts_with(&format!("{k} ")));
+            if is_new_key {
+                flush(&mut pol, key, std::mem::take(&mut multiline_buf));
+                multiline_key = None;
+            } else {
+                if !multiline_buf.is_empty() {
+                    multiline_buf.push('\n');
+                }
+                // Preserve relative indent inside the policy block (strip one level)
+                let stripped = line
+                    .strip_prefix("    ")
+                    .or_else(|| line.strip_prefix("\t"))
+                    .unwrap_or(line);
+                multiline_buf.push_str(stripped);
+                continue;
+            }
+        }
+
+        for k in keys {
+            let prefix = format!("{k} ");
+            if let Some(rest) = t.strip_prefix(&prefix) {
+                if k.starts_with("effect_") {
+                    multiline_key = Some(k.to_string());
+                    multiline_buf = rest.to_string();
+                } else {
+                    flush(&mut pol, k, rest.to_string());
+                }
+                break;
+            }
+        }
+    }
+    if let Some(key) = multiline_key {
+        flush(&mut pol, &key, multiline_buf);
+    }
+
+    if found {
+        Some(pol)
+    } else {
+        None
     }
 }
 

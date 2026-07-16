@@ -484,6 +484,37 @@ Type constructors:
 
 Any other capitalized name is a user/domain type and passes through by name.
 
+### Generics, type aliases, and monomorphized adapters
+
+```veil
+# Generic port + generic adapter with real VEIL method bodies
+trait EntityRepo<T>
+  find!(id: Id) -> Opt<T>
+  save!(entity: T)
+  delete!(id: Id)
+
+adapter DynamoJsonRepo<T> for EntityRepo<T>
+  @field(client: Client)
+  @env(DYNAMO_TABLE)
+  impl find(id)
+    # … VEIL body; T is a type parameter
+    entity = serde_json.from_str(payload)
+    ret entity
+  # …
+
+# Product monomorphization for DI
+type WearTestRepo = EntityRepo<WearTest>
+
+# Empty monomorphized adapter: codegen copies VEIL bodies from DynamoJsonRepo<T>
+# substituting T → WearTest (works for any generic class, not Dynamo-specific).
+adapter DynamoWearTestRepo for EntityRepo<WearTest>
+  @field(client: Client)
+  @env(DYNAMO_TABLE)
+```
+
+Codegen does **not** invent SDK-specific method bodies. It only substitutes type
+parameters and lowers authored VEIL.
+
 > The `!` result marker is what makes a type fallible; `Res` is the
 > conventional name written before it (`Res!` / `Res!<T>`). Mechanically the
 > parser treats any `Name!` as a unit result and `Name!<T>` as a result

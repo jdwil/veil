@@ -490,6 +490,10 @@ fn gen_local_harness_main(
             }
         }
         for ad in adapters {
+            // Skip pure generic templates (adapter Foo<T> for Trait<T>).
+            if is_pure_generic_adapter_template(ad) {
+                continue;
+            }
             let target = ad.target.as_deref().unwrap_or("Send");
             // Check if adapter has @env fields to populate from environment
             let env_ann = ad.annotations.iter().find(|a| a.name == "env");
@@ -538,15 +542,9 @@ fn gen_local_harness_main(
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
             });
-            if body_uses_client && !has_explicit_client_field {
-                let has_dynamo = ad.annotations.iter().any(|a| {
-                    a.name == "env"
-                        && a.args.iter().any(|arg| arg.contains("DYNAMO") || arg.contains("DDB"))
-                });
-                if has_dynamo {
-                    fields_init.push_str(
-                        "        client: aws_sdk_dynamodb::Client::new(&aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await),\n"
-                    );
+            if body_uses_client && !has_explicit_client_field && !fields_init.contains("client:") {
+                if let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
+                    fields_init.push_str(&format!("        client: {let_name}.clone(),\n"));
                 }
             } else if !ad.fields.is_empty() {
                 for f in &ad.fields {
@@ -557,15 +555,16 @@ fn gen_local_harness_main(
                     ));
                 }
             }
+            let dyn_ty = adapter_dyn_type(sol, ad);
             if fields_init.is_empty() {
                 out.push_str(&format!(
-                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name}{{}});\n",
+                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({name}{{}});\n",
                     sn = to_snake(&ad.name),
                     name = ad.name,
                 ));
             } else {
                 out.push_str(&format!(
-                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name} {{\n{fields_init}    }});\n",
+                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({name} {{\n{fields_init}    }});\n",
                     sn = to_snake(&ad.name),
                     name = ad.name,
                 ));
@@ -578,10 +577,13 @@ fn gen_local_harness_main(
 
         out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
         for ad in adapters {
+            if is_pure_generic_adapter_template(ad) {
+                continue;
+            }
             if let Some(target) = &ad.target {
+                let field = adapter_deps_field_name(sol, ad, target);
                 out.push_str(&format!(
                     "        {field}: {sn}_inst.clone(),\n",
-                    field = to_snake(target),
                     sn = to_snake(&ad.name),
                 ));
             }
@@ -706,19 +708,8 @@ fn gen_local_harness_main(
                         ));
                     }
                 } else if needs_body {
-                    // Extract from JSON body (POST/PUT)
-                    let extract = match rust_type.as_str() {
-                        "Uuid" => format!(
-                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
-                        ),
-                        "String" => format!(
-                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
-                        ),
-                        _ => format!(
-                            "    let {field} = serde_json::from_value(body.get(\"{field}\").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
-                        ),
-                    };
-                    out.push_str(&extract);
+                    // Extract from JSON body (POST/PUT) — HTML dates + empty optionals
+                    out.push_str(&harness_body_field_extract(&field, &rust_type));
                 }
                 args.push(field);
             }
@@ -736,6 +727,7 @@ fn gen_local_harness_main(
         }
     }
 
+    out.push_str(harness_body_dt_helper());
     out
 }
 
@@ -1107,7 +1099,7 @@ uuid.workspace = true"#);
         ),
     });
 
-    files.push(gen_types(&contents, &crate_name, registry));
+    files.push(gen_types(&contents, &crate_name, registry, solution));
     files.push(gen_child_types(&contents, &crate_name));
     files.push(GeneratedFile {
         path: format!("crates/{}/src/domain/mod.rs", crate_name),
@@ -1116,21 +1108,49 @@ uuid.workspace = true"#);
 
     // For modules that reference siblings (orchestrators), re-export ports from the first sibling
     // instead of generating duplicate DomainError/Bus/etc.
-    files.push(gen_traits(&contents, &crate_name));
+    files.push(gen_traits(&contents, &crate_name, solution));
 
-    // Impls targeting traits defined in this module (from anywhere in the tree).
+    // Impls targeting traits defined in this module (from anywhere in the tree),
+    // or layer-provided generic ports (e.g. EntityRepo) implemented by product adapters.
     let trait_names: Vec<&str> = contents.traits.iter().map(|t| t.name.as_str()).collect();
+    let layer_trait_names: Vec<&str> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Construct(c) if c.shape == Shape::Trait && c.layer_provided => {
+                Some(c.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
     let impls_for_module: Vec<&Construct> = all_impls
         .iter()
         .filter(|i| {
-            i.target
-                .as_deref()
-                .map(|t| trait_names.contains(&t))
-                .unwrap_or(false)
+            i.target.as_deref().map(|t| {
+                trait_names.contains(&t) || layer_trait_names.contains(&t)
+            }).unwrap_or(false)
         })
         .copied()
         .collect();
-    files.push(gen_impls(&impls_for_module, &contents.traits, &crate_name, solution, registry));
+    // Merge layer-provided traits into the trait list for signature lookup.
+    let mut traits_for_impls: Vec<&Construct> = contents.traits.to_vec();
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            if c.shape == Shape::Trait
+                && c.layer_provided
+                && !traits_for_impls.iter().any(|t| t.name == c.name)
+            {
+                traits_for_impls.push(c);
+            }
+        }
+    }
+    files.push(gen_impls(
+        &impls_for_module,
+        &traits_for_impls,
+        &crate_name,
+        solution,
+        registry,
+    ));
 
     // Application: fn-shaped constructs in this module, plus top-level flows
     // (generated once, in the first module that has traits).
@@ -1252,7 +1272,12 @@ fn gen_manifest(
     }
 }
 
-fn gen_types(contents: &ModuleContents, crate_name: &str, registry: &LayerRegistry) -> GeneratedFile {
+fn gen_types(
+    contents: &ModuleContents,
+    crate_name: &str,
+    registry: &LayerRegistry,
+    solution: &Solution,
+) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
@@ -1301,9 +1326,35 @@ fn gen_types(contents: &ModuleContents, crate_name: &str, registry: &LayerRegist
         "Str", "Int", "F64", "Bool", "Bytes", "UUID", "Id", "DateTime", "Dt", "List", "Map", "Set", "Opt",
         "Res", "String", "Json",
     ];
+    // Type params (T, U) and type-alias names (WearTestRepo) are not domain stubs.
+    let mut skip_stubs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for t in &contents.traits {
+        for p in &t.type_params {
+            skip_stubs.insert(p.split(':').next().unwrap_or(p).trim().to_string());
+        }
+        skip_stubs.insert(t.name.clone());
+    }
+    for item in &solution.items {
+        match item {
+            TopLevelItem::TypeAlias { name, .. } => {
+                skip_stubs.insert(name.clone());
+            }
+            TopLevelItem::Construct(c) if c.shape == Shape::Trait => {
+                for p in &c.type_params {
+                    skip_stubs.insert(p.split(':').next().unwrap_or(p).trim().to_string());
+                }
+                skip_stubs.insert(c.name.clone());
+            }
+            _ => {}
+        }
+    }
     let undefined: Vec<String> = referenced
         .iter()
-        .filter(|t| !defined_types.contains(t) && !builtin.contains(&t.as_str()))
+        .filter(|t| {
+            !defined_types.contains(t)
+                && !builtin.contains(&t.as_str())
+                && !skip_stubs.contains(*t)
+        })
         .cloned()
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
@@ -2158,7 +2209,24 @@ futures = "0.3"
         if t.name == "AuthService" {
             has_auth = true;
         }
-        lib.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {}: Send + Sync {{\n", t.subkind, t.name, t.name));
+        let tp = generic_params_rust(&t.type_params);
+        let where_bounds = if t.type_params.is_empty() {
+            String::new()
+        } else {
+            let clauses: Vec<String> = t
+                .type_params
+                .iter()
+                .map(|p| {
+                    let name = p.split(':').next().unwrap_or(p).trim();
+                    format!("{name}: Send + Sync + 'static")
+                })
+                .collect();
+            format!("\nwhere\n    {}", clauses.join(",\n    "))
+        };
+        lib.push_str(&format!(
+            "/// {}: {}\n#[async_trait]\npub trait {}{}: Send + Sync{where_bounds} {{\n",
+            t.subkind, t.name, t.name, tp
+        ));
         for method in &t.methods {
             let params = method
                 .params
@@ -2257,7 +2325,11 @@ futures = "0.3"
     files
 }
 
-fn gen_traits(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
+fn gen_traits(
+    contents: &ModuleContents,
+    crate_name: &str,
+    solution: &Solution,
+) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Trait definitions (async traits).\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
@@ -2270,7 +2342,25 @@ fn gen_traits(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
     out.push_str("pub use veil_shared::*;\n\n");
 
     for t in &contents.traits {
-        out.push_str(&format!("/// {}: {}\n#[async_trait]\npub trait {}{} {{\n", t.subkind, t.name, t.name, generic_params_rust(&t.type_params)));
+        let tp = generic_params_rust(&t.type_params);
+        // Generic ports get Send+Sync on type params used as entity payloads.
+        let where_bounds = if t.type_params.is_empty() {
+            String::new()
+        } else {
+            let clauses: Vec<String> = t
+                .type_params
+                .iter()
+                .map(|p| {
+                    let name = p.split(':').next().unwrap_or(p).trim();
+                    format!("{name}: Send + Sync + 'static")
+                })
+                .collect();
+            format!("\nwhere\n    {}", clauses.join(",\n    "))
+        };
+        out.push_str(&format!(
+            "/// {}: {}\n#[async_trait]\npub trait {}{}: Send + Sync{where_bounds} {{\n",
+            t.subkind, t.name, t.name, tp
+        ));
         for method in &t.methods {
             let params = method
                 .params
@@ -2282,13 +2372,40 @@ fn gen_traits(contents: &ModuleContents, crate_name: &str) -> GeneratedFile {
                 Some(t) => format!(" -> {}", type_to_rust(t)),
                 None => String::new(),
             };
+            let sep = if params.is_empty() { "" } else { ", " };
             out.push_str(&format!(
-                "    async fn {}(&self, {}){ret};\n",
+                "    async fn {}(&self{sep}{}){ret};\n",
                 to_snake(&method.name),
                 params
             ));
         }
         out.push_str("}\n\n");
+    }
+
+    // Type aliases: `type WearTestRepo = EntityRepo<WearTest>`
+    // → marker trait for DI (`Arc<dyn WearTestRepo>`) over monomorphized EntityRepo.
+    for item in &solution.items {
+        if let TopLevelItem::TypeAlias { name, target } = item {
+            match target {
+                TypeExpr::Generic(base, args) => {
+                    let args_rust: Vec<String> = args.iter().map(type_to_rust).collect();
+                    let base_app = format!("{}<{}>", base, args_rust.join(", "));
+                    out.push_str(&format!(
+                        "/// Type alias: {name} = {base_app}\n\
+                         pub trait {name}: {base_app} {{}}\n\
+                         impl<__T: {base_app}> {name} for __T {{}}\n\n"
+                    ));
+                }
+                TypeExpr::Named(base) => {
+                    out.push_str(&format!(
+                        "/// Type alias: {name} = {base}\n\
+                         pub trait {name}: {base} {{}}\n\
+                         impl<__T: {base}> {name} for __T {{}}\n\n"
+                    ));
+                }
+                _ => {}
+            }
+        }
     }
 
     GeneratedFile {
@@ -2356,10 +2473,43 @@ fn gen_impls(
         out.push_str("// No implementations target traits in this module.\n");
     } else {
         for c in impls {
+            // Pure generic templates (`adapter Foo<T> for Trait<T>`) are monomorphization
+            // sources only — VEIL bodies live there; concrete adapters get T substituted.
+            // Do NOT emit Rust for the template (avoids entity.id on unconstrained T).
+            if is_pure_generic_adapter_template(c) {
+                continue;
+            }
             let target = c.target.as_deref().unwrap_or("?");
+            let adapter_tp = generic_params_rust(&c.type_params);
+            let target_args_rust: Vec<String> = c
+                .target_type_args
+                .iter()
+                .map(type_to_rust)
+                .collect();
+            let target_impl = if target_args_rust.is_empty() {
+                // Generic adapter: DynamoJsonRepo<T> for EntityRepo<T>
+                if !c.type_params.is_empty() {
+                    let tp_names: Vec<&str> = c
+                        .type_params
+                        .iter()
+                        .map(|p| p.split(':').next().unwrap_or(p).trim())
+                        .collect();
+                    format!("{}<{}>", target, tp_names.join(", "))
+                } else {
+                    target.to_string()
+                }
+            } else {
+                format!("{}<{}>", target, target_args_rust.join(", "))
+            };
+            // Generic template adapter (same target trait, has type params + VEIL bodies).
+            // Used to fill empty monomorphized adapters: DynamoWearTestRepo for EntityRepo<WearTest>
+            // copies bodies from DynamoJsonRepo<T> for EntityRepo<T>.
+            let generic_template =
+                find_generic_adapter_template(c, impls);
+
             out.push_str(&format!(
-                "/// {}: {} (implements {})\npub struct {} {{\n",
-                c.subkind, c.name, target, c.name
+                "/// {}: {} (implements {})\npub struct {}{} {{\n",
+                c.subkind, c.name, target_impl, c.name, adapter_tp
             ));
             for ann in &c.annotations {
                 if ann.name == "env" {
@@ -2415,57 +2565,153 @@ fn gen_impls(
             });
             let body_uses_client = c.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
-            });
+            }) || generic_template
+                .map(|t| {
+                    t.impls
+                        .iter()
+                        .any(|m| m.body.iter().any(|e| expr_mentions_self_field(e, "client")))
+                })
+                .unwrap_or(false);
+            // Client field: only when @field says so, or bodies (own/template) use self.client.
+            // Do NOT hardcode Dynamo/S3 — type comes from @field(client: Client) when present.
             if body_uses_client && !has_explicit_client_field {
-                // Determine which SDK client to use from env annotations
-                let has_dynamo = c.annotations.iter().any(|a| {
-                    a.name == "env"
-                        && a.args
-                            .iter()
-                            .any(|arg| arg.contains("DYNAMO") || arg.contains("DDB"))
-                });
-                let has_s3 = c.annotations.iter().any(|a| {
-                    a.name == "env"
-                        && a.args.iter().any(|arg| arg.contains("S3"))
-                });
-                if has_dynamo {
-                    out.push_str("    pub client: aws_sdk_dynamodb::Client,\n");
-                } else if has_s3 {
-                    out.push_str("    pub client: aws_sdk_s3::Client,\n");
+                // Fall back only when body uses client without @field (legacy). Prefer stub Client.
+                if let Some((crate_name, path)) = stub_type_path(registry, "Client") {
+                    out.push_str(&format!("    pub client: {crate_name}::{path},\n"));
                 }
-                // When neither DYNAMO nor S3 is in @env, trust @field or stub resolution
-                // to provide the correct type — do not hardcode an SDK client.
+            }
+            // PhantomData for generic adapters
+            if !c.type_params.is_empty() {
+                out.push_str("    pub _marker: std::marker::PhantomData<");
+                if c.type_params.len() == 1 {
+                    let n = c.type_params[0].split(':').next().unwrap_or(&c.type_params[0]).trim();
+                    out.push_str(n);
+                } else {
+                    let names: Vec<&str> = c
+                        .type_params
+                        .iter()
+                        .map(|p| p.split(':').next().unwrap_or(p).trim())
+                        .collect();
+                    out.push_str(&format!("({})", names.join(", ")));
+                }
+                out.push_str(">,\n");
             }
             out.push_str("}\n\n");
 
             // Look up the target trait to recover real method signatures
             // (the impl only carries bare parameter names).
-            let target_trait = traits.iter().find(|t| t.name == target);
+            let target_trait = traits.iter().find(|t| t.name == target).copied();
 
-            out.push_str(&format!("#[async_trait]\nimpl {} for {} {{\n", target, c.name));
+            let impl_generics = if c.type_params.is_empty() {
+                String::new()
+            } else {
+                // Bound type params for serde document store.
+                let parts: Vec<String> = c
+                    .type_params
+                    .iter()
+                    .map(|p| {
+                        let n = p.split(':').next().unwrap_or(p).trim();
+                        if p.contains(':') {
+                            p.clone()
+                        } else {
+                            format!(
+                                "{n}: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static"
+                            )
+                        }
+                    })
+                    .collect();
+                format!("<{}>", parts.join(", "))
+            };
 
-            for mimpl in &c.impls {
+            out.push_str(&format!(
+                "#[async_trait]\nimpl{impl_generics} {target_impl} for {}{} {{\n",
+                c.name,
+                if c.type_params.is_empty() {
+                    String::new()
+                } else {
+                    let names: Vec<&str> = c
+                        .type_params
+                        .iter()
+                        .map(|p| p.split(':').next().unwrap_or(p).trim())
+                        .collect();
+                    format!("<{}>", names.join(", "))
+                }
+            ));
+
+            // Effective method list: authored impls, else monomorphized from generic template.
+            let effective_impls: Vec<MethodImpl> = {
+                let mut by_name: std::collections::BTreeMap<String, MethodImpl> =
+                    std::collections::BTreeMap::new();
+                if let Some(tmpl) = generic_template {
+                    for m in &tmpl.impls {
+                        if !m.body.is_empty() {
+                            by_name.insert(m.method_name.clone(), m.clone());
+                        }
+                    }
+                }
+                for m in &c.impls {
+                    if !m.body.is_empty() {
+                        by_name.insert(m.method_name.clone(), m.clone());
+                    } else if !by_name.contains_key(&m.method_name) {
+                        // Keep empty entry so we still emit a method (todo) if no template.
+                        by_name.insert(m.method_name.clone(), m.clone());
+                    }
+                }
+                // If monomorphized with no authored methods, still take all template methods.
+                if c.impls.is_empty() && generic_template.is_some() {
+                    // already filled from template
+                }
+                by_name.into_values().collect()
+            };
+
+            for mimpl in &effective_impls {
                 // Find the trait method to get typed params + return type.
                 let trait_method = target_trait
-                    .and_then(|t| t.methods.iter().find(|m| m.name == mimpl.method_name));
+                    .and_then(|t| t.methods.iter().find(|m| m.name == mimpl.method_name
+                        || to_snake(&m.name) == to_snake(&mimpl.method_name)));
 
-                // Build the signature: prefer the trait's typed params, zipping
-                // the impl's bare names by position; fall back to the impl names.
-                let (sig_params, ret_rust) = match trait_method {
-                    Some(m) => {
-                        let params = m.params.iter()
+                // Build the signature: prefer the trait's typed params (monomorphized),
+                // zipping the impl's bare names by position; fall back to the impl names.
+                let (sig_params, ret_rust) = match (trait_method, target_trait) {
+                    (Some(m), Some(t)) => {
+                        let params = m
+                            .params
+                            .iter()
+                            .map(|p| {
+                                let ty = monomorphize_type(&p.type_expr, c, t);
+                                format!("{}: {}", to_snake(&p.name), type_to_rust(&ty))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|rt| type_to_rust(&monomorphize_type(rt, c, t)))
+                            .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                        (params, ret)
+                    }
+                    (Some(m), None) => {
+                        let params = m
+                            .params
+                            .iter()
                             .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
-                            .collect::<Vec<_>>().join(", ");
-                        let ret = m.return_type.as_ref()
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let ret = m
+                            .return_type
+                            .as_ref()
                             .map(type_to_rust)
                             .unwrap_or_else(|| "Result<(), DomainError>".to_string());
                         (params, ret)
                     }
-                    None => {
+                    _ => {
                         // No trait match — use the impl's bare names, untyped.
-                        let params = mimpl.params.iter()
+                        let params = mimpl
+                            .params
+                            .iter()
                             .map(|p| format!("{}: ()", to_snake(p)))
-                            .collect::<Vec<_>>().join(", ");
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         (params, "Result<(), DomainError>".to_string())
                     }
                 };
@@ -2535,6 +2781,7 @@ fn gen_impls(
                     .body
                     .iter()
                     .any(|e| expr_refs_stub_type(e, &ctx.stub_type_crate));
+
                 // Only short-circuit empty bodies that *would* be cloud SDKs with
                 // no authored lines. Non-empty bodies always try expr_to_rust —
                 // that is the real adapter path (GEN-002 / RT cloud).
@@ -2554,10 +2801,23 @@ fn gen_impls(
                 } else {
                     for (i, expr) in mimpl.body.iter().enumerate() {
                         let is_last = i == mimpl.body.len() - 1;
-                        let rust_expr = expr_to_rust(expr, &ctx);
+                        // Monomorphize type names in expressions (T → WearTest) when
+                        // this body was copied from a generic template.
+                        let expr = if !c.target_type_args.is_empty() {
+                            if let Some(t) = target_trait {
+                                monomorphize_expr(expr, c, t)
+                            } else {
+                                expr.clone()
+                            }
+                        } else {
+                            expr.clone()
+                        };
+                        let rust_expr = expr_to_rust(&expr, &ctx);
                         // Track local assignments AFTER translation so first use gets 'let mut'
-                        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = expr {
-                            ctx.locals.insert(name.clone());
+                        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = &expr {
+                            if !name.contains('.') {
+                                ctx.locals.insert(name.clone());
+                            }
                         }
                         if is_last {
                             // GEN-002: lower authored adapter bodies. If the last
@@ -2595,19 +2855,31 @@ fn gen_impls(
                 out.push_str("    }\n\n");
             }
 
-            // A trait impl must cover ALL trait methods. Emit default stubs for
-            // any method the adapter did not implement, so the code compiles.
+            // A trait impl must cover ALL trait methods. Emit todo for any still missing.
             if let Some(t) = target_trait {
-                let implemented: std::collections::HashSet<&str> =
-                    c.impls.iter().map(|m| m.method_name.as_str()).collect();
+                let implemented: std::collections::HashSet<String> = effective_impls
+                    .iter()
+                    .map(|m| to_snake(&m.method_name))
+                    .collect();
                 for m in &t.methods {
-                    if implemented.contains(m.name.as_str()) {
+                    if implemented.contains(&to_snake(&m.name)) {
                         continue;
                     }
-                    let params = m.params.iter()
-                        .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
-                        .collect::<Vec<_>>().join(", ");
-                    let ret = m.return_type.as_ref()
+                    let params = m
+                        .params
+                        .iter()
+                        .map(|p| {
+                            let ty = monomorphize_type(&p.type_expr, c, t);
+                            format!("{}: {}", to_snake(&p.name), type_to_rust(&ty))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret_te = m
+                        .return_type
+                        .as_ref()
+                        .map(|rt| monomorphize_type(rt, c, t));
+                    let ret = ret_te
+                        .as_ref()
                         .map(type_to_rust)
                         .unwrap_or_else(|| "Result<(), DomainError>".to_string());
                     out.push_str(&format!(
@@ -2628,6 +2900,254 @@ fn gen_impls(
     GeneratedFile {
         path: format!("crates/{}/src/adapters/mod.rs", crate_name),
         content: out,
+    }
+}
+
+/// Pure generic adapter template: `adapter Foo<T> for Trait<T>` (or unbound
+/// `adapter Foo<T> for Trait`). Used only as monomorphization source in VEIL;
+/// not emitted as Rust.
+fn is_pure_generic_adapter_template(c: &Construct) -> bool {
+    if c.type_params.is_empty() {
+        return false;
+    }
+    let tp_names: std::collections::HashSet<&str> = c
+        .type_params
+        .iter()
+        .map(|p| p.split(':').next().unwrap_or(p).trim())
+        .collect();
+    if c.target_type_args.is_empty() {
+        return true;
+    }
+    // EntityRepo<T> — all type args are type parameters, not concrete types.
+    c.target_type_args.iter().all(|a| match a {
+        TypeExpr::Named(n) => tp_names.contains(n.as_str()),
+        _ => false,
+    })
+}
+
+/// Find a generic adapter template to monomorphize into `adapter`.
+///
+/// Matches: same target trait name, pure generic template with at least one
+/// non-empty method body. Used for `adapter Foo for EntityRepo<WearTest>`
+/// filling from `adapter Bar<T> for EntityRepo<T>`.
+fn find_generic_adapter_template<'a>(
+    adapter: &Construct,
+    all: &[&'a Construct],
+) -> Option<&'a Construct> {
+    if adapter.target_type_args.is_empty() {
+        return None;
+    }
+    // Only monomorphize into concrete adapters (args are not just type params).
+    if is_pure_generic_adapter_template(adapter) {
+        return None;
+    }
+    let target = adapter.target.as_deref()?;
+    all.iter().copied().find(|other| {
+        other.name != adapter.name
+            && other.target.as_deref() == Some(target)
+            && is_pure_generic_adapter_template(other)
+            && other.impls.iter().any(|m| !m.body.is_empty())
+    })
+}
+
+/// Replace trait type params with monomorphized args from the adapter.
+/// Works for any generic trait/adapter pair — no domain knowledge.
+fn monomorphize_type(ty: &TypeExpr, adapter: &Construct, trait_: &Construct) -> TypeExpr {
+    match ty {
+        TypeExpr::Named(n) => {
+            if let Some(idx) = trait_.type_params.iter().position(|p| {
+                p.split(':').next().unwrap_or(p).trim() == n
+            }) {
+                if let Some(arg) = adapter.target_type_args.get(idx) {
+                    return arg.clone();
+                }
+                if let Some(p) = adapter.type_params.get(idx) {
+                    let name = p.split(':').next().unwrap_or(p).trim();
+                    return TypeExpr::Named(name.to_string());
+                }
+            }
+            // Also map adapter's own type params when monomorphizing template bodies
+            // that mention T from the generic adapter (same index as target_type_args).
+            if let Some(idx) = adapter.type_params.iter().position(|p| {
+                p.split(':').next().unwrap_or(p).trim() == n
+            }) {
+                if let Some(arg) = adapter.target_type_args.get(idx) {
+                    return arg.clone();
+                }
+            }
+            TypeExpr::Named(n.clone())
+        }
+        TypeExpr::Optional(i) => {
+            TypeExpr::Optional(Box::new(monomorphize_type(i, adapter, trait_)))
+        }
+        TypeExpr::List(i) => TypeExpr::List(Box::new(monomorphize_type(i, adapter, trait_))),
+        TypeExpr::Result(Some(i)) => {
+            TypeExpr::Result(Some(Box::new(monomorphize_type(i, adapter, trait_))))
+        }
+        TypeExpr::Generic(name, args) => TypeExpr::Generic(
+            name.clone(),
+            args.iter()
+                .map(|a| monomorphize_type(a, adapter, trait_))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Substitute type-parameter names in expression AST when monomorphizing
+/// generic template bodies (type ascriptions / idents mentioning `T`).
+fn monomorphize_expr(expr: &Expr, adapter: &Construct, trait_: &Construct) -> Expr {
+    let mut renames: std::collections::HashMap<String, TypeExpr> =
+        std::collections::HashMap::new();
+    for (idx, p) in trait_.type_params.iter().enumerate() {
+        let pname = p.split(':').next().unwrap_or(p).trim().to_string();
+        if let Some(arg) = adapter.target_type_args.get(idx) {
+            renames.insert(pname, arg.clone());
+        }
+    }
+    if renames.is_empty() {
+        return expr.clone();
+    }
+    monomorphize_expr_with(&renames, expr)
+}
+
+fn rename_type_expr(
+    ty: &TypeExpr,
+    renames: &std::collections::HashMap<String, TypeExpr>,
+) -> TypeExpr {
+    match ty {
+        TypeExpr::Named(n) => renames.get(n).cloned().unwrap_or_else(|| ty.clone()),
+        TypeExpr::Optional(i) => TypeExpr::Optional(Box::new(rename_type_expr(i, renames))),
+        TypeExpr::List(i) => TypeExpr::List(Box::new(rename_type_expr(i, renames))),
+        TypeExpr::Result(Some(i)) => {
+            TypeExpr::Result(Some(Box::new(rename_type_expr(i, renames))))
+        }
+        TypeExpr::Generic(name, args) => TypeExpr::Generic(
+            name.clone(),
+            args.iter().map(|a| rename_type_expr(a, renames)).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn monomorphize_expr_with(
+    renames: &std::collections::HashMap<String, TypeExpr>,
+    expr: &Expr,
+) -> Expr {
+    use Expr::*;
+    match expr {
+        Ident(name) => {
+            if let Some(TypeExpr::Named(rep)) = renames.get(name) {
+                Ident(rep.clone())
+            } else {
+                Ident(name.clone())
+            }
+        }
+        Assign(n, e, ty) => Assign(
+            n.clone(),
+            Box::new(monomorphize_expr_with(renames, e)),
+            ty.as_ref().map(|t| rename_type_expr(t, renames)),
+        ),
+        MutAssign(n, e, ty) => MutAssign(
+            n.clone(),
+            Box::new(monomorphize_expr_with(renames, e)),
+            ty.as_ref().map(|t| rename_type_expr(t, renames)),
+        ),
+        Call(c) => {
+            let mut c = c.clone();
+            c.args = c
+                .args
+                .iter()
+                .map(|a| monomorphize_expr_with(renames, a))
+                .collect();
+            if let Some(recv) = c.receiver.take() {
+                c.receiver = Some(Box::new(monomorphize_expr_with(renames, &recv)));
+            }
+            Call(c)
+        }
+        BinaryOp(b) => {
+            let mut b = b.clone();
+            b.left = Box::new(monomorphize_expr_with(renames, &b.left));
+            b.right = Box::new(monomorphize_expr_with(renames, &b.right));
+            BinaryOp(b)
+        }
+        UnaryOp(u) => {
+            let mut u = u.clone();
+            u.expr = Box::new(monomorphize_expr_with(renames, &u.expr));
+            UnaryOp(u)
+        }
+        FieldAccess(e, f) => FieldAccess(Box::new(monomorphize_expr_with(renames, e)), f.clone()),
+        Index(e, i) => Index(
+            Box::new(monomorphize_expr_with(renames, e)),
+            Box::new(monomorphize_expr_with(renames, i)),
+        ),
+        Return(e) => Return(Box::new(monomorphize_expr_with(renames, e))),
+        Match(e, arms) => Match(
+            Box::new(monomorphize_expr_with(renames, e)),
+            arms.iter()
+                .map(|arm| {
+                    let mut arm = arm.clone();
+                    arm.body = arm
+                        .body
+                        .iter()
+                        .map(|x| monomorphize_expr_with(renames, x))
+                        .collect();
+                    if let Some(g) = arm.guard.take() {
+                        arm.guard = Some(monomorphize_expr_with(renames, &g));
+                    }
+                    arm
+                })
+                .collect(),
+        ),
+        IfExpr(i) => {
+            let mut i = i.clone();
+            i.condition = Box::new(monomorphize_expr_with(renames, &i.condition));
+            i.then_body = i
+                .then_body
+                .iter()
+                .map(|x| monomorphize_expr_with(renames, x))
+                .collect();
+            if let Some(eb) = i.else_body.take() {
+                i.else_body = Some(
+                    eb.iter()
+                        .map(|x| monomorphize_expr_with(renames, x))
+                        .collect(),
+                );
+            }
+            IfExpr(i)
+        }
+        Action(a) => {
+            let mut a = a.clone();
+            a.args = a
+                .args
+                .iter()
+                .map(|x| monomorphize_expr_with(renames, x))
+                .collect();
+            a.named_args = a
+                .named_args
+                .iter()
+                .map(|(k, v)| (k.clone(), monomorphize_expr_with(renames, v)))
+                .collect();
+            if let Some(c) = a.condition.take() {
+                a.condition = Some(Box::new(monomorphize_expr_with(renames, &c)));
+            }
+            Action(a)
+        }
+        ForLoop {
+            binding,
+            index,
+            iterable,
+            body,
+        } => ForLoop {
+            binding: binding.clone(),
+            index: index.clone(),
+            iterable: Box::new(monomorphize_expr_with(renames, iterable)),
+            body: body
+                .iter()
+                .map(|x| monomorphize_expr_with(renames, x))
+                .collect(),
+        },
+        other => other.clone(),
     }
 }
 
@@ -2657,8 +3177,17 @@ fn build_name_to_shape(solution: &Solution, registry: &LayerRegistry) -> std::co
     }
     let mut map = HashMap::new();
     for item in &solution.items {
-        if let TopLevelItem::Construct(c) = item {
-            index(c, &mut map);
+        match item {
+            TopLevelItem::Construct(c) => index(c, &mut map),
+            // Type aliases to traits act as ports for call resolution.
+            TopLevelItem::TypeAlias { name, target } => {
+                // EntityRepo may be nested under a context; Generic aliases
+                // always resolve as Trait for DI (type WearTestRepo = EntityRepo<…>).
+                if matches!(target, TypeExpr::Generic(_, _) | TypeExpr::Named(_)) {
+                    map.insert(name.clone(), Shape::Trait);
+                }
+            }
+            _ => {}
         }
     }
     // Also include layer-defined constructs (from all loaded layers)
@@ -2884,12 +3413,14 @@ fn infer_flow_return_type(
         if let FlowStep::Step(s) = step {
             for expr in &s.body {
                 if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = expr {
-                    ctx.locals.insert(name.clone());
-                    if is_orchestrator {
-                        // Orchestrator locals are JSON Bus results.
-                        ctx.local_types.insert(name.clone(), "serde_json::Value".to_string());
-                    } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
-                        ctx.local_types.insert(name.clone(), t);
+                    if !name.contains('.') {
+                        ctx.locals.insert(name.clone());
+                        if is_orchestrator {
+                            // Orchestrator locals are JSON Bus results.
+                            ctx.local_types.insert(name.clone(), "serde_json::Value".to_string());
+                        } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
+                            ctx.local_types.insert(name.clone(), t);
+                        }
                     }
                 }
             }
@@ -3004,8 +3535,15 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         for field in inputs {
             if registry.field_is_dependency(field) {
                 // The type_expr of a dependency-role field is the trait name
-                if let TypeExpr::Named(type_name) = &field.type_expr {
-                    all_deps.insert(type_name.clone());
+                // (or a type alias like WearTestRepo / Generic EntityRepo<T>).
+                match &field.type_expr {
+                    TypeExpr::Named(type_name) => {
+                        all_deps.insert(type_name.clone());
+                    }
+                    TypeExpr::Generic(base, _) => {
+                        all_deps.insert(base.clone());
+                    }
+                    _ => {}
                 }
             }
         }
@@ -3203,7 +3741,9 @@ fn emit_runtime_delegated(
         if let FlowStep::Step(s) = step {
             for expr in &s.body {
                 if let Expr::Assign(n, _, _) | Expr::MutAssign(n, _, _) = expr {
-                    state_locals.insert(n.clone());
+                    if !n.contains('.') {
+                        state_locals.insert(n.clone());
+                    }
                 }
             }
         }
@@ -3348,6 +3888,55 @@ pub fn type_to_rust(ty: &TypeExpr) -> String {
     type_to_rust_impl(ty, &std::collections::HashSet::new())
 }
 
+/// REST body field extraction for dual-loop harness handlers.
+///
+/// Accepts HTML date inputs (`YYYY-MM-DD` → RFC3339 midnight UTC) and form empties
+/// (`""` → null) so browser `<input type="date">` and optional fields do not 400.
+fn harness_body_field_extract(field: &str, rust_type: &str) -> String {
+    match rust_type {
+        "Uuid" => format!(
+            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
+        ),
+        "String" => format!(
+            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
+        ),
+        "DateTime<Utc>" => format!(
+            "    let {field} = serde_json::from_value(veil_normalize_body_dt(body.get(\"{field}\").cloned().unwrap_or(Value::Null))).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+        ),
+        t if t.starts_with("Option<") && t.contains("DateTime") => format!(
+            "    let {field} = serde_json::from_value(veil_normalize_body_dt(body.get(\"{field}\").cloned().unwrap_or(Value::Null))).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+        ),
+        t if t.starts_with("Option<") => format!(
+            "    let {field} = {{\n        let __v = body.get(\"{field}\").cloned().unwrap_or(Value::Null);\n        let __v = if matches!(&__v, Value::String(s) if s.is_empty()) {{ Value::Null }} else {{ __v }};\n        serde_json::from_value(__v).map_err(|_| StatusCode::BAD_REQUEST)?\n    }};\n"
+        ),
+        _ => format!(
+            "    let {field} = serde_json::from_value(body.get(\"{field}\").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+        ),
+    }
+}
+
+/// Helper emitted into dual-loop `veil_bin` main.rs (no chrono dep required).
+fn harness_body_dt_helper() -> &'static str {
+    r#"
+/// HTML `<input type="date">` and form empties → JSON values chrono/serde accept.
+/// `""` → null; bare `YYYY-MM-DD` → `YYYY-MM-DDT00:00:00Z`.
+fn veil_normalize_body_dt(v: Value) -> Value {
+    match v {
+        Value::String(s) if s.is_empty() => Value::Null,
+        Value::String(s)
+            if s.len() == 10
+                && s.as_bytes().get(4) == Some(&b'-')
+                && s.as_bytes().get(7) == Some(&b'-')
+                && !s.contains('T') =>
+        {
+            Value::String(format!("{s}T00:00:00Z"))
+        }
+        other => other,
+    }
+}
+"#
+}
+
 /// Format generic type parameters: `<T, U>` or empty string if none.
 fn generic_params_rust(params: &[String]) -> String {
     if params.is_empty() {
@@ -3355,6 +3944,53 @@ fn generic_params_rust(params: &[String]) -> String {
     } else {
         format!("<{}>", params.join(", "))
     }
+}
+
+/// Dyn trait type for harness wiring: prefer type-alias marker (WearTestRepo)
+/// when the adapter monomorphizes EntityRepo&lt;WearTest&gt;.
+fn adapter_dyn_type(solution: &Solution, ad: &Construct) -> String {
+    let target = ad.target.as_deref().unwrap_or("?");
+    // Match type alias `type WearTestRepo = EntityRepo<WearTest>`
+    for item in &solution.items {
+        if let TopLevelItem::TypeAlias { name, target: te } = item {
+            if let TypeExpr::Generic(base, args) = te {
+                if base == target
+                    && args.len() == ad.target_type_args.len()
+                    && args
+                        .iter()
+                        .zip(ad.target_type_args.iter())
+                        .all(|(a, b)| type_to_rust(a) == type_to_rust(b))
+                {
+                    return name.clone();
+                }
+            }
+        }
+    }
+    if !ad.target_type_args.is_empty() {
+        let args: Vec<String> = ad.target_type_args.iter().map(type_to_rust).collect();
+        return format!("{}<{}>", target, args.join(", "));
+    }
+    target.to_string()
+}
+
+/// Deps field name for an adapter (snake_case of type alias or target trait).
+fn adapter_deps_field_name(solution: &Solution, ad: &Construct, target: &str) -> String {
+    for item in &solution.items {
+        if let TopLevelItem::TypeAlias { name, target: te } = item {
+            if let TypeExpr::Generic(base, args) = te {
+                if base == target
+                    && args.len() == ad.target_type_args.len()
+                    && args
+                        .iter()
+                        .zip(ad.target_type_args.iter())
+                        .all(|(a, b)| type_to_rust(a) == type_to_rust(b))
+                {
+                    return to_snake(name);
+                }
+            }
+        }
+    }
+    to_snake(target)
 }
 
 /// Trait-aware type rendering: a value-position reference to a known trait
@@ -3483,7 +4119,8 @@ fn infer_field_type(name: &str) -> String {
 pub fn generate_multi_package_harness(
     packages: &[(&Solution, &LayerRegistry)],
 ) -> Vec<GeneratedFile> {
-    let mut all_modules: Vec<(&Construct, &str, &LayerRegistry)> = Vec::new(); // (module, crate_name_of_module, registry)
+    // (module, crate_name, registry, solution) — solution needed for type aliases / dyn types
+    let mut all_modules: Vec<(&Construct, &str, &LayerRegistry, &Solution)> = Vec::new();
     let mut all_crate_names: Vec<String> = Vec::new();
 
     for (sol, reg) in packages {
@@ -3491,7 +4128,7 @@ pub fn generate_multi_package_harness(
             if let TopLevelItem::Construct(c) = item {
                 if c.shape == Shape::Mod {
                     let cn = to_snake(&c.name);
-                    all_modules.push((c, Box::leak(cn.clone().into_boxed_str()), reg));
+                    all_modules.push((c, Box::leak(cn.clone().into_boxed_str()), reg, sol));
                     if !all_crate_names.contains(&cn) {
                         all_crate_names.push(cn);
                     }
@@ -3524,7 +4161,7 @@ pub fn generate_multi_package_harness(
 
     // For each module: wire adapters + deps (same logic as gen_local_harness_main)
     let mut router_names: Vec<String> = Vec::new();
-    for (module, crate_name, registry) in &all_modules {
+    for (module, crate_name, registry, sol) in &all_modules {
         let flat = flatten_module(module);
         let adapters = &flat.impls;
         let services = &flat.fns;
@@ -3579,9 +4216,20 @@ pub fn generate_multi_package_harness(
 
         // Emit adapter instantiations (only for needed ports when known)
         for ad in adapters {
+            // Skip pure generic templates (e.g. DynamoJsonRepo<T> for EntityRepo<T>).
+            if is_pure_generic_adapter_template(ad) {
+                continue;
+            }
             let target = ad.target.as_deref().unwrap_or("Send");
             if filter_ports && !needed_ports.contains(target) {
-                continue;
+                // Allow type-alias deps (WearTestRepo) via monomorphized adapters
+                let field = adapter_deps_field_name(sol, ad, target);
+                let alias_ok = needed_ports.iter().any(|p| to_snake(p) == field || p == &field);
+                if !alias_ok && !needed_ports.iter().any(|p| sol.items.iter().any(|i| {
+                    matches!(i, TopLevelItem::TypeAlias { name, .. } if name == p)
+                })) {
+                    continue;
+                }
             }
             let env_ann = ad.annotations.iter().find(|a| a.name == "env");
             let mut fields_init = String::new();
@@ -3626,32 +4274,28 @@ pub fn generate_multi_package_harness(
                 }
             }
 
-            // Auto-init client field
+            // Client only via @field harness_field — never hardcode SDK paths here.
             let has_explicit_client = ad.annotations.iter().any(|a| {
                 a.name == "field" && a.args.iter().any(|arg| arg.split(':').next().unwrap_or("").trim() == "client")
             });
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
             });
-            if body_uses_client && !has_explicit_client {
-                let has_dynamo = ad.annotations.iter().any(|a| {
-                    a.name == "env" && a.args.iter().any(|arg| arg.contains("DYNAMO") || arg.contains("DDB"))
-                });
-                if has_dynamo {
-                    fields_init.push_str(
-                        "        client: aws_sdk_dynamodb::Client::new(&aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await),\n"
-                    );
+            if (body_uses_client || has_explicit_client) && !fields_init.contains("client:") {
+                if let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
+                    fields_init.push_str(&format!("        client: {let_name}.clone(),\n"));
                 }
             }
 
+            let dyn_ty = adapter_dyn_type(sol, ad);
             if fields_init.is_empty() {
                 main_rs.push_str(&format!(
-                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name} {{}});\n",
+                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({name} {{}});\n",
                     sn = to_snake(&ad.name), name = ad.name,
                 ));
             } else {
                 main_rs.push_str(&format!(
-                    "    let {sn}_inst: Arc<dyn {target} + Send + Sync> = Arc::new({name} {{\n{fields_init}    }});\n",
+                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({name} {{\n{fields_init}    }});\n",
                     sn = to_snake(&ad.name), name = ad.name,
                 ));
             }
@@ -3665,13 +4309,29 @@ pub fn generate_multi_package_harness(
         // Build Deps struct — only ports the application crate expects
         main_rs.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
         for ad in adapters {
+            if is_pure_generic_adapter_template(ad) {
+                continue;
+            }
             if let Some(target) = &ad.target {
-                if filter_ports && !needed_ports.contains(target) {
-                    continue;
+                let field = adapter_deps_field_name(sol, ad, target);
+                if filter_ports
+                    && !needed_ports.contains(target)
+                    && !needed_ports.iter().any(|p| p == &field || to_snake(p) == field)
+                {
+                    // Also allow type-alias dep names (WearTestRepo)
+                    let alias_match = sol.items.iter().any(|i| match i {
+                        TopLevelItem::TypeAlias { name, .. } => {
+                            to_snake(name) == field && needed_ports.contains(name)
+                        }
+                        _ => false,
+                    });
+                    if !alias_match {
+                        continue;
+                    }
                 }
                 main_rs.push_str(&format!(
                     "        {field}: {sn}_inst.clone(),\n",
-                    field = to_snake(target), sn = to_snake(&ad.name),
+                    sn = to_snake(&ad.name),
                 ));
             }
         }
@@ -3706,7 +4366,7 @@ pub fn generate_multi_package_harness(
 
     // Generate handler functions for each service across all modules
     // (same path/query/body policy as single-package local harness).
-    for (module, crate_name, _) in &all_modules {
+    for (module, crate_name, _, _) in &all_modules {
         let flat = flatten_module(module);
         for svc in &flat.fns {
             let fn_name = to_snake(&svc.name);
@@ -3805,19 +4465,7 @@ pub fn generate_multi_package_harness(
                         ));
                     }
                 } else if needs_body {
-                    if rust_type == "Uuid" {
-                        main_rs.push_str(&format!(
-                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
-                        ));
-                    } else if rust_type == "String" {
-                        main_rs.push_str(&format!(
-                            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
-                        ));
-                    } else {
-                        main_rs.push_str(&format!(
-                            "    let {field} = serde_json::from_value(body.get(\"{field}\").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;\n"
-                        ));
-                    }
+                    main_rs.push_str(&harness_body_field_extract(&field, &rust_type));
                 } else if needs_path_id && path.matches('{').count() > 1 {
                     // multi path params map
                     if rust_type == "Uuid" {
@@ -3856,6 +4504,8 @@ pub fn generate_multi_package_harness(
             main_rs.push_str("    }\n}\n\n");
         }
     }
+
+    main_rs.push_str(harness_body_dt_helper());
 
     // Build Cargo.toml for veil_bin
     let mut cargo_toml = String::new();

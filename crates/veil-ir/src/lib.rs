@@ -5,6 +5,7 @@ pub mod ast;
 pub mod builder;
 pub mod check;
 pub mod context;
+pub mod deps;
 pub mod diagnostics;
 pub mod edit;
 pub mod escape;
@@ -26,6 +27,12 @@ pub use adapt::{
     is_adapt_denied, merge_adapt_chain, merge_adapted_package, package_as_solution, path_exists,
     AdaptError, MergeResult, ADAPT_DENYLIST,
 };
+pub use deps::{
+    adapt_search_paths_for_file, deps_cache_dir, find_project_root, layer_source_in_root,
+    load_package_entry, load_product_deps, missing_package_hint, package_source_in_root,
+    product_provides_use, projects_hub, resolve_dep_root, resolve_dependency_roots,
+    resolve_dependency_roots_for, PackageEntry, ProductDep,
+};
 pub use ast::*;
 pub use builder::{build_ir, build_ir_with_registry};
 pub use check::{
@@ -41,8 +48,8 @@ pub use edit::{apply_edit, apply_edit_with, apply_edits, apply_edits_with, EditE
 pub use ir::*;
 pub use layer::{
     palette_from_registry, parse_layer_file, parse_stub_file, CodegenRule, CodegenTemplate,
-    ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer, Shape, StatementSpec, StmtShape,
-    StubCrate, StubImpl, StubMethod, StubStruct,
+    ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer, ReactivityPolicy, Shape,
+    StatementSpec, StmtShape, StubCrate, StubImpl, StubMethod, StubStruct,
 };
 pub use layer_graph::{build_layer_ir, check_layer, layer_prompt};
 pub use presentation::{

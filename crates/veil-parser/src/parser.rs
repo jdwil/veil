@@ -1889,8 +1889,18 @@ impl<'a> Parser<'a> {
                         }
                     }
                     _ => {
-                        // struct-shaped block: fields
-                        if self.at(&TokenKind::Ident) {
+                        // struct-shaped block: fields (props/state/derived)
+                        // Support `@bind` / other field annotations before the field line.
+                        if self.at(&TokenKind::Annotation) {
+                            let anns = self.parse_annotations();
+                            if self.at(&TokenKind::Ident) {
+                                let mut field = self.parse_field()?;
+                                field.annotations = anns;
+                                block.fields.push(field);
+                            } else {
+                                // Orphan annotations — skip
+                            }
+                        } else if self.at(&TokenKind::Ident) {
                             block.fields.push(self.parse_field()?);
                         } else {
                             self.advance();
@@ -2143,7 +2153,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// impl shape: `kw Name for Target` + block of method impls.
+    /// impl shape: `kw Name[<T, …>] for Target[<Args, …>]` + block of method impls.
+    ///
+    /// Examples:
+    /// - `adapter DynamoJsonRepo<T> for EntityRepo<T>`
+    /// - `adapter DynamoWearTestRepo for EntityRepo<WearTest>`
     fn parse_impl_shape(
         &mut self,
         spec: &veil_ir::layer::ConstructSpec,
@@ -2151,11 +2165,25 @@ impl<'a> Parser<'a> {
         let start_span = self.current().span;
         self.advance(); // keyword
         let name = self.expect_ident()?;
+        let type_params = self.parse_type_params();
         self.expect(&TokenKind::For)?;
         let target = self.expect_ident()?;
+        // Optional type args on the target trait: EntityRepo<WearTest>
+        let mut target_type_args = Vec::new();
+        if self.at(&TokenKind::LAngle) {
+            self.advance();
+            target_type_args.push(self.parse_type()?);
+            while self.at(&TokenKind::Comma) {
+                self.advance();
+                target_type_args.push(self.parse_type()?);
+            }
+            self.expect(&TokenKind::RAngle)?;
+        }
 
         let mut c = Construct::new(&spec.keyword, &spec.name, Shape::Impl, name, start_span);
+        c.type_params = type_params;
         c.target = Some(target);
+        c.target_type_args = target_type_args;
 
         if self.at_block_start() {
             self.enter_block()?;
@@ -2777,13 +2805,20 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Assignment: name = expr (only if LHS is a simple ident)
+        // Assignment: name = expr, or field assign obj.field = expr
+        // (field assign is stored as Assign with a dotted path: "wt.name")
         if self.at(&TokenKind::Eq) {
             if let Expr::Ident(name) = &lhs {
                 let name = name.clone();
                 self.advance();
                 let rhs = self.parse_expr()?;
                 return Ok(Expr::Assign(name, Box::new(rhs), None));
+            }
+            // Field assignment: a.b = expr / a.b.c = expr → Assign("a.b", …)
+            if let Some(path) = flatten_assign_lhs(&lhs) {
+                self.advance();
+                let rhs = self.parse_expr()?;
+                return Ok(Expr::Assign(path, Box::new(rhs), None));
             }
             // Tuple destructuring: (a, b) = expr → LetPattern
             if let Expr::Tuple(items) = &lhs {
@@ -3410,7 +3445,7 @@ impl<'a> Parser<'a> {
                 {
                     pattern_parts.push(self.advance().text);
                 }
-                let pattern = pattern_parts.join(" ");
+                let pattern = join_pattern_tokens(&pattern_parts);
 
                 // Parse match guard: `pattern if condition -> body`
                 let guard = if self.at(&TokenKind::If) {
@@ -3517,7 +3552,7 @@ impl<'a> Parser<'a> {
             while !self.at(&TokenKind::Eq) && !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof) {
                 pattern_parts.push(self.advance().text);
             }
-            let pattern = pattern_parts.join(" ");
+            let pattern = join_pattern_tokens(&pattern_parts);
             if self.at(&TokenKind::Eq) { self.advance(); }
             let expr = self.parse_expr()?;
             let mut body = Vec::new();
@@ -3563,7 +3598,7 @@ impl<'a> Parser<'a> {
             while !self.at(&TokenKind::Eq) && !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof) {
                 pattern_parts.push(self.advance().text);
             }
-            let pattern = pattern_parts.join(" ");
+            let pattern = join_pattern_tokens(&pattern_parts);
             if self.at(&TokenKind::Eq) { self.advance(); }
             let expr = self.parse_expr()?;
 
@@ -3670,6 +3705,43 @@ impl<'a> Parser<'a> {
             self.advance();
         }
         args
+    }
+}
+
+/// Join lexed pattern tokens into a source pattern string.
+/// - `Some` `(` `n` `)` → `Some(n)` (no spaces around punctuation)
+/// - `Ok` `next` → `Ok next` (space between words; codegen normalizes to `Ok(next)`)
+fn join_pattern_tokens(parts: &[String]) -> String {
+    let mut out = String::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            let prev = parts[i - 1].as_str();
+            let prev_word = prev
+                .chars()
+                .last()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+            let cur_word = p
+                .chars()
+                .next()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+            if prev_word && cur_word {
+                out.push(' ');
+            }
+        }
+        out.push_str(p);
+    }
+    out
+}
+
+/// Flatten an assignment LHS field chain (`wt.name`, `a.b.c`) into a dotted path
+/// for `Expr::Assign`. Returns `None` if not a pure FieldAccess/Ident chain.
+fn flatten_assign_lhs(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(n) => Some(n.clone()),
+        Expr::FieldAccess(base, field) => flatten_dotted_path(base, field),
+        _ => None,
     }
 }
 

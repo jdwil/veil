@@ -346,6 +346,9 @@ pub struct Construct {
     // ─── impl shape ───────────────────────────────────────────────────
     /// Target trait-shaped construct (`kw Name for Target`).
     pub target: Option<String>,
+    /// Type arguments on the target: `for EntityRepo<WearTest>` → `[WearTest]`.
+    #[serde(default)]
+    pub target_type_args: Vec<TypeExpr>,
     pub impls: Vec<MethodImpl>,
 
     // ─── fn shape ─────────────────────────────────────────────────────
@@ -386,6 +389,7 @@ impl Construct {
             methods: Vec::new(),
             associated_types: Vec::new(),
             target: None,
+            target_type_args: Vec::new(),
             impls: Vec::new(),
             inputs: Vec::new(),
             steps: Vec::new(),

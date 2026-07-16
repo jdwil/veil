@@ -403,6 +403,18 @@ pkg ddd v1
       invoke(cmd: Json) -> Res!<Json>
       request(qry: Json) -> Res!<Json>
 
+    # Generic persistence port — monomorphize with type alias:
+    #   type WearTestRepo = EntityRepo<WearTest>
+    # Implementation lives in VEIL (e.g. adapter DynamoJsonRepo<T> for EntityRepo<T>);
+    # monomorphized empty adapters copy those VEIL bodies with T substituted.
+    # Declared as `trait` (core keyword) so inject_declarations can parse
+    # without layer keywords in the __decl__ wrapper.
+    trait EntityRepo<T>
+      find!(id: Id) -> Opt<T>
+      list_by_tenant!(tenant_id: Id) -> List<T>
+      save!(entity: T)
+      delete!(id: Id)
+
     # ─── Auth service (runtime-injected authentication & authorization) ─────
     # The runtime provides the concrete implementation: Cognito, Auth0, custom
     # RBAC, or a BusAuthAdapter that delegates to a VEIL-authored auth context.
