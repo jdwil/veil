@@ -265,9 +265,8 @@ pkg DbApp
     );
 }
 
-/// Port methods and stub methods often share names (`get_version`, …).
-/// Receiver Shape::Struct must win — sync Res! stub → map_err, never .await?
-/// (Permanent fix for Extensions ExtStore / File adapter lowering.)
+/// When a stub/struct method shares a name with a port method, suffix choice
+/// follows the receiver's Shape (Struct → sync map_err; not trait .await?).
 #[test]
 fn stub_method_name_collision_with_port_uses_sync_suffix() {
     let stub = r#"

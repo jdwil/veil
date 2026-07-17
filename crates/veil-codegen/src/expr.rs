@@ -906,11 +906,9 @@ fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
 /// - Other stub methods marked `Res!` are sync Result → `map_err…?`
 /// - Trait methods (ports) are async_trait + Result → `.await?`
 ///
-/// **Receiver type wins over bare method name.** Port methods and stub methods
-/// often share names (`get_version`, `list_versions`, `package_root`, …). Looking
-/// only at the method name caused `.await?` on sync stub facades (ExtStore,
-/// LocalFs) — the permanent adapter/stub-lowering bug. Always prefer the
-/// receiver's Shape::Struct vs Shape::Trait when known.
+/// **Receiver shape wins over bare method name.** The same identifier can name a
+/// method on both a port trait and a stub/struct; suffix choice must follow the
+/// *receiver's* Shape (Struct vs Trait) when known, not a global method-name scan.
 ///
 /// Method names may carry VEIL bang/query suffixes (`fetch_all!`); strip before lookup.
 fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
@@ -932,8 +930,7 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
         _ => None,
     };
 
-    // Known struct / stub type → never treat as port trait (even if method name
-    // collides with ExtensionRegistry.get_version etc.).
+    // Known struct / stub type: use stub fallibility metadata only (not trait scan).
     if let Some(ref ty) = recv_type_name {
         if ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Struct)
             || ctx.stub_type_crate.contains_key(ty.as_str())
@@ -969,7 +966,7 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     if is_trait_method {
         return ".await?".to_string();
     }
-    // Sync Res! stub methods: map any Error into DomainError (generic — not domain-specific).
+    // Sync Res! stub methods: map any Error into DomainError.
     if ctx.fallible_methods.contains(method) {
         return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
