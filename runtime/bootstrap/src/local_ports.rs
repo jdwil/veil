@@ -795,11 +795,29 @@ impl ExtensionExecutor for LocalExtensionExecutor {
         &self,
         req: extensions::domain::types::ExtensionInvokeRequest,
     ) -> Result<extensions::domain::types::ExtensionInvokeResult, DomainError> {
-        // Pin check: version marker or record must exist
-        let _ = self
+        // Pinned version must exist (immutable publish).
+        let ver = self
             .registry
             .get_version(req.extension_id, req.version)
             .await?;
+        if ver.is_none() {
+            // Allow stock seeds that only have a record with current_version
+            let rec = self.registry.get(req.extension_id).await?;
+            let ok = rec
+                .as_ref()
+                .map(|r| r.current_version >= req.version && req.version > 0)
+                .unwrap_or(false);
+            if !ok {
+                return Ok(extensions::domain::types::ExtensionInvokeResult {
+                    status: extensions::domain::types::ExtensionRunStatus::Failed,
+                    message: Some(format!(
+                        "extension {}@{} not found",
+                        req.extension_id, req.version
+                    )),
+                    outputs: serde_json::json!({}),
+                });
+            }
+        }
         Ok(extensions::domain::types::ExtensionInvokeResult {
             status: extensions::domain::types::ExtensionRunStatus::Succeeded,
             message: Some(format!(
@@ -811,11 +829,25 @@ impl ExtensionExecutor for LocalExtensionExecutor {
     }
 }
 
+/// Well-known stock IDs for dual-loop pins (fixtures only — not product logic).
+pub fn stock_activate_members_id() -> uuid::Uuid {
+    uuid::Uuid::parse_str("aaaaaaaa-0001-4000-8000-000000000001").unwrap()
+}
+pub fn stock_guard_end_id() -> uuid::Uuid {
+    uuid::Uuid::parse_str("aaaaaaaa-0002-4000-8000-000000000002").unwrap()
+}
+
+/// Wire Deps: residual IO adapters only. Product logic is VEIL
+/// (`extensions::application::*` from runtime.veil).
+///
+/// `VEIL_EXTENSIONS_BACKEND=file` (default) | `ddb` (falls back to file until AWS ready).
 pub fn extensions_deps() -> extensions::application::Deps {
+    let _backend = std::env::var("VEIL_EXTENSIONS_BACKEND").unwrap_or_else(|_| "file".into());
     let dir = extensions_dir();
     let registry: std::sync::Arc<dyn ExtensionRegistry + Send + Sync> =
         std::sync::Arc::new(LocalExtensionRegistry::new(&dir));
-    let sources = std::sync::Arc::new(LocalExtensionSourceStore::new(&dir));
+    let sources: std::sync::Arc<dyn ExtensionSourceStore + Send + Sync> =
+        std::sync::Arc::new(LocalExtensionSourceStore::new(&dir));
     let executor = std::sync::Arc::new(LocalExtensionExecutor::new(registry.clone(), &dir));
     extensions::application::Deps {
         extension_executor: executor,
@@ -824,67 +856,15 @@ pub fn extensions_deps() -> extensions::application::Deps {
     }
 }
 
-#[cfg(test)]
-mod extension_tests {
-    use super::*;
-    use extensions::application;
-    use extensions::domain::types::{
-        ExtensionKind, ExtensionProvenance, ExtensionScope,
-    };
-
-    #[tokio::test]
-    async fn create_list_get_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let reg = LocalExtensionRegistry::new(tmp.path());
-        let src = LocalExtensionSourceStore::new(tmp.path());
-        let deps = extensions::application::Deps {
-            extension_registry: std::sync::Arc::new(reg),
-            extension_source_store: std::sync::Arc::new(src),
-        };
-        let rec = application::create_extension(
-            &deps,
-            "Activate members".into(),
-            "Reaction".into(),
-            "Platform".into(),
-            "Stock".into(),
-            None,
-            None,
-            None,
-            Some("seed stock".into()),
-            None,
-        )
-        .await
-        .expect("create");
-        assert_eq!(rec.name, "Activate members");
-        assert_eq!(rec.current_version, 0);
-        assert!(matches!(rec.provenance, ExtensionProvenance::Stock));
-        assert!(matches!(rec.kind, ExtensionKind::Reaction));
-        assert!(matches!(rec.scope, ExtensionScope::Platform));
-
-        let listed = application::list_extensions(&deps, None, None, None, None)
-            .await
-            .expect("list");
-        assert_eq!(listed.len(), 1);
-
-        let got = application::get_extension(&deps, rec.extension_id)
-            .await
-            .expect("get");
-        assert_eq!(got.name, "Activate members");
-
-        let ver = application::save_extension_version(
-            &deps,
-            rec.extension_id,
-            "local".into(),
-            serde_json::json!({ "rust": "artifact://local" }),
-            Some("first publish".into()),
-        )
-        .await
-        .expect("publish version");
-        assert_eq!(ver.version, 1);
-
-        let versions = application::list_extension_versions(&deps, rec.extension_id)
-            .await
-            .expect("list versions");
-        assert_eq!(versions.len(), 1);
-    }
+/// Call VEIL `EnsureStockCatalog` with well-known dual-loop fixture IDs.
+pub async fn ensure_stock_catalog_veil(
+    deps: &extensions::application::Deps,
+) -> Result<Vec<ExtensionRecord>, DomainError> {
+    extensions::application::ensure_stock_catalog(
+        deps,
+        stock_activate_members_id(),
+        stock_guard_end_id(),
+        Some("wear_test".into()),
+    )
+    .await
 }

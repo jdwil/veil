@@ -1025,7 +1025,8 @@ pkg VeilRuntime
           res = ExtensionExecutor.invoke!(req)
           ret res
 
-      # EXT-08: stock catalog (filter provenance=Stock + scope)
+      # EXT-08: stock catalog — list then provenance filter is adapter-assisted;
+      # product path uses EnsureStockCatalog + ListExtensions with provenance Stock.
       svc ListStockExtensions
         -> List<ExtensionRecord>
         input
@@ -1035,6 +1036,58 @@ pkg VeilRuntime
         step execute
           items = ExtensionRegistry.list!(scope, kind, product_id, null)
           ret items
+
+      # EXT-08: upsert one stock package by stable id (idempotent create/update).
+      # Host may pass well-known UUIDs; all business fields authored here in VEIL.
+      svc UpsertStockExtension
+        -> ExtensionRecord
+        input
+          extension_id: Id
+          name: Str
+          description: Str
+          product_id: Opt<Str>
+          params_schema: Opt<Json>
+          capabilities: List<Str>
+          palette_layer_refs: List<Str>
+        step execute
+          now = Dt.now()
+          root = ExtensionSourceStore.ensure_package!(extension_id)
+          rec = ExtensionRecord{extension_id: extension_id, scope: ExtensionScope.Platform, product_id: product_id, tenant_id: null, initiative_id: null, kind: ExtensionKind.Reaction, provenance: ExtensionProvenance.Stock, name: name, description: null, current_version: 1, params_schema: params_schema, capabilities: capabilities, palette_layer_refs: palette_layer_refs, source_uri: root, created_from: null, created_on: now, updated_on: now, archived: false}
+          rec.description = Opt.some(description)
+          saved = ExtensionRegistry.create!(rec)
+          ver = ExtensionVersion{extension_id: extension_id, version: 1, source_commit: "stock-seed", artifact_uris: {}, published_on: now, published_by: null, changelog: null}
+          ExtensionRegistry.save_version!(ver)
+          ExtensionSourceStore.write_file!(extension_id, "README.md", "stock")
+          ret saved
+
+      # EXT-08: ensure platform stock Reactions exist (ids from dual-loop fixture).
+      # Bodies inlined (same-context svc-to-svc invoke is not used — all logic stays VEIL).
+      svc EnsureStockCatalog
+        -> List<ExtensionRecord>
+        input
+          activate_id: Id
+          guard_id: Id
+          product_id: Opt<Str>
+        step execute
+          now = Dt.now()
+          root_a = ExtensionSourceStore.ensure_package!(activate_id)
+          root_g = ExtensionSourceStore.ensure_package!(guard_id)
+          caps_a = ["activation.invoke"]
+          caps_g = ["enrollment.is_enrolled"]
+          palette = ["reaction_guard", "reaction_activate", "reaction_end"]
+          schema_a = {}
+          schema_g = {}
+          rec_a = ExtensionRecord{extension_id: activate_id, scope: ExtensionScope.Platform, product_id: product_id, tenant_id: null, initiative_id: null, kind: ExtensionKind.Reaction, provenance: ExtensionProvenance.Stock, name: "Activate members", description: Opt.some("Invoke the default Activation for matching members"), current_version: 1, params_schema: Opt.some(schema_a), capabilities: caps_a, palette_layer_refs: palette, source_uri: root_a, created_from: null, created_on: now, updated_on: now, archived: false}
+          rec_g = ExtensionRecord{extension_id: guard_id, scope: ExtensionScope.Platform, product_id: product_id, tenant_id: null, initiative_id: null, kind: ExtensionKind.Reaction, provenance: ExtensionProvenance.Stock, name: "Guard then end", description: Opt.some("Skip if not enrolled; otherwise end success"), current_version: 1, params_schema: Opt.some(schema_g), capabilities: caps_g, palette_layer_refs: palette, source_uri: root_g, created_from: null, created_on: now, updated_on: now, archived: false}
+          a = ExtensionRegistry.create!(rec_a)
+          g = ExtensionRegistry.create!(rec_g)
+          ver_a = ExtensionVersion{extension_id: activate_id, version: 1, source_commit: "stock-seed", artifact_uris: {}, published_on: now, published_by: null, changelog: Opt.some("seed")}
+          ver_g = ExtensionVersion{extension_id: guard_id, version: 1, source_commit: "stock-seed", artifact_uris: {}, published_on: now, published_by: null, changelog: Opt.some("seed")}
+          ExtensionRegistry.save_version!(ver_a)
+          ExtensionRegistry.save_version!(ver_g)
+          ExtensionSourceStore.write_file!(activate_id, "README.md", "Activate members stock reaction")
+          ExtensionSourceStore.write_file!(guard_id, "README.md", "Guard then end stock reaction")
+          ret [a, g]
 
       # EXT-09: duplicate stock → custom with lineage
       svc ForkExtension
@@ -1061,7 +1114,31 @@ pkg VeilRuntime
         input
           node_kinds: List<Str>
         step execute
-          # Allowed: Guard, Activate, Map, EmitEvent, End (EXT-05)
+          # Allowed only EXT-05 constructs: Guard, Activate, Map, EmitEvent, End
+          for k in node_kinds
+            ok = false
+            if k == "Guard"
+              ok = true
+            if k == "Activate"
+              ok = true
+            if k == "Map"
+              ok = true
+            if k == "EmitEvent"
+              ok = true
+            if k == "End"
+              ok = true
+            if k == "guard"
+              ok = true
+            if k == "activate"
+              ok = true
+            if k == "map"
+              ok = true
+            if k == "emit_event"
+              ok = true
+            if k == "end"
+              ok = true
+            if ok == false
+              ret false
           ret true
 
       # EXT-12: UI mount ABI (frontend extensions)
@@ -1083,14 +1160,18 @@ pkg VeilRuntime
           slot: Str
           props: Json
         step execute
-          h = UiMountHandle{mount_id: "mount", asset_uri: "local://ui"}
+          uri = f"local://extensions/{slot}/{extension_id}@{version}"
+          h = UiMountHandle{mount_id: f"{extension_id}", asset_uri: uri}
           ret h
 
     group infrastructure
-      # Local dual-loop / CI adapters (declared in VEIL). Live filesystem IO lives in
-      # bootstrap `LocalExtensionRegistry` residual (same pattern as LocalObjectStorage /
-      # LocalMetadataStore) implementing these ports under VEIL_EXTENSIONS_DIR.
-      # AWS: DdbExtensionRegistry (EXT-11) — same ports, no AWS types in domain.
+      # ── Adapters declared in VEIL (ports only; no product logic) ──────────
+      # Dual-loop host wires residual IO that implements these same ports
+      # (LocalObjectStorage pattern). AWS: Ddb* adapters, same ports.
+      #
+      # MUST NOT put registry/catalog/fork/seed business rules in bootstrap Rust —
+      # those live in `group application` services above.
+
       adapter FileExtensionRegistry for ExtensionRegistry
         @env(VEIL_EXTENSIONS_DIR)
         impl create(record)
@@ -1128,17 +1209,19 @@ pkg VeilRuntime
         impl get_uri(id, version, target)
           ret null
 
-      # Local executor: publish bumps version + marker artifact; invoke returns Succeeded.
-      # Full dylib/WASM load is residual in bootstrap LocalExtensionExecutor (like LocalObjectStorage).
+      # Executor: VEIL-declared contract. Publish/invoke orchestration is also
+      # available via PublishExtension / InvokeExtension services. Residual host
+      # may swap a LocalExtensionExecutor that performs real FS/compile IO.
       adapter FileExtensionExecutor for ExtensionExecutor
         impl publish(id)
+          # Default: version 1 marker; host residual may replace with real compile.
           ver = ExtensionVersion{extension_id: id, version: 1, source_commit: "local", artifact_uris: {}, published_on: Dt.now(), published_by: null, changelog: null}
           ret ver
         impl invoke(req)
           res = ExtensionInvokeResult{status: ExtensionRunStatus.Succeeded, message: null, outputs: {}}
           ret res
 
-      # AWS path (EXT-11): same port, DDB meta. Skeleton — no domain AWS types.
+      # AWS path (EXT-11): same ports, DDB meta. No AWS shapes in domain vals.
       adapter DdbExtensionRegistry for ExtensionRegistry
         @field(client: DdbClient)
         @env(EXTENSIONS_TABLE)
