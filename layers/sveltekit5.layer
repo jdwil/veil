@@ -37,7 +37,21 @@ pkg sveltekit5 v1
       emit """
         import { sveltekit } from '@sveltejs/kit/vite';
         import { defineConfig } from 'vite';
-        export default defineConfig({ plugins: [sveltekit()] });
+        // server.watch.ignored: dual-loop gen rewrites these; watching them
+        // restarts Vite mid-HMR and can crash the process (Node HMR race).
+        export default defineConfig({
+          plugins: [sveltekit()],
+          server: {
+            watch: {
+              ignored: [
+                '**/svelte.config.js',
+                '**/tsconfig.json',
+                '**/package.json',
+                '**/package-lock.json',
+              ],
+            },
+          },
+        });
       """
 
     scaffold "src/app.html"
@@ -115,7 +129,19 @@ pkg sveltekit5 v1
       emit """
         import { sveltekit } from '@sveltejs/kit/vite';
         import { defineConfig } from 'vite';
-        export default defineConfig({ plugins: [sveltekit()] });
+        export default defineConfig({
+          plugins: [sveltekit()],
+          server: {
+            watch: {
+              ignored: [
+                '**/svelte.config.js',
+                '**/tsconfig.json',
+                '**/package.json',
+                '**/package-lock.json',
+              ],
+            },
+          },
+        });
       """
 
       emit_file "src/hooks.server.ts"
