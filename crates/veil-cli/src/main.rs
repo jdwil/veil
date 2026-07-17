@@ -2007,6 +2007,7 @@ fn main() {
                 println!("  Config:       {}", veil_server::config_path().display());
                 println!("  Hub:          http://localhost:{port}/api/projects");
                 println!("  IDE:          http://localhost:{port}/api/p/{{name}}/ir");
+                println!("  Viewer:       http://localhost:{port}/viewer/?project=<name>&mode=reaction");
                 let hub = veil_server::ProjectsHub::new(projects_dir, show_core_layers);
                 let app = veil_server::build_multi_router(hub);
                 let rt = tokio::runtime::Runtime::new().unwrap();

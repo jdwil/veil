@@ -145,10 +145,28 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
             multi.clone(),
             project_scope_middleware,
         ));
-    let router = hub_routes::<Arc<MultiProjectProvider>>()
+    let mut router = hub_routes::<Arc<MultiProjectProvider>>()
         .nest("/api/p/{project}", ide)
         .layer(CorsLayer::permissive())
         .with_state(multi);
+
+    // Embed dual-loop viewer SPA at /viewer (same-origin as multi API).
+    // Static dir: VEIL_VIEWER_STATIC or runtime/bootstrap/static/viewer.
+    let viewer_dir = std::env::var("VEIL_VIEWER_STATIC")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let static_root = crate::product_host::resolve_static_dir(None);
+            static_root.join("viewer")
+        });
+    if viewer_dir.is_dir() {
+        use tower_http::services::{ServeDir, ServeFile};
+        let index = viewer_dir.join("index.html");
+        let viewer_svc = ServeDir::new(&viewer_dir)
+            .append_index_html_on_directories(true)
+            .not_found_service(ServeFile::new(index));
+        router = router.nest_service("/viewer", viewer_svc);
+    }
+
     with_auth(router)
 }
 
