@@ -24,7 +24,7 @@
   import DiffPanel from '$lib/DiffPanel.svelte';
   import DevToolbar from '$lib/DevToolbar.svelte';
   import { layoutNodes, layoutByType } from '$lib/layout';
-  import { agentPlacement } from '$lib/agentLayout';
+  import { agentPlacement, setAgentPlacement } from '$lib/agentLayout';
   import {
     irGraph,
     currentParent,
@@ -55,9 +55,10 @@
     viewRevision,
     agentActive,
     embedShellConfig,
-    isReactionIdeMode,
+    isFlowComposerMode,
+    flowLayerParam,
   } from '$lib/store';
-  import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
+  import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind, type PaletteEntry } from '$lib/types';
   import {
     projectView,
     pickDefaultView,
@@ -97,8 +98,19 @@
   // DOM reference for node measurement — ELK needs real rendered sizes
   let graphContainerEl: HTMLElement | null = $state(null);
 
-  /** Mount-time shell (query `?mode=reaction` → minimal graph authoring). */
+  /** Mount-time shell (`?mode=flow|reaction` → layer flow composer only). */
   const shell = embedShellConfig();
+  const flowLayer = flowLayerParam();
+
+  // Flow mode: force agent on the right so vibe-coding is available.
+  if (shell.mode === 'flow' && shell.showAgentRail) {
+    setAgentPlacement('right');
+  }
+
+  /** Attach-picker: drag from a node handle → choose palette construct. */
+  let attachOpen = $state(false);
+  let attachSourceId = $state<string | null>(null);
+  let connectFromId = $state<string | null>(null);
 
   async function handleCreateProject() {
     const name = newProjectName.trim();
@@ -881,13 +893,14 @@
     if (!graph) return;
     const irNode = graph.nodes.find(n => n.id === Number(node.id));
 
-    // Always update selection
+    // Always update selection (opens property panel)
     selectedNodeId.set(node.id);
 
     // Show reference edges for the selected node, hide others
     updateReferenceEdges(graph, node.id);
 
-    // Double-click to drill down
+    // Double-click drill-down disabled in flow composer (flat graph only)
+    if (!shell.allowDrillDown) return;
     if (irNode && event instanceof MouseEvent && event.detail === 2) {
       const children = getChildren(graph, irNode.id);
       if (children.length > 0) {
@@ -895,6 +908,81 @@
         selectedNodeId.set(null);
       }
     }
+  }
+
+  function handleConnectStart({ nodeId }: { nodeId: string | null }) {
+    connectFromId = nodeId;
+  }
+
+  function handleConnectEnd(event: MouseEvent | TouchEvent) {
+    if (!shell.attachPickerOnConnect || !connectFromId) {
+      connectFromId = null;
+      return;
+    }
+    // Dropped on another node → onconnect already fired; only open picker when
+    // the gesture ends on empty canvas (no valid target).
+    const t = event.target as HTMLElement | null;
+    const onNode = t?.closest?.('.svelte-flow__node');
+    if (onNode) {
+      connectFromId = null;
+      return;
+    }
+    attachSourceId = connectFromId;
+    attachOpen = true;
+    connectFromId = null;
+  }
+
+  function closeAttachPicker() {
+    attachOpen = false;
+    attachSourceId = null;
+  }
+
+  async function attachPaletteItem(item: PaletteEntry) {
+    const graph = get(irGraph);
+    const hostId = get(currentParent);
+    if (!graph || hostId == null) {
+      alert('Cannot create: no package context.');
+      closeAttachPicker();
+      return;
+    }
+    const keyword = item.keyword || item.name?.toLowerCase() || 'struct';
+    const placement = resolveCreateParentSpan(
+      {
+        name: item.name,
+        keyword,
+        label: item.label,
+        dg: item.dg,
+        group: item.group,
+      },
+      {
+        graph,
+        hostId,
+        selectedId: attachSourceId ? Number(attachSourceId) : null,
+        activeGroup: activeTab,
+        activeViewId,
+        presentation: get(presentationModel),
+      }
+    );
+    if (!placement) {
+      alert('Cannot create: missing parent span.');
+      closeAttachPicker();
+      return;
+    }
+    const baseName = (item.name || item.label || 'New').replace(/\s+/g, '');
+    const name = uniqueConstructName(graph, baseName, hostId);
+    const ok = await saveEdits([
+      {
+        op: 'create_construct',
+        parent_span: placement.parentSpan,
+        keyword,
+        name,
+      },
+    ]);
+    closeAttachPicker();
+    if (!ok) return;
+    const fresh = get(irGraph);
+    if (fresh) await computeView(fresh, get(currentParent), get(paletteConfig));
+    flowKey += 1;
   }
 
   /** Add/remove reference edges + focus related domain nodes when selected. */
@@ -1113,137 +1201,140 @@
 
 <svelte:window onkeydown={handleKeyDown} />
 
-<div class="viewer-container">
-  <!-- Top bar -->
-  <div class="top-bar">
-    <div class="breadcrumbs">
-      {#if $hubSnapshot?.multi && $hubSnapshot.projects.length > 0}
-        <select
-          class="file-selector project-switcher"
-          title="Switch product project"
-          value={currentProjectParam() ?? ''}
-          onchange={(e) => {
-            const name = (e.currentTarget as HTMLSelectElement).value;
-            if (name) openProject(name);
-          }}
-        >
-          <option value="" disabled={!!currentProjectParam()}>Projects…</option>
-          {#each $hubSnapshot.projects as p}
-            <option value={p.name}>{p.name}</option>
-          {/each}
-        </select>
-        <span class="breadcrumb-sep">›</span>
-      {:else if $activeProject?.name}
-        <span class="project-badge" title={$activeProject.path ?? ''}>{$activeProject.name}</span>
-        <span class="breadcrumb-sep">›</span>
-      {/if}
-      {#if $availableFiles.length > 0}
-        <select
-          class="file-selector"
-          title="Switch package or layer"
-          value={$availableFiles.findIndex(f => f.active)}
-          onchange={(e) => {
-            const idx = Number((e.currentTarget as HTMLSelectElement).value);
-            if (!Number.isFinite(idx)) return;
-            void selectFile(idx);
-          }}
-        >
-          {#each $availableFiles as file}
-            <option value={file.index}
-              >{file.kind === 'layer' ? '📐 ' : file.kind === 'stub' ? '📎 ' : ''}{file.name}{file.active
-                ? ' ●'
-                : ''}{file.adapts ? ` ↳ ${file.adapts}` : ''}</option
-            >
-          {/each}
-        </select>
-      {/if}
-      <button
-        type="button"
-        class="add-file-btn"
-        title="Add package or layer file to this project"
-        onclick={() => {
-          showNewFile = !showNewFile;
-          if (showNewFile) newFileName = '';
-        }}
-      >
-        +
-      </button>
-      {#if showNewFile}
-        <div class="new-file-form" role="group" aria-label="New file">
+<div
+  class="viewer-container"
+  class:viewer-container--flow={shell.mode === 'flow'}
+  data-veil-shell={shell.mode}
+>
+  {#if shell.showTopBar}
+    <!-- Full dual-loop top bar (hidden in flow/reaction composer mode) -->
+    <div class="top-bar">
+      <div class="breadcrumbs">
+        {#if $hubSnapshot?.multi && $hubSnapshot.projects.length > 0}
           <select
-            class="file-selector kind-select"
-            bind:value={newFileKind}
-            title="File kind"
-          >
-            <option value="package">package (.veil)</option>
-            <option value="layer">layer (.layer)</option>
-          </select>
-          <input
-            class="new-file-input"
-            placeholder={newFileKind === 'layer' ? 'my_layer' : 'MyPackage'}
-            bind:value={newFileName}
-            onkeydown={(e) => {
-              if (e.key === 'Enter') void handleCreateFile();
-              if (e.key === 'Escape') showNewFile = false;
+            class="file-selector project-switcher"
+            title="Switch product project"
+            value={currentProjectParam() ?? ''}
+            onchange={(e) => {
+              const name = (e.currentTarget as HTMLSelectElement).value;
+              if (name) openProject(name);
             }}
-          />
-          <button
-            type="button"
-            class="retry-btn new-file-go"
-            disabled={creatingFile || !newFileName.trim()}
-            onclick={() => void handleCreateFile()}
           >
-            {creatingFile ? '…' : 'Add'}
-          </button>
-        </div>
-      {/if}
-      {#if $availableFiles.length > 0 || showNewFile}
-        <span class="breadcrumb-sep">›</span>
-      {/if}
-      {#if $activeFileKind === 'layer'}
-        <span class="kind-badge" title="Language designer mode">layer</span>
-      {/if}
-      {#each $breadcrumbs as crumb, i}
-        {#if i > 0}
+            <option value="" disabled={!!currentProjectParam()}>Projects…</option>
+            {#each $hubSnapshot.projects as p}
+              <option value={p.name}>{p.name}</option>
+            {/each}
+          </select>
+          <span class="breadcrumb-sep">›</span>
+        {:else if $activeProject?.name}
+          <span class="project-badge" title={$activeProject.path ?? ''}>{$activeProject.name}</span>
           <span class="breadcrumb-sep">›</span>
         {/if}
+        {#if $availableFiles.length > 0}
+          <select
+            class="file-selector"
+            title="Switch package or layer"
+            value={$availableFiles.findIndex(f => f.active)}
+            onchange={(e) => {
+              const idx = Number((e.currentTarget as HTMLSelectElement).value);
+              if (!Number.isFinite(idx)) return;
+              void selectFile(idx);
+            }}
+          >
+            {#each $availableFiles as file}
+              <option value={file.index}
+                >{file.kind === 'layer' ? '📐 ' : file.kind === 'stub' ? '📎 ' : ''}{file.name}{file.active
+                  ? ' ●'
+                  : ''}{file.adapts ? ` ↳ ${file.adapts}` : ''}</option
+              >
+            {/each}
+          </select>
+        {/if}
         <button
-          class="breadcrumb-item"
-          class:active={i === $breadcrumbs.length - 1}
-          onclick={() => navigateTo(crumb.id)}
+          type="button"
+          class="add-file-btn"
+          title="Add package or layer file to this project"
+          onclick={() => {
+            showNewFile = !showNewFile;
+            if (showNewFile) newFileName = '';
+          }}
         >
-          {crumb.name}
+          +
         </button>
-      {/each}
+        {#if showNewFile}
+          <div class="new-file-form" role="group" aria-label="New file">
+            <select
+              class="file-selector kind-select"
+              bind:value={newFileKind}
+              title="File kind"
+            >
+              <option value="package">package (.veil)</option>
+              <option value="layer">layer (.layer)</option>
+            </select>
+            <input
+              class="new-file-input"
+              placeholder={newFileKind === 'layer' ? 'my_layer' : 'MyPackage'}
+              bind:value={newFileName}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') void handleCreateFile();
+                if (e.key === 'Escape') showNewFile = false;
+              }}
+            />
+            <button
+              type="button"
+              class="retry-btn new-file-go"
+              disabled={creatingFile || !newFileName.trim()}
+              onclick={() => void handleCreateFile()}
+            >
+              {creatingFile ? '…' : 'Add'}
+            </button>
+          </div>
+        {/if}
+        {#if $availableFiles.length > 0 || showNewFile}
+          <span class="breadcrumb-sep">›</span>
+        {/if}
+        {#if $activeFileKind === 'layer'}
+          <span class="kind-badge" title="Language designer mode">layer</span>
+        {/if}
+        {#each $breadcrumbs as crumb, i}
+          {#if i > 0}
+            <span class="breadcrumb-sep">›</span>
+          {/if}
+          <button
+            class="breadcrumb-item"
+            class:active={i === $breadcrumbs.length - 1}
+            onclick={() => navigateTo(crumb.id)}
+          >
+            {crumb.name}
+          </button>
+        {/each}
+      </div>
+      {#if shell.showOutline}
+        <OutlinePanel />
+      {/if}
+      {#if shell.showDiff}
+        <DiffPanel />
+      {/if}
+      {#if shell.showInfraToggle}
+        <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
+          <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
+          <span>Show infrastructure</span>
+        </label>
+      {/if}
+      {#if shell.showCriticalToggle}
+        <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
+          <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
+          <span>Critical only</span>
+          <span class="critical-count">{criticalCountLabel()}</span>
+        </label>
+      {/if}
+      {#if shell.showThemeToggle}
+        <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
+          {theme === 'dark' ? '☀️' : '🌙'}
+        </button>
+      {/if}
     </div>
-    {#if shell.showOutline}
-      <OutlinePanel />
-    {/if}
-    {#if shell.showDiff}
-      <DiffPanel />
-    {/if}
-    {#if shell.showInfraToggle}
-      <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
-        <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
-        <span>Show infrastructure</span>
-      </label>
-    {/if}
-    {#if shell.showCriticalToggle}
-      <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
-        <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
-        <span>Critical only</span>
-        <span class="critical-count">{criticalCountLabel()}</span>
-      </label>
-    {/if}
-    {#if isReactionIdeMode()}
-      <span class="reaction-mode-badge" title="Palette locked to reaction.layer · use reaction required">
-        reaction.layer
-      </span>
-    {/if}
-    <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
-      {theme === 'dark' ? '☀️' : '🌙'}
-    </button>
-  </div>
+  {/if}
 
   {#if $loading}
     <div class="status-overlay">
@@ -1302,7 +1393,7 @@
     </div>
   <!-- Scope panel — shows variables available at current level -->
   {:else}
-    {#if scopeVars.length > 0}
+    {#if shell.showScopeBar && scopeVars.length > 0}
       <div class="scope-bar">
         <span class="scope-label">Scope:</span>
         {#each scopeVars as v}
@@ -1319,7 +1410,7 @@
         <span class="agent-activity-text">Agent editing…</span>
       </div>
     {/if}
-    <div class="main-layout" class:main-layout--minimal={shell.mode === 'reaction'}>
+    <div class="main-layout" class:main-layout--flow={shell.mode === 'flow'}>
       <Palette contextKind={currentContextKind} contextKindCore={currentContextKindCore} activeGroup={activeTab} />
       {#if shell.showAgentRail && $agentPlacement === 'left'}
         <AgentSideRail side="left" />
@@ -1341,7 +1432,7 @@
             {/each}
           </div>
         {/if}
-        {#if tabs.length > 0}
+        {#if shell.showGroupTabs && tabs.length > 0}
           <div class="tab-bar">
             {#each tabs as tab}
               <button
@@ -1355,7 +1446,9 @@
           </div>
         {/if}
         <div class="graph-container" bind:this={graphContainerEl} ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
-        <DiagnosticsPanel />
+        {#if shell.showDiagnostics}
+          <DiagnosticsPanel />
+        {/if}
         
         {#key flowKey}
         <SvelteFlow
@@ -1366,11 +1459,15 @@
           fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
           onnodeclick={handleNodeClick}
           onconnect={handleConnect}
+          onconnectstart={(_e, params) => handleConnectStart({ nodeId: params.nodeId ?? null })}
+          onconnectend={handleConnectEnd}
           onpaneclick={handlePaneClick}
           colorMode={theme}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-          <Controls />
+          {#if shell.showFlowControls}
+            <Controls />
+          {/if}
           {#if shell.showMiniMap}
             <MiniMap />
           {/if}
@@ -1398,6 +1495,41 @@
   {#if shell.showCodePreview}
     <CodePreview />
   {/if}
+
+  {#if attachOpen && shell.attachPickerOnConnect}
+    <div class="attach-modal" role="dialog" aria-modal="true" aria-label="Attach node">
+      <div class="attach-modal__backdrop" onclick={closeAttachPicker}></div>
+      <div class="attach-modal__panel">
+        <header class="attach-modal__head">
+          <h2 class="attach-modal__title">Attach next step</h2>
+          <p class="attach-modal__sub">
+            Choose a construct from <code>{flowLayer || 'layer'}</code>
+            {#if attachSourceId}
+              · from node #{attachSourceId}
+            {/if}
+          </p>
+          <button type="button" class="attach-modal__close" onclick={closeAttachPicker}>✕</button>
+        </header>
+        <div class="attach-modal__grid">
+          {#each ($paletteConfig || []).filter((c) => (c.entry_type || 'construct') === 'construct') as item}
+            <button
+              type="button"
+              class="attach-modal__tile"
+              style="--tile-color: {item.color || 'var(--veil-text-dim)'}"
+              title={item.description || item.label}
+              onclick={() => void attachPaletteItem(item as PaletteEntry)}
+            >
+              <span class="attach-modal__icon">{item.icon || '◇'}</span>
+              <span class="attach-modal__label">{item.label || item.keyword || item.name}</span>
+              {#if item.description}
+                <span class="attach-modal__desc">{item.description}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1409,23 +1541,104 @@
     background: var(--veil-bg);
   }
 
-  .reaction-mode-badge {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 3px 8px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--veil-accent, #14b8a6) 45%, transparent);
-    color: var(--veil-accent, #14b8a6);
-    background: color-mix(in srgb, var(--veil-accent, #14b8a6) 12%, transparent);
-    white-space: nowrap;
+  /* Flow composer: fill viewport — palette | canvas | agent only */
+  .viewer-container--flow {
+    background: var(--veil-bg, #0f0f14);
   }
-
-  .main-layout--minimal {
-    /* Graph + palette only — no dock chrome below */
+  .main-layout--flow {
     flex: 1;
     min-height: 0;
+    height: 100%;
+  }
+  .viewer-container--flow .graph-wrapper {
+    min-height: 0;
+  }
+
+  .attach-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+  .attach-modal__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(2px);
+  }
+  .attach-modal__panel {
+    position: relative;
+    z-index: 1;
+    width: min(32rem, 94vw);
+    max-height: min(70vh, 36rem);
+    overflow: auto;
+    border-radius: 0.85rem;
+    border: 1px solid var(--veil-border, #2a2a38);
+    background: var(--veil-surface, #14141c);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+  .attach-modal__head {
+    position: sticky;
+    top: 0;
+    padding: 0.85rem 1rem 0.65rem;
+    border-bottom: 1px solid var(--veil-border, #2a2a38);
+    background: var(--veil-surface, #14141c);
+  }
+  .attach-modal__title {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+  .attach-modal__sub {
+    margin: 0.25rem 0 0;
+    font-size: 0.75rem;
+    color: var(--veil-text-dim, #9ca3af);
+  }
+  .attach-modal__close {
+    position: absolute;
+    top: 0.65rem;
+    right: 0.65rem;
+    border: 0;
+    background: transparent;
+    color: var(--veil-text-dim, #9ca3af);
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  .attach-modal__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+    gap: 0.55rem;
+    padding: 0.85rem;
+  }
+  .attach-modal__tile {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+    padding: 0.65rem 0.7rem;
+    border-radius: 0.55rem;
+    border: 1px solid color-mix(in srgb, var(--tile-color) 40%, var(--veil-border, #2a2a38));
+    background: color-mix(in srgb, var(--tile-color) 12%, transparent);
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .attach-modal__tile:hover {
+    border-color: var(--tile-color);
+  }
+  .attach-modal__icon { font-size: 1.1rem; }
+  .attach-modal__label { font-size: 0.82rem; font-weight: 650; }
+  .attach-modal__desc {
+    font-size: 0.68rem;
+    color: var(--veil-text-dim, #9ca3af);
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
   .agent-activity-bar {

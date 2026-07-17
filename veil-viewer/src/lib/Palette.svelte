@@ -1,6 +1,6 @@
 <script lang="ts">
   import { NODE_STYLES, type NodeKind } from '$lib/types';
-  import { paletteConfig, stubs, isReactionIdeMode } from '$lib/store';
+  import { paletteConfig, stubs, isFlowComposerMode, flowLayerParam } from '$lib/store';
 
   // Format a stub method signature for the hover tooltip.
   function stubSig(m: { name: string; params: [string, string][]; return_type: string | null }): string {
@@ -96,15 +96,12 @@
   }
 </script>
 
-<aside class="palette">
+<aside class="palette" class:palette--flow={isFlowComposerMode()}>
   <div class="palette-header">
-    <span class="palette-title">{isReactionIdeMode() ? 'Reaction palette' : 'Constructs'}</span>
+    <span class="palette-title">
+      {isFlowComposerMode() ? `${flowLayerParam() || 'flow'} nodes` : 'Constructs'}
+    </span>
   </div>
-  {#if isReactionIdeMode()}
-    <p class="palette-lock-hint" title="Packages must use reaction; this use line cannot be removed">
-      Locked · <code>use reaction</code> · reaction.layer
-    </p>
-  {/if}
 
   <div class="palette-body">
     {#if items.length === 0}
@@ -138,7 +135,7 @@
       {/each}
     {/if}
 
-    {#if !isReactionIdeMode() && $paletteConfig?.some((c) => c.entry_type === 'statement')}
+    {#if !isFlowComposerMode() && $paletteConfig?.some((c) => c.entry_type === 'statement')}
       <div class="palette-category">
         <span class="category-label">Statements</span>
         <p class="section-hint">Reference only — edit bodies in the review pane</p>
@@ -157,7 +154,7 @@
       </div>
     {/if}
 
-    {#if !isReactionIdeMode() && $stubs && $stubs.length > 0}
+    {#if !isFlowComposerMode() && $stubs && $stubs.length > 0}
       <div class="palette-category">
         <span class="category-label">External (stubs)</span>
         <p class="section-hint">Read-only browse — not instantiable constructs</p>
@@ -215,6 +212,10 @@
     backdrop-filter: blur(12px);
     overflow-y: auto;
     z-index: 5;
+  }
+  .palette--flow {
+    width: 200px;
+    min-width: 200px;
   }
 
   .palette-header {

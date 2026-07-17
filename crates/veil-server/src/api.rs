@@ -533,17 +533,26 @@ async fn get_palette<P: SourceProvider>(
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     let mut palette = veil_ir::palette_from_registry(&state.registry());
-    // Embed mode=reaction (or reaction project): only constructs from reaction.layer.
-    let reaction_mode = crate::file_ops::is_reaction_ide_context(state.project_root().as_deref())
-        || headers
-            .get("x-veil-mode")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.eq_ignore_ascii_case("reaction"))
-            .unwrap_or(false);
-    if reaction_mode {
-        palette.retain(|e| {
-            e.entry_type == "construct" && e.layer.eq_ignore_ascii_case("reaction")
-        });
+    // Flow composer: restrict palette to one layer (default reaction for mode=flow|reaction).
+    let mode = headers
+        .get("x-veil-mode")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase());
+    let layer_hdr = headers
+        .get("x-veil-layer")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase());
+    let reaction_ctx = crate::file_ops::is_reaction_ide_context(state.project_root().as_deref());
+    let only_layer = layer_hdr.or_else(|| {
+        match mode.as_deref() {
+            Some("reaction") => Some("reaction".into()),
+            Some("flow") => Some("reaction".into()),
+            _ if reaction_ctx => Some("reaction".into()),
+            _ => None,
+        }
+    });
+    if let Some(layer) = only_layer {
+        palette.retain(|e| e.entry_type == "construct" && e.layer.eq_ignore_ascii_case(&layer));
     }
     match serde_json::to_string(&palette) {
         Ok(json) => json_response(json).into_response(),

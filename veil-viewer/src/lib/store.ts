@@ -108,29 +108,58 @@ export function currentProjectParam(): string | null {
 
 /**
  * IDE mode from `?mode=`.
- * `reaction` → force reaction.layer palette + locked `use reaction` on packages.
+ * - omit / full → dual-loop engineer IDE
+ * - `flow` | `reaction` → layer flow composer (minimal shell)
+ *
+ * Optional overrides (any boolean shell flag):
+ *   `?showAgentRail=0` `?showTopBar=1` etc. (0/false/off → false; 1/true/on → true)
  */
 export function currentIdeMode(): string | null {
   if (typeof window === 'undefined') return null;
   const m = new URLSearchParams(window.location.search).get('mode');
   if (m && /^[a-zA-Z0-9_-]+$/.test(m)) return m.toLowerCase();
-  // Infer reaction mode when hub project is reaction
-  if (currentProjectParam() === 'reaction') return 'reaction';
   return null;
 }
 
+/** Layer for flow composer: `?layer=reaction` (default `reaction` when mode=flow|reaction). */
+export function flowLayerParam(): string | null {
+  if (typeof window === 'undefined') return null;
+  const l = new URLSearchParams(window.location.search).get('layer');
+  if (l && /^[a-zA-Z0-9_-]+$/.test(l)) return l.toLowerCase();
+  const m = currentIdeMode();
+  if (m === 'flow' || m === 'reaction') return 'reaction';
+  return null;
+}
+
+/** Reaction palette lock / use-reaction enforcement (layer is reaction). */
 export function isReactionIdeMode(): boolean {
-  return currentIdeMode() === 'reaction';
+  const m = currentIdeMode();
+  if (m === 'reaction') return true;
+  if (m === 'flow' && (flowLayerParam() ?? 'reaction') === 'reaction') return true;
+  // Infer when hub project is reaction and mode omitted (embed default)
+  if (!m && currentProjectParam() === 'reaction') return true;
+  return false;
+}
+
+export function isFlowComposerMode(): boolean {
+  const m = currentIdeMode();
+  if (m === 'flow' || m === 'reaction') return true;
+  if (!m && currentProjectParam() === 'reaction') return true;
+  return false;
 }
 
 /**
- * Shell chrome for the dual-loop IDE, configured on mount via `?mode=`.
- * Full mode = default engineer IDE. Reaction mode = graph-only authoring.
+ * Shell chrome — every dual-loop feature is a separate flag so embeds can
+ * toggle pieces later without inventing new modes.
+ *
+ * Preset `mode=flow|reaction`: palette (one layer) + canvas + props + agent.
+ * No top bar, layers UI, source/review/dev chrome, or drill-down.
  */
 export interface EmbedShellConfig {
-  mode: 'full' | 'reaction';
+  mode: 'full' | 'flow';
   /** Only constructs from these layer names (empty = all loaded layers). */
   paletteLayers: string[];
+  showTopBar: boolean;
   showOutline: boolean;
   showDiff: boolean;
   showInfraToggle: boolean;
@@ -140,16 +169,65 @@ export interface EmbedShellConfig {
   showCodePreview: boolean;
   showAgentRail: boolean;
   showViewBar: boolean;
-  showFileChrome: boolean;
+  showGroupTabs: boolean;
+  showScopeBar: boolean;
+  showDiagnostics: boolean;
   showMiniMap: boolean;
+  showThemeToggle: boolean;
+  showFlowControls: boolean;
+  /** Double-click drill into nested IR */
+  allowDrillDown: boolean;
+  /** Drag from node handle → pick palette construct to attach */
+  attachPickerOnConnect: boolean;
+}
+
+function queryBool(key: string): boolean | null {
+  if (typeof window === 'undefined') return null;
+  const v = new URLSearchParams(window.location.search).get(key);
+  if (v == null) return null;
+  if (v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
+  if (v === '1' || v === 'true' || v === 'on' || v === 'yes') return true;
+  return null;
+}
+
+function applyQueryOverrides(cfg: EmbedShellConfig): EmbedShellConfig {
+  const keys: (keyof EmbedShellConfig)[] = [
+    'showTopBar',
+    'showOutline',
+    'showDiff',
+    'showInfraToggle',
+    'showCriticalToggle',
+    'showDevToolbar',
+    'showReviewDock',
+    'showCodePreview',
+    'showAgentRail',
+    'showViewBar',
+    'showGroupTabs',
+    'showScopeBar',
+    'showDiagnostics',
+    'showMiniMap',
+    'showThemeToggle',
+    'showFlowControls',
+    'allowDrillDown',
+    'attachPickerOnConnect',
+  ];
+  const out = { ...cfg };
+  for (const k of keys) {
+    const b = queryBool(k);
+    if (b !== null) (out as Record<string, unknown>)[k] = b;
+  }
+  return out;
 }
 
 export function embedShellConfig(): EmbedShellConfig {
-  if (isReactionIdeMode()) {
-    return {
-      mode: 'reaction',
-      // Strict: only constructs declared in reaction.layer
-      paletteLayers: ['reaction'],
+  let cfg: EmbedShellConfig;
+  if (isFlowComposerMode()) {
+    const layer = flowLayerParam() || 'reaction';
+    cfg = {
+      mode: 'flow',
+      paletteLayers: [layer],
+      // REALLY basic: palette | graph | props-on-select | agent
+      showTopBar: false,
       showOutline: false,
       showDiff: false,
       showInfraToggle: false,
@@ -157,34 +235,52 @@ export function embedShellConfig(): EmbedShellConfig {
       showDevToolbar: false,
       showReviewDock: false,
       showCodePreview: false,
-      showAgentRail: false,
+      showAgentRail: true,
       showViewBar: false,
-      showFileChrome: true, // keep file switcher minimal
+      showGroupTabs: false,
+      showScopeBar: false,
+      showDiagnostics: false,
       showMiniMap: false,
+      showThemeToggle: false,
+      showFlowControls: false,
+      allowDrillDown: false,
+      attachPickerOnConnect: true,
+    };
+  } else {
+    cfg = {
+      mode: 'full',
+      paletteLayers: [],
+      showTopBar: true,
+      showOutline: true,
+      showDiff: true,
+      showInfraToggle: true,
+      showCriticalToggle: true,
+      showDevToolbar: true,
+      showReviewDock: true,
+      showCodePreview: true,
+      showAgentRail: true,
+      showViewBar: true,
+      showGroupTabs: true,
+      showScopeBar: true,
+      showDiagnostics: true,
+      showMiniMap: true,
+      showThemeToggle: true,
+      showFlowControls: true,
+      allowDrillDown: true,
+      attachPickerOnConnect: false,
     };
   }
-  return {
-    mode: 'full',
-    paletteLayers: [],
-    showOutline: true,
-    showDiff: true,
-    showInfraToggle: true,
-    showCriticalToggle: true,
-    showDevToolbar: true,
-    showReviewDock: true,
-    showCodePreview: true,
-    showAgentRail: true,
-    showViewBar: true,
-    showFileChrome: true,
-    showMiniMap: true,
-  };
+  return applyQueryOverrides(cfg);
 }
 
-/** Headers for IDE API calls (reaction mode locks use reaction server-side). */
+/** Headers for IDE API calls (mode + layer scope for palette / write locks). */
 export function ideRequestHeaders(extra?: Record<string, string>): Record<string, string> {
   const h: Record<string, string> = { ...(extra || {}) };
   const mode = currentIdeMode();
   if (mode) h['X-Veil-Mode'] = mode;
+  else if (isFlowComposerMode()) h['X-Veil-Mode'] = 'flow';
+  const layer = flowLayerParam();
+  if (layer) h['X-Veil-Layer'] = layer;
   return h;
 }
 
