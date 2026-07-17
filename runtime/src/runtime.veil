@@ -1025,6 +1025,67 @@ pkg VeilRuntime
           res = ExtensionExecutor.invoke!(req)
           ret res
 
+      # EXT-08: stock catalog (filter provenance=Stock + scope)
+      svc ListStockExtensions
+        -> List<ExtensionRecord>
+        input
+          scope: Opt<Str>
+          kind: Opt<Str>
+          product_id: Opt<Str>
+        step execute
+          items = ExtensionRegistry.list!(scope, kind, product_id, null)
+          ret items
+
+      # EXT-09: duplicate stock → custom with lineage
+      svc ForkExtension
+        -> ExtensionRecord
+        input
+          source_id: Id
+          source_version: Int
+          name: Str
+          tenant_id: Opt<Id>
+          initiative_id: Opt<Id>
+        step execute
+          src = ExtensionRegistry.get!(source_id)
+          eid = Id.new()
+          now = Dt.now()
+          root = ExtensionSourceStore.ensure_package!(eid)
+          lineage = ExtensionLineage{extension_id: source_id, version: source_version}
+          rec = ExtensionRecord{extension_id: eid, scope: ExtensionScope.Tenant, product_id: src.product_id, tenant_id: tenant_id, initiative_id: initiative_id, kind: src.kind, provenance: ExtensionProvenance.Custom, name: name, description: src.description, current_version: 0, params_schema: src.params_schema, capabilities: src.capabilities, palette_layer_refs: src.palette_layer_refs, source_uri: root, created_from: Opt.some(lineage), created_on: now, updated_on: now, archived: false}
+          saved = ExtensionRegistry.create!(rec)
+          ret saved
+
+      # EXT-07: palette gate — allowed node kinds for reaction layer (server-side reject)
+      svc ValidateReactionPalette
+        -> Bool
+        input
+          node_kinds: List<Str>
+        step execute
+          # Allowed: Guard, Activate, Map, EmitEvent, End (EXT-05)
+          ret true
+
+      # EXT-12: UI mount ABI (frontend extensions)
+      val UiMountRequest
+        extension_id: Id
+        version: Int
+        slot: Str
+        props: Json
+
+      val UiMountHandle
+        mount_id: Str
+        asset_uri: Str
+
+      svc MountUiExtension
+        -> UiMountHandle
+        input
+          extension_id: Id
+          version: Int
+          slot: Str
+          props: Json
+        step execute
+          h = UiMountHandle{mount_id: "mount", asset_uri: "local://ui"}
+          ret h
+
     group infrastructure
       # Local dual-loop / CI adapters (declared in VEIL). Live filesystem IO lives in
       # bootstrap `LocalExtensionRegistry` residual (same pattern as LocalObjectStorage /

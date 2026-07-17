@@ -121,7 +121,7 @@ so platform implementers never miss them.
 
 ## EXT-07: Agent palette gate
 
-**Status:** Todo · **Priority:** P1 · **Owner:** veil-runtime + product  
+**Status:** Done · **Priority:** P1 · **Owner:** veil-runtime + product  
 
 **MUST:** R1; server-side reject  
 
@@ -149,7 +149,7 @@ so platform implementers never miss them.
 
 ## EXT-10: Multi-scope catalogs
 
-**Status:** Todo · **Priority:** P2 · **Owner:** veil-runtime  
+**Status:** Done · **Priority:** P2 · **Owner:** veil-runtime  
 
 **MUST:** R1, R2  
 
@@ -162,7 +162,7 @@ so platform implementers never miss them.
 
 ## EXT-11: AWS adapters
 
-**Status:** Todo · **Priority:** P2 · **Owner:** veil-runtime  
+**Status:** Done · **Priority:** P2 · **Owner:** veil-runtime  
 
 **MUST:** R1, R2 — **local adapters remain default and complete**  
 
@@ -177,7 +177,7 @@ so platform implementers never miss them.
 
 ## EXT-12: UI mount ABI
 
-**Status:** Todo · **Priority:** P2 · **Owner:** veil-runtime + products  
+**Status:** Done · **Priority:** P2 · **Owner:** veil-runtime + products  
 
 **MUST:** R1, R2, R3  
 
@@ -207,12 +207,12 @@ so platform implementers never miss them.
 | EXT-02 | Done |
 | EXT-03 | Done |
 | EXT-04 | Done |
-| EXT-05 | Todo (application/layers) |
-| EXT-06 | Todo (wear_test) |
-| EXT-07 | Todo |
-| EXT-08 | Todo |
-| EXT-09 | Todo |
-| EXT-10 | Todo |
-| EXT-11 | Todo |
-| EXT-12 | Todo |
+| EXT-05 | Done (application/layers) |
+| EXT-06 | Done (wear_test) |
+| EXT-07 | Done |
+| EXT-08 | Done |
+| EXT-09 | Done |
+| EXT-10 | Done |
+| EXT-11 | Done |
+| EXT-12 | Done |
 | EXT-00 | Todo |
