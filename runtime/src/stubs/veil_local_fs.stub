@@ -1,0 +1,16 @@
+# Thin std::fs facade for VEIL-authored File adapters.
+# Real crate: runtime/local_fs (path dep in generated workspace — not in engine).
+# MISSION: filesystem domain stays out of veil-codegen; adapters use this stub.
+# Version `path:…` → workspace path dep (relative to gen output root).
+stub veil_local_fs path:../local_fs
+
+  struct LocalFs
+    fn create_dir_all(path: Str) -> Res!
+    fn write(path: Str, data: Str) -> Res!
+    fn read(path: Str) -> Res!<Str>
+    # Named path_exists so it is not confused with ObjectStorage.exists port method.
+    fn path_exists(path: Str) -> Bool
+    fn path_is_file(path: Str) -> Bool
+    fn list_dir(path: Str) -> Res!<List<Str>>
+    fn list_json_files(path: Str) -> Res!<List<Str>>
+    fn join(a: Str, b: Str) -> Str

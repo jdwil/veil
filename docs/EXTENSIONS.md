@@ -61,10 +61,10 @@ When implementation lands in-tree, link concrete packages and APIs from this pag
 
 **veil-runtime work MUST be VEIL-authored** (`runtime/src/runtime.veil`):
 
-| In VEIL | Residual host only (like pure-runtime CAP) |
-|---------|-----------------------------------------------|
-| Domain vals, enums, ports | Thin FS/S3/DDB **port implementations** |
-| Application services (Create/List/Publish/Invoke/Fork/Seed/Validate/Mount) | Deps wiring (`extensions_deps`) |
-| Adapter **declarations** (File*, Ddb*) | `LocalExtension*` implementing those ports under `VEIL_EXTENSIONS_DIR` |
+| In VEIL | Outside the engine |
+|---------|-------------------|
+| Domain, ports, application services | `.stub` crates for external APIs (`veil_local_fs`, aws-sdk-*) |
+| **File* / Ddb* adapters** (full bodies) | Real crate behind the stub (`runtime/local_fs`) |
+| Catalog, fork, seed, palette, publish, invoke | Bootstrap only **constructs** generated adapters (`extensions_deps`) |
 
-Do **not** put catalog, fork, seed, palette rules, or invoke policy in bootstrap Rust.
+**MISSION:** zero filesystem domain knowledge in `veil-codegen`. Adapters call `LocalFs` via stub, not `Fs.*` builtins.

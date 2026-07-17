@@ -1,0 +1,7 @@
+[package]
+name = "veil_local_fs"
+version = "0.1.0"
+edition = "2021"
+description = "Thin std::fs facade for VEIL-authored adapters (referenced via .stub)"
+
+[dependencies]

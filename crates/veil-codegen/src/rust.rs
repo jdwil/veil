@@ -974,7 +974,14 @@ fn gen_workspace_toml(
         if !stub_is_active_cargo(stub) {
             continue;
         }
-        if stub.cargo_features.is_empty() {
+        // Path stubs: version line `path:../relative` (local platform crates, not crates.io).
+        // Keeps filesystem/SDK details out of the engine; the .stub still declares the API.
+        if let Some(rel) = stub.version.strip_prefix("path:") {
+            extra_deps.push_str(&format!(
+                "{} = {{ path = \"{}\" }}\n",
+                stub.name, rel
+            ));
+        } else if stub.cargo_features.is_empty() {
             extra_deps.push_str(&format!("{} = \"{}\"\n", stub.name, stub.version));
         } else {
             let feats: Vec<String> = stub

@@ -924,8 +924,9 @@ fn receiver_call_suffix(_recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     if is_trait_method {
         return ".await?".to_string();
     }
+    // Sync Res! stub methods: map any Error into DomainError (generic — not domain-specific).
     if ctx.fallible_methods.contains(method) {
-        return "?".to_string();
+        return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
     String::new()
 }
@@ -1124,13 +1125,21 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         );
     }
 
-    // Language primitives win over stub names (e.g. gix.stub declares `struct Id`
-    // which must not capture VEIL `Id.new()` → that is always Uuid::new_v4()).
+    // Language primitives win over stub names (e.g. gix.stub `struct Id`,
+    // axum.stub `Json` — IR Json is not axum::Json).
     if !call.method.is_empty() {
         let lang = match (call.target.as_str(), call.method.as_str()) {
             ("Id", "new") | ("Id", "new_v4") | ("UUID", "new") | ("UUID", "new_v4") | ("Uuid", "new")
                 => Some("Uuid::new_v4()".to_string()),
             ("Dt", "now") => Some("Utc::now()".to_string()),
+            ("Json", "parse") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("serde_json::from_str(&{})?", arg))
+            }
+            ("Json", "stringify") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("serde_json::to_string(&{})?", arg))
+            }
             _ => None,
         };
         if let Some(result) = lang {
@@ -1174,31 +1183,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 let arg = expr_to_rust(&call.args[0], ctx);
                 Some(format!("String::from_utf8({})?", arg))
             }
-            ("Fs", "read") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("std::fs::read_to_string(&{})?", arg))
-            }
-            ("Fs", "write") if call.args.len() == 2 => {
-                let path = expr_to_rust(&call.args[0], ctx);
-                let data = expr_to_rust(&call.args[1], ctx);
-                Some(format!("std::fs::write(&{}, {}.as_bytes())?", path, data))
-            }
-            ("Fs", "create_dir_all") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("std::fs::create_dir_all(&{})?", arg))
-            }
-            ("Fs", "exists") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("std::path::Path::new(&{}).exists()", arg))
-            }
-            ("Fs", "list_dir") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("std::fs::read_dir(&{})?.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>()", arg))
-            }
-            ("Shell", "run") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("std::process::Command::new(\"sh\").args([&\"-c\", &{}]).output()?", arg))
-            }
+            // Filesystem / process IO must NOT live in the engine (MISSION: zero
+            // domain knowledge). Author adapters against ports or .stub crates
+            // (e.g. runtime/src/stubs/*_fs.stub + real crate), never Fs/Shell builtins.
             _ => None,
         };
         if let Some(result) = translated {

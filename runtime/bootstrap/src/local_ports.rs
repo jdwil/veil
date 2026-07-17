@@ -503,12 +503,16 @@ pub fn storage_deps() -> storage::application::Deps {
     }
 }
 
-// ─── EXT-02: Extension registry (local filesystem) ─────────────────────────
-// Residual IO adapter implementing VEIL-declared ports (same role as
-// LocalObjectStorage). Domain + services remain in runtime.veil → extensions crate.
 
-use extensions::domain::types::{ExtensionRecord, ExtensionVersion};
-use extensions::ports::{ExtensionExecutor, ExtensionRegistry, ExtensionSourceStore};
+// ─── Extensions Deps (VEIL-generated File* adapters — no residual registry) ─
+// Product logic: runtime.veil → extensions::application
+// IO: FileExtension* via veil_local_fs stub (not engine builtins)
+
+use extensions::adapters::{
+    FileExtensionArtifactStore, FileExtensionExecutor, FileExtensionRegistry,
+    FileExtensionSourceStore,
+};
+use extensions::domain::types::ExtensionRecord;
 
 /// Resolve extensions data dir: `VEIL_EXTENSIONS_DIR` or `{projects_dir}/.veil-extensions`.
 pub fn extensions_dir() -> PathBuf {
@@ -518,318 +522,7 @@ pub fn extensions_dir() -> PathBuf {
     crate::platform::projects_dir().join(".veil-extensions")
 }
 
-/// Local ExtensionRegistry: one JSON file per extension + versions/ subdir.
-pub struct LocalExtensionRegistry {
-    root: PathBuf,
-}
-
-impl LocalExtensionRegistry {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        let root = root.into();
-        let _ = std::fs::create_dir_all(&root);
-        Self { root }
-    }
-
-    fn record_path(&self, id: &uuid::Uuid) -> PathBuf {
-        self.root.join(format!("{id}.json"))
-    }
-
-    fn versions_dir(&self, id: &uuid::Uuid) -> PathBuf {
-        self.root.join(id.to_string()).join("versions")
-    }
-
-    fn version_path(&self, id: &uuid::Uuid, version: i64) -> PathBuf {
-        self.versions_dir(id).join(format!("{version}.json"))
-    }
-}
-
-#[async_trait]
-impl ExtensionRegistry for LocalExtensionRegistry {
-    async fn create(&self, record: ExtensionRecord) -> Result<ExtensionRecord, DomainError> {
-        let p = self.record_path(&record.extension_id);
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let s = serde_json::to_string_pretty(&record)
-            .map_err(|e| DomainError::External(e.to_string()))?;
-        std::fs::write(&p, s).map_err(|e| DomainError::External(e.to_string()))?;
-        Ok(record)
-    }
-
-    async fn get(&self, id: uuid::Uuid) -> Result<Option<ExtensionRecord>, DomainError> {
-        let p = self.record_path(&id);
-        if !p.is_file() {
-            return Ok(None);
-        }
-        let s = std::fs::read_to_string(&p).map_err(|e| DomainError::External(e.to_string()))?;
-        let rec: ExtensionRecord =
-            serde_json::from_str(&s).map_err(|e| DomainError::External(e.to_string()))?;
-        Ok(Some(rec))
-    }
-
-    async fn list(
-        &self,
-        scope: Option<String>,
-        kind: Option<String>,
-        product_id: Option<String>,
-        tenant_id: Option<uuid::Uuid>,
-    ) -> Result<Vec<ExtensionRecord>, DomainError> {
-        let mut out = Vec::new();
-        let Ok(rd) = std::fs::read_dir(&self.root) else {
-            return Ok(out);
-        };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(s) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            let Ok(rec) = serde_json::from_str::<ExtensionRecord>(&s) else {
-                continue;
-            };
-            if rec.archived {
-                continue;
-            }
-            if let Some(ref sc) = scope {
-                if format!("{:?}", rec.scope) != *sc && format!("{:?}", rec.scope).to_lowercase() != sc.to_lowercase() {
-                    // also accept bare names
-                    let want = sc.to_lowercase();
-                    let got = format!("{:?}", rec.scope).to_lowercase();
-                    if got != want {
-                        continue;
-                    }
-                }
-            }
-            if let Some(ref k) = kind {
-                let want = k.to_lowercase();
-                let got = format!("{:?}", rec.kind).to_lowercase();
-                if got != want {
-                    continue;
-                }
-            }
-            if let Some(ref pid) = product_id {
-                if rec.product_id.as_deref() != Some(pid.as_str()) {
-                    continue;
-                }
-            }
-            if let Some(tid) = tenant_id {
-                if rec.tenant_id != Some(tid) {
-                    continue;
-                }
-            }
-            out.push(rec);
-        }
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(out)
-    }
-
-    async fn update(&self, record: ExtensionRecord) -> Result<ExtensionRecord, DomainError> {
-        self.create(record).await
-    }
-
-    async fn save_version(&self, ver: ExtensionVersion) -> Result<ExtensionVersion, DomainError> {
-        let dir = self.versions_dir(&ver.extension_id);
-        let _ = std::fs::create_dir_all(&dir);
-        let p = self.version_path(&ver.extension_id, ver.version);
-        let s = serde_json::to_string_pretty(&ver)
-            .map_err(|e| DomainError::External(e.to_string()))?;
-        std::fs::write(&p, s).map_err(|e| DomainError::External(e.to_string()))?;
-        Ok(ver)
-    }
-
-    async fn get_version(
-        &self,
-        id: uuid::Uuid,
-        version: i64,
-    ) -> Result<Option<ExtensionVersion>, DomainError> {
-        let p = self.version_path(&id, version);
-        if !p.is_file() {
-            return Ok(None);
-        }
-        let s = std::fs::read_to_string(&p).map_err(|e| DomainError::External(e.to_string()))?;
-        let ver: ExtensionVersion =
-            serde_json::from_str(&s).map_err(|e| DomainError::External(e.to_string()))?;
-        Ok(Some(ver))
-    }
-
-    async fn list_versions(&self, id: uuid::Uuid) -> Result<Vec<ExtensionVersion>, DomainError> {
-        let dir = self.versions_dir(&id);
-        let mut out = Vec::new();
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            return Ok(out);
-        };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(s) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            if let Ok(ver) = serde_json::from_str::<ExtensionVersion>(&s) {
-                out.push(ver);
-            }
-        }
-        out.sort_by_key(|v| v.version);
-        Ok(out)
-    }
-}
-
-/// Local package source tree under `{root}/src/{id}/`.
-pub struct LocalExtensionSourceStore {
-    root: PathBuf,
-}
-
-impl LocalExtensionSourceStore {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        let root = root.into();
-        let _ = std::fs::create_dir_all(root.join("src"));
-        Self { root }
-    }
-
-    fn pkg_root(&self, id: &uuid::Uuid) -> PathBuf {
-        self.root.join("src").join(id.to_string())
-    }
-}
-
-#[async_trait]
-impl ExtensionSourceStore for LocalExtensionSourceStore {
-    async fn ensure_package(&self, id: uuid::Uuid) -> Result<String, DomainError> {
-        let r = self.pkg_root(&id);
-        std::fs::create_dir_all(&r).map_err(|e| DomainError::External(e.to_string()))?;
-        Ok(r.to_string_lossy().to_string())
-    }
-
-    async fn write_file(
-        &self,
-        id: uuid::Uuid,
-        rel_path: String,
-        content: String,
-    ) -> Result<(), DomainError> {
-        let r = self.pkg_root(&id);
-        let p = r.join(&rel_path);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| DomainError::External(e.to_string()))?;
-        }
-        std::fs::write(&p, content).map_err(|e| DomainError::External(e.to_string()))
-    }
-
-    async fn read_file(
-        &self,
-        id: uuid::Uuid,
-        rel_path: String,
-    ) -> Result<Option<String>, DomainError> {
-        let p = self.pkg_root(&id).join(rel_path);
-        if !p.is_file() {
-            return Ok(None);
-        }
-        let s = std::fs::read_to_string(&p).map_err(|e| DomainError::External(e.to_string()))?;
-        Ok(Some(s))
-    }
-
-    async fn list_files(&self, id: uuid::Uuid, prefix: String) -> Result<Vec<String>, DomainError> {
-        let r = self.pkg_root(&id);
-        let mut out = Vec::new();
-        walk_keys(&r, &r, &prefix, &mut out);
-        Ok(out)
-    }
-
-    async fn package_root(&self, id: uuid::Uuid) -> Result<String, DomainError> {
-        Ok(self.pkg_root(&id).to_string_lossy().to_string())
-    }
-}
-
-/// Build extensions Deps with local filesystem adapters.
-/// Local executor: publish via registry bump + marker; invoke always Succeeded (dual-loop).
-pub struct LocalExtensionExecutor {
-    registry: std::sync::Arc<dyn ExtensionRegistry + Send + Sync>,
-    artifacts: PathBuf,
-}
-
-impl LocalExtensionExecutor {
-    pub fn new(
-        registry: std::sync::Arc<dyn ExtensionRegistry + Send + Sync>,
-        root: impl Into<PathBuf>,
-    ) -> Self {
-        let artifacts = root.into().join("artifacts");
-        let _ = std::fs::create_dir_all(&artifacts);
-        Self { registry, artifacts }
-    }
-}
-
-#[async_trait]
-impl ExtensionExecutor for LocalExtensionExecutor {
-    async fn publish(
-        &self,
-        id: uuid::Uuid,
-    ) -> Result<extensions::domain::types::ExtensionVersion, DomainError> {
-        let mut rec = self
-            .registry
-            .get(id)
-            .await?
-            .ok_or(DomainError::NotFound)?;
-        let next = rec.current_version + 1;
-        rec.current_version = next;
-        rec.updated_on = Utc::now();
-        self.registry.update(rec.clone()).await?;
-        let marker = self.artifacts.join(format!("{id}/{next}/rust.marker"));
-        if let Some(parent) = marker.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&marker, b"published");
-        let ver = extensions::domain::types::ExtensionVersion {
-            extension_id: id,
-            version: next,
-            source_commit: "local".into(),
-            artifact_uris: serde_json::json!({ "rust": marker.to_string_lossy() }),
-            published_on: Utc::now(),
-            published_by: None,
-            changelog: None,
-        };
-        self.registry.save_version(ver.clone()).await
-    }
-
-    async fn invoke(
-        &self,
-        req: extensions::domain::types::ExtensionInvokeRequest,
-    ) -> Result<extensions::domain::types::ExtensionInvokeResult, DomainError> {
-        // Pinned version must exist (immutable publish).
-        let ver = self
-            .registry
-            .get_version(req.extension_id, req.version)
-            .await?;
-        if ver.is_none() {
-            // Allow stock seeds that only have a record with current_version
-            let rec = self.registry.get(req.extension_id).await?;
-            let ok = rec
-                .as_ref()
-                .map(|r| r.current_version >= req.version && req.version > 0)
-                .unwrap_or(false);
-            if !ok {
-                return Ok(extensions::domain::types::ExtensionInvokeResult {
-                    status: extensions::domain::types::ExtensionRunStatus::Failed,
-                    message: Some(format!(
-                        "extension {}@{} not found",
-                        req.extension_id, req.version
-                    )),
-                    outputs: serde_json::json!({}),
-                });
-            }
-        }
-        Ok(extensions::domain::types::ExtensionInvokeResult {
-            status: extensions::domain::types::ExtensionRunStatus::Succeeded,
-            message: Some(format!(
-                "invoked {}@{}",
-                req.extension_id, req.version
-            )),
-            outputs: req.params,
-        })
-    }
-}
-
-/// Well-known stock IDs for dual-loop pins (fixtures only — not product logic).
+/// Well-known stock IDs for dual-loop pins (fixtures only).
 pub fn stock_activate_members_id() -> uuid::Uuid {
     uuid::Uuid::parse_str("aaaaaaaa-0001-4000-8000-000000000001").unwrap()
 }
@@ -837,26 +530,21 @@ pub fn stock_guard_end_id() -> uuid::Uuid {
     uuid::Uuid::parse_str("aaaaaaaa-0002-4000-8000-000000000002").unwrap()
 }
 
-/// Wire Deps: residual IO adapters only. Product logic is VEIL
-/// (`extensions::application::*` from runtime.veil).
-///
-/// `VEIL_EXTENSIONS_BACKEND=file` (default) | `ddb` (falls back to file until AWS ready).
+/// Wire VEIL-generated File* adapters (veil_local_fs stub — not residual registry logic).
 pub fn extensions_deps() -> extensions::application::Deps {
-    let _backend = std::env::var("VEIL_EXTENSIONS_BACKEND").unwrap_or_else(|_| "file".into());
-    let dir = extensions_dir();
-    let registry: std::sync::Arc<dyn ExtensionRegistry + Send + Sync> =
-        std::sync::Arc::new(LocalExtensionRegistry::new(&dir));
-    let sources: std::sync::Arc<dyn ExtensionSourceStore + Send + Sync> =
-        std::sync::Arc::new(LocalExtensionSourceStore::new(&dir));
-    let executor = std::sync::Arc::new(LocalExtensionExecutor::new(registry.clone(), &dir));
+    let dir = extensions_dir().to_string_lossy().to_string();
+    let _ = std::fs::create_dir_all(&dir);
     extensions::application::Deps {
-        extension_executor: executor,
-        extension_registry: registry,
-        extension_source_store: sources,
+        extension_artifact_store: std::sync::Arc::new(FileExtensionArtifactStore {
+            dir: dir.clone(),
+        }),
+        extension_executor: std::sync::Arc::new(FileExtensionExecutor { dir: dir.clone() }),
+        extension_registry: std::sync::Arc::new(FileExtensionRegistry { dir: dir.clone() }),
+        extension_source_store: std::sync::Arc::new(FileExtensionSourceStore { dir }),
     }
 }
 
-/// Call VEIL `EnsureStockCatalog` with well-known dual-loop fixture IDs.
+/// Call VEIL EnsureStockCatalog with fixture IDs.
 pub async fn ensure_stock_catalog_veil(
     deps: &extensions::application::Deps,
 ) -> Result<Vec<ExtensionRecord>, DomainError> {
