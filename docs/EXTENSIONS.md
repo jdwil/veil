@@ -51,3 +51,12 @@ Related platform docs:
 | **Layers** | Node vocabulary, presentation, capability ports |
 
 When implementation lands in-tree, link concrete packages and APIs from this page.
+
+## Stories
+
+| Location | Role |
+|----------|------|
+| `/home/jd/dev/veil-projects/application/docs/veil-extensions-stories.md` | Full EXT-01–12 acceptance criteria |
+| [`stories/180-veil-extensions.md`](../stories/180-veil-extensions.md) | Platform tracking + **MUST** pure VEIL + ports/adapters |
+
+**veil-runtime work MUST be VEIL-authored** with local adapters for dual-loop/CI and AWS adapters (same ports) for deploy.
