@@ -880,6 +880,35 @@ pkg VeilRuntime
         list_files!(id: Id, prefix: Str) -> List<Str>
         package_root!(id: Id) -> Str
 
+      # Compiled artifacts (local dir or S3).
+      port ExtensionArtifactStore
+        put!(id: Id, version: Int, target: Str, data: Bytes) -> Str
+        get_uri!(id: Id, version: Int, target: Str) -> Opt<Str>
+
+      # Invoke result for Reactions (EXT-03 ABI).
+      enum ExtensionRunStatus
+        Succeeded
+        Skipped
+        Failed
+
+      val ExtensionInvokeResult
+        status: ExtensionRunStatus
+        message: Opt<Str>
+        outputs: Json
+
+      # Firing context passed into invoke (opaque-friendly).
+      val ExtensionInvokeRequest
+        extension_id: Id
+        version: Int
+        kind: Str
+        params: Json
+        context: Json
+
+      # Compile + load + run. Local adapter shells out / loads marker; AWS later.
+      port ExtensionExecutor
+        publish!(id: Id) -> ExtensionVersion
+        invoke!(req: ExtensionInvokeRequest) -> ExtensionInvokeResult
+
     group application
       # Bus/HTTP services (same pattern as Storage CreateRepo / ListRepos).
       # Host maps HTTP → these services; ports via Deps + local File adapters.
@@ -974,6 +1003,28 @@ pkg VeilRuntime
           saved = ExtensionRegistry.save_version!(ver)
           ret saved
 
+      # EXT-03: publish (compile + pin version) and invoke ABI
+      svc PublishExtension
+        -> ExtensionVersion
+        input
+          id: Id
+        step execute
+          ver = ExtensionExecutor.publish!(id)
+          ret ver
+
+      svc InvokeExtension
+        -> ExtensionInvokeResult
+        input
+          extension_id: Id
+          version: Int
+          kind: Str
+          params: Json
+          context: Json
+        step execute
+          req = ExtensionInvokeRequest{extension_id: extension_id, version: version, kind: kind, params: params, context: context}
+          res = ExtensionExecutor.invoke!(req)
+          ret res
+
     group infrastructure
       # Local dual-loop / CI adapters (declared in VEIL). Live filesystem IO lives in
       # bootstrap `LocalExtensionRegistry` residual (same pattern as LocalObjectStorage /
@@ -1008,6 +1059,23 @@ pkg VeilRuntime
           ret []
         impl package_root(id)
           ret "local"
+
+      adapter FileExtensionArtifactStore for ExtensionArtifactStore
+        @env(VEIL_EXTENSIONS_DIR)
+        impl put(id, version, target, data)
+          ret "file://artifact"
+        impl get_uri(id, version, target)
+          ret null
+
+      # Local executor: publish bumps version + marker artifact; invoke returns Succeeded.
+      # Full dylib/WASM load is residual in bootstrap LocalExtensionExecutor (like LocalObjectStorage).
+      adapter FileExtensionExecutor for ExtensionExecutor
+        impl publish(id)
+          ver = ExtensionVersion{extension_id: id, version: 1, source_commit: "local", artifact_uris: {}, published_on: Dt.now(), published_by: null, changelog: null}
+          ret ver
+        impl invoke(req)
+          res = ExtensionInvokeResult{status: ExtensionRunStatus.Succeeded, message: null, outputs: {}}
+          ret res
 
       # AWS path (EXT-11): same port, DDB meta. Skeleton — no domain AWS types.
       adapter DdbExtensionRegistry for ExtensionRegistry

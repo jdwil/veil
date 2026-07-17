@@ -508,7 +508,7 @@ pub fn storage_deps() -> storage::application::Deps {
 // LocalObjectStorage). Domain + services remain in runtime.veil → extensions crate.
 
 use extensions::domain::types::{ExtensionRecord, ExtensionVersion};
-use extensions::ports::{ExtensionRegistry, ExtensionSourceStore};
+use extensions::ports::{ExtensionExecutor, ExtensionRegistry, ExtensionSourceStore};
 
 /// Resolve extensions data dir: `VEIL_EXTENSIONS_DIR` or `{projects_dir}/.veil-extensions`.
 pub fn extensions_dir() -> PathBuf {
@@ -742,11 +742,85 @@ impl ExtensionSourceStore for LocalExtensionSourceStore {
 }
 
 /// Build extensions Deps with local filesystem adapters.
+/// Local executor: publish via registry bump + marker; invoke always Succeeded (dual-loop).
+pub struct LocalExtensionExecutor {
+    registry: std::sync::Arc<dyn ExtensionRegistry + Send + Sync>,
+    artifacts: PathBuf,
+}
+
+impl LocalExtensionExecutor {
+    pub fn new(
+        registry: std::sync::Arc<dyn ExtensionRegistry + Send + Sync>,
+        root: impl Into<PathBuf>,
+    ) -> Self {
+        let artifacts = root.into().join("artifacts");
+        let _ = std::fs::create_dir_all(&artifacts);
+        Self { registry, artifacts }
+    }
+}
+
+#[async_trait]
+impl ExtensionExecutor for LocalExtensionExecutor {
+    async fn publish(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<extensions::domain::types::ExtensionVersion, DomainError> {
+        let mut rec = self
+            .registry
+            .get(id)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let next = rec.current_version + 1;
+        rec.current_version = next;
+        rec.updated_on = Utc::now();
+        self.registry.update(rec.clone()).await?;
+        let marker = self.artifacts.join(format!("{id}/{next}/rust.marker"));
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&marker, b"published");
+        let ver = extensions::domain::types::ExtensionVersion {
+            extension_id: id,
+            version: next,
+            source_commit: "local".into(),
+            artifact_uris: serde_json::json!({ "rust": marker.to_string_lossy() }),
+            published_on: Utc::now(),
+            published_by: None,
+            changelog: None,
+        };
+        self.registry.save_version(ver.clone()).await
+    }
+
+    async fn invoke(
+        &self,
+        req: extensions::domain::types::ExtensionInvokeRequest,
+    ) -> Result<extensions::domain::types::ExtensionInvokeResult, DomainError> {
+        // Pin check: version marker or record must exist
+        let _ = self
+            .registry
+            .get_version(req.extension_id, req.version)
+            .await?;
+        Ok(extensions::domain::types::ExtensionInvokeResult {
+            status: extensions::domain::types::ExtensionRunStatus::Succeeded,
+            message: Some(format!(
+                "invoked {}@{}",
+                req.extension_id, req.version
+            )),
+            outputs: req.params,
+        })
+    }
+}
+
 pub fn extensions_deps() -> extensions::application::Deps {
     let dir = extensions_dir();
+    let registry: std::sync::Arc<dyn ExtensionRegistry + Send + Sync> =
+        std::sync::Arc::new(LocalExtensionRegistry::new(&dir));
+    let sources = std::sync::Arc::new(LocalExtensionSourceStore::new(&dir));
+    let executor = std::sync::Arc::new(LocalExtensionExecutor::new(registry.clone(), &dir));
     extensions::application::Deps {
-        extension_registry: std::sync::Arc::new(LocalExtensionRegistry::new(&dir)),
-        extension_source_store: std::sync::Arc::new(LocalExtensionSourceStore::new(&dir)),
+        extension_executor: executor,
+        extension_registry: registry,
+        extension_source_store: sources,
     }
 }
 

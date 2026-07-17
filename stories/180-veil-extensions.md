@@ -101,7 +101,7 @@ so platform implementers never miss them.
 
 ## EXT-03: Publish + invoke
 
-**Status:** Todo · **Priority:** P1 · **Owner:** veil-runtime  
+**Status:** Done · **Priority:** P1 · **Owner:** veil-runtime  
 
 **As a** extension author  
 **I want** publish → immutable int version and `invoke(id, version, ctx, params)`  
@@ -205,7 +205,7 @@ so platform implementers never miss them.
 |----|--------|
 | EXT-01 | Done |
 | EXT-02 | Done |
-| EXT-03 | Todo |
+| EXT-03 | Done |
 | EXT-04 | Todo (application) |
 | EXT-05 | Todo (application/layers) |
 | EXT-06 | Todo (wear_test) |

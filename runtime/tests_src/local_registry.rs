@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use extensions::application::{self, Deps};
 use extensions::domain::types::{ExtensionKind, ExtensionProvenance, ExtensionScope};
-use extensions::ports::{ExtensionRegistry, ExtensionSourceStore};
+use extensions::domain::types::{ExtensionInvokeRequest, ExtensionInvokeResult, ExtensionRunStatus, ExtensionVersion};
+use extensions::ports::{ExtensionExecutor, ExtensionRegistry, ExtensionSourceStore};
 use async_trait::async_trait;
 use uuid::Uuid;
 use veil_shared::DomainError;
@@ -182,10 +183,35 @@ impl ExtensionSourceStore for FsSources {
     }
 }
 
+struct StubExecutor;
+
+#[async_trait]
+impl ExtensionExecutor for StubExecutor {
+    async fn publish(&self, id: Uuid) -> Result<ExtensionVersion, DomainError> {
+        Ok(ExtensionVersion {
+            extension_id: id,
+            version: 1,
+            source_commit: "test".into(),
+            artifact_uris: serde_json::json!({}),
+            published_on: chrono::Utc::now(),
+            published_by: None,
+            changelog: None,
+        })
+    }
+    async fn invoke(&self, _req: ExtensionInvokeRequest) -> Result<ExtensionInvokeResult, DomainError> {
+        Ok(ExtensionInvokeResult {
+            status: ExtensionRunStatus::Succeeded,
+            message: None,
+            outputs: serde_json::json!({}),
+        })
+    }
+}
+
 #[tokio::test]
 async fn create_list_get_version_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();
     let deps = Deps {
+        extension_executor: Arc::new(StubExecutor),
         extension_registry: Arc::new(FsRegistry::new(tmp.path().to_path_buf())),
         extension_source_store: Arc::new(FsSources {
             root: tmp.path().to_path_buf(),
