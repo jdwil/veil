@@ -502,3 +502,315 @@ pub fn storage_deps() -> storage::application::Deps {
         object_storage: std::sync::Arc::new(LocalObjectStorage::new(&dir)),
     }
 }
+
+// ─── EXT-02: Extension registry (local filesystem) ─────────────────────────
+// Residual IO adapter implementing VEIL-declared ports (same role as
+// LocalObjectStorage). Domain + services remain in runtime.veil → extensions crate.
+
+use extensions::domain::types::{ExtensionRecord, ExtensionVersion};
+use extensions::ports::{ExtensionRegistry, ExtensionSourceStore};
+
+/// Resolve extensions data dir: `VEIL_EXTENSIONS_DIR` or `{projects_dir}/.veil-extensions`.
+pub fn extensions_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("VEIL_EXTENSIONS_DIR") {
+        return PathBuf::from(d);
+    }
+    crate::platform::projects_dir().join(".veil-extensions")
+}
+
+/// Local ExtensionRegistry: one JSON file per extension + versions/ subdir.
+pub struct LocalExtensionRegistry {
+    root: PathBuf,
+}
+
+impl LocalExtensionRegistry {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let _ = std::fs::create_dir_all(&root);
+        Self { root }
+    }
+
+    fn record_path(&self, id: &uuid::Uuid) -> PathBuf {
+        self.root.join(format!("{id}.json"))
+    }
+
+    fn versions_dir(&self, id: &uuid::Uuid) -> PathBuf {
+        self.root.join(id.to_string()).join("versions")
+    }
+
+    fn version_path(&self, id: &uuid::Uuid, version: i64) -> PathBuf {
+        self.versions_dir(id).join(format!("{version}.json"))
+    }
+}
+
+#[async_trait]
+impl ExtensionRegistry for LocalExtensionRegistry {
+    async fn create(&self, record: ExtensionRecord) -> Result<ExtensionRecord, DomainError> {
+        let p = self.record_path(&record.extension_id);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let s = serde_json::to_string_pretty(&record)
+            .map_err(|e| DomainError::External(e.to_string()))?;
+        std::fs::write(&p, s).map_err(|e| DomainError::External(e.to_string()))?;
+        Ok(record)
+    }
+
+    async fn get(&self, id: uuid::Uuid) -> Result<Option<ExtensionRecord>, DomainError> {
+        let p = self.record_path(&id);
+        if !p.is_file() {
+            return Ok(None);
+        }
+        let s = std::fs::read_to_string(&p).map_err(|e| DomainError::External(e.to_string()))?;
+        let rec: ExtensionRecord =
+            serde_json::from_str(&s).map_err(|e| DomainError::External(e.to_string()))?;
+        Ok(Some(rec))
+    }
+
+    async fn list(
+        &self,
+        scope: Option<String>,
+        kind: Option<String>,
+        product_id: Option<String>,
+        tenant_id: Option<uuid::Uuid>,
+    ) -> Result<Vec<ExtensionRecord>, DomainError> {
+        let mut out = Vec::new();
+        let Ok(rd) = std::fs::read_dir(&self.root) else {
+            return Ok(out);
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(s) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let Ok(rec) = serde_json::from_str::<ExtensionRecord>(&s) else {
+                continue;
+            };
+            if rec.archived {
+                continue;
+            }
+            if let Some(ref sc) = scope {
+                if format!("{:?}", rec.scope) != *sc && format!("{:?}", rec.scope).to_lowercase() != sc.to_lowercase() {
+                    // also accept bare names
+                    let want = sc.to_lowercase();
+                    let got = format!("{:?}", rec.scope).to_lowercase();
+                    if got != want {
+                        continue;
+                    }
+                }
+            }
+            if let Some(ref k) = kind {
+                let want = k.to_lowercase();
+                let got = format!("{:?}", rec.kind).to_lowercase();
+                if got != want {
+                    continue;
+                }
+            }
+            if let Some(ref pid) = product_id {
+                if rec.product_id.as_deref() != Some(pid.as_str()) {
+                    continue;
+                }
+            }
+            if let Some(tid) = tenant_id {
+                if rec.tenant_id != Some(tid) {
+                    continue;
+                }
+            }
+            out.push(rec);
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    async fn update(&self, record: ExtensionRecord) -> Result<ExtensionRecord, DomainError> {
+        self.create(record).await
+    }
+
+    async fn save_version(&self, ver: ExtensionVersion) -> Result<ExtensionVersion, DomainError> {
+        let dir = self.versions_dir(&ver.extension_id);
+        let _ = std::fs::create_dir_all(&dir);
+        let p = self.version_path(&ver.extension_id, ver.version);
+        let s = serde_json::to_string_pretty(&ver)
+            .map_err(|e| DomainError::External(e.to_string()))?;
+        std::fs::write(&p, s).map_err(|e| DomainError::External(e.to_string()))?;
+        Ok(ver)
+    }
+
+    async fn get_version(
+        &self,
+        id: uuid::Uuid,
+        version: i64,
+    ) -> Result<Option<ExtensionVersion>, DomainError> {
+        let p = self.version_path(&id, version);
+        if !p.is_file() {
+            return Ok(None);
+        }
+        let s = std::fs::read_to_string(&p).map_err(|e| DomainError::External(e.to_string()))?;
+        let ver: ExtensionVersion =
+            serde_json::from_str(&s).map_err(|e| DomainError::External(e.to_string()))?;
+        Ok(Some(ver))
+    }
+
+    async fn list_versions(&self, id: uuid::Uuid) -> Result<Vec<ExtensionVersion>, DomainError> {
+        let dir = self.versions_dir(&id);
+        let mut out = Vec::new();
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return Ok(out);
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(s) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            if let Ok(ver) = serde_json::from_str::<ExtensionVersion>(&s) {
+                out.push(ver);
+            }
+        }
+        out.sort_by_key(|v| v.version);
+        Ok(out)
+    }
+}
+
+/// Local package source tree under `{root}/src/{id}/`.
+pub struct LocalExtensionSourceStore {
+    root: PathBuf,
+}
+
+impl LocalExtensionSourceStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let _ = std::fs::create_dir_all(root.join("src"));
+        Self { root }
+    }
+
+    fn pkg_root(&self, id: &uuid::Uuid) -> PathBuf {
+        self.root.join("src").join(id.to_string())
+    }
+}
+
+#[async_trait]
+impl ExtensionSourceStore for LocalExtensionSourceStore {
+    async fn ensure_package(&self, id: uuid::Uuid) -> Result<String, DomainError> {
+        let r = self.pkg_root(&id);
+        std::fs::create_dir_all(&r).map_err(|e| DomainError::External(e.to_string()))?;
+        Ok(r.to_string_lossy().to_string())
+    }
+
+    async fn write_file(
+        &self,
+        id: uuid::Uuid,
+        rel_path: String,
+        content: String,
+    ) -> Result<(), DomainError> {
+        let r = self.pkg_root(&id);
+        let p = r.join(&rel_path);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| DomainError::External(e.to_string()))?;
+        }
+        std::fs::write(&p, content).map_err(|e| DomainError::External(e.to_string()))
+    }
+
+    async fn read_file(
+        &self,
+        id: uuid::Uuid,
+        rel_path: String,
+    ) -> Result<Option<String>, DomainError> {
+        let p = self.pkg_root(&id).join(rel_path);
+        if !p.is_file() {
+            return Ok(None);
+        }
+        let s = std::fs::read_to_string(&p).map_err(|e| DomainError::External(e.to_string()))?;
+        Ok(Some(s))
+    }
+
+    async fn list_files(&self, id: uuid::Uuid, prefix: String) -> Result<Vec<String>, DomainError> {
+        let r = self.pkg_root(&id);
+        let mut out = Vec::new();
+        walk_keys(&r, &r, &prefix, &mut out);
+        Ok(out)
+    }
+
+    async fn package_root(&self, id: uuid::Uuid) -> Result<String, DomainError> {
+        Ok(self.pkg_root(&id).to_string_lossy().to_string())
+    }
+}
+
+/// Build extensions Deps with local filesystem adapters.
+pub fn extensions_deps() -> extensions::application::Deps {
+    let dir = extensions_dir();
+    extensions::application::Deps {
+        extension_registry: std::sync::Arc::new(LocalExtensionRegistry::new(&dir)),
+        extension_source_store: std::sync::Arc::new(LocalExtensionSourceStore::new(&dir)),
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+    use extensions::application;
+    use extensions::domain::types::{
+        ExtensionKind, ExtensionProvenance, ExtensionScope,
+    };
+
+    #[tokio::test]
+    async fn create_list_get_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reg = LocalExtensionRegistry::new(tmp.path());
+        let src = LocalExtensionSourceStore::new(tmp.path());
+        let deps = extensions::application::Deps {
+            extension_registry: std::sync::Arc::new(reg),
+            extension_source_store: std::sync::Arc::new(src),
+        };
+        let rec = application::create_extension(
+            &deps,
+            "Activate members".into(),
+            "Reaction".into(),
+            "Platform".into(),
+            "Stock".into(),
+            None,
+            None,
+            None,
+            Some("seed stock".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        assert_eq!(rec.name, "Activate members");
+        assert_eq!(rec.current_version, 0);
+        assert!(matches!(rec.provenance, ExtensionProvenance::Stock));
+        assert!(matches!(rec.kind, ExtensionKind::Reaction));
+        assert!(matches!(rec.scope, ExtensionScope::Platform));
+
+        let listed = application::list_extensions(&deps, None, None, None, None)
+            .await
+            .expect("list");
+        assert_eq!(listed.len(), 1);
+
+        let got = application::get_extension(&deps, rec.extension_id)
+            .await
+            .expect("get");
+        assert_eq!(got.name, "Activate members");
+
+        let ver = application::save_extension_version(
+            &deps,
+            rec.extension_id,
+            "local".into(),
+            serde_json::json!({ "rust": "artifact://local" }),
+            Some("first publish".into()),
+        )
+        .await
+        .expect("publish version");
+        assert_eq!(ver.version, 1);
+
+        let versions = application::list_extension_versions(&deps, rec.extension_id)
+            .await
+            .expect("list versions");
+        assert_eq!(versions.len(), 1);
+    }
+}

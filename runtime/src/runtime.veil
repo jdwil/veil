@@ -801,3 +801,229 @@ pkg VeilRuntime
           ret Principal{id: token, roles: [], claims: Map.new()}
         impl check_permission(principal, action, resource)
           ret true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Extensions — registry for mini-programs (Reactions, Signals, UI, …)
+  # Design: application/docs/veil-extensions.md · Stories: EXT-02+
+  # MUST: VEIL-authored domain/services/handlers; ports + local/AWS adapters.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ctx Extensions
+    group domain
+      enum ExtensionScope
+        Platform
+        Product
+        Tenant
+
+      enum ExtensionKind
+        Reaction
+        Signal
+        Activation
+        UiPanel
+
+      enum ExtensionProvenance
+        Stock
+        Custom
+
+      # Lineage for duplicate-as-custom (EXT-09)
+      val ExtensionLineage
+        extension_id: Id
+        version: Int
+
+      # Registry row (meta). Source/artifacts live behind source/artifact ports.
+      val ExtensionRecord
+        extension_id: Id
+        scope: ExtensionScope
+        product_id: Opt<Str>
+        tenant_id: Opt<Id>
+        initiative_id: Opt<Id>
+        kind: ExtensionKind
+        provenance: ExtensionProvenance
+        name: Str
+        description: Opt<Str>
+        current_version: Int
+        params_schema: Opt<Json>
+        capabilities: List<Str>
+        palette_layer_refs: List<Str>
+        # Local path or s3/git URI — adapter-specific
+        source_uri: Str
+        created_from: Opt<ExtensionLineage>
+        created_on: Dt
+        updated_on: Dt
+        archived: Bool
+
+      val ExtensionVersion
+        extension_id: Id
+        version: Int
+        source_commit: Str
+        # target name → artifact URI (local path or s3 key)
+        artifact_uris: Json
+        published_on: Dt
+        published_by: Opt<Id>
+        changelog: Opt<Str>
+
+      # Meta registry (create/list/get/versions). Not the object store.
+      port ExtensionRegistry
+        create!(record: ExtensionRecord) -> ExtensionRecord
+        get!(id: Id) -> Opt<ExtensionRecord>
+        list!(scope: Opt<Str>, kind: Opt<Str>, product_id: Opt<Str>, tenant_id: Opt<Id>) -> List<ExtensionRecord>
+        update!(record: ExtensionRecord) -> ExtensionRecord
+        save_version!(ver: ExtensionVersion) -> ExtensionVersion
+        get_version!(id: Id, version: Int) -> Opt<ExtensionVersion>
+        list_versions!(id: Id) -> List<ExtensionVersion>
+
+      # Package source tree (git-on-S3 later; local dir for dual-loop).
+      port ExtensionSourceStore
+        ensure_package!(id: Id) -> Str
+        write_file!(id: Id, rel_path: Str, content: Str)
+        read_file!(id: Id, rel_path: Str) -> Opt<Str>
+        list_files!(id: Id, prefix: Str) -> List<Str>
+        package_root!(id: Id) -> Str
+
+    group application
+      # Bus/HTTP services (same pattern as Storage CreateRepo / ListRepos).
+      # Host maps HTTP → these services; ports via Deps + local File adapters.
+
+      svc CreateExtension
+        -> ExtensionRecord
+        input
+          name: Str
+          kind: Str
+          scope: Str
+          provenance: Str
+          product_id: Opt<Str>
+          tenant_id: Opt<Id>
+          initiative_id: Opt<Id>
+          description: Opt<Str>
+          params_schema: Opt<Json>
+        step execute
+          eid = Id.new()
+          now = Dt.now()
+          sc = ExtensionScope.Platform
+          if scope == "Product"
+            sc = ExtensionScope.Product
+          if scope == "Tenant"
+            sc = ExtensionScope.Tenant
+          kd = ExtensionKind.Reaction
+          if kind == "Signal"
+            kd = ExtensionKind.Signal
+          if kind == "Activation"
+            kd = ExtensionKind.Activation
+          if kind == "UiPanel"
+            kd = ExtensionKind.UiPanel
+          pv = ExtensionProvenance.Custom
+          if provenance == "Stock"
+            pv = ExtensionProvenance.Stock
+          root = ExtensionSourceStore.ensure_package!(eid)
+          rec = ExtensionRecord{extension_id: eid, scope: sc, product_id: product_id, tenant_id: tenant_id, initiative_id: initiative_id, kind: kd, provenance: pv, name: name, description: description, current_version: 0, params_schema: params_schema, capabilities: [], palette_layer_refs: [], source_uri: root, created_from: null, created_on: now, updated_on: now, archived: false}
+          saved = ExtensionRegistry.create!(rec)
+          ret saved
+
+      svc ListExtensions
+        -> List<ExtensionRecord>
+        input
+          scope: Opt<Str>
+          kind: Opt<Str>
+          product_id: Opt<Str>
+          tenant_id: Opt<Id>
+        step execute
+          items = ExtensionRegistry.list!(scope, kind, product_id, tenant_id)
+          ret items
+
+      svc GetExtension
+        -> ExtensionRecord
+        input
+          id: Id
+        step execute
+          # Port returns Opt; codegen maps missing → NotFound
+          rec = ExtensionRegistry.get!(id)
+          ret rec
+
+      svc ListExtensionVersions
+        -> List<ExtensionVersion>
+        input
+          id: Id
+        step execute
+          items = ExtensionRegistry.list_versions!(id)
+          ret items
+
+      svc GetExtensionVersion
+        -> ExtensionVersion
+        input
+          id: Id
+          version: Int
+        step execute
+          ver = ExtensionRegistry.get_version!(id, version)
+          ret ver
+
+      svc SaveExtensionVersion
+        -> ExtensionVersion
+        input
+          extension_id: Id
+          source_commit: Str
+          artifact_uris: Json
+          changelog: Opt<Str>
+        step execute
+          rec = ExtensionRegistry.get!(extension_id)
+          next_v = rec.current_version + 1
+          rec.current_version = next_v
+          rec.updated_on = Dt.now()
+          ExtensionRegistry.update!(rec)
+          now = Dt.now()
+          ver = ExtensionVersion{extension_id: extension_id, version: next_v, source_commit: source_commit, artifact_uris: artifact_uris, published_on: now, published_by: null, changelog: changelog}
+          saved = ExtensionRegistry.save_version!(ver)
+          ret saved
+
+    group infrastructure
+      # Local dual-loop / CI adapters (declared in VEIL). Live filesystem IO lives in
+      # bootstrap `LocalExtensionRegistry` residual (same pattern as LocalObjectStorage /
+      # LocalMetadataStore) implementing these ports under VEIL_EXTENSIONS_DIR.
+      # AWS: DdbExtensionRegistry (EXT-11) — same ports, no AWS types in domain.
+      adapter FileExtensionRegistry for ExtensionRegistry
+        @env(VEIL_EXTENSIONS_DIR)
+        impl create(record)
+          ret record
+        impl get(id)
+          ret null
+        impl list(scope, kind, product_id, tenant_id)
+          ret []
+        impl update(record)
+          ret record
+        impl save_version(ver)
+          ret ver
+        impl get_version(id, version)
+          ret null
+        impl list_versions(id)
+          ret []
+
+      adapter FileExtensionSourceStore for ExtensionSourceStore
+        @env(VEIL_EXTENSIONS_DIR)
+        impl ensure_package(id)
+          ret "local"
+        impl write_file(id, rel_path, content)
+          ret Ok
+        impl read_file(id, rel_path)
+          ret null
+        impl list_files(id, prefix)
+          ret []
+        impl package_root(id)
+          ret "local"
+
+      # AWS path (EXT-11): same port, DDB meta. Skeleton — no domain AWS types.
+      adapter DdbExtensionRegistry for ExtensionRegistry
+        @field(client: DdbClient)
+        @env(EXTENSIONS_TABLE)
+        impl create(record)
+          ret record
+        impl get(id)
+          ret null
+        impl list(scope, kind, product_id, tenant_id)
+          ret []
+        impl update(record)
+          ret record
+        impl save_version(ver)
+          ret ver
+        impl get_version(id, version)
+          ret null
+        impl list_versions(id)
+          ret []

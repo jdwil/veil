@@ -1124,6 +1124,20 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         );
     }
 
+    // Language primitives win over stub names (e.g. gix.stub declares `struct Id`
+    // which must not capture VEIL `Id.new()` → that is always Uuid::new_v4()).
+    if !call.method.is_empty() {
+        let lang = match (call.target.as_str(), call.method.as_str()) {
+            ("Id", "new") | ("Id", "new_v4") | ("UUID", "new") | ("UUID", "new_v4") | ("Uuid", "new")
+                => Some("Uuid::new_v4()".to_string()),
+            ("Dt", "now") => Some("Utc::now()".to_string()),
+            _ => None,
+        };
+        if let Some(result) = lang {
+            return result;
+        }
+    }
+
     // Built-in type-level method translations.
     // These are VEIL's short type names with associated methods that map
     // to Rust idioms. No framework knowledge — just language primitives.
@@ -1163,6 +1177,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             ("Fs", "read") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
                 Some(format!("std::fs::read_to_string(&{})?", arg))
+            }
+            ("Fs", "write") if call.args.len() == 2 => {
+                let path = expr_to_rust(&call.args[0], ctx);
+                let data = expr_to_rust(&call.args[1], ctx);
+                Some(format!("std::fs::write(&{}, {}.as_bytes())?", path, data))
+            }
+            ("Fs", "create_dir_all") if call.args.len() == 1 => {
+                let arg = expr_to_rust(&call.args[0], ctx);
+                Some(format!("std::fs::create_dir_all(&{})?", arg))
             }
             ("Fs", "exists") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
