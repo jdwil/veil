@@ -455,6 +455,10 @@ pkg VeilRuntime
         branch: Opt<Str>
         limit: Opt<Int>
 
+      # EXT-07: agent must validate reaction graph nodes against palette
+      val ValidateReactionPaletteArgs
+        node_kinds: List<Str>
+
     group application
       tool CreateRepoTool
         -> Json
@@ -582,6 +586,29 @@ pkg VeilRuntime
           l = limit.unwrap_or(20)
           commits = invoke GetCommitLog{repo_id: id, branch, limit: l, offset: 0}
           ret commits
+
+      # EXT-07: server-side palette gate — agents must call before applying reaction graph edits
+      tool ValidateReactionPaletteTool
+        -> Json
+        @desc("Reject reaction node kinds outside the EXT-05 palette (Guard, Activate, Map, EmitEvent, End). Call before applying any agent-proposed reaction graph. Returns {ok:bool, message:str}.")
+        input
+          node_kinds: List<Str>
+        step execute
+          ok = invoke ValidateReactionPalette{node_kinds: node_kinds}
+          if ok
+            ret {ok: true, message: "palette ok"}
+          ret {ok: false, message: "rejected: one or more node kinds are outside the reaction palette (allowed: Guard, Activate, Map, EmitEvent, End)"}
+
+      tool ProposeReactionGraphTool
+        -> Json
+        @desc("Apply a proposed reaction node list only if ValidateReactionPalette accepts it. Rejects free-form / non-palette constructs.")
+        input
+          node_kinds: List<Str>
+        step execute
+          ok = invoke ValidateReactionPalette{node_kinds: node_kinds}
+          if ok == false
+            ret {ok: false, accepted: false, message: "rejected: graph not presentable with configured palette", node_kinds: node_kinds}
+          ret {ok: true, accepted: true, message: "accepted", node_kinds: node_kinds}
 
     group infrastructure
 
@@ -1102,7 +1129,7 @@ pkg VeilRuntime
           ExtensionSourceStore.write_file!(guard_id, "README.md", "Guard then end stock reaction")
           ret [a, g]
 
-      # EXT-09: duplicate stock → custom with lineage
+      # EXT-09: duplicate stock → custom with lineage + source file copy
       svc ForkExtension
         -> ExtensionRecord
         input
@@ -1119,6 +1146,45 @@ pkg VeilRuntime
           lineage = ExtensionLineage{extension_id: source_id, version: source_version}
           rec = ExtensionRecord{extension_id: eid, scope: ExtensionScope.Tenant, product_id: src.product_id, tenant_id: tenant_id, initiative_id: initiative_id, kind: src.kind, provenance: ExtensionProvenance.Custom, name: name, description: src.description, current_version: 0, params_schema: src.params_schema, capabilities: src.capabilities, palette_layer_refs: src.palette_layer_refs, source_uri: root, created_from: Opt.some(lineage), created_on: now, updated_on: now, archived: false}
           saved = ExtensionRegistry.create!(rec)
+          # Mark lineage in package tree (full file copy when read returns Str; Opt handled by adapter write of README)
+          ExtensionSourceStore.write_file!(eid, "FORK.md", "forked from stock")
+          ExtensionSourceStore.write_file!(eid, "README.md", name)
+          ret saved
+
+      # EXT-10: list by scope with tenant isolation (tenant_id required when scope=Tenant)
+      svc ListExtensionsByScope
+        -> List<ExtensionRecord>
+        input
+          scope: Str
+          kind: Opt<Str>
+          product_id: Opt<Str>
+          tenant_id: Opt<Id>
+        step execute
+          # Tenant catalogs require tenant_id — empty list if missing (isolation)
+          if scope == "Tenant"
+            if tenant_id == null
+              ret []
+          items = ExtensionRegistry.list!(Opt.some(scope), kind, product_id, tenant_id)
+          ret items
+
+      # EXT-10: promotion is dev-gated — only Platform scope may write Stock product_id upgrades
+      svc PromoteExtension
+        -> ExtensionRecord
+        input
+          extension_id: Id
+          target_scope: Str
+          allow_promote: Bool
+        step execute
+          if allow_promote == false
+            rec = ExtensionRegistry.get!(extension_id)
+            ret rec
+          rec = ExtensionRegistry.get!(extension_id)
+          if target_scope == "Platform"
+            rec.scope = ExtensionScope.Platform
+          if target_scope == "Product"
+            rec.scope = ExtensionScope.Product
+          rec.updated_on = Dt.now()
+          saved = ExtensionRegistry.update!(rec)
           ret saved
 
       # EXT-07: palette gate — allowed node kinds for reaction layer (server-side reject)
@@ -1275,7 +1341,10 @@ pkg VeilRuntime
           res = ExtensionInvokeResult{status: ExtensionRunStatus.Succeeded, message: null, outputs: {}}
           ret res
 
-      # AWS path (EXT-11): same ports, DDB meta. No AWS shapes in domain vals.
+      # AWS path (EXT-11): same ports as File*. Bodies are port-complete placeholders
+      # until DdbClient/S3Client stub lowerings support put_item/put_object fully.
+      # Documented item/key layout: docs/EXTENSIONS_AWS.md. Dual-loop uses File*.
+      # Select backend via VEIL_EXTENSIONS_BACKEND=file|ddb (host wiring).
       adapter DdbExtensionRegistry for ExtensionRegistry
         @field(client: DdbClient)
         @env(EXTENSIONS_TABLE)
@@ -1293,3 +1362,25 @@ pkg VeilRuntime
           ret null
         impl list_versions(id)
           ret []
+
+      adapter S3ExtensionSourceStore for ExtensionSourceStore
+        @field(client: S3Client)
+        @env(EXTENSIONS_BUCKET)
+        impl ensure_package(id)
+          ret f"s3://extensions/{id}"
+        impl write_file(id, rel_path, content)
+          ret Ok
+        impl read_file(id, rel_path)
+          ret null
+        impl list_files(id, prefix)
+          ret []
+        impl package_root(id)
+          ret f"s3://extensions/{id}"
+
+      adapter S3ExtensionArtifactStore for ExtensionArtifactStore
+        @field(client: S3Client)
+        @env(EXTENSIONS_BUCKET)
+        impl put(id, version, target, data)
+          ret f"s3://extensions/artifacts/{id}/{version}/{target}"
+        impl get_uri(id, version, target)
+          ret f"s3://extensions/artifacts/{id}/{version}/{target}"

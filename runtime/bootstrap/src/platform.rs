@@ -672,7 +672,8 @@ pub async fn handle_bus(msg: &Value) -> Value {
         // ── Extensions (VEIL services via generated File* adapters) ───────
         "EnsureStockCatalog" | "ListExtensions" | "CreateExtension" | "GetExtension"
         | "PublishExtension" | "InvokeExtension" | "ForkExtension"
-        | "ValidateReactionPalette" | "ListStockExtensions" | "MountUiExtension" => {
+        | "ValidateReactionPalette" | "ListStockExtensions" | "MountUiExtension"
+        | "ListExtensionsByScope" | "PromoteExtension" => {
             handle_extension_bus(ty, msg).await
         }
         other => json!({
@@ -820,6 +821,35 @@ async fn handle_extension_bus(ty: &str, msg: &Value) -> Value {
             let props = msg.get("props").cloned().unwrap_or(json!({}));
             match application::mount_ui_extension(eid, version, slot, props).await {
                 Ok(h) => json!({ "handle": h, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "ListExtensionsByScope" => {
+            let scope = strf("scope").unwrap_or_else(|| "Platform".into());
+            match application::list_extensions_by_scope(
+                &deps,
+                scope,
+                strf("kind"),
+                strf("product_id"),
+                uuid_f("tenant_id"),
+            )
+            .await
+            {
+                Ok(items) => json!({ "extensions": items, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "PromoteExtension" => {
+            let Some(eid) = uuid_f("extension_id").or_else(|| uuid_f("id")) else {
+                return json!({ "error": "extension_id required" });
+            };
+            let target_scope = strf("target_scope").unwrap_or_else(|| "Product".into());
+            let allow = msg
+                .get("allow_promote")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match application::promote_extension(&deps, eid, target_scope, allow).await {
+                Ok(rec) => json!({ "extension": rec, "via": "extensions::application" }),
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }

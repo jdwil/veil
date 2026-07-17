@@ -68,3 +68,9 @@ When implementation lands in-tree, link concrete packages and APIs from this pag
 | Catalog, fork, seed, palette, publish, invoke | Bootstrap only **constructs** generated adapters (`extensions_deps`) |
 
 **MISSION:** zero filesystem domain knowledge in `veil-codegen`. Adapters call `LocalFs` via stub, not `Fs.*` builtins.
+
+## Related
+
+- [`EXTENSIONS_AWS.md`](./EXTENSIONS_AWS.md) — EXT-11 Dynamo/S3 layout and migration
+- [`EXTENSIONS_UI_SLOTS.md`](./EXTENSIONS_UI_SLOTS.md) — EXT-12 mount slots
+- Smoke: `runtime/scripts/extensions_smoke.sh`
