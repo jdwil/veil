@@ -264,3 +264,73 @@ pkg DbApp
             .join("\n")
     );
 }
+
+/// Port methods and stub methods often share names (`get_version`, …).
+/// Receiver Shape::Struct must win — sync Res! stub → map_err, never .await?
+/// (Permanent fix for Extensions ExtStore / File adapter lowering.)
+#[test]
+fn stub_method_name_collision_with_port_uses_sync_suffix() {
+    let stub = r#"
+stub facade_store path:../facade_store
+  struct Facade
+    fn get_version(root: Str, id: Str) -> Res!<Str>
+    fn package_root(root: Str, id: Str) -> Str
+"#;
+    let app = r#"
+pkg Collide
+  use ddd
+  use facade_store
+
+  ctx Ext
+    group domain
+      port VersionPort
+        get_version!(id: Id) -> Opt<Str>
+        package_root!(id: Id) -> Str
+
+    group infrastructure
+      adapter FileVersion for VersionPort
+        @env(ROOT_DIR)
+        impl get_version(id)
+          raw = Facade.get_version!(self.dir, f"{id}")
+          if raw == ""
+            ret null
+          ret raw
+        impl package_root(id)
+          ret Facade.package_root(self.dir, f"{id}")
+"#;
+    let out = generate_with_stub(stub, app);
+    // Facade is a stub struct — must not be lowered as port .await?
+    assert!(
+        out.contains("facade_store::Facade::get_version")
+            && out.contains("map_err(|e| DomainError::External"),
+        "sync Res! stub method must map_err, not await:\n{}",
+        out.lines()
+            .filter(|l| l.contains("Facade") || l.contains("get_version") || l.contains("await"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("Facade::get_version") || !out.lines().any(|l| {
+            l.contains("Facade::get_version") && l.contains(".await")
+        }),
+        "Facade::get_version must not use .await (port name collision):\n{}",
+        out
+    );
+    // Non-Res! package_root: no await on Facade
+    let pkg_lines: Vec<_> = out
+        .lines()
+        .filter(|l| l.contains("package_root"))
+        .collect();
+    assert!(
+        pkg_lines.iter().any(|l| l.contains("Facade::package_root")),
+        "expected Facade::package_root call:\n{}",
+        pkg_lines.join("\n")
+    );
+    assert!(
+        !pkg_lines
+            .iter()
+            .any(|l| l.contains("Facade::package_root") && l.contains(".await")),
+        "Facade::package_root must not await:\n{}",
+        pkg_lines.join("\n")
+    );
+}

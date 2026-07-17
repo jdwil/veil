@@ -7,6 +7,14 @@ members = [
     "crates/veil-cli",
     "crates/veil-local",
 ]
+# Path crates for generated runtime (referenced via .stub path:…, not engine members)
+exclude = [
+    "runtime/local_fs",
+    "runtime/ext_store",
+    "runtime/generated",
+    "runtime/bootstrap",
+    "runtime/generated-host",
+]
 resolver = "2"
 
 [workspace.package]

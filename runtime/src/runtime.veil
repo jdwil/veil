@@ -12,8 +12,10 @@ pkg VeilRuntime
   use aws_sdk_s3 as s3
   use aws_sdk_dynamodb as ddb
   use aws_config as cfg
-  # Local FS facade for File* adapters (stub + path crate — not engine builtins)
+  # Local FS facade (other Storage adapters). Extensions use veil_ext_store.
   use veil_local_fs
+  # Extension registry/source/artifacts — file|AWS switch lives in the crate, not SDK lowering
+  use veil_ext_store
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Storage — VCS, Registry, Compiler, Deployer
@@ -1244,57 +1246,46 @@ pkg VeilRuntime
           ret h
 
     group infrastructure
-      # ── File adapters: fully VEIL-authored against veil_local_fs stub ─────
-      # No residual Rust registry/executor. Engine has zero FS knowledge.
+      # ── Extension adapters: VEIL bodies call ExtStore only ─────────────────
+      # Permanent fix for "stub lowering": never call raw DdbClient/S3Client from
+      # VEIL. AWS SDK lives in runtime/ext_store behind veil_ext_store.stub.
+      # Backend: VEIL_EXTENSIONS_BACKEND=file (default) | ddb — same adapter code.
+      # Dual-loop host wires File* (extensions_deps). Engine has zero FS/AWS knowledge.
 
       adapter FileExtensionRegistry for ExtensionRegistry
         @env(VEIL_EXTENSIONS_DIR)
         impl create(record)
-          LocalFs.create_dir_all!(self.dir)
-          path = LocalFs.join(self.dir, f"{record.extension_id}.json")
-          body = Json.stringify(record)
-          LocalFs.write!(path, body)
+          ExtStore.put_record!(self.dir, f"{record.extension_id}", Json.stringify(record))
           ret record
         impl get(id)
-          path = LocalFs.join(self.dir, f"{id}.json")
-          if LocalFs.path_exists(LocalFs.join(self.dir, f"{id}.json")) == false
+          raw = ExtStore.get_record!(self.dir, f"{id}")
+          if raw == ""
             ret null
-          raw = LocalFs.read!(LocalFs.join(self.dir, f"{id}.json"))
           rec = Json.parse(raw)
           ret rec
         impl list(scope, kind, product_id, tenant_id)
-          LocalFs.create_dir_all!(self.dir)
-          names = LocalFs.list_json_files!(self.dir)
+          raws = ExtStore.list_records!(self.dir)
           out = []
-          for name in names
-            raw = LocalFs.read!(LocalFs.join(self.dir, name))
+          for raw in raws
             rec = Json.parse(raw)
             out = out + [rec]
           ret out
         impl update(record)
-          path = LocalFs.join(self.dir, f"{record.extension_id}.json")
-          body = Json.stringify(record)
-          LocalFs.write!(path, body)
+          ExtStore.put_record!(self.dir, f"{record.extension_id}", Json.stringify(record))
           ret record
         impl save_version(ver)
-          LocalFs.create_dir_all!(LocalFs.join(LocalFs.join(self.dir, f"{ver.extension_id}"), "versions"))
-          LocalFs.write!(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, f"{ver.extension_id}"), "versions"), f"{ver.version}.json"), Json.stringify(ver))
+          ExtStore.put_version!(self.dir, f"{ver.extension_id}", f"{ver.version}", Json.stringify(ver))
           ret ver
         impl get_version(id, version)
-          if LocalFs.path_exists(LocalFs.join(LocalFs.join(self.dir, f"{id}"), "versions")) == false
+          raw = ExtStore.get_version!(self.dir, f"{id}", f"{version}")
+          if raw == ""
             ret null
-          if LocalFs.path_exists(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, f"{id}"), "versions"), f"{version}.json")) == false
-            ret null
-          raw = LocalFs.read!(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, f"{id}"), "versions"), f"{version}.json"))
           ver = Json.parse(raw)
           ret ver
         impl list_versions(id)
-          if LocalFs.path_exists(LocalFs.join(LocalFs.join(self.dir, f"{id}"), "versions")) == false
-            ret []
-          names = LocalFs.list_dir!(LocalFs.join(LocalFs.join(self.dir, f"{id}"), "versions"))
+          raws = ExtStore.list_versions!(self.dir, f"{id}")
           out = []
-          for name in names
-            raw = LocalFs.read!(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, f"{id}"), "versions"), name))
+          for raw in raws
             ver = Json.parse(raw)
             out = out + [ver]
           ret out
@@ -1302,34 +1293,32 @@ pkg VeilRuntime
       adapter FileExtensionSourceStore for ExtensionSourceStore
         @env(VEIL_EXTENSIONS_DIR)
         impl ensure_package(id)
-          LocalFs.create_dir_all!(LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}"))
-          ret LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}")
+          root = ExtStore.ensure_package!(self.dir, f"{id}")
+          ret root
         impl write_file(id, rel_path, content)
-          LocalFs.create_dir_all!(LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}"))
-          LocalFs.write!(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}"), rel_path), content)
+          ExtStore.write_source!(self.dir, f"{id}", rel_path, content)
           ret Ok
         impl read_file(id, rel_path)
-          # single use of rel_path — recompute via list+match is heavy; use join once into temp via write pattern
-          raw = LocalFs.read!(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}"), rel_path))
+          raw = ExtStore.read_source!(self.dir, f"{id}", rel_path)
+          if raw == ""
+            ret null
           ret raw
         impl list_files(id, prefix)
-          if LocalFs.path_exists(LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}")) == false
-            ret []
-          names = LocalFs.list_dir!(LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}"))
+          names = ExtStore.list_source!(self.dir, f"{id}")
           ret names
         impl package_root(id)
-          ret LocalFs.join(LocalFs.join(self.dir, "src"), f"{id}")
+          ret ExtStore.package_root(self.dir, f"{id}")
 
       adapter FileExtensionArtifactStore for ExtensionArtifactStore
         @env(VEIL_EXTENSIONS_DIR)
         impl put(id, version, target, data)
-          LocalFs.create_dir_all!(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, "artifacts"), f"{id}"), f"{version}"))
-          LocalFs.write!(LocalFs.join(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, "artifacts"), f"{id}"), f"{version}"), "marker"), "artifact")
-          ret f"artifacts/{id}/{version}/marker"
+          uri = ExtStore.put_artifact!(self.dir, f"{id}", f"{version}", target, "artifact")
+          ret uri
         impl get_uri(id, version, target)
-          if LocalFs.path_exists(LocalFs.join(LocalFs.join(LocalFs.join(LocalFs.join(self.dir, "artifacts"), f"{id}"), f"{version}"), "marker")) == false
+          uri = ExtStore.get_artifact_uri!(self.dir, f"{id}", f"{version}", target)
+          if uri == ""
             ret null
-          ret f"artifacts/{id}/{version}/marker"
+          ret uri
 
       # Publish bumps via registry services; invoke succeeds when version exists.
       adapter FileExtensionExecutor for ExtensionExecutor
@@ -1341,46 +1330,72 @@ pkg VeilRuntime
           res = ExtensionInvokeResult{status: ExtensionRunStatus.Succeeded, message: null, outputs: {}}
           ret res
 
-      # AWS path (EXT-11): same ports as File*. Bodies are port-complete placeholders
-      # until DdbClient/S3Client stub lowerings support put_item/put_object fully.
-      # Documented item/key layout: docs/EXTENSIONS_AWS.md. Dual-loop uses File*.
-      # Select backend via VEIL_EXTENSIONS_BACKEND=file|ddb (host wiring).
+      # AWS-named adapters: same ExtStore facade (set VEIL_EXTENSIONS_BACKEND=ddb).
+      # No @field(DdbClient/S3Client) — raw SDK calls are never lowered from VEIL.
       adapter DdbExtensionRegistry for ExtensionRegistry
-        @field(client: DdbClient)
-        @env(EXTENSIONS_TABLE)
+        @env(VEIL_EXTENSIONS_DIR)
         impl create(record)
+          ExtStore.put_record!(self.dir, f"{record.extension_id}", Json.stringify(record))
           ret record
         impl get(id)
-          ret null
+          raw = ExtStore.get_record!(self.dir, f"{id}")
+          if raw == ""
+            ret null
+          rec = Json.parse(raw)
+          ret rec
         impl list(scope, kind, product_id, tenant_id)
-          ret []
+          raws = ExtStore.list_records!(self.dir)
+          out = []
+          for raw in raws
+            rec = Json.parse(raw)
+            out = out + [rec]
+          ret out
         impl update(record)
+          ExtStore.put_record!(self.dir, f"{record.extension_id}", Json.stringify(record))
           ret record
         impl save_version(ver)
+          ExtStore.put_version!(self.dir, f"{ver.extension_id}", f"{ver.version}", Json.stringify(ver))
           ret ver
         impl get_version(id, version)
-          ret null
+          raw = ExtStore.get_version!(self.dir, f"{id}", f"{version}")
+          if raw == ""
+            ret null
+          ver = Json.parse(raw)
+          ret ver
         impl list_versions(id)
-          ret []
+          raws = ExtStore.list_versions!(self.dir, f"{id}")
+          out = []
+          for raw in raws
+            ver = Json.parse(raw)
+            out = out + [ver]
+          ret out
 
       adapter S3ExtensionSourceStore for ExtensionSourceStore
-        @field(client: S3Client)
-        @env(EXTENSIONS_BUCKET)
+        @env(VEIL_EXTENSIONS_DIR)
         impl ensure_package(id)
-          ret f"s3://extensions/{id}"
+          root = ExtStore.ensure_package!(self.dir, f"{id}")
+          ret root
         impl write_file(id, rel_path, content)
+          ExtStore.write_source!(self.dir, f"{id}", rel_path, content)
           ret Ok
         impl read_file(id, rel_path)
-          ret null
+          raw = ExtStore.read_source!(self.dir, f"{id}", rel_path)
+          if raw == ""
+            ret null
+          ret raw
         impl list_files(id, prefix)
-          ret []
+          names = ExtStore.list_source!(self.dir, f"{id}")
+          ret names
         impl package_root(id)
-          ret f"s3://extensions/{id}"
+          ret ExtStore.package_root(self.dir, f"{id}")
 
       adapter S3ExtensionArtifactStore for ExtensionArtifactStore
-        @field(client: S3Client)
-        @env(EXTENSIONS_BUCKET)
+        @env(VEIL_EXTENSIONS_DIR)
         impl put(id, version, target, data)
-          ret f"s3://extensions/artifacts/{id}/{version}/{target}"
+          uri = ExtStore.put_artifact!(self.dir, f"{id}", f"{version}", target, "artifact")
+          ret uri
         impl get_uri(id, version, target)
-          ret f"s3://extensions/artifacts/{id}/{version}/{target}"
+          uri = ExtStore.get_artifact_uri!(self.dir, f"{id}", f"{version}", target)
+          if uri == ""
+            ret null
+          ret uri

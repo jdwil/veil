@@ -903,20 +903,65 @@ fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
 ///
 /// - Fluent `.send()` / `.send_with()` are async + Result → `.await?`
 /// - Stub methods marked async+fallible (BoxFuture / executor param) → `.await.map_err…?`
-/// - Other stub methods marked `Res!` are sync Result → `?` (e.g. `as_s`)
+/// - Other stub methods marked `Res!` are sync Result → `map_err…?`
 /// - Trait methods (ports) are async_trait + Result → `.await?`
 ///
+/// **Receiver type wins over bare method name.** Port methods and stub methods
+/// often share names (`get_version`, `list_versions`, `package_root`, …). Looking
+/// only at the method name caused `.await?` on sync stub facades (ExtStore,
+/// LocalFs) — the permanent adapter/stub-lowering bug. Always prefer the
+/// receiver's Shape::Struct vs Shape::Trait when known.
+///
 /// Method names may carry VEIL bang/query suffixes (`fetch_all!`); strip before lookup.
-fn receiver_call_suffix(_recv: &Expr, method: &str, ctx: &GenCtx) -> String {
+fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     let method = method.trim_end_matches(['!', '?']);
-    // Stub-declared async+fallible methods (return type BoxFuture<Res!<...>> or
-    // takes an executor param). These get `.await.map_err(...)? `.
+
+    // Resolve the static type of the receiver when we can (UFCS / local / self field).
+    let recv_type_name: Option<String> = match recv {
+        Expr::Ident(name) => {
+            if ctx.is_struct_target(name) || ctx.is_trait_target(name) {
+                Some(name.clone())
+            } else if let Some(t) = ctx.local_type(name) {
+                Some(t.to_string())
+            } else if ctx.stub_type_crate.contains_key(name) {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    // Known struct / stub type → never treat as port trait (even if method name
+    // collides with ExtensionRegistry.get_version etc.).
+    if let Some(ref ty) = recv_type_name {
+        if ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Struct)
+            || ctx.stub_type_crate.contains_key(ty.as_str())
+        {
+            if method == "send"
+                || method == "send_with"
+                || ctx.async_fallible_methods.contains(method)
+            {
+                return ".await.map_err(|e| DomainError::External(e.to_string()))?".to_string();
+            }
+            if ctx.fallible_methods.contains(method) {
+                return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+            }
+            return String::new();
+        }
+        if ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Trait) {
+            return ".await?".to_string();
+        }
+    }
+
+    // Fluent SDK send / async fallible stubs (untyped receivers).
     if method == "send"
         || method == "send_with"
         || ctx.async_fallible_methods.contains(method)
     {
         return ".await.map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
+    // Untyped receiver: method name appears on a port trait → async_trait.
     let is_trait_method = ctx
         .method_returns
         .keys()

@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Document** | Platform index for Extensions |
-| **Status** | Design approved (planning) |
+| **Status** | Implemented (EXT-00 dual-loop path) |
 | **Date** | 2026-07-17 |
 
 ---
@@ -63,11 +63,16 @@ When implementation lands in-tree, link concrete packages and APIs from this pag
 
 | In VEIL | Outside the engine |
 |---------|-------------------|
-| Domain, ports, application services | `.stub` crates for external APIs (`veil_local_fs`, aws-sdk-*) |
-| **File* / Ddb* adapters** (full bodies) | Real crate behind the stub (`runtime/local_fs`) |
+| Domain, ports, application services | `.stub` crates for external APIs |
+| **File* / Ddb* / S3* adapters** (bodies call `ExtStore` only) | `runtime/ext_store` (`veil_ext_store.stub`) — file \| AWS |
 | Catalog, fork, seed, palette, publish, invoke | Bootstrap only **constructs** generated adapters (`extensions_deps`) |
 
-**MISSION:** zero filesystem domain knowledge in `veil-codegen`. Adapters call `LocalFs` via stub, not `Fs.*` builtins.
+**MISSION:** zero filesystem/AWS domain knowledge in `veil-codegen`. Extensions
+adapters never call raw `DdbClient`/`S3Client` (invalid SDK lowering). They call
+`ExtStore.*`; backend is `VEIL_EXTENSIONS_BACKEND=file|ddb`.
+
+**Codegen rule:** call suffixes (`.await?` vs `.map_err…?`) use the **receiver
+type**, not bare method names — port methods and stub methods may share names.
 
 ## Related
 

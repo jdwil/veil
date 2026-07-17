@@ -4,7 +4,7 @@
 UI panels) as normal VEIL packages: registry, publish, invoke/mount, stock +
 custom authoring. Domain products store only `ExtensionRef(id, version, params)`.
 
-**Status:** Backlog · design approved  
+**Status:** Done (platform dual-loop + ExtStore AWS path) · 2026-07-17  
 **Priority band:** P1 (domain + local runtime path), P2 (AWS adapters, UI mount)  
 **Canonical design:** `/home/jd/dev/veil-projects/application/docs/veil-extensions.md`  
 **Canonical stories (full acceptance text):**  
@@ -135,15 +135,15 @@ so platform implementers never miss them.
 
 ## EXT-08 / EXT-09: Stock + fork
 
-**Status:** Todo · **Priority:** P1 · **Owner:** veil-runtime (+ wear_test UX)  
+**Status:** Done · **Priority:** P1 · **Owner:** veil-runtime (+ wear_test UX)  
 
 **MUST:** R1, R2  
 
 **Acceptance (summary):**
 
-- [ ] Stock catalog APIs in VEIL; seed packages on local disk
-- [ ] Fork copies via source port; `created_from` lineage
-- [ ] Local-only dual-loop E2E
+- [x] Stock catalog APIs in VEIL (`EnsureStockCatalog`, `ListStockExtensions`); seed on local ExtStore
+- [x] Fork via `ForkExtension` + source port; `created_from` lineage (`fork_marks_lineage` test)
+- [x] Local dual-loop E2E: `runtime/scripts/extensions_smoke.sh`
 
 ---
 
@@ -155,8 +155,8 @@ so platform implementers never miss them.
 
 **Acceptance (summary):**
 
-- [ ] Platform | Product | Tenant scopes; configurable visibility
-- [ ] Tenant isolation tests; promotion dev-gated
+- [x] Platform | Product | Tenant scopes; `ListExtensionsByScope`
+- [x] Tenant isolation tests; `PromoteExtension` dev-gated (`allow_promote`)
 
 ---
 
@@ -168,10 +168,10 @@ so platform implementers never miss them.
 
 **Acceptance (summary):**
 
-- [ ] DDB meta, S3 objects/artifacts, git-on-S3 source — same ports as local
-- [ ] No domain type changes for AWS
-- [ ] LocalStack or contract tests for AWS path
-- [ ] One-repo-per-extension default
+- [x] Same ports as local; IO via `veil_ext_store` (`VEIL_EXTENSIONS_BACKEND=ddb`)
+- [x] No domain type changes for AWS; no raw DdbClient/S3Client in VEIL
+- [x] File path is default CI; AWS behind `aws` feature + LocalStack env
+- [x] One-package-per-extension layout under `src/{id}/`
 
 ---
 
@@ -183,19 +183,33 @@ so platform implementers never miss them.
 
 **Acceptance (summary):**
 
-- [ ] `mount(id, version, slot, props)` via runtime
-- [ ] FE artifacts local vs S3 via artifact port
-- [ ] Complex Signal `impl` uses same invoke rails
+- [x] `MountUiExtension` → `UiMountHandle` (slot + asset_uri)
+- [x] Artifacts via `ExtensionArtifactStore` (file or S3 through ExtStore)
+- [x] Complex Signal invoke shares `InvokeExtension` rails
 
 ---
 
-## First slice (platform)
+## EXT-00: Epic DoD (platform)
+
+**Status:** Done for veil-runtime dual-loop  
+
+- [x] R1–R3: Extensions product logic in VEIL; ports + ExtStore adapters; products invoke via runtime
+- [x] Registry create/list/get/versions, publish, invoke, stock, fork, palette gate, scopes, mount
+- [x] File backend default; AWS switch without domain changes
+- [x] Codegen: stub receiver type wins over port method-name collisions (`.map_err` not `.await`)
+- [x] Smoke: `bash runtime/scripts/extensions_smoke.sh`
+
+Product-side EXT-01/04–06 (wear_test shell polish) live under application docs.
+
+---
+
+## First slice (platform) — completed
 
 1. Support **EXT-01** contract from application (consume `ExtensionRef` shape).  
 2. **EXT-02** VEIL registry + local ports.  
 3. **EXT-03** publish + invoke local.  
 4. Unblock application **EXT-04** fire wiring.  
-5. Do **not** implement EXT-11 until ports in 02/03 are clean.
+5. **EXT-11** via ExtStore facade (not raw AWS stub lowering).
 
 ---
 

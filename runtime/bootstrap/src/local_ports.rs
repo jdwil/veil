@@ -506,7 +506,8 @@ pub fn storage_deps() -> storage::application::Deps {
 
 // ─── Extensions Deps (VEIL-generated File* adapters — no residual registry) ─
 // Product logic: runtime.veil → extensions::application
-// IO: FileExtension* via veil_local_fs stub (not engine builtins)
+// IO: FileExtension* → ExtStore (veil_ext_store stub). Backend:
+// VEIL_EXTENSIONS_BACKEND=file|ddb (default file). Never raw DdbClient in VEIL.
 
 use extensions::adapters::{
     FileExtensionArtifactStore, FileExtensionExecutor, FileExtensionRegistry,
@@ -530,10 +531,14 @@ pub fn stock_guard_end_id() -> uuid::Uuid {
     uuid::Uuid::parse_str("aaaaaaaa-0002-4000-8000-000000000002").unwrap()
 }
 
-/// Wire VEIL-generated File* adapters (veil_local_fs stub — not residual registry logic).
+/// Wire VEIL-generated File* adapters (ExtStore facade — file backend by default).
 pub fn extensions_deps() -> extensions::application::Deps {
     let dir = extensions_dir().to_string_lossy().to_string();
     let _ = std::fs::create_dir_all(&dir);
+    // Default dual-loop: file backend (no AWS). Deploy sets VEIL_EXTENSIONS_BACKEND=ddb.
+    if std::env::var("VEIL_EXTENSIONS_BACKEND").is_err() {
+        std::env::set_var("VEIL_EXTENSIONS_BACKEND", "file");
+    }
     extensions::application::Deps {
         extension_artifact_store: std::sync::Arc::new(FileExtensionArtifactStore {
             dir: dir.clone(),

@@ -1,0 +1,23 @@
+# Extension registry / source / artifact persistence for VEIL adapters.
+# Real crate: runtime/ext_store — AWS SDK lives HERE, never in veil-codegen.
+# Backend: VEIL_EXTENSIONS_BACKEND=file (default) | ddb
+# Optional reads return "" when missing (VEIL has no Opt unwrap on stubs).
+stub veil_ext_store path:../ext_store
+
+  struct ExtStore
+    # Registry (JSON documents keyed by extension id)
+    fn put_record(root: Str, id: Str, json: Str) -> Res!
+    fn get_record(root: Str, id: Str) -> Res!<Str>
+    fn list_records(root: Str) -> Res!<List<Str>>
+    fn put_version(root: Str, id: Str, version: Str, json: Str) -> Res!
+    fn get_version(root: Str, id: Str, version: Str) -> Res!<Str>
+    fn list_versions(root: Str, id: Str) -> Res!<List<Str>>
+    # Source package tree
+    fn ensure_package(root: Str, id: Str) -> Res!<Str>
+    fn write_source(root: Str, id: Str, rel: Str, content: Str) -> Res!
+    fn read_source(root: Str, id: Str, rel: Str) -> Res!<Str>
+    fn list_source(root: Str, id: Str) -> Res!<List<Str>>
+    fn package_root(root: Str, id: Str) -> Str
+    # Artifacts
+    fn put_artifact(root: Str, id: Str, version: Str, target: Str, data: Str) -> Res!<Str>
+    fn get_artifact_uri(root: Str, id: Str, version: Str, target: Str) -> Res!<Str>
