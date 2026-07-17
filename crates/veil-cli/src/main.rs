@@ -5,9 +5,31 @@
 //! hands it to the parser, and serves palette metadata straight from it.
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use veil_ir::LayerRegistry;
+
+/// Write `content` via temp file + rename so concurrent readers (e.g. Vite
+/// watching `src/app.html`) never observe a truncated intermediate.
+fn write_file_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("veilgen")
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(content)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
 
 
 #[derive(Parser)]
@@ -1588,10 +1610,7 @@ fn main() {
 
             for f in &harness_files {
                 let path = output.join(&f.path);
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).expect("Failed to create directory");
-                }
-                std::fs::write(&path, &f.content).expect("Failed to write file");
+                write_file_atomic(&path, f.content.as_bytes()).expect("Failed to write file");
             }
 
             // Ensure workspace.dependencies includes every stub (and cargo_deps
@@ -1750,10 +1769,7 @@ fn main() {
 
             for f in &files {
                 let path = output.join(&f.path);
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).expect("Failed to create directory");
-                }
-                std::fs::write(&path, &f.content).expect("Failed to write file");
+                write_file_atomic(&path, f.content.as_bytes()).expect("Failed to write file");
             }
 
             // Single-file gen must not leave crates from a prior multi-package
