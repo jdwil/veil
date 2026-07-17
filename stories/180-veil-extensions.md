@@ -206,7 +206,7 @@ so platform implementers never miss them.
 | EXT-01 | Done |
 | EXT-02 | Done |
 | EXT-03 | Done |
-| EXT-04 | Todo (application) |
+| EXT-04 | Done |
 | EXT-05 | Todo (application/layers) |
 | EXT-06 | Todo (wear_test) |
 | EXT-07 | Todo |
