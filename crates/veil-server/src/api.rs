@@ -510,8 +510,23 @@ async fn get_generated<P: SourceProvider>(State(state): State<SharedProvider<P>>
     }
 }
 
-async fn get_palette<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
-    let palette = veil_ir::palette_from_registry(&state.registry());
+async fn get_palette<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let mut palette = veil_ir::palette_from_registry(&state.registry());
+    // Embed mode=reaction (or reaction project): only constructs from reaction.layer.
+    let reaction_mode = crate::file_ops::is_reaction_ide_context(state.project_root().as_deref())
+        || headers
+            .get("x-veil-mode")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("reaction"))
+            .unwrap_or(false);
+    if reaction_mode {
+        palette.retain(|e| {
+            e.entry_type == "construct" && e.layer.eq_ignore_ascii_case("reaction")
+        });
+    }
     match serde_json::to_string(&palette) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),

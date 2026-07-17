@@ -19,10 +19,12 @@
   import DiagnosticsPanel from '$lib/DiagnosticsPanel.svelte';
   import CodePreview from '$lib/CodePreview.svelte';
   import ReviewDock from '$lib/ReviewDock.svelte';
+  import AgentSideRail from '$lib/AgentSideRail.svelte';
   import OutlinePanel from '$lib/OutlinePanel.svelte';
   import DiffPanel from '$lib/DiffPanel.svelte';
   import DevToolbar from '$lib/DevToolbar.svelte';
   import { layoutNodes, layoutByType } from '$lib/layout';
+  import { agentPlacement } from '$lib/agentLayout';
   import {
     irGraph,
     currentParent,
@@ -51,6 +53,9 @@
     ideApiBase,
     diagnostics,
     viewRevision,
+    agentActive,
+    embedShellConfig,
+    isReactionIdeMode,
   } from '$lib/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind } from '$lib/types';
   import {
@@ -91,6 +96,9 @@
   let creatingFile = $state(false);
   // DOM reference for node measurement — ELK needs real rendered sizes
   let graphContainerEl: HTMLElement | null = $state(null);
+
+  /** Mount-time shell (query `?mode=reaction` → minimal graph authoring). */
+  const shell = embedShellConfig();
 
   async function handleCreateProject() {
     const name = newProjectName.trim();
@@ -1208,17 +1216,30 @@
         </button>
       {/each}
     </div>
-    <OutlinePanel />
-    <DiffPanel />
-    <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
-      <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
-      <span>Show infrastructure</span>
-    </label>
-    <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
-      <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
-      <span>Critical only</span>
-      <span class="critical-count">{criticalCountLabel()}</span>
-    </label>
+    {#if shell.showOutline}
+      <OutlinePanel />
+    {/if}
+    {#if shell.showDiff}
+      <DiffPanel />
+    {/if}
+    {#if shell.showInfraToggle}
+      <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
+        <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
+        <span>Show infrastructure</span>
+      </label>
+    {/if}
+    {#if shell.showCriticalToggle}
+      <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
+        <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
+        <span>Critical only</span>
+        <span class="critical-count">{criticalCountLabel()}</span>
+      </label>
+    {/if}
+    {#if isReactionIdeMode()}
+      <span class="reaction-mode-badge" title="Palette locked to reaction.layer · use reaction required">
+        reaction.layer
+      </span>
+    {/if}
     <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
       {theme === 'dark' ? '☀️' : '🌙'}
     </button>
@@ -1289,11 +1310,22 @@
         {/each}
       </div>
     {/if}
-    <DevToolbar />
-    <div class="main-layout">
+    {#if shell.showDevToolbar}
+      <DevToolbar />
+    {/if}
+    {#if $agentActive && shell.showAgentRail}
+      <div class="agent-activity-bar">
+        <span class="agent-activity-dot"></span>
+        <span class="agent-activity-text">Agent editing…</span>
+      </div>
+    {/if}
+    <div class="main-layout" class:main-layout--minimal={shell.mode === 'reaction'}>
       <Palette contextKind={currentContextKind} contextKindCore={currentContextKindCore} activeGroup={activeTab} />
+      {#if shell.showAgentRail && $agentPlacement === 'left'}
+        <AgentSideRail side="left" />
+      {/if}
       <div class="graph-wrapper">
-        {#if hostViews.length > 1}
+        {#if shell.showViewBar && hostViews.length > 1}
           <div class="view-bar" role="tablist" aria-label="Presentation views">
             {#each hostViews as v}
               <button
@@ -1330,6 +1362,8 @@
           bind:nodes
           bind:edges
           {nodeTypes}
+          fitView
+          fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
           onnodeclick={handleNodeClick}
           onconnect={handleConnect}
           onpaneclick={handlePaneClick}
@@ -1337,7 +1371,9 @@
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
           <Controls />
-          <MiniMap />
+          {#if shell.showMiniMap}
+            <MiniMap />
+          {/if}
         </SvelteFlow>
         {/key}
 
@@ -1351,10 +1387,17 @@
         {/if}
       </div>
       </div>
+      {#if shell.showAgentRail && $agentPlacement === 'right'}
+        <AgentSideRail side="right" />
+      {/if}
     </div>
   {/if}
-  <ReviewDock />
-  <CodePreview />
+  {#if shell.showReviewDock}
+    <ReviewDock />
+  {/if}
+  {#if shell.showCodePreview}
+    <CodePreview />
+  {/if}
 </div>
 
 <style>
@@ -1364,6 +1407,59 @@
     display: flex;
     flex-direction: column;
     background: var(--veil-bg);
+  }
+
+  .reaction-mode-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--veil-accent, #14b8a6) 45%, transparent);
+    color: var(--veil-accent, #14b8a6);
+    background: color-mix(in srgb, var(--veil-accent, #14b8a6) 12%, transparent);
+    white-space: nowrap;
+  }
+
+  .main-layout--minimal {
+    /* Graph + palette only — no dock chrome below */
+    flex: 1;
+    min-height: 0;
+  }
+
+  .agent-activity-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px;
+    background: rgba(96, 165, 250, 0.08);
+    border-bottom: 1px solid rgba(96, 165, 250, 0.2);
+    font-size: 11px;
+    color: #60a5fa;
+    animation: agent-bar-in 0.2s ease-out;
+  }
+
+  .agent-activity-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #60a5fa;
+    animation: agent-pulse 1s ease-in-out infinite;
+  }
+
+  .agent-activity-text {
+    font-weight: 500;
+  }
+
+  @keyframes agent-bar-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes agent-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 
   .top-bar {

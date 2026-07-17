@@ -138,7 +138,7 @@
       {/each}
     {/if}
 
-    {#if $paletteConfig?.some((c) => c.entry_type === 'statement')}
+    {#if !isReactionIdeMode() && $paletteConfig?.some((c) => c.entry_type === 'statement')}
       <div class="palette-category">
         <span class="category-label">Statements</span>
         <p class="section-hint">Reference only — edit bodies in the review pane</p>

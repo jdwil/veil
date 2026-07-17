@@ -123,12 +123,83 @@ export function isReactionIdeMode(): boolean {
   return currentIdeMode() === 'reaction';
 }
 
+/**
+ * Shell chrome for the dual-loop IDE, configured on mount via `?mode=`.
+ * Full mode = default engineer IDE. Reaction mode = graph-only authoring.
+ */
+export interface EmbedShellConfig {
+  mode: 'full' | 'reaction';
+  /** Only constructs from these layer names (empty = all loaded layers). */
+  paletteLayers: string[];
+  showOutline: boolean;
+  showDiff: boolean;
+  showInfraToggle: boolean;
+  showCriticalToggle: boolean;
+  showDevToolbar: boolean;
+  showReviewDock: boolean;
+  showCodePreview: boolean;
+  showAgentRail: boolean;
+  showViewBar: boolean;
+  showFileChrome: boolean;
+  showMiniMap: boolean;
+}
+
+export function embedShellConfig(): EmbedShellConfig {
+  if (isReactionIdeMode()) {
+    return {
+      mode: 'reaction',
+      // Strict: only constructs declared in reaction.layer
+      paletteLayers: ['reaction'],
+      showOutline: false,
+      showDiff: false,
+      showInfraToggle: false,
+      showCriticalToggle: false,
+      showDevToolbar: false,
+      showReviewDock: false,
+      showCodePreview: false,
+      showAgentRail: false,
+      showViewBar: false,
+      showFileChrome: true, // keep file switcher minimal
+      showMiniMap: false,
+    };
+  }
+  return {
+    mode: 'full',
+    paletteLayers: [],
+    showOutline: true,
+    showDiff: true,
+    showInfraToggle: true,
+    showCriticalToggle: true,
+    showDevToolbar: true,
+    showReviewDock: true,
+    showCodePreview: true,
+    showAgentRail: true,
+    showViewBar: true,
+    showFileChrome: true,
+    showMiniMap: true,
+  };
+}
+
 /** Headers for IDE API calls (reaction mode locks use reaction server-side). */
 export function ideRequestHeaders(extra?: Record<string, string>): Record<string, string> {
   const h: Record<string, string> = { ...(extra || {}) };
   const mode = currentIdeMode();
   if (mode) h['X-Veil-Mode'] = mode;
   return h;
+}
+
+/** Keep only palette entries from allowed layers (reaction mode: ['reaction']). */
+export function filterPaletteByLayers(
+  palette: PaletteEntry[],
+  layers: string[],
+): PaletteEntry[] {
+  if (!layers.length) return palette;
+  const allow = new Set(layers.map((l) => l.toLowerCase()));
+  return palette.filter((c) => {
+    if ((c.entry_type || 'construct') !== 'construct') return false;
+    const layer = (c.layer || '').toLowerCase();
+    return allow.has(layer);
+  });
 }
 
 /**
@@ -401,14 +472,22 @@ async function loadActiveFile(
     unsubS();
   }
 
+  const modeHeaders = ideRequestHeaders();
+  const withMode = (init?: RequestInit): RequestInit | undefined => {
+    if (!Object.keys(modeHeaders).length) return init;
+    return {
+      ...init,
+      headers: { ...(init?.headers as Record<string, string> | undefined), ...modeHeaders },
+    };
+  };
   const [irRes, srcRes, palRes, presRes, stubRes, filesRes, projRes] = await Promise.all([
-    fetchWithTimeout(API_URL()),
-    fetchWithTimeout(SOURCE_URL()),
-    fetchWithTimeout(PALETTE_URL()),
-    fetchWithTimeout(PRESENTATION_URL()).catch(() => null),
-    fetchWithTimeout(STUBS_URL()).catch(() => null),
-    fetchWithTimeout(FILES_URL()).catch(() => null),
-    fetchWithTimeout(PROJECT_URL()).catch(() => null),
+    fetchWithTimeout(API_URL(), withMode()),
+    fetchWithTimeout(SOURCE_URL(), withMode()),
+    fetchWithTimeout(PALETTE_URL(), withMode()),
+    fetchWithTimeout(PRESENTATION_URL(), withMode()).catch(() => null),
+    fetchWithTimeout(STUBS_URL(), withMode()).catch(() => null),
+    fetchWithTimeout(FILES_URL(), withMode()).catch(() => null),
+    fetchWithTimeout(PROJECT_URL(), withMode()).catch(() => null),
   ]);
   if (gen !== loadGeneration) return false;
 
@@ -457,33 +536,10 @@ async function loadActiveFile(
 
   if (palRes.ok) {
     let palette: PaletteEntry[] = await palRes.json();
-    // mode=reaction: only reaction.layer palette constructs (EXT-05), not full DDD.
-    if (isReactionIdeMode()) {
-      const allowedKw = new Set([
-        'guard',
-        'activate',
-        'map',
-        'emit_event',
-        'end',
-        'reaction_package',
-        'reaction_edge',
-      ]);
-      const allowedLabel = new Set([
-        'guard',
-        'activate',
-        'map',
-        'emit event',
-        'end',
-        'reaction package',
-        'edge',
-      ]);
-      palette = palette.filter((c) => {
-        const g = (c.group || '').toLowerCase();
-        if (g === 'palette') return true;
-        const kw = (c.keyword || '').toLowerCase();
-        const lab = (c.label || c.name || '').toLowerCase();
-        return allowedKw.has(kw) || allowedLabel.has(lab);
-      });
+    // Embed shell: only constructs from configured layers (reaction → ['reaction']).
+    const shell = embedShellConfig();
+    if (shell.paletteLayers.length) {
+      palette = filterPaletteByLayers(palette, shell.paletteLayers);
     }
     paletteConfig.set(palette);
     setPaletteStyles(palette);
