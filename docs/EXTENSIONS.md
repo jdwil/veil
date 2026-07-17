@@ -1,0 +1,53 @@
+# VEIL Extensions (platform pointer)
+
+| Field | Value |
+|-------|-------|
+| **Document** | Platform index for Extensions |
+| **Status** | Design approved (planning) |
+| **Date** | 2026-07-17 |
+
+---
+
+## What this is
+
+**Extensions** are VEIL mini-programs (Reactions, complex Signals, Activation behaviors, custom UI panels) **compiled to normal targets** (Rust / TypeScript) and **managed by veil-runtime**: registry, git-on-S3 source, DDB meta, artifacts, load, sandbox, invoke/mount.
+
+Product domains store only an **`ExtensionRef`** (`extension_id` + **integer version** + optional `params`). They never own a second interpreter or per-app loader.
+
+## Canonical design
+
+Full design (domain + runtime + authoring + catalogs):
+
+> **Product / application doc (canonical):**  
+> `/home/jd/dev/veil-projects/application/docs/veil-extensions.md`  
+> (sibling hub project `application` under `VEIL_PROJECTS_DIR`)
+
+Related platform docs:
+
+| Doc | Relevance |
+|-----|-----------|
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Git on S3, meta cache, build service, artifacts on S3/ECR; VEIL has no storage knowledge |
+| [`VCS_MODEL.md`](./VCS_MODEL.md) | Local disk/git for daily IDE; object store + meta for remote/deploy |
+| [`IDE_RUNTIME.md`](./IDE_RUNTIME.md) | Runtime host embeds IDE/server capabilities |
+| [`STORAGE.md`](./STORAGE.md) | Object storage adapters |
+| [`COMPILE_PIPELINE.md`](./COMPILE_PIPELINE.md) | Gen + compile pipeline |
+
+## Principles (short)
+
+1. **Runtime owns code lifecycle**; products own **refs + wiring**.
+2. **Integer pinned versions** on production invoke paths.
+3. **Stock** (params forms) and **Custom** (embedded palette IDE) share one model; **duplicate-as-custom** with lineage is required.
+4. **Catalog scopes** are configurable: platform ∪ product ∪ tenant.
+5. **Agent ⊆ layer palette** — reject IR that cannot be fully presented in the configured IDE.
+6. **Default: one git repo per extension package**; curated stock monorepos are a physical exception only.
+7. **No second DSL** (no CEL/JSONLogic/Lark as the Reaction language).
+
+## Ownership
+
+| Layer | Responsibility |
+|-------|----------------|
+| **veil-runtime** | Registry, VCS, compile, artifacts, FFI/in-process/service invoke, mount |
+| **application / products** | `ExtensionRef` on Reaction (etc.), bindings, embedded IDE shell |
+| **Layers** | Node vocabulary, presentation, capability ports |
+
+When implementation lands in-tree, link concrete packages and APIs from this page.

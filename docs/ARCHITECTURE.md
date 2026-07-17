@@ -273,3 +273,8 @@ When deployed to DashLX:
 
 VEIL itself has NO knowledge of storage — it's a pure compiler library.
 The platform handles persistence.
+
+**Extensions** (Reactions, complex Signals, custom UI, …) use this same plane:
+runtime-managed packages with integer pinned versions and an invoke/mount ABI.
+See [`EXTENSIONS.md`](./EXTENSIONS.md) and the application design
+`veil-projects/application/docs/veil-extensions.md`.
