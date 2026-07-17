@@ -669,10 +669,161 @@ pub async fn handle_bus(msg: &Value) -> Value {
                 "ide_path": format!("/api/p/{project}/agent/turn"),
             })
         }
+        // ── Extensions (VEIL services via generated File* adapters) ───────
+        "EnsureStockCatalog" | "ListExtensions" | "CreateExtension" | "GetExtension"
+        | "PublishExtension" | "InvokeExtension" | "ForkExtension"
+        | "ValidateReactionPalette" | "ListStockExtensions" | "MountUiExtension" => {
+            handle_extension_bus(ty, msg).await
+        }
         other => json!({
             "error": "not_implemented",
             "handler": other,
         }),
+    }
+}
+
+/// Dispatch extension bus messages to VEIL-generated `extensions::application`.
+async fn handle_extension_bus(ty: &str, msg: &Value) -> Value {
+    use extensions::application;
+    let deps = crate::local_ports::extensions_deps();
+    let strf = |k: &str| msg.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let uuid_f = |k: &str| {
+        msg.get(k)
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+    };
+    match ty {
+        "EnsureStockCatalog" => {
+            match crate::local_ports::ensure_stock_catalog_veil(&deps).await {
+                Ok(items) => json!({ "extensions": items, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "ListExtensions" | "ListStockExtensions" => {
+            match application::list_extensions(
+                &deps,
+                strf("scope"),
+                strf("kind"),
+                strf("product_id"),
+                uuid_f("tenant_id"),
+            )
+            .await
+            {
+                Ok(mut items) => {
+                    if ty == "ListStockExtensions" {
+                        items.retain(|r| {
+                            matches!(
+                                r.provenance,
+                                extensions::domain::types::ExtensionProvenance::Stock
+                            )
+                        });
+                    }
+                    json!({ "extensions": items, "via": "extensions::application" })
+                }
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "GetExtension" => match uuid_f("id").or_else(|| uuid_f("extension_id")) {
+            Some(id) => match application::get_extension(&deps, id).await {
+                Ok(rec) => json!({ "extension": rec, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            },
+            None => json!({ "error": "id required" }),
+        },
+        "CreateExtension" => {
+            let name = strf("name").unwrap_or_else(|| "extension".into());
+            let kind = strf("kind").unwrap_or_else(|| "Reaction".into());
+            let scope = strf("scope").unwrap_or_else(|| "Tenant".into());
+            let provenance = strf("provenance").unwrap_or_else(|| "Custom".into());
+            match application::create_extension(
+                &deps,
+                name,
+                kind,
+                scope,
+                provenance,
+                strf("product_id"),
+                uuid_f("tenant_id"),
+                uuid_f("initiative_id"),
+                strf("description"),
+                msg.get("params_schema").cloned(),
+            )
+            .await
+            {
+                Ok(rec) => json!({ "extension": rec, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "PublishExtension" => match uuid_f("id").or_else(|| uuid_f("extension_id")) {
+            Some(id) => match application::publish_extension(&deps, id).await {
+                Ok(ver) => json!({ "version": ver, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            },
+            None => json!({ "error": "id required" }),
+        },
+        "InvokeExtension" => {
+            let Some(eid) = uuid_f("extension_id").or_else(|| uuid_f("id")) else {
+                return json!({ "error": "extension_id required" });
+            };
+            let version = msg.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+            let kind = strf("kind").unwrap_or_else(|| "Reaction".into());
+            let params = msg.get("params").cloned().unwrap_or(json!({}));
+            let context = msg.get("context").cloned().unwrap_or(json!({}));
+            match application::invoke_extension(&deps, eid, version, kind, params, context).await {
+                Ok(res) => json!({ "result": res, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "ForkExtension" => {
+            let Some(sid) = uuid_f("source_id") else {
+                return json!({ "error": "source_id required" });
+            };
+            let source_version = msg
+                .get("source_version")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1);
+            let name = strf("name").unwrap_or_else(|| "fork".into());
+            match application::fork_extension(
+                &deps,
+                sid,
+                source_version,
+                name,
+                uuid_f("tenant_id"),
+                uuid_f("initiative_id"),
+            )
+            .await
+            {
+                Ok(rec) => json!({ "extension": rec, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "ValidateReactionPalette" => {
+            let kinds: Vec<String> = msg
+                .get("node_kinds")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            match application::validate_reaction_palette(kinds).await {
+                Ok(ok) => json!({ "ok": ok, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "MountUiExtension" => {
+            let Some(eid) = uuid_f("extension_id") else {
+                return json!({ "error": "extension_id required" });
+            };
+            let version = msg.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+            let slot = strf("slot").unwrap_or_else(|| "default".into());
+            let props = msg.get("props").cloned().unwrap_or(json!({}));
+            match application::mount_ui_extension(eid, version, slot, props).await {
+                Ok(h) => json!({ "handle": h, "via": "extensions::application" }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        other => json!({ "error": "not_implemented", "handler": other }),
     }
 }
 
