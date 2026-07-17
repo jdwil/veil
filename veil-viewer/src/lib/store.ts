@@ -107,6 +107,31 @@ export function currentProjectParam(): string | null {
 }
 
 /**
+ * IDE mode from `?mode=`.
+ * `reaction` → force reaction.layer palette + locked `use reaction` on packages.
+ */
+export function currentIdeMode(): string | null {
+  if (typeof window === 'undefined') return null;
+  const m = new URLSearchParams(window.location.search).get('mode');
+  if (m && /^[a-zA-Z0-9_-]+$/.test(m)) return m.toLowerCase();
+  // Infer reaction mode when hub project is reaction
+  if (currentProjectParam() === 'reaction') return 'reaction';
+  return null;
+}
+
+export function isReactionIdeMode(): boolean {
+  return currentIdeMode() === 'reaction';
+}
+
+/** Headers for IDE API calls (reaction mode locks use reaction server-side). */
+export function ideRequestHeaders(extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { ...(extra || {}) };
+  const mode = currentIdeMode();
+  if (mode) h['X-Veil-Mode'] = mode;
+  return h;
+}
+
+/**
  * Resolve IDE API base.
  * - Multi-project: `?project=name` → `/api/p/{name}`
  * - Single-project: `/api`
@@ -319,6 +344,34 @@ function applyRootNavigation(data: IrGraph) {
   viewRevision.update((n) => n + 1);
 }
 
+/**
+ * Compare two IR graphs and return the set of node IDs that were added or changed.
+ * A node is "changed" if its name, kind, fields, methods, or body differ.
+ */
+function diffNodes(prev: IrGraph, next: IrGraph): Set<number> {
+  const changed = new Set<number>();
+  const prevById = new Map(prev.nodes.map((n) => [n.id, n]));
+
+  for (const node of next.nodes) {
+    const old = prevById.get(node.id);
+    if (!old) {
+      // New node
+      changed.add(node.id);
+    } else if (nodeFingerprint(old) !== nodeFingerprint(node)) {
+      // Modified node
+      changed.add(node.id);
+    }
+  }
+  return changed;
+}
+
+/** Quick fingerprint for IR node change detection (compare by value). */
+function nodeFingerprint(n: IrNode): string {
+  // Compare stable structural attributes: name, kind, subkind, properties,
+  // annotations, and span (which changes when content before it changes).
+  return `${n.name}|${n.kind}|${n.metadata?.subkind ?? ''}|${n.span.start}:${n.span.end}|${(n.metadata?.annotations ?? []).join(',')}|${(n.metadata?.properties ?? []).map(([k, v]) => `${k}=${v}`).join(',')}`;
+}
+
 export type LoadActiveOptions = {
   /** Keep breadcrumbs / drill-down / selection when possible (agent edits). */
   preserveNav?: boolean;
@@ -369,6 +422,19 @@ async function loadActiveFile(
   const data: IrGraph = await irRes.json();
   if (gen !== loadGeneration) return false;
 
+  // Detect changed nodes for flash animation (only on preserveNav / agent edits).
+  if (preserveNav) {
+    let prevGraph: IrGraph | null = null;
+    const unsub = irGraph.subscribe((g) => { prevGraph = g; });
+    unsub();
+    if (prevGraph) {
+      const changed = diffNodes(prevGraph, data);
+      changedNodeIds.set(changed);
+      // Auto-clear flash after animation duration.
+      setTimeout(() => changedNodeIds.set(new Set()), 1200);
+    }
+  }
+
   irGraph.set(data);
   if (!preserveNav) {
     selectedNodeId.set(null);
@@ -390,7 +456,35 @@ async function loadActiveFile(
   }
 
   if (palRes.ok) {
-    const palette: PaletteEntry[] = await palRes.json();
+    let palette: PaletteEntry[] = await palRes.json();
+    // mode=reaction: only reaction.layer palette constructs (EXT-05), not full DDD.
+    if (isReactionIdeMode()) {
+      const allowedKw = new Set([
+        'guard',
+        'activate',
+        'map',
+        'emit_event',
+        'end',
+        'reaction_package',
+        'reaction_edge',
+      ]);
+      const allowedLabel = new Set([
+        'guard',
+        'activate',
+        'map',
+        'emit event',
+        'end',
+        'reaction package',
+        'edge',
+      ]);
+      palette = palette.filter((c) => {
+        const g = (c.group || '').toLowerCase();
+        if (g === 'palette') return true;
+        const kw = (c.keyword || '').toLowerCase();
+        const lab = (c.label || c.name || '').toLowerCase();
+        return allowedKw.has(kw) || allowedLabel.has(lab);
+      });
+    }
     paletteConfig.set(palette);
     setPaletteStyles(palette);
   }
@@ -503,6 +597,12 @@ let lastSseRevision: number | null = null;
 let sse: EventSource | null = null;
 let sseRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Set of node IDs that changed in the last refresh (for flash animation). */
+export const changedNodeIds = writable<Set<number>>(new Set());
+/** When true, the agent is actively making edits (revisions arriving). */
+export const agentActive = writable(false);
+let agentActiveTimer: ReturnType<typeof setTimeout> | null = null;
+
 /**
  * Subscribe to `GET /api/events` so agent mid-turn writes update the badge
  * without waiting for the HTTP turn response.
@@ -519,6 +619,7 @@ export function startRevisionWatch(): () => void {
       const data = JSON.parse(String(ev.data || '{}')) as {
         revision?: number;
         reason?: string;
+        active_file?: string;
       };
       const rev = data.revision;
       if (typeof rev !== 'number') return;
@@ -529,10 +630,21 @@ export function startRevisionWatch(): () => void {
       }
       if (rev === lastSseRevision) return;
       lastSseRevision = rev;
+
+      // Signal agent activity (auto-clears after 2s of silence).
+      agentActive.set(true);
+      if (agentActiveTimer) clearTimeout(agentActiveTimer);
+      agentActiveTimer = setTimeout(() => agentActive.set(false), 2000);
+
       // Debounce bursty multi-tool writes
       if (sseRefreshTimer) clearTimeout(sseRefreshTimer);
       sseRefreshTimer = setTimeout(() => {
-        void refreshAfterEdit();
+        if (data.reason === 'select_file') {
+          // Agent switched files — full reload (new file, reset navigation).
+          void fetchIr();
+        } else {
+          void refreshAfterEdit();
+        }
       }, 120);
     } catch {
       /* ignore malformed */
@@ -548,6 +660,11 @@ export function stopRevisionWatch(): void {
     clearTimeout(sseRefreshTimer);
     sseRefreshTimer = null;
   }
+  if (agentActiveTimer) {
+    clearTimeout(agentActiveTimer);
+    agentActiveTimer = null;
+  }
+  agentActive.set(false);
   if (sse) {
     sse.close();
     sse = null;
@@ -789,7 +906,7 @@ export async function saveEdits(edits: EditOp[]): Promise<boolean> {
   try {
     const res = await fetch(EDIT_URL(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: ideRequestHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ edits }),
     });
     if (!res.ok) {

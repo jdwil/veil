@@ -1,6 +1,6 @@
 <script lang="ts">
   import { NODE_STYLES, type NodeKind } from '$lib/types';
-  import { paletteConfig, stubs } from '$lib/store';
+  import { paletteConfig, stubs, isReactionIdeMode } from '$lib/store';
 
   // Format a stub method signature for the hover tooltip.
   function stubSig(m: { name: string; params: [string, string][]; return_type: string | null }): string {
@@ -98,8 +98,13 @@
 
 <aside class="palette">
   <div class="palette-header">
-    <span class="palette-title">Constructs</span>
+    <span class="palette-title">{isReactionIdeMode() ? 'Reaction palette' : 'Constructs'}</span>
   </div>
+  {#if isReactionIdeMode()}
+    <p class="palette-lock-hint" title="Packages must use reaction; this use line cannot be removed">
+      Locked · <code>use reaction</code> · reaction.layer
+    </p>
+  {/if}
 
   <div class="palette-body">
     {#if items.length === 0}
@@ -152,7 +157,7 @@
       </div>
     {/if}
 
-    {#if $stubs && $stubs.length > 0}
+    {#if !isReactionIdeMode() && $stubs && $stubs.length > 0}
       <div class="palette-category">
         <span class="category-label">External (stubs)</span>
         <p class="section-hint">Read-only browse — not instantiable constructs</p>
@@ -215,6 +220,20 @@
   .palette-header {
     padding: 12px 16px;
     border-bottom: 1px solid var(--veil-border);
+  }
+
+  .palette-lock-hint {
+    margin: 0;
+    padding: 6px 12px 10px;
+    font-size: 10px;
+    line-height: 1.35;
+    color: var(--veil-text-dim);
+    border-bottom: 1px solid var(--veil-border);
+    background: color-mix(in srgb, var(--veil-accent, #14b8a6) 10%, transparent);
+  }
+  .palette-lock-hint code {
+    font-size: 10px;
+    color: var(--veil-accent, #14b8a6);
   }
 
   .palette-title {

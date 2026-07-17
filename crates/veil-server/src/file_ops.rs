@@ -83,6 +83,91 @@ pub fn default_package_source(stem: &str) -> String {
     format!("pkg {stem}\n  use ddd\n\n  # New package — add constructs here\n")
 }
 
+/// Scaffold for reaction-mode packages: `use reaction` is mandatory (palette lock).
+pub fn reaction_package_source(stem: &str) -> String {
+    format!(
+        "pkg {stem}\n  use ddd\n  # Locked: reaction.layer palette (Guard / Activate / Map / EmitEvent / End)\n  use reaction\n\n  # Author reaction graph constructs only — do not remove `use reaction`.\n"
+    )
+}
+
+/// True when this serve root is the reaction hub project (or VEIL_IDE_MODE=reaction).
+pub fn is_reaction_ide_context(project_root: Option<&Path>) -> bool {
+    if std::env::var("VEIL_IDE_MODE")
+        .map(|v| v.eq_ignore_ascii_case("reaction"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    project_root
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case("reaction"))
+        .unwrap_or(false)
+}
+
+fn line_is_use_reaction(line: &str) -> bool {
+    let t = line.trim();
+    t == "use reaction" || t.starts_with("use reaction ")
+}
+
+/// Package source has a `use reaction` line.
+pub fn source_has_use_reaction(source: &str) -> bool {
+    source.lines().any(line_is_use_reaction)
+}
+
+/// Reject removing the locked `use reaction` line (reaction IDE mode).
+pub fn check_use_reaction_locked(previous: &str, next: &str) -> Result<(), String> {
+    if source_has_use_reaction(previous) && !source_has_use_reaction(next) {
+        return Err(
+            "use reaction is required for reaction packages and cannot be removed \
+             (palette is locked to reaction.layer)"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Ensure a package source includes `use reaction` (insert after first `use` / `pkg` block).
+pub fn ensure_use_reaction(source: &str) -> String {
+    if source_has_use_reaction(source) {
+        return source.to_string();
+    }
+    let mut out = String::new();
+    let mut inserted = false;
+    for line in source.lines() {
+        out.push_str(line);
+        out.push('\n');
+        if !inserted {
+            let t = line.trim();
+            if t.starts_with("use ") || t.starts_with("pkg ") {
+                // insert after first use or after pkg line before blank
+                if t.starts_with("use ") {
+                    out.push_str("  use reaction\n");
+                    inserted = true;
+                }
+            }
+        }
+    }
+    if !inserted {
+        // No use lines — inject after pkg line if present
+        let mut out2 = String::new();
+        let mut done = false;
+        for line in source.lines() {
+            out2.push_str(line);
+            out2.push('\n');
+            if !done && line.trim().starts_with("pkg ") {
+                out2.push_str("  use reaction\n");
+                done = true;
+            }
+        }
+        if done {
+            return out2;
+        }
+        return format!("use reaction\n{source}");
+    }
+    out
+}
+
 pub fn default_layer_source(stem: &str) -> String {
     format!(
         "pkg {stem} v1\n  desc \"{stem} language layer\"\n  author \"VEIL\"\n\n  construct Example\n    kw example\n    mt struct\n    desc \"Starter construct — rename me\"\n    visual\n      icon \"📦\"\n      color \"#6366f1\"\n      label \"Example\"\n    group domain\n\n  prompt\n    You are authoring packages that use the `{stem}` layer.\n    Prefer layer keywords; keep platform packages as dependencies.\n"
@@ -137,8 +222,10 @@ pub async fn create_file_in_project<P: SourceProvider + ?Sized>(
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "pkg".into());
+    let reaction_ctx = is_reaction_ide_context(state.project_root().as_deref());
     let content = content.unwrap_or_else(|| match kind {
         FileKind::Layer => default_layer_source(&stem),
+        FileKind::Package | FileKind::Stub if reaction_ctx => reaction_package_source(&stem),
         FileKind::Package | FileKind::Stub => default_package_source(&stem),
     });
 

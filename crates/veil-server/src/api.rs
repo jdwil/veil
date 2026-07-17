@@ -353,11 +353,30 @@ async fn get_source<P: SourceProvider>(State(state): State<SharedProvider<P>>) -
 /// AGT-010: full-file write for remote SourceStore clients.
 async fn post_source<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
+    headers: axum::http::HeaderMap,
     body: String,
 ) -> axum::response::Response {
     if !state.is_editable("") {
         return (StatusCode::FORBIDDEN, "file is read-only").into_response();
     }
+    let reaction_mode = crate::file_ops::is_reaction_ide_context(state.project_root().as_deref())
+        || headers
+            .get("x-veil-mode")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("reaction"))
+            .unwrap_or(false);
+
+    let mut body = body;
+    if reaction_mode && matches!(state.file_kind(""), FileKind::Package) {
+        if let Ok(prev) = state.read_source("").await {
+            if let Err(e) = crate::file_ops::check_use_reaction_locked(&prev, &body) {
+                return (StatusCode::BAD_REQUEST, e).into_response();
+            }
+        }
+        // Always re-assert locked use (idempotent if already present).
+        body = crate::file_ops::ensure_use_reaction(&body);
+    }
+
     match state.file_kind("") {
         FileKind::Layer => {
             let name = layer_name_from_files(state.as_ref()).await;
@@ -1114,6 +1133,7 @@ async fn post_select_file<P: SourceProvider>(
 
 async fn post_edit<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<EditRequest>,
 ) -> axum::response::Response {
     if !state.is_editable("") {
@@ -1152,7 +1172,20 @@ async fn post_edit<P: SourceProvider>(
         return (StatusCode::BAD_REQUEST, format!("edit failed: {}", e)).into_response();
     }
 
-    let new_source = veil_ir::serialize_solution(&sol);
+    let mut new_source = veil_ir::serialize_solution(&sol);
+
+    let reaction_mode = crate::file_ops::is_reaction_ide_context(state.project_root().as_deref())
+        || headers
+            .get("x-veil-mode")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("reaction"))
+            .unwrap_or(false);
+    if reaction_mode {
+        if let Err(e) = crate::file_ops::check_use_reaction_locked(&source, &new_source) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+        new_source = crate::file_ops::ensure_use_reaction(&new_source);
+    }
 
     let reparsed = match parse_source(&new_source, &state.registry()) {
         Ok(s) => s,
