@@ -501,6 +501,12 @@ function applyRootNavigation(data: IrGraph) {
     targetId = flows[0].id;
     crumb = { id: flows[0].id, name: flows[0].name };
   }
+  // Flow composer mode: always drill into the first fn/Flow regardless of
+  // other siblings (layer-injected Bus, etc. don't block auto-drill).
+  if (isFlowComposerMode() && flows.length >= 1) {
+    targetId = flows[0].id;
+    crumb = { id: flows[0].id, name: flows[0].name };
+  }
 
   // Force subscriber fire even when parent id is unchanged across files
   // (both packages use node id 1 for Solution).
