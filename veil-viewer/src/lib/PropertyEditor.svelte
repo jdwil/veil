@@ -397,18 +397,35 @@
           <div class="step-fields">
             {#each paletteEntry.has_fields as [fieldName, fieldType]}
               {@const currentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === fieldName)?.[1] ?? ''}
+              {@const isList = fieldType.startsWith('List<')}
               <label class="step-field">
                 <span class="step-field-name">{fieldName}</span>
-                <input
-                  type="text"
-                  class="step-field-input"
-                  value={currentValue}
-                  placeholder={fieldType}
-                  onchange={(e) => {
-                    // TODO: wire to edit API (set_step_field op) when available.
-                    // For now this is read-only display with the schema visible.
-                  }}
-                />
+                {#if isList}
+                  {@const items = currentValue ? currentValue.split(',').map((s: string) => s.trim()).filter((s: string) => s) : ['']}
+                  <div class="step-field-list">
+                    {#each items as item, i}
+                      <input
+                        type="text"
+                        class="step-field-input"
+                        value={item}
+                        placeholder={fieldType.replace('List<', '').replace('>', '') + ` #${i + 1}`}
+                      />
+                    {/each}
+                    <button type="button" class="step-field-add" title="Add item">+</button>
+                  </div>
+                {:else if fieldType === 'Bool'}
+                  <select class="step-field-input">
+                    <option value="true" selected={currentValue === 'true'}>true</option>
+                    <option value="false" selected={currentValue !== 'true'}>false</option>
+                  </select>
+                {:else}
+                  <input
+                    type="text"
+                    class="step-field-input"
+                    value={currentValue}
+                    placeholder={fieldType}
+                  />
+                {/if}
               </label>
             {/each}
           </div>
@@ -728,5 +745,24 @@
   .step-field-input:focus {
     outline: none;
     border-color: var(--veil-accent);
+  }
+  .step-field-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .step-field-add {
+    align-self: flex-start;
+    padding: 2px 10px;
+    font-size: 12px;
+    border: 1px dashed var(--veil-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--veil-text-dim);
+    cursor: pointer;
+  }
+  .step-field-add:hover {
+    border-color: var(--veil-accent);
+    color: var(--veil-accent);
   }
 </style>

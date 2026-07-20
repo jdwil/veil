@@ -120,9 +120,9 @@
     {/if}
 
     <!-- UX-024: step body summary on the card -->
-    {#if isStep && bodyEmpty}
+    {#if isStep && !subkind && bodyEmpty}
       <div class="body-preview empty">empty step</div>
-    {:else if isStep && bodyPreview.length > 0}
+    {:else if isStep && !subkind && bodyPreview.length > 0}
       <div class="body-preview">
         {#each bodyPreview as line}
           <div
