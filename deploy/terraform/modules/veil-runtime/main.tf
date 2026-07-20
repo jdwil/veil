@@ -118,7 +118,15 @@ resource "aws_security_group" "ecs_instances" {
   description = "ECS container instances for veil-runtime"
 
   ingress {
-    description = "Allow traffic from ALB"
+    description     = "Allow traffic from ALB"
+    from_port       = var.runtime_port
+    to_port         = var.runtime_port
+    protocol        = "tcp"
+    security_groups = var.create_alb ? [aws_security_group.alb[0].id] : []
+  }
+
+  ingress {
+    description = "Allow traffic from self"
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
