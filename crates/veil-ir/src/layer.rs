@@ -81,6 +81,63 @@ impl StmtShape {
     }
 }
 
+/// Meta-type for step-type construct `has` fields.
+/// Drives context-aware property editors in the viewer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FieldMeta {
+    /// Plain value field (text input, checkbox, etc.)
+    Plain { type_hint: String },
+    /// Pick any callable target (trait method, free fn) in scope.
+    Callable,
+    /// Pick a construct by shape (optionally filtered by subkind).
+    Construct { shape: String },
+    /// Pick a method from the construct selected in another field.
+    MethodOf { source_field: String },
+    /// Auto-generate param inputs from the method selected in another field.
+    ParamsOf { source_field: String },
+    /// Pick a type defined in scope.
+    TypeRef,
+}
+
+/// A field declared in a step-type construct's `has` block with meta-type info.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepFieldSpec {
+    pub name: String,
+    pub meta: FieldMeta,
+    /// Optional label override (from field_hints). If empty, use field name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// Optional filter hint (from field_hints). E.g. "subkind:Repository".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub filter: String,
+}
+
+impl FieldMeta {
+    /// Parse a type string from a `has` block into a FieldMeta.
+    /// Recognizes: Callable, MethodOf<field>, ParamsOf<field>, Construct<shape>, TypeRef
+    /// Everything else is Plain.
+    pub fn parse(type_str: &str) -> FieldMeta {
+        let s = type_str.trim();
+        if s == "Callable" {
+            return FieldMeta::Callable;
+        }
+        if s == "TypeRef" {
+            return FieldMeta::TypeRef;
+        }
+        if let Some(inner) = s.strip_prefix("MethodOf<").and_then(|r| r.strip_suffix('>')) {
+            return FieldMeta::MethodOf { source_field: inner.trim().to_string() };
+        }
+        if let Some(inner) = s.strip_prefix("ParamsOf<").and_then(|r| r.strip_suffix('>')) {
+            return FieldMeta::ParamsOf { source_field: inner.trim().to_string() };
+        }
+        if let Some(inner) = s.strip_prefix("Construct<").and_then(|r| r.strip_suffix('>')) {
+            return FieldMeta::Construct { shape: inner.trim().to_string() };
+        }
+        FieldMeta::Plain { type_hint: s.to_string() }
+    }
+}
+
 /// Visual metadata for a construct or statement.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Visual {
@@ -134,6 +191,10 @@ pub struct ConstructSpec {
     /// contextually within fn-shaped constructs instead of at top level.
     #[serde(default)]
     pub is_step: bool,
+    /// Structured field specs for step-type constructs (from `has` block).
+    /// Carries meta-type info for context-aware property editors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_fields: Vec<StepFieldSpec>,
     pub annotations: Vec<AnnotationSpec>,
     /// Target construct name (for impl-shaped constructs): the trait-shaped
     /// construct this implements. Declared as `tgt Port` in the layer file.
@@ -462,6 +523,7 @@ impl LayerRegistry {
                 },
                 au: false,
                 is_step: false,
+                step_fields: Vec::new(),
                 annotations: Vec::new(),
                 runtime: None,
                 tgt: String::new(),
@@ -1473,6 +1535,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         Annotations,
         Runtime,
         Present,
+        FieldHints,
     }
 
     enum Item {
@@ -1669,6 +1732,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 group: String::new(),
                 au: false,
                 is_step: false,
+                step_fields: Vec::new(),
                 visual: Visual {
                     label: name,
                     ..Default::default()
@@ -1758,6 +1822,11 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     section = Section::Present;
                     continue;
                 }
+                "field_hints" => {
+                    flush_present_view(&mut current, &mut present_view);
+                    section = Section::FieldHints;
+                    continue;
+                }
                 _ => {
                     flush_present_view(&mut current, &mut present_view);
                     section = Section::None;
@@ -1780,6 +1849,13 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                         } else if let Some(shape) = Shape::from_name(shape_str) {
                             c.blocks.push((kw.trim().to_string(), shape));
                         }
+                        // Build StepFieldSpec with meta-type for step-type constructs.
+                        c.step_fields.push(StepFieldSpec {
+                            name: kw.trim().to_string(),
+                            meta: FieldMeta::parse(shape_str),
+                            label: String::new(),
+                            filter: String::new(),
+                        });
                     }
                     c.contains.push(entry.trim_end_matches("[]").to_string());
                 }
@@ -1831,6 +1907,24 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                             params,
                             roles,
                         });
+                    }
+                }
+            }
+            Section::FieldHints => {
+                // Grammar: `field_name: hint_key hint_value`
+                // E.g. `target: filter_by subkind:Repository`
+                //       `target: label "Repository"`
+                if let Item::Construct(c) = item {
+                    if let Some((field_name, rest)) = trimmed.split_once(':') {
+                        let field_name = field_name.trim();
+                        let rest = rest.trim();
+                        if let Some(spec) = c.step_fields.iter_mut().find(|f| f.name == field_name) {
+                            if let Some(v) = rest.strip_prefix("filter_by ") {
+                                spec.filter = v.trim().to_string();
+                            } else if let Some(v) = rest.strip_prefix("label ") {
+                                spec.label = unquote(v);
+                            }
+                        }
                     }
                 }
             }
@@ -2159,6 +2253,9 @@ pub struct PaletteEntry {
     /// The viewer uses this to render per-type property editors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub has_fields: Vec<(String, String)>,
+    /// Structured field specs with meta-type info for context-aware editors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_fields: Vec<StepFieldSpec>,
     /// Whether this is a step-type construct (mt step).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_step: bool,
@@ -2209,6 +2306,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
                     })
                 })
                 .collect(),
+            step_fields: c.step_fields.clone(),
             is_step: c.is_step,
         });
     }
@@ -2235,6 +2333,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             tgt: String::new(),
             dg: String::new(),
             has_fields: Vec::new(),
+            step_fields: Vec::new(),
             is_step: false,
         });
     }

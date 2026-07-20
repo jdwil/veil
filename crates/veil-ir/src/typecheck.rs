@@ -1588,6 +1588,7 @@ mod tests {
             visual: empty_visual(),
             au: false,
                 is_step: false,
+                step_fields: Vec::new(),
             annotations: Vec::new(),
             runtime: None,
             tgt: String::new(),
