@@ -764,6 +764,34 @@
         }
       }
       if (projected.layout === 'flow') {
+        // Resolve on:label routing properties into labeled edges.
+        // Step nodes with on:* properties (e.g. on:true → process) get
+        // explicit labeled edges pointing to the named target step.
+        for (const node of displayNodes) {
+          if (node.kind !== 'Step') continue;
+          for (const [key, value] of node.metadata.properties) {
+            if (!key.startsWith('on:')) continue;
+            const label = key.slice(3); // "true", "false", case label
+            const targetNode = displayNodes.find(
+              (n) => n.kind === 'Step' && n.name === value
+            );
+            if (targetNode && itemIds.has(targetNode.id)) {
+              // Remove the automatic SequenceFlow edge from this node if a routing edge replaces it
+              flowEdges = flowEdges.filter(
+                (e) => !(e.source === String(node.id) && e.id?.startsWith('e-'))
+              );
+              flowEdges.push({
+                id: `route-${node.id}-${targetNode.id}-${label}`,
+                source: String(node.id),
+                target: String(targetNode.id),
+                animated: false,
+                style: `stroke: var(--node-color, ${node.metadata.properties.find(([k]) => k === 'color')?.[1] || '#64748b'}); stroke-width: 2;`,
+                label,
+                labelStyle: 'font-size: 11px; fill: var(--veil-text); font-weight: 600;',
+              });
+            }
+          }
+        }
         const dir = projected.flowDirection ?? 'LR';
         nodes = await layoutNodes(flowNodes, flowEdges, dir, graphContainerEl);
         edges = flowEdges;
