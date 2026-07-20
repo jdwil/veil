@@ -1078,7 +1078,7 @@ impl<'a> Parser<'a> {
                             span: step_start.merge(self.current().span),
                             body,
                             refs: Vec::new(),
-                            sub_blocks: Vec::new(),
+                            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
                         }),
                         position,
                     });
@@ -1156,7 +1156,7 @@ impl<'a> Parser<'a> {
                         span: step_start.merge(self.current().span),
                         body: step_body,
                         refs: Vec::new(),
-                        sub_blocks: Vec::new(),
+                        sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
                     }));
                     continue;
                 }
@@ -2375,6 +2375,7 @@ impl<'a> Parser<'a> {
         }
 
         let mut body = Vec::new();
+        let mut steps: Vec<FlowStep> = Vec::new();
         let mut fn_annotations = annotations;
         if self.at_block_start() {
             self.enter_block()?;
@@ -2385,6 +2386,15 @@ impl<'a> Parser<'a> {
                 }
                 if self.at(&TokenKind::Annotation) {
                     fn_annotations.extend(self.parse_annotations());
+                    continue;
+                }
+                // Typed steps and plain steps inside fn bodies.
+                if self.at_step_header() {
+                    steps.push(FlowStep::Step(self.parse_step_def()?));
+                    continue;
+                }
+                if self.at_par_header() {
+                    steps.push(FlowStep::Parallel(self.parse_par_block()?));
                     continue;
                 }
                 match self.parse_expr() {
@@ -2404,6 +2414,7 @@ impl<'a> Parser<'a> {
             return_type,
             annotations: fn_annotations,
             body,
+            steps,
             layer_provided: false,
         })
     }
@@ -2521,12 +2532,18 @@ impl<'a> Parser<'a> {
 
     fn parse_step_def(&mut self) -> Result<StepDef, ParseError> {
         let start_span = self.current().span;
-        self.advance(); // `step` ident-keyword
+        let keyword = self.advance().text; // `step` or typed step keyword
         let name = self.expect_ident()?;
+
+        // Determine if this is a typed step (layer-defined with has fields).
+        let is_typed = keyword != "step" && self.registry.step_construct(&keyword).is_some();
+        let kind = if is_typed { Some(keyword.clone()) } else { None };
 
         let mut body = Vec::new();
         let mut refs = Vec::new();
         let mut sub_blocks = Vec::new();
+        let mut fields: Vec<StepField> = Vec::new();
+        let mut edges: Vec<StepEdge> = Vec::new();
 
         if self.at_block_start() {
             self.enter_block()?;
@@ -2535,6 +2552,53 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
+
+                // Typed step: parse `on <label>: <target>` edge routing lines.
+                if is_typed && self.current_word() == Some("on") {
+                    let edge_span = self.current().span;
+                    self.advance(); // consume "on"
+                    // Label can be an ident or a keyword like true/false.
+                    let label = match self.peek_kind() {
+                        TokenKind::True | TokenKind::False => self.advance().text,
+                        _ => self.expect_ident()?,
+                    };
+                    self.expect(&TokenKind::Colon)?;
+                    let target = self.expect_ident()?;
+                    edges.push(StepEdge {
+                        label,
+                        target,
+                        span: edge_span.merge(self.current().span),
+                    });
+                    continue;
+                }
+
+                // Typed step: parse `key: value` config fields.
+                // A field line is: Ident followed by Colon (but NOT `name(` which is a call).
+                if is_typed && self.at(&TokenKind::Ident) {
+                    let maybe_field = self.pos + 1 < self.tokens.len()
+                        && self.tokens[self.pos + 1].kind == TokenKind::Colon;
+                    if maybe_field {
+                        let field_span = self.current().span;
+                        let field_name = self.advance().text;
+                        self.advance(); // consume colon
+                        // Collect the rest of the line as the value string.
+                        let mut value_parts: Vec<String> = Vec::new();
+                        while !self.at(&TokenKind::Newline)
+                            && !self.at(&TokenKind::Eof)
+                            && !self.at(&TokenKind::Dedent)
+                        {
+                            value_parts.push(self.advance().text.clone());
+                        }
+                        let value = value_parts.join(" ");
+                        fields.push(StepField {
+                            name: field_name,
+                            value: value.trim().to_string(),
+                            span: field_span.merge(self.current().span),
+                        });
+                        continue;
+                    }
+                }
+
                 // Reference line: an ident-keyword followed by a bare Name and
                 // then end-of-line (e.g. `ctx Identity`). Distinguished from
                 // expressions by the absence of call/assign syntax.
@@ -2606,6 +2670,9 @@ impl<'a> Parser<'a> {
             body,
             refs,
             sub_blocks,
+            kind,
+            fields,
+            edges,
         })
     }
 
@@ -2666,9 +2733,18 @@ impl<'a> Parser<'a> {
     /// (lexed as idents), recognized here by word + shape so users can still
     /// name variables `step`. A step header is `step <Ident>`; anything else
     /// (e.g. `step = 1`) is an ordinary expression.
+    ///
+    /// Also recognizes layer-defined typed steps (e.g. `query fetch_data`)
+    /// when the word is registered as a step-type construct (`mt step`).
     fn at_step_header(&self) -> bool {
-        self.current_word() == Some("step")
-            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident))
+        let word = match self.current_word() {
+            Some(w) => w,
+            None => return false,
+        };
+        if !matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident)) {
+            return false;
+        }
+        word == "step" || self.registry.step_construct(word).is_some()
     }
 
     /// `par` alone on its line, opening a parallel block.
@@ -2727,16 +2803,6 @@ impl<'a> Parser<'a> {
             TokenKind::If => return self.parse_if_expr(),
             TokenKind::Break => { self.advance(); return Ok(Expr::Break); }
             TokenKind::Continue => { self.advance(); return Ok(Expr::Continue); }
-            TokenKind::Loop => {
-                self.advance();
-                let mut body = Vec::new();
-                if self.at_block_start() {
-                    let _ = self.enter_block();
-                    loop { self.skip_newlines(); if self.at_block_end() { break; } body.push(self.parse_expr()?); }
-                    self.exit_block();
-                }
-                return Ok(Expr::Loop(body));
-            }
             TokenKind::Mut => {
                 self.advance(); // consume 'mut'
                 let name = self.expect_ident()?;
@@ -2765,8 +2831,21 @@ impl<'a> Parser<'a> {
                 return Ok(Expr::Return(Box::new(inner)));
             }
             TokenKind::Ident => {
-                // Layer-defined statement?
+                // `loop` is contextual (like `step`/`par`): recognized as an
+                // infinite-loop expression when followed by a block, otherwise
+                // it's a plain identifier (field name, enum variant, etc.).
                 let word = self.current().text.clone();
+                if word == "loop" && self.tokens.get(self.pos + 1).map(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Indent)).unwrap_or(false) {
+                    self.advance();
+                    let mut body = Vec::new();
+                    if self.at_block_start() {
+                        let _ = self.enter_block();
+                        loop { self.skip_newlines(); if self.at_block_end() { break; } body.push(self.parse_expr()?); }
+                        self.exit_block();
+                    }
+                    return Ok(Expr::Loop(body));
+                }
+                // Layer-defined statement?
                 if let Some(stmt) = self.registry.statement(&word).cloned() {
                     return self.parse_action(&word, &stmt);
                 }

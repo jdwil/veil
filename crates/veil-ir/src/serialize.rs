@@ -545,6 +545,9 @@ impl Serializer {
             .unwrap_or_default();
         self.line(&format!("fn {}({}){}", f.name, params, ret));
         self.indent();
+        for step in &f.steps {
+            self.emit_flow_step(step);
+        }
         for expr in &f.body {
             self.emit_expr(expr);
         }
@@ -615,8 +618,22 @@ impl Serializer {
     }
 
     fn emit_step_def(&mut self, s: &StepDef) {
-        self.line(&format!("step {}", s.name));
+        // Typed step: emit `<kind> <name>` instead of `step <name>`.
+        let header = if let Some(kind) = &s.kind {
+            format!("{} {}", kind, s.name)
+        } else {
+            format!("step {}", s.name)
+        };
+        self.line(&header);
         self.indent();
+        // Typed step config fields: `key: value`
+        for f in &s.fields {
+            self.line(&format!("{}: {}", f.name, f.value));
+        }
+        // Edge routing: `on <label>: <target>`
+        for e in &s.edges {
+            self.line(&format!("on {}: {}", e.label, e.target));
+        }
         for r in &s.refs {
             self.line(&format!("{} {}", r.keyword, r.values.join(", ")));
         }
@@ -1347,7 +1364,7 @@ items: vec![TopLevelItem::Construct(c)],
             span: Span::new(0, 0),
             body,
             refs: Vec::new(),
-            sub_blocks: Vec::new(),
+            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
         }));
         Solution {
             name: "App".into(),

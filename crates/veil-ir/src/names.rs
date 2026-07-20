@@ -1240,6 +1240,7 @@ mod tests {
             group: String::new(),
             visual: empty_visual(),
             au: false,
+                is_step: false,
             annotations: Vec::new(),
             runtime: None,
             tgt: String::new(),
@@ -1313,7 +1314,7 @@ mod tests {
             span: Span::new(0, 0),
             body,
             refs: Vec::new(),
-            sub_blocks: Vec::new(),
+            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
         }
     }
 
@@ -1441,6 +1442,7 @@ mod tests {
             annotations: Vec::new(),
             body: Vec::new(),
             layer_provided: false,
+            steps: Vec::new(),
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "Greet".into(), Span::new(0, 0));
         svc.steps.push(FlowStep::Step(step_with_body(vec![

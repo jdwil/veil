@@ -129,6 +129,11 @@ pub struct ConstructSpec {
     #[serde(default)]
     /// Whether constructs of this kind are deployment unit boundaries.
     pub au: bool,
+    /// Whether this construct appears as a typed step inside fn bodies.
+    /// Set when `maps_to` is `"step"`. The parser recognizes the keyword
+    /// contextually within fn-shaped constructs instead of at top level.
+    #[serde(default)]
+    pub is_step: bool,
     pub annotations: Vec<AnnotationSpec>,
     /// Target construct name (for impl-shaped constructs): the trait-shaped
     /// construct this implements. Declared as `tgt Port` in the layer file.
@@ -456,6 +461,7 @@ impl LayerRegistry {
                     label: label.to_string(),
                 },
                 au: false,
+                is_step: false,
                 annotations: Vec::new(),
                 runtime: None,
                 tgt: String::new(),
@@ -503,6 +509,13 @@ impl LayerRegistry {
     /// Look up a statement by its source keyword.
     pub fn statement(&self, keyword: &str) -> Option<&StatementSpec> {
         self.statements.iter().find(|s| s.keyword == keyword)
+    }
+
+    /// Look up a step-type construct by its source keyword.
+    /// These are constructs with `maps_to: "step"` that appear as typed steps
+    /// inside fn bodies.
+    pub fn step_construct(&self, keyword: &str) -> Option<&ConstructSpec> {
+        self.constructs.iter().find(|c| c.keyword == keyword && c.is_step)
     }
 
     /// Find an infix operator statement that matches a token text sequence.
@@ -836,6 +849,10 @@ impl LayerRegistry {
                         spec.name, spec.layer, spec.maps_to
                     )
                 })?;
+            // Flag step-type constructs: maps_to chain passes through "step".
+            if spec.maps_to == "step" {
+                spec.is_step = true;
+            }
         }
         // Later definitions shadow earlier ones with the same keyword.
         for spec in pending {
@@ -906,6 +923,12 @@ fn resolve_construct_shape(
         // "primitive" is used by base.layer to mean "I am the core shape myself".
         if current == "primitive" {
             return None; // handled by caller for base constructs; see below
+        }
+        // "step" means this construct is a typed step inside fn bodies.
+        // It gets Struct shape (for its config fields) but is recognized
+        // contextually by the parser — not as a top-level construct.
+        if current == "step" {
+            return Some(Shape::Struct);
         }
         if let Some(shape) = Shape::from_name(&current) {
             return Some(shape);
@@ -1645,6 +1668,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 allowed_in: String::new(),
                 group: String::new(),
                 au: false,
+                is_step: false,
                 visual: Visual {
                     label: name,
                     ..Default::default()

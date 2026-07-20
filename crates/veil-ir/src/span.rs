@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A span in the source text, used for error reporting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

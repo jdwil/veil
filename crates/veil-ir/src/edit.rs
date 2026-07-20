@@ -801,7 +801,7 @@ items: Vec::new(),
             span: Span::new(100, 200),
             body: vec![Expr::Ident("old".into())],
             refs: Vec::new(),
-            sub_blocks: Vec::new(),
+            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
         };
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "Do".into(), Span::new(10, 300));
         svc.steps.push(FlowStep::Step(step));

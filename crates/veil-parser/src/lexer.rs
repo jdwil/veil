@@ -105,7 +105,6 @@ pub enum TokenKind {
     Node,
     Flow,
     Alt,
-    Loop,
     Err,
     Call,
     Input,
@@ -548,7 +547,6 @@ fn keyword_lookup(text: &str) -> TokenKind {
         // contextually inside fn-shaped bodies, so users can name variables
         // `step`/`par` freely.
         "alt" => TokenKind::Alt,
-        "loop" => TokenKind::Loop,
         "err" => TokenKind::Err,
         "call" => TokenKind::Call,
         "input" => TokenKind::Input,

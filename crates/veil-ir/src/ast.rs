@@ -449,6 +449,9 @@ pub struct FnDef {
     pub return_type: Option<TypeExpr>,
     pub annotations: Vec<Annotation>,
     pub body: Vec<Expr>,
+    /// Typed steps and plain steps inside the fn body.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<FlowStep>,
     /// True when this function was injected from a layer's `declare` block
     /// (e.g. the saga coordinator). Not re-emitted by the serializer.
     #[serde(default)]
@@ -494,7 +497,7 @@ pub enum FlowStep {
 }
 
 /// A named sequential step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StepDef {
     pub name: String,
     pub span: Span,
@@ -503,6 +506,33 @@ pub struct StepDef {
     pub refs: Vec<RefLine>,
     /// Named expression sub-blocks within the step (`compensate`).
     pub sub_blocks: Vec<SubBlock>,
+    /// Layer-defined step type keyword (e.g. "query", "decision").
+    /// None for plain `step` blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Typed step config fields from the layer `has` schema.
+    /// Parsed as `key: value` lines inside typed step blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<StepField>,
+    /// Edge routing: `on <label>: <target_step_name>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<StepEdge>,
+}
+
+/// A config field on a typed step (key: value from layer has schema).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepField {
+    pub name: String,
+    pub value: String,
+    pub span: Span,
+}
+
+/// An edge routing line: `on <label>: <target_step_name>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepEdge {
+    pub label: String,
+    pub target: String,
+    pub span: Span,
 }
 
 /// A named expression block within a step (e.g. compensation logic).

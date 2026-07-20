@@ -287,6 +287,7 @@ mod tests {
             group: String::new(),
             visual: empty_visual(),
             au: false,
+                is_step: false,
             annotations: Vec::new(),
             runtime: None,
             tgt: String::new(),

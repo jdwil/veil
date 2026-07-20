@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 use crate::ast::*;
 use crate::span::Span;
 
-/// Platform packages that must not be specialized via `adapt` (use only).
-pub const ADAPT_DENYLIST: &[&str] = &["dlx_core"];
+/// Platform / library packages that must not be specialized via `adapt` (use only).
+/// `reaction` is the graph language + IR types package: `use reaction` loads
+/// vocabulary (layer) and types, not an inlined stock product on the canvas.
+pub const ADAPT_DENYLIST: &[&str] = &["dlx_core", "reaction"];
 
 /// Error from adapt resolve / merge.
 #[derive(Debug, Clone)]
@@ -1297,7 +1299,7 @@ fn replace_body(
                     span,
                     body: body.to_vec(),
                     refs: Vec::new(),
-                    sub_blocks: Vec::new(),
+                    sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
                 })];
             }
             c.return_expr = None;
@@ -1665,7 +1667,7 @@ mod tests {
                     span: sp(),
                     body,
                     refs: vec![],
-                    sub_blocks: vec![],
+                    sub_blocks: vec![], kind: None, fields: vec![], edges: vec![],
                 })
             })
             .collect();
@@ -1675,6 +1677,7 @@ mod tests {
     #[test]
     fn denylist_dlx_core() {
         assert!(is_adapt_denied("dlx_core"));
+        assert!(is_adapt_denied("reaction"));
         assert!(!is_adapt_denied("wear_test"));
     }
 
@@ -1788,7 +1791,7 @@ mod tests {
                     span: sp(),
                     body: vec![Expr::Ident("Ok".into())],
                     refs: vec![],
-                    sub_blocks: vec![],
+                    sub_blocks: vec![], kind: None, fields: vec![], edges: vec![],
                 }),
                 position: StepPosition::After("persist".into()),
             }],
@@ -1829,7 +1832,7 @@ mod tests {
                 span: sp(),
                 body: vec![Expr::Stock],
                 refs: vec![],
-                sub_blocks: vec![],
+                sub_blocks: vec![], kind: None, fields: vec![], edges: vec![],
             })],
             body: vec![],
             span: sp(),
@@ -1871,7 +1874,7 @@ mod tests {
                     Expr::Return(Box::new(Expr::Ident("init".into()))),
                 ],
                 refs: vec![],
-                sub_blocks: vec![],
+                sub_blocks: vec![], kind: None, fields: vec![], edges: vec![],
             })],
             body: vec![],
             span: sp(),

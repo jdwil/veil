@@ -817,7 +817,7 @@ items: vec![TopLevelItem::Construct(c)],
                 body: vec![],
             }],
             refs: Vec::new(),
-            sub_blocks: Vec::new(),
+            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
         }));
         let reg = LayerRegistry::builtin();
         let diags = check_target_capabilities(&sol_with(svc), &reg, CodegenTarget::TypeScript);
@@ -840,7 +840,7 @@ items: vec![TopLevelItem::Construct(c)],
                 inclusive: true,
             }],
             refs: Vec::new(),
-            sub_blocks: Vec::new(),
+            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
         }));
         let reg = LayerRegistry::builtin();
         let diags = check_target_capabilities(&sol_with(svc), &reg, CodegenTarget::Rust);
@@ -875,7 +875,7 @@ items: vec![TopLevelItem::Construct(c)],
                 inclusive: false,
             }],
             refs: Vec::new(),
-            sub_blocks: Vec::new(),
+            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
         }));
         let reg = LayerRegistry::builtin();
         let diags = check_multi_target_debt(&sol_with(svc), &reg);
@@ -924,6 +924,7 @@ items: vec![TopLevelItem::Function(FnDef {
                 annotations: vec![],
                 body: vec![Expr::IntLit(1)],
                 layer_provided: false,
+            steps: Vec::new(),
             })],
             expose: None,
         };
@@ -952,6 +953,7 @@ items: vec![TopLevelItem::Function(FnDef {
                 annotations: vec![],
                 body: vec![Expr::Try(Box::new(Expr::Ident("x".into())))],
                 layer_provided: false,
+            steps: Vec::new(),
             })],
             expose: None,
         };
@@ -981,7 +983,7 @@ items: vec![TopLevelItem::Function(FnDef {
                 inclusive: false,
             }],
             refs: Vec::new(),
-            sub_blocks: Vec::new(),
+            sub_blocks: Vec::new(), kind: None, fields: Vec::new(), edges: Vec::new(),
         }));
         let reg = LayerRegistry::builtin();
         let diags = check_target_capabilities(&sol_with(svc), &reg, CodegenTarget::Swift);
