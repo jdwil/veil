@@ -400,7 +400,7 @@ resource "aws_lb_target_group" "runtime" {
   target_type = "instance"
 
   health_check {
-    path                = "/health"
+    path                = "/api/projects"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
