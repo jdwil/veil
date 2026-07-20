@@ -280,6 +280,10 @@ impl<'a> IrBuilder<'a> {
                             node.metadata.annotations.push("layer-provided".to_string());
                         }
                     }
+                    // Build steps (typed steps + plain steps) as child nodes.
+                    if !f.steps.is_empty() {
+                        self.build_steps(&f.steps, id);
+                    }
                 }
                 TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } | TopLevelItem::Static { .. } => {}
             }
@@ -728,6 +732,20 @@ impl<'a> IrBuilder<'a> {
                     self.graph.add_edge(parent_id, step_id, EdgeKind::Contains);
                     if let Some(prev) = prev_step_id {
                         self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
+                    }
+                    // Typed step: set subkind from the layer-defined kind.
+                    if let Some(kind) = &s.kind {
+                        self.set_subkind(step_id, kind);
+                    }
+                    // Typed step config fields as properties.
+                    for f in &s.fields {
+                        self.set_property(step_id, &f.name, &f.value);
+                    }
+                    // Typed step edge routing (on label: target).
+                    // Stored as properties; resolved to edges after all steps
+                    // are created (see below).
+                    for e in &s.edges {
+                        self.set_property(step_id, &format!("on:{}", e.label), &e.target);
                     }
                     // Reference lines within the step (e.g. `ctx Identity`).
                     // Prefixed with `ref:` so the viewer can render them
