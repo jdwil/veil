@@ -388,6 +388,34 @@
       </div>
     {/if}
 
+    <!-- Step-type field editor: editable fields from layer has_fields schema -->
+    {#if kind === 'Step' && subkind}
+      {@const paletteEntry = ($paletteConfig ?? []).find((p: any) => p.keyword === subkind && p.is_step)}
+      {#if paletteEntry?.has_fields?.length}
+        <div class="pe-section">
+          <span class="label-text">{paletteEntry.label || subkind} config</span>
+          <div class="step-fields">
+            {#each paletteEntry.has_fields as [fieldName, fieldType]}
+              {@const currentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === fieldName)?.[1] ?? ''}
+              <label class="step-field">
+                <span class="step-field-name">{fieldName}</span>
+                <input
+                  type="text"
+                  class="step-field-input"
+                  value={currentValue}
+                  placeholder={fieldType}
+                  onchange={(e) => {
+                    // TODO: wire to edit API (set_step_field op) when available.
+                    // For now this is read-only display with the schema visible.
+                  }}
+                />
+              </label>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    {/if}
+
     <!-- Properties from IR -->
     {#if node.data.properties && node.data.properties.length > 0}
       <div class="pe-section">
@@ -671,5 +699,34 @@
     border-radius: 4px;
     border-left: 2px solid var(--veil-border);
     min-height: 32px;
+  }
+
+  .step-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .step-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .step-field-name {
+    font-size: 11px;
+    color: var(--veil-text-dim);
+    font-weight: 500;
+  }
+  .step-field-input {
+    font-size: 12px;
+    padding: 4px 8px;
+    border: 1px solid var(--veil-border);
+    border-radius: 4px;
+    background: var(--veil-node-bg);
+    color: var(--veil-text);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .step-field-input:focus {
+    outline: none;
+    border-color: var(--veil-accent);
   }
 </style>
