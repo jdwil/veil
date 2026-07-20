@@ -1496,6 +1496,20 @@
           </div>
         {/if}
         <div class="graph-container" bind:this={graphContainerEl} ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+        {#if shell.mode === 'flow'}
+          {@const parentNode = $irGraph?.nodes.find((n) => n.id === $currentParent)}
+          {@const fnParams = parentNode?.metadata.properties.find(([k]) => k === 'params')?.[1] ?? ''}
+          {@const fnReturn = parentNode?.metadata.properties.find(([k]) => k === 'returns')?.[1] ?? ''}
+          <div class="fn-signature-bar">
+            <span class="fn-kw">fn</span>
+            <span class="fn-name">{parentNode?.name ?? 'run'}</span>
+            <span class="fn-params">({fnParams})</span>
+            {#if fnReturn}
+              <span class="fn-arrow">→</span>
+              <span class="fn-return">{fnReturn}</span>
+            {/if}
+          </div>
+        {/if}
         {#if shell.showDiagnostics}
           <DiagnosticsPanel />
         {/if}
@@ -2042,4 +2056,33 @@
   :global(.svelte-flow__edge.animated .svelte-flow__edge-path) { stroke: var(--veil-text-dim) !important; stroke-width: 2.5px; filter: drop-shadow(0 0 6px rgba(100, 100, 100, 0.3)); }
   :global(.svelte-flow__handle) { width: 8px !important; height: 8px !important; background: var(--node-color, var(--veil-text-faint)) !important; border: 2px solid var(--veil-surface) !important; opacity: 0; transition: opacity 0.2s; }
   :global(.svelte-flow__node:hover .svelte-flow__handle) { opacity: 1; }
+
+  .fn-signature-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    background: var(--veil-surface);
+    border-bottom: 1px solid var(--veil-border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    z-index: 5;
+  }
+  .fn-kw {
+    color: var(--veil-accent);
+    font-weight: 700;
+  }
+  .fn-name {
+    color: var(--veil-text);
+    font-weight: 600;
+  }
+  .fn-params {
+    color: var(--veil-text-dim);
+  }
+  .fn-arrow {
+    color: var(--veil-text-faint);
+  }
+  .fn-return {
+    color: var(--veil-accent);
+  }
 </style>
