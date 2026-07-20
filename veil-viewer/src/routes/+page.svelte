@@ -198,6 +198,7 @@
       keyword?: string;
       group?: string;
       dg?: string;
+      is_step?: boolean;
     };
 
     const graph = get(irGraph);
@@ -231,9 +232,10 @@
       return;
     }
 
-    // Ensure default group exists when placing into a named group that is missing
+    // Ensure default group exists when placing into a named group that is missing.
+    // Flow composer: flat graph on the package body — never auto-create groups.
     let parentSpan = placement.parentSpan;
-    const wantGroup = activeTab || item.dg || item.group;
+    const wantGroup = shell.mode === 'flow' ? null : (activeTab || item.dg || item.group);
     if (wantGroup && placement.reason.startsWith('host')) {
       const hasGroup = graph.nodes.some(
         (n) =>
@@ -268,6 +270,26 @@
 
     const baseName = (item.name || item.label || 'New').replace(/\s+/g, '');
     const name = uniqueConstructName(graph, baseName, hostId);
+
+    // Step-type items in flow mode: use create_step targeting the fn body.
+    const hostNode = graph.nodes.find((n) => n.id === hostId);
+    const isFlowParent = hostNode && (hostNode.kind === 'Flow' || hostNode.kind === 'Service' || hostNode.kind === 'Orchestrator');
+    if (item.is_step && isFlowParent) {
+      const ok = await saveEdits([
+        {
+          op: 'create_step',
+          parent_span: hostNode.span.start,
+          keyword: item.keyword || item.name?.toLowerCase() || 'step',
+          name,
+          fields: [],
+        },
+      ]);
+      if (!ok) return;
+      const fresh = get(irGraph);
+      if (fresh) await computeView(fresh, get(currentParent), get(paletteConfig));
+      flowKey += 1;
+      return;
+    }
 
     const ok = await saveEdits([
       {

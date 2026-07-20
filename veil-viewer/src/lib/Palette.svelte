@@ -21,23 +21,37 @@
     dg?: string;
     /** Layer `desc` — domain help for non-programmers */
     description?: string;
+    /** Whether this is a step-type construct */
+    is_step?: boolean;
   }
 
   let { contextKind = "Solution", contextKindCore = "Solution", activeGroup = null }: { contextKind?: NodeKind | null; contextKindCore?: string; activeGroup?: string | null } = $props();
 
-  // Build palette items from API config, falling back to hardcoded if not loaded
+  // Build palette items from API config, falling back to hardcoded if not loaded.
+  // Flow composer: package has `use <layer>` → show that layer's constructs as-is
+  // (API already filters to ?layer=). No nest-context filter — drill-down is off.
   let items = $derived.by(() => {
     const config = $paletteConfig;
     if (!config || config.length === 0) return fallbackItems();
 
+    const flow = isFlowComposerMode();
     const ck = contextKind ?? 'Solution';
     const results: PaletteItem[] = [];
 
+    // Flow composer: package body is the graph; edges are SvelteFlow — not tiles.
+    const flowHide = new Set(['ReactionPackage', 'Edge']);
+
     for (const c of config) {
-      // Check if this construct is allowed in the current context
+      if ((c.entry_type || 'construct') !== 'construct') continue;
+      if (flow && flowHide.has(c.name)) continue;
+
       let show = false;
-      if (ck === 'Solution' && c.allowed_in === 'top') show = true;
-      else if (c.allowed_in === ck || c.allowed_in === contextKindCore || c.allowed_in.split(',').map(s => s.trim()).includes(ck) || c.allowed_in.split(',').map(s => s.trim()).includes(contextKindCore)) {
+      if (flow) {
+        // Layer vocabulary for the open package — reaction.layer rail.
+        show = true;
+      } else if (ck === 'Solution' && (c.allowed_in === 'top' || c.allowed_in === 'any')) {
+        show = true;
+      } else if (c.allowed_in === ck || c.allowed_in === contextKindCore || c.allowed_in.split(',').map(s => s.trim()).includes(ck) || c.allowed_in.split(',').map(s => s.trim()).includes(contextKindCore)) {
         // Check group match
         if (c.group && activeGroup) {
           show = c.group === activeGroup;
@@ -68,6 +82,7 @@
           group: c.group || undefined,
           dg: c.dg || undefined,
           description: c.description || undefined,
+          is_step: (c as any).is_step || false,
         });
       }
     }

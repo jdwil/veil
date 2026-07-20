@@ -93,6 +93,10 @@ export interface PaletteEntry {
   /** Default group for create/placement (layer `dg`). */
   dg?: string;
   expected_groups?: string[];
+  /** Whether this is a step-type construct (mt step in layer). */
+  is_step?: boolean;
+  /** Config field schema for step-type constructs: [field_name, type_hint][] */
+  has_fields?: [string, string][];
 }
 
 // Visual config per node kind — CORE SHAPES ONLY.
