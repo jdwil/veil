@@ -2154,6 +2154,14 @@ pub struct PaletteEntry {
     /// Default group — where this construct should be created by default.
     #[serde(default)]
     pub dg: String,
+    /// For step-type constructs: the config field schema from layer `has`.
+    /// Each entry is (field_name, type_hint) e.g. ("port", "Str").
+    /// The viewer uses this to render per-type property editors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub has_fields: Vec<(String, String)>,
+    /// Whether this is a step-type construct (mt step).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_step: bool,
 }
 
 pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
@@ -2194,6 +2202,14 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
                 .unwrap_or_default(),
             tgt: c.tgt.clone(),
             dg: c.dg.clone(),
+            has_fields: c.contains.iter()
+                .filter_map(|entry| {
+                    entry.split_once(':').map(|(name, type_hint)| {
+                        (name.trim().to_string(), type_hint.trim().to_string())
+                    })
+                })
+                .collect(),
+            is_step: c.is_step,
         });
     }
     for s in &reg.statements {
@@ -2218,6 +2234,8 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             expected_groups: Vec::new(),
             tgt: String::new(),
             dg: String::new(),
+            has_fields: Vec::new(),
+            is_step: false,
         });
     }
     out
