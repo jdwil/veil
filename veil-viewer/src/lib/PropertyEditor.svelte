@@ -26,23 +26,34 @@
 
   // Meta-type support: fetch available callables for Callable field widgets.
   // Uses `context_api` query param if set (points at host project for cross-project context).
-  import { ideApiBase } from '$lib/store';
+  import { ideApiBase, contextApiHost } from '$lib/store';
   let callableOptions: { name: string; subkind?: string; methods: { name: string; params: string; returns: string }[] }[] = $state([]);
-  function contextApiBase(): string {
-    if (typeof window === 'undefined') return ideApiBase();
-    const ctx = new URLSearchParams(window.location.search).get('context_api');
-    if (ctx) return ctx.replace(/\/$/, '') + '/api';
-    return ideApiBase();
+  let callablesFetched = $state(false);
+
+  function fetchCallables() {
+    if (callablesFetched) return;
+    const config = get(paletteConfig) ?? [];
+    const entry = config.find((p: any) => p.keyword === subkind && p.is_step);
+    if (!entry?.step_fields) return;
+    const callableField = entry.step_fields.find((f: any) => f.meta?.type === 'callable');
+    if (!callableField) return;
+    callablesFetched = true;
+    const filter = callableField.filter || '';
+    const base = contextApiHost();
+    const url = `${base}/api/callables${filter ? `?filter_by=${encodeURIComponent(filter)}` : ''}`;
+    console.log('[VEIL] fetchCallables:', url, 'subkind:', subkind);
+    fetch(url)
+      .then(r => { console.log('[VEIL] callables response:', r.status); return r.ok ? r.json() : []; })
+      .then(data => { console.log('[VEIL] callables data:', data); callableOptions = data; })
+      .catch((e) => { console.error('[VEIL] callables error:', e); callableOptions = []; });
   }
+
+  // Trigger fetch when component mounts with a step that has Callable fields
   $effect(() => {
-    if (kind === 'Step' && subkind) {
-      const entry = ($paletteConfig ?? []).find((p: any) => p.keyword === subkind && p.is_step);
-      const hasCallable = entry?.step_fields?.some((f: any) => f.meta?.type === 'callable');
-      if (hasCallable) {
-        const filter = entry?.step_fields?.find((f: any) => f.meta?.type === 'callable')?.filter || '';
-        const url = `${contextApiBase()}/callables${filter ? `?filter_by=${encodeURIComponent(filter)}` : ''}`;
-        fetch(url).then(r => r.json()).then(data => { callableOptions = data; }).catch(() => { callableOptions = []; });
-      }
+    const _k = kind;
+    const _s = subkind;
+    if (_k === 'Step' && _s) {
+      fetchCallables();
     }
   });
 

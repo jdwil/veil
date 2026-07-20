@@ -663,7 +663,8 @@ async fn get_callables<P: SourceProvider>(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     let registry = state.registry();
-    let sol = match parse_source(&source, &registry) {
+    let leaf = active_file_path(state.as_ref()).await;
+    let sol = match parse_source_at(&source, &registry, leaf.as_deref()) {
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
@@ -688,7 +689,8 @@ async fn get_callables<P: SourceProvider>(
         if node.metadata.annotations.iter().any(|a| a == "layer-provided") {
             continue;
         }
-        // Collect methods from child InterfaceMethod nodes.
+        // Skip generic traits (methods have <T> or unresolved type params).
+        // Concrete monomorphized repos have real types in their signatures.
         let methods: Vec<serde_json::Value> = graph.nodes.iter()
             .filter(|m| m.metadata.parent == Some(node.id) && m.kind == veil_ir::NodeKind::InterfaceMethod)
             .map(|m| {
@@ -707,6 +709,19 @@ async fn get_callables<P: SourceProvider>(
                 })
             })
             .collect();
+        // Skip if any method has unresolved generic params (standalone T as a type)
+        let is_generic = methods.iter().any(|m| {
+            let params = m["params"].as_str().unwrap_or("");
+            let returns = m["returns"].as_str().unwrap_or("");
+            let has_t = |s: &str| -> bool {
+                s.contains("<T>") || s.contains("Opt<T>") || s.contains("List<T>")
+                    || s.ends_with(": T)") || s.contains(": T,") || s == "T"
+            };
+            has_t(params) || has_t(returns)
+        });
+        if is_generic {
+            continue;
+        }
         callables.push(serde_json::json!({
             "name": node.name,
             "subkind": node.metadata.subkind,

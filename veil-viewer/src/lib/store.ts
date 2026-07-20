@@ -121,6 +121,24 @@ export function currentIdeMode(): string | null {
   return null;
 }
 
+/**
+ * Context API host for meta-type field lookups (callables, types, etc.).
+ * `?context_api=http://host:port` points at the host project that provides
+ * available repos/ports/operations. Falls back to main apiHost().
+ */
+export function contextApiHost(): string {
+  if (typeof window === 'undefined') return apiHost();
+  const ctx = new URLSearchParams(window.location.search).get('context_api');
+  if (ctx) return ctx.replace(/\/$/, '');
+  // In flow mode, default to port 3001 (host project) if no explicit context_api
+  if (isFlowComposerMode()) {
+    const origin = window.location.origin;
+    // If we're on the viewer dev server, the host project is likely on 3001
+    return 'http://127.0.0.1:3001';
+  }
+  return apiHost();
+}
+
 /** Layer for flow composer: `?layer=reaction` (default `reaction` when mode=flow|reaction). */
 export function flowLayerParam(): string | null {
   if (typeof window === 'undefined') return null;
