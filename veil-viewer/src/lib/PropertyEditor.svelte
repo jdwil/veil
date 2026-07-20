@@ -24,6 +24,21 @@
   let style = $derived(getNodeStyle(kind, subkind));
   let displayKind = $derived(subkind ?? kind);
 
+  // Meta-type support: fetch available callables for Callable field widgets.
+  import { ideApiBase } from '$lib/store';
+  let callableOptions: { name: string; subkind?: string; methods: { name: string; params: string; returns: string }[] }[] = $state([]);
+  $effect(() => {
+    if (kind === 'Step' && subkind) {
+      const entry = ($paletteConfig ?? []).find((p: any) => p.keyword === subkind && p.is_step);
+      const hasCallable = entry?.step_fields?.some((f: any) => f.meta?.type === 'callable');
+      if (hasCallable) {
+        const filter = entry?.step_fields?.find((f: any) => f.meta?.type === 'callable')?.filter || '';
+        const url = `${ideApiBase()}/callables${filter ? `?filter_by=${encodeURIComponent(filter)}` : ''}`;
+        fetch(url).then(r => r.json()).then(data => { callableOptions = data; }).catch(() => { callableOptions = []; });
+      }
+    }
+  });
+
   // Check if any impl-shaped construct in the palette targets this node's subkind.
   // If so, we can offer a "Create [impl label]" button.
   // tgt may be a comma-separated list (e.g. "Port, Repository").
@@ -388,32 +403,59 @@
       </div>
     {/if}
 
-    <!-- Step-type field editor: editable fields from layer has_fields schema -->
+    <!-- Step-type field editor: meta-type-aware cascading widgets -->
     {#if kind === 'Step' && subkind}
       {@const paletteEntry = ($paletteConfig ?? []).find((p: any) => p.keyword === subkind && p.is_step)}
-      {#if paletteEntry?.has_fields?.length}
+      {#if paletteEntry?.step_fields?.length}
         <div class="pe-section">
           <span class="label-text">{paletteEntry.label || subkind} config</span>
           <div class="step-fields">
-            {#each paletteEntry.has_fields as [fieldName, fieldType]}
-              {@const currentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === fieldName)?.[1] ?? ''}
-              {@const isList = fieldType.startsWith('List<')}
+            {#each paletteEntry.step_fields as field}
+              {@const currentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === field.name)?.[1] ?? ''}
+              {@const fieldLabel = field.label || field.name}
               <label class="step-field">
-                <span class="step-field-name">{fieldName}</span>
-                {#if isList}
-                  {@const items = currentValue ? currentValue.split(',').map((s: string) => s.trim()).filter((s: string) => s) : ['']}
-                  <div class="step-field-list">
-                    {#each items as item, i}
-                      <input
-                        type="text"
-                        class="step-field-input"
-                        value={item}
-                        placeholder={fieldType.replace('List<', '').replace('>', '') + ` #${i + 1}`}
-                      />
+                <span class="step-field-name">{fieldLabel}</span>
+                {#if field.meta.type === 'callable'}
+                  <select class="step-field-input">
+                    <option value="">— select —</option>
+                    {#each callableOptions as opt}
+                      <option value={opt.name} selected={currentValue === opt.name}>{opt.name}</option>
                     {/each}
-                    <button type="button" class="step-field-add" title="Add item">+</button>
-                  </div>
-                {:else if fieldType === 'Bool'}
+                  </select>
+                {:else if field.meta.type === 'method_of'}
+                  {@const parentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === field.meta.source_field)?.[1] ?? ''}
+                  {@const parentCallable = callableOptions.find((c) => c.name === parentValue)}
+                  <select class="step-field-input">
+                    <option value="">— select —</option>
+                    {#if parentCallable}
+                      {#each parentCallable.methods as m}
+                        <option value={m.name} selected={currentValue === m.name}>{m.name}({m.params}) → {m.returns}</option>
+                      {/each}
+                    {/if}
+                  </select>
+                {:else if field.meta.type === 'params_of'}
+                  {@const methodField = field.meta.source_field}
+                  {@const methodValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === methodField)?.[1] ?? ''}
+                  {@const callableField = paletteEntry.step_fields.find((f: any) => f.meta?.type === 'method_of')?.meta?.source_field}
+                  {@const callableValue = callableField ? ((node.data.properties ?? []).find(([k]: [string, string]) => k === callableField)?.[1] ?? '') : ''}
+                  {@const callable = callableOptions.find((c) => c.name === callableValue)}
+                  {@const method = callable?.methods?.find((m: any) => m.name === methodValue)}
+                  {#if method?.params}
+                    <div class="step-field-params">
+                      {#each method.params.replace(/[()]/g, '').split(',').filter((s: string) => s.trim()) as param}
+                        {@const parts = param.trim().split(':')}
+                        {@const pName = parts[0]?.trim() || ''}
+                        {@const pType = parts[1]?.trim() || 'value'}
+                        <div class="step-param-row">
+                          <span class="param-name">{pName}:</span>
+                          <input type="text" class="step-field-input" placeholder={pType} />
+                        </div>
+                      {/each}
+                    </div>
+                  {:else}
+                    <span class="step-field-hint">Select a method first</span>
+                  {/if}
+                {:else if field.meta.type === 'plain' && field.meta.type_hint === 'Bool'}
                   <select class="step-field-input">
                     <option value="true" selected={currentValue === 'true'}>true</option>
                     <option value="false" selected={currentValue !== 'true'}>false</option>
@@ -423,9 +465,22 @@
                     type="text"
                     class="step-field-input"
                     value={currentValue}
-                    placeholder={fieldType}
+                    placeholder={field.meta.type_hint || ''}
                   />
                 {/if}
+              </label>
+            {/each}
+          </div>
+        </div>
+      {:else if paletteEntry?.has_fields?.length}
+        <div class="pe-section">
+          <span class="label-text">{paletteEntry.label || subkind} config</span>
+          <div class="step-fields">
+            {#each paletteEntry.has_fields as [fieldName, fieldType]}
+              {@const currentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === fieldName)?.[1] ?? ''}
+              <label class="step-field">
+                <span class="step-field-name">{fieldName}</span>
+                <input type="text" class="step-field-input" value={currentValue} placeholder={fieldType} />
               </label>
             {/each}
           </div>
@@ -764,5 +819,27 @@
   .step-field-add:hover {
     border-color: var(--veil-accent);
     color: var(--veil-accent);
+  }
+  .step-field-params {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+  }
+  .step-param-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .param-name {
+    font-size: 11px;
+    color: var(--veil-text-dim);
+    min-width: 60px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .step-field-hint {
+    font-size: 10px;
+    color: var(--veil-text-faint);
+    font-style: italic;
   }
 </style>
