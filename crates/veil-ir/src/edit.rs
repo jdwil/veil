@@ -63,6 +63,16 @@ pub enum EditOp {
     /// identified by `span_start`. Layer-provided infrastructure cannot be
     /// deleted. Keyed by AST span start (not IR node id) — see module docs.
     DeleteConstruct { span_start: usize },
+    /// Create a typed step inside a fn body (free function or fn-shaped construct)
+    /// identified by `parent_span`. Used for palette drag-drop in flow mode.
+    CreateStep {
+        parent_span: usize,
+        keyword: String,
+        name: String,
+        /// Optional config fields for the typed step.
+        #[serde(default)]
+        fields: Vec<(String, String)>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +227,63 @@ where
         return Ok(());
     }
 
+    // CreateStep: insert a typed step into a fn body (free fn or fn-shaped construct).
+    if let EditOp::CreateStep {
+        parent_span,
+        keyword,
+        name,
+        fields,
+    } = op
+    {
+        let step = StepDef {
+            name: name.clone(),
+            kind: if keyword == "step" { None } else { Some(keyword.clone()) },
+            fields: fields
+                .iter()
+                .map(|(k, v)| crate::ast::StepField {
+                    name: k.clone(),
+                    value: v.clone(),
+                    span: Span::new(0, 0),
+                })
+                .collect(),
+            span: Span::new(0, 0),
+            body: Vec::new(),
+            refs: Vec::new(),
+            sub_blocks: Vec::new(),
+            edges: Vec::new(),
+        };
+
+        // Try free functions first.
+        for item in sol.items.iter_mut() {
+            if let TopLevelItem::Function(f) = item {
+                if f.span.start == *parent_span {
+                    if f.steps.iter().any(|s| match s {
+                        FlowStep::Step(sd) => sd.name == *name,
+                        _ => false,
+                    }) {
+                        return Err(EditError::DuplicateName(name.clone()));
+                    }
+                    f.steps.push(FlowStep::Step(step));
+                    return Ok(());
+                }
+            }
+        }
+        // Try fn-shaped constructs.
+        if let Some(c) = find_construct_mut(&mut sol.items, *parent_span) {
+            if c.shape == Shape::Fn {
+                if c.steps.iter().any(|s| match s {
+                    FlowStep::Step(sd) => sd.name == *name,
+                    _ => false,
+                }) {
+                    return Err(EditError::DuplicateName(name.clone()));
+                }
+                c.steps.push(FlowStep::Step(step));
+                return Ok(());
+            }
+        }
+        return Err(EditError::TargetNotFound(*parent_span));
+    }
+
     if let EditOp::SetBody { body, span_start } = op {
         let mut exprs = Vec::new();
         for (i, line) in body.iter().enumerate() {
@@ -311,7 +378,8 @@ where
         }
         EditOp::CreateConstruct { .. }
         | EditOp::SetBody { .. }
-        | EditOp::DeleteConstruct { .. } => unreachable!("handled above"),
+        | EditOp::DeleteConstruct { .. }
+        | EditOp::CreateStep { .. } => unreachable!("handled above"),
     }
 }
 
@@ -324,7 +392,8 @@ impl EditOp {
             | EditOp::SetMethods { span_start, .. }
             | EditOp::SetBody { span_start, .. }
             | EditOp::DeleteConstruct { span_start } => *span_start,
-            EditOp::CreateConstruct { parent_span, .. } => *parent_span,
+            EditOp::CreateConstruct { parent_span, .. }
+            | EditOp::CreateStep { parent_span, .. } => *parent_span,
         }
     }
 }

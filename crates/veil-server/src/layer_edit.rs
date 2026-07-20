@@ -20,7 +20,8 @@ pub fn apply_layer_edits(source: &str, edits: &[EditOp]) -> Result<String, Strin
             EditOp::SetAnnotations { .. }
             | EditOp::SetFields { .. }
             | EditOp::SetMethods { .. }
-            | EditOp::SetBody { .. } => {
+            | EditOp::SetBody { .. }
+            | EditOp::CreateStep { .. } => {
                 return Err(format!(
                     "edit op {:?} is package-shaped; for layers use source write or create/rename",
                     std::mem::discriminant(op)
