@@ -42,6 +42,7 @@ pub fn ide_routes<P: SourceProvider + 'static>() -> Router<Arc<P>> {
         .route("/presentation", get(get_presentation::<P>))
         .route("/context", get(get_context::<P>))
         .route("/stubs", get(get_stubs::<P>))
+        .route("/callables", get(get_callables::<P>))
         .route("/diagnostics", get(get_diagnostics::<P>))
         .route("/check", get(get_check::<P>).post(post_check::<P>))
         .route("/files", get(get_files::<P>).post(post_create_file::<P>))
@@ -638,6 +639,82 @@ async fn get_context<P: SourceProvider>(
 
 async fn get_stubs<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
     match serde_json::to_string(&state.registry().stubs) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Query params for `GET /api/callables`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct CallablesQuery {
+    /// Filter by subkind (e.g. "Repository", "Port").
+    #[serde(default)]
+    filter_by: Option<String>,
+}
+
+/// Returns available callable targets (traits/interfaces with methods) from the
+/// loaded IR. Used by meta-type Callable fields in the property editor.
+async fn get_callables<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    axum::extract::Query(query): axum::extract::Query<CallablesQuery>,
+) -> axum::response::Response {
+    let source = match state.read_source("").await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+    let registry = state.registry();
+    let sol = match parse_source(&source, &registry) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    let graph = veil_ir::build_ir_with_registry(&sol, Some(&registry));
+
+    // Collect Interface (trait) nodes with their methods.
+    let mut callables: Vec<serde_json::Value> = Vec::new();
+    for node in &graph.nodes {
+        if node.kind != veil_ir::NodeKind::Interface {
+            continue;
+        }
+        // Apply subkind filter if provided (e.g. filter_by=subkind:Repository).
+        if let Some(ref filter) = query.filter_by {
+            if let Some(wanted) = filter.strip_prefix("subkind:") {
+                let subkind = node.metadata.subkind.as_deref().unwrap_or("");
+                if subkind != wanted {
+                    continue;
+                }
+            }
+        }
+        // Skip layer-provided infrastructure (Bus, etc.)
+        if node.metadata.annotations.iter().any(|a| a == "layer-provided") {
+            continue;
+        }
+        // Collect methods from child InterfaceMethod nodes.
+        let methods: Vec<serde_json::Value> = graph.nodes.iter()
+            .filter(|m| m.metadata.parent == Some(node.id) && m.kind == veil_ir::NodeKind::InterfaceMethod)
+            .map(|m| {
+                let params = m.metadata.properties.iter()
+                    .find(|(k, _)| k == "params")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("");
+                let returns = m.metadata.properties.iter()
+                    .find(|(k, _)| k == "returns")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("");
+                serde_json::json!({
+                    "name": m.name,
+                    "params": params,
+                    "returns": returns,
+                })
+            })
+            .collect();
+        callables.push(serde_json::json!({
+            "name": node.name,
+            "subkind": node.metadata.subkind,
+            "methods": methods,
+        }));
+    }
+
+    match serde_json::to_string(&callables) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
