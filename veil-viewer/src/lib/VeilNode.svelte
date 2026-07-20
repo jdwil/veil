@@ -1,8 +1,9 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
   import { NODE_STYLES, getNodeStyle, type NodeKind } from '$lib/types';
+  import { changedNodeIds } from '$lib/store';
 
-  let { data } = $props();
+  let { id, data } = $props();
 
   const kind: NodeKind = $derived(data.kind);
   const subkind: string | null = $derived(data.subkind ?? null);
@@ -15,6 +16,20 @@
   const inlineChildren: { name: string; kind: string; properties: [string, string][] }[] = $derived(data.inlineChildren ?? []);
   let detailsOpen = $state(false);
   let childrenOpen = $state(true);
+
+  // Flash highlight when the agent just modified this node.
+  let isFlashing = $state(false);
+  $effect(() => {
+    const ids = $changedNodeIds;
+    const numericId = Number(id);
+    if (ids.size > 0 && ids.has(numericId)) {
+      isFlashing = true;
+      const timer = setTimeout(() => { isFlashing = false; }, 1200);
+      return () => clearTimeout(timer);
+    } else {
+      isFlashing = false;
+    }
+  });
 
   // Reference-line badge (e.g. `ctx Identity`, `contexts A, B`) — the builder
   // prefixes ref keys with `ref:` so this stays layer-agnostic.
@@ -31,6 +46,12 @@
   const bodyMore: number = $derived(data.bodyMore ?? 0);
   const routingTargets: string[] = $derived(data.routingTargets ?? []);
   const isStep = $derived(kind === 'Step');
+  const stepKind: string = $derived(subkind || '');
+  const isDecision = $derived(stepKind === 'decision');
+  const isBranch = $derived(stepKind === 'branch');
+  const isLoop = $derived(stepKind === 'loop');
+  const isQuery = $derived(stepKind === 'query');
+  const isAssign = $derived(stepKind === 'assign');
 </script>
 
 <div
@@ -42,6 +63,12 @@
   class:is-group={isGroup}
   class:is-critical={isCritical}
   class:layer-provided={layerProvided}
+  class:agent-flash={isFlashing}
+  class:step-decision={isDecision}
+  class:step-branch={isBranch}
+  class:step-loop={isLoop}
+  class:step-query={isQuery}
+  class:step-assign={isAssign}
   style="--node-color: {style.color}"
 >
   <Handle type="target" position={Position.Top} id="top" />
@@ -581,5 +608,59 @@
     color: var(--veil-text-secondary);
     border: 1px solid rgba(168, 85, 247, 0.25);
     font-weight: 500;
+  }
+
+  .agent-flash {
+    animation: agent-highlight 1.2s ease-out;
+  }
+
+  @keyframes agent-highlight {
+    0% {
+      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.8), 0 0 12px rgba(96, 165, 250, 0.4);
+      border-color: rgba(96, 165, 250, 0.8);
+    }
+    50% {
+      box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.5), 0 0 8px rgba(96, 165, 250, 0.2);
+      border-color: rgba(96, 165, 250, 0.5);
+    }
+    100% {
+      box-shadow: none;
+      border-color: var(--node-color, var(--veil-border));
+    }
+  }
+  /* ─── Step-type node shapes ─────────────────────────────────── */
+
+  .step-decision,
+  .step-branch {
+    border-radius: 4px;
+    clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+    min-width: 200px;
+    min-height: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 32px;
+  }
+
+  .step-decision .node-inner,
+  .step-branch .node-inner {
+    text-align: center;
+  }
+
+  .step-loop {
+    border-radius: 24px;
+    border-width: 2.5px;
+    border-style: dashed;
+  }
+
+  .step-query {
+    border-radius: 8px;
+    border-left: 4px solid var(--node-color);
+  }
+
+  .step-assign {
+    border-radius: 6px;
+    border-style: dotted;
+    border-width: 2px;
   }
 </style>
