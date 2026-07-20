@@ -360,14 +360,14 @@ resource "aws_security_group" "alb" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.this.cidr_block]
+    cidr_blocks = [for c in data.aws_vpc.this.cidr_block_associations : c.cidr_block]
   }
 
   ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.this.cidr_block]
+    cidr_blocks = [for c in data.aws_vpc.this.cidr_block_associations : c.cidr_block]
   }
 
   egress {
