@@ -12,7 +12,18 @@ use veil_ir::LayerRegistry;
 
 /// Write `content` via temp file + rename so concurrent readers (e.g. Vite
 /// watching `src/app.html`) never observe a truncated intermediate.
-fn write_file_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
+/// Skips writing if the file already has identical content (prevents
+/// unnecessary Vite HMR triggers and dev server crashes).
+/// Returns true if the file was actually written (content changed).
+fn write_file_atomic(path: &Path, content: &[u8]) -> std::io::Result<bool> {
+    // Skip if file already has identical content
+    if path.exists() {
+        if let Ok(existing) = std::fs::read(path) {
+            if existing == content {
+                return Ok(false);
+            }
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -28,7 +39,7 @@ fn write_file_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
     }
     std::fs::rename(&tmp, path)?;
-    Ok(())
+    Ok(true)
 }
 
 
@@ -1767,9 +1778,12 @@ fn main() {
                 }
             };
 
+            let mut written_count = 0;
             for f in &files {
                 let path = output.join(&f.path);
-                write_file_atomic(&path, f.content.as_bytes()).expect("Failed to write file");
+                if write_file_atomic(&path, f.content.as_bytes()).expect("Failed to write file") {
+                    written_count += 1;
+                }
             }
 
             // Single-file gen must not leave crates from a prior multi-package
@@ -1782,6 +1796,7 @@ fn main() {
             }
 
             // Run formatters on generated files (spikes skip formatters)
+            if written_count > 0 {
             match codegen_target {
                 veil_codegen::CodegenTarget::Rust => {
                     for f in &files {
@@ -1794,13 +1809,12 @@ fn main() {
                     }
                 }
                 veil_codegen::CodegenTarget::TypeScript => {
-                    // Optionally run prettier if available
-                    let _ = std::process::Command::new("npx")
-                        .args(["prettier", "--write", &output.to_string_lossy()])
-                        .output();
+                    // Skip prettier — gen output is stable and running prettier
+                    // would cause content drift that defeats the skip-unchanged logic.
                 }
                 veil_codegen::CodegenTarget::Swift | veil_codegen::CodegenTarget::Kotlin => {}
             }
+            } // end if written_count > 0
 
             println!(
                 "✓ Generated {} files ({}) in {}",
