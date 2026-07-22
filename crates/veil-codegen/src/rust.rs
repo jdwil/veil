@@ -754,9 +754,10 @@ fn gen_local_harness_main(
             out.push_str(&format!("        .route(\"{path}\", {chained})\n"));
         }
         out.push_str("        .route(\"/health\", get(|| async { \"ok\" }))\n");
-        // Host edge: CORS + optional API key (env policy, not product domain).
-        out.push_str("        .layer(veil_cors_layer())\n");
+        // Tower: last layer is outermost. CORS must be outside auth so browser
+        // OPTIONS preflight is not blocked by missing API key.
         out.push_str("        .layer(from_fn(veil_api_key_middleware))\n");
+        out.push_str("        .layer(veil_cors_layer())\n");
         out.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
     }
 
@@ -888,32 +889,104 @@ fn gen_local_harness_main(
             if method == "delete" {
                 out.push_str("        Ok(_) => Ok(Json(serde_json::json!({\"ok\": true}))),\n");
             } else {
-                out.push_str("        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_default())),\n");
+                // Redact role:secret fields on the way out (storage still full Serialize).
+                out.push_str(
+                    "        Ok(result) => Ok(Json(veil_json_public(&result))),\n",
+                );
             }
-            // Issue 5: map DomainError → correct HTTP status (not always 500).
+            // Match DomainError variants — never substring Display text.
             out.push_str("        Err(e) => Err(veil_domain_error_status(e)),\n");
             out.push_str("    }\n}\n\n");
         }
     }
 
+    out.push_str(&harness_json_public_helper(modules, registry));
     out.push_str(harness_domain_error_status_helper());
     out.push_str(harness_auth_cors_helpers());
     out.push_str(harness_body_dt_helper());
     out
 }
 
-/// API key middleware + CORS policy for dual-loop harness (review Issues 7).
+/// Collect snake_case field names marked role:secret across the solution.
+fn collect_secret_field_names(modules: &[&Construct], registry: &LayerRegistry) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    fn walk(c: &Construct, registry: &LayerRegistry, names: &mut std::collections::BTreeSet<String>) {
+        for f in &c.fields {
+            if registry.field_is_secret(f) {
+                names.insert(to_snake(&f.name));
+            }
+        }
+        for block in &c.blocks {
+            for f in &block.fields {
+                if registry.field_is_secret(f) {
+                    names.insert(to_snake(&f.name));
+                }
+            }
+        }
+        for ch in &c.children {
+            walk(ch, registry, names);
+        }
+    }
+    for m in modules {
+        walk(m, registry, &mut names);
+    }
+    names.into_iter().collect()
+}
+
+/// Harness helper: Serialize then strip secret keys (INV-001 roles).
+fn harness_json_public_helper(modules: &[&Construct], registry: &LayerRegistry) -> String {
+    let secrets = collect_secret_field_names(modules, registry);
+    let keys: String = secrets
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"
+/// Serialize for HTTP JSON, omitting fields annotated role:secret.
+/// Persistence (repos) uses full `Serialize` — secrets still round-trip to storage.
+fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {{
+    let mut v = serde_json::to_value(value).unwrap_or_default();
+    veil_redact_secrets(&mut v);
+    v
+}}
+
+fn veil_redact_secrets(v: &mut serde_json::Value) {{
+    const SECRET_KEYS: &[&str] = &[{keys}];
+    match v {{
+        serde_json::Value::Object(map) => {{
+            for k in SECRET_KEYS {{
+                map.remove(*k);
+            }}
+            for (_k, child) in map.iter_mut() {{
+                veil_redact_secrets(child);
+            }}
+        }}
+        serde_json::Value::Array(items) => {{
+            for item in items.iter_mut() {{
+                veil_redact_secrets(item);
+            }}
+        }}
+        _ => {{}}
+    }}
+}}
+"#
+    )
+}
+
+/// API key middleware + CORS policy for dual-loop harness.
 fn harness_auth_cors_helpers() -> &'static str {
     r#"
 /// When `VEIL_API_KEY` is set, require matching `X-Api-Key` or
-/// `Authorization: Bearer <key>`. `/health` is always open. Product-specific
-/// env names do not belong in the engine (INV).
+/// `Authorization: Bearer <key>`. `/health` and CORS preflight `OPTIONS` are
+/// always open. Set `VEIL_REQUIRE_AUTH=1` to deny when the key is unset
+/// (non-dev deploy). Product env names do not belong in the engine (INV).
 async fn veil_api_key_middleware(
     headers: HeaderMap,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if request.uri().path() == "/health" {
+    if request.uri().path() == "/health" || request.method() == axum::http::Method::OPTIONS {
         return Ok(next.run(request).await);
     }
     let expected = std::env::var("VEIL_API_KEY").ok().filter(|s| !s.is_empty());
@@ -985,25 +1058,23 @@ fn veil_cors_layer() -> CorsLayer {
 "#
 }
 
-/// Map domain errors to HTTP statuses for the local dual-loop harness.
+/// Map domain errors to HTTP statuses — match enum variants (never Display text).
 fn harness_domain_error_status_helper() -> &'static str {
     r#"
-fn veil_domain_error_status(e: impl std::fmt::Display) -> StatusCode {
-    let s = e.to_string();
-    let lower = s.to_ascii_lowercase();
-    // thiserror Display: "Not found", "Validation failed: …", "External service error: …"
-    if lower.contains("not found") {
-        eprintln!("warn: not found: {s}");
-        StatusCode::NOT_FOUND
-    } else if lower.contains("validation") {
-        eprintln!("warn: validation: {s}");
-        StatusCode::BAD_REQUEST
-    } else if lower.contains("external") {
-        eprintln!("error: upstream: {s}");
-        StatusCode::BAD_GATEWAY
-    } else {
-        eprintln!("error: internal: {s}");
-        StatusCode::INTERNAL_SERVER_ERROR
+fn veil_domain_error_status(e: DomainError) -> StatusCode {
+    match &e {
+        DomainError::NotFound => {
+            eprintln!("warn: not found: {e}");
+            StatusCode::NOT_FOUND
+        }
+        DomainError::Validation(msg) => {
+            eprintln!("warn: validation: {msg}");
+            StatusCode::BAD_REQUEST
+        }
+        DomainError::External(msg) => {
+            eprintln!("error: upstream: {msg}");
+            StatusCode::BAD_GATEWAY
+        }
     }
 }
 "#
@@ -1226,7 +1297,7 @@ fn gen_bin_crate(
     registry: &LayerRegistry,
 ) -> Vec<GeneratedFile> {
     let mut deps = String::from(
-        "tokio = { workspace = true }\nuuid = { workspace = true }\nserde_json = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\naxum = \"0.8\"\ntower-http = { version = \"0.6\", features = [\"cors\"] }\n",
+        "tokio = { workspace = true }\nuuid = { workspace = true }\nserde = { workspace = true }\nserde_json = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\naxum = \"0.8\"\ntower-http = { version = \"0.6\", features = [\"cors\"] }\n",
     );
     for c in module_crates {
         deps.push_str(&format!("{c} = {{ path = \"../{c}\" }}\n"));
@@ -1901,9 +1972,13 @@ fn gen_struct(
             ty = format!("std::sync::Arc<{ty}>");
         }
         let snake = to_snake(&field.name);
-        // Layer policy only: annotation with role:secret (INV-001). No field-name lists.
+        // role:secret: still *persist* (repos use Serialize for Dynamo/PG payload).
+        // Redaction is harness-side via veil_json_public (skip only on API JSON).
         if registry.field_is_secret(field) {
-            out.push_str("    #[serde(default, skip_serializing)]\n");
+            out.push_str("    /// Secret — stored; redacted from dual-loop HTTP responses.\n");
+            if ty.starts_with("Option<") {
+                out.push_str("    #[serde(default)]\n");
+            }
         }
         out.push_str(&format!("    pub {snake}: {ty},\n"));
     }

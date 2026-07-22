@@ -789,8 +789,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                             // ret Err "msg" → External (adapter fail-closed, not validation)
                             format!("return Err(DomainError::External({}))", a)
                         } else {
-                            // Other expression — wrap in DomainError::Validation
-                            format!("return Err(DomainError::Validation({}))", a)
+                            // format! / computed messages (upstream HTTP, DB) → External → 502
+                            // User-facing validation uses `guard`, not `ret Err`.
+                            format!("return Err(DomainError::External({}))", a)
                         }
                     }
                 }
