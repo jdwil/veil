@@ -7,6 +7,10 @@ pkg ddd v1
     ref_suffix _id
     identity_field id
 
+  # Bus message names: optional strip of a layer-chosen prefix (not engine-hardcoded).
+  bus_policy
+    strip_name_prefix Handle
+
   construct Context
     kw ctx
     mt mod
@@ -233,6 +237,8 @@ pkg ddd v1
     ann
       trace: "Add distributed tracing" method
       timeout: "Service-level timeout" ms
+      # role:http_route — dual-loop harness REST surface (engine never hardcodes "route")
+      route: "HTTP method and path, e.g. GET /api/items" method_path role:http_route
     group domain
 
   construct ApplicationService
@@ -247,6 +253,7 @@ pkg ddd v1
     ann
       trace: "Add distributed tracing" method
       timeout: "Service-level timeout" ms
+      route: "HTTP method and path, e.g. GET /api/items" method_path role:http_route
     group application
 
   construct Saga

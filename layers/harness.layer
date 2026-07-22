@@ -41,17 +41,14 @@ pkg harness v1
     (CAP-002/006). FileSystem / GitRepo are provided_by runtime (CAP-004).
 
     ## Local REST routes (dual-loop harness)
-    - Prefer `@route("GET /api/…")` / `@route("POST /api/…")` on application
-      services so paths match the running server.
+    - Prefer `@route("GET /api/…")` on application services (annotation name is
+      layer-declared with **role:http_route** in ddd — the engine matches the
+      role, not the string `"route"`).
     - **Path params use brace form** `{id}`, `{cohort_id}`, … — same as
-      name-derived routes. Do **not** write Express-style `:id` (the engine
-      does not rewrite path dialects; author the form the Rust harness emits).
-    - Without `@route`, names drive paths: ListX → GET /api/{x}s, GetX →
-      GET /api/{x}s/{id}, CreateX → POST, Update/Delete → PUT/DELETE.
-    - Inspect generated routes via agent tools `list_routes` /
-      `read_generated(what=harness)` — do not invent paths.
-    - Longer term: REST/host path policy may move fully into a dedicated layer
-      (e.g. `rest` / host-adapter layer) so harness emission is template-driven.
+      name-derived routes. Do **not** write Express-style `:id`.
+    - Without any http_route annotation, names drive paths: ListX → GET /api/{x}s, …
+    - Bus message keys: optional `bus_policy.strip_name_prefix` in ddd (e.g. Handle).
+    - Inspect routes via `list_routes` / `read_generated(what=harness)`.
 
     ## Patterns
     - Construct `InProcessBus.new()` in `@main` when you need multi-context

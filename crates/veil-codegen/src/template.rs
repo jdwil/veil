@@ -221,17 +221,9 @@ fn matches_construct(construct: &Construct, rule: &CodegenRule) -> bool {
 fn expand_file_path(pattern: &str, construct: &Construct) -> String {
     let name = &construct.name;
     let name_lower = name.to_lowercase();
-    let route = construct
-        .annotations
-        .iter()
-        .find(|a| a.name == "route")
-        .and_then(|a| a.args.first())
-        .map(|s| {
-            let t = s.trim().trim_matches('"').trim_matches('\'');
-            // Strip leading / for path use
-            t.trim_start_matches('/').to_string()
-        })
-        .unwrap_or_else(|| name_lower.clone());
+    // {{route}} is filled in expand_file_path with registry when available;
+    // path-only helper keeps name_lower fallback without hardcoding "route".
+    let route = name_lower.clone();
 
     pattern
         .replace("{{name}}", name)
@@ -249,11 +241,9 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
     output = output.replace("{{subkind}}", &construct.subkind);
     output = output.replace("{{keyword}}", &construct.keyword);
 
-    // {{route}} — from @route annotation
-    let route_val = construct
-        .annotations
-        .iter()
-        .find(|a| a.name == "route")
+    // {{route}} — annotation with role:http_route (layer policy, INV-001)
+    let route_val = registry
+        .http_route_annotation(construct)
         .and_then(|a| a.args.first())
         .map(|s| strip_ann_arg(s))
         .unwrap_or_else(|| format!("/{}", construct.name.to_lowercase()));

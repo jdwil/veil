@@ -431,9 +431,20 @@ pub struct LayerRegistry {
     pub reactivity_policy: ReactivityPolicy,
     /// Identity / FK inference policy (INV-006). Default off.
     pub identity_policy: IdentityPolicy,
+    /// Bus / handler name policy from layers (optional strip prefix). Default: no strip.
+    pub bus_policy: BusPolicy,
     /// Extra product roots from `veil.toml` `[dependencies]` (R20).
     /// Each root may contain `layers/<name>.layer` or `<name>.layer`.
     pub extra_layer_roots: Vec<std::path::PathBuf>,
+}
+
+/// Layer-declared bus message naming (no hard-coded `Handle` in the engine).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BusPolicy {
+    /// If set, strip this prefix from construct names when exporting bus message types.
+    /// Example: `strip_name_prefix Handle` → `HandleGetUser` publishes as `GetUser`.
+    #[serde(default)]
+    pub strip_name_prefix: Option<String>,
 }
 
 impl Default for LayerRegistry {
@@ -450,6 +461,7 @@ impl Default for LayerRegistry {
             constructor_policy: ConstructorPolicy::default(),
             reactivity_policy: ReactivityPolicy::default(),
             identity_policy: IdentityPolicy::default(),
+            bus_policy: BusPolicy::default(),
             extra_layer_roots: Vec::new(),
         }
     }
@@ -469,6 +481,7 @@ impl Clone for LayerRegistry {
             constructor_policy: self.constructor_policy.clone(),
             reactivity_policy: self.reactivity_policy.clone(),
             identity_policy: self.identity_policy.clone(),
+            bus_policy: self.bus_policy.clone(),
             extra_layer_roots: self.extra_layer_roots.clone(),
         }
     }
@@ -581,6 +594,42 @@ impl LayerRegistry {
             .any(|a| self.is_secret_annotation(&a.name))
     }
 
+    /// Annotation carries `role:http_route` (REST surface for dual-loop harness).
+    pub fn is_http_route_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "http_route")
+    }
+
+    /// Construct has an HTTP route annotation (any name with role:http_route).
+    pub fn construct_has_http_route(&self, c: &crate::ast::Construct) -> bool {
+        c.annotations
+            .iter()
+            .any(|a| self.is_http_route_annotation(&a.name))
+    }
+
+    /// First HTTP-route annotation on a construct (for method/path args).
+    pub fn http_route_annotation<'a>(
+        &self,
+        c: &'a crate::ast::Construct,
+    ) -> Option<&'a crate::ast::Annotation> {
+        c.annotations
+            .iter()
+            .find(|a| self.is_http_route_annotation(&a.name))
+    }
+
+    /// Apply layer bus_policy strip to a construct/fn name for message keys.
+    pub fn bus_message_name(&self, construct_name: &str) -> String {
+        if let Some(prefix) = &self.bus_policy.strip_name_prefix {
+            if !prefix.is_empty() {
+                if let Some(rest) = construct_name.strip_prefix(prefix.as_str()) {
+                    if !rest.is_empty() {
+                        return rest.to_string();
+                    }
+                }
+            }
+        }
+        construct_name.to_string()
+    }
+
     /// Look up a statement by its source keyword.
     pub fn statement(&self, keyword: &str) -> Option<&StatementSpec> {
         self.statements.iter().find(|s| s.keyword == keyword)
@@ -685,6 +734,12 @@ impl LayerRegistry {
         }
         if let Some(id_pol) = parse_identity_policy(&content) {
             self.identity_policy = id_pol;
+        }
+        if let Some(bus) = parse_bus_policy(&content) {
+            // Later layers can override strip prefix when stacked.
+            if bus.strip_name_prefix.is_some() {
+                self.bus_policy.strip_name_prefix = bus.strip_name_prefix;
+            }
         }
         Ok(())
     }
@@ -858,6 +913,11 @@ impl LayerRegistry {
         // INV-006: identity / FK policy (ddd opts in; default is off).
         if let Some(id_pol) = parse_identity_policy(content) {
             self.identity_policy = id_pol;
+        }
+        if let Some(bus) = parse_bus_policy(content) {
+            if bus.strip_name_prefix.is_some() {
+                self.bus_policy.strip_name_prefix = bus.strip_name_prefix;
+            }
         }
         Ok(())
     }
@@ -2614,6 +2674,50 @@ pub fn parse_identity_policy(content: &str) -> Option<IdentityPolicy> {
             pol.ref_suffix = Some(rest.trim().to_string());
         } else if let Some(rest) = t.strip_prefix("identity_field ") {
             pol.identity_field = Some(rest.trim().to_string());
+        }
+    }
+    if found {
+        Some(pol)
+    } else {
+        None
+    }
+}
+
+/// Parse optional `bus_policy` block from a layer file:
+/// ```text
+/// bus_policy
+///   strip_name_prefix Handle
+/// ```
+pub fn parse_bus_policy(content: &str) -> Option<BusPolicy> {
+    let mut in_block = false;
+    let mut pol = BusPolicy::default();
+    let mut found = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t == "bus_policy" {
+            in_block = true;
+            found = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && !t.starts_with("strip_name_prefix")
+        {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("strip_name_prefix ") {
+            let p = rest.trim();
+            pol.strip_name_prefix = if p.is_empty() || p == "-" || p == "none" {
+                None
+            } else {
+                Some(p.to_string())
+            };
         }
     }
     if found {

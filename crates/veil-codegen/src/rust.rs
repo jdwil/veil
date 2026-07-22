@@ -84,7 +84,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         .collect();
 
     // CAP-003: collect handler message names for register_all.
-    let handler_names = collect_handler_names(solution, &modules);
+    let handler_names = collect_handler_names(solution, &modules, registry);
 
     files.extend(gen_shared_crate(
         &shared_traits,
@@ -446,13 +446,13 @@ fn gen_local_harness_main(
     let mut any_query = false;
     for module in modules {
         let flat = flatten_module(module);
-        let routable = http_routable_services(&flat.fns);
+        let routable = http_routable_services(&flat.fns, registry);
         let mut by_path: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         let mut seen: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
         for svc in &routable {
-            let (method, path) = rest_route_for_service(svc);
+            let (method, path) = rest_route_for_service(svc, registry);
             if !seen.insert((method.clone(), path.clone())) {
                 continue;
             }
@@ -720,7 +720,7 @@ fn gen_local_harness_main(
 
         // HTTP surface: prefer `@route` endpoints; dedupe (method, path).
         // Without any @route in the module, fall back to name-derived for all fns.
-        let routable = http_routable_services(&services);
+        let routable = http_routable_services(&services, registry);
         out.push_str("    let app = Router::new()\n");
         let mut routes_emitted: std::collections::BTreeMap<String, Vec<(String, String)>> =
             std::collections::BTreeMap::new();
@@ -729,7 +729,7 @@ fn gen_local_harness_main(
             std::collections::HashSet::new();
         for svc in &routable {
             let fn_name = to_snake(&svc.name);
-            let (method, path) = rest_route_for_service(svc);
+            let (method, path) = rest_route_for_service(svc, registry);
             let key = (method.clone(), path.clone());
             if !seen_method_path.insert(key) {
                 continue; // duplicate GET /api/foo from svc + handler
@@ -765,12 +765,12 @@ fn gen_local_harness_main(
     for module in modules {
         let crate_name = to_snake(&module.name);
         let flat = flatten_module(module);
-        let routable = http_routable_services(&flat.fns);
+        let routable = http_routable_services(&flat.fns, registry);
         let mut seen_method_path: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
         for svc in &routable {
             let fn_name = to_snake(&svc.name);
-            let (method, path) = rest_route_for_service(svc);
+            let (method, path) = rest_route_for_service(svc, registry);
             if !seen_method_path.insert((method.clone(), path.clone())) {
                 continue;
             }
@@ -1046,8 +1046,8 @@ pub struct IrRestRoute {
     pub via: &'static str,
 }
 
-fn has_route_annotation(svc: &Construct) -> bool {
-    svc.annotations.iter().any(|a| a.name == "route")
+fn has_route_annotation(svc: &Construct, registry: &LayerRegistry) -> bool {
+    registry.construct_has_http_route(svc)
 }
 
 /// Extract `{param}` names from an HTTP path in order.
@@ -1067,13 +1067,16 @@ fn path_param_names(path: &str) -> Vec<String> {
 }
 
 /// Fns that become HTTP endpoints in the harness.
-/// If any construct has `@route`, only those are routable (blessed REST surface).
-/// Otherwise fall back to all fn-shaped constructs (legacy name-derived).
-fn http_routable_services<'a>(services: &[&'a Construct]) -> Vec<&'a Construct> {
+/// If any construct has an annotation with role:http_route, only those are
+/// routable. Otherwise fall back to name-derived for layer service keywords.
+fn http_routable_services<'a>(
+    services: &[&'a Construct],
+    registry: &LayerRegistry,
+) -> Vec<&'a Construct> {
     let with_route: Vec<&'a Construct> = services
         .iter()
         .copied()
-        .filter(|s| has_route_annotation(s))
+        .filter(|s| has_route_annotation(s, registry))
         .collect();
     if !with_route.is_empty() {
         with_route
@@ -1082,9 +1085,11 @@ fn http_routable_services<'a>(services: &[&'a Construct]) -> Vec<&'a Construct> 
     }
 }
 
-/// Collect REST routes from package IR: `@route` first, else name-derived
-/// (same policy as local harness). Works without gen (ACS-011).
-pub fn list_rest_routes_from_solution(sol: &Solution) -> Vec<IrRestRoute> {
+/// Collect REST routes from package IR (http_route role first, else name-derived).
+pub fn list_rest_routes_from_solution(
+    sol: &Solution,
+    registry: &LayerRegistry,
+) -> Vec<IrRestRoute> {
     let mut out = Vec::new();
     for item in &sol.items {
         let TopLevelItem::Construct(c) = item else {
@@ -1094,23 +1099,21 @@ pub fn list_rest_routes_from_solution(sol: &Solution) -> Vec<IrRestRoute> {
             continue;
         }
         let flat = flatten_module(c);
-        let routable = http_routable_services(&flat.fns);
+        let routable = http_routable_services(&flat.fns, registry);
         let mut seen: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
         for svc in routable {
-            let has_route = has_route_annotation(svc);
-            // When using @route surface, skip non-route helpers already filtered.
-            // When fallback, still skip pure non-service shapes without route.
+            let has_route = has_route_annotation(svc, registry);
             if !has_route {
-                let is_svc = svc.subkind.eq_ignore_ascii_case("Service")
-                    || svc.subkind.eq_ignore_ascii_case("Handler")
-                    || svc.keyword == "svc"
-                    || svc.keyword == "handler";
+                // Fallback: constructs whose keyword maps to a layer fn-shaped
+                // vocabulary entry (ApplicationService / DomainService via is_a).
+                let is_svc = registry.is_a(&svc.keyword, "ApplicationService")
+                    || registry.is_a(&svc.keyword, "DomainService");
                 if !is_svc {
                     continue;
                 }
             }
-            let (method, path) = rest_route_for_service(svc);
+            let (method, path) = rest_route_for_service(svc, registry);
             if !seen.insert((method.clone(), path.clone())) {
                 continue;
             }
@@ -1125,16 +1128,14 @@ pub fn list_rest_routes_from_solution(sol: &Solution) -> Vec<IrRestRoute> {
     out
 }
 
-/// Derive a RESTful (method, path) from a service name.
-/// ListInitiatives → (get, /api/initiatives)
-/// GetInitiative → (get, /api/initiatives/{id})
-/// Prefer `@route` annotation when present (AGT-026); else name-derived REST.
+/// Derive a RESTful (method, path) from a service name, or from an annotation
+/// whose layer role is `http_route` (not a hard-coded annotation name).
 ///
 /// Annotation forms (first arg):
 /// - `"GET /api/foo"` / `"POST /api/foo"` …
 /// - `"/api/foo"` alone → method from service name (`derive_rest_route`)
-pub fn rest_route_for_service(svc: &Construct) -> (String, String) {
-    if let Some(ann) = svc.annotations.iter().find(|a| a.name == "route") {
+pub fn rest_route_for_service(svc: &Construct, registry: &LayerRegistry) -> (String, String) {
+    if let Some(ann) = registry.http_route_annotation(svc) {
         if let Some(raw) = ann.args.first() {
             let s = raw.trim().trim_matches('"').trim_matches('\'');
             if let Some((method, path)) = parse_route_annotation(s) {
@@ -1508,7 +1509,14 @@ uuid.workspace = true"#);
 
     // Generate manifest.json only for deployment units (constructs marked with `au`)
     if module.deployment_unit {
-        files.push(gen_manifest(module, &contents, &impls_for_module, &crate_name, solution));
+        files.push(gen_manifest(
+            module,
+            &contents,
+            &impls_for_module,
+            &crate_name,
+            solution,
+            registry,
+        ));
     }
 
     files
@@ -1523,6 +1531,7 @@ fn gen_manifest(
     impls: &[&Construct],
     crate_name: &str,
     solution: &Solution,
+    registry: &LayerRegistry,
 ) -> GeneratedFile {
     use serde_json::json;
 
@@ -1582,20 +1591,20 @@ fn gen_manifest(
         deps.insert(dep_name, serde_json::Value::Object(dep_info));
     }
 
-    // Collect handlers: fn-shaped constructs in the application group
-    // that have names starting with "Handle" (convention for Bus handlers)
+    // Bus handler map: all fn-shaped constructs; message key via layer bus_policy.
     let mut handlers = serde_json::Map::new();
     for f in &contents.fns {
         let fn_name = to_snake(&f.name);
-        // Derive the message name from the handler name
-        // HandleGetCohort → GetCohort, HandleAddCohortMember → AddCohortMember
-        let message_name = f.name.strip_prefix("Handle").unwrap_or(&f.name);
-        handlers.insert(message_name.to_string(), json!({
-            "function": fn_name,
-            "inputs": f.inputs.iter().map(|i| {
-                json!({ "name": i.name, "type": format!("{:?}", i.type_expr) })
-            }).collect::<Vec<_>>(),
-        }));
+        let message_name = registry.bus_message_name(&f.name);
+        handlers.insert(
+            message_name,
+            json!({
+                "function": fn_name,
+                "inputs": f.inputs.iter().map(|i| {
+                    json!({ "name": i.name, "type": format!("{:?}", i.type_expr) })
+                }).collect::<Vec<_>>(),
+            }),
+        );
     }
 
     // The `expose` block lives on `Package` (pkg files), not on `Solution`
@@ -2734,30 +2743,26 @@ impl Bus for InProcessBus {
 /// owns the common error types and layer-provided top-level traits, so there
 /// is exactly one definition of each across the workspace.
 /// CAP-003: handler message names from application fns across modules.
-fn collect_handler_names(solution: &Solution, modules: &[&Construct]) -> Vec<String> {
+fn collect_handler_names(
+    solution: &Solution,
+    modules: &[&Construct],
+    registry: &LayerRegistry,
+) -> Vec<String> {
     let mut names = Vec::new();
     for module in modules {
         let flat = flatten_module(module);
         for f in &flat.fns {
-            // HandleX → X; DomainService CreateRepo → CreateRepo
-            let message = f
-                .name
-                .strip_prefix("Handle")
-                .unwrap_or(&f.name)
-                .to_string();
+            let message = registry.bus_message_name(&f.name);
             if !names.contains(&message) {
                 names.push(message);
             }
         }
     }
-    // Also free functions with Handle prefix at solution top-level
     for item in &solution.items {
         if let TopLevelItem::Function(f) = item {
-            if let Some(msg) = f.name.strip_prefix("Handle") {
-                let m = msg.to_string();
-                if !names.contains(&m) {
-                    names.push(m);
-                }
+            let message = registry.bus_message_name(&f.name);
+            if !names.contains(&message) {
+                names.push(message);
             }
         }
     }
@@ -4336,24 +4341,6 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         out.push_str("}\n\n");
     }
 
-    // When a construct is named `Handle` + Base and Base also exists as a flow,
-    // emit a thin wrapper (same prefix convention as bus message stripping).
-    // No domain vocabulary — pure name-prefix + sibling existence.
-    let sibling_fn_names: std::collections::HashSet<String> = flows
-        .iter()
-        .filter_map(|flow| {
-            let name = match flow {
-                FlowLike::Flow(f) => f.name.as_str(),
-                FlowLike::Construct(c) => c.name.as_str(),
-            };
-            if name.starts_with("Handle") {
-                None
-            } else {
-                Some(to_snake(name))
-            }
-        })
-        .collect();
-
     for flow in flows {
         let (name, subkind, annotations, inputs, steps) = match flow {
             FlowLike::Flow(f) => (
@@ -4465,37 +4452,6 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         } else {
             infer_flow_return_type(return_expr, steps, &ctx, envelope_routing)
         };
-
-        if let Some(base) = name.strip_prefix("Handle") {
-            let sibling = to_snake(base);
-            if sibling_fn_names.contains(&sibling) {
-                let call_args: Vec<String> = {
-                    let mut a = Vec::new();
-                    if has_deps {
-                        a.push("deps".into());
-                    }
-                    for f in inputs.iter().filter(|f| !registry.field_is_dependency(f)) {
-                        a.push(to_snake(&f.name));
-                    }
-                    a
-                };
-                out.push_str(&format!(
-                    "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",
-                    to_snake(name),
-                    deps_param,
-                    params,
-                    ret_type
-                ));
-                out.push_str(&format!(
-                    "    // Thin wrapper for sibling `{sibling}` (Handle* name prefix).\n"
-                ));
-                out.push_str(&format!(
-                    "    {sibling}({}).await\n}}\n\n",
-                    call_args.join(", ")
-                ));
-                continue;
-            }
-        }
 
         out.push_str(&format!(
             "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",
@@ -5409,14 +5365,13 @@ pub fn generate_multi_package_harness(
         }
         main_rs.push_str("    });\n\n");
 
-        // Build routes for this context
+        // Build routes for this context (http_route role, else name-derived).
         let router_name = format!("{crate_name}_routes");
         main_rs.push_str(&format!("    let {router_name} = Router::new()\n"));
-        for svc in services {
+        let routable = http_routable_services(services, registry);
+        for svc in &routable {
             let fn_name = to_snake(&svc.name);
-            let (method, path) = rest_route_for_service(svc);
-            // Path strings come from `@route` / name-derived policy as authored
-            // (brace params `{id}`). No target-framework rewrite in the engine.
+            let (method, path) = rest_route_for_service(svc, registry);
             main_rs.push_str(&format!("        .route(\"{path}\", {method}({fn_name}_handler))\n"));
         }
         main_rs.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
@@ -5438,11 +5393,12 @@ pub fn generate_multi_package_harness(
 
     // Generate handler functions for each service across all modules
     // (same path/query/body policy as single-package local harness).
-    for (module, crate_name, _, _) in &all_modules {
+    for (module, crate_name, registry, _) in &all_modules {
         let flat = flatten_module(module);
-        for svc in &flat.fns {
+        let routable = http_routable_services(&flat.fns, registry);
+        for svc in &routable {
             let fn_name = to_snake(&svc.name);
-            let (method, path) = rest_route_for_service(svc);
+            let (method, path) = rest_route_for_service(svc, registry);
             // Same binding policy as single-package local harness: path segments
             // use brace form `{id}` in `@route` (and name-derived paths). Engine
             // does not rewrite foreign path dialects.

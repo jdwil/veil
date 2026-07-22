@@ -449,7 +449,7 @@ fn list_routes_from_ir(
     }
     let reg = registry.cloned().unwrap_or_else(veil_ir::LayerRegistry::builtin);
     let tokens = veil_parser::lex(source);
-    let sol = veil_parser::parse_with_registry(&tokens, reg).map_err(|errs| {
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).map_err(|errs| {
         format!(
             "parse for IR routes: {}",
             errs.iter()
@@ -458,7 +458,7 @@ fn list_routes_from_ir(
                 .join("; ")
         )
     })?;
-    let routes = veil_codegen::list_rest_routes_from_solution(&sol);
+    let routes = veil_codegen::list_rest_routes_from_solution(&sol, &reg);
     if routes.is_empty() {
         return Ok(
             "[]\n(no svc/handler routes in package IR — add @route or List/Get/Create names)"
