@@ -403,6 +403,9 @@ fn stub_type_path(registry: &LayerRegistry, type_name: &str) -> Option<(String, 
 }
 
 /// Look up a stub `harness_field Type` recipe. Returns (local_let_name, rust_expr).
+///
+/// Matches bare names (`Client`) and use-aliases (`use reqwest as rw` → `RwClient`
+/// matches that stub's `harness_field Client`).
 fn stub_harness_field_expr(
     registry: &LayerRegistry,
     type_name: &str,
@@ -412,7 +415,20 @@ fn stub_harness_field_expr(
             let let_name = format!("_stub_{}", to_snake(type_name));
             return Some((let_name, expr.trim().to_string()));
         }
-        // Also match when type is aliased (e.g. S3Client) — strip common prefixes? skip.
+        if let Some(alias) = &stub.alias {
+            let cap = alias
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().collect::<String>())
+                .unwrap_or_default()
+                + alias.get(1..).unwrap_or("");
+            for (key, expr) in &stub.harness_fields {
+                if type_name == format!("{cap}{key}") {
+                    let let_name = format!("_stub_{}", to_snake(type_name));
+                    return Some((let_name, expr.trim().to_string()));
+                }
+            }
+        }
     }
     None
 }

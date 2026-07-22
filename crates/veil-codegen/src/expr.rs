@@ -608,8 +608,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     return format!("state[\"{}\"][\"{}\"]", name, field);
                 }
                 // Method body: `self.table` → clone so `&self` methods compile.
+                // `self.pool` stays uncloned — sqlx `Executor` is for `&Pool`.
                 if name == "self" && ctx.in_method {
                     let f = to_snake(field);
+                    if f == "pool" {
+                        return "&self.pool".to_string();
+                    }
                     if ctx.self_fields.contains(field.as_str())
                         || ctx.self_fields.contains(&f)
                     {
@@ -1142,11 +1146,17 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
         return ".await.map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
     // Untyped receiver: method name appears on a port trait → async_trait.
-    let is_trait_method = ctx
-        .method_returns
-        .keys()
-        .any(|(ty, m)| m == method && ctx.name_to_shape.get(ty) == Some(&Shape::Trait));
-    if is_trait_method {
+    // Do not treat stub/struct methods (e.g. reqwest `Client.delete`) as port
+    // methods just because a trait also has `delete`.
+    let is_trait_method = ctx.method_returns.keys().any(|(ty, m)| {
+        m == method && ctx.name_to_shape.get(ty) == Some(&Shape::Trait)
+    });
+    let is_stub_or_struct_method = ctx.method_returns.keys().any(|(ty, m)| {
+        m == method
+            && (ctx.stub_type_crate.contains_key(ty)
+                || ctx.name_to_shape.get(ty) == Some(&Shape::Struct))
+    });
+    if is_trait_method && !is_stub_or_struct_method {
         return ".await?".to_string();
     }
     // Sync Res! stub methods: map any Error into DomainError.
@@ -1204,11 +1214,55 @@ fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
             // The routing reference and Copy scalars are passed as-is.
             Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
+            // sqlx Executor is implemented for `&Pool`, not `Pool`.
+            Expr::Ident(n) if n == "pool" => "&self.pool".to_string(),
             Expr::Ident(n) if ctx.is_local(n) => format!("{}.clone()", n),
+            Expr::FieldAccess(base, field)
+                if field == "pool"
+                    && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
+            {
+                "&self.pool".to_string()
+            }
             _ => expr_to_rust(a, ctx),
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Like `clone_args` but applies method-specific argument shaping (e.g. reqwest
+/// `basic_auth` takes `Option` password).
+fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> String {
+    let method = method.trim_end_matches(['!', '?']);
+    if method == "basic_auth" && args.len() >= 2 {
+        let user = clone_args(&args[..1], ctx);
+        let pass = expr_to_rust(&args[1], ctx);
+        // reqwest: basic_auth(user, Option<password>)
+        return format!("{user}, Some({pass})");
+    }
+    // sqlx bind: Uuid needs the `uuid` feature; bind as text to stay feature-light.
+    if method == "bind" && args.len() == 1 {
+        if let Expr::Ident(n) = &args[0] {
+            if ctx.local_type(n) == Some("Uuid")
+                || n == "id"
+                || n.ends_with("_id")
+                || n.ends_with("Id")
+            {
+                return format!("{n}.to_string()");
+            }
+        }
+        if let Expr::FieldAccess(base, field) = &args[0] {
+            let f = to_snake(field);
+            if f == "id" || f.ends_with("_id") {
+                let b = expr_to_rust(base, ctx);
+                // self.x.clone().id → already cloned base
+                if b.ends_with(".clone()") {
+                    return format!("{b}.{f}.to_string()");
+                }
+                return format!("{b}.{f}.to_string()");
+            }
+        }
+    }
+    clone_args(args, ctx)
 }
 
 /// A local whose inferred type is a Copy scalar (int/bool/float) — no clone.
@@ -1228,20 +1282,37 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 
     // Built-in List methods: `.get(i)` → indexing (`[i as usize]`), `.len()` →
     // `.len() as i64`. The receiver/target is the list expression.
+    // Only treat `.get` as slice index when the arg is index-like (int lit /
+    // int-typed local). `client.get(url)` and `map.get(key)` must stay method
+    // calls — non-string non-int used to miscompile as `client[(url) as usize]`.
     let list_base = if let Some(recv) = &call.receiver {
         Some(expr_to_rust(recv, ctx))
-    } else if !call.target.is_empty() && !ctx.is_trait_target(&call.target) && (call.method == "get" || call.method == "len") {
+    } else if !call.target.is_empty()
+        && !ctx.is_trait_target(&call.target)
+        && (call.method == "get" || call.method == "len")
+    {
         Some(call.target.clone())
     } else {
         None
     };
     if let Some(base) = list_base {
         if call.method == "get" && call.args.len() == 1 {
-            // String args (HashMap key lookup) stay as .get("key").
-            // Numeric / Int locals (including loop indices) → slice index with `as usize`
-            // so saga `steps.get(i)` and list access compile (i64 is not SliceIndex).
+            // String args (HashMap key lookup) stay as .get("key") — fall through.
             let is_string_arg = matches!(&call.args[0], Expr::StringLit(_));
-            if !is_string_arg {
+            let arg_is_index_like = match &call.args[0] {
+                Expr::IntLit(_) => true,
+                Expr::Ident(n) => matches!(
+                    ctx.local_type(n),
+                    Some("i64")
+                        | Some("i32")
+                        | Some("u64")
+                        | Some("u32")
+                        | Some("usize")
+                        | Some("isize")
+                ) || is_copy_local(n, ctx),
+                _ => false,
+            };
+            if !is_string_arg && arg_is_index_like {
                 let idx = expr_to_rust(&call.args[0], ctx);
                 return format!("{}[({}) as usize]", base, idx);
             }
@@ -1286,7 +1357,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             "{}.{}({}){}",
             recv_str,
             m,
-            clone_args(&call.args, ctx),
+            clone_args_for_method(&call.method, &call.args, ctx),
             suffix
         );
     }
@@ -1520,16 +1591,38 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                         })
                         .collect::<Vec<_>>().join(", ");
 
-                    let domain_type = ctx
-                        .expected_return_rust
-                        .as_ref()
-                        .and_then(|ret| extract_domain_type_from_return(ret, &ctx.name_to_shape));
-
                     // Prefer explicit stub metadata; fall back to sibling `TypeAs` heuristic.
                     let typed_meta = ctx
                         .stub_typed_ctors
                         .get(&effective_target)
                         .or_else(|| ctx.stub_typed_ctors.get(type_leaf));
+
+                    // query_as only when fetch_* on this type returns a domain row,
+                    // not Opt<Str>/List<Str> (JSON payload columns use plain query +
+                    // from_str). Method return type alone is not enough — find() may
+                    // return Opt<Entity> while the SQL selects a text payload.
+                    let fetch_ret = ctx
+                        .method_returns
+                        .get(&(type_leaf.to_string(), "fetch_optional".into()))
+                        .or_else(|| {
+                            ctx.method_returns
+                                .get(&(effective_target.clone(), "fetch_optional".into()))
+                        })
+                        .map(|s| s.as_str());
+                    let fetch_is_stringish = fetch_ret.is_some_and(|r| {
+                        r.contains("Str")
+                            || r.contains("String")
+                            || r == "Opt<Str>"
+                            || r.starts_with("List<Str")
+                    });
+
+                    let domain_type = if fetch_is_stringish {
+                        None
+                    } else {
+                        ctx.expected_return_rust.as_ref().and_then(|ret| {
+                            extract_domain_type_from_return(ret, &ctx.name_to_shape)
+                        })
+                    };
 
                     if let Some(domain_type) = domain_type {
                         if let Some((typed_fn, param_tmpl)) = typed_meta {
@@ -1548,6 +1641,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                                 "{module}::{typed_fn_name}::<_, {domain_type}>({raw_args})"
                             );
                         }
+                    }
+                    // JSON-payload adapters: SELECT → query_scalar::<_, String>;
+                    // INSERT/UPDATE/DELETE → plain query (has execute, no row type).
+                    if fetch_is_stringish && type_leaf == "Query" {
+                        let sql_is_select = call.args.first().is_some_and(|a| {
+                            matches!(a, Expr::StringLit(s) if s.trim_start().to_ascii_lowercase().starts_with("select"))
+                        });
+                        if sql_is_select {
+                            return format!("{module}::query_scalar::<_, String>({raw_args})");
+                        }
+                        return format!("{module}::query({raw_args})");
                     }
                     return format!("{module}::{fn_name}({raw_args})");
                 }
@@ -1669,7 +1773,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 "{}.{}({}){}",
                 path,
                 method,
-                clone_args(&call.args, ctx),
+                clone_args_for_method(&call.method, &call.args, ctx),
                 suffix
             );
         }
@@ -1695,7 +1799,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 "self.{}.{}({}){}",
                 to_snake(field),
                 method,
-                clone_args(&call.args, ctx),
+                clone_args_for_method(&call.method, &call.args, ctx),
                 suffix
             );
         }
@@ -1728,7 +1832,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     call.method.trim_end_matches(['!', '?']).to_string(),
                 ))
             {
-                let cloned_args = clone_args(&call.args, ctx);
+                let cloned_args = clone_args_for_method(&call.method, &call.args, ctx);
                 let suffix = receiver_call_suffix(
                     &Expr::Ident(call.target.clone()),
                     &call.method,
@@ -1756,7 +1860,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 "{}.iter().{}({})",
                 call.target,
                 method,
-                clone_args(&call.args, ctx)
+                clone_args_for_method(&call.method, &call.args, ctx)
             );
         }
         let suffix = receiver_call_suffix(
@@ -1768,7 +1872,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             "{}.{}({}){}",
             call.target,
             method,
-            clone_args(&call.args, ctx),
+            clone_args_for_method(&call.method, &call.args, ctx),
             suffix
         );
     }

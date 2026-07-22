@@ -1143,6 +1143,46 @@ fn convert_rustdoc_json_to_stub(
             ));
         }
     }
+    // reqwest / HTTP clients: zero-arg Client::new() harness
+    if struct_names.contains("Client")
+        && (crate_name == "reqwest"
+            || struct_impls
+                .get("Client")
+                .map(|ms| ms.iter().any(|m| m.starts_with("fn new()")))
+                .unwrap_or(false))
+        && !crate_name.starts_with("aws_sdk_")
+        && !crate_name.starts_with("aws-sdk-")
+    {
+        out.push_str(&format!(
+            "  harness_field Client \"\"\"\n{{\n    {rust_crate}::Client::new()\n}}\n\"\"\"\n"
+        ));
+    }
+    // AWS SDK clients (aws-sdk-*): load_defaults + optional AWS_ENDPOINT_URL
+    // (LocalStack / custom endpoints). Do not hand-edit .stub for this — re-run
+    // veil stub-gen so the recipe stays in sync with the crate surface.
+    if (crate_name.starts_with("aws_sdk_") || crate_name.starts_with("aws-sdk-"))
+        && struct_names.contains("Client")
+    {
+        out.push_str("  types_module types\n");
+        out.push_str("  root_types Client\n");
+        out.push_str("  cargo_deps aws-config=1.8\n");
+        out.push_str(&format!(
+            "  harness_field Client \"\"\"\n\
+{{\n\
+    let conf = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;\n\
+    let conf = {rust_crate}::config::Builder::from(&conf);\n\
+    let conf = if let Ok(ep) = std::env::var(\"AWS_ENDPOINT_URL\")\n\
+        .or_else(|_| std::env::var(\"DYNAMO_ENDPOINT\"))\n\
+    {{\n\
+        conf.endpoint_url(ep).build()\n\
+    }} else {{\n\
+        conf.build()\n\
+    }};\n\
+    {rust_crate}::Client::from_conf(conf)\n\
+}}\n\
+\"\"\"\n"
+        ));
+    }
     // Free-fn → struct constructor map: query → Query, with typed_variant query_as
     let free_fn_bases: std::collections::HashMap<String, String> = free_fns
         .keys()

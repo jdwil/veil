@@ -254,3 +254,30 @@ re-run `veil stub-gen` for API/policy changes)
 **Done notes:** Pre-scan free-fn methods + `harness_handler_needs_query`;
 wire-before-instantiate. AWS `load_from_env` deprecation is residual until
 stub-gen (or a regen) updates the Client `harness_field` recipe.
+
+---
+
+## GEN-012: Outbound HTTP + SQL payload adapters (relay bar)
+
+**Status:** Done · **Priority:** P2  
+**As a** product author  
+**I want** real reqwest HTTP + Postgres JSON-payload repos to lower cleanly  
+**So that** execute paths and dual-store adapters compile without hand-edited SDK glue
+
+**Acceptance criteria:**
+
+- `Client.get(url)` is a method call, not slice index (only int-like `.get(i)` indexes)
+- sqlx `Query` with stringish `fetch_*` uses `query_scalar` for SELECT and `query`
+  for mutations; executor is `&self.pool`
+- Trait method names (`delete`) do not force `.await` on stub receivers
+- `basic_auth` password shaped as `Option`; Response `text()` async via BoxFuture
+- stub-gen emits AWS Client `harness_field` with `load_defaults` + reqwest
+  `Client::new()` (no hand-edit of generated stubs for that policy)
+- harness_field resolves use-aliases (`use reqwest as rw` → `RwClient`)
+- Relay: ReqwestHttpClient, Pg JSON adapters, POST `/api/execute` routes green
+
+**Touch:** `expr.rs`, `rust.rs` harness, `veil-cli` stub-gen, `examples/reqwest.stub`,
+relay `main.veil`
+
+**Done notes:** Dual-loop `cargo check -p relay -p veil_bin` green (aws
+`load_from_env` deprecation only until system dynamodb stub is re-stub-gen'd).
