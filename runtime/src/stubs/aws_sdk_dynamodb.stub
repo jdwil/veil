@@ -6,7 +6,7 @@ stub aws-sdk-dynamodb 1.116.0
   cargo_deps aws-config=1.8
   harness_field Client """
 {
-    let conf = aws_config::load_from_env().await;
+    let conf = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let conf = aws_sdk_dynamodb::config::Builder::from(&conf);
     let conf = if let Ok(ep) = std::env::var("DYNAMO_ENDPOINT").or_else(|_| std::env::var("AWS_ENDPOINT_URL")) {
         conf.endpoint_url(ep).build()

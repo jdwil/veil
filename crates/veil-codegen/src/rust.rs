@@ -422,6 +422,47 @@ fn gen_local_harness_main(
     modules: &[&Construct],
     registry: &LayerRegistry,
 ) -> String {
+    // ── Pre-scan: free-fn routing imports + whether any handler needs Query ─
+    // Axum: only the first method on a path is a free fn (`get(h)`); chained
+    // methods are MethodRouter methods (`.post(h)`), so do not import them.
+    let mut free_fn_methods: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::from(["get".to_string()]); // /health
+    let mut any_query = false;
+    for module in modules {
+        let flat = flatten_module(module);
+        let routable = http_routable_services(&flat.fns);
+        let mut by_path: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for svc in &routable {
+            let (method, path) = rest_route_for_service(svc);
+            if !seen.insert((method.clone(), path.clone())) {
+                continue;
+            }
+            by_path.entry(path.clone()).or_default().push(method.clone());
+            let path_params = path_param_names(&path);
+            if harness_handler_needs_query(svc, registry, &method, &path, &path_params) {
+                any_query = true;
+            }
+        }
+        for methods in by_path.values() {
+            if let Some(first) = methods.first() {
+                free_fn_methods.insert(first.clone());
+            }
+        }
+    }
+    let routing_imports = free_fn_methods
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query_import = if any_query {
+        "extract::Query, "
+    } else {
+        ""
+    };
+
     let mut out = String::new();
     out.push_str(&format!(
         "//! HTTP harness for package `{}` (RT-001 / RT-003).\n\
@@ -430,11 +471,12 @@ fn gen_local_harness_main(
         sol.name
     ));
     out.push_str("use std::sync::Arc;\n");
-    out.push_str("use axum::{Router, Json, extract::State, extract::Query, routing::{get, post, put, delete}, http::StatusCode};\n");
+    out.push_str(&format!(
+        "use axum::{{Router, Json, extract::State, {query_import}routing::{{{routing_imports}}}, http::StatusCode}};\n"
+    ));
     out.push_str("use tower_http::cors::CorsLayer;\n");
     out.push_str("use uuid::Uuid;\n");
     out.push_str("use serde_json::Value;\n");
-    out.push_str("use veil_shared::*;\n\n");
     for m in modules {
         let cn = to_snake(&m.name);
         out.push_str(&format!(
@@ -456,11 +498,47 @@ fn gen_local_harness_main(
         }
 
         out.push_str(&format!("    // ── context {} ──\n", module.name));
-        // Collect stub harness_field constructors needed by @field annotations.
-        // Construction recipes live on the .stub (not in the engine).
+
+        // Shared Deps field names must match application crate (dependency-role
+        // input names preferred over snake(trait)).
+        let name_to_shape = build_name_to_shape(sol, registry);
+        let (_deps_set, dep_fields) =
+            collect_deps_field_map(&services, registry, &name_to_shape);
+
+        // One adapter per Deps field (first wins). Only *wired* adapters are
+        // instantiated — dual Dynamo+Pg does not leave unused `*_inst` lets.
+        let mut wired: Vec<(String, String, &Construct)> = Vec::new(); // field, snake, ad
+        let mut wired_fields: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut wired_adapter_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for ad in adapters {
+            if is_pure_generic_adapter_template(ad) {
+                continue;
+            }
+            if let Some(target) = &ad.target {
+                let field = adapter_deps_field_name(sol, ad, target, &dep_fields);
+                if !wired_fields.insert(field.clone()) {
+                    continue;
+                }
+                if !dep_fields.is_empty()
+                    && !dep_fields.values().any(|v| v == &field)
+                    && !dep_fields.contains_key(target)
+                {
+                    continue;
+                }
+                wired_adapter_names.insert(ad.name.clone());
+                wired.push((field, to_snake(&ad.name), ad));
+            }
+        }
+
+        // stub harness_field constructors only for wired adapters.
         let mut emitted_harness_lets: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for ad in adapters {
+            if !wired_adapter_names.contains(&ad.name) {
+                continue;
+            }
             for ann in &ad.annotations {
                 if ann.name != "field" {
                     continue;
@@ -471,15 +549,10 @@ fn gen_local_harness_main(
                         .map(|(_, t)| t.trim())
                         .unwrap_or("")
                         .to_string();
-                    if ftype.is_empty() {
+                    if ftype.is_empty() || emitted_harness_lets.contains(&ftype) {
                         continue;
                     }
-                    if emitted_harness_lets.contains(&ftype) {
-                        continue;
-                    }
-                    if let Some((let_name, expr)) =
-                        stub_harness_field_expr(registry, &ftype)
-                    {
+                    if let Some((let_name, expr)) = stub_harness_field_expr(registry, &ftype) {
                         out.push_str(&format!(
                             "    // stub harness_field {ftype}\n\
                              let {let_name} = {expr};\n\n"
@@ -488,13 +561,36 @@ fn gen_local_harness_main(
                     }
                 }
             }
+            // Body may reference self.client without @field — still need Client.
+            let body_uses_client = ad.impls.iter().any(|m| {
+                m.body
+                    .iter()
+                    .any(|e| expr_mentions_self_field(e, "client"))
+            });
+            let has_field_client = ad.annotations.iter().any(|a| {
+                a.name == "field"
+                    && a.args
+                        .iter()
+                        .any(|arg| arg.split_once(':').map(|(n, _)| n.trim()) == Some("client"))
+            });
+            if body_uses_client
+                && !has_field_client
+                && !emitted_harness_lets.contains("Client")
+            {
+                if let Some((let_name, expr)) = stub_harness_field_expr(registry, "Client") {
+                    out.push_str(&format!(
+                        "    // stub harness_field Client\n\
+                         let {let_name} = {expr};\n\n"
+                    ));
+                    emitted_harness_lets.insert("Client".into());
+                }
+            }
         }
+
         for ad in adapters {
-            // Skip pure generic templates (adapter Foo<T> for Trait<T>).
-            if is_pure_generic_adapter_template(ad) {
+            if !wired_adapter_names.contains(&ad.name) {
                 continue;
             }
-            let target = ad.target.as_deref().unwrap_or("Send");
             // Wire adapter fields: @field first, @env only for names not yet set
             // (avoids double-init of `pool` from @field(pool) + @env(DATABASE_URL)).
             let mut field_inits: std::collections::BTreeMap<String, String> =
@@ -587,34 +683,6 @@ fn gen_local_harness_main(
             continue;
         }
 
-        // Shared Deps field names must match application crate (dependency-role
-        // input names preferred over snake(trait)).
-        let name_to_shape = build_name_to_shape(sol, registry);
-        let (_deps_set, dep_fields) =
-            collect_deps_field_map(&services, registry, &name_to_shape);
-
-        let mut wired: Vec<(String, String)> = Vec::new(); // (field, adapter_snake)
-        let mut wired_fields: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for ad in adapters {
-            if is_pure_generic_adapter_template(ad) {
-                continue;
-            }
-            if let Some(target) = &ad.target {
-                let field = adapter_deps_field_name(sol, ad, target, &dep_fields);
-                // One adapter per Deps field (first wins). Dual Dynamo+Pg keeps first.
-                if !wired_fields.insert(field.clone()) {
-                    continue;
-                }
-                if !dep_fields.is_empty()
-                    && !dep_fields.values().any(|v| v == &field)
-                    && !dep_fields.contains_key(target)
-                {
-                    continue;
-                }
-                wired.push((field, to_snake(&ad.name)));
-            }
-        }
         // Required Deps fields with no adapter → fail closed with a clear message.
         let mut missing: Vec<String> = Vec::new();
         for (trait_name, field) in &dep_fields {
@@ -629,7 +697,7 @@ fn gen_local_harness_main(
             ));
         }
         out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
-        for (field, sn) in &wired {
+        for (field, sn, _) in &wired {
             out.push_str(&format!("        {field}: {sn}_inst.clone(),\n"));
         }
         out.push_str("    });\n\n");
@@ -691,11 +759,9 @@ fn gen_local_harness_main(
             let path_params = path_param_names(&path);
             let needs_path = !path_params.is_empty();
             let needs_body = method == "post" || method == "put";
+            let needs_query =
+                harness_handler_needs_query(svc, registry, &method, &path, &path_params);
 
-            // Function signature
-            // List* GET: Query params (not random Uuid defaults — that silently broke local APIs).
-            let is_list_get =
-                method == "get" && (svc.name.starts_with("List") || !path.contains('{'));
             // Path extractors: single param → Path(String); multi → Path<(String, …)>.
             let path_extractor = match path_params.len() {
                 0 => String::new(),
@@ -726,7 +792,7 @@ fn gen_local_harness_main(
                 out.push_str(&format!(
                     "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
                 ));
-            } else if is_list_get {
+            } else if needs_query {
                 out.push_str(&format!(
                     "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Query(q): Query<std::collections::HashMap<String, String>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
                 ));
@@ -768,7 +834,7 @@ fn gen_local_harness_main(
                         ));
                     }
                     // else: already String from Path extractor
-                } else if is_list_get {
+                } else if needs_query {
                     // GET List*: query string ?tenant_id=… (required for Uuid)
                     if rust_type == "Uuid" {
                         out.push_str(&format!(
@@ -807,6 +873,32 @@ fn gen_local_harness_main(
 
     out.push_str(harness_body_dt_helper());
     out
+}
+
+/// Whether a GET handler needs `Query(q)` — only when it has non-dep inputs
+/// that are not path params (true List/filter endpoints).
+fn harness_handler_needs_query(
+    svc: &Construct,
+    registry: &LayerRegistry,
+    method: &str,
+    path: &str,
+    path_params: &[String],
+) -> bool {
+    if method != "get" {
+        return false;
+    }
+    // List* or collection GET (no path braces) may take query filters.
+    let is_listish = svc.name.starts_with("List") || !path.contains('{');
+    if !is_listish {
+        return false;
+    }
+    svc.inputs.iter().any(|i| {
+        if registry.field_is_dependency(i) {
+            return false;
+        }
+        let field = to_snake(&i.name);
+        !path_params.iter().any(|p| p == &field)
+    })
 }
 
 fn demo_value_for_type(ty: &TypeExpr) -> String {

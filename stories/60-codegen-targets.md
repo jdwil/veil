@@ -226,3 +226,29 @@ loop `_id`. `cargo check -p veil-codegen -p veil-cli` clean.
 **Done notes:** `GenCtx.mut_locals` + `analyze_mut_locals` / `_in_steps`;
 `MUTATING_METHODS` set; wired into services, adapters, domain methods, layer
 fns, saga steps. Relay: 58 unused-mut warnings → 0.
+
+---
+
+## GEN-011: Harness hygiene (wired adapters, imports, Query)
+
+**Status:** Done · **Priority:** P2  
+**As an** author running the local harness  
+**I want** `cargo check -p veil_bin` clean  
+**So that** dual-loop green means zero warnings, not LIB-only green
+
+**Acceptance criteria:**
+
+- Only **wired** adapters are instantiated (first wins per Deps field); dual
+  Dynamo+Pg does not leave unused `pg_*_inst`
+- Stub `harness_field` lets only for wired adapters
+- HTTP routing free-fn imports: only methods that lead a path chain (Axum
+  `.post`/`.put`/`.delete` are methods, not free imports)
+- `Query(q)` only when the handler has non-dep, non-path inputs
+- Drop unused `veil_shared::*` from harness when not needed
+- Dynamo Client recipe uses non-deprecated `aws_config::load_defaults`
+- Relay: `cargo check -p relay -p veil_bin` → zero warnings
+
+**Touch:** `rust.rs` harness, `aws_sdk_dynamodb.stub`
+
+**Done notes:** Pre-scan free-fn methods + `harness_handler_needs_query`;
+wire-before-instantiate; stub Client → `BehaviorVersion::latest()`.
