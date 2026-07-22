@@ -873,7 +873,8 @@ impl LayerRegistry {
                 // Try to load as a layer (searches local → system → external)
                 let _ = reg.load_layer(name, dir);
 
-                // Also check for .stub files (local dir, then stubs/ subdir)
+                // Also check for .stub files: local → stubs/ → system (VEIL_STUBS_DIR /
+                // runtime/src/stubs next to layers). Same resolution idea as layers.
                 let stub_path = dir.join(format!("{}.stub", name));
                 let stub_subdir_path = dir.join("stubs").join(format!("{}.stub", name));
                 let found_stub = if stub_path.exists() {
@@ -881,7 +882,7 @@ impl LayerRegistry {
                 } else if stub_subdir_path.exists() {
                     Some(stub_subdir_path)
                 } else {
-                    None
+                    Self::find_system_stub(name)
                 };
                 if let Some(path) = found_stub {
                     if let Ok(stub_content) = std::fs::read_to_string(&path) {
@@ -894,6 +895,54 @@ impl LayerRegistry {
             }
         }
         Ok(reg)
+    }
+
+    /// Locate a system `.stub` by package use-name (`aws_sdk_dynamodb`, `sqlx`, …).
+    fn find_system_stub(name: &str) -> Option<std::path::PathBuf> {
+        let file = format!("{name}.stub");
+        // VEIL_STUBS_DIR
+        if let Ok(dir) = std::env::var("VEIL_STUBS_DIR") {
+            let p = Path::new(&dir).join(&file);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        // Next to system layers: VEIL_LAYERS_DIR/../runtime/src/stubs
+        if let Ok(layers) = std::env::var("VEIL_LAYERS_DIR") {
+            let p = Path::new(&layers)
+                .join("../runtime/src/stubs")
+                .join(&file);
+            if p.exists() {
+                return Some(p);
+            }
+            let p = Path::new(&layers).join("../examples").join(&file);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        // Walk CWD ancestors for runtime/src/stubs and examples/
+        if let Ok(cwd) = std::env::current_dir() {
+            for anc in cwd.ancestors() {
+                for rel in ["runtime/src/stubs", "examples"] {
+                    let p = anc.join(rel).join(&file);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        // Relative to executable (installed layout)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                for rel in ["../runtime/src/stubs", "stubs", "../stubs"] {
+                    let p = exe_dir.join(rel).join(&file);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Merge raw (unresolved) specs into the registry, resolving `maps_to`

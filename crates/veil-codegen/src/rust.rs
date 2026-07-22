@@ -3618,6 +3618,33 @@ fn build_name_to_shape(solution: &Solution, registry: &LayerRegistry) -> std::co
 /// Walk an expression tree collecting external-effect hook calls: a `Call`
 /// with a non-empty method whose target is neither a known construct nor a
 /// local. Records `(snake(target)_snake(method), arg_count)`.
+/// Targets that lower to real Rust paths in expr.rs (not external-effect hooks).
+fn is_known_codegen_module(target: &str) -> bool {
+    matches!(
+        target,
+        "serde_json"
+            | "serde"
+            | "tokio"
+            | "tracing"
+            | "uuid"
+            | "chrono"
+            | "std"
+            | "aws_sdk_dynamodb"
+            | "aws_sdk_s3"
+            | "aws_config"
+            | "sqlx"
+            | "Json"
+            | "Map"
+            | "List"
+            | "Opt"
+            | "Dt"
+            | "Uuid"
+            | "Env"
+            | "Str"
+    ) || target.starts_with("aws_sdk_")
+        || target.starts_with("aws_config")
+}
+
 fn collect_effect_hooks(
     expr: &Expr,
     name_to_shape: &std::collections::HashMap<String, Shape>,
@@ -3632,6 +3659,7 @@ fn collect_effect_hooks(
                 && !locals.contains(&call.target)
                 && !call.target.is_empty()
                 && !call.target.contains('.') // dotted paths resolve as Struct::method
+                && !is_known_codegen_module(&call.target)
             {
                 let name = format!("{}_{}", to_snake(&call.target), to_snake(&call.method));
                 hooks.insert((name, call.args.len()));
@@ -3643,6 +3671,7 @@ fn collect_effect_hooks(
                 && !locals.contains(&call.target)
                 && !call.target.is_empty()
                 && call.target.chars().next().map_or(true, |c| c.is_lowercase())
+                && !is_known_codegen_module(&call.target)
             {
                 let name = to_snake(&call.target);
                 hooks.insert((name, call.args.len()));

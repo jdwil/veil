@@ -1235,15 +1235,27 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // `items.map(f).collect()`). The receiver carries the left side of the chain.
     if let Some(recv) = &call.receiver {
         let recv_str = expr_to_rust(recv, ctx);
+        // Map/HashMap .get("lit") → &str key (not String) on any receiver chain.
+        if call.method == "get" && call.args.len() == 1 {
+            if let Expr::StringLit(key) = &call.args[0] {
+                return format!("{}.get(\"{}\")", recv_str, key);
+            }
+        }
         // DynamoDB AttributeValue .as_s() / .as_n() returns Result<&str, &AttributeValue>
         // which doesn't implement From for DomainError — use map_err.
         if (call.method == "as_s" || call.method == "as_n" || call.method.starts_with("as_"))
             && call.args.is_empty()
         {
+            // Keep as_s / as_n (not snake-cased away) — AWS AttributeValue API.
+            let m = if call.method.starts_with("as_") {
+                call.method.clone()
+            } else {
+                to_snake(&call.method)
+            };
             return format!(
                 "{}.{}().map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{{:?}}\", e)))?",
                 recv_str,
-                to_snake(&call.method)
+                m
             );
         }
         // A trait method invoked on a chained receiver is async + fallible.
@@ -1409,16 +1421,44 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     }
 
     // Struct-shaped target with method "new" or empty → Type::new(args)
-    // Handle dotted paths: `sqlx.Query` → check if `Query` is a known struct
-    let effective_target = if call.target.contains('.') {
-        call.target.split('.').last().unwrap_or(&call.target).to_string()
+    // Handle dotted paths: `sqlx.Query` → prefer stub crate matching the prefix
+    // so `sqlx.Query` does not resolve to an unrelated SDK type also named Query.
+    let (module_prefix, effective_target) = if call.target.contains('.') {
+        let mut parts = call.target.splitn(2, '.');
+        let m = parts.next().unwrap_or("").to_string();
+        let t = parts.next().unwrap_or(&call.target).to_string();
+        (Some(m), t)
     } else {
-        call.target.clone()
+        (None, call.target.clone())
     };
-    if ctx.is_struct_target(&effective_target) {
+    if ctx.is_struct_target(&effective_target)
+        || ctx.stub_type_crate.contains_key(&effective_target)
+        || module_prefix
+            .as_ref()
+            .map(|m| {
+                ctx.stub_type_crate.values().any(|(c, _)| {
+                    c.replace('-', "_") == *m || c.as_str() == m
+                })
+            })
+            .unwrap_or(false)
+    {
         let method = if call.method.is_empty() { "new" } else { &call.method };
-        // Qualify with crate path if type is from a stub
-        let qualified = if let Some((crate_name, original_name)) = ctx.stub_type_crate.get(&effective_target) {
+        // Qualify with crate path if type is from a stub — prefer prefix match.
+        let qualified = if let Some(prefix) = &module_prefix {
+            // Find stub entry whose crate matches the VEIL module prefix.
+            // Never fall back to a different crate's same leaf name (e.g. AWS
+            // `Query` must not steal `sqlx.Query`).
+            let by_prefix = ctx.stub_type_crate.iter().find(|(name, (crate_name, _))| {
+                (*name == &effective_target || name.ends_with(&format!("::{effective_target}")))
+                    && (crate_name.replace('-', "_") == *prefix || crate_name.as_str() == prefix)
+            });
+            if let Some((_, (crate_name, original_name))) = by_prefix {
+                format!("{}::{}", crate_name, original_name)
+            } else {
+                // Unloaded stub or no matching crate: keep author module path.
+                format!("{}::{}", prefix, effective_target)
+            }
+        } else if let Some((crate_name, original_name)) = ctx.stub_type_crate.get(&effective_target) {
             format!("{}::{}", crate_name, original_name)
         } else {
             effective_target.clone()
