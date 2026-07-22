@@ -488,9 +488,9 @@ fn gen_local_harness_main(
     ));
     out.push_str("use std::sync::Arc;\n");
     out.push_str(&format!(
-        "use axum::{{Router, Json, extract::State, {query_import}routing::{{{routing_imports}}}, http::StatusCode}};\n"
+        "use axum::{{Router, Json, extract::State, {query_import}routing::{{{routing_imports}}}, http::{{HeaderMap, StatusCode}}, middleware::{{from_fn, Next}}, response::Response, extract::Request}};\n"
     ));
-    out.push_str("use tower_http::cors::CorsLayer;\n");
+    out.push_str("use tower_http::cors::{{Any, CorsLayer}};\n");
     out.push_str("use uuid::Uuid;\n");
     out.push_str("use serde_json::Value;\n");
     for m in modules {
@@ -748,7 +748,10 @@ fn gen_local_harness_main(
             out.push_str(&format!("        .route(\"{path}\", {chained})\n"));
         }
         out.push_str("        .route(\"/health\", get(|| async { \"ok\" }))\n");
-        out.push_str("        .layer(CorsLayer::permissive())\n");
+        // Review Issue 7: no blanket permissive CORS; optional CORS_ORIGINS env.
+        out.push_str("        .layer(veil_cors_layer())\n");
+        // Review Issue 7: API key gate when VEIL_API_KEY / RELAY_API_KEY set.
+        out.push_str("        .layer(from_fn(veil_api_key_middleware))\n");
         out.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
     }
 
@@ -774,7 +777,15 @@ fn gen_local_harness_main(
             }
             let path_params = path_param_names(&path);
             let needs_path = !path_params.is_empty();
-            let needs_body = method == "post" || method == "put";
+            let has_non_path_inputs = svc.inputs.iter().any(|i| {
+                !registry.field_is_dependency(i)
+                    && !path_params.iter().any(|p| p == &to_snake(&i.name))
+            });
+            // DELETE with extra inputs (e.g. tenant_id) uses JSON body.
+            let needs_body = method == "post"
+                || method == "put"
+                || method == "patch"
+                || (method == "delete" && has_non_path_inputs);
             let needs_query =
                 harness_handler_needs_query(svc, registry, &method, &path, &path_params);
 
@@ -796,27 +807,19 @@ fn gen_local_harness_main(
                     )
                 }
             };
-            if needs_path && needs_body {
-                out.push_str(&format!(
-                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
-                ));
-            } else if needs_path {
-                out.push_str(&format!(
-                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
-                ));
-            } else if needs_body {
-                out.push_str(&format!(
-                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
-                ));
-            } else if needs_query {
-                out.push_str(&format!(
-                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    Query(q): Query<std::collections::HashMap<String, String>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
-                ));
+            let query_extractor = if needs_query {
+                "\n    Query(q): Query<std::collections::HashMap<String, String>>,"
             } else {
-                out.push_str(&format!(
-                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n) -> Result<Json<Value>, StatusCode> {{\n"
-                ));
-            }
+                ""
+            };
+            let body_extractor = if needs_body {
+                "\n    Json(body): Json<Value>,"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}{query_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
+            ));
 
             // Only pass &deps when the application fn actually takes deps
             // (dependency-role inputs or body references ports).
@@ -889,8 +892,96 @@ fn gen_local_harness_main(
     }
 
     out.push_str(harness_domain_error_status_helper());
+    out.push_str(harness_auth_cors_helpers());
     out.push_str(harness_body_dt_helper());
     out
+}
+
+/// API key middleware + CORS policy for dual-loop harness (review Issues 7).
+fn harness_auth_cors_helpers() -> &'static str {
+    r#"
+/// When `VEIL_API_KEY` or `RELAY_API_KEY` is set, require matching
+/// `X-Api-Key` or `Authorization: Bearer <key>`. Health stays open via route order
+/// only when middleware is not applied to it — this middleware runs on the whole
+/// router; allow `/health` by path.
+async fn veil_api_key_middleware(
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if request.uri().path() == "/health" {
+        return Ok(next.run(request).await);
+    }
+    let expected = std::env::var("VEIL_API_KEY")
+        .or_else(|_| std::env::var("RELAY_API_KEY"))
+        .ok()
+        .filter(|s| !s.is_empty());
+    if let Some(key) = expected {
+        let header_key = headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let bearer = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()));
+        let ok = header_key.as_deref() == Some(key.as_str())
+            || bearer.as_deref() == Some(key.as_str());
+        if !ok {
+            eprintln!("warn: unauthorized — set X-Api-Key or Authorization: Bearer");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    } else if std::env::var("VEIL_REQUIRE_AUTH").ok().as_deref() == Some("1") {
+        eprintln!("error: VEIL_REQUIRE_AUTH=1 but VEIL_API_KEY unset");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(request).await)
+}
+
+/// Restrict CORS: `CORS_ORIGINS=http://a,http://b` or localhost defaults (not *).
+fn veil_cors_layer() -> CorsLayer {
+    use axum::http::{HeaderValue, Method};
+    if let Ok(raw) = std::env::var("CORS_ORIGINS") {
+        let origins: Vec<HeaderValue> = raw
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        if !origins.is_empty() {
+            return CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::PATCH,
+                    Method::DELETE,
+                    Method::OPTIONS,
+                ])
+                .allow_headers(Any);
+        }
+    }
+    let local = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ];
+    let origins: Vec<HeaderValue> = local.iter().filter_map(|s| s.parse().ok()).collect();
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(Any)
+}
+"#
 }
 
 /// Map domain errors to HTTP statuses for the local dual-loop harness.
@@ -917,8 +1008,8 @@ fn veil_domain_error_status(e: impl std::fmt::Display) -> StatusCode {
 "#
 }
 
-/// Whether a GET handler needs `Query(q)` — only when it has non-dep inputs
-/// that are not path params (true List/filter endpoints).
+/// Whether a GET handler needs `Query(q)` — non-dep inputs that are not path
+/// params (list filters **or** tenant_id scoping on GET-by-id).
 fn harness_handler_needs_query(
     svc: &Construct,
     registry: &LayerRegistry,
@@ -929,11 +1020,7 @@ fn harness_handler_needs_query(
     if method != "get" {
         return false;
     }
-    // List* or collection GET (no path braces) may take query filters.
-    let is_listish = svc.name.starts_with("List") || !path.contains('{');
-    if !is_listish {
-        return false;
-    }
+    let _ = path; // reserved for future path-only heuristics
     svc.inputs.iter().any(|i| {
         if registry.field_is_dependency(i) {
             return false;
@@ -1791,11 +1878,24 @@ fn gen_struct(
         if field.annotations.iter().any(|a| a.name == "shared") {
             ty = format!("std::sync::Arc<{ty}>");
         }
-        out.push_str(&format!(
-            "    pub {}: {},\n",
-            to_snake(&field.name),
-            ty
-        ));
+        let snake = to_snake(&field.name);
+        // Secrets: never serialize in API responses (still deserialize on create).
+        // `@secret` or common credential field names.
+        let is_secret = field.annotations.iter().any(|a| a.name == "secret")
+            || matches!(
+                snake.as_str(),
+                "auth_password"
+                    | "auth_token"
+                    | "password"
+                    | "secret"
+                    | "api_key"
+                    | "client_secret"
+                    | "private_key"
+            );
+        if is_secret {
+            out.push_str("    #[serde(default, skip_serializing)]\n");
+        }
+        out.push_str(&format!("    pub {snake}: {ty},\n"));
     }
     out.push_str("}\n\n");
 
@@ -4253,6 +4353,22 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         out.push_str("}\n\n");
     }
 
+    // Issue 9: collect domain service names so `HandleX` can thin-wrap `x`.
+    let domain_fn_names: std::collections::HashSet<String> = flows
+        .iter()
+        .filter_map(|flow| {
+            let name = match flow {
+                FlowLike::Flow(f) => f.name.as_str(),
+                FlowLike::Construct(c) => c.name.as_str(),
+            };
+            if name.starts_with("Handle") {
+                None
+            } else {
+                Some(to_snake(name))
+            }
+        })
+        .collect();
+
     for flow in flows {
         let (name, subkind, annotations, inputs, steps) = match flow {
             FlowLike::Flow(f) => (
@@ -4364,6 +4480,38 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         } else {
             infer_flow_return_type(return_expr, steps, &ctx, envelope_routing)
         };
+
+        // Issue 9: HandleListProviders → thin wrap list_providers (no body copy).
+        if let Some(base) = name.strip_prefix("Handle") {
+            let domain_snake = to_snake(base);
+            if domain_fn_names.contains(&domain_snake) {
+                let call_args: Vec<String> = {
+                    let mut a = Vec::new();
+                    if has_deps {
+                        a.push("deps".into());
+                    }
+                    for f in inputs.iter().filter(|f| !registry.field_is_dependency(f)) {
+                        a.push(to_snake(&f.name));
+                    }
+                    a
+                };
+                out.push_str(&format!(
+                    "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",
+                    to_snake(name),
+                    deps_param,
+                    params,
+                    ret_type
+                ));
+                out.push_str(&format!(
+                    "    // Thin wrapper — domain use-case is `{domain_snake}` (review Issue 9).\n"
+                ));
+                out.push_str(&format!(
+                    "    {domain_snake}({}).await\n}}\n\n",
+                    call_args.join(", ")
+                ));
+                continue;
+            }
+        }
 
         out.push_str(&format!(
             "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",
