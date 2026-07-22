@@ -1377,47 +1377,55 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 
     // Built-in type-level method translations.
     // These are VEIL's short type names with associated methods that map
-    // to Rust idioms. No framework knowledge — just language primitives.
-    // ONLY apply these if the target is NOT a known domain struct (e.g., an entity
-    // named "List" should NOT be translated as Vec::new()).
-    if !call.method.is_empty() && !ctx.is_struct_target(&call.target) {
-        let translated = match (call.target.as_str(), call.method.as_str()) {
-            ("Dt", "now") => Some("Utc::now()".to_string()),
-            ("Uuid", "new_v4") => Some("Uuid::new_v4()".to_string()),
-            ("Map", "new") => Some("HashMap::new()".to_string()),
-            ("List", "new") => Some("Vec::new()".to_string()),
-            ("Opt", "empty") | ("Opt", "none") => Some("None".to_string()),
-            ("Opt", "some") | ("Opt", "of") if call.args.len() == 1 => {
-                Some(format!("Some({})", expr_to_rust(&call.args[0], ctx)))
+    // to Rust idioms. Language primitives always win over stub types that
+    // happen to share a name (e.g. sqlx's `Map` must not steal `Map.new()`).
+    if !call.method.is_empty() {
+        let is_lang_primitive = matches!(
+            call.target.as_str(),
+            "Dt" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id"
+        );
+        if is_lang_primitive || !ctx.is_struct_target(&call.target) {
+            let translated = match (call.target.as_str(), call.method.as_str()) {
+                ("Dt", "now") => Some("Utc::now()".to_string()),
+                ("Uuid", "new_v4") | ("Id", "new_v4") => Some("Uuid::new_v4()".to_string()),
+                ("Map", "new") => Some("HashMap::new()".to_string()),
+                ("List", "new") => Some("Vec::new()".to_string()),
+                ("Opt", "empty") | ("Opt", "none") => Some("None".to_string()),
+                ("Opt", "some") | ("Opt", "of") if call.args.len() == 1 => {
+                    Some(format!("Some({})", expr_to_rust(&call.args[0], ctx)))
+                }
+                ("Env", "get_or") if call.args.len() == 2 => {
+                    let var = expr_to_rust(&call.args[0], ctx);
+                    let default = expr_to_rust(&call.args[1], ctx);
+                    Some(format!(
+                        "std::env::var({}).unwrap_or_else(|_| {}.to_string())",
+                        var, default
+                    ))
+                }
+                ("Env", "get_opt") if call.args.len() == 1 => {
+                    let var = expr_to_rust(&call.args[0], ctx);
+                    Some(format!("std::env::var({}).ok()", var))
+                }
+                ("Json", "parse") if call.args.len() == 1 => {
+                    let arg = expr_to_rust(&call.args[0], ctx);
+                    Some(format!("serde_json::from_str(&{})?", arg))
+                }
+                ("Json", "stringify") if call.args.len() == 1 => {
+                    let arg = expr_to_rust(&call.args[0], ctx);
+                    Some(format!("serde_json::to_string(&{})?", arg))
+                }
+                ("Str", "from_bytes") if call.args.len() == 1 => {
+                    let arg = expr_to_rust(&call.args[0], ctx);
+                    Some(format!("String::from_utf8({})?", arg))
+                }
+                // Filesystem / process IO must NOT live in the engine (MISSION: zero
+                // domain knowledge). Author adapters against ports or .stub crates
+                // (e.g. runtime/src/stubs/*_fs.stub + real crate), never Fs/Shell builtins.
+                _ => None,
+            };
+            if let Some(result) = translated {
+                return result;
             }
-            ("Env", "get_or") if call.args.len() == 2 => {
-                let var = expr_to_rust(&call.args[0], ctx);
-                let default = expr_to_rust(&call.args[1], ctx);
-                Some(format!("std::env::var({}).unwrap_or_else(|_| {}.to_string())", var, default))
-            }
-            ("Env", "get_opt") if call.args.len() == 1 => {
-                let var = expr_to_rust(&call.args[0], ctx);
-                Some(format!("std::env::var({}).ok()", var))
-            }
-            ("Json", "parse") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("serde_json::from_str(&{})?", arg))
-            }
-            ("Json", "stringify") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("serde_json::to_string(&{})?", arg))
-            }
-            ("Str", "from_bytes") if call.args.len() == 1 => {
-                let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("String::from_utf8({})?", arg))
-            }
-            // Filesystem / process IO must NOT live in the engine (MISSION: zero
-            // domain knowledge). Author adapters against ports or .stub crates
-            // (e.g. runtime/src/stubs/*_fs.stub + real crate), never Fs/Shell builtins.
-            _ => None,
-        };
-        if let Some(result) = translated {
-            return result;
         }
     }
 

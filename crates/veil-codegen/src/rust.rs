@@ -688,23 +688,39 @@ fn gen_local_harness_main(
             if !seen_method_path.insert((method.clone(), path.clone())) {
                 continue;
             }
-            let needs_path_id = path.contains("{id}")
-                || (method == "get" && !svc.name.starts_with("List") && !path.contains('{'))
-                || method == "put"
-                || method == "delete";
-            let needs_path_id = needs_path_id && path.contains('{');
+            let path_params = path_param_names(&path);
+            let needs_path = !path_params.is_empty();
             let needs_body = method == "post" || method == "put";
 
             // Function signature
             // List* GET: Query params (not random Uuid defaults — that silently broke local APIs).
-            let is_list_get = method == "get" && (svc.name.starts_with("List") || !path.contains('{'));
-            if needs_path_id && needs_body {
+            let is_list_get =
+                method == "get" && (svc.name.starts_with("List") || !path.contains('{'));
+            // Path extractors: single param → Path(String); multi → Path<(String, …)>.
+            let path_extractor = match path_params.len() {
+                0 => String::new(),
+                1 => format!(
+                    "\n    axum::extract::Path({p}): axum::extract::Path<String>,",
+                    p = path_params[0]
+                ),
+                n => {
+                    let names = path_params.join(", ");
+                    let tys = std::iter::repeat("String")
+                        .take(n)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "\n    axum::extract::Path(({names})): axum::extract::Path<({tys})>,"
+                    )
+                }
+            };
+            if needs_path && needs_body {
                 out.push_str(&format!(
-                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(id): axum::extract::Path<String>,\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}\n    Json(body): Json<Value>,\n) -> Result<Json<Value>, StatusCode> {{\n"
                 ));
-            } else if needs_path_id {
+            } else if needs_path {
                 out.push_str(&format!(
-                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,\n    axum::extract::Path(id): axum::extract::Path<String>,\n) -> Result<Json<Value>, StatusCode> {{\n"
+                    "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
                 ));
             } else if needs_body {
                 out.push_str(&format!(
@@ -744,15 +760,14 @@ fn gen_local_harness_main(
                 let field = to_snake(&input.name);
                 let rust_type = crate::rust::type_to_rust(&input.type_expr);
 
-                // If this is the 'id' field and we have path extraction, use that
-                if field == "id" && needs_path_id {
+                // Path params from @route `{name}` segments.
+                if path_params.iter().any(|p| p == &field) {
                     if rust_type == "Uuid" {
                         out.push_str(&format!(
-                            "    let {field} = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;\n"
+                            "    let {field} = {field}.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;\n"
                         ));
-                    } else {
-                        out.push_str(&format!("    let {field} = id.clone();\n"));
                     }
+                    // else: already String from Path extractor
                 } else if is_list_get {
                     // GET List*: query string ?tenant_id=… (required for Uuid)
                     if rust_type == "Uuid" {
@@ -817,6 +832,22 @@ pub struct IrRestRoute {
 
 fn has_route_annotation(svc: &Construct) -> bool {
     svc.annotations.iter().any(|a| a.name == "route")
+}
+
+/// Extract `{param}` names from an HTTP path in order.
+fn path_param_names(path: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = path;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find('}') {
+            names.push(after[..end].to_string());
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    names
 }
 
 /// Fns that become HTTP endpoints in the harness.
