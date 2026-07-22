@@ -73,6 +73,10 @@ pub struct GenCtx {
     /// else `to_snake(Trait)`. Shared by application emission, harness wiring,
     /// and port-call lowering so all three agree.
     pub dep_fields: HashMap<String, String>,
+    /// Locals whose first binding must be `let mut` (reassigned, field-written,
+    /// or receiver of a known mutating method). Plain `Assign` without this
+    /// set emits immutable `let`. Explicit `mut x = …` always uses `let mut`.
+    pub mut_locals: HashSet<String>,
 }
 
 impl GenCtx {
@@ -97,6 +101,7 @@ impl GenCtx {
             expected_return_rust: None,
             defaultable_types: HashSet::new(),
             dep_fields: HashMap::new(),
+            mut_locals: HashSet::new(),
         }
     }
 
@@ -720,10 +725,23 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             } else if ctx.is_local(name) {
                 // Already-declared local (e.g. a `mut` var) → reassignment, no `let`.
                 format!("{} = {}", name, rhs_str)
-            } else if let Some(ty) = ty_ann {
-                format!("let {}: {} = {}", name, crate::rust::type_to_rust(ty), rhs_str)
             } else {
-                format!("let mut {} = {}", name, rhs_str)
+                let mut_kw = if ctx.mut_locals.contains(name.as_str()) {
+                    "mut "
+                } else {
+                    ""
+                };
+                if let Some(ty) = ty_ann {
+                    format!(
+                        "let {}{}: {} = {}",
+                        mut_kw,
+                        name,
+                        crate::rust::type_to_rust(ty),
+                        rhs_str
+                    )
+                } else {
+                    format!("let {}{} = {}", mut_kw, name, rhs_str)
+                }
             }
         }
         Expr::MutAssign(name, rhs, ty_ann) => {
@@ -909,6 +927,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 for name in pattern_binding_names(&arm.pattern) {
                     arm_ctx.locals.insert(name);
                 }
+                arm_ctx.mut_locals.extend(analyze_mut_locals(&arm.body));
                 let body_str = if arm.body.len() == 1 {
                     expr_to_rust(&arm.body[0], &arm_ctx)
                 } else {
@@ -947,6 +966,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             if let Some(idx) = index {
                 body_ctx.locals.insert(idx.clone());
             }
+            body_ctx.mut_locals.extend(analyze_mut_locals(body));
             let mut body_lines = Vec::new();
             for e in body {
                 let line = expr_to_rust(e, &body_ctx);
@@ -2045,7 +2065,240 @@ impl GenCtx {
             expected_return_rust: self.expected_return_rust.clone(),
             defaultable_types: self.defaultable_types.clone(),
             dep_fields: self.dep_fields.clone(),
+            mut_locals: self.mut_locals.clone(),
         }
+    }
+}
+
+/// Names that need `let mut` on first bind: explicit `mut`, reassignment,
+/// field write (`x.f = …`), or receiver of a known mutating method (`x.push`).
+pub fn analyze_mut_locals(body: &[Expr]) -> HashSet<String> {
+    let mut needs = HashSet::new();
+    let mut bound = HashSet::new();
+    for e in body {
+        walk_mut_needs(e, &mut needs, &mut bound);
+    }
+    needs
+}
+
+/// Union of mut-local needs across flow steps (locals persist across steps).
+pub fn analyze_mut_locals_in_steps(steps: &[FlowStep]) -> HashSet<String> {
+    let mut needs = HashSet::new();
+    let mut bound = HashSet::new();
+    for step in steps {
+        match step {
+            FlowStep::Step(s) => {
+                for e in &s.body {
+                    walk_mut_needs(e, &mut needs, &mut bound);
+                }
+            }
+            FlowStep::Parallel(par) => {
+                for s in &par.steps {
+                    for e in &s.body {
+                        walk_mut_needs(e, &mut needs, &mut bound);
+                    }
+                }
+            }
+            FlowStep::Match(m) => {
+                walk_mut_needs(&m.expr, &mut needs, &mut bound);
+                for arm in &m.arms {
+                    for e in &arm.body {
+                        walk_mut_needs(e, &mut needs, &mut bound);
+                    }
+                }
+            }
+        }
+    }
+    needs
+}
+
+/// Collection / builder methods that require `&mut self` in Rust.
+const MUTATING_METHODS: &[&str] = &[
+    "push",
+    "insert",
+    "extend",
+    "append",
+    "remove",
+    "clear",
+    "pop",
+    "retain",
+    "truncate",
+    "resize",
+    "swap_remove",
+    "drain",
+    "entry",
+    "get_mut",
+    "or_insert",
+    "or_insert_with",
+    "or_default",
+    "and_modify",
+];
+
+fn walk_mut_needs(expr: &Expr, needs: &mut HashSet<String>, bound: &mut HashSet<String>) {
+    match expr {
+        Expr::MutAssign(name, rhs, _) => {
+            walk_mut_needs(rhs, needs, bound);
+            needs.insert(name.clone());
+            bound.insert(name.clone());
+        }
+        Expr::Assign(name, rhs, _) => {
+            walk_mut_needs(rhs, needs, bound);
+            if let Some((base, _)) = name.split_once('.') {
+                // Field write on a local → base must be mut.
+                needs.insert(base.to_string());
+            } else if bound.contains(name) {
+                needs.insert(name.clone());
+            } else {
+                bound.insert(name.clone());
+            }
+        }
+        Expr::Call(call) => {
+            for a in &call.args {
+                walk_mut_needs(a, needs, bound);
+            }
+            if let Some(recv) = &call.receiver {
+                walk_mut_needs(recv, needs, bound);
+            }
+            // `out.insert(...)` / `out.push(...)` — receiver needs mut.
+            let method = call.method.trim_end_matches(['!', '?']);
+            if !method.is_empty() && MUTATING_METHODS.contains(&method) {
+                if !call.target.is_empty() && !call.target.contains('.') {
+                    needs.insert(call.target.clone());
+                } else if let Some(recv) = &call.receiver {
+                    if let Expr::Ident(n) = recv.as_ref() {
+                        needs.insert(n.clone());
+                    }
+                }
+            }
+        }
+        Expr::IfExpr(ie) => {
+            walk_mut_needs(&ie.condition, needs, bound);
+            for e in &ie.then_body {
+                walk_mut_needs(e, needs, bound);
+            }
+            if let Some(eb) = &ie.else_body {
+                for e in eb {
+                    walk_mut_needs(e, needs, bound);
+                }
+            }
+        }
+        Expr::IfLet {
+            expr: scrut,
+            then_body,
+            else_body,
+            ..
+        } => {
+            walk_mut_needs(scrut, needs, bound);
+            for e in then_body {
+                walk_mut_needs(e, needs, bound);
+            }
+            if let Some(eb) = else_body {
+                for e in eb {
+                    walk_mut_needs(e, needs, bound);
+                }
+            }
+        }
+        Expr::ForLoop { iterable, body, .. } => {
+            walk_mut_needs(iterable, needs, bound);
+            for e in body {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::WhileLoop { condition, body, .. } => {
+            walk_mut_needs(condition, needs, bound);
+            for e in body {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::WhileLet { expr: scrut, body, .. } => {
+            walk_mut_needs(scrut, needs, bound);
+            for e in body {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::Loop(body) => {
+            for e in body {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::Match(scrut, arms) => {
+            walk_mut_needs(scrut, needs, bound);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    walk_mut_needs(g, needs, bound);
+                }
+                for e in &arm.body {
+                    walk_mut_needs(e, needs, bound);
+                }
+            }
+        }
+        Expr::Return(inner)
+        | Expr::Await(inner)
+        | Expr::Try(inner)
+        | Expr::Cast(inner, _)
+        | Expr::FieldAccess(inner, _) => {
+            walk_mut_needs(inner, needs, bound);
+        }
+        Expr::UnaryOp(u) => walk_mut_needs(&u.expr, needs, bound),
+        Expr::BinaryOp(bin) => {
+            walk_mut_needs(&bin.left, needs, bound);
+            walk_mut_needs(&bin.right, needs, bound);
+        }
+        Expr::Index(base, idx) => {
+            walk_mut_needs(base, needs, bound);
+            walk_mut_needs(idx, needs, bound);
+        }
+        Expr::StructLit(_, fields) => {
+            for (_, v) in fields {
+                walk_mut_needs(v, needs, bound);
+            }
+        }
+        Expr::StructUpdate { fields, base, .. } => {
+            for (_, v) in fields {
+                walk_mut_needs(v, needs, bound);
+            }
+            walk_mut_needs(base, needs, bound);
+        }
+        Expr::ArrayLit(items) | Expr::Tuple(items) => {
+            for e in items {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::Closure { body, .. } => {
+            for e in body {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::Action(a) => {
+            for e in &a.args {
+                walk_mut_needs(e, needs, bound);
+            }
+            for (_, v) in &a.named_args {
+                walk_mut_needs(v, needs, bound);
+            }
+            if let Some(c) = &a.condition {
+                walk_mut_needs(c, needs, bound);
+            }
+        }
+        Expr::StringInterp(parts) => {
+            for p in parts {
+                if let StringPart::Expr(e) = p {
+                    walk_mut_needs(e, needs, bound);
+                }
+            }
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                walk_mut_needs(s, needs, bound);
+            }
+            if let Some(e) = end {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::LetPattern(_, rhs, _) => {
+            walk_mut_needs(rhs, needs, bound);
+        }
+        _ => {}
     }
 }
 

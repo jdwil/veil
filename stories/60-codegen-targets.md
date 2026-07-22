@@ -199,3 +199,30 @@ codegen_tests locks Bus/AuthService + strategy fields for onboarding.
 
 **Done notes:** Dropped unused imports in `rust.rs` / `template.rs`; CLI stub
 loop `_id`. `cargo check -p veil-codegen -p veil-cli` clean.
+
+---
+
+## GEN-010: Local mutability analysis (`let` vs `let mut`)
+
+**Status:** Done · **Priority:** P2  
+**As an** author reviewing generated Rust  
+**I want** bindings immutable unless actually mutated  
+**So that** the dual-loop quality bar is green without 50+ unused-mut warnings
+
+**Acceptance criteria:**
+
+- Plain `x = expr` emits `let x = …` when `x` is only read afterward
+- Emits `let mut x` when later: reassigned, field-written (`x.f = …`), explicit
+  `mut x = …`, or receiver of a known mutating method (`push`/`insert`/…)
+- Analysis spans flow steps (locals persist across steps) and nested if/for/match
+- Regression test covers read-only vs push vs field-write
+- Relay `cargo check -p relay` has zero `variable does not need to be mutable`
+
+**Touch:** `expr.rs` (`analyze_mut_locals*`, Assign emission), body sites in
+`rust.rs`
+
+**Mission impact:** Generated-code quality bar for product packages (relay)
+
+**Done notes:** `GenCtx.mut_locals` + `analyze_mut_locals` / `_in_steps`;
+`MUTATING_METHODS` set; wired into services, adapters, domain methods, layer
+fns, saga steps. Relay: 58 unused-mut warnings → 0.

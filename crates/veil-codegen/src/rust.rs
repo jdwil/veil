@@ -2041,6 +2041,7 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
             ctx.local_types
                 .insert(p.name.clone(), type_to_rust(&p.type_expr));
         }
+        ctx.mut_locals = crate::expr::analyze_mut_locals(&func.body);
 
         let mut has_explicit_ret = false;
         for expr in &func.body {
@@ -2734,6 +2735,7 @@ futures = "0.3"
             // Track the trait name (unboxed) so method calls resolve to .await?.
             ctx.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names));
         }
+        ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
 
         let params = f
             .params
@@ -3187,6 +3189,7 @@ fn gen_impls(
                 for p in &mimpl.params {
                     ctx.locals.insert(p.clone());
                 }
+                ctx.mut_locals = crate::expr::analyze_mut_locals(&mimpl.body);
                 // @env annotation fields are available as self.field in the body.
                 ctx.in_method = true;
                 for ann in &c.annotations {
@@ -4236,6 +4239,9 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             ret_type
         ));
 
+        // GEN-010: only `let mut` when the binding is actually mutated later.
+        ctx.mut_locals = crate::expr::analyze_mut_locals_in_steps(steps);
+
         for step in steps {
             match step {
                 FlowStep::Step(s) => {
@@ -4482,7 +4488,7 @@ fn emit_step_method(
     returns_state: bool,
     step_method: Option<&veil_ir::ast::Method>,
     trait_names: &std::collections::HashSet<String>,
-    ctx: &crate::expr::GenCtx,
+    base_ctx: &crate::expr::GenCtx,
 ) {
     use crate::expr::expr_to_rust;
 
@@ -4523,8 +4529,15 @@ fn emit_step_method(
         "    async fn {}(&self{}{}) -> Result<{}, DomainError> {{\n",
         method, sep, params_str, ret_inner
     ));
+    let mut ctx = base_ctx.clone_for_inference();
+    ctx.mut_locals = crate::expr::analyze_mut_locals(body);
     for expr in body {
-        out.push_str(&format!("        {};\n", expr_to_rust(expr, ctx)));
+        out.push_str(&format!("        {};\n", expr_to_rust(expr, &ctx)));
+        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = expr {
+            if !name.contains('.') {
+                ctx.locals.insert(name.clone());
+            }
+        }
     }
     if returns_state {
         // Return the threaded state param if present; else unit Ok.

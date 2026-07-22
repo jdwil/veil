@@ -103,6 +103,47 @@ pkg mini v1
 }
 
 #[test]
+fn immutable_locals_emit_let_not_let_mut() {
+    // GEN-010: plain binds are immutable unless reassigned, field-written, or
+    // receiver of a mutating method (push/insert/…).
+    let layer = "\
+pkg mini v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in top
+  declare
+    fn only_read(items: List<Int>) -> Res!<Int>
+      n = items.len()
+      ret n
+    fn mutates_via_push() -> Res!<List<Int>>
+      out = List.new()
+      out.push(1)
+      ret out
+    fn mutates_via_field() -> Res!<Widget>
+      w = Widget{size: 0}
+      w.size = 1
+      ret w";
+    let app = "sol MiniApp\n  use mini\n  widget Gadget\n    size: Int";
+    let out = generate_with_layer("mini", layer, app);
+    assert!(
+        out.contains("let n = ") && !out.contains("let mut n = "),
+        "read-only local should be immutable let:\n{}",
+        out
+    );
+    assert!(
+        out.contains("let mut out = ") || out.contains("let mut out:"),
+        "push receiver needs mut:\n{}",
+        out
+    );
+    assert!(
+        out.contains("let mut w = ") || out.contains("let mut w:"),
+        "field write needs mut:\n{}",
+        out
+    );
+}
+
+#[test]
 fn guard_enforces_validation() {
     let out = customer_onboarding();
     // The `guard call Email.validate(email), "invalid email"` must propagate an
