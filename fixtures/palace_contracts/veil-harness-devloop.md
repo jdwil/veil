@@ -81,6 +81,11 @@ write_source → gen + cargo check (smoke)
 ## veil.toml Targets
 
 ```toml
+# Optional product policy overrides (after layers; see docs/POLICY_ROLES.md)
+[codegen]
+http_path_prefix = "/api/v1/"
+# bus_strip_prefix = "none"   # clear Handle* strip from bus_handle pack
+
 [[targets]]
 name = "backend"
 package = "wear_test.veil"

@@ -124,6 +124,15 @@ pub struct ProjectConfig {
     /// Parsed fully by `veil_ir::deps`; this field preserves raw TOML for tooling.
     #[serde(default)]
     pub dependencies: Option<toml::Value>,
+    /// Codegen policy overrides (INV-001). Applied by `LayerRegistry::for_veil_file`.
+    ///
+    /// ```toml
+    /// [codegen]
+    /// http_path_prefix = "/api/v1/"
+    /// bus_strip_prefix = "none"
+    /// ```
+    #[serde(default)]
+    pub codegen: Option<veil_ir::CodegenToml>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

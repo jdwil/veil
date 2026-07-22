@@ -11,7 +11,7 @@
 //! which is itself defined on top of the core shapes.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -720,6 +720,38 @@ impl LayerRegistry {
             .is_some_and(|t| t == trait_name)
     }
 
+    /// Apply product `[codegen]` overrides from `veil.toml` (INV-001).
+    ///
+    /// Merge order: **builtin → layers → veil.toml**. Present keys override;
+    /// empty / `"none"` clears optional fields so products can disable layer
+    /// defaults without forking layers.
+    pub fn apply_codegen_overrides(&mut self, o: &crate::deps::CodegenToml) {
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.bus_strip_prefix) {
+            self.bus_policy.strip_name_prefix = v;
+        }
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.auth_service_trait) {
+            self.auth_policy.service_trait = v;
+        }
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_path_prefix) {
+            self.http_name_policy.path_prefix = v;
+        }
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_list_prefix) {
+            self.http_name_policy.list_prefix = v;
+        }
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_get_prefix) {
+            self.http_name_policy.get_prefix = v;
+        }
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_create_prefix) {
+            self.http_name_policy.create_prefix = v;
+        }
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_update_prefix) {
+            self.http_name_policy.update_prefix = v;
+        }
+        if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_delete_prefix) {
+            self.http_name_policy.delete_prefix = v;
+        }
+    }
+
     /// Look up a statement by its source keyword.
     pub fn statement(&self, keyword: &str) -> Option<&StatementSpec> {
         self.statements.iter().find(|s| s.keyword == keyword)
@@ -988,10 +1020,23 @@ impl LayerRegistry {
         None
     }
 
-    /// Load a layer from in-memory content (no `use` dependency resolution).
+    /// Load a layer from in-memory content. Resolves `use` deps via system /
+    /// ancestor layers (same as `load_layer`) so policy packs like
+    /// `rest_english` apply when tests `include_str!` a dependent layer.
     pub fn load_content(&mut self, name: &str, content: &str) -> Result<(), String> {
         if self.layers.iter().any(|l| l == name) {
             return Ok(());
+        }
+        // Resolve `use` deps first (policy packs, foundations).
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        for line in content.lines() {
+            let t = line.trim();
+            if let Some(dep) = t.strip_prefix("use ") {
+                let dep = dep.split_whitespace().next().unwrap_or("").trim();
+                if !dep.is_empty() {
+                    let _ = self.load_layer(dep, &cwd);
+                }
+            }
         }
         self.layers.push(name.to_string());
         let raw = parse_layer_file(content, name)
@@ -1072,6 +1117,10 @@ impl LayerRegistry {
                     }
                 }
             }
+        }
+        // Product veil.toml [codegen] wins over layer policies (INV-001).
+        if let Some(o) = crate::deps::load_codegen_overrides_for(veil_path) {
+            reg.apply_codegen_overrides(&o);
         }
         Ok(reg)
     }
@@ -2943,17 +2992,17 @@ pub fn parse_http_name_policy(content: &str) -> Option<HttpNamePolicy> {
             break;
         }
         if let Some(rest) = t.strip_prefix("list_prefix ") {
-            pol.list_prefix = Some(rest.trim().to_string());
+            pol.list_prefix = Some(normalize_policy_string(rest.trim()));
         } else if let Some(rest) = t.strip_prefix("get_prefix ") {
-            pol.get_prefix = Some(rest.trim().to_string());
+            pol.get_prefix = Some(normalize_policy_string(rest.trim()));
         } else if let Some(rest) = t.strip_prefix("create_prefix ") {
-            pol.create_prefix = Some(rest.trim().to_string());
+            pol.create_prefix = Some(normalize_policy_string(rest.trim()));
         } else if let Some(rest) = t.strip_prefix("update_prefix ") {
-            pol.update_prefix = Some(rest.trim().to_string());
+            pol.update_prefix = Some(normalize_policy_string(rest.trim()));
         } else if let Some(rest) = t.strip_prefix("delete_prefix ") {
-            pol.delete_prefix = Some(rest.trim().to_string());
+            pol.delete_prefix = Some(normalize_policy_string(rest.trim()));
         } else if let Some(rest) = t.strip_prefix("path_prefix ") {
-            pol.path_prefix = Some(rest.trim().to_string());
+            pol.path_prefix = Some(normalize_policy_string(rest.trim()));
         }
     }
     if found {
@@ -2963,23 +3012,34 @@ pub fn parse_http_name_policy(content: &str) -> Option<HttpNamePolicy> {
     }
 }
 
+/// Sentinel stored when a layer says `list_prefix none` (explicit clear).
+const POLICY_CLEAR: &str = "\0clear";
+
+fn normalize_policy_string(p: &str) -> String {
+    let t = p.trim();
+    if t.is_empty() || t == "-" || t.eq_ignore_ascii_case("none") {
+        POLICY_CLEAR.to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+fn resolve_policy_opt(over: &Option<String>, base: &Option<String>) -> Option<String> {
+    match over {
+        None => base.clone(),
+        Some(s) if s == POLICY_CLEAR => None,
+        Some(s) => Some(s.clone()),
+    }
+}
+
 fn merge_http_name_policy(base: &HttpNamePolicy, over: &HttpNamePolicy) -> HttpNamePolicy {
     HttpNamePolicy {
-        list_prefix: over.list_prefix.clone().or_else(|| base.list_prefix.clone()),
-        get_prefix: over.get_prefix.clone().or_else(|| base.get_prefix.clone()),
-        create_prefix: over
-            .create_prefix
-            .clone()
-            .or_else(|| base.create_prefix.clone()),
-        update_prefix: over
-            .update_prefix
-            .clone()
-            .or_else(|| base.update_prefix.clone()),
-        delete_prefix: over
-            .delete_prefix
-            .clone()
-            .or_else(|| base.delete_prefix.clone()),
-        path_prefix: over.path_prefix.clone().or_else(|| base.path_prefix.clone()),
+        list_prefix: resolve_policy_opt(&over.list_prefix, &base.list_prefix),
+        get_prefix: resolve_policy_opt(&over.get_prefix, &base.get_prefix),
+        create_prefix: resolve_policy_opt(&over.create_prefix, &base.create_prefix),
+        update_prefix: resolve_policy_opt(&over.update_prefix, &base.update_prefix),
+        delete_prefix: resolve_policy_opt(&over.delete_prefix, &base.delete_prefix),
+        path_prefix: resolve_policy_opt(&over.path_prefix, &base.path_prefix),
     }
 }
 
@@ -3194,6 +3254,82 @@ pkg bad v1
         let decl = reg.declarations.join("\n");
         assert!(decl.contains("trait Bus"), "Bus missing from declare: {decl}");
         assert!(decl.contains("run_saga"), "run_saga missing: {decl}");
+    }
+
+    #[test]
+    fn rest_english_and_bus_handle_packs_load_via_ddd_use() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        assert!(
+            reg.layers.iter().any(|l| l == "rest_english"),
+            "ddd must pull rest_english: {:?}",
+            reg.layers
+        );
+        assert!(
+            reg.layers.iter().any(|l| l == "bus_handle"),
+            "ddd must pull bus_handle: {:?}",
+            reg.layers
+        );
+        assert_eq!(reg.http_name_policy.list_prefix.as_deref(), Some("List"));
+        assert_eq!(reg.bus_policy.strip_name_prefix.as_deref(), Some("Handle"));
+    }
+
+    #[test]
+    fn rest_rpc_clears_name_derived_prefixes() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer"))
+            .unwrap();
+        reg.load_content("rest_rpc", include_str!("../../../layers/rest_rpc.layer"))
+            .unwrap();
+        assert!(
+            reg.http_name_policy.list_prefix.is_none(),
+            "rest_rpc must clear List: {:?}",
+            reg.http_name_policy
+        );
+        assert!(reg.http_name_policy.path_prefix.is_none());
+    }
+
+    #[test]
+    fn codegen_toml_overrides_layer_policy() {
+        let dir = std::env::temp_dir().join(format!(
+            "veil-codegen-ov-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+name = "app"
+[codegen]
+bus_strip_prefix = "Cmd"
+http_path_prefix = "/api/v2/"
+http_list_prefix = "Fetch"
+"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("main.veil"), "pkg app\n  use ddd\n").unwrap();
+
+        // Load ddd policies then apply project overrides (mirrors for_veil_file tail).
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .unwrap();
+        let o = crate::deps::load_codegen_overrides(&dir)
+            .unwrap()
+            .expect("codegen");
+        reg.apply_codegen_overrides(&o);
+        assert_eq!(reg.bus_policy.strip_name_prefix.as_deref(), Some("Cmd"));
+        assert_eq!(
+            reg.http_name_policy.path_prefix.as_deref(),
+            Some("/api/v2/")
+        );
+        assert_eq!(reg.http_name_policy.list_prefix.as_deref(), Some("Fetch"));
+        // Unset keys leave layer values
+        assert_eq!(reg.http_name_policy.get_prefix.as_deref(), Some("Get"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Regression: `prompt` then comments then `declare` must not swallow declarations

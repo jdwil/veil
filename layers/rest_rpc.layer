@@ -1,0 +1,19 @@
+pkg rest_rpc v1
+  desc "RPC-style REST — no name-derived routes; require role:http_route annotations"
+  author "VEIL"
+
+  # Clear English prefixes so stacked layers cannot leave List/Get/… active.
+  # (http_name_policy "none" = explicit clear; see LayerRegistry merge.)
+  http_name_policy
+    list_prefix none
+    get_prefix none
+    create_prefix none
+    update_prefix none
+    delete_prefix none
+    path_prefix none
+
+  prompt
+    REST pack (rest_rpc):
+    - Name-derived routes are OFF. Every dual-loop HTTP surface must use
+      an annotation with role:http_route (e.g. @route("GET /api/…") from ddd).
+    - Use this pack when handler names are not English REST verbs.

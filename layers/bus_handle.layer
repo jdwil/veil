@@ -1,0 +1,12 @@
+pkg bus_handle v1
+  desc "Bus message keys strip a Handle* prefix (DDD application-service convention)"
+  author "VEIL"
+
+  bus_policy
+    strip_name_prefix Handle
+
+  prompt
+    Bus naming pack (bus_handle):
+    - Handler HandleCreateUser publishes bus type CreateUser (prefix stripped).
+    - Disable in product: veil.toml [codegen] bus_strip_prefix = "none"
+    - Different prefix: bus_strip_prefix = "Cmd" or a forked layer.

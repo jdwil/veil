@@ -41,8 +41,9 @@ veil check examples/di_example.veil
 | `@main` composition into generated main | Working via `di.layer` + rust codegen (`role:main`) |
 | `@dep` / `@pvd` DI graph | Working (INV-001: `role:dependency` / `role:provider`) |
 | `@route` dual-loop REST | Working (`role:http_route`; never hard-coded `"route"`) |
-| Name-derived REST | `http_name_policy` in `ddd` / `rust.layer` |
-| Bus message key strip | `bus_policy.strip_name_prefix` (e.g. Handle) |
+| Name-derived REST | `rest_english` pack (`ddd`/`rust` use it); override via `rest_rpc` or `[codegen]` |
+| Bus message key strip | `bus_handle` pack; `[codegen] bus_strip_prefix` |
+| Product policy knobs | `veil.toml` `[codegen]` (see POLICY_ROLES.md) |
 | Multi-context Bus orchestration | Opt-in when steps have `ctx` refs **and** layer defines routing traits (INV-003) |
 | Smart constructors / timestamps | `rust.layer` `constructor_policy` (INV-002) |
 

@@ -1,0 +1,21 @@
+pkg rest_english v1
+  desc "English name-derived REST (List/Get/Create/Update/Delete → /api/…)"
+  author "VEIL"
+
+  # INV-001: verb prefixes are policy, not engine hardcodes.
+  # Products that want different verbs or paths: use rest_rpc instead,
+  # ship a forked pack, or override via veil.toml [codegen].
+  http_name_policy
+    list_prefix List
+    get_prefix Get
+    create_prefix Create
+    update_prefix Update
+    delete_prefix Delete
+    path_prefix /api/
+
+  prompt
+    REST naming pack (rest_english):
+    - Without role:http_route, service names drive paths:
+      ListX → GET /api/{x}s, GetX → GET /api/{x}s/{id}, CreateX → POST, …
+    - Prefer explicit @route("METHOD /path") when paths differ from English.
+    - Override path root in veil.toml: [codegen] http_path_prefix = "/api/v1/"

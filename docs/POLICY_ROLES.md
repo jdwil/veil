@@ -109,8 +109,11 @@ Placeholders:
 | Layer | Policies / roles |
 |-------|------------------|
 | `di.layer` | dependency, provider, main, secret, shared |
-| `ddd.layer` | bus/auth/http_name/identity; http_route, invariant, adapter_*, strategy; declare Bus/Auth/saga |
-| `rust.layer` | constructor_policy, http_name_policy |
+| `ddd.layer` | `use rest_english` + `use bus_handle`; auth/identity; http_route, invariant, adapter_*, strategy; declare Bus/Auth/saga |
+| `rest_english.layer` | http_name_policy (List/Get/… `/api/`) |
+| `rest_rpc.layer` | clears name-derived REST |
+| `bus_handle.layer` | bus_policy strip `Handle` |
+| `rust.layer` | constructor_policy; `use rest_english` |
 | `harness.layer` | docs for dual-loop roles + bus_policy |
 
 ## What still lives in the engine (acceptable)
@@ -122,54 +125,39 @@ Placeholders:
   matching the declared `Bus` trait surface from the layer (long-term: emit
   from trait methods only)
 
-## Suggested product overrides (not yet implemented)
-
-These are **proposals** — run by maintainers before coding:
+## Product overrides (implemented)
 
 ### A. `veil.toml` `[codegen]` overrides
 
 ```toml
 [codegen]
-# Layer policy merge: product knobs without forking ddd.layer
-bus_strip_prefix = "Handle"          # or "" to disable
-auth_service_trait = "AuthService"   # or omit
+# Applied after layers. Absent keys leave layer policy alone.
+bus_strip_prefix = "Handle"          # "" or "none" clears
+auth_service_trait = "AuthService"
 http_path_prefix = "/api/v1/"
 http_list_prefix = "List"
-# …
+http_get_prefix = "Get"
+http_create_prefix = "Create"
+http_update_prefix = "Update"
+http_delete_prefix = "Delete"
 ```
 
 Merge order: **builtin defaults → layers (load order) → veil.toml**.
 
-### B. Named policy packs as layers
+Wired in `LayerRegistry::for_veil_file` via `apply_codegen_overrides`.
 
-```text
-layers/rest_english.layer   # List/Get/Create… + /api/
-layers/rest_rpc.layer       # no name derive; routes required
-layers/auth_cognito.layer   # auth_policy + strategy defaults
-```
+### B. Named policy packs (shipped)
 
-Products `use rest_english` instead of baking verbs into `ddd`.
+| Layer | Effect |
+|-------|--------|
+| `rest_english` | List/Get/Create/Update/Delete + `/api/` |
+| `rest_rpc` | Clears name-derived prefixes (`none`); require `role:http_route` |
+| `bus_handle` | `strip_name_prefix Handle` |
 
-### C. Annotation alias maps
+`ddd.layer` / `rust.layer` `use rest_english` (+ ddd also `use bus_handle`).
+Products can `use rest_rpc` after ddd (later wins) or set `[codegen]` clears.
 
-```text
-# product.layer
-annotation_alias inject -> dep   # surface @inject, role still dependency
-```
+### C / D (not implemented)
 
-Engine already keys off roles; aliases are a parser/registry convenience.
-
-### D. Per-package `policy` block in `.veil`
-
-```text
-pkg relay v1
-  policy
-    http_path_prefix /api/v1/
-    bus_strip_prefix ""
-```
-
-Useful for multi-tenant monorepos where one package differs.
-
-**Recommendation:** start with **A + B** (toml merge + small policy layers).
-Avoid C until a real product renames annotations. Prefer D only if monorepo
-packages diverge often.
+- Annotation aliases (`inject → dep`) — only if a product renames surfaces.
+- Per-package `policy` block in `.veil` — use `[codegen]` or a pack layer first.

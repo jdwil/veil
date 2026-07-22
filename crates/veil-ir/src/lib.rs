@@ -31,9 +31,10 @@ pub use adapt::{
 };
 pub use deps::{
     adapt_search_paths_for_file, deps_cache_dir, find_project_root, layer_source_in_root,
-    load_package_entry, load_product_deps, missing_package_hint, package_source_in_root,
-    product_provides_use, projects_hub, resolve_dep_root, resolve_dependency_roots,
-    resolve_dependency_roots_for, PackageEntry, ProductDep,
+    load_codegen_overrides, load_codegen_overrides_for, load_package_entry, load_product_deps,
+    missing_package_hint, package_source_in_root, product_provides_use, projects_hub,
+    resolve_dep_root, resolve_dependency_roots, resolve_dependency_roots_for, CodegenToml,
+    PackageEntry, ProductDep,
 };
 pub use ast::*;
 pub use builder::{build_ir, build_ir_with_registry};

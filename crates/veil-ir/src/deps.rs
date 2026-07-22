@@ -10,7 +10,7 @@
 //! Resolved roots are added to adapt package search and layer search so
 //! `use designkit` works without relying only on ambient sibling discovery.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -59,6 +59,93 @@ struct VeilTomlFile {
     package: Option<PackageToml>,
     #[serde(default)]
     dependencies: BTreeMap<String, DepToml>,
+    /// Product codegen policy overrides (INV-001). Applied after layers load.
+    #[serde(default)]
+    codegen: Option<CodegenToml>,
+}
+
+/// `[codegen]` section in `veil.toml` — product knobs over layer policies.
+///
+/// Absent keys leave layer policy alone. Empty string or `"none"` clears an
+/// optional field (e.g. disable bus strip prefix without forking ddd.layer).
+///
+/// ```toml
+/// [codegen]
+/// bus_strip_prefix = "Handle"
+/// auth_service_trait = "AuthService"
+/// http_path_prefix = "/api/v1/"
+/// http_list_prefix = "List"
+/// http_get_prefix = "Get"
+/// http_create_prefix = "Create"
+/// http_update_prefix = "Update"
+/// http_delete_prefix = "Delete"
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodegenToml {
+    #[serde(default)]
+    pub bus_strip_prefix: Option<String>,
+    #[serde(default)]
+    pub auth_service_trait: Option<String>,
+    #[serde(default)]
+    pub http_path_prefix: Option<String>,
+    #[serde(default)]
+    pub http_list_prefix: Option<String>,
+    #[serde(default)]
+    pub http_get_prefix: Option<String>,
+    #[serde(default)]
+    pub http_create_prefix: Option<String>,
+    #[serde(default)]
+    pub http_update_prefix: Option<String>,
+    #[serde(default)]
+    pub http_delete_prefix: Option<String>,
+}
+
+impl CodegenToml {
+    /// True when at least one override key was present in toml.
+    pub fn is_empty(&self) -> bool {
+        self.bus_strip_prefix.is_none()
+            && self.auth_service_trait.is_none()
+            && self.http_path_prefix.is_none()
+            && self.http_list_prefix.is_none()
+            && self.http_get_prefix.is_none()
+            && self.http_create_prefix.is_none()
+            && self.http_update_prefix.is_none()
+            && self.http_delete_prefix.is_none()
+    }
+
+    /// Normalize a optional string field: empty / `-` / `none` → clear (None).
+    pub fn normalize_opt(s: &Option<String>) -> Option<Option<String>> {
+        match s {
+            None => None, // key absent — do not override
+            Some(v) => {
+                let t = v.trim();
+                if t.is_empty() || t == "-" || t.eq_ignore_ascii_case("none") {
+                    Some(None) // explicit clear
+                } else {
+                    Some(Some(t.to_string()))
+                }
+            }
+        }
+    }
+}
+
+/// Load `[codegen]` from a product root’s `veil.toml` (None if missing/empty).
+pub fn load_codegen_overrides(project_root: &Path) -> Result<Option<CodegenToml>, String> {
+    let toml_path = project_root.join("veil.toml");
+    if !toml_path.is_file() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&toml_path)
+        .map_err(|e| format!("cannot read {}: {e}", toml_path.display()))?;
+    let parsed: VeilTomlFile =
+        toml::from_str(&content).map_err(|e| format!("veil.toml parse error: {e}"))?;
+    Ok(parsed.codegen.filter(|c| !c.is_empty()))
+}
+
+/// Walk from a `.veil` path to project root and load `[codegen]` if present.
+pub fn load_codegen_overrides_for(veil_path: &Path) -> Option<CodegenToml> {
+    let root = find_project_root(veil_path)?;
+    load_codegen_overrides(&root).ok().flatten()
 }
 
 /// `[package]` entry in veil.toml (R21).
@@ -549,6 +636,43 @@ mylib = {{ path = "/tmp/mylib", use = "lib" }}
         );
         let lib = deps.iter().find(|d| d.use_name == "lib").unwrap();
         assert!(lib.path.is_some());
+    }
+
+    #[test]
+    fn parse_codegen_overrides() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+name = "app"
+[codegen]
+bus_strip_prefix = "Cmd"
+auth_service_trait = "AuthService"
+http_path_prefix = "/api/v1/"
+http_list_prefix = "List"
+"#,
+        )
+        .unwrap();
+        let o = load_codegen_overrides(&dir).unwrap().expect("codegen");
+        assert_eq!(o.bus_strip_prefix.as_deref(), Some("Cmd"));
+        assert_eq!(o.auth_service_trait.as_deref(), Some("AuthService"));
+        assert_eq!(o.http_path_prefix.as_deref(), Some("/api/v1/"));
+        assert_eq!(o.http_list_prefix.as_deref(), Some("List"));
+        assert!(o.http_get_prefix.is_none());
+    }
+
+    #[test]
+    fn codegen_none_string_normalizes_to_clear() {
+        assert_eq!(
+            CodegenToml::normalize_opt(&Some("none".into())),
+            Some(None)
+        );
+        assert_eq!(CodegenToml::normalize_opt(&Some("".into())), Some(None));
+        assert_eq!(
+            CodegenToml::normalize_opt(&Some("Handle".into())),
+            Some(Some("Handle".into()))
+        );
+        assert_eq!(CodegenToml::normalize_opt(&None), None);
     }
 
     #[test]

@@ -2,27 +2,18 @@ pkg ddd v1
   desc "Domain-Driven Design abstraction layer"
   author "VEIL"
 
+  # Policy packs (INV-001) — override with rest_rpc / veil.toml [codegen] / forks.
+  use rest_english
+  use bus_handle
+
   # INV-006: FK / identity conventions (opt-in; off without this block)
   identity_policy
     ref_suffix _id
     identity_field id
 
-  # Bus message names: optional strip of a layer-chosen prefix (not engine-hardcoded).
-  bus_policy
-    strip_name_prefix Handle
-
   # Local AllowAllAuth when this trait is present (RT-008); host swaps via strategy.
   auth_policy
     service_trait AuthService
-
-  # Name-derived REST when no role:http_route annotation (also in rust.layer).
-  http_name_policy
-    list_prefix List
-    get_prefix Get
-    create_prefix Create
-    update_prefix Update
-    delete_prefix Delete
-    path_prefix /api/
 
   construct Context
     kw ctx
