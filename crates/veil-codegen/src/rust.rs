@@ -748,9 +748,8 @@ fn gen_local_harness_main(
             out.push_str(&format!("        .route(\"{path}\", {chained})\n"));
         }
         out.push_str("        .route(\"/health\", get(|| async { \"ok\" }))\n");
-        // Review Issue 7: no blanket permissive CORS; optional CORS_ORIGINS env.
+        // Host edge: CORS + optional API key (env policy, not product domain).
         out.push_str("        .layer(veil_cors_layer())\n");
-        // Review Issue 7: API key gate when VEIL_API_KEY / RELAY_API_KEY set.
         out.push_str("        .layer(from_fn(veil_api_key_middleware))\n");
         out.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
     }
@@ -900,10 +899,9 @@ fn gen_local_harness_main(
 /// API key middleware + CORS policy for dual-loop harness (review Issues 7).
 fn harness_auth_cors_helpers() -> &'static str {
     r#"
-/// When `VEIL_API_KEY` or `RELAY_API_KEY` is set, require matching
-/// `X-Api-Key` or `Authorization: Bearer <key>`. Health stays open via route order
-/// only when middleware is not applied to it — this middleware runs on the whole
-/// router; allow `/health` by path.
+/// When `VEIL_API_KEY` is set, require matching `X-Api-Key` or
+/// `Authorization: Bearer <key>`. `/health` is always open. Product-specific
+/// env names do not belong in the engine (INV).
 async fn veil_api_key_middleware(
     headers: HeaderMap,
     request: Request,
@@ -912,10 +910,7 @@ async fn veil_api_key_middleware(
     if request.uri().path() == "/health" {
         return Ok(next.run(request).await);
     }
-    let expected = std::env::var("VEIL_API_KEY")
-        .or_else(|_| std::env::var("RELAY_API_KEY"))
-        .ok()
-        .filter(|s| !s.is_empty());
+    let expected = std::env::var("VEIL_API_KEY").ok().filter(|s| !s.is_empty());
     if let Some(key) = expected {
         let header_key = headers
             .get("x-api-key")
@@ -1879,20 +1874,8 @@ fn gen_struct(
             ty = format!("std::sync::Arc<{ty}>");
         }
         let snake = to_snake(&field.name);
-        // Secrets: never serialize in API responses (still deserialize on create).
-        // `@secret` or common credential field names.
-        let is_secret = field.annotations.iter().any(|a| a.name == "secret")
-            || matches!(
-                snake.as_str(),
-                "auth_password"
-                    | "auth_token"
-                    | "password"
-                    | "secret"
-                    | "api_key"
-                    | "client_secret"
-                    | "private_key"
-            );
-        if is_secret {
+        // Layer policy only: annotation with role:secret (INV-001). No field-name lists.
+        if registry.field_is_secret(field) {
             out.push_str("    #[serde(default, skip_serializing)]\n");
         }
         out.push_str(&format!("    pub {snake}: {ty},\n"));
@@ -4353,8 +4336,10 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         out.push_str("}\n\n");
     }
 
-    // Issue 9: collect domain service names so `HandleX` can thin-wrap `x`.
-    let domain_fn_names: std::collections::HashSet<String> = flows
+    // When a construct is named `Handle` + Base and Base also exists as a flow,
+    // emit a thin wrapper (same prefix convention as bus message stripping).
+    // No domain vocabulary — pure name-prefix + sibling existence.
+    let sibling_fn_names: std::collections::HashSet<String> = flows
         .iter()
         .filter_map(|flow| {
             let name = match flow {
@@ -4481,10 +4466,9 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             infer_flow_return_type(return_expr, steps, &ctx, envelope_routing)
         };
 
-        // Issue 9: HandleListProviders → thin wrap list_providers (no body copy).
         if let Some(base) = name.strip_prefix("Handle") {
-            let domain_snake = to_snake(base);
-            if domain_fn_names.contains(&domain_snake) {
+            let sibling = to_snake(base);
+            if sibling_fn_names.contains(&sibling) {
                 let call_args: Vec<String> = {
                     let mut a = Vec::new();
                     if has_deps {
@@ -4503,10 +4487,10 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
                     ret_type
                 ));
                 out.push_str(&format!(
-                    "    // Thin wrapper — domain use-case is `{domain_snake}` (review Issue 9).\n"
+                    "    // Thin wrapper for sibling `{sibling}` (Handle* name prefix).\n"
                 ));
                 out.push_str(&format!(
-                    "    {domain_snake}({}).await\n}}\n\n",
+                    "    {sibling}({}).await\n}}\n\n",
                     call_args.join(", ")
                 ));
                 continue;

@@ -568,6 +568,19 @@ impl LayerRegistry {
             .any(|a| self.is_dependency_annotation(&a.name))
     }
 
+    /// Annotation name carries `role:secret` (INV-001 — never hardcode `"secret"`).
+    pub fn is_secret_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "secret")
+    }
+
+    /// Field is a secret (omit from serialization) per layer policy.
+    pub fn field_is_secret(&self, field: &crate::ast::Field) -> bool {
+        field
+            .annotations
+            .iter()
+            .any(|a| self.is_secret_annotation(&a.name))
+    }
+
     /// Look up a statement by its source keyword.
     pub fn statement(&self, keyword: &str) -> Option<&StatementSpec> {
         self.statements.iter().find(|s| s.keyword == keyword)

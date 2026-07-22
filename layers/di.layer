@@ -32,6 +32,19 @@ layer di
       color "#8b5cf6"
       label "Dependency"
 
+  # @secret — field must not appear in serialized API responses (Rust: skip_serializing).
+  # Engine keys off role:secret only (INV-001); products annotate fields explicitly.
+  construct SecretField
+    kw secret
+    mt struct
+    desc "Secret — omit from outbound serialization (tokens, passwords)"
+    ann
+      secret: "Omit from serialization" field role:secret
+    visual
+      icon "🔒"
+      color "#ef4444"
+      label "Secret"
+
   # @pvd — marks a fn as a provider/factory for a given type.
   # The annotation value is the type it satisfies.
   # Example:
