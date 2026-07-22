@@ -17,12 +17,14 @@ pub struct GenCtx {
     pub name_to_shape: HashMap<String, Shape>,
     /// Locals accumulated in the current scope (let-bound variables).
     pub locals: HashSet<String>,
-    /// Fields of the enclosing struct (when inside an aggregate fn body).
+    /// Fields of the enclosing type (when inside a method body with a `self` receiver).
     pub self_fields: HashSet<String>,
-    /// Whether we're inside an aggregate fn (use `self.` for field access).
-    pub in_aggregate_fn: bool,
-    /// Whether this is an orchestrator module (route unknown port calls through Bus).
-    pub is_orchestrator: bool,
+    /// Whether we're inside a method body that uses `self.` for field access.
+    pub in_method: bool,
+    /// Whether cross-boundary calls use message-envelope routing (JSON) via
+    /// layer-declared routing traits. Opt-in when loaded layers declare statement
+    /// targets that are routing ports (INV-003).
+    pub envelope_routing: bool,
     /// Method return types: (ConstructName, method_name) → inner type name.
     /// For Result<T>, stores T. For Result<()>, stores "()".
     pub method_returns: HashMap<(String, String), String>,
@@ -30,18 +32,21 @@ pub struct GenCtx {
     pub local_types: HashMap<String, String>,
     /// Struct field maps: type_name → vec of (field_name, field_type_name).
     pub struct_fields: HashMap<String, Vec<(String, String)>>,
-    /// How to reference the Bus for orchestrator routing. `deps.bus` in a
-    /// flow/service; `bus` inside a saga-step impl where it's an injected param.
-    pub bus_ref: String,
-    /// Names of traits used as message-routing ports (e.g. "Bus"). Calls to these
-    /// use `bus_ref` instead of `deps.<name>`. Derived from the layer registry.
+    /// Expression that names the primary routing-trait instance for envelope
+    /// routing. Derived from layer routing traits: `deps.<snake(Trait)>` in a
+    /// flow; the injected param name inside a runtime-delegated step method.
+    /// Empty when no routing traits are loaded.
+    pub routing_ref: String,
+    /// Names of traits used as message-routing ports (from layer statement
+    /// `maps_to Trait.method`). Calls to these use `routing_ref` instead of
+    /// `deps.<name>`.
     pub routing_traits: HashSet<String>,
-    /// Names of known async free functions (e.g. layer-declared coordinators like
-    /// `run_saga`, `unwind`). Calls to these need `.await?`.
+    /// Names of known async free functions (layer-declared coordinators and
+    /// package free fns). Calls to these need `.await?`.
     pub async_fns: HashSet<String>,
-    /// Names backed by a threaded JSON state (saga steps). A read of such a name
-    /// becomes `state["name"]`; an assignment writes `state["name"] = ...`. This
-    /// lets independent step impls share results across steps.
+    /// Names backed by a threaded JSON state bag (multi-step runtime-delegated
+    /// constructs). A read of such a name becomes `state["name"]`; an assignment
+    /// writes `state["name"] = ...` so step impls can share results.
     pub state_locals: HashSet<String>,
     /// Maps stub struct names to (crate_name, original_type_name) so codegen
     /// generates qualified paths like `aws_sdk_s3::Client::new()` when VEIL
@@ -54,11 +59,15 @@ pub struct GenCtx {
     pub fallible_methods: HashSet<String>,
     /// Methods whose stub return type is async AND fallible (e.g. `BoxFuture<Res!<...>>`
     /// or declared with `Res!` on a struct that acts as an executor).
-    /// These get `.await.map_err(...)? ` instead of just `?`.
+    /// These get `.await.map_err(...)?` instead of just `?`.
     pub async_fallible_methods: HashSet<String>,
     /// Expected Rust return type of the enclosing fn (e.g. `Result<Option<T>, DomainError>`).
     /// Used to wrap `ret x` as `Ok(Some(x))` when returning Option.
     pub expected_return_rust: Option<String>,
+    /// Struct types whose smart ctor is zero-arg (every field fillable from
+    /// INV-002 / collection / nested defaults) and thus implement `Default`.
+    /// `Type.new(a, b)` on these lowers to a positional struct update + `..Default`.
+    pub defaultable_types: HashSet<String>,
 }
 
 impl GenCtx {
@@ -67,12 +76,12 @@ impl GenCtx {
             name_to_shape,
             locals: HashSet::new(),
             self_fields: HashSet::new(),
-            in_aggregate_fn: false,
-            is_orchestrator: false,
+            in_method: false,
+            envelope_routing: false,
             method_returns: HashMap::new(),
             local_types: HashMap::new(),
             struct_fields: HashMap::new(),
-            bus_ref: "deps.bus".to_string(),
+            routing_ref: String::new(),
             routing_traits: HashSet::new(),
             async_fns: HashSet::new(),
             state_locals: HashSet::new(),
@@ -81,7 +90,22 @@ impl GenCtx {
             fallible_methods: HashSet::new(),
             async_fallible_methods: HashSet::new(),
             expected_return_rust: None,
+            defaultable_types: HashSet::new(),
         }
+    }
+
+    /// Stable primary routing-trait name (sorted; HashSet order is arbitrary).
+    pub fn primary_routing_trait(&self) -> Option<&str> {
+        let mut names: Vec<&str> = self.routing_traits.iter().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        names.first().copied()
+    }
+
+    /// Default routing access path: `deps.<snake(Trait)>`, or empty if none.
+    pub fn default_routing_ref_as_dep(&self) -> String {
+        self.primary_routing_trait()
+            .map(|t| format!("deps.{}", to_snake(t)))
+            .unwrap_or_default()
     }
 
     /// Is this name a known trait-shaped construct (port/repo/integration)?
@@ -350,19 +374,91 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     }
 
     // Populate routing traits from the layer registry so call generation can
-    // identify which traits are message-routing ports (e.g. Bus) without
-    // hardcoding names.
+    // identify message-routing ports without hardcoding trait names.
     ctx.routing_traits = registry.routing_traits().into_iter().collect();
+    ctx.routing_ref = ctx.default_routing_ref_as_dep();
 
-    // Track layer-declared free functions (e.g. run_saga, unwind) as async —
-    // they generate as `pub async fn` and calls to them need `.await?`.
+    // Track layer-declared free functions as async — they generate as
+    // `pub async fn` and calls to them need `.await?`.
     for item in &solution.items {
         if let TopLevelItem::Function(f) = item {
             ctx.async_fns.insert(f.name.clone());
         }
     }
 
+    // Fixpoint: types whose every field is fillable without caller input
+    // (scalars via constructor_policy, empty collections, nested defaultable).
+    // Shape/type only — no subkind vocabulary.
+    let ctor_pol = if registry.constructor_policy.auto_fields.is_empty() {
+        veil_ir::layer::ConstructorPolicy::rust_defaults()
+    } else {
+        registry.constructor_policy.clone()
+    };
+    // Unit-like enums implement Default in rust codegen; treat as defaultable.
+    for (name, shape) in &ctx.name_to_shape {
+        if *shape == Shape::Enum {
+            ctx.defaultable_types.insert(name.clone());
+        }
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let names: Vec<String> = ctx.struct_fields.keys().cloned().collect();
+        for type_name in names {
+            if ctx.defaultable_types.contains(&type_name) {
+                continue;
+            }
+            let fields = ctx.struct_fields.get(&type_name).cloned().unwrap_or_default();
+            let all_ok = fields.iter().all(|(fname, fty)| {
+                rust_field_is_defaultable(fname, fty, &ctor_pol, &ctx.defaultable_types)
+            });
+            if all_ok {
+                ctx.defaultable_types.insert(type_name);
+                changed = true;
+            }
+        }
+    }
+
     ctx
+}
+
+/// Whether a stored struct field (Rust type string) can be filled without a
+/// `new(...)` argument. Mirrors smart-ctor defaults in rust.rs.
+fn rust_field_is_defaultable(
+    field_name: &str,
+    rust_ty: &str,
+    ctor_pol: &veil_ir::layer::ConstructorPolicy,
+    defaultable: &HashSet<String>,
+) -> bool {
+    if ctor_pol.is_auto_field(field_name) {
+        return true;
+    }
+    // Field-name string defaults (constructor_policy-adjacent conventions).
+    if field_name == "authorization_header_string" {
+        return true;
+    }
+    let t = rust_ty.trim();
+    if t.starts_with("Option<")
+        || t.starts_with("Vec<")
+        || t.contains("HashMap")
+        || t.contains("HashSet")
+    {
+        return true;
+    }
+    // INV-002 scalar type defaults (policy table, not domain words).
+    for (veil_ty, _) in &ctor_pol.type_defaults {
+        let rust = rust_type_for_named(veil_ty);
+        if t == rust {
+            return true;
+        }
+    }
+    // Nested type already known defaultable.
+    if defaultable.contains(t) {
+        return true;
+    }
+    // Unit enums and domain types that implement Default appear as bare names.
+    // Only treat as defaultable once registered (fixpoint / unit-enum pass).
+    false
 }
 
 /// Extract the inner type from a TypeExpr (unwrapping Result/Optional).
@@ -422,8 +518,31 @@ fn expand_typed_type_params(template: &str, domain_type: &str) -> String {
 
 fn type_name_simple(ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Named(n) => n.clone(),
-        TypeExpr::Generic(n, _) => n.clone(),
+        // Map VEIL builtins to their Rust form so inferred return types /
+        // method_returns can be pasted into signatures (Json → serde_json::Value).
+        TypeExpr::Named(n) => rust_type_for_named(n),
+        TypeExpr::Generic(n, args) => {
+            // Keep domain generics (EntityRepo<T>) by name; map List/Map/etc.
+            match n.as_str() {
+                "List" | "Vec" if args.len() == 1 => {
+                    format!("Vec<{}>", type_name_simple(&args[0]))
+                }
+                "Opt" | "Option" if args.len() == 1 => {
+                    format!("Option<{}>", type_name_simple(&args[0]))
+                }
+                "Map" | "HashMap" if args.len() == 2 => {
+                    format!(
+                        "HashMap<{}, {}>",
+                        type_name_simple(&args[0]),
+                        type_name_simple(&args[1])
+                    )
+                }
+                "Set" | "HashSet" if args.len() == 1 => {
+                    format!("HashSet<{}>", type_name_simple(&args[0]))
+                }
+                _ => n.clone(),
+            }
+        }
         TypeExpr::Result(Some(inner)) => type_name_simple(inner),
         TypeExpr::Result(None) => "()".to_string(),
         TypeExpr::Optional(inner) => format!("Option<{}>", type_name_simple(inner)),
@@ -451,9 +570,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 return "None".to_string();
             }
             if ctx.state_locals.contains(name.as_str()) {
-                // Shared saga state: read from the threaded JSON state.
+                // Threaded step state: read from the shared JSON bag.
                 format!("state[\"{}\"]", name)
-            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) && !ctx.locals.contains(name.as_str()) {
+            } else if ctx.in_method && ctx.self_fields.contains(name.as_str()) && !ctx.locals.contains(name.as_str()) {
                 format!("&self.{}", to_snake(name))
             } else {
                 name.clone()
@@ -465,8 +584,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 if ctx.state_locals.contains(name.as_str()) {
                     return format!("state[\"{}\"][\"{}\"]", name, field);
                 }
-                // Adapter / aggregate: `self.table` → clone so `&self` methods compile.
-                if name == "self" && ctx.in_aggregate_fn {
+                // Method body: `self.table` → clone so `&self` methods compile.
+                if name == "self" && ctx.in_method {
                     let f = to_snake(field);
                     if ctx.self_fields.contains(field.as_str())
                         || ctx.self_fields.contains(&f)
@@ -483,9 +602,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     return format!("{}::{}", name, variant);
                 }
             }
-            // In the JSON-bus orchestrator, a field of a Bus-returned local is a
-            // JSON index: `result["code"]`. Bus results are serde_json::Value.
-            if ctx.is_orchestrator {
+            // Envelope routing: a field of a routing-returned local is a JSON
+            // index (`result["code"]`). Envelope results are serde_json::Value.
+            if ctx.envelope_routing {
                 if let Expr::Ident(name) = base.as_ref() {
                     if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
                         return format!("{}[\"{}\"]", name, field);
@@ -543,6 +662,20 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             }
         }
         Expr::Assign(name, rhs, ty_ann) => {
+            // List append sugar: `out = out + [x]` → `out.push(x)` when the
+            // left is the same local and the right is a single-element list.
+            if let Expr::BinaryOp(bin) = rhs.as_ref() {
+                if matches!(bin.op, veil_ir::ast::BinOp::Add) {
+                    if let (Expr::Ident(left), Expr::ArrayLit(items)) =
+                        (bin.left.as_ref(), bin.right.as_ref())
+                    {
+                        if left == name && items.len() == 1 {
+                            let item = expr_to_rust(&items[0], ctx);
+                            return format!("{}.push({})", name, item);
+                        }
+                    }
+                }
+            }
             let rhs_str = expr_to_rust(rhs, ctx);
             // Field assignment: `wt.name = x` stored as Assign("wt.name", …)
             // Emit path with snake_case fields; never introduce a `let` binding.
@@ -562,9 +695,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 return format!("{} = {}", path, rhs_str);
             }
             if ctx.state_locals.contains(name.as_str()) {
-                // Write the result into the threaded saga state as JSON.
+                // Write the result into the threaded step state as JSON.
                 format!("state[\"{}\"] = serde_json::json!({})", name, rhs_str)
-            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
+            } else if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
                 format!("self.{} = {}", to_snake(name), rhs_str)
             } else if ctx.is_local(name) {
                 // Already-declared local (e.g. a `mut` var) → reassignment, no `let`.
@@ -877,11 +1010,11 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
 fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
     match expr {
         Expr::Ident(name) => {
-            // A shared saga-state value → read from the threaded state.
+            // A shared step-state value → read from the threaded state.
             if ctx.state_locals.contains(name.as_str()) {
                 format!("state[\"{}\"].clone()", name)
-            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
-                // A struct-captured input (saga step) → self.<field>.
+            } else if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
+                // A struct-captured input (step impl) → self.<field>.
                 format!("self.{}.clone()", to_snake(name))
             } else if ctx.is_local(name) {
                 format!("{}.clone()", name)
@@ -1002,8 +1135,8 @@ fn rust_method_name(method: &str) -> String {
     }
 }
 
-/// Build a `serde_json::json!` object for a message (event/command) with a
-/// `"type"` tag plus its named fields — the wire form for a JSON Bus payload.
+/// Build a `serde_json::json!` object for a message with a `"type"` tag plus
+/// its named fields — the wire form for a JSON envelope payload.
 fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> String {
     let mut parts = vec![format!("\"type\": \"{}\"", name)];
     for (k, v) in fields {
@@ -1012,9 +1145,9 @@ fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> String {
     format!("serde_json::json!({{ {} }})", parts.join(", "))
 }
 
-/// Build a JSON envelope for a cross-context call routed through the Bus:
-/// `{ "target": T, "method": m, "args": [ ... ] }`. Positional args are
-/// rendered as JSON values so the receiving context can decode them.
+/// Build a JSON envelope for a cross-boundary call routed through a routing
+/// trait: `{ "target": T, "method": m, "args": [ ... ] }`. Positional args are
+/// rendered as JSON values so the receiving side can decode them.
 fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> String {
     let arg_vals = args.iter().map(|a| to_json_arg(a, ctx)).collect::<Vec<_>>().join(", ");
     format!(
@@ -1024,14 +1157,14 @@ fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> Str
 }
 
 /// Render call args, cloning value-bearing locals/state so passing them into a
-/// by-value parameter doesn't move them out of the caller. Skips the Bus
+/// by-value parameter doesn't move them out of the caller. Skips the routing
 /// reference and Copy scalars (which don't move).
 fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
     args.iter()
         .map(|a| match a {
             Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => format!("state[\"{}\"].clone()", n),
-            // The bus reference (bus_ref) and Copy scalars are passed as-is.
-            Expr::Ident(n) if *n == ctx.bus_ref => n.clone(),
+            // The routing reference and Copy scalars are passed as-is.
+            Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
             Expr::Ident(n) if ctx.is_local(n) => format!("{}.clone()", n),
             _ => expr_to_rust(a, ctx),
@@ -1111,8 +1244,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     if ctx.is_trait_target(&call.target) {
         let dep_name = to_snake(&call.target);
         let method = if call.method.is_empty() { "call" } else { &call.method };
-        // Desugared bus calls (dispatch/invoke/request) carry a StructLit
-        // event/command; build a JSON payload tagged with its type.
+        // Desugared routing-port calls (layer statement sugar) carry a StructLit
+        // payload; build a JSON message tagged with its type.
         let final_args = if call.sugar.is_some() {
             match call.args.first() {
                 Some(Expr::StructLit(name, fields)) => json_message(name, fields, ctx),
@@ -1120,7 +1253,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 _ => json_envelope(&call.target, method, &call.args, ctx),
             }
         } else {
-            // Direct Bus call — clone args to avoid move issues.
+            // Direct routing-trait call — clone args to avoid move issues.
             call.args.iter()
                 .map(|a| {
                     let s = expr_to_rust(a, ctx);
@@ -1131,10 +1264,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 })
                 .collect::<Vec<_>>().join(", ")
         };
-        // Routing traits (e.g. Bus) use the ctx bus reference (`deps.bus` in a flow,
-        // `bus` inside a saga-step impl); other trait deps come from `deps`.
+        // Routing traits use `routing_ref` (`deps.<trait>` in a flow, injected
+        // param inside a step impl); other trait deps come from `deps`.
         if ctx.routing_traits.contains(&call.target) {
-            return format!("{}.{}({}).await?", ctx.bus_ref, to_snake(method), final_args);
+            let rref = if ctx.routing_ref.is_empty() {
+                format!("deps.{}", dep_name)
+            } else {
+                ctx.routing_ref.clone()
+            };
+            return format!("{}.{}({}).await?", rref, to_snake(method), final_args);
         }
         // Check if this method returns Option<T> — if so, unwrap with .ok_or(NotFound)?
         // Keys may be stored with or without `!` (method declaration name).
@@ -1166,15 +1304,19 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         );
     }
 
-    // In an orchestrator, ANY call to another context (struct construction,
-    // aggregate method, or repo/port) is routed through the JSON Bus with a
-    // typed envelope — the orchestrator crate can't see the other context's
-    // concrete types.
-    if ctx.is_orchestrator && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty()) {
+    // Envelope routing: cross-boundary calls (struct construction, foreign
+    // methods, etc.) go through the primary routing trait with a typed JSON
+    // envelope — the caller crate cannot see the target's concrete types.
+    if ctx.envelope_routing && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty()) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
+        let rref = if ctx.routing_ref.is_empty() {
+            "deps".to_string() // should not happen when envelope_routing is set
+        } else {
+            ctx.routing_ref.clone()
+        };
         return format!(
             "{}.invoke({}).await?",
-            ctx.bus_ref,
+            rref,
             json_envelope(&call.target, method, &call.args, ctx)
         );
     }
@@ -1268,6 +1410,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 let s = expr_to_rust(a, ctx);
                 match a { Expr::Ident(_) => format!("{}.clone()", s), _ => s }
             }).collect::<Vec<_>>().join(", ");
+        // `Type.default()` → `Type::default()` (requires Default impl from smart ctor).
+        if method == "default" && call.args.is_empty() {
+            return format!("{}::default()", qualified);
+        }
         if method == "new" {
             // Stub constructors that map to module-level free functions.
             // e.g. crate::Query::new(sql) → crate::query(sql)
@@ -1342,6 +1488,34 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 .map(|t| t.starts_with("Result<"))
                 .unwrap_or(false);
             let suffix = if returns_result { "?" } else { "" };
+
+            // Zero-arg smart ctors (`Default`): `T.new(a, b, c)` → positional
+            // field fill + `..T::default()`. Skips a leading `id: Uuid` so
+            // `Greeting.new(message)` still maps onto `message`, not `id`.
+            if ctx.defaultable_types.contains(&effective_target) && !call.args.is_empty() {
+                if let Some(fields) = ctx.struct_fields.get(&effective_target) {
+                    let mut field_iter = fields.iter().peekable();
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some((fname, fty)) = field_iter.peek() {
+                        if *fname == "id" && (*fty == "Uuid" || *fty == "uuid::Uuid") {
+                            parts.push("id: Uuid::new_v4()".to_string());
+                            field_iter.next();
+                        }
+                    }
+                    for arg in &call.args {
+                        if let Some((fname, _)) = field_iter.next() {
+                            parts.push(format!(
+                                "{}: {}",
+                                to_snake(fname),
+                                expr_to_rust(arg, ctx)
+                            ));
+                        }
+                    }
+                    parts.push(format!("..{}::default()", qualified));
+                    return format!("{} {{ {} }}", qualified, parts.join(", "));
+                }
+            }
+
             return format!("{}::{}({}){}", qualified, to_snake(method), final_args, suffix);
         }
         // Non-new method on a struct: UFCS instance form `Email.validate(email)`
@@ -1413,9 +1587,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         }
     }
 
-    // Self field target (adapter bodies) → self.target.method(args)
+    // Self field target (method bodies) → self.target.method(args)
     // Parser may produce target "client" or dotted "self.client".
-    if ctx.in_aggregate_fn {
+    if ctx.in_method {
         let field = call
             .target
             .strip_prefix("self.")
@@ -1536,7 +1710,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         //
         // If target has dots (e.g. `sqlx.Query`), the last segment is the
         // struct name — emit `Struct::method(args)` (Rust path syntax).
-        // Skip `self.field` — already handled above when in_aggregate_fn.
+        // Skip `self.field` — already handled above when in_method.
         if call.target.contains('.') && !call.target.starts_with("self.") {
             let parts: Vec<&str> = call.target.split('.').collect();
             let struct_name = parts.last().unwrap_or(&"");
@@ -1787,12 +1961,12 @@ impl GenCtx {
             name_to_shape: self.name_to_shape.clone(),
             locals: self.locals.clone(),
             self_fields: self.self_fields.clone(),
-            in_aggregate_fn: self.in_aggregate_fn,
-            is_orchestrator: self.is_orchestrator,
+            in_method: self.in_method,
+            envelope_routing: self.envelope_routing,
             method_returns: self.method_returns.clone(),
             local_types: self.local_types.clone(),
             struct_fields: self.struct_fields.clone(),
-            bus_ref: self.bus_ref.clone(),
+            routing_ref: self.routing_ref.clone(),
             routing_traits: self.routing_traits.clone(),
             async_fns: self.async_fns.clone(),
             state_locals: self.state_locals.clone(),
@@ -1801,6 +1975,7 @@ impl GenCtx {
             fallible_methods: self.fallible_methods.clone(),
             async_fallible_methods: self.async_fallible_methods.clone(),
             expected_return_rust: self.expected_return_rust.clone(),
+            defaultable_types: self.defaultable_types.clone(),
         }
     }
 }
@@ -1814,19 +1989,57 @@ pub fn infer_expr_type_pub(expr: &Expr, ctx: &GenCtx) -> Option<String> {
 /// tracked type is `Vec<T>` (or a boxed-trait vec), return the inner `T`
 /// (unwrapping `Box<dyn T ..>` to `T`) so method calls on the loop var resolve.
 fn element_type_of(iterable: &Expr, ctx: &GenCtx) -> Option<String> {
-    if let Expr::Ident(name) = iterable {
-        if let Some(t) = ctx.local_type(name) {
-            let inner = t.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>'))?;
-            let inner = inner.trim();
-            // Unwrap Box<dyn Trait + Send + Sync> → Trait.
-            if let Some(rest) = inner.strip_prefix("Box<dyn ") {
-                let name = rest.split([' ', '+', '>']).next().unwrap_or(rest);
-                return Some(name.to_string());
+    let vec_type = match iterable {
+        Expr::Ident(name) => {
+            // Self fields in method bodies: `for x in api_endpoints` after bare-field rewrite.
+            if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
+                // Look up via any struct_fields entry that has this field.
+                ctx.struct_fields.values().find_map(|fields| {
+                    fields
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, t)| t.clone())
+                })
+            } else {
+                ctx.local_type(name).map(|s| s.to_string())
             }
-            return Some(inner.to_string());
         }
+        Expr::FieldAccess(base, field) => {
+            if let Expr::Ident(base_name) = base.as_ref() {
+                if base_name == "self" && ctx.in_method {
+                    ctx.struct_fields.values().find_map(|fields| {
+                        fields
+                            .iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, t)| t.clone())
+                    })
+                } else if let Some(type_name) = ctx.local_type(base_name) {
+                    ctx.field_type(type_name, field).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }?;
+    let inner = vec_type
+        .strip_prefix("Vec<")
+        .and_then(|s| s.strip_suffix('>'))
+        .or_else(|| {
+            // Also accept `std::collections::…` forms — take after last `Vec<`.
+            vec_type
+                .rfind("Vec<")
+                .map(|i| &vec_type[i + 4..vec_type.len().saturating_sub(1)])
+        })?;
+    let inner = inner.trim();
+    // Unwrap Box<dyn Trait + Send + Sync> → Trait.
+    if let Some(rest) = inner.strip_prefix("Box<dyn ") {
+        let name = rest.split([' ', '+', '>']).next().unwrap_or(rest);
+        return Some(name.to_string());
     }
-    None
+    Some(inner.to_string())
 }
 
 /// Infer the Rust type of a flow's return expression (`ret <expr>`).
@@ -1883,10 +2096,48 @@ fn rust_type_for_named(name: &str) -> String {
         "Int" => "i64".to_string(),
         "F64" => "f64".to_string(),
         "Bool" => "bool".to_string(),
-        "UUID" => "Uuid".to_string(),
-        "DateTime" => "DateTime<Utc>".to_string(),
+        "Bytes" => "Vec<u8>".to_string(),
+        "UUID" | "Id" => "Uuid".to_string(),
+        "DateTime" | "Dt" => "DateTime<Utc>".to_string(),
         "Json" => "serde_json::Value".to_string(),
         other => other.to_string(),
+    }
+}
+
+/// Default expression for a field type when a positional `Type.new(a, b)` call
+/// omits trailing fields. Types are stored as Rust forms from struct_fields.
+fn field_type_default_expr(rust_ty: &str, field_name: &str) -> String {
+    let t = rust_ty.trim();
+    if t.starts_with("Option<") {
+        return "None".to_string();
+    }
+    if t.starts_with("Vec<") {
+        return "Vec::new()".to_string();
+    }
+    if t.contains("HashMap") {
+        return "std::collections::HashMap::new()".to_string();
+    }
+    if t.contains("HashSet") {
+        return "std::collections::HashSet::new()".to_string();
+    }
+    match t {
+        "String" => {
+            // Conventional auth header name used by CreateProvider defaults.
+            if field_name == "authorization_header_string" {
+                "\"Authorization\".to_string()".to_string()
+            } else {
+                "String::new()".to_string()
+            }
+        }
+        "i64" | "i32" | "u64" | "u32" | "usize" | "isize" => "0".to_string(),
+        "f64" | "f32" => "0.0".to_string(),
+        "bool" => "false".to_string(),
+        "Uuid" => "Uuid::new_v4()".to_string(),
+        "DateTime<Utc>" => "Utc::now()".to_string(),
+        "serde_json::Value" => "serde_json::json!({})".to_string(),
+        // Nested domain types / enums: prefer Default (emitted for all-defaultable
+        // VOs; enums can derive or use first-variant Default later).
+        other => format!("{}::default()", other),
     }
 }
 
@@ -1894,9 +2145,9 @@ fn rust_type_for_named(name: &str) -> String {
 fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
     match expr {
         Expr::Call(call) => {
-            // In an orchestrator, cross-context calls route through the JSON Bus
-            // and yield `serde_json::Value` (unless the target is a direct dep).
-            if ctx.is_orchestrator && call.receiver.is_none() && !ctx.is_trait_target(&call.target) {
+            // Envelope routing: cross-boundary calls yield `serde_json::Value`
+            // (unless the target is a direct trait dep).
+            if ctx.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target) {
                 if ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty() {
                     return Some("serde_json::Value".to_string());
                 }

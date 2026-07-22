@@ -71,9 +71,11 @@ rust codegen use roles only. Template `dep_fields` via registry.
 
 **Touch:** `expr.rs`, `rust.rs`, layer `routing` / `runtime` metadata
 
-**Done notes:** `is_orchestrator` requires **both** step `ctx` refs **and**
-non-empty `registry.routing_traits()` (from layer statements). No routing
-layer → no JSON-Bus envelope path.
+**Done notes:** `envelope_routing` (formerly `is_orchestrator`) requires
+**both** step `ctx` refs **and** non-empty `registry.routing_traits()` (from
+layer statements). No routing layer → no JSON envelope path. GenCtx uses
+domain-agnostic names (`in_method`, `envelope_routing`, `routing_ref` derived
+from the primary routing trait — not hardcoded Bus / aggregate / orchestrator).
 
 ---
 

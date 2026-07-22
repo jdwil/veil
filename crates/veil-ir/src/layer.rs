@@ -592,8 +592,9 @@ impl LayerRegistry {
     }
 
     /// Get the names of traits used as message-routing ports by layer statements.
-    /// These are the traits that statements target via `maps_to Port.method` (e.g. Bus).
-    /// Orchestrators keep only these as direct deps; all other calls route through them.
+    /// These are the traits that statements target via `maps_to Port.method`.
+    /// Envelope-routing modules keep only these as direct deps; other cross-boundary
+    /// calls route through them.
     pub fn routing_traits(&self) -> Vec<String> {
         let mut names: Vec<String> = self.statements.iter()
             .filter_map(|s| s.port_target.as_ref())

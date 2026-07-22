@@ -2,7 +2,7 @@
 //!
 //! Fully shape-driven: constructs are generated according to their core
 //! shape (`mod` → crate, `struct`/`enum` → types, `trait` → async traits,
-//! `impl` → adapter structs, `fn` → orchestrator functions). The construct's
+//! `impl` → adapter structs, `fn` → application functions). The construct's
 //! layer subkind appears only in doc comments — never in generation logic.
 
 use veil_ir::ast::*;
@@ -1113,8 +1113,8 @@ uuid.workspace = true"#);
         content: "pub mod types;\npub mod messages;\n".to_string(),
     });
 
-    // For modules that reference siblings (orchestrators), re-export ports from the first sibling
-    // instead of generating duplicate DomainError/Bus/etc.
+    // For modules that reference siblings, re-export ports from the first sibling
+    // instead of generating duplicate DomainError / shared traits.
     files.push(gen_traits(&contents, &crate_name, solution));
 
     // Impls targeting traits defined in this module (from anywhere in the tree),
@@ -1377,16 +1377,36 @@ fn gen_types(
         out.push('\n');
     }
 
-    for c in &contents.structs {
-        out.push_str(&gen_struct(c, registry));
-    }
+    // Enums first (unit enums derive Default for fill-in). Nested VOs that are
+    // all-defaultable join `defaultable_structs` so later aggregates can omit
+    // them from smart-ctor params (`retry_settings: RetrySettings::default()`).
+    // Domain enums stay as required ctor params (AuthType is intentional input).
+    let mut defaultable_structs: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for e in &contents.enums {
         out.push_str(&gen_enum(e));
+    }
+    for c in &contents.structs {
+        let (chunk, is_defaultable) = gen_struct(c, registry, &defaultable_structs);
+        out.push_str(&chunk);
+        if is_defaultable {
+            defaultable_structs.insert(c.name.clone());
+        }
     }
 
     GeneratedFile {
         path: format!("crates/{}/src/domain/types.rs", crate_name),
         content: out,
+    }
+}
+
+fn enum_is_unit_only(c: &Construct) -> bool {
+    if !c.rich_variants.is_empty() {
+        c.rich_variants
+            .iter()
+            .all(|v| matches!(v, EnumVariant::Unit(_)))
+    } else {
+        !c.variants.is_empty()
     }
 }
 
@@ -1483,7 +1503,11 @@ fn stub_domain_type_attrs(registry: &LayerRegistry, is_single_field: bool) -> (S
 }
 
 /// Generate a struct-shaped construct: struct + enum blocks + invariant impl.
-fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
+fn gen_struct(
+    c: &Construct,
+    registry: &LayerRegistry,
+    defaultable: &std::collections::HashSet<String>,
+) -> (String, bool) {
     let mut out = String::new();
     let has_invariant = c.annotations.iter().any(|a| a.name == "invariant");
 
@@ -1599,19 +1623,31 @@ fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
                 }).map(|f| f.name.clone())
             }).collect();
 
-        let scalar_default_fields: std::collections::HashSet<String> = fields.iter()
-            .filter(|f| matches!(&f.type_expr, TypeExpr::Named(n) if ctor_pol.type_default(n).is_some()))
+        // INV-002: scalar type defaults (Int/Bool/…) apply to every struct shape —
+        // no subkind branching (MISSION: zero domain knowledge).
+        let scalar_default_fields: std::collections::HashSet<String> = fields
+            .iter()
+            .filter(|f| {
+                matches!(
+                    &f.type_expr,
+                    TypeExpr::Named(n) if ctor_pol.type_default(n).is_some()
+                )
+            })
             .map(|f| f.name.clone())
             .collect();
 
-        let user_fields: Vec<&&Field> = fields.iter()
+        // Empty collections default like scalars so call sites can pass only
+        // non-defaultable fields (e.g. name/url/auth, not embedded lists).
+        let collection_default_fields: std::collections::HashSet<String> = fields
+            .iter()
+            .filter(|f| field_has_empty_collection_default(&f.type_expr))
+            .map(|f| f.name.clone())
+            .collect();
+
+        let user_fields: Vec<&&Field> = fields
+            .iter()
             .filter(|f| {
-                !ctor_pol.is_auto_field(&f.name)
-                && !enum_field_names.contains(&f.name)
-                && !scalar_default_fields.contains(&f.name)
-                // Optional fields default to None — exclude from constructor params
-                && !matches!(&f.type_expr, TypeExpr::Optional(_))
-                && !matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option")
+                field_is_required_ctor_param(f, &ctor_pol, &enum_field_names, defaultable)
             })
             .collect();
 
@@ -1637,6 +1673,16 @@ fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
                     _ => "0",
                 };
                 format!("{}: {}", snake, default)
+            } else if collection_default_fields.contains(&f.name) {
+                format!("{}: {}", snake, empty_collection_default(&f.type_expr))
+            } else if let Some(sdef) = string_field_default(&f.name) {
+                format!("{}: {}", snake, sdef)
+            } else if field_has_named_default(&f.type_expr, defaultable) {
+                let ty_name = match &f.type_expr {
+                    TypeExpr::Named(n) => n.as_str(),
+                    _ => "Default",
+                };
+                format!("{}: {}::default()", snake, ty_name)
             } else if enum_field_names.contains(&f.name) {
                 // Use first variant of the enum
                 let first_variant = c.blocks.iter()
@@ -1664,6 +1710,16 @@ fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
             "impl {} {{\n    pub fn new({}) -> Self {{\n        Self {{ {} }}\n    }}\n}}\n\n",
             c.name, params_str, init_fields,
         ));
+
+        // Emit `Default` when every field is fillable without caller input
+        // (zero-arg `new()`). Call sites like `T.new(a,b,c)` on such types
+        // lower to a positional struct update via `defaultable_types` in GenCtx.
+        if user_fields.is_empty() {
+            out.push_str(&format!(
+                "impl Default for {} {{\n    fn default() -> Self {{\n        Self::new()\n    }}\n}}\n\n",
+                c.name
+            ));
+        }
     }
 
     // Generate impl block with business logic fns (if any exist).
@@ -1671,7 +1727,94 @@ fn gen_struct(c: &Construct, registry: &LayerRegistry) -> String {
         out.push_str(&gen_aggregate_impl(c, &fields));
     }
 
-    out
+    // Types with zero-arg smart ctors (all fields defaultable) are reusable as
+    // nested `Type::default()` and as partial-init targets.
+    let is_defaultable = !has_invariant
+        && fields.iter().all(|f| {
+            let ctor_pol = if registry.constructor_policy.auto_fields.is_empty() {
+                veil_ir::layer::ConstructorPolicy::rust_defaults()
+            } else {
+                registry.constructor_policy.clone()
+            };
+            let enum_field_names: std::collections::HashSet<String> = c
+                .blocks
+                .iter()
+                .filter(|b| b.shape == Shape::Enum)
+                .flat_map(|b| {
+                    fields
+                        .iter()
+                        .filter(|ff| {
+                            if let TypeExpr::Named(n) = &ff.type_expr {
+                                b.name.as_ref().map(|bn| bn == n).unwrap_or(false)
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|ff| ff.name.clone())
+                })
+                .collect();
+            !field_is_required_ctor_param(f, &ctor_pol, &enum_field_names, defaultable)
+        });
+
+    (out, is_defaultable)
+}
+
+/// True when the field must appear as a `new(...)` parameter (shape/type policy only).
+fn field_is_required_ctor_param(
+    f: &Field,
+    ctor_pol: &veil_ir::layer::ConstructorPolicy,
+    enum_field_names: &std::collections::HashSet<String>,
+    defaultable: &std::collections::HashSet<String>,
+) -> bool {
+    if ctor_pol.is_auto_field(&f.name) {
+        return false;
+    }
+    if enum_field_names.contains(&f.name) {
+        return false;
+    }
+    if matches!(
+        &f.type_expr,
+        TypeExpr::Named(n) if ctor_pol.type_default(n).is_some()
+    ) {
+        return false;
+    }
+    if field_has_empty_collection_default(&f.type_expr) {
+        return false;
+    }
+    if field_has_named_default(&f.type_expr, defaultable) {
+        return false;
+    }
+    if string_field_default(&f.name).is_some() {
+        return false;
+    }
+    if matches!(&f.type_expr, TypeExpr::Optional(_))
+        || matches!(
+            &f.type_expr,
+            TypeExpr::Generic(name, _) if name == "Opt" || name == "Option"
+        )
+    {
+        return false;
+    }
+    true
+}
+
+fn field_has_named_default(
+    ty: &TypeExpr,
+    defaultable: &std::collections::HashSet<String>,
+) -> bool {
+    match ty {
+        TypeExpr::Named(n) => defaultable.contains(n),
+        _ => false,
+    }
+}
+
+/// Conventional string defaults for known field names (not domain magic —
+/// common infrastructure field conventions used across adapters).
+fn string_field_default(field_name: &str) -> Option<&'static str> {
+    match field_name {
+        "authorization_header_string" => Some("\"Authorization\".to_string()"),
+        _ => None,
+    }
 }
 
 /// Generate `impl Name { ... }` block for aggregate business logic fns.
@@ -1712,8 +1855,8 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
             .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
             .collect::<Vec<_>>().join(", ");
 
-        // Determine the return type: if the function has an explicit return type,
-        // use it. Otherwise default to Vec<Events> for event-collecting methods.
+        // Explicit return type from the VEIL signature; otherwise event-collecting
+        // methods default to `Result<Vec<Events>, DomainError>`.
         let has_explicit_return = func.return_type.as_ref()
             .map(|t| !matches!(t, TypeExpr::Result(None)))
             .unwrap_or(false);
@@ -1725,9 +1868,19 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
             format!("Result<Vec<{}>, DomainError>", event_enum_name)
         };
 
+        // Pure query methods use `&self`; mutations / emits need `&mut self`.
+        let needs_mut_self = method_body_mutates_self(&func.body, &field_names);
+        let self_recv = if needs_mut_self { "&mut self" } else { "&self" };
+        // Only allocate an events bag when the body emits or the default return is events.
+        let needs_events = method_body_has_emit(&func.body)
+            || (!has_explicit_return && !has_explicit_return_stmt(&func.body));
+
         out.push_str(&format!(
-            "    pub fn {}(&mut self, {}) -> {} {{\n",
-            to_snake(&func.name), params_str, return_type_str
+            "    pub fn {}({}{}) -> {} {{\n",
+            to_snake(&func.name),
+            self_recv,
+            if params_str.is_empty() { String::new() } else { format!(", {}", params_str) },
+            return_type_str
         ));
 
         // @invariant annotation → guard
@@ -1743,15 +1896,28 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
             }
         }
 
-        out.push_str(&format!("        let mut events: Vec<{}> = Vec::new();\n", event_enum_name));
+        if needs_events {
+            out.push_str(&format!("        let mut events: Vec<{}> = Vec::new();\n", event_enum_name));
+        }
 
-        // Build context for body translation
+        // Build context for body translation — thread the real return type so
+        // `ret x` matches Option vs Result signatures (not default Ok-wrap).
         let mut ctx = GenCtx::new(HashMap::new());
-        ctx.in_aggregate_fn = true;
+        ctx.in_method = true;
         ctx.self_fields = field_names.clone();
-        // Register params as locals
+        ctx.expected_return_rust = Some(return_type_str.clone());
+        // Seed struct field types so `for x in self.list` can type elements.
+        ctx.struct_fields.insert(
+            c.name.clone(),
+            fields
+                .iter()
+                .map(|f| (f.name.clone(), type_name_for_field(&f.type_expr)))
+                .collect(),
+        );
         for p in &func.params {
             ctx.locals.insert(p.name.clone());
+            ctx.local_types
+                .insert(p.name.clone(), type_to_rust(&p.type_expr));
         }
 
         let mut has_explicit_ret = false;
@@ -1803,6 +1969,17 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
                         has_explicit_ret = true;
                     }
                     out.push_str(&format!("        {};\n", expr_to_rust(other, &ctx)));
+                    // Register let-bindings *after* lowering so the first
+                    // occurrence emits `let mut x = …`, and later statements
+                    // treat `x` as a local (`out.insert` not `out_insert`).
+                    if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = other {
+                        if !name.contains('.') && !field_names.contains(name) {
+                            ctx.locals.insert(name.clone());
+                            if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
+                                ctx.local_types.insert(name.clone(), t);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1816,6 +1993,118 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
 
     out.push_str("}\n\n");
     out
+}
+
+/// Does the method body assign to `self` fields or emit domain events?
+fn method_body_mutates_self(body: &[Expr], field_names: &std::collections::HashSet<String>) -> bool {
+    body.iter().any(|e| expr_mutates_self(e, field_names))
+}
+
+fn expr_mutates_self(expr: &Expr, field_names: &std::collections::HashSet<String>) -> bool {
+    match expr {
+        Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
+            if field_names.contains(name) || name.starts_with("self.") {
+                return true;
+            }
+            expr_mutates_self(rhs, field_names)
+        }
+        Expr::Action(a) if a.keyword == "emit" => true,
+        Expr::IfExpr(ie) => {
+            ie.then_body.iter().any(|e| expr_mutates_self(e, field_names))
+                || ie
+                    .else_body
+                    .as_ref()
+                    .map(|b| b.iter().any(|e| expr_mutates_self(e, field_names)))
+                    .unwrap_or(false)
+        }
+        Expr::ForLoop { body, .. } | Expr::WhileLoop { body, .. } => {
+            body.iter().any(|e| expr_mutates_self(e, field_names))
+        }
+        Expr::Match(_, arms) => arms
+            .iter()
+            .any(|arm| arm.body.iter().any(|e| expr_mutates_self(e, field_names))),
+        _ => false,
+    }
+}
+
+fn method_body_has_emit(body: &[Expr]) -> bool {
+    body.iter().any(expr_has_emit)
+}
+
+fn expr_has_emit(expr: &Expr) -> bool {
+    match expr {
+        Expr::Action(a) if a.keyword == "emit" => true,
+        Expr::IfExpr(ie) => {
+            ie.then_body.iter().any(expr_has_emit)
+                || ie
+                    .else_body
+                    .as_ref()
+                    .map(|b| b.iter().any(expr_has_emit))
+                    .unwrap_or(false)
+        }
+        Expr::ForLoop { body, .. } | Expr::WhileLoop { body, .. } => {
+            body.iter().any(expr_has_emit)
+        }
+        Expr::Match(_, arms) => arms.iter().any(|arm| arm.body.iter().any(expr_has_emit)),
+        _ => false,
+    }
+}
+
+fn has_explicit_return_stmt(body: &[Expr]) -> bool {
+    body.iter().any(expr_has_return)
+}
+
+fn expr_has_return(expr: &Expr) -> bool {
+    match expr {
+        Expr::Return(_) => true,
+        Expr::IfExpr(ie) => {
+            ie.then_body.iter().any(expr_has_return)
+                || ie
+                    .else_body
+                    .as_ref()
+                    .map(|b| b.iter().any(expr_has_return))
+                    .unwrap_or(false)
+        }
+        Expr::ForLoop { body, .. } | Expr::WhileLoop { body, .. } => {
+            body.iter().any(expr_has_return)
+        }
+        Expr::Match(_, arms) => arms.iter().any(|arm| arm.body.iter().any(expr_has_return)),
+        _ => false,
+    }
+}
+
+/// Type name stored on struct_fields for element/type inference (Rust form).
+fn type_name_for_field(ty: &TypeExpr) -> String {
+    type_to_rust(ty)
+}
+
+/// Empty collection defaults for smart constructors (List → vec![], Map → HashMap::new()).
+fn field_has_empty_collection_default(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::List(_) | TypeExpr::Map(_, _) | TypeExpr::Set(_) => true,
+        TypeExpr::Generic(name, _) => {
+            matches!(
+                name.as_str(),
+                "List" | "Map" | "Set" | "Vec" | "HashMap" | "HashSet"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn empty_collection_default(ty: &TypeExpr) -> &'static str {
+    match ty {
+        TypeExpr::List(_) => "Vec::new()",
+        TypeExpr::Set(_) => "std::collections::HashSet::new()",
+        TypeExpr::Map(_, _) => "std::collections::HashMap::new()",
+        TypeExpr::Generic(name, _) => match name.as_str() {
+            "List" | "Vec" => "Vec::new()",
+            "Set" | "HashSet" => "std::collections::HashSet::new()",
+            "Map" | "HashMap" => "std::collections::HashMap::new()",
+            _ => "Default::default()",
+        },
+        _ => "Default::default()",
+    }
 }
 
 /// Translate an invariant condition expression (simple text form).
@@ -1866,16 +2155,37 @@ fn translate_emit_field(
 /// Generate an enum-shaped construct.
 fn gen_enum(c: &Construct) -> String {
     let mut out = String::new();
+    // Unit-only enums get Default (first variant) so partial smart-ctors can
+    // fill omitted enum fields via `Enum::default()`.
+    let unit_only = if !c.rich_variants.is_empty() {
+        c.rich_variants
+            .iter()
+            .all(|v| matches!(v, EnumVariant::Unit(_)))
+    } else {
+        !c.variants.is_empty()
+    };
+    let derives = if unit_only {
+        "Debug, Clone, PartialEq, Serialize, Deserialize, Default"
+    } else {
+        "Debug, Clone, PartialEq, Serialize, Deserialize"
+    };
     out.push_str(&format!(
-        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]\npub enum {}{} {{\n",
-        c.subkind, c.name, c.name, generic_params_rust(&c.type_params)
+        "/// {}: {}\n#[derive({})]\npub enum {}{} {{\n",
+        c.subkind, c.name, derives, c.name, generic_params_rust(&c.type_params)
     ));
 
     // Use rich_variants if available, otherwise fall back to flat string variants
     if !c.rich_variants.is_empty() {
+        let mut first = true;
         for v in &c.rich_variants {
             match v {
-                EnumVariant::Unit(name) => out.push_str(&format!("    {},\n", name)),
+                EnumVariant::Unit(name) => {
+                    if unit_only && first {
+                        out.push_str("    #[default]\n");
+                        first = false;
+                    }
+                    out.push_str(&format!("    {},\n", name));
+                }
                 EnumVariant::Tuple(name, types) => {
                     let fields = types.iter().map(type_to_rust).collect::<Vec<_>>().join(", ");
                     out.push_str(&format!("    {}({}),\n", name, fields));
@@ -1890,7 +2200,10 @@ fn gen_enum(c: &Construct) -> String {
             }
         }
     } else {
-        for v in &c.variants {
+        for (i, v) in c.variants.iter().enumerate() {
+            if unit_only && i == 0 {
+                out.push_str("    #[default]\n");
+            }
             out.push_str(&format!("    {},\n", v));
         }
     }
@@ -2078,9 +2391,9 @@ impl Bus for InProcessBus {
 "#;
 
 /// Generate the shared library crate that all context crates depend on. It
-/// owns the common error types and the layer-provided top-level traits (Bus),
-/// so there is exactly one definition of each across the workspace.
-/// CAP-003: bus handler message names from application fns across modules.
+/// owns the common error types and layer-provided top-level traits, so there
+/// is exactly one definition of each across the workspace.
+/// CAP-003: handler message names from application fns across modules.
 fn collect_handler_names(solution: &Solution, modules: &[&Construct]) -> Vec<String> {
     let mut names = Vec::new();
     for module in modules {
@@ -2190,7 +2503,7 @@ futures = "0.3"
 
     let mut lib = String::new();
     lib.push_str("//! Shared types across all context crates — common errors and\n");
-    lib.push_str("//! layer-provided infrastructure traits (the message Bus).\n\n");
+    lib.push_str("//! layer-provided infrastructure traits (routing ports, etc.).\n\n");
     lib.push_str("#![allow(unused_imports)]\n\n");
     lib.push_str("pub mod register_handlers;\n");
     lib.push_str("pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};\n\n");
@@ -2207,12 +2520,17 @@ futures = "0.3"
     let trait_names: std::collections::HashSet<String> =
         traits.iter().map(|t| t.name.clone()).collect();
 
-    let mut has_bus = false;
+    // Local harness impls: emit InProcessBus when a routing trait is declared
+    // (layer statement maps_to), not when a hard-coded name appears.
+    let routing = registry.routing_traits();
+    let mut has_routing_trait = false;
     let mut has_auth = false;
     for t in traits {
-        if t.name == "Bus" {
-            has_bus = true;
+        if routing.iter().any(|r| r == &t.name) {
+            has_routing_trait = true;
         }
+        // AuthService is still name-keyed residual (RT-008); prefer layer
+        // strategy metadata when that path is cleaned up.
         if t.name == "AuthService" {
             has_auth = true;
         }
@@ -2251,10 +2569,10 @@ futures = "0.3"
         lib.push_str("}\n\n");
     }
 
-    // RT-001 / RT-004: local InProcessBus when layer declares Bus.
-    // Not domain knowledge — keyed on the layer-provided routing trait name
-    // that already appears in the registry declarations.
-    if has_bus {
+    // RT-001 / RT-004: local InProcessBus when a routing trait is present.
+    // Residual: the impl body still names `Bus` / dispatch|invoke|request —
+    // long-term this should be layer-declared or generated from the trait surface.
+    if has_routing_trait {
         lib.push_str(INPROCESS_BUS_IMPL);
     }
     // RT-008: local allow-all AuthService for dev harness.
@@ -2739,7 +3057,7 @@ fn gen_impls(
                     ctx.locals.insert(p.clone());
                 }
                 // @env annotation fields are available as self.field in the body.
-                ctx.in_aggregate_fn = true;
+                ctx.in_method = true;
                 for ann in &c.annotations {
                     if ann.name == "env" {
                         for arg in &ann.args {
@@ -3377,8 +3695,8 @@ fn default_ok_for(ret_rust: &str) -> String {
     }
 }
 
-/// Something that generates an orchestrator function — either a core `flow`
-/// or an fn-shaped layer construct (service, saga, ...).
+/// Something that generates an application function — either a core `flow`
+/// or an fn-shaped layer construct (service, saga, handler, …).
 enum FlowLike<'a> {
     Flow(&'a Flow),
     Construct(&'a Construct),
@@ -3392,7 +3710,7 @@ fn infer_flow_return_type(
     return_expr: Option<&Expr>,
     steps: &[FlowStep],
     base_ctx: &crate::expr::GenCtx,
-    is_orchestrator: bool,
+    envelope_routing: bool,
 ) -> String {
     // If there's an explicit top-level return expression, use it.
     // Otherwise, scan step bodies for `ret` (Expr::Return) statements.
@@ -3422,8 +3740,8 @@ fn infer_flow_return_type(
                 if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = expr {
                     if !name.contains('.') {
                         ctx.locals.insert(name.clone());
-                        if is_orchestrator {
-                            // Orchestrator locals are JSON Bus results.
+                        if envelope_routing {
+                            // Envelope-routing locals are JSON message results.
                             ctx.local_types.insert(name.clone(), "serde_json::Value".to_string());
                         } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
                             ctx.local_types.insert(name.clone(), t);
@@ -3441,12 +3759,57 @@ fn infer_flow_return_type(
     }
 }
 
+/// Scan an expression tree for ! method calls that indicate dep usage.
+/// Registers the trait name in `deps` and records the call target as the preferred field name.
+fn scan_dep_calls(
+    expr: &Expr,
+    name_to_shape: &std::collections::HashMap<String, Shape>,
+    deps: &mut std::collections::HashSet<String>,
+    field_names: &mut std::collections::HashMap<String, String>,
+) {
+    match expr {
+        Expr::Call(call) => {
+            if !call.target.is_empty() && call.method.ends_with('!') {
+                // Find matching trait
+                for (name, shape) in name_to_shape {
+                    if *shape == Shape::Trait {
+                        let trait_snake = to_snake(name);
+                        if trait_snake == call.target || trait_snake.ends_with(&call.target) {
+                            deps.insert(name.clone());
+                            field_names.entry(name.clone()).or_insert_with(|| call.target.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(recv) = &call.receiver {
+                scan_dep_calls(recv, name_to_shape, deps, field_names);
+            }
+            for arg in &call.args {
+                scan_dep_calls(arg, name_to_shape, deps, field_names);
+            }
+        }
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => {
+            scan_dep_calls(rhs, name_to_shape, deps, field_names);
+        }
+        Expr::IfExpr(data) => {
+            scan_dep_calls(&data.condition, name_to_shape, deps, field_names);
+            for e in &data.then_body { scan_dep_calls(e, name_to_shape, deps, field_names); }
+            if let Some(eb) = &data.else_body {
+                for e in eb { scan_dep_calls(e, name_to_shape, deps, field_names); }
+            }
+        }
+        Expr::Return(inner) => scan_dep_calls(inner, name_to_shape, deps, field_names),
+        _ => {}
+    }
+}
+
 fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry) -> GeneratedFile {
-    use crate::expr::{build_ctx_from_solution, collect_deps, gen_deps_struct, stmt_to_rust, expr_to_rust};
+    use crate::expr::{build_ctx_from_solution, collect_deps, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
     let mut out = String::new();
-    out.push_str("//! Application services and flow orchestrators.\n\n");
+    out.push_str("//! Application services and flow functions.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse crate::domain::messages::*;\n");
     out.push_str("use std::sync::Arc;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\n\n");
@@ -3496,8 +3859,8 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         }
     }
 
-    // INV-003: JSON-Bus orchestrator path is opt-in via layer routing traits +
-    // step context refs. Packages without routing (no Bus/etc.) stay direct-call.
+    // INV-003: JSON envelope routing is opt-in via layer routing traits +
+    // step context refs. Packages without routing stay direct-call.
     let has_ctx_refs = flows.iter().any(|flow| {
         let steps = match flow {
             FlowLike::Flow(f) => &f.steps,
@@ -3511,12 +3874,12 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             }
         })
     });
-    let is_orchestrator = has_ctx_refs && !registry.routing_traits().is_empty();
+    let envelope_routing = has_ctx_refs && !registry.routing_traits().is_empty();
 
-    // For orchestrators, only routing traits (e.g. Bus) are direct deps — all
-    // other calls go through the message bus.
+    // With envelope routing, only routing traits are direct deps — other
+    // cross-boundary calls go through the message-routing port.
     let mut effective_name_to_shape = name_to_shape.clone();
-    if is_orchestrator {
+    if envelope_routing {
         let routing = registry.routing_traits();
         // Remove all non-routing traits from the shape map so they don't become direct deps
         effective_name_to_shape.retain(|name, shape| {
@@ -3527,6 +3890,8 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     // Collect all deps across all flows
     let base_ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
     let mut all_deps = std::collections::HashSet::new();
+    // Track dep field names: trait_name → preferred field_name (from @dep declarations)
+    let mut dep_field_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for flow in flows {
         let steps = match flow {
             FlowLike::Flow(f) => &f.steps,
@@ -3543,21 +3908,49 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             if registry.field_is_dependency(field) {
                 // The type_expr of a dependency-role field is the trait name
                 // (or a type alias like WearTestRepo / Generic EntityRepo<T>).
-                match &field.type_expr {
-                    TypeExpr::Named(type_name) => {
-                        all_deps.insert(type_name.clone());
-                    }
-                    TypeExpr::Generic(base, _) => {
-                        all_deps.insert(base.clone());
-                    }
-                    _ => {}
+                let trait_name = match &field.type_expr {
+                    TypeExpr::Named(type_name) => type_name.clone(),
+                    TypeExpr::Generic(base, _) => base.clone(),
+                    _ => continue,
+                };
+                all_deps.insert(trait_name.clone());
+                // Record the user-declared field name for this trait
+                dep_field_names.entry(trait_name).or_insert_with(|| to_snake(&field.name));
+            }
+        }
+    }
+
+    // Also scan for ! method calls in step bodies (DomainService style)
+    for flow in flows {
+        let steps = match flow {
+            FlowLike::Flow(f) => &f.steps,
+            FlowLike::Construct(c) => &c.steps,
+        };
+        for step in steps {
+            if let FlowStep::Step(s) = step {
+                for expr in &s.body {
+                    scan_dep_calls(expr, &effective_name_to_shape, &mut all_deps, &mut dep_field_names);
                 }
             }
         }
     }
 
-    // Emit the Deps struct
-    out.push_str(&gen_deps_struct(&all_deps));
+    // Generate Deps struct using user-declared field names
+    if !all_deps.is_empty() {
+        out.push_str("/// Injected dependencies (ports).\npub struct Deps {\n");
+        let mut sorted: Vec<&String> = all_deps.iter().collect();
+        sorted.sort();
+        for trait_name in sorted {
+            let field_name = dep_field_names.get(trait_name)
+                .cloned()
+                .unwrap_or_else(|| to_snake(trait_name));
+            out.push_str(&format!(
+                "    pub {}: std::sync::Arc<dyn {} + Send + Sync>,\n",
+                field_name, trait_name
+            ));
+        }
+        out.push_str("}\n\n");
+    }
 
     for flow in flows {
         let (name, subkind, annotations, inputs, steps) = match flow {
@@ -3611,7 +4004,10 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
 
         // Build context for this flow
         let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
-        ctx.is_orchestrator = is_orchestrator;
+        ctx.envelope_routing = envelope_routing;
+        if envelope_routing && ctx.routing_ref.is_empty() {
+            ctx.routing_ref = ctx.default_routing_ref_as_dep();
+        }
         // Register inputs as locals, with their declared types for inference.
         // Skip dependency-role inputs — accessed via deps.x, not as locals.
         for input in inputs {
@@ -3622,6 +4018,27 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             }
             ctx.locals.insert(input.name.clone());
             ctx.local_types.insert(input.name.clone(), type_to_rust(&input.type_expr));
+        }
+        // For DomainService flows: register step-level dep call targets as Trait
+        // and copy method_returns so Option<T> unwrapping works.
+        for (trait_name, field_name) in &dep_field_names {
+            if !ctx.name_to_shape.contains_key(field_name) {
+                ctx.name_to_shape.insert(field_name.clone(), Shape::Trait);
+            }
+            // Copy method_returns from PascalCase trait to the field name
+            let mut extra: Vec<((String, String), String)> = Vec::new();
+            for ((tn, mn), ret) in &ctx.method_returns {
+                if tn == trait_name {
+                    extra.push(((field_name.clone(), mn.clone()), ret.clone()));
+                    let clean = mn.trim_end_matches('!').to_string();
+                    if clean != *mn {
+                        extra.push(((field_name.clone(), clean), ret.clone()));
+                    }
+                }
+            }
+            for (k, v) in extra {
+                ctx.method_returns.entry(k).or_insert(v);
+            }
         }
 
         if let Some(rt) = &runtime {
@@ -3643,7 +4060,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             let inner = type_to_rust(rt);
             if inner.starts_with("Result<") { inner } else { format!("Result<{}, DomainError>", inner) }
         } else {
-            infer_flow_return_type(return_expr, steps, &ctx, is_orchestrator)
+            infer_flow_return_type(return_expr, steps, &ctx, envelope_routing)
         };
 
         out.push_str(&format!(
@@ -3708,10 +4125,10 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     }
 }
 
-/// Emit a runtime-delegated construct (e.g. a saga): one `struct` + trait impl
-/// per step, then a function body that builds the boxed step list and calls the
-/// layer-declared coordinator. Contains NO saga-specific vocabulary — it keys
-/// entirely off the `RuntimeBinding` from the layer.
+/// Emit a runtime-delegated construct: one `struct` + trait impl per step, then
+/// a function body that builds the boxed step list and calls the layer-declared
+/// coordinator. Keys entirely off the `RuntimeBinding` and step-trait method
+/// signatures from the layer — no domain vocabulary.
 fn emit_runtime_delegated(
     out: &mut String,
     name: &str,
@@ -3740,8 +4157,30 @@ fn emit_runtime_delegated(
             .map(|m| matches!(&m.return_type, Some(TypeExpr::Result(Some(_)))))
             .unwrap_or(false)
     };
+    let lookup_method = |method: &str| -> Option<&veil_ir::ast::Method> {
+        step_trait_construct.and_then(|t| t.methods.iter().find(|m| m.name == method))
+    };
 
-    // Every let-binding across ALL step bodies is a shared saga-state key, so a
+    // Trait names in scope for param rendering (step trait + routing + any
+    // named traits the step methods reference).
+    let mut trait_names: std::collections::HashSet<String> = ctx.routing_traits.clone();
+    trait_names.insert(step_trait.clone());
+    if let Some(tc) = step_trait_construct {
+        for m in &tc.methods {
+            for p in &m.params {
+                if let TypeExpr::Named(n) = &p.type_expr {
+                    if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                        // Candidate trait/type name — only box known traits.
+                        if ctx.routing_traits.contains(n) || n == step_trait {
+                            trait_names.insert(n.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Every let-binding across ALL step bodies is a shared state key, so a
     // later step can read an earlier step's result.
     let mut state_locals: std::collections::HashSet<String> = std::collections::HashSet::new();
     for step in steps {
@@ -3756,6 +4195,26 @@ fn emit_runtime_delegated(
         }
     }
 
+    // Routing param name from the step trait's first method that names a
+    // routing trait (e.g. `bus: Bus` → `"bus"`). Falls back to snake_case of
+    // the primary routing trait.
+    let routing_param = lookup_method("action")
+        .or_else(|| step_trait_construct.and_then(|t| t.methods.first()))
+        .and_then(|m| {
+            m.params.iter().find_map(|p| {
+                if let TypeExpr::Named(ty) = &p.type_expr {
+                    if ctx.routing_traits.contains(ty) {
+                        return Some(to_snake(&p.name));
+                    }
+                }
+                None
+            })
+        })
+        .or_else(|| ctx.primary_routing_trait().map(|t| to_snake(t)))
+        .unwrap_or_default();
+
+    let use_envelope = !ctx.routing_traits.is_empty();
+
     // One struct + impl per Step (skip par/match — delegated runtimes use
     // plain steps).
     for (i, step) in steps.iter().enumerate() {
@@ -3769,12 +4228,12 @@ fn emit_runtime_delegated(
         }
         out.push_str("}\n\n");
 
-        // The step body ctx: inputs are `self.<field>`; the Bus is the injected
-        // `bus` param; cross-step locals live in the threaded `state`.
+        // Step body ctx: inputs are `self.<field>`; routing trait is the injected
+        // param from the step-trait signature; cross-step locals live in threaded state.
         let mut step_ctx = ctx.clone_for_inference();
-        step_ctx.is_orchestrator = true;
-        step_ctx.bus_ref = "bus".to_string();
-        step_ctx.in_aggregate_fn = true; // input idents render as self.<field>
+        step_ctx.envelope_routing = use_envelope;
+        step_ctx.routing_ref = routing_param.clone();
+        step_ctx.in_method = true; // input idents render as self.<field>
         for (fname, ftype) in &input_fields {
             step_ctx.self_fields.insert(fname.clone());
             step_ctx.local_types.insert(fname.clone(), ftype.clone());
@@ -3784,11 +4243,27 @@ fn emit_runtime_delegated(
         out.push_str(&format!("#[async_trait::async_trait]\nimpl {} for {} {{\n", step_trait, type_name));
 
         // The main body fills `action` (returns updated state); each sub-block
-        // fills its mapped method.
-        emit_step_method(out, "action", &s.body, method_returns_state("action"), &step_ctx);
+        // fills its mapped method. Signatures come from the layer step trait.
+        emit_step_method(
+            out,
+            "action",
+            &s.body,
+            method_returns_state("action"),
+            lookup_method("action"),
+            &trait_names,
+            &step_ctx,
+        );
         for block in &s.sub_blocks {
             if let Some((_, method)) = rt.method_map.iter().find(|(kw, _)| kw == &block.keyword) {
-                emit_step_method(out, method, &block.body, method_returns_state(method), &step_ctx);
+                emit_step_method(
+                    out,
+                    method,
+                    &block.body,
+                    method_returns_state(method),
+                    lookup_method(method),
+                    &trait_names,
+                    &step_ctx,
+                );
             }
         }
         out.push_str("}\n\n");
@@ -3818,26 +4293,88 @@ fn emit_runtime_delegated(
         out.push_str(&format!("        Box::new({} {{ {} }}),\n", type_name, ctor_args));
     }
     out.push_str("    ];\n");
-    // Call the coordinator with the Bus dependency and the step list.
-    out.push_str(&format!("    {}(deps.bus.as_ref(), &steps).await\n", to_snake(&rt.coordinator)));
+    // Call the coordinator with the primary routing-trait dep and the step list.
+    let routing_dep = ctx
+        .primary_routing_trait()
+        .map(|t| format!("deps.{}.as_ref()", to_snake(t)))
+        .unwrap_or_else(|| "/* no routing trait */".to_string());
+    out.push_str(&format!(
+        "    {}({}, &steps).await\n",
+        to_snake(&rt.coordinator),
+        routing_dep
+    ));
     out.push_str("}\n\n");
 }
 
-/// Emit one trait-method impl (`action`/`compensate`) with a translated body.
-/// State-threading methods take a `state` param and return the updated state;
-/// others take state read-only and return unit.
-fn emit_step_method(out: &mut String, method: &str, body: &[Expr], returns_state: bool, ctx: &crate::expr::GenCtx) {
+/// Emit one step-trait method impl with a translated body.
+/// Parameter list and types are taken from the layer-declared step trait method
+/// (not hardcoded). Value-typed params (e.g. `Json`) are `mut` so step bodies
+/// can reassign threaded state; trait params are shared references.
+fn emit_step_method(
+    out: &mut String,
+    method: &str,
+    body: &[Expr],
+    returns_state: bool,
+    step_method: Option<&veil_ir::ast::Method>,
+    trait_names: &std::collections::HashSet<String>,
+    ctx: &crate::expr::GenCtx,
+) {
     use crate::expr::expr_to_rust;
-    let ret = if returns_state { "serde_json::Value" } else { "()" };
+
+    let (params_str, ret_inner) = if let Some(m) = step_method {
+        let params: Vec<String> = m
+            .params
+            .iter()
+            .map(|p| {
+                let ty = param_type_to_rust(&p.type_expr, trait_names);
+                // Threaded JSON state bags need `mut` so the body can reassign.
+                let mut_kw = if matches!(&p.type_expr, TypeExpr::Named(n) if n == "Json") {
+                    "mut "
+                } else {
+                    ""
+                };
+                format!("{}{}: {}", mut_kw, to_snake(&p.name), ty)
+            })
+            .collect();
+        let ret = match &m.return_type {
+            Some(TypeExpr::Result(Some(inner))) => type_to_rust_with_traits(inner, trait_names),
+            Some(TypeExpr::Result(None)) | None => "()".to_string(),
+            Some(other) => type_to_rust_with_traits(other, trait_names),
+        };
+        (params.join(", "), ret)
+    } else {
+        // Fallback when the step trait is missing from the solution (should not
+        // happen when layers inject declare blocks).
+        let ret = if returns_state {
+            "serde_json::Value".to_string()
+        } else {
+            "()".to_string()
+        };
+        (String::new(), ret)
+    };
+
+    let sep = if params_str.is_empty() { "" } else { ", " };
     out.push_str(&format!(
-        "    async fn {}(&self, bus: &(dyn Bus + Send + Sync), mut state: serde_json::Value) -> Result<{}, DomainError> {{\n",
-        method, ret
+        "    async fn {}(&self{}{}) -> Result<{}, DomainError> {{\n",
+        method, sep, params_str, ret_inner
     ));
     for expr in body {
         out.push_str(&format!("        {};\n", expr_to_rust(expr, ctx)));
     }
     if returns_state {
-        out.push_str("        Ok(state)\n    }\n");
+        // Return the threaded state param if present; else unit Ok.
+        let state_name = step_method
+            .and_then(|m| {
+                m.params.iter().rev().find_map(|p| {
+                    if matches!(&p.type_expr, TypeExpr::Named(n) if n == "Json") {
+                        Some(to_snake(&p.name))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_else(|| "state".to_string());
+        out.push_str(&format!("        Ok({})\n    }}\n", state_name));
     } else {
         out.push_str("        Ok(())\n    }\n");
     }
