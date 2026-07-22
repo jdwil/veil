@@ -782,8 +782,11 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         if is_simple_ident {
                             // Bare variable from a match arm — likely already DomainError
                             format!("return Err({})", a)
+                        } else if matches!(c.args.first(), Some(Expr::StringLit(_))) {
+                            // ret Err "msg" → External (adapter fail-closed, not validation)
+                            format!("return Err(DomainError::External({}))", a)
                         } else {
-                            // String expression — wrap in DomainError::Validation
+                            // Other expression — wrap in DomainError::Validation
                             format!("return Err(DomainError::Validation({}))", a)
                         }
                     }
@@ -1330,7 +1333,11 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Match local-target lowering: unwrap Option for immediate .as_s() chains.
         if call.method == "get" && call.args.len() == 1 {
             if let Expr::StringLit(key) = &call.args[0] {
-                return format!("{}.get(\"{}\").unwrap()", recv_str, key);
+                // Issue 6: never panic on missing map keys in adapter bodies.
+                return format!(
+                    "{}.get(\"{}\").ok_or_else(|| DomainError::External(\"missing {}\".into()))?",
+                    recv_str, key, key
+                );
             }
         }
         // DynamoDB AttributeValue .as_s() / .as_n() returns Result<&str, &AttributeValue>
@@ -1810,13 +1817,21 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Always strip VEIL `!`/`?` fallible/query suffixes (typecheck sugar only).
         let method = rust_method_name(&call.method);
 
-        // HashMap/DynamoDB item .get("key") pattern: emit as &str arg + unwrap Option.
+        // HashMap/DynamoDB item .get("key") — never panic (review Issue 6).
         if call.method == "get" && call.args.len() == 1 {
             if let Expr::StringLit(key) = &call.args[0] {
-                // .get("key") returns Option<&V> — emit .get("key").unwrap() for now
-                // (callers typically chain .as_s()? which handles the error case)
-                return format!("{}.get(\"{}\").unwrap()", call.target, key);
+                return format!(
+                    "{}.get(\"{}\").ok_or_else(|| DomainError::External(\"missing {}\".into()))?",
+                    call.target, key, key
+                );
             }
+        }
+        // Option.unwrap() in Result-returning bodies → ok_or (review Issue 1).
+        if (call.method == "unwrap" || call.method == "unwrap!") && call.args.is_empty() {
+            return format!(
+                "{}.ok_or(DomainError::NotFound)?",
+                call.target
+            );
         }
 
         if let Some(type_name) = ctx.local_type(&call.target) {
@@ -2007,22 +2022,29 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                 // Boolean guard: the condition must evaluate to true.
                 Some(cond) => {
                     let cond_str = expr_to_rust(cond, ctx);
-                    // Suppress redundant `.is_some()` guards on variables that were
-                    // already unwrapped from Option via `.ok_or(...)` on the port call.
-                    // The codegen appends `.ok_or(DomainError::NotFound)?` to methods
-                    // returning Option<T>, so the variable is T — not Option<T>.
+                    // Suppress redundant `.is_some()` guards only when we *know*
+                    // the local is already unwrapped (port call + `.ok_or(NotFound)?`).
+                    // If type is unknown, keep the guard — domain helpers like
+                    // `get_endpoint` return Option without auto-ok_or (review Issue 1).
                     if let Expr::Call(c) = cond {
                         if c.method == "is_some" && ctx.locals.contains(&c.target) {
                             let var_type = ctx.local_types.get(&c.target);
                             let is_option = var_type
                                 .map(|t| t.starts_with("Option<") || t == "Option")
-                                .unwrap_or(false);
+                                .unwrap_or(true); // unknown → keep guard
                             if !is_option {
                                 return format!(
                                     "/* guard {:?} — already unwrapped by .ok_or() above */",
                                     msg_escaped
                                 );
                             }
+                            // Prefer explicit is_none → Validation so following
+                            // `.unwrap()` is only reached when Some (still lower
+                            // unwrap to ok_or for panic-free paths).
+                            return format!(
+                                "if {}.is_none() {{ return Err(DomainError::Validation(\"{}\".to_string())); }}",
+                                c.target, msg_escaped
+                            );
                         }
                     }
                     format!(

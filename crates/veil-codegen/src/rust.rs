@@ -882,13 +882,39 @@ fn gen_local_harness_main(
             } else {
                 out.push_str("        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_default())),\n");
             }
-            out.push_str("        Err(e) => { eprintln!(\"error: {e}\"); Err(StatusCode::INTERNAL_SERVER_ERROR) }\n");
+            // Issue 5: map DomainError → correct HTTP status (not always 500).
+            out.push_str("        Err(e) => Err(veil_domain_error_status(e)),\n");
             out.push_str("    }\n}\n\n");
         }
     }
 
+    out.push_str(harness_domain_error_status_helper());
     out.push_str(harness_body_dt_helper());
     out
+}
+
+/// Map domain errors to HTTP statuses for the local dual-loop harness.
+fn harness_domain_error_status_helper() -> &'static str {
+    r#"
+fn veil_domain_error_status(e: impl std::fmt::Display) -> StatusCode {
+    let s = e.to_string();
+    let lower = s.to_ascii_lowercase();
+    // thiserror Display: "Not found", "Validation failed: …", "External service error: …"
+    if lower.contains("not found") {
+        eprintln!("warn: not found: {s}");
+        StatusCode::NOT_FOUND
+    } else if lower.contains("validation") {
+        eprintln!("warn: validation: {s}");
+        StatusCode::BAD_REQUEST
+    } else if lower.contains("external") {
+        eprintln!("error: upstream: {s}");
+        StatusCode::BAD_GATEWAY
+    } else {
+        eprintln!("error: internal: {s}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+"#
 }
 
 /// Whether a GET handler needs `Query(q)` — only when it has non-dep inputs
@@ -4724,8 +4750,9 @@ pub fn type_to_rust(ty: &TypeExpr) -> String {
 /// (`""` → null) so browser `<input type="date">` and optional fields do not 400.
 fn harness_body_field_extract(field: &str, rust_type: &str) -> String {
     match rust_type {
+        // Issue 2: never invent UUIDs — missing/invalid → 400.
         "Uuid" => format!(
-            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).unwrap_or_else(Uuid::new_v4);\n"
+            "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).and_then(|s| s.parse::<Uuid>().ok()).ok_or(StatusCode::BAD_REQUEST)?;\n"
         ),
         "String" => format!(
             "    let {field} = body.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or_default().to_string();\n"
@@ -5412,12 +5439,13 @@ pub fn generate_multi_package_harness(
                 );
             }
             main_rs.push_str(
-                "        Err(e) => { eprintln!(\"error: {e}\"); Err(StatusCode::INTERNAL_SERVER_ERROR) }\n",
+                "        Err(e) => Err(veil_domain_error_status(e)),\n",
             );
             main_rs.push_str("    }\n}\n\n");
         }
     }
 
+    main_rs.push_str(harness_domain_error_status_helper());
     main_rs.push_str(harness_body_dt_helper());
 
     // Build Cargo.toml for veil_bin
