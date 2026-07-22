@@ -581,7 +581,7 @@ fn gen_local_harness_main(
         let (_deps_set, dep_fields) =
             collect_deps_field_map(&services, registry, &name_to_shape);
 
-        out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
+        let mut wired: Vec<(String, String)> = Vec::new(); // (field, adapter_snake)
         let mut wired_fields: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for ad in adapters {
@@ -590,41 +590,66 @@ fn gen_local_harness_main(
             }
             if let Some(target) = &ad.target {
                 let field = adapter_deps_field_name(sol, ad, target, &dep_fields);
-                // One adapter per Deps field (first wins). Multi-adapter selection
-                // policy is PR4; naming agreement is this path.
+                // One adapter per Deps field (first wins). Dual Dynamo+Pg keeps first.
                 if !wired_fields.insert(field.clone()) {
                     continue;
                 }
-                // Only wire fields the application Deps struct declares.
-                if !dep_fields.values().any(|v| v == &field)
+                if !dep_fields.is_empty()
+                    && !dep_fields.values().any(|v| v == &field)
                     && !dep_fields.contains_key(target)
                 {
-                    // Still allow if map is empty (no @dep scan) and field is trait snake
-                    if !dep_fields.is_empty() {
-                        continue;
-                    }
+                    continue;
                 }
-                out.push_str(&format!(
-                    "        {field}: {sn}_inst.clone(),\n",
-                    sn = to_snake(&ad.name),
-                ));
+                wired.push((field, to_snake(&ad.name)));
             }
+        }
+        // Required Deps fields with no adapter → fail closed with a clear message.
+        let mut missing: Vec<String> = Vec::new();
+        for (trait_name, field) in &dep_fields {
+            if !wired_fields.contains(field) {
+                missing.push(format!("`{field}` (trait {trait_name})"));
+            }
+        }
+        if !missing.is_empty() {
+            out.push_str(&format!(
+                "    compile_error!(\"Deps requires adapter(s) for: {} — add `adapter … for <Trait>` in the package\");\n\n",
+                missing.join(", ")
+            ));
+        }
+        out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
+        for (field, sn) in &wired {
+            out.push_str(&format!("        {field}: {sn}_inst.clone(),\n"));
         }
         out.push_str("    });\n\n");
 
-        // Generate RESTful route handlers for each service.
-        // Detect CRUD patterns: List* → GET /resource, Get* → GET /resource/:id,
-        // Create* → POST /resource, Update* → PUT /resource/:id, Delete* → DELETE /resource/:id
+        // HTTP surface: prefer `@route` endpoints; dedupe (method, path).
+        // Without any @route in the module, fall back to name-derived for all fns.
+        let routable = http_routable_services(&services);
         out.push_str("    let app = Router::new()\n");
-        let mut routes_emitted: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-        for svc in services {
+        let mut routes_emitted: std::collections::BTreeMap<String, Vec<(String, String)>> =
+            std::collections::BTreeMap::new();
+        // path → list of (method, handler_fn_name)
+        let mut seen_method_path: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for svc in &routable {
             let fn_name = to_snake(&svc.name);
             let (method, path) = rest_route_for_service(svc);
-            routes_emitted.entry(path.clone()).or_default().push(format!("{method}({fn_name}_handler)"));
+            let key = (method.clone(), path.clone());
+            if !seen_method_path.insert(key) {
+                continue; // duplicate GET /api/foo from svc + handler
+            }
+            routes_emitted
+                .entry(path)
+                .or_default()
+                .push((method, format!("{fn_name}_handler")));
         }
         for (path, handlers) in &routes_emitted {
-            let combined = handlers.join(".").replace("get(", "get(").replace("post(", "post(").replace("put(", "put(").replace("delete(", "delete(");
-            out.push_str(&format!("        .route(\"{path}\", {})\n", handlers.join(".")));
+            let chained = handlers
+                .iter()
+                .map(|(m, h)| format!("{m}({h})"))
+                .collect::<Vec<_>>()
+                .join(".");
+            out.push_str(&format!("        .route(\"{path}\", {chained})\n"));
         }
         out.push_str("        .route(\"/health\", get(|| async { \"ok\" }))\n");
         out.push_str("        .layer(CorsLayer::permissive())\n");
@@ -638,13 +663,19 @@ fn gen_local_harness_main(
     out.push_str("    axum::serve(listener, app).await?;\n");
     out.push_str("    Ok(())\n}\n\n");
 
-    // Generate handler functions for each service
+    // Generate handler functions only for HTTP-routable services
     for module in modules {
         let crate_name = to_snake(&module.name);
         let flat = flatten_module(module);
-        for svc in &flat.fns {
+        let routable = http_routable_services(&flat.fns);
+        let mut seen_method_path: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for svc in &routable {
             let fn_name = to_snake(&svc.name);
             let (method, path) = rest_route_for_service(svc);
+            if !seen_method_path.insert((method.clone(), path.clone())) {
+                continue;
+            }
             let needs_path_id = path.contains("{id}")
                 || (method == "get" && !svc.name.starts_with("List") && !path.contains('{'))
                 || method == "put"
@@ -678,26 +709,24 @@ fn gen_local_harness_main(
             }
 
             // Only pass &deps when the application fn actually takes deps
-            // (has @dep inputs or body references ports).
-            let svc_has_deps = svc.inputs.iter().any(|i| {
-                i.annotations.iter().any(|a| a.name == "dep")
-            }) || {
-                // Port calls as Type.method in body imply Deps
-                svc.steps.iter().any(|st| {
-                    if let FlowStep::Step(s) = st {
-                        s.body.iter().any(|e| expr_mentions_port_call(e))
-                    } else {
-                        false
-                    }
-                })
-            };
+            // (dependency-role inputs or body references ports).
+            let svc_has_deps = svc.inputs.iter().any(|i| registry.field_is_dependency(i))
+                || {
+                    svc.steps.iter().any(|st| {
+                        if let FlowStep::Step(s) = st {
+                            s.body.iter().any(|e| expr_mentions_port_call(e))
+                        } else {
+                            false
+                        }
+                    })
+                };
             let mut args: Vec<String> = if svc_has_deps {
                 vec!["&deps".to_string()]
             } else {
                 Vec::new()
             };
             for input in &svc.inputs {
-                if input.annotations.iter().any(|a| a.name == "dep") {
+                if registry.field_is_dependency(input) {
                     continue;
                 }
                 let field = to_snake(&input.name);
@@ -774,6 +803,26 @@ pub struct IrRestRoute {
     pub via: &'static str,
 }
 
+fn has_route_annotation(svc: &Construct) -> bool {
+    svc.annotations.iter().any(|a| a.name == "route")
+}
+
+/// Fns that become HTTP endpoints in the harness.
+/// If any construct has `@route`, only those are routable (blessed REST surface).
+/// Otherwise fall back to all fn-shaped constructs (legacy name-derived).
+fn http_routable_services<'a>(services: &[&'a Construct]) -> Vec<&'a Construct> {
+    let with_route: Vec<&'a Construct> = services
+        .iter()
+        .copied()
+        .filter(|s| has_route_annotation(s))
+        .collect();
+    if !with_route.is_empty() {
+        with_route
+    } else {
+        services.to_vec()
+    }
+}
+
 /// Collect REST routes from package IR: `@route` first, else name-derived
 /// (same policy as local harness). Works without gen (ACS-011).
 pub fn list_rest_routes_from_solution(sol: &Solution) -> Vec<IrRestRoute> {
@@ -786,18 +835,26 @@ pub fn list_rest_routes_from_solution(sol: &Solution) -> Vec<IrRestRoute> {
             continue;
         }
         let flat = flatten_module(c);
-        for svc in &flat.fns {
-            // Skip non-HTTP helpers (@main bootstrap, pure fns without svc/handler shape)
-            let is_svc = svc.subkind.eq_ignore_ascii_case("Service")
-                || svc.subkind.eq_ignore_ascii_case("Handler")
-                || svc.keyword == "svc"
-                || svc.keyword == "handler"
-                || svc.annotations.iter().any(|a| a.name == "route");
-            if !is_svc {
+        let routable = http_routable_services(&flat.fns);
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for svc in routable {
+            let has_route = has_route_annotation(svc);
+            // When using @route surface, skip non-route helpers already filtered.
+            // When fallback, still skip pure non-service shapes without route.
+            if !has_route {
+                let is_svc = svc.subkind.eq_ignore_ascii_case("Service")
+                    || svc.subkind.eq_ignore_ascii_case("Handler")
+                    || svc.keyword == "svc"
+                    || svc.keyword == "handler";
+                if !is_svc {
+                    continue;
+                }
+            }
+            let (method, path) = rest_route_for_service(svc);
+            if !seen.insert((method.clone(), path.clone())) {
                 continue;
             }
-            let has_route = svc.annotations.iter().any(|a| a.name == "route");
-            let (method, path) = rest_route_for_service(svc);
             out.push(IrRestRoute {
                 method,
                 path,
