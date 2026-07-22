@@ -685,7 +685,7 @@ pub fn generate_ts_with_packages(
         }
     } else if package_has_ui_constructs(solution) {
         // Fallback: no layer templates but has UI constructs — use legacy SPA.
-        files.extend(gen_spa_bundle(solution, &sol_name));
+        files.extend(gen_spa_bundle(solution, &sol_name, registry));
     }
 
     TsProject { files }
@@ -707,10 +707,10 @@ fn package_has_ui_constructs(solution: &Solution) -> bool {
 }
 
 /// CAP-005: emit index.html + browser app that talks to same-origin `/api`.
-fn gen_spa_bundle(solution: &Solution, sol_name: &str) -> Vec<TsFile> {
+fn gen_spa_bundle(solution: &Solution, sol_name: &str, registry: &LayerRegistry) -> Vec<TsFile> {
     let mut files = Vec::new();
 
-    // Collect @route paths if present on pages
+    // Collect http_route annotation paths on pages (role-driven; INV-001).
     let mut routes: Vec<(String, String)> = Vec::new();
     fn strip_ann_quotes(s: &str) -> String {
         let t = s.trim();
@@ -725,24 +725,26 @@ fn gen_spa_bundle(solution: &Solution, sol_name: &str) -> Vec<TsFile> {
     fn js_escape(s: &str) -> String {
         s.replace('\\', "\\\\").replace('"', "\\\"")
     }
-    fn collect_routes(c: &Construct, routes: &mut Vec<(String, String)>) {
+    fn collect_routes(
+        c: &Construct,
+        routes: &mut Vec<(String, String)>,
+        registry: &LayerRegistry,
+    ) {
         if c.subkind.eq_ignore_ascii_case("page") {
-            let route = c
-                .annotations
-                .iter()
-                .find(|a| a.name == "route")
+            let route = registry
+                .http_route_annotation(c)
                 .and_then(|a| a.args.first())
                 .map(|s| strip_ann_quotes(s))
                 .unwrap_or_else(|| format!("/{}", to_camel(&c.name)));
             routes.push((c.name.clone(), route));
         }
         for ch in &c.children {
-            collect_routes(ch, routes);
+            collect_routes(ch, routes, registry);
         }
     }
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
-            collect_routes(c, &mut routes);
+            collect_routes(c, &mut routes, registry);
         }
     }
 

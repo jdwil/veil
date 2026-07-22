@@ -195,7 +195,7 @@ impl GenCtx {
 pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<String, Shape>, registry: &LayerRegistry) -> GenCtx {
     let mut ctx = GenCtx::new(name_to_shape);
 
-    fn visit_constructs(c: &Construct, ctx: &mut GenCtx) {
+    fn visit_constructs(c: &Construct, ctx: &mut GenCtx, registry: &LayerRegistry) {
         // Record method return types for trait-shaped constructs
         if c.shape == Shape::Trait {
             for method in &c.methods {
@@ -234,7 +234,10 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             ctx.struct_fields.insert(c.name.clone(), fields);
 
             // Record struct constructors: Type.new → Type (or Result<Type> for invariant types)
-            let has_invariant = c.annotations.iter().any(|a| a.name == "invariant");
+            let has_invariant = c
+                .annotations
+                .iter()
+                .any(|a| registry.is_invariant_annotation(&a.name));
             let new_ret = if has_invariant {
                 format!("Result<{}>", c.name)
             } else {
@@ -247,13 +250,13 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
         }
 
         for child in &c.children {
-            visit_constructs(child, ctx);
+            visit_constructs(child, ctx, registry);
         }
     }
 
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
-            visit_constructs(c, &mut ctx);
+            visit_constructs(c, &mut ctx, registry);
         }
     }
 
@@ -1286,8 +1289,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // Built-in List methods: `.get(i)` → indexing (`[i as usize]`), `.len()` →
     // `.len() as i64`. The receiver/target is the list expression.
     // Only treat `.get` as slice index when the arg is index-like (int lit /
-    // int-typed local). `client.get(url)` and `map.get(key)` must stay method
-    // calls — non-string non-int used to miscompile as `client[(url) as usize]`.
+    // int-typed local) OR the receiver is known to be a Vec/slice (saga
+    // coordinators: `steps: List<SagaStep>` → `&[Box<dyn …>]`). `client.get(url)`
+    // and `map.get(key)` must stay method calls.
     let list_base = if let Some(recv) = &call.receiver {
         Some(expr_to_rust(recv, ctx))
     } else if !call.target.is_empty()
@@ -1315,7 +1319,32 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 ) || is_copy_local(n, ctx),
                 _ => false,
             };
-            if !is_string_arg && arg_is_index_like {
+            // Receiver known as Vec / slice → index even if local types lag
+            // (e.g. `mut i = upto` before Ident inference is wired).
+            let base_is_list = if !call.target.is_empty() {
+                ctx.local_type(&call.target)
+                    .map(|t| {
+                        t.starts_with("Vec<")
+                            || t.starts_with("&[")
+                            || t.starts_with("&mut [")
+                    })
+                    .unwrap_or(false)
+            } else if let Some(recv) = &call.receiver {
+                if let Expr::Ident(n) = recv.as_ref() {
+                    ctx.local_type(n)
+                        .map(|t| {
+                            t.starts_with("Vec<")
+                                || t.starts_with("&[")
+                                || t.starts_with("&mut [")
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !is_string_arg && (arg_is_index_like || base_is_list) {
                 let idx = expr_to_rust(&call.args[0], ctx);
                 return format!("{}[({}) as usize]", base, idx);
             }
@@ -2639,6 +2668,11 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             }
         }
         Expr::StructLit(name, _) => Some(name.clone()),
+        Expr::Ident(name) => ctx.local_type(name).map(|s| s.to_string()),
+        Expr::IntLit(_) => Some("i64".to_string()),
+        Expr::FloatLit(_) => Some("f64".to_string()),
+        Expr::BoolLit(_) => Some("bool".to_string()),
+        Expr::StringLit(_) => Some("String".to_string()),
         _ => None,
     }
 }

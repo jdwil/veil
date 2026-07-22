@@ -9,7 +9,7 @@ mod tests {
     /// learns its entire vocabulary from layer content at runtime.
     fn ddd_registry() -> LayerRegistry {
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .expect("ddd layer should resolve");
         reg
     }
@@ -323,7 +323,7 @@ sol App
     fn test_stacked_layer_resolves_transitively() {
         // crm.layer maps pipeline->ctx->mod and lead->agg->struct.
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .expect("ddd layer");
         reg.load_content("crm", include_str!("../../../examples/crm.layer"))
             .expect("crm layer");
@@ -688,7 +688,7 @@ pkg App
         let mut reg = LayerRegistry::builtin();
         reg.load_content("di", include_str!("../../../layers/di.layer"))
             .expect("di layer");
-        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .ok();
 
         let src = r#"

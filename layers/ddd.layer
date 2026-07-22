@@ -11,6 +11,19 @@ pkg ddd v1
   bus_policy
     strip_name_prefix Handle
 
+  # Local AllowAllAuth when this trait is present (RT-008); host swaps via strategy.
+  auth_policy
+    service_trait AuthService
+
+  # Name-derived REST when no role:http_route annotation (also in rust.layer).
+  http_name_policy
+    list_prefix List
+    get_prefix Get
+    create_prefix Create
+    update_prefix Update
+    delete_prefix Delete
+    path_prefix /api/
+
   construct Context
     kw ctx
     mt mod
@@ -86,7 +99,8 @@ pkg ddd v1
       color "#ec4899"
       label "Aggregate"
     ann
-      invariant: "Domain constraint validation" expr
+      # role:invariant — smart-constructor validation (INV-001)
+      invariant: "Domain constraint validation" expr role:invariant
     group domain
     present
       role container
@@ -184,6 +198,9 @@ pkg ddd v1
       icon "🔌"
       color "#10b981"
       label "Port"
+    ann
+      # role:runtime_strategy — runtime-provided adapter selection (e.g. cognito)
+      strategy: "Runtime provider strategy key" value role:runtime_strategy
     group domain
     present
       role leaf
@@ -202,7 +219,9 @@ pkg ddd v1
       color "#a855f7"
       label "Adapter"
     ann
-      env: "Required environment variables" vars
+      # role:adapter_env / adapter_field — harness wiring (INV-001)
+      env: "Required environment variables" vars role:adapter_env
+      field: "SDK/client field from stub harness_field" name_type role:adapter_field
     group infrastructure
     tgt Port, Repository
     dg infrastructure

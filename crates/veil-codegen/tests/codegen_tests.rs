@@ -8,7 +8,7 @@ use veil_ir::LayerRegistry;
 /// Parse an example .veil file with the ddd layer and generate the project.
 fn generate_example(src: &str) -> String {
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd layer should load");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
@@ -338,7 +338,7 @@ fn manifest_includes_layer_provided_deps_with_strategy() {
 
 fn generate_ts_example(src: &str) -> String {
     let mut reg = veil_ir::LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd layer should load");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
@@ -460,7 +460,7 @@ pkg BusApp
         ret "ok"
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
@@ -508,9 +508,9 @@ pkg HostApp
       ret Ok
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd");
-    reg.load_content("di", include_str!("../../../examples/di.layer"))
+    reg.load_content("di", include_str!("../../../layers/di.layer"))
         .expect("di");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
@@ -570,9 +570,9 @@ pkg RouteApp
     let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
     // examples path fallback
     if reg.constructs.iter().all(|c| c.keyword != "ctx") {
-        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .expect("ddd");
-        reg.load_content("di", include_str!("../../../examples/di.layer"))
+        reg.load_content("di", include_str!("../../../layers/di.layer"))
             .expect("di");
     }
     let tokens = veil_parser::lex(src);
@@ -711,7 +711,7 @@ pkg HostApp
       greet(name: Str) -> Str
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd");
     // di.layer for @main if needed — check what @main requires
     let tokens = veil_parser::lex(src);
@@ -919,9 +919,9 @@ pkg App
     let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
     let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
     if reg.constructs.iter().all(|c| c.keyword != "ctx") {
-        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .unwrap();
-        reg.load_content("di", include_str!("../../../examples/di.layer"))
+        reg.load_content("di", include_str!("../../../layers/di.layer"))
             .unwrap();
     }
     let tokens = veil_parser::lex(src);
@@ -969,9 +969,9 @@ pkg App
     let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
     let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
     if reg.constructs.iter().all(|c| c.keyword != "ctx") {
-        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .unwrap();
-        reg.load_content("di", include_str!("../../../examples/di.layer"))
+        reg.load_content("di", include_str!("../../../layers/di.layer"))
             .unwrap();
     }
     let tokens = veil_parser::lex(src);

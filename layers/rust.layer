@@ -16,6 +16,16 @@ layer rust
     type_default F64 0.0
     type_default Json serde_json::json!({})
 
+  # Name-derived REST verbs when no http_route annotation is present.
+  # Engine matches these prefixes only via this policy (not hard-coded English).
+  http_name_policy
+    list_prefix List
+    get_prefix Get
+    create_prefix Create
+    update_prefix Update
+    delete_prefix Delete
+    path_prefix /api/
+
   # ─── Codegen Templates ──────────────────────────────────────────────
 
   codegen rust

@@ -433,6 +433,10 @@ pub struct LayerRegistry {
     pub identity_policy: IdentityPolicy,
     /// Bus / handler name policy from layers (optional strip prefix). Default: no strip.
     pub bus_policy: BusPolicy,
+    /// Auth service trait name for local AllowAllAuth (RT-008). Default: none.
+    pub auth_policy: AuthPolicy,
+    /// Name-derived REST verb/path prefixes. Default empty = no name-derived REST.
+    pub http_name_policy: HttpNamePolicy,
     /// Extra product roots from `veil.toml` `[dependencies]` (R20).
     /// Each root may contain `layers/<name>.layer` or `<name>.layer`.
     pub extra_layer_roots: Vec<std::path::PathBuf>,
@@ -445,6 +449,31 @@ pub struct BusPolicy {
     /// Example: `strip_name_prefix Handle` → `HandleGetUser` publishes as `GetUser`.
     #[serde(default)]
     pub strip_name_prefix: Option<String>,
+}
+
+/// Which trait name triggers local AllowAllAuth emission (layer-configured).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthPolicy {
+    #[serde(default)]
+    pub service_trait: Option<String>,
+}
+
+/// Name-derived REST routes when no role:http_route annotation is present.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HttpNamePolicy {
+    #[serde(default)]
+    pub list_prefix: Option<String>,
+    #[serde(default)]
+    pub get_prefix: Option<String>,
+    #[serde(default)]
+    pub create_prefix: Option<String>,
+    #[serde(default)]
+    pub update_prefix: Option<String>,
+    #[serde(default)]
+    pub delete_prefix: Option<String>,
+    /// Path root for derived routes (e.g. `/api/`).
+    #[serde(default)]
+    pub path_prefix: Option<String>,
 }
 
 impl Default for LayerRegistry {
@@ -462,6 +491,8 @@ impl Default for LayerRegistry {
             reactivity_policy: ReactivityPolicy::default(),
             identity_policy: IdentityPolicy::default(),
             bus_policy: BusPolicy::default(),
+            auth_policy: AuthPolicy::default(),
+            http_name_policy: HttpNamePolicy::default(),
             extra_layer_roots: Vec::new(),
         }
     }
@@ -482,6 +513,8 @@ impl Clone for LayerRegistry {
             reactivity_policy: self.reactivity_policy.clone(),
             identity_policy: self.identity_policy.clone(),
             bus_policy: self.bus_policy.clone(),
+            auth_policy: self.auth_policy.clone(),
+            http_name_policy: self.http_name_policy.clone(),
             extra_layer_roots: self.extra_layer_roots.clone(),
         }
     }
@@ -630,6 +663,63 @@ impl LayerRegistry {
         construct_name.to_string()
     }
 
+    // ── INV-001 role helpers (never hardcode annotation names in backends) ──
+
+    pub fn is_main_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "main")
+    }
+
+    pub fn construct_has_main(&self, c: &crate::ast::Construct) -> bool {
+        c.annotations
+            .iter()
+            .any(|a| self.is_main_annotation(&a.name))
+    }
+
+    pub fn is_adapter_field_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "adapter_field")
+    }
+
+    pub fn is_adapter_env_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "adapter_env")
+    }
+
+    pub fn is_invariant_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "invariant")
+    }
+
+    pub fn construct_has_invariant(&self, c: &crate::ast::Construct) -> bool {
+        c.annotations
+            .iter()
+            .any(|a| self.is_invariant_annotation(&a.name))
+    }
+
+    pub fn is_shared_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "shared")
+    }
+
+    pub fn field_is_shared(&self, field: &crate::ast::Field) -> bool {
+        field
+            .annotations
+            .iter()
+            .any(|a| self.is_shared_annotation(&a.name))
+    }
+
+    pub fn is_runtime_strategy_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "runtime_strategy")
+    }
+
+    pub fn is_provider_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "provider")
+    }
+
+    /// Whether this trait name is the configured local auth service trait.
+    pub fn is_auth_service_trait(&self, trait_name: &str) -> bool {
+        self.auth_policy
+            .service_trait
+            .as_ref()
+            .is_some_and(|t| t == trait_name)
+    }
+
     /// Look up a statement by its source keyword.
     pub fn statement(&self, keyword: &str) -> Option<&StatementSpec> {
         self.statements.iter().find(|s| s.keyword == keyword)
@@ -740,6 +830,14 @@ impl LayerRegistry {
             if bus.strip_name_prefix.is_some() {
                 self.bus_policy.strip_name_prefix = bus.strip_name_prefix;
             }
+        }
+        if let Some(auth) = parse_auth_policy(&content) {
+            if auth.service_trait.is_some() {
+                self.auth_policy = auth;
+            }
+        }
+        if let Some(http) = parse_http_name_policy(&content) {
+            self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
         }
         Ok(())
     }
@@ -918,6 +1016,14 @@ impl LayerRegistry {
             if bus.strip_name_prefix.is_some() {
                 self.bus_policy.strip_name_prefix = bus.strip_name_prefix;
             }
+        }
+        if let Some(auth) = parse_auth_policy(content) {
+            if auth.service_trait.is_some() {
+                self.auth_policy = auth;
+            }
+        }
+        if let Some(http) = parse_http_name_policy(content) {
+            self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
         }
         Ok(())
     }
@@ -1708,12 +1814,23 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         }
         let indent = line.len() - line.trim_start().len();
 
-        // Handle `declare` section: accumulate raw VEIL source text
+        // Handle `declare` section: accumulate raw VEIL source text.
+        // Must clear other top-level sections first: `prompt`/`codegen` leave
+        // conditions only fire on fall-through, but `declare` is matched above
+        // those checks — without clearing, declare body is swallowed as prompt
+        // (ddd.layer: prompt then comments then declare).
         if trimmed == "declare" && indent <= 2 {
-            // Flush any previous construct/statement
             if let Some(item) = current.take() {
                 items.push(item);
             }
+            // Flush in-progress codegen before leaving it
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            in_codegen = false;
+            in_prompt = false;
             in_declare = true;
             declare_base_indent = indent + 2; // items inside declare are at +2
             section = Section::None;
@@ -1725,6 +1842,21 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             if let Some(item) = current.take() {
                 items.push(item);
             }
+            // Leaving declare for prompt — flush declaration blocks
+            if in_declare && !current_decl_lines.is_empty() {
+                while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                    current_decl_lines.pop();
+                }
+                declarations.push(current_decl_lines.join("\n"));
+                current_decl_lines.clear();
+            }
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            in_declare = false;
+            in_codegen = false;
             in_prompt = true;
             prompt_base_indent = indent + 2;
             section = Section::None;
@@ -1800,10 +1932,20 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 codegen_templates.push(template);
                 codegen_lines.clear();
             }
+            // Flush declare if we jumped from declare → codegen
+            if in_declare && !current_decl_lines.is_empty() {
+                while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                    current_decl_lines.pop();
+                }
+                declarations.push(current_decl_lines.join("\n"));
+                current_decl_lines.clear();
+            }
             // Flush any previous construct/statement
             if let Some(item) = current.take() {
                 items.push(item);
             }
+            in_declare = false;
+            in_prompt = false;
             codegen_target = trimmed.strip_prefix("codegen ").unwrap().trim().to_string();
             in_codegen = true;
             codegen_base_indent = indent + 2; // rules inside codegen are at +2
@@ -2727,6 +2869,120 @@ pub fn parse_bus_policy(content: &str) -> Option<BusPolicy> {
     }
 }
 
+/// Parse optional `auth_policy` block:
+/// ```text
+/// auth_policy
+///   service_trait AuthService
+/// ```
+pub fn parse_auth_policy(content: &str) -> Option<AuthPolicy> {
+    let mut in_block = false;
+    let mut pol = AuthPolicy::default();
+    let mut found = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t == "auth_policy" {
+            in_block = true;
+            found = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && !t.starts_with("service_trait")
+        {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("service_trait ") {
+            let p = rest.trim();
+            pol.service_trait = if p.is_empty() || p == "-" || p == "none" {
+                None
+            } else {
+                Some(p.to_string())
+            };
+        }
+    }
+    if found {
+        Some(pol)
+    } else {
+        None
+    }
+}
+
+/// Parse optional `http_name_policy` block for name-derived REST.
+pub fn parse_http_name_policy(content: &str) -> Option<HttpNamePolicy> {
+    let mut in_block = false;
+    let mut pol = HttpNamePolicy::default();
+    let mut found = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t == "http_name_policy" {
+            in_block = true;
+            found = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && !t.starts_with("list_prefix")
+            && !t.starts_with("get_prefix")
+            && !t.starts_with("create_prefix")
+            && !t.starts_with("update_prefix")
+            && !t.starts_with("delete_prefix")
+            && !t.starts_with("path_prefix")
+        {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("list_prefix ") {
+            pol.list_prefix = Some(rest.trim().to_string());
+        } else if let Some(rest) = t.strip_prefix("get_prefix ") {
+            pol.get_prefix = Some(rest.trim().to_string());
+        } else if let Some(rest) = t.strip_prefix("create_prefix ") {
+            pol.create_prefix = Some(rest.trim().to_string());
+        } else if let Some(rest) = t.strip_prefix("update_prefix ") {
+            pol.update_prefix = Some(rest.trim().to_string());
+        } else if let Some(rest) = t.strip_prefix("delete_prefix ") {
+            pol.delete_prefix = Some(rest.trim().to_string());
+        } else if let Some(rest) = t.strip_prefix("path_prefix ") {
+            pol.path_prefix = Some(rest.trim().to_string());
+        }
+    }
+    if found {
+        Some(pol)
+    } else {
+        None
+    }
+}
+
+fn merge_http_name_policy(base: &HttpNamePolicy, over: &HttpNamePolicy) -> HttpNamePolicy {
+    HttpNamePolicy {
+        list_prefix: over.list_prefix.clone().or_else(|| base.list_prefix.clone()),
+        get_prefix: over.get_prefix.clone().or_else(|| base.get_prefix.clone()),
+        create_prefix: over
+            .create_prefix
+            .clone()
+            .or_else(|| base.create_prefix.clone()),
+        update_prefix: over
+            .update_prefix
+            .clone()
+            .or_else(|| base.update_prefix.clone()),
+        delete_prefix: over
+            .delete_prefix
+            .clone()
+            .or_else(|| base.delete_prefix.clone()),
+        path_prefix: over.path_prefix.clone().or_else(|| base.path_prefix.clone()),
+    }
+}
+
 /// Convenience: keyword→shape map for quick parser lookups.
 pub fn keyword_shapes(reg: &LayerRegistry) -> HashMap<String, Shape> {
     reg.constructs
@@ -2756,7 +3012,7 @@ mod tests {
     #[test]
     fn layer_annotations_parse_and_reach_palette() {
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../examples/ddd.layer"))
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .expect("ddd layer should load");
         // The Aggregate construct declares an `invariant` annotation with an
         // `expr` param — parsed from the layer, not hardcoded anywhere.
@@ -2917,6 +3173,60 @@ pkg bad v1
 
     /// LAY-004: real ddd.layer ships Context groups + model presentation.
     #[test]
+    fn annotation_roles_from_ddd_and_di() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        assert!(reg.is_runtime_strategy_annotation("strategy"), "strategy role");
+        assert!(reg.is_http_route_annotation("route"), "route role");
+        assert!(reg.is_main_annotation("main"), "main role");
+        assert!(reg.is_adapter_field_annotation("field"), "field role");
+        assert!(reg.is_adapter_env_annotation("env"), "env role");
+        assert!(reg.is_invariant_annotation("invariant"), "invariant role");
+        assert!(reg.is_secret_annotation("secret"), "secret role");
+        assert_eq!(reg.auth_policy.service_trait.as_deref(), Some("AuthService"));
+        assert!(reg.bus_policy.strip_name_prefix.as_deref() == Some("Handle"));
+        assert!(reg.http_name_policy.list_prefix.as_deref() == Some("List"));
+        assert!(
+            !reg.declarations.is_empty(),
+            "declare block empty — policy lines may have broken layer parse"
+        );
+        let decl = reg.declarations.join("\n");
+        assert!(decl.contains("trait Bus"), "Bus missing from declare: {decl}");
+        assert!(decl.contains("run_saga"), "run_saga missing: {decl}");
+    }
+
+    /// Regression: `prompt` then comments then `declare` must not swallow declarations
+    /// (section leave only ran on fall-through; declare is matched first).
+    #[test]
+    fn prompt_then_declare_preserves_declarations() {
+        let src = r#"
+pkg demo v1
+  construct X
+    kw x
+    mt struct
+  prompt
+    Some LLM prose.
+    More prose with the word declare in it.
+  # comment between sections
+  declare
+    trait DemoPort
+      go() -> Res!
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("demo", src).expect("load");
+        assert!(
+            !reg.declarations.is_empty(),
+            "declare after prompt must be collected"
+        );
+        let decl = reg.declarations.join("\n");
+        assert!(
+            decl.contains("trait DemoPort"),
+            "DemoPort missing from declare: {decl}"
+        );
+    }
+
+    #[test]
     fn ddd_layer_context_has_groups_and_model_views() {
         let mut reg = LayerRegistry::builtin();
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
@@ -2951,3 +3261,5 @@ pkg bad v1
         assert_eq!(agg.presentation.role.as_deref(), Some("container"));
     }
 }
+
+// temporary - in tests module already closed, add at end of tests:

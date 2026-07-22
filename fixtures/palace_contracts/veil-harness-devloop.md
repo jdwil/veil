@@ -35,16 +35,20 @@ crates/veil_bin/        # [[bin]] with main.rs harness
 - **App harness** — VEIL `@main` constructs everything (local run, custom deploy)
 - **Host harness** — External host reads `manifest.json`, injects `provided_by: "runtime"` deps
 
-## HTTP Route Generation
+## HTTP Route Generation (INV-001)
 
-**Preferred:** `@route("METHOD /path")` annotation on handler:
+Engine matches **roles and policies**, not annotation spellings. Full catalog:
+`docs/POLICY_ROLES.md`.
+
+**Preferred:** annotation with `role:http_route` (shipped as `@route` in `ddd.layer`):
 ```
 @route("GET /api/users/{id}")
 handler HandleGetUser
   ...
 ```
 
-**Fallback** (legacy, when no @route): name-derived routes:
+**Fallback** when no http_route annotation: `http_name_policy` prefixes
+(`List`/`Get`/`Create`/`Update`/`Delete`, path `/api/` — configurable in layer):
 | Name pattern | Method | Path |
 |-------------|--------|------|
 | `ListThings` | GET | `/api/things` |
@@ -52,6 +56,8 @@ handler HandleGetUser
 | `CreateThing` | POST | `/api/things` |
 | `UpdateThing` | PUT | `/api/things/{id}` |
 | `DeleteThing` | DELETE | `/api/things/{id}` |
+
+Bus message keys: optional `bus_policy.strip_name_prefix` (e.g. `Handle`).
 
 - List inputs from **query string** (not random UUIDs)
 - Create/Update inputs from JSON body

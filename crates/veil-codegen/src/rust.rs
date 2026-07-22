@@ -130,7 +130,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // Prefer a generated InProcessBus harness (RT-001/003/004) over raw
     // template fragments when we have context modules.
     let has_main = crate::template::compose_main_section(&template_output, "rust").is_some()
-        || package_has_main_annotation(solution)
+        || package_has_main_annotation(solution, registry)
         || !modules.is_empty(); // Packages with modules always get a harness binary.
     if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| to_snake(&m.name)).collect();
@@ -311,19 +311,25 @@ fn expr_mentions_self_field(expr: &Expr, field_name: &str) -> bool {
     }
 }
 
-fn package_has_main_annotation(sol: &Solution) -> bool {
-    fn walk(c: &Construct) -> bool {
-        if c.annotations.iter().any(|a| a.name == "main") {
+fn package_has_main_annotation(sol: &Solution, registry: &LayerRegistry) -> bool {
+    fn walk(c: &Construct, registry: &LayerRegistry) -> bool {
+        if registry.construct_has_main(c) {
             return true;
         }
-        c.children.iter().any(walk)
-            || c.fns.iter().any(|f| f.annotations.iter().any(|a| a.name == "main"))
+        c.children.iter().any(|ch| walk(ch, registry))
+            || c.fns.iter().any(|f| {
+                f.annotations
+                    .iter()
+                    .any(|a| registry.is_main_annotation(&a.name))
+            })
     }
     for item in &sol.items {
         match item {
-            TopLevelItem::Construct(c) if walk(c) => return true,
+            TopLevelItem::Construct(c) if walk(c, registry) => return true,
             TopLevelItem::Function(f)
-                if f.annotations.iter().any(|a| a.name == "main") =>
+                if f.annotations
+                    .iter()
+                    .any(|a| registry.is_main_annotation(&a.name)) =>
             {
                 return true;
             }
@@ -556,7 +562,7 @@ fn gen_local_harness_main(
                 continue;
             }
             for ann in &ad.annotations {
-                if ann.name != "field" {
+                if !registry.is_adapter_field_annotation(&ann.name) {
                     continue;
                 }
                 for arg in &ann.args {
@@ -584,7 +590,7 @@ fn gen_local_harness_main(
                     .any(|e| expr_mentions_self_field(e, "client"))
             });
             let has_field_client = ad.annotations.iter().any(|a| {
-                a.name == "field"
+                registry.is_adapter_field_annotation(&a.name)
                     && a.args
                         .iter()
                         .any(|arg| arg.split_once(':').map(|(n, _)| n.trim()) == Some("client"))
@@ -612,7 +618,7 @@ fn gen_local_harness_main(
             let mut field_inits: std::collections::BTreeMap<String, String> =
                 std::collections::BTreeMap::new();
             for ann in &ad.annotations {
-                if ann.name == "field" {
+                if registry.is_adapter_field_annotation(&ann.name) {
                     for arg in &ann.args {
                         let (fname, ftype) = if let Some((n, t)) = arg.split_once(':') {
                             (n.trim().to_string(), t.trim())
@@ -630,7 +636,7 @@ fn gen_local_harness_main(
                     }
                 }
             }
-            if let Some(env_a) = ad.annotations.iter().find(|a| a.name == "env") {
+            if let Some(env_a) = ad.annotations.iter().find(|a| registry.is_adapter_env_annotation(&a.name)) {
                 for arg in &env_a.args {
                     let full = arg.to_lowercase();
                     if arg.contains("DATABASE") {
@@ -1121,7 +1127,7 @@ pub fn list_rest_routes_from_solution(
                 method,
                 path,
                 handler: svc.name.clone(),
-                via: if has_route { "route" } else { "name" },
+                via: if has_route { "http_route" } else { "name" },
             });
         }
     }
@@ -1143,12 +1149,12 @@ pub fn rest_route_for_service(svc: &Construct, registry: &LayerRegistry) -> (Str
             }
             // Path-only: keep derived method
             if s.starts_with('/') {
-                let (method, _) = derive_rest_route(&svc.name);
+                let (method, _) = derive_rest_route(&svc.name, registry);
                 return (method, s.to_string());
             }
         }
     }
-    derive_rest_route(&svc.name)
+    derive_rest_route(&svc.name, registry)
 }
 
 fn parse_route_annotation(s: &str) -> Option<(String, String)> {
@@ -1168,34 +1174,46 @@ fn parse_route_annotation(s: &str) -> Option<(String, String)> {
 /// CreateInitiative → (post, /api/initiatives)
 /// UpdateInitiative → (put, /api/initiatives/{id})
 /// DeleteInitiative → (delete, /api/initiatives/{id})
-fn derive_rest_route(service_name: &str) -> (String, String) {
-    // Strip prefix and pluralize resource
-    let prefixes = [
-        ("List", "get"),
-        ("Get", "get"),
-        ("Create", "post"),
-        ("Update", "put"),
-        ("Delete", "delete"),
+fn derive_rest_route(service_name: &str, registry: &LayerRegistry) -> (String, String) {
+    let pol = &registry.http_name_policy;
+    let path_root = pol.path_prefix.as_deref().unwrap_or("/api/");
+    let pairs: [(&Option<String>, &str, bool); 5] = [
+        (&pol.list_prefix, "get", true),
+        (&pol.get_prefix, "get", false),
+        (&pol.create_prefix, "post", true),
+        (&pol.update_prefix, "put", false),
+        (&pol.delete_prefix, "delete", false),
     ];
-    for (prefix, method) in prefixes {
-        if let Some(resource) = service_name.strip_prefix(prefix) {
+    for (prefix_opt, method, collection) in pairs {
+        let Some(prefix) = prefix_opt.as_ref() else {
+            continue;
+        };
+        if prefix.is_empty() {
+            continue;
+        }
+        if let Some(resource) = service_name.strip_prefix(prefix.as_str()) {
+            if resource.is_empty() {
+                continue;
+            }
             let resource_snake = to_snake(resource);
-            // Pluralize: Initiative → initiatives (simple 's' suffix if not already plural)
             let resource_plural = if resource_snake.ends_with('s') {
                 resource_snake.clone()
             } else {
                 format!("{resource_snake}s")
             };
-            let path = match method {
-                "get" if prefix == "List" => format!("/api/{resource_plural}"),
-                "post" => format!("/api/{resource_plural}"),
-                _ => format!("/api/{resource_plural}/{{id}}"),
+            let path = if collection || method == "post" {
+                format!("{path_root}{resource_plural}")
+            } else {
+                format!("{path_root}{resource_plural}/{{id}}")
             };
             return (method.to_string(), path);
         }
     }
-    // Fallback: POST to kebab-case name
-    let fallback_path = format!("/api/{}", to_snake(service_name).replace('_', "-"));
+    let fallback_path = format!(
+        "{}{}",
+        path_root.trim_end_matches('/'),
+        format!("/{}", to_snake(service_name).replace('_', "-"))
+    );
     ("post".to_string(), fallback_path)
 }
 
@@ -1547,7 +1565,7 @@ fn gen_manifest(
             dep_info.insert("adapter".to_string(), json!(adapter.name));
             // Collect @env annotations for config requirements
             let env_vars: Vec<&str> = adapter.annotations.iter()
-                .filter(|a| a.name == "env")
+                .filter(|a| registry.is_adapter_env_annotation(&a.name))
                 .flat_map(|a| a.args.iter().map(|s| s.as_str()))
                 .collect();
             if !env_vars.is_empty() {
@@ -1582,7 +1600,7 @@ fn gen_manifest(
         dep_info.insert("provided_by".to_string(), json!("runtime"));
 
         // Emit @strategy annotation if present (e.g. @strategy(cognito))
-        if let Some(strategy_ann) = t.annotations.iter().find(|a| a.name == "strategy") {
+        if let Some(strategy_ann) = t.annotations.iter().find(|a| registry.is_runtime_strategy_annotation(&a.name)) {
             if let Some(strategy_value) = strategy_ann.args.first() {
                 dep_info.insert("strategy".to_string(), json!(strategy_value));
             }
@@ -1856,7 +1874,7 @@ fn gen_struct(
     defaultable: &std::collections::HashSet<String>,
 ) -> (String, bool) {
     let mut out = String::new();
-    let has_invariant = c.annotations.iter().any(|a| a.name == "invariant");
+    let has_invariant = c.annotations.iter().any(|a| registry.is_invariant_annotation(&a.name));
 
     // Fields: direct plus struct-shaped named blocks (e.g. root).
     let mut fields: Vec<&Field> = c.fields.iter().collect();
@@ -1879,7 +1897,7 @@ fn gen_struct(
     for field in &fields {
         let mut ty = type_to_rust(&field.type_expr);
         // PAR-014: optional @shared → Arc<T> (no lifetimes in .veil)
-        if field.annotations.iter().any(|a| a.name == "shared") {
+        if field.annotations.iter().any(|a| registry.is_shared_annotation(&a.name)) {
             ty = format!("std::sync::Arc<{ty}>");
         }
         let snake = to_snake(&field.name);
@@ -2072,7 +2090,7 @@ fn gen_struct(
 
     // Generate impl block with business logic fns (if any exist).
     if !c.fns.is_empty() {
-        out.push_str(&gen_aggregate_impl(c, &fields));
+        out.push_str(&gen_aggregate_impl(c, &fields, registry));
     }
 
     // Types with zero-arg smart ctors (all fields defaultable) are reusable as
@@ -2166,7 +2184,7 @@ fn string_field_default(field_name: &str) -> Option<&'static str> {
 }
 
 /// Generate `impl Name { ... }` block for aggregate business logic fns.
-fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
+fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry) -> String {
     use crate::expr::{GenCtx, expr_to_rust};
     use std::collections::HashMap;
 
@@ -2233,7 +2251,7 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field]) -> String {
 
         // @invariant annotation → guard
         for ann in &func.annotations {
-            if ann.name == "invariant" {
+            if registry.is_invariant_annotation(&ann.name) {
                 let cond_text = ann.args.first().map(|s| s.as_str()).unwrap_or("true");
                 // Simple invariant: field == Value → self.field == EnumName::Value
                 let cond_rust = translate_invariant_condition(cond_text, &field_names, &enum_map);
@@ -2874,9 +2892,8 @@ futures = "0.3"
         if routing.iter().any(|r| r == &t.name) {
             has_routing_trait = true;
         }
-        // AuthService is still name-keyed residual (RT-008); prefer layer
-        // strategy metadata when that path is cleaned up.
-        if t.name == "AuthService" {
+        // Layer auth_policy.service_trait (e.g. AuthService from ddd).
+        if registry.is_auth_service_trait(&t.name) {
             has_auth = true;
         }
         let tp = generic_params_rust(&t.type_params);
@@ -3189,7 +3206,7 @@ fn gen_impls(
                 std::collections::BTreeMap::new();
             let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
             for ann in &c.annotations {
-                if ann.name == "field" {
+                if registry.is_adapter_field_annotation(&ann.name) {
                     for arg in &ann.args {
                         if let Some((fname, ftype)) = arg.split_once(':') {
                             let fname = fname.trim().to_string();
@@ -3215,7 +3232,7 @@ fn gen_impls(
                 }
             }
             for ann in &c.annotations {
-                if ann.name == "env" {
+                if registry.is_adapter_env_annotation(&ann.name) {
                     for arg in &ann.args {
                         if arg.contains("DATABASE") {
                             // Only add pool when @field did not already declare it.
@@ -3415,7 +3432,7 @@ fn gen_impls(
                 // @env annotation fields are available as self.field in the body.
                 ctx.in_method = true;
                 for ann in &c.annotations {
-                    if ann.name == "env" {
+                    if registry.is_adapter_env_annotation(&ann.name) {
                         for arg in &ann.args {
                             let full = arg.to_lowercase();
                             ctx.self_fields.insert(full.clone());
@@ -3435,7 +3452,7 @@ fn gen_impls(
                 }
                 // @field annotation typed fields are also available as self.field
                 for ann in &c.annotations {
-                    if ann.name == "field" {
+                    if registry.is_adapter_field_annotation(&ann.name) {
                         for arg in &ann.args {
                             let fname = arg.split(':').next().unwrap_or(arg).trim().to_lowercase();
                             ctx.self_fields.insert(fname);
@@ -5190,7 +5207,7 @@ pub fn generate_multi_package_harness(
             std::collections::HashSet::new();
         for ad in adapters {
             for ann in &ad.annotations {
-                if ann.name != "field" {
+                if !registry.is_adapter_field_annotation(&ann.name) {
                     continue;
                 }
                 for arg in &ann.args {
@@ -5252,7 +5269,7 @@ pub fn generate_multi_package_harness(
             let mut field_inits: std::collections::BTreeMap<String, String> =
                 std::collections::BTreeMap::new();
             for ann in &ad.annotations {
-                if ann.name == "field" {
+                if registry.is_adapter_field_annotation(&ann.name) {
                     for arg in &ann.args {
                         let (fname, ftype) = if let Some((n, t)) = arg.split_once(':') {
                             (n.trim().to_string(), t.trim())
@@ -5270,7 +5287,7 @@ pub fn generate_multi_package_harness(
                     }
                 }
             }
-            if let Some(env_a) = ad.annotations.iter().find(|a| a.name == "env") {
+            if let Some(env_a) = ad.annotations.iter().find(|a| registry.is_adapter_env_annotation(&a.name)) {
                 for arg in &env_a.args {
                     let full = arg.to_lowercase();
                     if arg.contains("DATABASE") {
@@ -5438,7 +5455,7 @@ pub fn generate_multi_package_harness(
             }
 
             let svc_has_deps = svc.inputs.iter().any(|i| {
-                i.annotations.iter().any(|a| a.name == "dep")
+                registry.field_is_dependency(i)
             }) || svc.steps.iter().any(|st| {
                 if let FlowStep::Step(s) = st {
                     s.body.iter().any(|e| expr_mentions_port_call(e))
@@ -5456,7 +5473,7 @@ pub fn generate_multi_package_harness(
             if needs_path_id && path_param_count == 1 {
                 // Prefer first non-dep input that is Id for path
                 if let Some(input) = svc.inputs.iter().find(|i| {
-                    !i.annotations.iter().any(|a| a.name == "dep")
+                    !registry.field_is_dependency(i)
                         && type_to_rust(&i.type_expr) == "Uuid"
                 }) {
                     let field = to_snake(&input.name);
@@ -5468,7 +5485,7 @@ pub fn generate_multi_package_harness(
             }
 
             for input in &svc.inputs {
-                if input.annotations.iter().any(|a| a.name == "dep") {
+                if registry.field_is_dependency(input) {
                     continue;
                 }
                 let field = to_snake(&input.name);

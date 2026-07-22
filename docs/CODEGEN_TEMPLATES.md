@@ -15,6 +15,7 @@ Each language target has two components:
 |-----------|----------|----------------|
 | `lang.rs` | Engine (`veil-codegen/src/`) | Compiler backend: expression translation, type mapping, project/workspace layout, built-in emitters |
 | `lang.layer` | Layer file (`layers/`) | Emission policy: derives, conventions, decorators, target-specific templates that call builtins |
+| roles / policies | `.layer` blocks | INV-001: engine matches `role:*` and `*_policy` blocks — never annotation spellings; see [`POLICY_ROLES.md`](./POLICY_ROLES.md) |
 
 Additionally, domain layers (`di.layer`, `ddd.layer`, etc.) add their own
 `codegen <target>` blocks that augment the output with domain-specific patterns.
@@ -77,8 +78,9 @@ Each `codegen` block is scoped to one target. A layer can have multiple
 
 ```
 match struct                           # all structs
-match struct where has_annotation("dep")  # structs with @dep
-match fn where has_annotation("main")     # fns with @main
+match struct where has_role("dependency") # any annotation with role:dependency (INV-001)
+match fn where has_role("main")           # role:main composition contributors
+match struct where has_annotation("dep")  # literal name (layer self-reference only)
 match impl where target == "Pool"         # impls targeting Pool
 match struct where field_typed("Pool")    # structs with a Pool-typed field
 ```
@@ -89,7 +91,7 @@ match struct where field_typed("Pool")    # structs with a Pool-typed field
 {{name}}                    # construct name
 {{field.name}}              # field property access
 {{field.type}}              # field type
-{{route}}                   # @route first arg (or /name_lower)
+{{route}}                   # role:http_route first arg (or /name_lower)
 {{annotation_value:name}}   # first arg of @name (quotes stripped)
 {{annotation_arg:name:N}}   # Nth arg (0-based) of @name
 {{annotation_value("name")}}  # same as annotation_value:name
@@ -113,7 +115,7 @@ match struct where field_typed("Pool")    # structs with a Pool-typed field
 ### Section Composition
 
 ```
-match fn where has_annotation("main")
+match fn where has_role("main")
   emit_to "main" priority 50
   emit """..."""
 ```

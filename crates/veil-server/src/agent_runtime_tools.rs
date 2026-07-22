@@ -786,7 +786,10 @@ mod tests {
         assert!(out.contains("/api/items"), "{out}");
         assert!(out.contains("\"source\": \"ir\""), "{out}");
         assert!(out.contains("ListItems") || out.contains("list"), "{out}");
-        assert!(out.contains("\"via\": \"route\""), "expected @route via: {out}");
+        assert!(
+            out.contains("\"via\": \"http_route\"") || out.contains("\"via\": \"route\""),
+            "expected http_route via: {out}"
+        );
     }
 
     #[test]

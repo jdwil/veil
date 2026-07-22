@@ -56,7 +56,8 @@ layer di
     mt fn
     desc "Provider — a fn that can construct/satisfy a dependency type"
     ann
-      pvd: "Type this fn provides" type
+      # role:provider — factory/provider registration (INV-001)
+      pvd: "Type this fn provides" type role:provider
     visual
       icon "🏭"
       color "#f59e0b"
@@ -79,11 +80,24 @@ layer di
     mt fn
     desc "Main contributor — steps are composed into the generated main()"
     ann
-      main: "Contributes to generated main" flag
+      # role:main — composition-root contribution (INV-001; never hardcode "main")
+      main: "Contributes to generated main" flag role:main
     visual
       icon "🚀"
       color "#10b981"
       label "Main"
+
+  # @shared — field stored as Arc/shared ownership in Rust emission
+  construct SharedField
+    kw shared
+    mt struct
+    desc "Shared ownership — emit Arc wrapping for this field"
+    ann
+      shared: "Shared ownership (Arc)" field role:shared
+    visual
+      icon "🔗"
+      color "#64748b"
+      label "Shared"
 
   # ─── Constraints ────────────────────────────────────────────────────
 
@@ -93,7 +107,8 @@ layer di
   # ─── Codegen Templates ──────────────────────────────────────────────
 
   codegen rust
-    match struct where has_annotation("dep")
+    # INV-001: match policy roles, not annotation spellings
+    match struct where has_role("dependency")
       emit """
         impl {{name}} {
             pub fn new({{for field in dep_fields}}{{field.name}}: {{field.type}}{{sep ", "}}{{end}}) -> Self {
@@ -102,7 +117,7 @@ layer di
         }
       """
 
-    match fn where has_annotation("main")
+    match fn where has_role("main")
       emit_to "main" priority 50
       emit """
         // — {{name}} —

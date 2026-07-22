@@ -49,3 +49,12 @@ curl -X POST http://127.0.0.1:3001/api/layer/scaffold \
 ## Impact
 
 `GET /api/layer/dependents?layer=ddd` lists packages in the serve set that `use` that layer.
+
+## Policy roles (INV-001)
+
+Domain and DI vocabulary live in layers via **annotation roles** and **policy
+blocks** (`bus_policy`, `auth_policy`, `http_name_policy`, …). The engine never
+hard-codes names like `"route"`, `"dep"`, or `"Handle"`.
+
+See [`POLICY_ROLES.md`](./POLICY_ROLES.md) for the full catalog and proposed
+`veil.toml` / policy-pack overrides.

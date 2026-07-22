@@ -75,14 +75,14 @@ pub fn execute_templates(
     ) {
         for template in templates {
             for rule in &template.rules {
-                if matches_construct(construct, rule) {
+                if matches_construct(construct, rule, registry) {
                     let output = render_template(construct, rule, registry);
 
                     if let Some(ref file_pattern) = rule.emit_file {
                         // Emit to a specific file path (expand pattern).
                         // Later emits for the same path replace earlier ones
                         // (e.g. scaffold vite.config.ts → @proxy override).
-                        let path = expand_file_path(file_pattern, construct);
+                        let path = expand_file_path(file_pattern, construct, registry);
                         if let Some(existing) = files.iter_mut().find(|f| f.path == path) {
                             existing.content = output;
                         } else {
@@ -174,7 +174,7 @@ pub fn compose_main_section(output: &TemplateOutput, target: &str) -> Option<Str
 }
 
 /// Check if a construct matches a rule's conditions.
-fn matches_construct(construct: &Construct, rule: &CodegenRule) -> bool {
+fn matches_construct(construct: &Construct, rule: &CodegenRule, registry: &LayerRegistry) -> bool {
     // Check shape match — accept shape name, "*", or layer subkind.
     let shape_name = construct.shape.name();
     let subkind = &construct.subkind;
@@ -191,7 +191,19 @@ fn matches_construct(construct: &Construct, rule: &CodegenRule) -> bool {
         return true; // No condition = match all of this shape
     }
 
-    // Parse simple conditions
+    // Prefer role-based matching (INV-001) over bare annotation names.
+    //   has_role("dependency") — any annotation carrying that policy role
+    //   has_annotation("dep")  — literal annotation name (layer self-reference)
+    if rule.condition.starts_with("has_role(") {
+        let role = extract_quoted_arg(&rule.condition, "has_role");
+        if let Some(role) = role {
+            return construct
+                .annotations
+                .iter()
+                .any(|a| registry.annotation_has_role(&a.name, &role));
+        }
+    }
+
     if rule.condition.starts_with("has_annotation(") {
         // Extract annotation name from: has_annotation("dep")
         let ann_name = extract_quoted_arg(&rule.condition, "has_annotation");
@@ -216,14 +228,16 @@ fn matches_construct(construct: &Construct, rule: &CodegenRule) -> bool {
 /// Supported placeholders:
 /// - `{{name}}` — construct name (as-is)
 /// - `{{name_lower}}` — lowercase construct name
-/// - `{{route}}` — @route annotation value (or `/name_lower`)
+/// - `{{route}}` — http_route annotation value (or `/name_lower`)
 /// - `{{subkind}}` — layer subkind
-fn expand_file_path(pattern: &str, construct: &Construct) -> String {
+fn expand_file_path(pattern: &str, construct: &Construct, registry: &LayerRegistry) -> String {
     let name = &construct.name;
     let name_lower = name.to_lowercase();
-    // {{route}} is filled in expand_file_path with registry when available;
-    // path-only helper keeps name_lower fallback without hardcoding "route".
-    let route = name_lower.clone();
+    let route = registry
+        .http_route_annotation(construct)
+        .and_then(|a| a.args.first())
+        .map(|s| strip_ann_arg(s))
+        .unwrap_or_else(|| format!("/{name_lower}"));
 
     pattern
         .replace("{{name}}", name)

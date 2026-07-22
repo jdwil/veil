@@ -38,10 +38,15 @@ veil check examples/di_example.veil
 
 | Capability | Status |
 |------------|--------|
-| `@main` composition into generated main | Working via `di.layer` + rust codegen |
-| `@dep` / `@pvd` DI graph | Working (INV-001: role:dependency) |
+| `@main` composition into generated main | Working via `di.layer` + rust codegen (`role:main`) |
+| `@dep` / `@pvd` DI graph | Working (INV-001: `role:dependency` / `role:provider`) |
+| `@route` dual-loop REST | Working (`role:http_route`; never hard-coded `"route"`) |
+| Name-derived REST | `http_name_policy` in `ddd` / `rust.layer` |
+| Bus message key strip | `bus_policy.strip_name_prefix` (e.g. Handle) |
 | Multi-context Bus orchestration | Opt-in when steps have `ctx` refs **and** layer defines routing traits (INV-003) |
 | Smart constructors / timestamps | `rust.layer` `constructor_policy` (INV-002) |
+
+Full role catalog and policy blocks: [`POLICY_ROLES.md`](./POLICY_ROLES.md).
 
 ## Layout (RT-021)
 
