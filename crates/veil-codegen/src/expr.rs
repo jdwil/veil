@@ -1108,6 +1108,8 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     let method = method.trim_end_matches(['!', '?']);
 
     // Resolve the static type of the receiver when we can (UFCS / local / self field).
+    // Index into List/slice of trait objects also yields a trait receiver
+    // (e.g. `steps[i].action(...)` for `List<SagaStep>`).
     let recv_type_name: Option<String> = match recv {
         Expr::Ident(name) => {
             if ctx.is_struct_target(name) || ctx.is_trait_target(name) {
@@ -1120,12 +1122,43 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                 None
             }
         }
+        Expr::Index(base, _) => {
+            // List/slice element: peel Vec/slice and Box<dyn Trait>
+            if let Expr::Ident(name) = base.as_ref() {
+                ctx.local_type(name)
+                    .and_then(|t| extract_box_dyn_trait(t).or_else(|| extract_vec_elem(t)))
+            } else {
+                None
+            }
+        }
+        // AST still has `.get(i)` before list-index lowering; treat as element access.
+        Expr::Call(inner)
+            if (inner.method == "get" || inner.method == "get!") && inner.args.len() == 1 =>
+        {
+            let base_name = if !inner.target.is_empty() {
+                Some(inner.target.as_str())
+            } else if let Some(r) = &inner.receiver {
+                match r.as_ref() {
+                    Expr::Ident(n) => Some(n.as_str()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            base_name.and_then(|n| {
+                ctx.local_type(n)
+                    .and_then(|t| extract_box_dyn_trait(t).or_else(|| extract_vec_elem(t)))
+            })
+        }
         _ => None,
     };
 
     // Known struct / stub type: use stub fallibility metadata only (not trait scan).
     if let Some(ref ty) = recv_type_name {
-        if ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Struct)
+        // Peel Box<dyn Trait + …> / bare trait names stored in local_types
+        let bare = peel_dyn_trait_name(ty).unwrap_or_else(|| ty.clone());
+        if ctx.name_to_shape.get(bare.as_str()) == Some(&Shape::Struct)
+            || ctx.stub_type_crate.contains_key(bare.as_str())
             || ctx.stub_type_crate.contains_key(ty.as_str())
         {
             if method == "send"
@@ -1139,7 +1172,9 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
             }
             return String::new();
         }
-        if ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Trait) {
+        if ctx.name_to_shape.get(bare.as_str()) == Some(&Shape::Trait)
+            || ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Trait)
+        {
             return ".await?".to_string();
         }
     }
@@ -1152,8 +1187,9 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
         return ".await.map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
     // Untyped receiver: method name appears on a port trait → async_trait.
-    // Do not treat stub/struct methods (e.g. reqwest `Client.delete`) as port
-    // methods just because a trait also has `delete`.
+    // If a stub/struct also has the same method name (e.g. `delete`), do not
+    // force await — that would break reqwest Client.delete. List elements of
+    // trait objects are handled via Index + peel above (SagaStep.action).
     let is_trait_method = ctx.method_returns.keys().any(|(ty, m)| {
         m == method && ctx.name_to_shape.get(ty) == Some(&Shape::Trait)
     });
@@ -1170,6 +1206,46 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
         return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
     String::new()
+}
+
+/// `Box<dyn SagaStep + Send + Sync>` → `SagaStep`
+fn peel_dyn_trait_name(ty: &str) -> Option<String> {
+    let t = ty.trim();
+    if let Some(rest) = t.strip_prefix("Box<dyn ") {
+        let name = rest.split(|c: char| c == '+' || c == '>' || c == ' ').next()?;
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    if let Some(rest) = t.strip_prefix("dyn ") {
+        let name = rest.split(|c: char| c == '+' || c == ' ').next()?;
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// `Vec<Box<dyn T + …>>` / `&[Box<dyn T + …>]` → element type string
+fn extract_vec_elem(ty: &str) -> Option<String> {
+    let t = ty.trim();
+    if let Some(inner) = t.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+        return Some(inner.trim().to_string());
+    }
+    if let Some(inner) = t.strip_prefix("&[").and_then(|s| s.strip_suffix(']')) {
+        return Some(inner.trim().to_string());
+    }
+    if let Some(inner) = t.strip_prefix("&mut [").and_then(|s| s.strip_suffix(']')) {
+        return Some(inner.trim().to_string());
+    }
+    None
+}
+
+fn extract_box_dyn_trait(ty: &str) -> Option<String> {
+    if let Some(elem) = extract_vec_elem(ty) {
+        return peel_dyn_trait_name(&elem).or(Some(elem));
+    }
+    peel_dyn_trait_name(ty)
 }
 
 /// Rust method/path segment for a call: keep PascalCase for enum variants /

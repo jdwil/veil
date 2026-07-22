@@ -712,6 +712,21 @@ impl LayerRegistry {
         self.annotation_has_role(name, "provider")
     }
 
+    /// Annotation carries `role:permission` (required claim for a service).
+    pub fn is_permission_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "permission")
+    }
+
+    /// First permission annotation on a construct (e.g. `@auth("relay.admin")`).
+    pub fn permission_annotation<'a>(
+        &self,
+        c: &'a crate::ast::Construct,
+    ) -> Option<&'a crate::ast::Annotation> {
+        c.annotations
+            .iter()
+            .find(|a| self.is_permission_annotation(&a.name))
+    }
+
     /// Whether this trait name is the configured local auth service trait.
     pub fn is_auth_service_trait(&self, trait_name: &str) -> bool {
         self.auth_policy
@@ -3244,9 +3259,15 @@ pkg bad v1
         assert!(reg.is_adapter_env_annotation("env"), "env role");
         assert!(reg.is_invariant_annotation("invariant"), "invariant role");
         assert!(reg.is_secret_annotation("secret"), "secret role");
+        assert!(reg.is_permission_annotation("auth"), "permission role");
         assert_eq!(reg.auth_policy.service_trait.as_deref(), Some("AuthService"));
         assert!(reg.bus_policy.strip_name_prefix.as_deref() == Some("Handle"));
         assert!(reg.http_name_policy.list_prefix.as_deref() == Some("List"));
+        assert!(
+            reg.layers.iter().any(|l| l == "auth_local"),
+            "ddd must pull auth_local: {:?}",
+            reg.layers
+        );
         assert!(
             !reg.declarations.is_empty(),
             "declare block empty — policy lines may have broken layer parse"

@@ -1,0 +1,16 @@
+pkg auth_local v1
+  desc "Local allow-all auth trait name for dual-loop (RT-008)"
+  author "VEIL"
+
+  # Which layer-declared trait gets AllowAllAuth in veil_shared.
+  # Host/runtime swaps Cognito/Auth0 via provided_by + strategy.
+  # Products override: [codegen] auth_service_trait = "none" | "MyAuth"
+  auth_policy
+    service_trait AuthService
+
+  prompt
+    Auth pack (auth_local):
+    - Declares that trait AuthService (from ddd declare) is the local auth port.
+    - Engine emits AllowAllAuth implementing every method on that trait surface
+      (no hard-coded validate_token / check_permission names).
+    - Production: host injects Cognito/Auth0; use @strategy on the trait.

@@ -2642,39 +2642,16 @@ fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> GeneratedFile
     }
 }
 
-/// RT-008: local allow-all auth (dev default; host swaps via strategy).
-const ALLOW_ALL_AUTH_IMPL: &str = r#"
-/// Dev/local AuthService — allows all tokens and permissions (RT-008).
-/// Host harnesses replace this with Cognito/Auth0/etc. via `provided_by: runtime`.
-pub struct AllowAllAuth;
-
-#[async_trait]
-impl AuthService for AllowAllAuth {
-    async fn validate_token(&self, token: String) -> Result<Principal, DomainError> {
-        Ok(Principal {
-            id: if token.is_empty() {
-                "anonymous".into()
-            } else {
-                token
-            },
-            roles: vec!["local".into()],
-            claims: std::collections::HashMap::new(),
-        })
-    }
-
-    async fn check_permission(
-        &self,
-        _principal: Principal,
-        _permission: String,
-    ) -> Result<bool, DomainError> {
-        Ok(true)
-    }
-}
-"#;
-
-/// RT-001/004: default local Bus implementation (monolith topology).
-const INPROCESS_BUS_IMPL: &str = r#"
-// ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
+/// RT-001/004: InProcessBus + handler registry, driven only by the routing
+/// trait's method surface (no hard-coded `Bus` / dispatch|invoke|request names).
+fn gen_inprocess_bus_impl(
+    routing_trait: &Construct,
+    trait_names: &std::collections::HashSet<String>,
+) -> String {
+    let trait_name = &routing_trait.name;
+    let mut out = String::from(
+        r#"// ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
+// Methods generated from the layer-declared routing trait surface.
 use std::collections::HashMap;
 use std::sync::Arc;
 use futures::future::BoxFuture;
@@ -2722,25 +2699,66 @@ impl InProcessBus {
     }
 }
 
-#[async_trait]
-impl Bus for InProcessBus {
-    async fn dispatch(&self, evt: serde_json::Value) -> Result<(), DomainError> {
-        let type_name = evt
+"#,
+    );
+    out.push_str(&format!(
+        "#[async_trait]\nimpl {trait_name} for InProcessBus {{\n"
+    ));
+    for method in &routing_trait.methods {
+        let mname = to_snake(&method.name);
+        let params_sig: Vec<String> = method
+            .params
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}: {}",
+                    to_snake(&p.name),
+                    param_type_to_rust(&p.type_expr, trait_names)
+                )
+            })
+            .collect();
+        let params_joined = params_sig.join(", ");
+        let sep = if params_joined.is_empty() { "" } else { ", " };
+        let ret = match &method.return_type {
+            Some(t) => format!(" -> {}", type_to_rust_with_traits(t, trait_names)),
+            None => String::new(),
+        };
+        // First Json/Value-like param is the envelope (type field + payload).
+        let envelope = method
+            .params
+            .iter()
+            .find(|p| {
+                let r = type_to_rust(&p.type_expr);
+                r.contains("Value") || r == "serde_json::Value"
+            })
+            .map(|p| to_snake(&p.name))
+            .or_else(|| method.params.first().map(|p| to_snake(&p.name)));
+
+        let unit_result = matches!(
+            &method.return_type,
+            None | Some(TypeExpr::Result(None))
+        );
+        let body = if let Some(env) = envelope {
+            if unit_result {
+                // Fire-and-forget (dispatch-style)
+                format!(
+                    r#"        let type_name = {env}
             .get("type")
             .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string();
-        if let Some(handler) = self.lookup(&type_name) {
-            let payload = evt.clone();
-            tokio::spawn(async move {
+        if let Some(handler) = self.lookup(&type_name) {{
+            let payload = {env}.clone();
+            tokio::spawn(async move {{
                 let _ = handler(payload).await;
-            });
-        }
-        Ok(())
-    }
-
-    async fn invoke(&self, cmd: serde_json::Value) -> Result<serde_json::Value, DomainError> {
-        let type_name = cmd
+            }});
+        }}
+        Ok(())"#
+                )
+            } else {
+                // Request/response (invoke-style)
+                format!(
+                    r#"        let type_name = {env}
             .get("type")
             .and_then(|t| t.as_str())
             .unwrap_or("")
@@ -2748,14 +2766,160 @@ impl Bus for InProcessBus {
         let handler = self
             .lookup(&type_name)
             .ok_or(DomainError::NotFound)?;
-        handler(cmd).await
+        handler({env}).await"#
+                )
+            }
+        } else if unit_result {
+            "        Ok(())".to_string()
+        } else {
+            "        Err(DomainError::External(\"no envelope param\".into()))".to_string()
+        };
+        out.push_str(&format!(
+            "    async fn {mname}(&self{sep}{params_joined}){ret} {{\n{body}\n    }}\n\n"
+        ));
     }
-
-    async fn request(&self, qry: serde_json::Value) -> Result<serde_json::Value, DomainError> {
-        self.invoke(qry).await
-    }
+    out.push_str("}\n");
+    out
 }
-"#;
+
+/// RT-008: AllowAllAuth from the configured auth trait + Principal-like structs.
+fn gen_allow_all_auth_impl(
+    auth_trait: &Construct,
+    structs: &[&Construct],
+    trait_names: &std::collections::HashSet<String>,
+) -> String {
+    let trait_name = &auth_trait.name;
+    // Prefer a layer-provided struct referenced by any method return type.
+    let principal = auth_trait
+        .methods
+        .iter()
+        .find_map(|m| {
+            let inner = match &m.return_type {
+                Some(TypeExpr::Result(Some(i))) => i.as_ref(),
+                Some(t) => t,
+                None => return None,
+            };
+            if let TypeExpr::Named(n) = inner {
+                structs.iter().find(|s| s.name == *n).copied()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            structs
+                .iter()
+                .find(|s| s.name.eq_ignore_ascii_case("principal"))
+                .copied()
+        });
+
+    let mut out = format!(
+        r#"/// Dev/local {trait_name} — allows all tokens and permissions (RT-008).
+/// Host harnesses replace this with Cognito/Auth0/etc. via `provided_by: runtime`.
+pub struct AllowAllAuth;
+
+#[async_trait]
+impl {trait_name} for AllowAllAuth {{
+"#
+    );
+    for method in &auth_trait.methods {
+        let mname = to_snake(&method.name);
+        let ret = match &method.return_type {
+            Some(t) => format!(" -> {}", type_to_rust_with_traits(t, trait_names)),
+            None => String::new(),
+        };
+        // First Str-like param is treated as token for principal identity.
+        let token_param = method.params.iter().find(|p| {
+            matches!(
+                type_to_rust(&p.type_expr).as_str(),
+                "String" | "&str" | "str"
+            )
+        });
+        let ret_inner = match &method.return_type {
+            Some(TypeExpr::Result(Some(i))) => Some(i.as_ref()),
+            Some(TypeExpr::Result(None)) | None => None,
+            Some(t) => Some(t),
+        };
+        let body = match ret_inner {
+            Some(TypeExpr::Named(n)) if n == "Bool" || n == "bool" => {
+                "        Ok(true)".to_string()
+            }
+            Some(TypeExpr::Named(n)) => {
+                if let Some(pstruct) = principal.filter(|s| s.name == *n) {
+                    let token_expr = token_param
+                        .map(|p| {
+                            let pn = to_snake(&p.name);
+                            format!(
+                                "if {pn}.is_empty() {{ \"anonymous\".into() }} else {{ {pn} }}"
+                            )
+                        })
+                        .unwrap_or_else(|| "\"anonymous\".into()".to_string());
+                    let mut fields = Vec::new();
+                    for f in &pstruct.fields {
+                        let fname = to_snake(&f.name);
+                        let ft = type_to_rust(&f.type_expr);
+                        let val = if fname == "id" || fname.ends_with("_id") {
+                            token_expr.clone()
+                        } else if ft.starts_with("Vec<") {
+                            if ft.contains("String") {
+                                "vec![\"local\".into()]".to_string()
+                            } else {
+                                "vec![]".to_string()
+                            }
+                        } else if ft.contains("HashMap") {
+                            "std::collections::HashMap::new()".to_string()
+                        } else if ft == "String" {
+                            "String::new()".to_string()
+                        } else if ft == "bool" {
+                            "false".to_string()
+                        } else if ft == "i64" {
+                            "0".to_string()
+                        } else {
+                            format!("{ft}::default()")
+                        };
+                        fields.push(format!("            {fname}: {val},"));
+                    }
+                    format!(
+                        "        Ok({n} {{\n{}\n        }})",
+                        fields.join("\n")
+                    )
+                } else {
+                    format!("        Ok({n}::default())")
+                }
+            }
+            None => "        Ok(())".to_string(),
+            Some(_) => "        Err(DomainError::External(\"allow-all: unsupported return\".into()))"
+                .to_string(),
+        };
+        // Prefix unused params with underscore when not referenced in body.
+        let params_for_sig: String = method
+            .params
+            .iter()
+            .map(|p| {
+                let pn = to_snake(&p.name);
+                let ty = param_type_to_rust(&p.type_expr, trait_names);
+                let used = token_param
+                    .map(|t| to_snake(&t.name) == pn)
+                    .unwrap_or(false)
+                    && matches!(
+                        ret_inner,
+                        Some(TypeExpr::Named(n)) if principal.map(|s| s.name == *n).unwrap_or(false)
+                    );
+                if used {
+                    format!("{pn}: {ty}")
+                } else {
+                    format!("_{pn}: {ty}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sep2 = if params_for_sig.is_empty() { "" } else { ", " };
+        out.push_str(&format!(
+            "    async fn {mname}(&self{sep2}{params_for_sig}){ret} {{\n{body}\n    }}\n\n"
+        ));
+    }
+    out.push_str("}\n");
+    out
+}
 
 /// Generate the shared library crate that all context crates depend on. It
 /// owns the common error types and layer-provided top-level traits, so there
@@ -2883,18 +3047,16 @@ futures = "0.3"
     let trait_names: std::collections::HashSet<String> =
         traits.iter().map(|t| t.name.clone()).collect();
 
-    // Local harness impls: emit InProcessBus when a routing trait is declared
-    // (layer statement maps_to), not when a hard-coded name appears.
+    // Local harness impls: routing trait(s) + auth trait from layer policy.
     let routing = registry.routing_traits();
-    let mut has_routing_trait = false;
-    let mut has_auth = false;
+    let mut routing_trait: Option<&Construct> = None;
+    let mut auth_trait: Option<&Construct> = None;
     for t in traits {
-        if routing.iter().any(|r| r == &t.name) {
-            has_routing_trait = true;
+        if routing.iter().any(|r| r == &t.name) && routing_trait.is_none() {
+            routing_trait = Some(t);
         }
-        // Layer auth_policy.service_trait (e.g. AuthService from ddd).
         if registry.is_auth_service_trait(&t.name) {
-            has_auth = true;
+            auth_trait = Some(t);
         }
         let tp = generic_params_rust(&t.type_params);
         let where_bounds = if t.type_params.is_empty() {
@@ -2931,15 +3093,13 @@ futures = "0.3"
         lib.push_str("}\n\n");
     }
 
-    // RT-001 / RT-004: local InProcessBus when a routing trait is present.
-    // Residual: the impl body still names `Bus` / dispatch|invoke|request —
-    // long-term this should be layer-declared or generated from the trait surface.
-    if has_routing_trait {
-        lib.push_str(INPROCESS_BUS_IMPL);
+    // RT-001 / RT-004: InProcessBus methods from the routing trait surface only.
+    if let Some(rt) = routing_trait {
+        lib.push_str(&gen_inprocess_bus_impl(rt, &trait_names));
     }
-    // RT-008: local allow-all AuthService for dev harness.
-    if has_auth {
-        lib.push_str(ALLOW_ALL_AUTH_IMPL);
+    // RT-008: AllowAllAuth methods from the configured auth trait + Principal-like struct.
+    if let Some(at) = auth_trait {
+        lib.push_str(&gen_allow_all_auth_impl(at, structs, &trait_names));
     }
 
     // Emit layer-provided structs (e.g. Principal) so traits can reference them.

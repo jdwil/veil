@@ -22,6 +22,7 @@ ann
 | `secret` | Omit from outbound serialization | `di.layer` (`@secret`) |
 | `shared` | Shared ownership (e.g. Arc) | `di.layer` (`@shared`) |
 | `http_route` | Dual-loop REST surface | `ddd.layer` (`@route`) |
+| `permission` | Required permission claim | `ddd.layer` (`@auth`) |
 | `invariant` | Smart-constructor validation | `ddd.layer` (`@invariant`) |
 | `adapter_env` | Required env vars for adapters | `ddd.layer` (`@env`) |
 | `adapter_field` | Stub harness field wiring | `ddd.layer` (`@field`) |
@@ -113,6 +114,7 @@ Placeholders:
 | `rest_english.layer` | http_name_policy (List/Get/… `/api/`) |
 | `rest_rpc.layer` | clears name-derived REST |
 | `bus_handle.layer` | bus_policy strip `Handle` |
+| `auth_local.layer` | auth_policy.service_trait AuthService (AllowAllAuth) |
 | `rust.layer` | constructor_policy; `use rest_english` |
 | `harness.layer` | docs for dual-loop roles + bus_policy |
 
@@ -153,8 +155,9 @@ Wired in `LayerRegistry::for_veil_file` via `apply_codegen_overrides`.
 | `rest_english` | List/Get/Create/Update/Delete + `/api/` |
 | `rest_rpc` | Clears name-derived prefixes (`none`); require `role:http_route` |
 | `bus_handle` | `strip_name_prefix Handle` |
+| `auth_local` | `service_trait AuthService` → AllowAllAuth for dual-loop |
 
-`ddd.layer` / `rust.layer` `use rest_english` (+ ddd also `use bus_handle`).
+`ddd.layer` / `rust.layer` `use rest_english` (+ ddd also `bus_handle`, `auth_local`).
 Products can `use rest_rpc` after ddd (later wins) or set `[codegen]` clears.
 
 ### C / D (not implemented)

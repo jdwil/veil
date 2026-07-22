@@ -5,15 +5,12 @@ pkg ddd v1
   # Policy packs (INV-001) — override with rest_rpc / veil.toml [codegen] / forks.
   use rest_english
   use bus_handle
+  use auth_local
 
   # INV-006: FK / identity conventions (opt-in; off without this block)
   identity_policy
     ref_suffix _id
     identity_field id
-
-  # Local AllowAllAuth when this trait is present (RT-008); host swaps via strategy.
-  auth_policy
-    service_trait AuthService
 
   construct Context
     kw ctx
@@ -264,6 +261,8 @@ pkg ddd v1
       trace: "Add distributed tracing" method
       timeout: "Service-level timeout" ms
       route: "HTTP method and path, e.g. GET /api/items" method_path role:http_route
+      # role:permission — required permission key (harness/host may enforce)
+      auth: "Required permission claim, e.g. relay.admin" permission role:permission
     group application
 
   construct Saga
