@@ -575,13 +575,35 @@ fn gen_local_harness_main(
             continue;
         }
 
+        // Shared Deps field names must match application crate (dependency-role
+        // input names preferred over snake(trait)).
+        let name_to_shape = build_name_to_shape(sol, registry);
+        let (_deps_set, dep_fields) =
+            collect_deps_field_map(&services, registry, &name_to_shape);
+
         out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
+        let mut wired_fields: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for ad in adapters {
             if is_pure_generic_adapter_template(ad) {
                 continue;
             }
             if let Some(target) = &ad.target {
-                let field = adapter_deps_field_name(sol, ad, target);
+                let field = adapter_deps_field_name(sol, ad, target, &dep_fields);
+                // One adapter per Deps field (first wins). Multi-adapter selection
+                // policy is PR4; naming agreement is this path.
+                if !wired_fields.insert(field.clone()) {
+                    continue;
+                }
+                // Only wire fields the application Deps struct declares.
+                if !dep_fields.values().any(|v| v == &field)
+                    && !dep_fields.contains_key(target)
+                {
+                    // Still allow if map is empty (no @dep scan) and field is trait snake
+                    if !dep_fields.is_empty() {
+                        continue;
+                    }
+                }
                 out.push_str(&format!(
                     "        {field}: {sn}_inst.clone(),\n",
                     sn = to_snake(&ad.name),
@@ -3887,61 +3909,65 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         });
     }
 
-    // Collect all deps across all flows
+    // Shared trait → Deps field map (application + harness + port-call lowering).
+    let flow_constructs: Vec<&Construct> = flows
+        .iter()
+        .filter_map(|f| match f {
+            FlowLike::Construct(c) => Some(*c),
+            FlowLike::Flow(_) => None,
+        })
+        .collect();
+    // Core Flow nodes aren't Constructs — fold their inputs/steps via the
+    // same collection logic by synthesizing from FlowLike below.
+    let (mut all_deps, mut dep_field_names) =
+        collect_deps_field_map(&flow_constructs, registry, &effective_name_to_shape);
     let base_ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
-    let mut all_deps = std::collections::HashSet::new();
-    // Track dep field names: trait_name → preferred field_name (from @dep declarations)
-    let mut dep_field_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for flow in flows {
-        let steps = match flow {
-            FlowLike::Flow(f) => &f.steps,
-            FlowLike::Construct(c) => &c.steps,
+        let (steps, inputs) = match flow {
+            FlowLike::Flow(f) => (&f.steps, &f.inputs),
+            FlowLike::Construct(_) => continue, // already in collect_deps_field_map
         };
         all_deps.extend(collect_deps(steps, &base_ctx));
-
-        // Also collect @dep annotated inputs as dependencies
-        let inputs = match flow {
-            FlowLike::Flow(f) => &f.inputs,
-            FlowLike::Construct(c) => &c.inputs,
-        };
         for field in inputs {
             if registry.field_is_dependency(field) {
-                // The type_expr of a dependency-role field is the trait name
-                // (or a type alias like WearTestRepo / Generic EntityRepo<T>).
                 let trait_name = match &field.type_expr {
                     TypeExpr::Named(type_name) => type_name.clone(),
                     TypeExpr::Generic(base, _) => base.clone(),
                     _ => continue,
                 };
                 all_deps.insert(trait_name.clone());
-                // Record the user-declared field name for this trait
-                dep_field_names.entry(trait_name).or_insert_with(|| to_snake(&field.name));
+                dep_field_names
+                    .entry(trait_name)
+                    .or_insert_with(|| to_snake(&field.name));
             }
         }
-    }
-
-    // Also scan for ! method calls in step bodies (DomainService style)
-    for flow in flows {
-        let steps = match flow {
-            FlowLike::Flow(f) => &f.steps,
-            FlowLike::Construct(c) => &c.steps,
-        };
         for step in steps {
             if let FlowStep::Step(s) = step {
                 for expr in &s.body {
-                    scan_dep_calls(expr, &effective_name_to_shape, &mut all_deps, &mut dep_field_names);
+                    scan_dep_calls(
+                        expr,
+                        &effective_name_to_shape,
+                        &mut all_deps,
+                        &mut dep_field_names,
+                    );
                 }
             }
         }
     }
+    for t in &all_deps {
+        dep_field_names
+            .entry(t.clone())
+            .or_insert_with(|| to_snake(t));
+    }
 
-    // Generate Deps struct using user-declared field names
+    // Generate Deps struct using the shared field map
     if !all_deps.is_empty() {
         out.push_str("/// Injected dependencies (ports).\npub struct Deps {\n");
         let mut sorted: Vec<&String> = all_deps.iter().collect();
         sorted.sort();
         for trait_name in sorted {
-            let field_name = dep_field_names.get(trait_name)
+            let field_name = dep_field_names
+                .get(trait_name)
                 .cloned()
                 .unwrap_or_else(|| to_snake(trait_name));
             out.push_str(&format!(
@@ -4008,6 +4034,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         if envelope_routing && ctx.routing_ref.is_empty() {
             ctx.routing_ref = ctx.default_routing_ref_as_dep();
         }
+        ctx.dep_fields = dep_field_names.clone();
         // Register inputs as locals, with their declared types for inference.
         // Skip dependency-role inputs — accessed via deps.x, not as locals.
         for input in inputs {
@@ -4517,8 +4544,17 @@ fn adapter_dyn_type(solution: &Solution, ad: &Construct) -> String {
     target.to_string()
 }
 
-/// Deps field name for an adapter (snake_case of type alias or target trait).
-fn adapter_deps_field_name(solution: &Solution, ad: &Construct, target: &str) -> String {
+/// Deps field name for an adapter given the shared trait→field map.
+/// Preference: map entry for target trait → type-alias snake → snake(trait).
+fn adapter_deps_field_name(
+    solution: &Solution,
+    ad: &Construct,
+    target: &str,
+    dep_fields: &std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(f) = dep_fields.get(target) {
+        return f.clone();
+    }
     for item in &solution.items {
         if let TopLevelItem::TypeAlias { name, target: te } = item {
             if let TypeExpr::Generic(base, args) = te {
@@ -4532,9 +4568,69 @@ fn adapter_deps_field_name(solution: &Solution, ad: &Construct, target: &str) ->
                     return to_snake(name);
                 }
             }
+            if let TypeExpr::Named(base) = te {
+                if base == target {
+                    return to_snake(name);
+                }
+            }
         }
     }
     to_snake(target)
+}
+
+/// Collect trait → Deps field names for application fns in a module.
+/// Policy: first dependency-role input name for a trait wins; body-scanned
+/// traits fall back to `to_snake(Trait)`. Used by application codegen and harness.
+fn collect_deps_field_map(
+    fns: &[&Construct],
+    registry: &LayerRegistry,
+    name_to_shape: &std::collections::HashMap<String, Shape>,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashMap<String, String>,
+) {
+    let mut all_deps = std::collections::HashSet::new();
+    let mut dep_field_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    // Pseudo-ctx for collect_deps (only needs name_to_shape for trait detection).
+    let base_ctx = crate::expr::GenCtx::new(name_to_shape.clone());
+
+    for f in fns {
+        all_deps.extend(crate::expr::collect_deps(&f.steps, &base_ctx));
+        for field in &f.inputs {
+            if registry.field_is_dependency(field) {
+                let trait_name = match &field.type_expr {
+                    TypeExpr::Named(type_name) => type_name.clone(),
+                    TypeExpr::Generic(base, _) => base.clone(),
+                    _ => continue,
+                };
+                all_deps.insert(trait_name.clone());
+                dep_field_names
+                    .entry(trait_name)
+                    .or_insert_with(|| to_snake(&field.name));
+            }
+        }
+        for step in &f.steps {
+            if let FlowStep::Step(s) = step {
+                for expr in &s.body {
+                    scan_dep_calls(
+                        expr,
+                        name_to_shape,
+                        &mut all_deps,
+                        &mut dep_field_names,
+                    );
+                }
+            }
+        }
+    }
+    // Ensure every dep has a field name.
+    for t in &all_deps {
+        dep_field_names
+            .entry(t.clone())
+            .or_insert_with(|| to_snake(t));
+    }
+    (all_deps, dep_field_names)
 }
 
 /// Trait-aware type rendering: a value-position reference to a known trait
@@ -4757,6 +4853,9 @@ pub fn generate_multi_package_harness(
         }
         // Fallback: if nothing discovered, keep previous "all adapters" behavior
         let filter_ports = !needed_ports.is_empty();
+        let name_to_shape_mp = build_name_to_shape(sol, registry);
+        let (_deps_set_mp, dep_fields_mp) =
+            collect_deps_field_map(&services, registry, &name_to_shape_mp);
 
         // Emit adapter instantiations (only for needed ports when known)
         for ad in adapters {
@@ -4767,7 +4866,7 @@ pub fn generate_multi_package_harness(
             let target = ad.target.as_deref().unwrap_or("Send");
             if filter_ports && !needed_ports.contains(target) {
                 // Allow type-alias deps (WearTestRepo) via monomorphized adapters
-                let field = adapter_deps_field_name(sol, ad, target);
+                let field = adapter_deps_field_name(sol, ad, target, &dep_fields_mp);
                 let alias_ok = needed_ports.iter().any(|p| to_snake(p) == field || p == &field);
                 if !alias_ok && !needed_ports.iter().any(|p| sol.items.iter().any(|i| {
                     matches!(i, TopLevelItem::TypeAlias { name, .. } if name == p)
@@ -4850,7 +4949,7 @@ pub fn generate_multi_package_harness(
             continue;
         }
 
-        // Build Deps struct — only ports the application crate expects
+        // Build Deps struct — field names from shared map (match application crate).
         main_rs.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
         let mut wired_fields: std::collections::HashSet<String> =
             std::collections::HashSet::new();
@@ -4859,7 +4958,7 @@ pub fn generate_multi_package_harness(
                 continue;
             }
             if let Some(target) = &ad.target {
-                let field = adapter_deps_field_name(sol, ad, target);
+                let field = adapter_deps_field_name(sol, ad, target, &dep_fields_mp);
                 if filter_ports
                     && !needed_ports.contains(target)
                     && !needed_ports.iter().any(|p| p == &field || to_snake(p) == field)

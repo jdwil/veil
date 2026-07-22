@@ -68,6 +68,11 @@ pub struct GenCtx {
     /// INV-002 / collection / nested defaults) and thus implement `Default`.
     /// `Type.new(a, b)` on these lowers to a positional struct update + `..Default`.
     pub defaultable_types: HashSet<String>,
+    /// Trait (or port) name → `Deps` field name. Preference: dependency-role
+    /// input name (`@dep provider_repo: ApiProviderRepo` → `provider_repo`),
+    /// else `to_snake(Trait)`. Shared by application emission, harness wiring,
+    /// and port-call lowering so all three agree.
+    pub dep_fields: HashMap<String, String>,
 }
 
 impl GenCtx {
@@ -91,7 +96,20 @@ impl GenCtx {
             async_fallible_methods: HashSet::new(),
             expected_return_rust: None,
             defaultable_types: HashSet::new(),
+            dep_fields: HashMap::new(),
         }
+    }
+
+    /// `Deps` field for a trait/port call target (PascalCase trait or already-snake field).
+    pub fn deps_field_for(&self, target: &str) -> String {
+        if let Some(f) = self.dep_fields.get(target) {
+            return f.clone();
+        }
+        // Target may already be the field name (dependency-role input registered as Trait).
+        if self.dep_fields.values().any(|v| v == target) {
+            return target.to_string();
+        }
+        to_snake(target)
     }
 
     /// Stable primary routing-trait name (sorted; HashSet order is arbitrary).
@@ -1240,9 +1258,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         );
     }
 
-    // Trait-shaped target → deps.target.method(args).await?
+    // Trait-shaped target → deps.<field>.method(args).await?
+    // Field name comes from dep_fields (shared with harness / Deps struct).
     if ctx.is_trait_target(&call.target) {
-        let dep_name = to_snake(&call.target);
+        let dep_name = ctx.deps_field_for(&call.target);
         let method = if call.method.is_empty() { "call" } else { &call.method };
         // Desugared routing-port calls (layer statement sugar) carry a StructLit
         // payload; build a JSON message tagged with its type.
@@ -1976,6 +1995,7 @@ impl GenCtx {
             async_fallible_methods: self.async_fallible_methods.clone(),
             expected_return_rust: self.expected_return_rust.clone(),
             defaultable_types: self.defaultable_types.clone(),
+            dep_fields: self.dep_fields.clone(),
         }
     }
 }
