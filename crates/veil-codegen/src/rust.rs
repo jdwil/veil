@@ -495,65 +495,77 @@ fn gen_local_harness_main(
                 continue;
             }
             let target = ad.target.as_deref().unwrap_or("Send");
-            // Check if adapter has @env fields to populate from environment
-            let env_ann = ad.annotations.iter().find(|a| a.name == "env");
-            let mut fields_init = String::new();
-            // @field(name: Type) — wire from stub harness_field or Default
+            // Wire adapter fields: @field first, @env only for names not yet set
+            // (avoids double-init of `pool` from @field(pool) + @env(DATABASE_URL)).
+            let mut field_inits: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
             for ann in &ad.annotations {
                 if ann.name == "field" {
                     for arg in &ann.args {
                         let (fname, ftype) = if let Some((n, t)) = arg.split_once(':') {
-                            (n.trim(), t.trim())
+                            (n.trim().to_string(), t.trim())
                         } else {
-                            (arg.trim(), "String")
+                            (arg.trim().to_string(), "String")
                         };
-                        if let Some((let_name, _)) =
+                        let init = if let Some((let_name, _)) =
                             stub_harness_field_expr(registry, ftype)
                         {
-                            fields_init.push_str(&format!(
-                                "        {fname}: {let_name}.clone(),\n"
-                            ));
+                            format!("{let_name}.clone()")
                         } else {
-                            fields_init.push_str(&format!(
-                                "        {fname}: Default::default(),\n"
-                            ));
-                        }
+                            "Default::default()".to_string()
+                        };
+                        field_inits.insert(fname, init);
                     }
                 }
             }
-            if let Some(env_a) = env_ann {
+            if let Some(env_a) = ad.annotations.iter().find(|a| a.name == "env") {
                 for arg in &env_a.args {
-                    // Match adapter struct field naming: last segment after '_'
                     let full = arg.to_lowercase();
-                    let field_name = full.rsplit('_').next().unwrap_or(&full);
-                    fields_init.push_str(&format!(
-                        "        {field_name}: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n"
-                    ));
+                    if arg.contains("DATABASE") {
+                        field_inits.entry("pool".to_string()).or_insert_with(|| {
+                            if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
+                                expr
+                            } else {
+                                format!(
+                                    "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
+                                )
+                            }
+                        });
+                    } else {
+                        let field_name =
+                            full.rsplit('_').next().unwrap_or(&full).to_string();
+                        field_inits.entry(field_name).or_insert_with(|| {
+                            format!(
+                                "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
+                            )
+                        });
+                    }
                 }
             }
-            // Auto-init client field when adapter body uses self.client
-            // and no @field(client: ...) already provides it.
-            let has_explicit_client_field = ad.annotations.iter().any(|a| {
-                a.name == "field"
-                    && a.args.iter().any(|arg| {
-                        arg.split(':').next().unwrap_or("").trim() == "client"
-                    })
-            });
+            let has_explicit_client_field = field_inits.contains_key("client");
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
             });
-            if body_uses_client && !has_explicit_client_field && !fields_init.contains("client:") {
+            if body_uses_client && !has_explicit_client_field {
                 if let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
-                    fields_init.push_str(&format!("        client: {let_name}.clone(),\n"));
+                    field_inits
+                        .entry("client".to_string())
+                        .or_insert_with(|| format!("{let_name}.clone()"));
                 }
             } else if !ad.fields.is_empty() {
                 for f in &ad.fields {
                     let field_name = to_snake(&f.name);
                     let env_key = f.name.to_uppercase();
-                    fields_init.push_str(&format!(
-                        "        {field_name}: std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into()),\n"
-                    ));
+                    field_inits.entry(field_name).or_insert_with(|| {
+                        format!(
+                            "std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into())"
+                        )
+                    });
                 }
+            }
+            let mut fields_init = String::new();
+            for (fname, init) in &field_inits {
+                fields_init.push_str(&format!("        {fname}: {init},\n"));
             }
             let dyn_ty = adapter_dyn_type(sol, ad);
             if fields_init.is_empty() {
@@ -2915,58 +2927,65 @@ fn gen_impls(
                 "/// {}: {} (implements {})\npub struct {}{} {{\n",
                 c.subkind, c.name, target_impl, c.name, adapter_tp
             ));
+            // Collect adapter fields into a map so @field and @env never double-declare
+            // the same name (e.g. @field(pool: Pool) + @env(DATABASE_URL) → one `pool`).
+            // @field wins on type; @env only fills gaps.
+            let mut adapter_fields: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
             for ann in &c.annotations {
-                if ann.name == "env" {
-                    for arg in &ann.args {
-                        // DATABASE_* env → `pool` field typed from stub `Pool` if present.
-                        if arg.contains("DATABASE") {
-                            if let Some((crate_name, path)) = stub_type_path(registry, "Pool") {
-                                out.push_str(&format!(
-                                    "    pub pool: {crate_name}::{path},\n"
-                                ));
-                            } else {
-                                out.push_str("    pub pool: String,\n");
-                            }
-                        } else {
-                            // Use the short suffix (after last _) as the field name,
-                            // matching what the body references via self.field.
-                            // DDB_TABLE → table, AWS_REGION → region, S3_BUCKET → bucket
-                            let full = arg.to_lowercase();
-                            let field_name = full.rsplit('_').next().unwrap_or(&full);
-                            out.push_str(&format!("    pub {}: String,\n", field_name));
-                        }
-                    }
-                }
                 if ann.name == "field" {
-                    // @field(name: Type) — generates a typed struct field.
-                    // The type is resolved via stub_type_crate for qualified paths.
                     for arg in &ann.args {
-                        // Parse "name: Type" or just "name" (defaults to String)
                         if let Some((fname, ftype)) = arg.split_once(':') {
-                            let fname = fname.trim();
+                            let fname = fname.trim().to_string();
                             let ftype = ftype.trim();
-                            // Check if type is from a stub (aliased)
-                            let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
-                            let qualified_type = if let Some((crate_name, original_name)) = seeded.stub_type_crate.get(ftype) {
+                            let qualified_type = if let Some((crate_name, original_name)) =
+                                seeded.stub_type_crate.get(ftype)
+                            {
                                 format!("{}::{}", crate_name, original_name)
+                            } else if let Some((crate_name, path)) =
+                                stub_type_path(registry, ftype)
+                            {
+                                format!("{crate_name}::{path}")
                             } else {
                                 ftype.to_string()
                             };
-                            out.push_str(&format!("    pub {}: {},\n", fname, qualified_type));
+                            adapter_fields.insert(fname, qualified_type);
                         } else {
-                            out.push_str(&format!("    pub {}: String,\n", arg.to_lowercase()));
+                            adapter_fields
+                                .entry(arg.to_lowercase())
+                                .or_insert_with(|| "String".to_string());
                         }
                     }
                 }
             }
-            // Auto-detect self.client usage in impl bodies → generate SDK client field.
-            // Only when no @field(client: ...) annotation already provides it.
-            let has_explicit_client_field = c.annotations.iter().any(|a| {
-                a.name == "field"
-                    && a.args.iter().any(|arg| {
-                        arg.split(':').next().unwrap_or("").trim() == "client"
-                    })
-            });
+            for ann in &c.annotations {
+                if ann.name == "env" {
+                    for arg in &ann.args {
+                        if arg.contains("DATABASE") {
+                            // Only add pool when @field did not already declare it.
+                            adapter_fields.entry("pool".to_string()).or_insert_with(|| {
+                                if let Some((crate_name, path)) =
+                                    stub_type_path(registry, "Pool")
+                                {
+                                    format!("{crate_name}::{path}")
+                                } else {
+                                    "String".to_string()
+                                }
+                            });
+                        } else {
+                            let full = arg.to_lowercase();
+                            let field_name =
+                                full.rsplit('_').next().unwrap_or(&full).to_string();
+                            adapter_fields
+                                .entry(field_name)
+                                .or_insert_with(|| "String".to_string());
+                        }
+                    }
+                }
+            }
+            // Auto-detect self.client usage when no @field(client: ...) already.
+            let has_explicit_client_field = adapter_fields.contains_key("client");
             let body_uses_client = c.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
             }) || generic_template
@@ -2976,13 +2995,15 @@ fn gen_impls(
                         .any(|m| m.body.iter().any(|e| expr_mentions_self_field(e, "client")))
                 })
                 .unwrap_or(false);
-            // Client field: only when @field says so, or bodies (own/template) use self.client.
-            // Do NOT hardcode Dynamo/S3 — type comes from @field(client: Client) when present.
             if body_uses_client && !has_explicit_client_field {
-                // Fall back only when body uses client without @field (legacy). Prefer stub Client.
                 if let Some((crate_name, path)) = stub_type_path(registry, "Client") {
-                    out.push_str(&format!("    pub client: {crate_name}::{path},\n"));
+                    adapter_fields
+                        .entry("client".to_string())
+                        .or_insert_with(|| format!("{crate_name}::{path}"));
                 }
+            }
+            for (fname, fty) in &adapter_fields {
+                out.push_str(&format!("    pub {fname}: {fty},\n"));
             }
             // PhantomData for generic adapters
             if !c.type_params.is_empty() {
@@ -4960,60 +4981,66 @@ pub fn generate_multi_package_harness(
                     continue;
                 }
             }
-            let env_ann = ad.annotations.iter().find(|a| a.name == "env");
-            let mut fields_init = String::new();
-
-            // @field annotations
+            // @field wins; @env fills gaps only (no duplicate pool init).
+            let mut field_inits: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
             for ann in &ad.annotations {
                 if ann.name == "field" {
                     for arg in &ann.args {
                         let (fname, ftype) = if let Some((n, t)) = arg.split_once(':') {
-                            (n.trim(), t.trim())
+                            (n.trim().to_string(), t.trim())
                         } else {
-                            (arg.trim(), "String")
+                            (arg.trim().to_string(), "String")
                         };
-                        if let Some((let_name, _)) = stub_harness_field_expr(registry, ftype) {
-                            fields_init.push_str(&format!("        {fname}: {let_name}.clone(),\n"));
+                        let init = if let Some((let_name, _)) =
+                            stub_harness_field_expr(registry, ftype)
+                        {
+                            format!("{let_name}.clone()")
                         } else {
-                            fields_init.push_str(&format!("        {fname}: Default::default(),\n"));
-                        }
+                            "Default::default()".to_string()
+                        };
+                        field_inits.insert(fname, init);
                     }
                 }
             }
-
-            // @env annotations
-            if let Some(env_a) = env_ann {
+            if let Some(env_a) = ad.annotations.iter().find(|a| a.name == "env") {
                 for arg in &env_a.args {
                     let full = arg.to_lowercase();
-                    let field_name = full.rsplit('_').next().unwrap_or(&full);
                     if arg.contains("DATABASE") {
-                        // Prefer stub harness_field Pool (declared on the DB driver stub).
-                        if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
-                            fields_init.push_str(&format!("        pool: {expr},\n"));
-                        } else {
-                            fields_init.push_str(&format!(
-                                "        pool: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n"
-                            ));
-                        }
+                        field_inits.entry("pool".to_string()).or_insert_with(|| {
+                            if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
+                                expr
+                            } else {
+                                format!(
+                                    "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
+                                )
+                            }
+                        });
                     } else {
-                        fields_init.push_str(&format!(
-                            "        {field_name}: std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into()),\n"
-                        ));
+                        let field_name =
+                            full.rsplit('_').next().unwrap_or(&full).to_string();
+                        field_inits.entry(field_name).or_insert_with(|| {
+                            format!(
+                                "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
+                            )
+                        });
                     }
                 }
             }
-
-            // Client only via @field harness_field — never hardcode SDK paths here.
-            let has_explicit_client = ad.annotations.iter().any(|a| {
-                a.name == "field" && a.args.iter().any(|arg| arg.split(':').next().unwrap_or("").trim() == "client")
-            });
+            let has_explicit_client = field_inits.contains_key("client");
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
             });
-            if (body_uses_client || has_explicit_client) && !fields_init.contains("client:") {
+            if body_uses_client && !has_explicit_client {
                 if let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
-                    fields_init.push_str(&format!("        client: {let_name}.clone(),\n"));
+                    field_inits
+                        .entry("client".to_string())
+                        .or_insert_with(|| format!("{let_name}.clone()"));
                 }
+            }
+            let mut fields_init = String::new();
+            for (fname, init) in &field_inits {
+                fields_init.push_str(&format!("        {fname}: {init},\n"));
             }
 
             let dyn_ty = adapter_dyn_type(sol, ad);

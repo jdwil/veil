@@ -1236,9 +1236,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     if let Some(recv) = &call.receiver {
         let recv_str = expr_to_rust(recv, ctx);
         // Map/HashMap .get("lit") → &str key (not String) on any receiver chain.
+        // Match local-target lowering: unwrap Option for immediate .as_s() chains.
         if call.method == "get" && call.args.len() == 1 {
             if let Expr::StringLit(key) = &call.args[0] {
-                return format!("{}.get(\"{}\")", recv_str, key);
+                return format!("{}.get(\"{}\").unwrap()", recv_str, key);
             }
         }
         // DynamoDB AttributeValue .as_s() / .as_n() returns Result<&str, &AttributeValue>

@@ -3274,94 +3274,98 @@ impl<'a> Parser<'a> {
     /// target for shape-driven codegen); subsequent links attach via
     /// `CallExpr.receiver`, threading the accumulated expression as the receiver.
     fn parse_postfix(&mut self, mut expr: Expr, start_span: Span) -> Result<Expr, ParseError> {
-        while self.at(&TokenKind::Dot) {
-            self.advance(); // consume '.'
+        // Unified postfix loop: `.method` / `.field` / `[index]` / `?` / `as`
+        // must interleave so `raw[0].get("k").as_s()` parses as one chain
+        // (index then method), not `raw[0]` plus a free-standing `get(...)`.
+        loop {
+            if self.at(&TokenKind::Dot) {
+                self.advance(); // consume '.'
 
-            // .await — postfix await (like Rust's expr.await)
-            if self.at(&TokenKind::Await) {
-                self.advance();
-                expr = Expr::Await(Box::new(expr));
+                // .await — postfix await (like Rust's expr.await)
+                if self.at(&TokenKind::Await) {
+                    self.advance();
+                    expr = Expr::Await(Box::new(expr));
+                    continue;
+                }
+
+                let field = self.expect_ident()?;
+
+                // Handle method!(args) — the ! is part of the method name (fallible shorthand).
+                // Must keep `!` on CallExpr.method so typecheck can unwrap Res!/Opt (codegen ? + ok_or).
+                let is_bang_call = self.at(&TokenKind::Bang)
+                    && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
+                if is_bang_call {
+                    self.advance(); // consume !
+                }
+
+                // Handle method?(args) — ? before ( means a query/predicate method call
+                let is_question_call = self.at(&TokenKind::Question)
+                    && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
+                if is_question_call {
+                    self.advance(); // consume ?
+                }
+
+                let method_name = if is_bang_call {
+                    format!("{field}!")
+                } else if is_question_call {
+                    format!("{field}?")
+                } else {
+                    field.clone()
+                };
+
+                if self.at(&TokenKind::LParen) {
+                    let args = self.parse_paren_args();
+                    let span = start_span.merge(self.current().span);
+                    // `Ident.method(args)` (no prior chaining) → named target form,
+                    // preserving `Repo.find(id)` for the codegen name resolver.
+                    expr = match expr {
+                        Expr::Ident(target) => Expr::Call(CallExpr {
+                            target,
+                            method: method_name.clone(),
+                            args,
+                            receiver: None,
+                            sugar: None,
+                            span,
+                        }),
+                        Expr::FieldAccess(base, last) => {
+                            // `a.b.method(args)` → target "a.b" (dotted path).
+                            let target = flatten_dotted_path(&base, &last);
+                            match target {
+                                Some(t) => Expr::Call(CallExpr {
+                                    target: t,
+                                    method: method_name.clone(),
+                                    args,
+                                    receiver: None,
+                                    sugar: None,
+                                    span,
+                                }),
+                                None => Expr::Call(CallExpr {
+                                    target: String::new(),
+                                    method: method_name.clone(),
+                                    args,
+                                    receiver: Some(Box::new(Expr::FieldAccess(base, last))),
+                                    sugar: None,
+                                    span,
+                                }),
+                            }
+                        }
+                        // Chain link on a call/index/other expression → receiver form.
+                        other => Expr::Call(CallExpr {
+                            target: String::new(),
+                            method: method_name,
+                            args,
+                            receiver: Some(Box::new(other)),
+                            sugar: None,
+                            span,
+                        }),
+                    };
+                } else {
+                    // Plain field access.
+                    expr = Expr::FieldAccess(Box::new(expr), field);
+                }
                 continue;
             }
 
-            let field = self.expect_ident()?;
-
-            // Handle method!(args) — the ! is part of the method name (fallible shorthand).
-            // Must keep `!` on CallExpr.method so typecheck can unwrap Res!/Opt (codegen ? + ok_or).
-            let is_bang_call = self.at(&TokenKind::Bang)
-                && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
-            if is_bang_call {
-                self.advance(); // consume !
-            }
-
-            // Handle method?(args) — ? before ( means a query/predicate method call
-            let is_question_call = self.at(&TokenKind::Question)
-                && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false);
-            if is_question_call {
-                self.advance(); // consume ?
-            }
-
-            let method_name = if is_bang_call {
-                format!("{field}!")
-            } else if is_question_call {
-                format!("{field}?")
-            } else {
-                field.clone()
-            };
-
-            if self.at(&TokenKind::LParen) {
-                let args = self.parse_paren_args();
-                let span = start_span.merge(self.current().span);
-                // `Ident.method(args)` (no prior chaining) → named target form,
-                // preserving `Repo.find(id)` for the codegen name resolver.
-                expr = match expr {
-                    Expr::Ident(target) => Expr::Call(CallExpr {
-                        target,
-                        method: method_name.clone(),
-                        args,
-                        receiver: None,
-                        sugar: None,
-                        span,
-                    }),
-                    Expr::FieldAccess(base, last) => {
-                        // `a.b.method(args)` → target "a.b" (dotted path).
-                        let target = flatten_dotted_path(&base, &last);
-                        match target {
-                            Some(t) => Expr::Call(CallExpr {
-                                target: t,
-                                method: method_name.clone(),
-                                args,
-                                receiver: None,
-                                sugar: None,
-                                span,
-                            }),
-                            None => Expr::Call(CallExpr {
-                                target: String::new(),
-                                method: method_name.clone(),
-                                args,
-                                receiver: Some(Box::new(Expr::FieldAccess(base, last))),
-                                sugar: None,
-                                span,
-                            }),
-                        }
-                    }
-                    // Chain link on a call/other expression → receiver form.
-                    other => Expr::Call(CallExpr {
-                        target: String::new(),
-                        method: method_name,
-                        args,
-                        receiver: Some(Box::new(other)),
-                        sugar: None,
-                        span,
-                    }),
-                };
-            } else {
-                // Plain field access.
-                expr = Expr::FieldAccess(Box::new(expr), field);
-            }
-        }
-        // Additional postfix: ?, [index], as, {struct_lit}, ..
-        loop {
             match self.peek_kind().clone() {
                 TokenKind::LBrace if matches!(&expr, Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_uppercase())) => {
                     // Type{field: value, ...} → named struct literal
@@ -3393,6 +3397,8 @@ impl<'a> Parser<'a> {
                     let index = self.parse_expr()?;
                     if self.at(&TokenKind::RBracket) { self.advance(); }
                     expr = Expr::Index(Box::new(expr), Box::new(index));
+                    // Continue so `raw[0].method(...)` can attach methods after index.
+                    continue;
                 }
                 TokenKind::As => {
                     self.advance();
