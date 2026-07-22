@@ -705,7 +705,10 @@ impl<'a> Parser<'a> {
                         items.push(TopLevelItem::Const { name: const_name, value });
                     }
                     _ => {
-                        if let Some(c) = self.parse_any_construct(annotations)? {
+                        // Check for testing framework contextual keywords
+                        if let Some(test_item) = self.try_parse_test_item()? {
+                            items.push(test_item);
+                        } else if let Some(c) = self.parse_any_construct(annotations)? {
                             items.push(TopLevelItem::Construct(c));
                         }
                     }
@@ -859,7 +862,10 @@ impl<'a> Parser<'a> {
                         });
                     }
                     _ => {
-                        if let Some(c) = self.parse_any_construct(annotations)? {
+                        // Check for testing framework contextual keywords
+                        if let Some(test_item) = self.try_parse_test_item()? {
+                            items.push(test_item);
+                        } else if let Some(c) = self.parse_any_construct(annotations)? {
                             items.push(TopLevelItem::Construct(c));
                         }
                     }
@@ -1725,6 +1731,11 @@ impl<'a> Parser<'a> {
                     c.fns.push(self.parse_fn_def()?);
                     continue;
                 }
+                // Test blocks attached to preceding fn or the construct itself
+                if self.at(&TokenKind::Ident) && self.current().text == "tests" {
+                    c.test_blocks.push(self.parse_test_block()?);
+                    continue;
+                }
                 // Effect block: `effect <name>` + indented body
                 if self.at(&TokenKind::Ident) && self.current().text == "effect" {
                     let effect_span = self.current().span;
@@ -2302,6 +2313,11 @@ impl<'a> Parser<'a> {
                     }
                     // Reference line: `keyword Name, Name` (e.g. `contexts Identity, Billing`).
                     TokenKind::Ident => {
+                        // Test blocks: `tests` with indented `it` cases
+                        if self.current().text == "tests" {
+                            c.test_blocks.push(self.parse_test_block()?);
+                            continue;
+                        }
                         let ref_span = self.current().span;
                         let keyword = self.advance().text;
                         let mut values = Vec::new();
@@ -3983,6 +3999,790 @@ fn parse_pattern_string(s: &str) -> Option<Pattern> {
     }
 
     None
+}
+
+// ─── Testing Framework Parsing ────────────────────────────────────────────────
+
+impl<'a> Parser<'a> {
+    /// Check if current position is at a testing contextual keyword and parse it.
+    /// Returns None if not at a test keyword (allowing fallthrough to construct parsing).
+    fn try_parse_test_item(&mut self) -> Result<Option<TopLevelItem>, ParseError> {
+        let word = match self.current_word() {
+            Some(w) => w.to_string(),
+            None => return Ok(None),
+        };
+        match word.as_str() {
+            "tests" => Ok(Some(TopLevelItem::TestBlock(self.parse_test_block()?))),
+            "fixture" => Ok(Some(TopLevelItem::Fixture(self.parse_fixture()?))),
+            "integration" => Ok(Some(TopLevelItem::Integration(self.parse_integration()?))),
+            "scenario" => Ok(Some(TopLevelItem::Scenario(self.parse_scenario()?))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Parse `tests [target_name]` block with indented `it` cases.
+    fn parse_test_block(&mut self) -> Result<TestBlock, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "tests"
+
+        // Optional target name
+        let target = if self.at(&TokenKind::Ident) && !self.at_block_start() {
+            Some(self.advance().text)
+        } else {
+            None
+        };
+
+        let mut cases = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                if self.at(&TokenKind::Ident) && self.current().text == "it" {
+                    cases.push(self.parse_test_case()?);
+                } else {
+                    // Skip unknown content
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(TestBlock {
+            target,
+            cases,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `it "test name"` with stubs, spies, given, then, mount, actions.
+    fn parse_test_case(&mut self) -> Result<TestCase, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "it"
+
+        // Test case name (string literal or bare identifier)
+        let name = if self.at(&TokenKind::StringLit) {
+            let text = self.advance().text;
+            Self::extract_string_content(&text)
+        } else if self.at(&TokenKind::Ident) {
+            self.advance().text
+        } else {
+            "unnamed".to_string()
+        };
+
+        let mut stubs = Vec::new();
+        let mut spies = Vec::new();
+        let mut given = Vec::new();
+        let mut then = Vec::new();
+        let mut each_table = None;
+        let mut mount = None;
+        let mut actions = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                let word = match self.current_word() {
+                    Some(w) => w.to_string(),
+                    None => { self.advance(); continue; }
+                };
+                match word.as_str() {
+                    "stub" => stubs.push(self.parse_stub_decl()?),
+                    "spy" => spies.push(self.parse_spy_decl()?),
+                    "given" => {
+                        self.advance(); // consume "given"
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                given.push(self.parse_given_binding()?);
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    "then" => {
+                        self.advance(); // consume "then"
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                then.push(self.parse_assertion()?);
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    "each" => {
+                        each_table = Some(self.parse_each_table()?);
+                    }
+                    "mount" => {
+                        mount = Some(self.parse_mount_expr()?);
+                    }
+                    "click" => {
+                        self.advance();
+                        let sel = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        actions.push(TestAction::Click(sel));
+                    }
+                    "fill" => {
+                        self.advance();
+                        let sel = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        let val = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        actions.push(TestAction::Fill(sel, val));
+                    }
+                    "fire" => {
+                        self.advance();
+                        let evt = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        // expect "on"
+                        if self.at(&TokenKind::Ident) && self.current().text == "on" {
+                            self.advance();
+                        }
+                        let sel = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        actions.push(TestAction::Fire(evt, sel));
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(TestCase {
+            name,
+            stubs,
+            spies,
+            given,
+            then,
+            each_table,
+            mount,
+            actions,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `stub Target.method -> value` or stub with conditional/sequence.
+    fn parse_stub_decl(&mut self) -> Result<StubDecl, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "stub"
+
+        // Parse target: `Repo.find_by_id` or just `Repo`
+        let mut target = self.expect_ident()?;
+        // Consume optional bang suffix on target
+        if self.at(&TokenKind::Bang) {
+            self.advance();
+            target = format!("{}!", target);
+        }
+        if self.at(&TokenKind::Dot) {
+            self.advance();
+            let method = self.expect_ident()?;
+            // Consume optional bang suffix on method
+            if self.at(&TokenKind::Bang) {
+                self.advance();
+                target = format!("{}.{}!", target, method);
+            } else {
+                target = format!("{}.{}", target, method);
+            }
+        }
+
+        // Simple form: `stub Target -> value`
+        if self.at(&TokenKind::Arrow) {
+            self.advance();
+            // Check for `error "message"` or `err "message"`
+            if self.at(&TokenKind::Ident) && (self.current().text == "error" || self.current().text == "err") {
+                self.advance();
+                let msg = if self.at(&TokenKind::StringLit) {
+                    let text = self.advance().text;
+                    Self::extract_string_content(&text)
+                } else { "error".to_string() };
+                return Ok(StubDecl {
+                    target,
+                    variant: StubVariant::Error(msg),
+                    span: start_span.merge(self.current().span),
+                });
+            }
+            let value = self.parse_expr()?;
+            return Ok(StubDecl {
+                target,
+                variant: StubVariant::Simple(value),
+                span: start_span.merge(self.current().span),
+            });
+        }
+
+        // Block form: conditional or sequence
+        if self.at_block_start() {
+            self.enter_block()?;
+            let mut when_clauses = Vec::new();
+            let mut otherwise = None;
+            let mut sequence = Vec::new();
+            let mut is_sequence = false;
+
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                let word = match self.current_word() {
+                    Some(w) => w.to_string(),
+                    None => { self.advance(); continue; }
+                };
+                match word.as_str() {
+                    "when" => {
+                        self.advance();
+                        let cond = self.parse_expr()?;
+                        self.expect(&TokenKind::Arrow)?;
+                        let val = self.parse_expr()?;
+                        when_clauses.push((cond, val));
+                    }
+                    "otherwise" => {
+                        self.advance();
+                        self.expect(&TokenKind::Arrow)?;
+                        let val = self.parse_expr()?;
+                        otherwise = Some(Box::new(val));
+                    }
+                    "first" => {
+                        is_sequence = true;
+                        self.advance();
+                        self.expect(&TokenKind::Arrow)?;
+                        let val = self.parse_expr()?;
+                        sequence.push(val);
+                    }
+                    "then" => {
+                        if is_sequence {
+                            self.advance();
+                            self.expect(&TokenKind::Arrow)?;
+                            let val = self.parse_expr()?;
+                            sequence.push(val);
+                        } else {
+                            // Could be the then block for assertions — break
+                            break;
+                        }
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+
+            if is_sequence {
+                return Ok(StubDecl {
+                    target,
+                    variant: StubVariant::Sequence(sequence),
+                    span: start_span.merge(self.current().span),
+                });
+            } else {
+                return Ok(StubDecl {
+                    target,
+                    variant: StubVariant::Conditional { when_clauses, otherwise },
+                    span: start_span.merge(self.current().span),
+                });
+            }
+        }
+
+        // Bare stub with no value (defaults to a simple ok)
+        Ok(StubDecl {
+            target,
+            variant: StubVariant::Simple(Expr::Ident("ok".into())),
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `spy Target.method` with optional assertion block.
+    fn parse_spy_decl(&mut self) -> Result<SpyDecl, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "spy"
+
+        let mut target = self.expect_ident()?;
+        if self.at(&TokenKind::Bang) {
+            self.advance();
+            target = format!("{}!", target);
+        }
+        if self.at(&TokenKind::Dot) {
+            self.advance();
+            let method = self.expect_ident()?;
+            if self.at(&TokenKind::Bang) {
+                self.advance();
+                target = format!("{}.{}!", target, method);
+            } else {
+                target = format!("{}.{}", target, method);
+            }
+        }
+
+        let mut assertions = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                let word = match self.current_word() {
+                    Some(w) => w.to_string(),
+                    None => { self.advance(); continue; }
+                };
+                match word.as_str() {
+                    "called_once" => {
+                        self.advance();
+                        assertions.push(SpyAssertion::CalledOnce);
+                    }
+                    "not_called" => {
+                        self.advance();
+                        assertions.push(SpyAssertion::NotCalled);
+                    }
+                    "called" => {
+                        self.advance();
+                        // expect (n)
+                        if self.at(&TokenKind::LParen) {
+                            self.advance();
+                            let n = if let Ok(e) = self.parse_expr() {
+                                match e {
+                                    Expr::IntLit(v) => v as u64,
+                                    _ => 1,
+                                }
+                            } else { 1 };
+                            if self.at(&TokenKind::RParen) { self.advance(); }
+                            assertions.push(SpyAssertion::CalledTimes(n));
+                        }
+                    }
+                    "args" => {
+                        self.advance();
+                        // args[n] == value
+                        if self.at(&TokenKind::LBracket) {
+                            self.advance();
+                            let idx = if let Ok(Expr::IntLit(n)) = self.parse_expr() {
+                                n as usize
+                            } else { 0 };
+                            if self.at(&TokenKind::RBracket) { self.advance(); }
+                            if self.at(&TokenKind::EqEq) { self.advance(); }
+                            let val = self.parse_expr()?;
+                            assertions.push(SpyAssertion::ArgsEq(idx, val));
+                        }
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(SpyDecl {
+            target,
+            assertions,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `name = expr` inside a given block.
+    fn parse_given_binding(&mut self) -> Result<GivenBinding, ParseError> {
+        let start_span = self.current().span;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Eq)?;
+        let value = self.parse_expr()?;
+        Ok(GivenBinding {
+            name,
+            value,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse an assertion in a `then` block.
+    fn parse_assertion(&mut self) -> Result<Assertion, ParseError> {
+        let word = match self.current_word() {
+            Some(w) => w.to_string(),
+            None => return Ok(Assertion::Expr(self.parse_expr()?)),
+        };
+        match word.as_str() {
+            "result" => {
+                // Try to parse as simple result.field == value, but fall back to
+                // expression parsing for complex cases (result.foo.bar, result.len(), etc.)
+                let save_pos = self.pos;
+                self.advance(); // consume "result"
+                if self.at(&TokenKind::Dot) {
+                    // Check if it's the simple case: result.ident ==
+                    let dot_pos = self.pos;
+                    self.advance(); // consume "."
+                    if self.at(&TokenKind::Ident) {
+                        let field_pos = self.pos;
+                        let field_name = self.advance().text; // consume ident
+                        if self.at(&TokenKind::EqEq) {
+                            // Simple case: result.field == value
+                            self.advance(); // consume "=="
+                            let val = self.parse_expr()?;
+                            Ok(Assertion::FieldEq(field_name, val))
+                        } else {
+                            // Complex: result.field.something or result.field()
+                            self.pos = save_pos;
+                            Ok(Assertion::Expr(self.parse_expr()?))
+                        }
+                    } else {
+                        self.pos = save_pos;
+                        Ok(Assertion::Expr(self.parse_expr()?))
+                    }
+                } else if self.at(&TokenKind::EqEq) {
+                    self.advance(); // consume "=="
+                    let val = self.parse_expr()?;
+                    Ok(Assertion::ResultEq(val))
+                } else {
+                    // Bare 'result' or other usage
+                    self.pos = save_pos;
+                    Ok(Assertion::Expr(self.parse_expr()?))
+                }
+            }
+            "fails" => {
+                self.advance();
+                // fails: "message"
+                if self.at(&TokenKind::Colon) { self.advance(); }
+                let msg = if self.at(&TokenKind::StringLit) {
+                    let text = self.advance().text;
+                    Self::extract_string_content(&text)
+                } else { String::new() };
+                Ok(Assertion::Fails(msg))
+            }
+            "ok" => {
+                self.advance();
+                Ok(Assertion::Ok)
+            }
+            "settles" => {
+                self.advance();
+                Ok(Assertion::Settles)
+            }
+            _ => {
+                Ok(Assertion::Expr(self.parse_expr()?))
+            }
+        }
+    }
+
+    /// Parse `each` parameterized table.
+    fn parse_each_table(&mut self) -> Result<EachTable, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "each"
+
+        let mut headers = Vec::new();
+        let mut rows = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            let mut first_row = true;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                // Each row starts with | and contains | delimited cells
+                if self.at(&TokenKind::Pipe) {
+                    self.advance(); // consume leading |
+                    let mut cells = Vec::new();
+                    // Collect tokens until end of line (Newline or Dedent or Eof)
+                    while !self.at(&TokenKind::Newline) && !self.at(&TokenKind::Eof)
+                        && !self.at(&TokenKind::Dedent) {
+                        if self.at(&TokenKind::Pipe) {
+                            self.advance(); // cell separator
+                            continue;
+                        }
+                        // Parse an expression (a single cell value)
+                        match self.parse_expr() {
+                            Ok(expr) => cells.push(expr),
+                            Err(_) => { self.advance(); }
+                        }
+                    }
+                    if first_row {
+                        // First row is headers — extract ident names
+                        headers = cells.into_iter().map(|e| match e {
+                            Expr::Ident(n) => n,
+                            other => expr_to_string_basic(&other),
+                        }).collect();
+                        first_row = false;
+                    } else {
+                        rows.push(cells);
+                    }
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(EachTable {
+            headers,
+            rows,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `fixture name` block.
+    fn parse_fixture(&mut self) -> Result<Fixture, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "fixture"
+
+        let name = self.expect_ident()?;
+        let mut bindings = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                bindings.push(self.parse_given_binding()?);
+            }
+            self.exit_block();
+        }
+
+        Ok(Fixture {
+            name,
+            bindings,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `integration "name"` block.
+    fn parse_integration(&mut self) -> Result<IntegrationBlock, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "integration"
+
+        let name = if self.at(&TokenKind::StringLit) {
+            let text = self.advance().text;
+            Self::extract_string_content(&text)
+        } else {
+            self.expect_ident()?
+        };
+
+        let mut real_deps = Vec::new();
+        let mut stub_deps = Vec::new();
+        let mut setup = Vec::new();
+        let mut verify = Vec::new();
+        let mut teardown = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                let word = match self.current_word() {
+                    Some(w) => w.to_string(),
+                    None => { self.advance(); continue; }
+                };
+                match word.as_str() {
+                    "real" => {
+                        self.advance();
+                        let dep = self.expect_ident()?;
+                        real_deps.push(dep);
+                    }
+                    "stub" => {
+                        stub_deps.push(self.parse_stub_decl()?);
+                    }
+                    "setup" => {
+                        self.advance();
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                match self.parse_expr() {
+                                    Ok(e) => setup.push(e),
+                                    Err(_) => { self.advance(); }
+                                }
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    "verify" => {
+                        self.advance();
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                match self.parse_expr() {
+                                    Ok(e) => verify.push(e),
+                                    Err(_) => { self.advance(); }
+                                }
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    "teardown" => {
+                        self.advance();
+                        if self.at_block_start() {
+                            self.enter_block()?;
+                            while !self.at_block_end() {
+                                self.skip_newlines();
+                                if self.at_block_end() { break; }
+                                match self.parse_expr() {
+                                    Ok(e) => teardown.push(e),
+                                    Err(_) => { self.advance(); }
+                                }
+                            }
+                            self.exit_block();
+                        }
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(IntegrationBlock {
+            name,
+            real_deps,
+            stub_deps,
+            setup,
+            verify,
+            teardown,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `scenario "name"` block.
+    fn parse_scenario(&mut self) -> Result<ScenarioBlock, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "scenario"
+
+        let name = if self.at(&TokenKind::StringLit) {
+            let text = self.advance().text;
+            Self::extract_string_content(&text)
+        } else {
+            self.expect_ident()?
+        };
+
+        let mut steps = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                let word = match self.current_word() {
+                    Some(w) => w.to_string(),
+                    None => { self.advance(); continue; }
+                };
+                match word.as_str() {
+                    "navigate" => {
+                        self.advance();
+                        let path = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        steps.push(ScenarioStep::Navigate(path));
+                    }
+                    "fill" => {
+                        self.advance();
+                        let sel = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        let val = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        steps.push(ScenarioStep::Fill(sel, val));
+                    }
+                    "select" => {
+                        self.advance();
+                        let sel = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        let val = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        steps.push(ScenarioStep::Select(sel, val));
+                    }
+                    "click" => {
+                        self.advance();
+                        let sel = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        steps.push(ScenarioStep::Click(sel));
+                    }
+                    "wait_for" => {
+                        self.advance();
+                        let sel = if self.at(&TokenKind::StringLit) {
+                            let text = self.advance().text;
+                            Self::extract_string_content(&text)
+                        } else { String::new() };
+                        steps.push(ScenarioStep::WaitFor(sel));
+                    }
+                    "assert" => {
+                        self.advance();
+                        let expr = self.parse_expr()?;
+                        steps.push(ScenarioStep::Assert(expr));
+                    }
+                    _ => { self.advance(); }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(ScenarioBlock {
+            name,
+            steps,
+            span: start_span.merge(self.current().span),
+        })
+    }
+
+    /// Parse `mount Component` with optional props block.
+    fn parse_mount_expr(&mut self) -> Result<MountExpr, ParseError> {
+        let start_span = self.current().span;
+        self.advance(); // consume "mount"
+
+        let component = self.expect_ident()?;
+        let mut props = Vec::new();
+
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() { break; }
+                let word = match self.current_word() {
+                    Some(w) => w.to_string(),
+                    None => { self.advance(); continue; }
+                };
+                if word == "props" {
+                    self.advance();
+                    if self.at_block_start() {
+                        self.enter_block()?;
+                        while !self.at_block_end() {
+                            self.skip_newlines();
+                            if self.at_block_end() { break; }
+                            props.push(self.parse_given_binding()?);
+                        }
+                        self.exit_block();
+                    }
+                } else {
+                    self.advance();
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(MountExpr {
+            component,
+            props,
+            span: start_span.merge(self.current().span),
+        })
+    }
+}
+
+/// Simple helper for converting Expr to string for table headers.
+fn expr_to_string_basic(expr: &Expr) -> String {
+    match expr {
+        Expr::Ident(n) => n.clone(),
+        Expr::StringLit(s) => s.clone(),
+        Expr::IntLit(n) => n.to_string(),
+        _ => format!("{:?}", expr),
+    }
 }
 
 #[cfg(test)]

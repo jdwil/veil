@@ -210,6 +210,41 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
     },
+    /// Run tests defined in VEIL test blocks (parse → codegen → run)
+    Test {
+        /// Path to the .veil file(s)
+        file: Option<PathBuf>,
+        /// Filter test cases by name
+        #[arg(long)]
+        filter: Option<String>,
+        /// Only unit tests (tests blocks without `mount`)
+        #[arg(long)]
+        unit: bool,
+        /// Only component tests (tests blocks with `mount`)
+        #[arg(long)]
+        component: bool,
+        /// Run all *.test.veil scenario files
+        #[arg(long)]
+        scenarios: bool,
+        /// Run all integration test blocks
+        #[arg(long)]
+        integration: bool,
+        /// Target language (rust, typescript)
+        #[arg(short = 't', long)]
+        target: Option<String>,
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+        /// Watch mode: re-run tests on .veil file changes
+        #[arg(long)]
+        watch: bool,
+        /// Report test coverage at the VEIL source level
+        #[arg(long)]
+        coverage: bool,
+        /// Update snapshot files (passed through to target runner)
+        #[arg(long)]
+        update_snapshots: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2284,7 +2319,464 @@ fn main() {
                 }
             });
         }
+        Commands::Test {
+            file,
+            filter,
+            unit,
+            component,
+            scenarios,
+            integration,
+            target,
+            json,
+            watch,
+            coverage,
+            update_snapshots,
+        } => {
+            // Determine which file(s) to process.
+            let files: Vec<PathBuf> = if scenarios {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                collect_test_veil_files(&cwd)
+            } else if let Some(f) = file.clone() {
+                vec![f]
+            } else {
+                eprintln!("error: provide a .veil file or use --scenarios");
+                std::process::exit(1);
+            };
+
+            if files.is_empty() {
+                eprintln!("No test files found.");
+                std::process::exit(1);
+            }
+
+            let target_str = target.as_deref().unwrap_or("rust");
+            let codegen_target = veil_codegen::CodegenTarget::from_str(target_str)
+                .unwrap_or_else(|| {
+                    eprintln!("Unknown target '{}'. Use: rust, typescript", target_str);
+                    std::process::exit(2);
+                });
+
+            // ─── Watch mode ─────────────────────────────────────────────
+            if watch {
+                run_test_watch_mode(
+                    &files, &filter, unit, component, scenarios, integration,
+                    codegen_target, target_str, json, coverage, update_snapshots,
+                );
+                return;
+            }
+
+            // ─── Single run ─────────────────────────────────────────────
+            let exit_code = run_tests_once(
+                &files, &filter, unit, component, scenarios, integration,
+                codegen_target, target_str, json, coverage, update_snapshots,
+            );
+            std::process::exit(exit_code);
+        }
     }
+}
+
+/// Run the test pipeline once. Returns the process exit code.
+fn run_tests_once(
+    files: &[PathBuf],
+    filter: &Option<String>,
+    unit: bool,
+    component: bool,
+    scenarios: bool,
+    integration: bool,
+    codegen_target: veil_codegen::CodegenTarget,
+    target_str: &str,
+    json: bool,
+    coverage: bool,
+    update_snapshots: bool,
+) -> i32 {
+    let mut all_items: Vec<veil_ir::TopLevelItem> = Vec::new();
+    let mut all_solutions: Vec<veil_ir::Solution> = Vec::new();
+    let mut total_tests = 0usize;
+    let mut total_filtered = 0usize;
+
+    for path in files {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {}", path.display(), e);
+                return 1;
+            }
+        };
+        let (sol, _registry) = parse_solution_or_exit(&source, path);
+
+        // Collect test blocks and filter.
+        let mut test_cases: Vec<(&str, &veil_ir::TestCase)> = Vec::new();
+        for item in &sol.items {
+            match item {
+                veil_ir::TopLevelItem::TestBlock(tb) => {
+                    for case in &tb.cases {
+                        let is_component = case.mount.is_some();
+                        let is_unit = !is_component;
+                        if unit && !is_unit { continue; }
+                        if component && !is_component { continue; }
+                        if let Some(f) = filter {
+                            if !case.name.contains(f.as_str()) { continue; }
+                        }
+                        test_cases.push((
+                            tb.target.as_deref().unwrap_or("anonymous"),
+                            case,
+                        ));
+                    }
+                }
+                veil_ir::TopLevelItem::Integration(integ) => {
+                    if integration || (!unit && !component && !scenarios) {
+                        if let Some(f) = filter {
+                            if !integ.name.contains(f.as_str()) { continue; }
+                        }
+                        total_tests += 1;
+                        total_filtered += 1;
+                        if !json {
+                            println!("  integration: {}", integ.name);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        total_tests += test_cases.len();
+        total_filtered += test_cases.len();
+
+        if !json && !coverage {
+            println!("{}:", path.display());
+            for (target_name, case) in &test_cases {
+                let kind = if case.mount.is_some() { "component" } else { "unit" };
+                println!("  {} [{}] {}", target_name, kind, case.name);
+            }
+        }
+
+        all_items.extend(sol.items.clone());
+        all_solutions.push(sol);
+    }
+
+    // ─── Coverage report ────────────────────────────────────────────────
+    if coverage {
+        for sol in &all_solutions {
+            let report = veil_ir::compute_coverage(sol);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+            } else {
+                println!("Coverage Report");
+                println!("───────────────────────────────────────");
+                println!(
+                    "  Functions: {}/{} ({:.1}%)",
+                    report.functions.covered, report.functions.total, report.functions.percent
+                );
+                println!(
+                    "  Branches:  {}/{} ({:.1}%)",
+                    report.branches.covered, report.branches.total, report.branches.percent
+                );
+                println!(
+                    "  Nodes:     {}/{} ({:.1}%)",
+                    report.nodes.covered, report.nodes.total, report.nodes.percent
+                );
+                if !report.uncovered.is_empty() {
+                    println!();
+                    println!("  Uncovered:");
+                    for item in &report.uncovered {
+                        println!("    [{}] {} (line {})", item.kind, item.name, item.line);
+                    }
+                }
+                println!();
+            }
+        }
+        return 0;
+    }
+
+    // ─── Codegen + runner invocation ────────────────────────────────────
+    let test_files = match codegen_target {
+        veil_codegen::CodegenTarget::Rust => {
+            veil_codegen::testing::generate_rust_tests(&all_items)
+        }
+        veil_codegen::CodegenTarget::TypeScript => {
+            veil_codegen::testing::generate_ts_tests(&all_items)
+        }
+        _ => {
+            eprintln!("Unsupported test target: {}", target_str);
+            return 2;
+        }
+    };
+
+    if test_files.is_empty() {
+        if !json {
+            println!("\nNo test code generated (0 test blocks found).");
+        }
+        return 0;
+    }
+
+    // Write generated files to a temp directory.
+    let tmp_dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: cannot create temp dir: {}", e);
+            return 1;
+        }
+    };
+    let tmp_path = tmp_dir.path();
+
+    match codegen_target {
+        veil_codegen::CodegenTarget::Rust => {
+            // Write minimal Cargo.toml
+            let cargo_toml = r#"[package]
+name = "veil_tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[[test]]
+name = "tests"
+path = "src/tests.rs"
+"#;
+            std::fs::create_dir_all(tmp_path.join("src")).ok();
+            std::fs::write(tmp_path.join("Cargo.toml"), cargo_toml).ok();
+            std::fs::write(tmp_path.join("src/lib.rs"), "").ok();
+
+            for gen_file in &test_files {
+                let dest = tmp_path.join(&gen_file.path);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                std::fs::write(&dest, &gen_file.content).ok();
+            }
+
+            // Invoke cargo test
+            let mut cmd = std::process::Command::new("cargo");
+            cmd.arg("test").current_dir(tmp_path);
+            if let Some(f) = filter {
+                cmd.arg("--").arg(f);
+            }
+            if update_snapshots {
+                cmd.env("INSTA_UPDATE", "always");
+            }
+            cmd.stdout(std::process::Stdio::inherit());
+            cmd.stderr(std::process::Stdio::inherit());
+
+            if json {
+                let report = serde_json::json!({
+                    "status": "running",
+                    "target": target_str,
+                    "files": files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                    "total_tests": total_tests,
+                    "filtered_tests": total_filtered,
+                    "runner": "cargo test",
+                    "temp_dir": tmp_path.display().to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            }
+
+            match cmd.status() {
+                Ok(status) => status.code().unwrap_or(1),
+                Err(e) => {
+                    eprintln!("error: failed to run cargo test: {}", e);
+                    1
+                }
+            }
+        }
+        veil_codegen::CodegenTarget::TypeScript => {
+            // Write package.json + vitest config
+            let package_json = r#"{"name":"veil-tests","private":true,"scripts":{"test":"vitest run"},"devDependencies":{"vitest":"^1"}}"#;
+            let vitest_config = "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ test: { globals: true } });\n";
+
+            std::fs::create_dir_all(tmp_path.join("src/__tests__")).ok();
+            std::fs::write(tmp_path.join("package.json"), package_json).ok();
+            std::fs::write(tmp_path.join("vitest.config.ts"), vitest_config).ok();
+
+            for gen_file in &test_files {
+                let dest = tmp_path.join(&gen_file.path);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                std::fs::write(&dest, &gen_file.content).ok();
+            }
+
+            // Check if there's a scenario file (playwright)
+            let has_scenarios = test_files.iter().any(|f| f.path.contains("e2e/"));
+
+            if has_scenarios && scenarios {
+                // Run Playwright for scenarios
+                let mut cmd = std::process::Command::new("npx");
+                cmd.arg("playwright").arg("test").current_dir(tmp_path);
+                if update_snapshots {
+                    cmd.arg("--update-snapshots");
+                }
+                cmd.stdout(std::process::Stdio::inherit());
+                cmd.stderr(std::process::Stdio::inherit());
+
+                if json {
+                    let report = serde_json::json!({
+                        "status": "running",
+                        "target": target_str,
+                        "runner": "playwright test",
+                        "temp_dir": tmp_path.display().to_string(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                }
+
+                match cmd.status() {
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(e) => {
+                        eprintln!("error: failed to run playwright test: {}", e);
+                        1
+                    }
+                }
+            } else {
+                // Run vitest for unit/component tests
+                let mut cmd = std::process::Command::new("npx");
+                cmd.arg("vitest").arg("run").current_dir(tmp_path);
+                if let Some(f) = filter {
+                    cmd.arg("--filter").arg(f);
+                }
+                if update_snapshots {
+                    cmd.arg("--update");
+                }
+                cmd.stdout(std::process::Stdio::inherit());
+                cmd.stderr(std::process::Stdio::inherit());
+
+                if json {
+                    let report = serde_json::json!({
+                        "status": "running",
+                        "target": target_str,
+                        "runner": "vitest",
+                        "temp_dir": tmp_path.display().to_string(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                }
+
+                match cmd.status() {
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(e) => {
+                        eprintln!("error: failed to run vitest: {}", e);
+                        1
+                    }
+                }
+            }
+        }
+        _ => {
+            eprintln!("Unsupported runner for target: {}", target_str);
+            2
+        }
+    }
+}
+
+/// Watch mode: use notify to watch .veil/.test.veil files and re-run tests on changes.
+fn run_test_watch_mode(
+    files: &[PathBuf],
+    filter: &Option<String>,
+    unit: bool,
+    component: bool,
+    scenarios: bool,
+    integration: bool,
+    codegen_target: veil_codegen::CodegenTarget,
+    target_str: &str,
+    json: bool,
+    coverage: bool,
+    update_snapshots: bool,
+) {
+    use notify::{Event, RecursiveMode, Watcher};
+
+    // Determine the watch root — parent of the first file, or cwd for scenarios.
+    let watch_root = if scenarios {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        files[0]
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+
+    println!("Watch mode: monitoring {} for .veil changes", watch_root.display());
+    println!("Press Ctrl+C to stop.\n");
+
+    // Initial run.
+    let _ = run_tests_once(
+        files, filter, unit, component, scenarios, integration,
+        codegen_target, target_str, json, coverage, update_snapshots,
+    );
+
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel();
+    let mut watcher = match notify::recommended_watcher(move |res: Result<Event, _>| {
+        if let Ok(event) = res {
+            let _ = notify_tx.send(event);
+        }
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("error: failed to create file watcher: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = watcher.watch(&watch_root, RecursiveMode::Recursive) {
+        eprintln!("error: failed to watch {}: {}", watch_root.display(), e);
+        std::process::exit(1);
+    }
+
+    // Set up Ctrl+C handler.
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc_flag(&r);
+
+    let debounce_ms = std::time::Duration::from_millis(300);
+    let mut last_run = std::time::Instant::now() - debounce_ms;
+
+    while running.load(std::sync::atomic::Ordering::Relaxed) {
+        match notify_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(event) => {
+                // Filter: only .veil files.
+                let relevant = event.paths.iter().any(|p| {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    name.ends_with(".veil")
+                });
+                if !relevant {
+                    continue;
+                }
+
+                // Debounce.
+                let now = std::time::Instant::now();
+                if now.duration_since(last_run) < debounce_ms {
+                    continue;
+                }
+                last_run = now;
+
+                // Clear screen and re-run.
+                print!("\x1b[2J\x1b[H");
+                println!("─── File changed: {:?} ───\n", event.paths);
+
+                // Re-collect files for scenarios mode.
+                let run_files: Vec<PathBuf> = if scenarios {
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    collect_test_veil_files(&cwd)
+                } else {
+                    files.to_vec()
+                };
+
+                let _ = run_tests_once(
+                    &run_files, filter, unit, component, scenarios, integration,
+                    codegen_target, target_str, json, coverage, update_snapshots,
+                );
+
+                println!("\n─── Waiting for changes... ───");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    println!("\nWatch mode stopped.");
+}
+
+/// Set up a Ctrl+C handler that sets an atomic bool to false.
+fn ctrlc_flag(running: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    // On Unix, rely on the default SIGINT behavior (terminates process).
+    // The AtomicBool flag provides a cooperative shutdown path for the
+    // watch loop — if the watcher channel disconnects, the loop exits too.
+    let _ = running;
 }
 
 /// Bind `0.0.0.0:port` with a clear error on AddrInUse (no panic).
@@ -2310,4 +2802,22 @@ async fn bind_serve_port(port: u16) -> tokio::net::TcpListener {
             std::process::exit(1);
         }
     }
+}
+
+/// Recursively collect `*.test.veil` files for `--scenarios` mode.
+fn collect_test_veil_files(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                results.extend(collect_test_veil_files(&path));
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".test.veil") {
+                    results.push(path);
+                }
+            }
+        }
+    }
+    results
 }

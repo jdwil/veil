@@ -166,6 +166,10 @@ impl Serializer {
             // Layer-provided functions (declared coordinators) are not user source.
             TopLevelItem::Function(f) if f.layer_provided => {}
             TopLevelItem::Function(f) => self.emit_function(f),
+            TopLevelItem::TestBlock(tb) => self.emit_test_block(tb),
+            TopLevelItem::Fixture(fix) => self.emit_fixture(fix),
+            TopLevelItem::Integration(integ) => self.emit_integration(integ),
+            TopLevelItem::Scenario(scen) => self.emit_scenario(scen),
         }
     }
 
@@ -444,6 +448,9 @@ impl Serializer {
                         self.emit_expr(expr);
                     }
                     self.dedent();
+                }
+                for tb in &c.test_blocks {
+                    self.emit_test_block(tb);
                 }
                 for child in &c.children {
                     self.emit_construct(child);
@@ -809,6 +816,219 @@ impl Serializer {
                     self.emit_expr(expr);
                 }
                 self.dedent();
+            }
+        }
+        self.dedent();
+    }
+
+    // ─── Testing ────────────────────────────────────────────────────────
+
+    fn emit_test_block(&mut self, tb: &TestBlock) {
+        if let Some(target) = &tb.target {
+            self.line(&format!("tests {}", target));
+        } else {
+            self.line("tests");
+        }
+        self.indent();
+        for case in &tb.cases {
+            self.emit_test_case(case);
+        }
+        self.dedent();
+    }
+
+    fn emit_test_case(&mut self, tc: &TestCase) {
+        self.line(&format!("it \"{}\"", tc.name));
+        self.indent();
+        if let Some(each) = &tc.each_table {
+            self.emit_each_table(each);
+        }
+        for stub in &tc.stubs {
+            self.emit_stub_decl(stub);
+        }
+        for spy in &tc.spies {
+            self.emit_spy_decl(spy);
+        }
+        if let Some(mount) = &tc.mount {
+            self.emit_mount(mount);
+        }
+        for action in &tc.actions {
+            self.emit_test_action(action);
+        }
+        if !tc.given.is_empty() {
+            self.line("given");
+            self.indent();
+            for binding in &tc.given {
+                self.line(&format!("{} = {}", binding.name, expr_to_veil(&binding.value)));
+            }
+            self.dedent();
+        }
+        if !tc.then.is_empty() {
+            self.line("then");
+            self.indent();
+            for assertion in &tc.then {
+                self.emit_assertion(assertion);
+            }
+            self.dedent();
+        }
+        self.dedent();
+    }
+
+    fn emit_stub_decl(&mut self, stub: &StubDecl) {
+        match &stub.variant {
+            StubVariant::Simple(expr) => {
+                self.line(&format!("stub {} -> {}", stub.target, expr_to_veil(expr)));
+            }
+            StubVariant::Error(msg) => {
+                self.line(&format!("stub {} -> error \"{}\"", stub.target, msg));
+            }
+            StubVariant::Conditional { when_clauses, otherwise } => {
+                self.line(&format!("stub {}", stub.target));
+                self.indent();
+                for (cond, val) in when_clauses {
+                    self.line(&format!("when {} -> {}", expr_to_veil(cond), expr_to_veil(val)));
+                }
+                if let Some(other) = otherwise {
+                    self.line(&format!("otherwise -> {}", expr_to_veil(other)));
+                }
+                self.dedent();
+            }
+            StubVariant::Sequence(exprs) => {
+                self.line(&format!("stub {}", stub.target));
+                self.indent();
+                for (i, expr) in exprs.iter().enumerate() {
+                    if i == 0 {
+                        self.line(&format!("first -> {}", expr_to_veil(expr)));
+                    } else {
+                        self.line(&format!("then -> {}", expr_to_veil(expr)));
+                    }
+                }
+                self.dedent();
+            }
+        }
+    }
+
+    fn emit_spy_decl(&mut self, spy: &SpyDecl) {
+        self.line(&format!("spy {}", spy.target));
+        if !spy.assertions.is_empty() {
+            self.indent();
+            for assertion in &spy.assertions {
+                match assertion {
+                    SpyAssertion::CalledOnce => self.line("called_once"),
+                    SpyAssertion::CalledTimes(n) => self.line(&format!("called({})", n)),
+                    SpyAssertion::NotCalled => self.line("not_called"),
+                    SpyAssertion::ArgsEq(idx, expr) => {
+                        self.line(&format!("args[{}] == {}", idx, expr_to_veil(expr)));
+                    }
+                }
+            }
+            self.dedent();
+        }
+    }
+
+    fn emit_assertion(&mut self, assertion: &Assertion) {
+        match assertion {
+            Assertion::ResultEq(expr) => self.line(&format!("result == {}", expr_to_veil(expr))),
+            Assertion::FieldEq(field, expr) => {
+                self.line(&format!("result.{} == {}", field, expr_to_veil(expr)));
+            }
+            Assertion::Fails(msg) => self.line(&format!("fails: \"{}\"", msg)),
+            Assertion::Ok => self.line("ok"),
+            Assertion::Settles => self.line("settles"),
+            Assertion::Expr(expr) => self.line(&expr_to_veil(expr)),
+        }
+    }
+
+    fn emit_each_table(&mut self, each: &EachTable) {
+        self.line("each");
+        self.indent();
+        let header_line = format!("| {} |", each.headers.join(" | "));
+        self.line(&header_line);
+        for row in &each.rows {
+            let cells: Vec<String> = row.iter().map(expr_to_veil).collect();
+            self.line(&format!("| {} |", cells.join(" | ")));
+        }
+        self.dedent();
+    }
+
+    fn emit_mount(&mut self, mount: &MountExpr) {
+        self.line(&format!("mount {}", mount.component));
+        if !mount.props.is_empty() {
+            self.indent();
+            self.line("props");
+            self.indent();
+            for binding in &mount.props {
+                self.line(&format!("{} = {}", binding.name, expr_to_veil(&binding.value)));
+            }
+            self.dedent();
+            self.dedent();
+        }
+    }
+
+    fn emit_test_action(&mut self, action: &TestAction) {
+        match action {
+            TestAction::Click(sel) => self.line(&format!("click \"{}\"", sel)),
+            TestAction::Fill(sel, val) => self.line(&format!("fill \"{}\" \"{}\"", sel, val)),
+            TestAction::Fire(evt, sel) => self.line(&format!("fire \"{}\" on \"{}\"", evt, sel)),
+            TestAction::Wait(ms) => self.line(&format!("wait {}", ms)),
+        }
+    }
+
+    fn emit_fixture(&mut self, fix: &Fixture) {
+        self.line(&format!("fixture {}", fix.name));
+        self.indent();
+        for binding in &fix.bindings {
+            self.line(&format!("{} = {}", binding.name, expr_to_veil(&binding.value)));
+        }
+        self.dedent();
+    }
+
+    fn emit_integration(&mut self, integ: &IntegrationBlock) {
+        self.line(&format!("integration \"{}\"", integ.name));
+        self.indent();
+        for dep in &integ.real_deps {
+            self.line(&format!("real {}", dep));
+        }
+        for stub in &integ.stub_deps {
+            self.emit_stub_decl(stub);
+        }
+        if !integ.setup.is_empty() {
+            self.line("setup");
+            self.indent();
+            for expr in &integ.setup {
+                self.emit_expr(expr);
+            }
+            self.dedent();
+        }
+        if !integ.verify.is_empty() {
+            self.line("verify");
+            self.indent();
+            for expr in &integ.verify {
+                self.emit_expr(expr);
+            }
+            self.dedent();
+        }
+        if !integ.teardown.is_empty() {
+            self.line("teardown");
+            self.indent();
+            for expr in &integ.teardown {
+                self.emit_expr(expr);
+            }
+            self.dedent();
+        }
+        self.dedent();
+    }
+
+    fn emit_scenario(&mut self, scen: &ScenarioBlock) {
+        self.line(&format!("scenario \"{}\"", scen.name));
+        self.indent();
+        for step in &scen.steps {
+            match step {
+                ScenarioStep::Navigate(path) => self.line(&format!("navigate \"{}\"", path)),
+                ScenarioStep::Fill(sel, val) => self.line(&format!("fill \"{}\" \"{}\"", sel, val)),
+                ScenarioStep::Select(sel, val) => self.line(&format!("select \"{}\" \"{}\"", sel, val)),
+                ScenarioStep::Click(sel) => self.line(&format!("click \"{}\"", sel)),
+                ScenarioStep::WaitFor(sel) => self.line(&format!("wait_for \"{}\"", sel)),
+                ScenarioStep::Assert(expr) => self.line(&format!("assert {}", expr_to_veil(expr))),
             }
         }
         self.dedent();

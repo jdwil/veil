@@ -1108,4 +1108,158 @@ pkg P
             panic!("ren");
         }
     }
+
+    // ─── Testing Framework Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_parse_test_block_basic() {
+        let src = r#"
+sol App
+  tests
+    it "returns user by id"
+      stub Repo.find_by_id -> User{id: "1", name: "Alice"}
+      given
+        id = "1"
+      then
+        result == User{id: "1", name: "Alice"}
+"#;
+        let tokens = lex(src);
+        let sol = parse(&tokens).expect("parse failed");
+        let tb = sol.items.iter().find_map(|i| match i {
+            TopLevelItem::TestBlock(tb) => Some(tb),
+            _ => None,
+        }).expect("TestBlock not found");
+
+        assert_eq!(tb.cases.len(), 1);
+        let case = &tb.cases[0];
+        assert_eq!(case.name, "returns user by id");
+        assert_eq!(case.stubs.len(), 1);
+        assert_eq!(case.stubs[0].target, "Repo.find_by_id");
+        assert_eq!(case.given.len(), 1);
+        assert_eq!(case.given[0].name, "id");
+        assert_eq!(case.then.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_fixture() {
+        let src = r#"
+sol App
+  fixture valid_user
+    name = "Alice"
+    email = "alice@example.com"
+"#;
+        let tokens = lex(src);
+        let sol = parse(&tokens).expect("parse failed");
+        let fix = sol.items.iter().find_map(|i| match i {
+            TopLevelItem::Fixture(f) => Some(f),
+            _ => None,
+        }).expect("Fixture not found");
+
+        assert_eq!(fix.name, "valid_user");
+        assert_eq!(fix.bindings.len(), 2);
+        assert_eq!(fix.bindings[0].name, "name");
+        assert_eq!(fix.bindings[1].name, "email");
+    }
+
+    #[test]
+    fn test_parse_scenario() {
+        let src = r#"
+sol App
+  scenario "user signs up"
+    navigate "/signup"
+    fill "email" "alice@example.com"
+    click "Submit"
+    wait_for ".success-message"
+"#;
+        let tokens = lex(src);
+        let sol = parse(&tokens).expect("parse failed");
+        let scen = sol.items.iter().find_map(|i| match i {
+            TopLevelItem::Scenario(s) => Some(s),
+            _ => None,
+        }).expect("Scenario not found");
+
+        assert_eq!(scen.name, "user signs up");
+        assert_eq!(scen.steps.len(), 4);
+        assert!(matches!(&scen.steps[0], ScenarioStep::Navigate(p) if p == "/signup"));
+        assert!(matches!(&scen.steps[1], ScenarioStep::Fill(s, v) if s == "email" && v == "alice@example.com"));
+        assert!(matches!(&scen.steps[2], ScenarioStep::Click(s) if s == "Submit"));
+        assert!(matches!(&scen.steps[3], ScenarioStep::WaitFor(s) if s == ".success-message"));
+    }
+
+    #[test]
+    fn test_parse_integration() {
+        let src = r#"
+sol App
+  integration "user creation flow"
+    real Repo
+    stub EmailService -> ok
+    setup
+      db = Db.connect()
+    teardown
+      db.reset()
+"#;
+        let tokens = lex(src);
+        let sol = parse(&tokens).expect("parse failed");
+        let integ = sol.items.iter().find_map(|i| match i {
+            TopLevelItem::Integration(i) => Some(i),
+            _ => None,
+        }).expect("Integration not found");
+
+        assert_eq!(integ.name, "user creation flow");
+        assert_eq!(integ.real_deps, vec!["Repo"]);
+        assert_eq!(integ.stub_deps.len(), 1);
+        assert_eq!(integ.stub_deps[0].target, "EmailService");
+        assert_eq!(integ.setup.len(), 1);
+        assert_eq!(integ.teardown.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_spy() {
+        let src = r#"
+sol App
+  tests
+    it "tracks calls"
+      spy Bus.dispatch
+        called_once
+"#;
+        let tokens = lex(src);
+        let sol = parse(&tokens).expect("parse failed");
+        let tb = sol.items.iter().find_map(|i| match i {
+            TopLevelItem::TestBlock(tb) => Some(tb),
+            _ => None,
+        }).expect("TestBlock not found");
+
+        let case = &tb.cases[0];
+        assert_eq!(case.spies.len(), 1);
+        assert_eq!(case.spies[0].target, "Bus.dispatch");
+        assert_eq!(case.spies[0].assertions.len(), 1);
+        assert!(matches!(case.spies[0].assertions[0], SpyAssertion::CalledOnce));
+    }
+
+    #[test]
+    fn test_parse_component_mount() {
+        let src = r#"
+sol App
+  tests
+    it "renders greeting"
+      mount Greeting
+        props
+          name = "Alice"
+      then
+        ok
+"#;
+        let tokens = lex(src);
+        let sol = parse(&tokens).expect("parse failed");
+        let tb = sol.items.iter().find_map(|i| match i {
+            TopLevelItem::TestBlock(tb) => Some(tb),
+            _ => None,
+        }).expect("TestBlock not found");
+
+        let case = &tb.cases[0];
+        assert!(case.mount.is_some());
+        let mount = case.mount.as_ref().unwrap();
+        assert_eq!(mount.component, "Greeting");
+        assert_eq!(mount.props.len(), 1);
+        assert_eq!(mount.props[0].name, "name");
+    }
 }

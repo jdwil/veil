@@ -406,6 +406,10 @@ fn item_name(item: &TopLevelItem) -> Option<String> {
         TopLevelItem::Const { name, .. } => Some(name.clone()),
         TopLevelItem::Static { name, .. } => Some(name.clone()),
         TopLevelItem::Lang(_) => None,
+        TopLevelItem::TestBlock(_) => None,
+        TopLevelItem::Fixture(f) => Some(f.name.clone()),
+        TopLevelItem::Integration(i) => Some(i.name.clone()),
+        TopLevelItem::Scenario(s) => Some(s.name.clone()),
     }
 }
 

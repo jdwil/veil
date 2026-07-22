@@ -20,6 +20,8 @@ pub mod typecheck;
 pub mod serialize;
 pub mod span;
 pub mod struct_diff;
+pub mod coverage;
+pub mod test_lint;
 pub mod validate;
 
 pub use adapt::{
@@ -64,3 +66,5 @@ pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, res
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;
 pub use struct_diff::{structural_diff, DiffItem, StructDiff};
+pub use test_lint::check_tests;
+pub use coverage::{compute_coverage, CoverageReport, CoverageMetric, UncoveredItem};

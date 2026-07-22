@@ -68,6 +68,7 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
     diagnostics.extend(crate::names::check_names(sol, registry));
     diagnostics.extend(crate::typecheck::check_types(sol, registry));
     diagnostics.extend(crate::escape::check_escape_hatches(sol, registry));
+    diagnostics.extend(crate::test_lint::check_tests(sol));
 
     sort_diagnostics(&mut diagnostics);
 

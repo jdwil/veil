@@ -286,6 +286,8 @@ impl<'a> IrBuilder<'a> {
                     }
                 }
                 TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } | TopLevelItem::Static { .. } => {}
+                TopLevelItem::TestBlock(_) | TopLevelItem::Fixture(_)
+                | TopLevelItem::Integration(_) | TopLevelItem::Scenario(_) => {}
             }
         }
     }

@@ -4175,6 +4175,7 @@ dependencies = [
  "axum",
  "clap",
  "miette",
+ "notify",
  "serde",
  "serde_json",
  "tempfile",

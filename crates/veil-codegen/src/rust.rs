@@ -1288,7 +1288,7 @@ fn gen_types(
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse crate::ports::{ValidationError, DomainError};\nuse crate::domain::messages::*;\n\n");
+    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse std::collections::HashMap;\nuse crate::ports::{ValidationError, DomainError};\nuse crate::domain::messages::*;\n\n");
 
     // Collect defined and referenced type names for stub generation.
     let mut defined_types: Vec<String> = Vec::new();

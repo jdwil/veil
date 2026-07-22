@@ -261,6 +261,14 @@ pub enum TopLevelItem {
     /// saga coordinator). Distinct from fn-shaped Constructs (svc/saga), which
     /// carry steps rather than a raw body.
     Function(FnDef),
+    /// A `tests` block with test cases for a fn/svc/component.
+    TestBlock(TestBlock),
+    /// A `fixture <name>` — shared test data.
+    Fixture(Fixture),
+    /// An `integration <name>` block — mixed real/stub tests.
+    Integration(IntegrationBlock),
+    /// A `scenario <name>` — E2E browser test.
+    Scenario(ScenarioBlock),
 }
 
 /// Ubiquitous language definitions.
@@ -329,6 +337,9 @@ pub struct Construct {
     pub effects: Vec<EffectBlock>,
     /// Nested function definitions (business logic methods).
     pub fns: Vec<FnDef>,
+    /// Test blocks attached to this construct or its methods.
+    #[serde(default)]
+    pub test_blocks: Vec<TestBlock>,
 
     // ─── enum shape ───────────────────────────────────────────────────
     pub variants: Vec<String>,
@@ -383,6 +394,7 @@ impl Construct {
             raw_blocks: Vec::new(),
             effects: Vec::new(),
             fns: Vec::new(),
+            test_blocks: Vec::new(),
             variants: Vec::new(),
             rich_variants: Vec::new(),
             transitions: Vec::new(),
@@ -876,4 +888,231 @@ pub struct CallExpr {
     #[serde(default)]
     pub sugar: Option<String>,
     pub span: Span,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Testing Framework AST Types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A `tests` block — attached to a fn/svc/handler/comp at the top level.
+///
+/// ```veil
+/// tests
+///   it "returns user by id"
+///     stub Repo.find_by_id -> User{id: "1", name: "Alice"}
+///     given
+///       id = "1"
+///     then
+///       result == User{id: "1", name: "Alice"}
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestBlock {
+    /// Name of the function/service/component under test (optional context).
+    pub target: Option<String>,
+    pub cases: Vec<TestCase>,
+    pub span: Span,
+}
+
+/// An individual `it` test case within a `tests` block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestCase {
+    /// Human-readable description: `it "returns user by id"`.
+    pub name: String,
+    pub stubs: Vec<StubDecl>,
+    pub spies: Vec<SpyDecl>,
+    pub given: Vec<GivenBinding>,
+    pub then: Vec<Assertion>,
+    /// `each` parameterized table rows, if any.
+    pub each_table: Option<EachTable>,
+    /// `mount` for component tests.
+    pub mount: Option<MountExpr>,
+    /// Actions for component tests (click, fill, etc.).
+    pub actions: Vec<TestAction>,
+    pub span: Span,
+}
+
+/// A `stub` declaration — replaces a callable with a test double.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StubDecl {
+    /// The callable target: `Repo.find_by_id`, `Service.create`, etc.
+    pub target: String,
+    pub variant: StubVariant,
+    pub span: Span,
+}
+
+/// The kind of stub.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StubVariant {
+    /// `stub Target -> value` — always returns this value.
+    Simple(Expr),
+    /// `stub Target -> error "message"` — always throws/returns error.
+    Error(String),
+    /// Conditional: `when <condition> -> value, otherwise -> other`.
+    Conditional {
+        when_clauses: Vec<(Expr, Expr)>,
+        otherwise: Option<Box<Expr>>,
+    },
+    /// Sequence: `first -> val1, then -> val2, then -> val3`.
+    Sequence(Vec<Expr>),
+}
+
+/// A `spy` declaration — records invocations for later assertions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpyDecl {
+    /// The callable target being spied on.
+    pub target: String,
+    pub assertions: Vec<SpyAssertion>,
+    pub span: Span,
+}
+
+/// A spy assertion type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SpyAssertion {
+    /// `called_once`
+    CalledOnce,
+    /// `called(n)` — called exactly n times.
+    CalledTimes(u64),
+    /// `not_called`
+    NotCalled,
+    /// `args[n] == value`
+    ArgsEq(usize, Expr),
+}
+
+/// A binding in the `given` block: `name = expr`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GivenBinding {
+    pub name: String,
+    pub value: Expr,
+    pub span: Span,
+}
+
+/// An assertion in the `then` block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Assertion {
+    /// `result == expr`
+    ResultEq(Expr),
+    /// `result.field == expr`
+    FieldEq(String, Expr),
+    /// `fails: "error message"`
+    Fails(String),
+    /// `ok` — result is Ok/success.
+    Ok,
+    /// `settles` — flush async before checking.
+    Settles,
+    /// Generic expression assertion (for extensibility).
+    Expr(Expr),
+}
+
+/// Parameterized test table (`each`).
+///
+/// ```veil
+/// each
+///   | input | expected |
+///   | 1     | 2        |
+///   | 2     | 4        |
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EachTable {
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<Expr>>,
+    pub span: Span,
+}
+
+/// A `fixture <name>` — shared test data.
+///
+/// ```veil
+/// fixture valid_user
+///   name = "Alice"
+///   email = "alice@example.com"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fixture {
+    pub name: String,
+    pub bindings: Vec<GivenBinding>,
+    pub span: Span,
+}
+
+/// An `integration <name>` block — mixed real/stub dependency tests.
+///
+/// ```veil
+/// integration "user creation flow"
+///   real Repo
+///   stub EmailService -> ok
+///   setup
+///     db.migrate()
+///   verify
+///     ...
+///   teardown
+///     db.reset()
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrationBlock {
+    pub name: String,
+    pub real_deps: Vec<String>,
+    pub stub_deps: Vec<StubDecl>,
+    pub setup: Vec<Expr>,
+    pub verify: Vec<Expr>,
+    pub teardown: Vec<Expr>,
+    pub span: Span,
+}
+
+/// A `scenario <name>` — E2E test using browser-like interactions.
+///
+/// ```veil
+/// scenario "user signs up"
+///   navigate "/signup"
+///   fill "email" "alice@example.com"
+///   click "Submit"
+///   wait_for ".success-message"
+///   assert text(".success-message") == "Welcome!"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioBlock {
+    pub name: String,
+    pub steps: Vec<ScenarioStep>,
+    pub span: Span,
+}
+
+/// A step in a scenario (E2E test action).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScenarioStep {
+    /// `navigate "/path"`
+    Navigate(String),
+    /// `fill "selector" "value"`
+    Fill(String, String),
+    /// `select "selector" "value"`
+    Select(String, String),
+    /// `click "selector"`
+    Click(String),
+    /// `wait_for "selector"`
+    WaitFor(String),
+    /// `assert <expr>`
+    Assert(Expr),
+}
+
+/// `mount` expression for component tests.
+///
+/// ```veil
+/// mount Component
+///   props
+///     name = "Alice"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MountExpr {
+    pub component: String,
+    pub props: Vec<GivenBinding>,
+    pub span: Span,
+}
+
+/// An action in a component test (click, fill, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TestAction {
+    /// `click "selector"`
+    Click(String),
+    /// `fill "selector" "value"`
+    Fill(String, String),
+    /// `fire "event_name" on "selector"`
+    Fire(String, String),
+    /// `wait <ms>` — sleep/delay (prefer `settles` in unit/component tests).
+    Wait(u64),
 }

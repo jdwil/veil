@@ -25,3 +25,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 miette = { workspace = true, features = ["fancy"] }
 tempfile = "3"
+notify.workspace = true
