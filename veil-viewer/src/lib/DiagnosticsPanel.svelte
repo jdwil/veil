@@ -82,10 +82,10 @@
 <style>
   .diagnostics-badge {
     position: absolute;
-    /* Left of canvas — avoids Source preview vertical tab on the right */
     top: 12px;
     left: 12px;
     right: auto;
+    bottom: auto;
     z-index: 30;
     font-family: var(--veil-font, system-ui);
     max-width: min(420px, calc(100% - 80px));

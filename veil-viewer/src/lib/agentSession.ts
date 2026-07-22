@@ -83,21 +83,22 @@ function handleEvent(event: StreamEvent) {
 			setMessages((prev) =>
 				prev.map((m) => {
 					if (m.id !== id) return m;
-					return {
-						...m,
-						content: [
-							...m.content,
-							{
-								type: 'tool_call',
-								toolCall: {
-									id: event.data.callId,
-									name: event.data.name,
-									arguments: '',
-									status: 'executing' as const
-								}
-							}
-						]
-					};
+					// Insert tool_call block BEFORE the trailing text block
+					// (server emits tools after text, but they executed during)
+					const blocks = [...m.content];
+					const lastIdx = blocks.length - 1;
+					const insertIdx =
+						lastIdx >= 0 && blocks[lastIdx].type === 'text' ? lastIdx : blocks.length;
+					blocks.splice(insertIdx, 0, {
+						type: 'tool_call',
+						toolCall: {
+							id: event.data.callId,
+							name: event.data.name,
+							arguments: '',
+							status: 'executing' as const
+						}
+					});
+					return { ...m, content: blocks };
 				})
 			);
 			break;
@@ -107,21 +108,21 @@ function handleEvent(event: StreamEvent) {
 			setMessages((prev) =>
 				prev.map((m) => {
 					if (m.id !== id) return m;
-					return {
-						...m,
-						content: [
-							...m.content,
-							{
-								type: 'tool_result',
-								toolResult: {
-									callId: event.data.callId,
-									name: event.data.name,
-									output: event.data.output,
-									isError: event.data.isError
-								}
-							}
-						]
-					};
+					// Insert tool_result BEFORE the trailing text block
+					const blocks = [...m.content];
+					const lastIdx = blocks.length - 1;
+					const insertIdx =
+						lastIdx >= 0 && blocks[lastIdx].type === 'text' ? lastIdx : blocks.length;
+					blocks.splice(insertIdx, 0, {
+						type: 'tool_result',
+						toolResult: {
+							callId: event.data.callId,
+							name: event.data.name,
+							output: event.data.output,
+							isError: event.data.isError
+						}
+					});
+					return { ...m, content: blocks };
 				})
 			);
 			break;
@@ -247,4 +248,58 @@ export function agentClear() {
 	agentStatusLine.set('');
 	agentPendingSeed.set('');
 	currentMessageId = null;
+}
+
+const HANDOFF_KEY = 'veil.agent.handoff';
+
+/** Snapshot conversation for pop-out window handoff (localStorage so popups share it). */
+export function agentSaveHandoff() {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(
+			HANDOFF_KEY,
+			JSON.stringify({
+				messages: get(agentMessages),
+				status: get(agentStatusLine),
+				error: get(agentError),
+				at: Date.now()
+			})
+		);
+	} catch {
+		/* ignore */
+	}
+}
+
+/** Load conversation if another window left a handoff snapshot. */
+export function agentLoadHandoff() {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		const raw = localStorage.getItem(HANDOFF_KEY);
+		if (!raw) return;
+		const data = JSON.parse(raw) as {
+			messages?: Message[];
+			status?: string;
+			error?: string | null;
+			at?: number;
+		};
+		// Ignore stale handoffs (> 1 hour)
+		if (data.at && Date.now() - data.at > 3_600_000) return;
+		if (Array.isArray(data.messages) && data.messages.length) {
+			agentMessages.set(data.messages);
+		}
+		if (data.status) agentStatusLine.set(data.status);
+		if (data.error) agentError.set(data.error);
+	} catch {
+		/* ignore */
+	}
+}
+
+// Expose for agentLayout / ReviewDock without circular imports
+if (typeof window !== 'undefined') {
+	const w = window as unknown as {
+		__veilAgentSaveHandoff?: () => void;
+		__veilAgentLoadHandoff?: () => void;
+	};
+	w.__veilAgentSaveHandoff = agentSaveHandoff;
+	w.__veilAgentLoadHandoff = agentLoadHandoff;
 }

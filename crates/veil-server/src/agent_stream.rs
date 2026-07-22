@@ -115,11 +115,28 @@ async fn stream_acp_turn<P: SourceProvider>(
         .map(|f| f.name.clone())
         .unwrap_or_else(|| "active.veil".into());
     let prompt = req.prompt.trim().to_string();
-    let composed = format!(
-        "{}\n\n# User request\n{}\n\n# Active VEIL file: `{active_name}`\n\
-         Prefer editing this file with your tools. After edits, the IDE reloads from disk.\n",
-        preamble_pack.text, prompt
-    );
+    let composed = {
+        let file_map: String = loaded
+            .iter()
+            .map(|f| {
+                let mark = if f.active { " ← active" } else { "" };
+                format!("  - {} ({}){}", f.name, f.kind.as_str(), mark)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut c = format!(
+            "{}\n\n# Project files\n{}\n\
+             Use `select_file` to switch between them. Frontend UI is typically in a `*_ui.veil` package.\n\n\
+             # User request\n{}\n\n# Active VEIL file: `{active_name}`\n\
+             If the request involves a different file (e.g. UI changes → *_ui.veil), switch to it first.\n",
+            preamble_pack.text, file_map, prompt
+        );
+        if crate::mind_palace_tools::enabled() {
+            c.push_str(crate::mind_palace_tools::preamble_addon());
+        }
+        c
+    };
 
     emit(
         tx,

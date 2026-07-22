@@ -166,8 +166,8 @@ Thumbs.db
 
 /// Scaffold a product project at `root` (INIT-001).
 ///
-/// Creates `veil.toml`, `<name>.veil`, `layers/`, `stubs/`, `.gitignore`,
-/// and optionally `git init`.
+/// Creates `veil.toml` (`[package]` entry), `main.veil`, `layers/main.layer`,
+/// `stubs/`, `.gitignore`, and optionally `git init` (R21).
 pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, String> {
     validate_project_name(&opts.name)?;
 
@@ -213,7 +213,17 @@ pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, Stri
         .map_err(|e| format!("cannot create stubs/: {e}"))?;
 
     let pkg_name = pascal_case(&opts.name);
-    let veil_toml = format!("name = \"{}\"\n", opts.name);
+    // R21: primary entry is main.veil / layers/main.layer; package.name = use name
+    let veil_toml = format!(
+        r#"name = "{name}"
+
+[package]
+name = "{name}"
+veil = "main.veil"
+layer = "layers/main.layer"
+"#,
+        name = opts.name
+    );
     std::fs::write(root.join("veil.toml"), veil_toml)
         .map_err(|e| format!("cannot write veil.toml: {e}"))?;
 
@@ -221,8 +231,15 @@ pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, Stri
         "pkg {pkg_name}\n  use ddd\n\n  # Scaffold — open in IDE: veil serve {}\n",
         root.display()
     );
-    let pkg_file = root.join(format!("{}.veil", opts.name));
+    let pkg_file = root.join("main.veil");
     std::fs::write(&pkg_file, pkg_src).map_err(|e| format!("cannot write package: {e}"))?;
+
+    let layer_src = format!(
+        "pkg {name} v1\n  desc \"{name} product language\"\n  use ddd\n",
+        name = opts.name
+    );
+    std::fs::write(root.join("layers/main.layer"), layer_src)
+        .map_err(|e| format!("cannot write layers/main.layer: {e}"))?;
 
     let gi = root.join(".gitignore");
     if !gi.exists() || opts.force {
@@ -500,10 +517,14 @@ mod tests {
         assert_eq!(info.name, "hello-app");
         let root = PathBuf::from(&info.path);
         assert!(root.join("veil.toml").is_file());
-        assert!(root.join("hello-app.veil").is_file());
+        assert!(root.join("main.veil").is_file());
+        assert!(root.join("layers/main.layer").is_file());
         assert!(root.join("layers").is_dir());
         assert!(root.join("stubs").is_dir());
         assert!(root.join(".gitignore").is_file());
+        let toml = std::fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert!(toml.contains("[package]"), "{toml}");
+        assert!(toml.contains("main.veil"), "{toml}");
         let gi = std::fs::read_to_string(root.join(".gitignore")).unwrap();
         assert!(gi.contains("generated/"));
         let listed = list_projects(&hub).unwrap();

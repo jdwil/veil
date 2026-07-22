@@ -12,6 +12,7 @@
     dev_port: number | null;
     last_gen: string | null;
     last_error: string | null;
+    attached: boolean;
   }
 
   /** Synthetic select value — API treats missing name as start/stop all. */
@@ -128,11 +129,11 @@
     return s === 'running' || s === 'starting' || s === 'generating';
   }
 
-  function runningPorts(): { name: string; port: number }[] {
+  function runningPorts(): { name: string; port: number; attached: boolean }[] {
     const list = isAll() ? targets : targets.filter((t) => t.name === selectedTarget);
     return list
       .filter((t) => t.status === 'running' && t.dev_port)
-      .map((t) => ({ name: t.name, port: t.dev_port as number }));
+      .map((t) => ({ name: t.name, port: t.dev_port as number, attached: t.attached }));
   }
 
   function displayError(): string | null {
@@ -186,8 +187,9 @@
           class="dev-port-link"
           href="http://127.0.0.1:{p.port}"
           target="_blank"
-          title="Open {p.name}"
+          title="Open {p.name}{p.attached ? ' (reattached)' : ''}"
         >
+          {#if p.attached}<span class="dev-attached-badge" title="Reattached to existing server">🔗</span>{/if}
           {#if isAll()}{p.name}{/if}:{p.port}
         </a>
       {/each}
@@ -302,6 +304,11 @@
 
   .dev-port-link:hover {
     text-decoration: underline;
+  }
+
+  .dev-attached-badge {
+    font-size: 9px;
+    margin-right: 2px;
   }
 
   .dev-error {

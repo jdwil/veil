@@ -677,10 +677,15 @@ async fn get_callables<P: SourceProvider>(
             continue;
         }
         // Apply subkind filter if provided (e.g. filter_by=subkind:Repository).
+        // Also supports name:X (name contains X, e.g. name:Repo).
         if let Some(ref filter) = query.filter_by {
             if let Some(wanted) = filter.strip_prefix("subkind:") {
                 let subkind = node.metadata.subkind.as_deref().unwrap_or("");
                 if subkind != wanted {
+                    continue;
+                }
+            } else if let Some(wanted) = filter.strip_prefix("name:") {
+                if !node.name.contains(wanted) {
                     continue;
                 }
             }
@@ -727,6 +732,67 @@ async fn get_callables<P: SourceProvider>(
             "subkind": node.metadata.subkind,
             "methods": methods,
         }));
+    }
+
+    // Resolve type aliases that reference generic traits (e.g. type WearTestRepo = EntityRepo<WearTest>).
+    // These produce concrete callables with T substituted in method signatures.
+    for item in &sol.items {
+        if let veil_ir::ast::TopLevelItem::TypeAlias { name, target } = item {
+            // Check if target is a Generic referencing a known interface
+            if let veil_ir::ast::TypeExpr::Generic(base_name, type_args) = target {
+                // Find the generic interface in the graph
+                let generic_node = graph.nodes.iter().find(|n| {
+                    n.kind == veil_ir::NodeKind::Interface && n.name == *base_name
+                });
+                if let Some(generic) = generic_node {
+                    // Apply name filter
+                    if let Some(ref filter) = query.filter_by {
+                        if let Some(wanted) = filter.strip_prefix("name:") {
+                            if !name.contains(wanted) {
+                                continue;
+                            }
+                        }
+                    }
+                    // Get the type arg as a string for substitution
+                    let type_arg_str = if !type_args.is_empty() {
+                        veil_ir::builder::type_to_display(&type_args[0])
+                    } else {
+                        "T".to_string()
+                    };
+                    // Collect methods with T substituted
+                    let methods: Vec<serde_json::Value> = graph.nodes.iter()
+                        .filter(|m| m.metadata.parent == Some(generic.id) && m.kind == veil_ir::NodeKind::InterfaceMethod)
+                        .map(|m| {
+                            let raw_params = m.metadata.properties.iter()
+                                .find(|(k, _)| k == "params")
+                                .map(|(_, v)| v.as_str())
+                                .unwrap_or("");
+                            let raw_returns = m.metadata.properties.iter()
+                                .find(|(k, _)| k == "returns")
+                                .map(|(_, v)| v.as_str())
+                                .unwrap_or("");
+                            // Replace standalone T (as a type) with the concrete type.
+                            // Patterns: ": T)", ": T,", "<T>", "Opt<T>", "List<T>"
+                            let sub = |s: &str| -> String {
+                                s.replace("<T>", &format!("<{}>", type_arg_str))
+                                 .replace(": T)", &format!(": {})", type_arg_str))
+                                 .replace(": T,", &format!(": {},", type_arg_str))
+                            };
+                            serde_json::json!({
+                                "name": m.name,
+                                "params": sub(raw_params),
+                                "returns": sub(raw_returns),
+                            })
+                        })
+                        .collect();
+                    callables.push(serde_json::json!({
+                        "name": name,
+                        "subkind": "monomorphized",
+                        "methods": methods,
+                    }));
+                }
+            }
+        }
     }
 
     match serde_json::to_string(&callables) {

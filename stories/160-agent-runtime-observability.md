@@ -17,6 +17,9 @@ backend dual-loop productive.
 - Local harness routes: [70-runtime-harness.md](70-runtime-harness.md) · [docs/HARNESS.md](../docs/HARNESS.md)  
 - Codegen targets: [60-codegen-targets.md](60-codegen-targets.md)
 
+**Follow-on:** stable contracts, multi-package green fixture, complexity ladder —
+[170-agent-complexity-shoreup.md](170-agent-complexity-shoreup.md) (ACS-*).
+
 **Non-goals**
 
 - Browser network capture / frontend CDP  

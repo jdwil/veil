@@ -1,6 +1,19 @@
-stub sqlx 0.8.6
-  # GEN-006: Cargo features declared here, not hardcoded in the engine
-  cargo_features runtime-tokio, postgres, uuid, chrono, json
+stub sqlx 0.9.0
+  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
+  cargo_features postgres
+  row_type_derives sqlx::FromRow
+  wrapper_type_derives sqlx::Type
+  wrapper_type_attrs sqlx(transparent)
+  rust_name PoolOptions AnyPoolOptions
+  codegen_imports sqlx::AnyPoolOptions
+  rust_name Pool PgPool
+  codegen_imports sqlx::PgPool
+  harness_field Pool """
+{
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/test".into());
+    sqlx::PgPool::connect_lazy(&url).expect("pool")
+}
+"""
 
   struct Text
     fn into_inner() -> T
@@ -17,7 +30,15 @@ stub sqlx 0.8.6
     fn fetch_one(executor: E) -> Res!<O>
     fn fetch_optional(executor: E) -> Res!<Opt<O>>
 
+  struct TryAsyncStream
+    fn new(f: F) -> Self
+
+  struct Yielder
+    fn yield(val: T)
+
   struct AnyColumn
+
+  struct TableColumn
 
   struct AnyRow
 
@@ -41,9 +62,6 @@ stub sqlx 0.8.6
     fn fetch_one(executor: E) -> Res!<O>
     fn fetch_optional(executor: E) -> Res!<Opt<O>>
 
-  struct TryAsyncStream
-    fn new(f: F) -> Self
-
   struct StatementCache
     fn new(capacity: usize) -> Self
     fn get_mut(k: Str) -> Opt<T>
@@ -56,12 +74,7 @@ stub sqlx 0.8.6
     fn capacity() -> usize
     fn is_enabled() -> Bool
 
-  struct Yielder
-    fn yield(val: T)
-
   struct DebugFn
-
-  struct AnyTransactionManager
 
   struct AnyQueryResult
     fn rows_affected() -> Int
@@ -74,9 +87,9 @@ stub sqlx 0.8.6
     fn execute_many(executor: E) -> BoxStream<Res!<Str>>
     fn fetch(executor: E) -> BoxStream<Res!<Str>>
     fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, Str>>>
-    fn fetch_all(executor: E) -> Res!<List<Str>>
-    fn fetch_one(executor: E) -> Res!<Str>
-    fn fetch_optional(executor: E) -> Res!<Str>
+    fn fetch_all(executor: E) -> BoxFuture<Res!<List<Str>>>
+    fn fetch_one(executor: E) -> BoxFuture<Res!<Str>>
+    fn fetch_optional(executor: E) -> Res!<Opt<Str>>
 
   struct ReadDir
     fn next() -> Res!<Opt<DirEntry>>
@@ -84,9 +97,10 @@ stub sqlx 0.8.6
   struct DirEntry
 
   struct QueryLogger
-    fn new(sql: Str, settings: LogSettings) -> Self
+    fn new(sql: SqlStr, settings: LogSettings) -> Self
     fn increment_rows_returned()
     fn increase_rows_affected(n: Int)
+    fn sql() -> SqlStr
     fn finish()
 
   struct BufferedSocket
@@ -129,6 +143,8 @@ stub sqlx 0.8.6
 
   struct TlsConfig
 
+  struct UnexpectedNullError
+
   struct QueryBuilder
     fn new(init: Str) -> Self
     fn with_arguments(init: Str, arguments: A) -> Self
@@ -141,8 +157,9 @@ stub sqlx 0.8.6
     fn build_query_as() -> QueryAs<DB, T, Str>
     fn build_query_scalar() -> QueryScalar<DB, T, Str>
     fn reset() -> Self
-    fn sql() -> Str
-    fn into_sql() -> Str
+    fn sql() -> SqlStr
+    fn into_string() -> Str
+    fn into_sql() -> SqlStr
 
   struct Separated
     fn push(sql: Str) -> Self
@@ -150,7 +167,7 @@ stub sqlx 0.8.6
     fn push_bind(value: T) -> Self
     fn push_bind_unseparated(value: T) -> Self
 
-  struct UnexpectedNullError
+  struct AssertSqlSafe
 
   struct TimeoutError
 
@@ -164,6 +181,8 @@ stub sqlx 0.8.6
   struct AsyncSemaphoreReleaser
     fn disarm()
 
+  struct PreferredCrates
+
   struct FmtValue
     fn debug(value: Str) -> Self
     fn unknown(value: Str) -> Self
@@ -171,16 +190,29 @@ stub sqlx 0.8.6
   struct AppliedMigration
 
   struct Migration
-    fn new(version: Int, description: Cow<Str>, migration_type: MigrationType, sql: Cow<Str>, no_tx: Bool) -> Self
+    fn new(version: Int, description: Cow<Str>, migration_type: MigrationType, sql: SqlStr, no_tx: Bool) -> Self
 
   struct Migrator
     fn new(source: S) -> Res!<Self>
+    fn with_migrations(migrations: List<Migration>) -> Self
+    fn dangerous_set_table_name(table_name: Str) -> Self
+    fn create_schema(schema_name: Str) -> Self
     fn set_ignore_missing(ignore_missing: Bool) -> Self
     fn set_locking(locking: Bool) -> Self
     fn iter() -> Iter<Migration>
     fn version_exists(version: Int) -> Bool
     fn run(migrator: A) -> Res!<Str>
+    fn run_to(target: Int, migrator: A) -> Res!<Str>
+    fn skip(migrator: A, target: Opt<Int>) -> Res!<Str>
     fn undo(migrator: A, target: Int) -> Res!<Str>
+
+  struct ResolveWith
+
+  struct ResolveConfig
+    fn new() -> Self
+    fn ignore_char(c: char) -> Self
+    fn ignore_chars(chars: Str) -> Self
+    fn ignored_chars() -> Str
 
   struct ResolveError
 
@@ -211,11 +243,77 @@ stub sqlx 0.8.6
 
   struct TestFixture
 
+  struct Config
+    fn database_url_var() -> Str
+    fn type_override(type_name: Str) -> Opt<Str>
+    fn column_override(table: Str, column: Str) -> Opt<Str>
+    fn migrations_dir() -> Str
+    fn table_name() -> Str
+    fn to_resolve_config() -> ResolveConfig
+    fn try_from_crate_or_default() -> Res!<Self>
+    fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+    fn try_from_path(path: PathBuf) -> Res!<Self>
+
+  struct MySqlConfig
+
+  struct PgConfig
+
+  struct SqliteConfig
+
+  struct ExternalDriverConfig
+    fn try_parse(_name: Str) -> Res!<Opt<T>>
+
+  struct Config
+    fn database_url_var() -> Str
+    fn type_override(type_name: Str) -> Opt<Str>
+    fn column_override(table: Str, column: Str) -> Opt<Str>
+    fn migrations_dir() -> Str
+    fn table_name() -> Str
+    fn to_resolve_config() -> ResolveConfig
+    fn try_from_crate_or_default() -> Res!<Self>
+    fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+    fn try_from_path(path: PathBuf) -> Res!<Self>
+
   struct Any
 
   struct AnyArguments
 
+  struct Config
+    fn database_url_var() -> Str
+    fn type_override(type_name: Str) -> Opt<Str>
+    fn column_override(table: Str, column: Str) -> Opt<Str>
+    fn migrations_dir() -> Str
+    fn table_name() -> Str
+    fn to_resolve_config() -> ResolveConfig
+    fn try_from_crate_or_default() -> Res!<Self>
+    fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+    fn try_from_path(path: PathBuf) -> Res!<Self>
+
   struct ImmutableArguments
+
+  struct MigrationDefaults
+
+  struct Config
+    fn database_url_var() -> Str
+    fn type_override(type_name: Str) -> Opt<Str>
+    fn column_override(table: Str, column: Str) -> Opt<Str>
+    fn migrations_dir() -> Str
+    fn table_name() -> Str
+    fn to_resolve_config() -> ResolveConfig
+    fn try_from_crate_or_default() -> Res!<Self>
+    fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+    fn try_from_path(path: PathBuf) -> Res!<Self>
+
+  struct Config
+    fn database_url_var() -> Str
+    fn type_override(type_name: Str) -> Opt<Str>
+    fn column_override(table: Str, column: Str) -> Opt<Str>
+    fn migrations_dir() -> Str
+    fn table_name() -> Str
+    fn to_resolve_config() -> ResolveConfig
+    fn try_from_crate_or_default() -> Res!<Self>
+    fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+    fn try_from_path(path: PathBuf) -> Res!<Self>
 
   struct PoolConnection
     fn close() -> Res!<Str>
@@ -276,7 +374,8 @@ stub sqlx 0.8.6
   struct PoolConnectionMetadata
 
   struct Query
-    # VEIL sugar for sqlx::query / Query construction
+    typed_variant query_as
+    typed_type_params _, return_type
     fn new(sql: Str) -> Self
     fn bind(value: T) -> Self
     fn try_bind(value: T) -> Res!<Str>
@@ -294,6 +393,10 @@ stub sqlx 0.8.6
   struct CloseEvent
     fn do_until(fut: Fut) -> Res!<Str>
 
+  struct SqlStr
+    fn as_str() -> Str
+    fn from_static(sql: Str) -> Self
+
   struct AnyConnectOptions
 
   struct AnyConnection
@@ -303,11 +406,186 @@ stub sqlx 0.8.6
     fn log_statements(level: LevelFilter)
     fn log_slow_statements(level: LevelFilter, duration: Duration)
 
+  struct AnyTransactionManager
+
   struct Json
+    fn into_inner() -> T
 
   struct AnyArgumentBuffer
 
   struct AnyValueRef
+
+  enum ColumnOrigin
+    Table(TableColumn)
+    Expression
+    Unknown
+
+    fn table_column() -> Opt<TableColumn>
+
+  enum Error
+    Configuration(BoxDynError)
+    InvalidArgument(Str)
+    Database(Box<Str>)
+    Io(Error)
+    Tls(BoxDynError)
+    Protocol(Str)
+    RowNotFound
+    TypeNotFound
+    ColumnIndexOutOfBounds
+    ColumnNotFound(Str)
+    ColumnDecode
+    Encode(BoxDynError)
+    Decode(BoxDynError)
+    AnyDriverError(BoxDynError)
+    PoolTimedOut
+    PoolClosed
+    WorkerCrashed
+    Migrate(Box<MigrateError>)
+    InvalidSavePointStatement
+    BeginFailed
+
+    fn into_database_error() -> Opt<Box<Str>>
+    fn as_database_error() -> Opt<Str>
+
+  enum CertificateInput
+    Inline(List<Int>)
+    File(PathBuf)
+
+  enum JoinHandle
+    _Phantom(PhantomData<Str>)
+
+  enum ParamChecking
+    Weak
+    Strong
+
+  enum Error
+    NoMappingFound
+    DateTimeCrateFeatureNotEnabled
+    NumericCrateFeatureNotEnabled
+    AmbiguousDateTimeType
+    AmbiguousNumericType
+
+    fn into_database_error() -> Opt<Box<Str>>
+    fn as_database_error() -> Opt<Str>
+
+  enum MigrationType
+    Simple
+    ReversibleUp
+    ReversibleDown
+
+    fn from_filename(filename: Str) -> Self
+    fn is_reversible() -> Bool
+    fn is_up_migration() -> Bool
+    fn is_down_migration() -> Bool
+    fn label() -> Str
+    fn suffix() -> Str
+    fn file_content() -> Str
+    fn infer(migrator: Migrator, reversible: Bool) -> MigrationType
+
+  enum MigrateError
+    Execute(Error)
+    ExecuteMigration(Error, Int)
+    Source(BoxDynError)
+    VersionMissing(Int)
+    VersionMismatch(Int)
+    VersionNotPresent(Int)
+    VersionTooOld(Int, Int)
+    VersionTooNew(Int, Int)
+    ForceNotSupported
+    InvalidMixReversibleAndSimple
+    Dirty(Int)
+    CreateSchemasNotSupported(Str)
+    SkipNotSupported
+
+  enum ConfigError
+    Env(VarError)
+    NotFound
+    Io
+    Parse
+    ParseDisabled
+
+    fn from_io(path: Str, error: Error) -> Self
+    fn not_found_path() -> Opt<Path>
+
+  enum AnyTypeInfoKind
+    Null
+    Bool
+    SmallInt
+    Integer
+    BigInt
+    Real
+    Double
+    Text
+    Blob
+
+    fn is_integer() -> Bool
+
+  enum ErrorKind
+    UniqueViolation
+    ForeignKeyViolation
+    NotNullViolation
+    CheckViolation
+    ExclusionViolation
+    Other
+
+  enum AnyValueKind
+    Null(AnyTypeInfoKind)
+    Bool(Bool)
+    SmallInt(Int)
+    Integer(Int)
+    BigInt(Int)
+    Real(F64)
+    Double(F64)
+    Text(Arc<Str>)
+    TextSlice(Arc<Str>)
+    Blob(Arc<List<Int>>)
+
+  enum SqliteExtension
+    Path(Str)
+    PathWithEntrypoint
+
+  enum DateTimeCrate
+    Inferred
+    Chrono
+    Time
+
+    fn is_inferred() -> Bool
+    fn crate_name() -> Opt<Str>
+
+  enum NumericCrate
+    Inferred
+    BigDecimal
+    RustDecimal
+
+    fn is_inferred() -> Bool
+    fn crate_name() -> Opt<Str>
+
+  enum DefaultMigrationType
+    Inferred
+    Simple
+    Reversible
+
+  enum DefaultVersioning
+    Inferred
+    Timestamp
+    Sequential
+
+  enum MaybePoolConnection
+    Connection(Str)
+    PoolConnection(PoolConnection<DB>)
+
+  enum UStr
+    Static(Str)
+    Shared(Arc<Str>)
+
+    fn new(s: Str) -> Self
+    fn strip_prefix(this: Self, prefix: Str) -> Opt<Self>
+
+  enum IsNull
+    Yes
+    No
+
+    fn is_null() -> Bool
 
   trait FromRow
     fn from_row(row: R) -> Res!<Self>
@@ -316,6 +594,7 @@ stub sqlx 0.8.6
     fn ordinal() -> usize
     fn name() -> Str
     fn type_info() -> Str
+    fn origin() -> ColumnOrigin
 
   trait Row
     fn is_empty() -> Bool
@@ -330,8 +609,8 @@ stub sqlx 0.8.6
     fn try_get_raw(index: I) -> Res!<Str>
 
   trait Statement
-    fn to_owned() -> Str
-    fn sql() -> Str
+    fn into_sql() -> SqlStr
+    fn sql() -> SqlStr
     fn parameters() -> Opt<Either<Str, usize>>
     fn columns() -> Str
     fn column(index: I) -> Str
@@ -401,8 +680,8 @@ stub sqlx 0.8.6
     fn with_socket(socket: S) -> Str
 
   trait TypeChecking
-    fn param_type_for_id(id: Str) -> Opt<Str>
-    fn return_type_for_id(id: Str) -> Opt<Str>
+    fn param_type_for_id(id: Str, preferred_crates: PreferredCrates) -> Res!<Str>
+    fn return_type_for_id(id: Str, preferred_crates: PreferredCrates) -> Res!<Str>
     fn get_feature_gate(info: Str) -> Opt<Str>
     fn fmt_value_debug(value: Str) -> FmtValue<Self>
 
@@ -417,19 +696,21 @@ stub sqlx 0.8.6
     fn is_check_violation() -> Bool
 
   trait MigrateDatabase
-    fn create_database(url: Str) -> BoxFuture<Res!<Str>>
-    fn database_exists(url: Str) -> BoxFuture<Res!<Bool>>
-    fn drop_database(url: Str) -> BoxFuture<Res!<Str>>
-    fn force_drop_database(_url: Str) -> BoxFuture<Res!<Str>>
+    fn create_database(url: Str) -> Str
+    fn database_exists(url: Str) -> Str
+    fn drop_database(url: Str) -> Str
+    fn force_drop_database(_url: Str) -> Str
 
   trait Migrate
-    fn ensure_migrations_table() -> BoxFuture<Res!<Str>>
-    fn dirty_version() -> BoxFuture<Res!<Opt<Int>>>
-    fn list_applied_migrations() -> BoxFuture<Res!<List<AppliedMigration>>>
+    fn create_schema_if_not_exists(schema_name: Str) -> BoxFuture<Res!<Str>>
+    fn ensure_migrations_table(table_name: Str) -> BoxFuture<Res!<Str>>
+    fn dirty_version(table_name: Str) -> BoxFuture<Res!<Opt<Int>>>
+    fn list_applied_migrations(table_name: Str) -> BoxFuture<Res!<List<AppliedMigration>>>
     fn lock() -> BoxFuture<Res!<Str>>
     fn unlock() -> BoxFuture<Res!<Str>>
-    fn apply(migration: Migration) -> BoxFuture<Res!<Duration>>
-    fn revert(migration: Migration) -> BoxFuture<Res!<Duration>>
+    fn apply(table_name: Str, migration: Migration) -> BoxFuture<Res!<Duration>>
+    fn revert(table_name: Str, migration: Migration) -> BoxFuture<Res!<Duration>>
+    fn skip(_table_name: Str, _migration: Migration) -> BoxFuture<Res!<Str>>
 
   trait MigrationSource
     fn resolve() -> BoxFuture<Res!<List<Migration>>>
@@ -438,7 +719,7 @@ stub sqlx 0.8.6
     fn name() -> Str
     fn close() -> BoxFuture<Res!<Str>>
     fn ping() -> BoxFuture<Res!<Str>>
-    fn begin(statement: Opt<Cow<Str>>) -> BoxFuture<Res!<Str>>
+    fn begin(statement: Opt<SqlStr>) -> BoxFuture<Res!<Str>>
     fn commit() -> BoxFuture<Res!<Str>>
     fn rollback() -> BoxFuture<Res!<Str>>
     fn start_rollback()
@@ -448,20 +729,20 @@ stub sqlx 0.8.6
     fn clear_cached_statements() -> BoxFuture<Res!<Str>>
     fn shrink_buffers()
     fn as_migrate() -> Res!<Str>
-    fn fetch_many(query: Str, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxStream<Res!<Either<AnyQueryResult, AnyRow>>>
-    fn fetch_optional(query: Str, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxFuture<Res!<Opt<AnyRow>>>
-    fn prepare_with(sql: Str, parameters: Str) -> BoxFuture<Res!<AnyStatement>>
-    fn describe(sql: Str) -> BoxFuture<Res!<Describe<Any>>>
+    fn fetch_many(query: SqlStr, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxStream<Res!<Either<AnyQueryResult, AnyRow>>>
+    fn fetch_optional(query: SqlStr, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxFuture<Res!<Opt<AnyRow>>>
+    fn prepare_with(sql: SqlStr, parameters: Str) -> BoxFuture<Res!<AnyStatement>>
+    fn describe(sql: SqlStr) -> BoxFuture<Res!<Describe<Any>>>
 
   trait Type
     fn type_info() -> Str
     fn compatible(ty: Str) -> Bool
 
   trait TestSupport
-    fn test_context(args: TestArgs) -> BoxFuture<Res!<TestContext<Self>>>
-    fn cleanup_test(db_name: Str) -> BoxFuture<Res!<Str>>
-    fn cleanup_test_dbs() -> BoxFuture<Res!<Opt<usize>>>
-    fn snapshot(conn: Str) -> BoxFuture<Res!<FixtureSnapshot<Self>>>
+    fn test_context(args: TestArgs) -> Str
+    fn cleanup_test(db_name: Str) -> Str
+    fn cleanup_test_dbs() -> Str
+    fn snapshot(conn: Str) -> Str
     fn db_name(args: TestArgs) -> Str
 
   trait TestFn
@@ -490,28 +771,31 @@ stub sqlx 0.8.6
     fn begin() -> BoxFuture<Res!<Transaction<Str>>>
 
   trait Connection
-    fn close() -> BoxFuture<Res!<Str>>
-    fn ping() -> BoxFuture<Res!<Str>>
-    fn begin() -> BoxFuture<Res!<Transaction<Str>>>
-    fn begin_with(statement: Str) -> BoxFuture<Res!<Transaction<Str>>>
+    fn close() -> Str
+    fn ping() -> Str
+    fn begin() -> Str
+    fn begin_with(statement: Str) -> Str
     fn is_in_transaction() -> Bool
-    fn transaction(callback: F) -> BoxFuture<Res!<R>>
+    fn transaction(callback: F) -> Str
     fn cached_statements_size() -> usize
-    fn clear_cached_statements() -> BoxFuture<Res!<Str>>
+    fn clear_cached_statements() -> Str
     fn shrink_buffers()
-    fn connect(url: Str) -> BoxFuture<Res!<Self>>
-    fn connect_with(options: Str) -> BoxFuture<Res!<Self>>
+    fn connect(url: Str) -> Str
+    fn connect_with(options: Str) -> Str
 
   trait ConnectOptions
     fn from_url(url: Url) -> Res!<Self>
     fn to_url_lossy() -> Url
-    fn connect() -> BoxFuture<Res!<Str>>
+    fn connect() -> Str
     fn log_statements(level: LevelFilter) -> Self
     fn log_slow_statements(level: LevelFilter, duration: Duration) -> Self
     fn disable_statement_logging() -> Self
 
+  trait SqlSafeStr
+    fn into_sql_str() -> SqlStr
+
   trait Execute
-    fn sql() -> Str
+    fn sql() -> SqlStr
     fn statement() -> Opt<Str>
     fn take_arguments() -> Res!<Opt<Str>>
     fn persistent() -> Bool
@@ -524,8 +808,15 @@ stub sqlx 0.8.6
     fn fetch_all(query: E) -> BoxFuture<Res!<List<Str>>>
     fn fetch_one(query: E) -> BoxFuture<Res!<Str>>
     fn fetch_optional(query: E) -> BoxFuture<Res!<Opt<Str>>>
-    fn prepare(query: Str) -> BoxFuture<Res!<Str>>
-    fn prepare_with(sql: Str, parameters: Str) -> BoxFuture<Res!<Str>>
+    fn prepare(query: SqlStr) -> BoxFuture<Res!<Str>>
+    fn prepare_with(sql: SqlStr, parameters: Str) -> BoxFuture<Res!<Str>>
+
+  trait TransactionManager
+    fn begin(conn: Str, statement: Opt<SqlStr>) -> Str
+    fn commit(conn: Str) -> Str
+    fn rollback(conn: Str) -> Str
+    fn start_rollback(conn: Str)
+    fn get_transaction_depth(conn: Str) -> usize
 
   trait Decode
     fn decode(value: Str) -> Res!<Self>

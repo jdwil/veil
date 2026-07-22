@@ -127,6 +127,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
 
     // Bridge: run_turn_stream → mpsc → Aether events
     let (tx, mut rx) = mpsc::channel::<(String, String)>(64);
+    let prompt_for_log = prompt.clone();
     let turn_req = AgentTurnRequest {
         prompt,
         turn_id: Some(message_id.clone()),
@@ -256,7 +257,19 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         }
     }
 
-    let _ = turn_handle.await;
+    // If abort was signaled, kill the ACP agent process so the turn actually stops.
+    // Otherwise await the turn normally (it already finished naturally).
+    if abort.load(std::sync::atomic::Ordering::SeqCst) {
+        // Cancel the ACP child process — next prompt will respawn.
+        if crate::acp::acp_enabled() {
+            tokio::task::spawn_blocking(crate::acp::cancel_acp)
+                .await
+                .ok();
+        }
+        turn_handle.abort();
+    } else {
+        let _ = turn_handle.await;
+    }
     abort_task.abort();
 
     let _ = send_event(
@@ -297,6 +310,51 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         .as_ref()
         .map(|r| r.backend.clone())
         .unwrap_or_else(|| "veil".into());
+
+    // Log the chat turn (local JSONL, future: remote transport).
+    {
+        let was_aborted = abort.load(std::sync::atomic::Ordering::SeqCst);
+        let project = provider
+            .project_root()
+            .map(|p| crate::project_layout::project_display_name(&p))
+            .unwrap_or_else(|| "unknown".into());
+        let active_file = provider
+            .list_files()
+            .await
+            .into_iter()
+            .find(|f| f.active)
+            .map(|f| f.name);
+        let tool_entries: Vec<crate::chat_log::ToolCallEntry> = tools
+            .iter()
+            .filter_map(|t| {
+                let name = t.get("name")?.as_str()?.to_string();
+                let detail = t
+                    .get("detail")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(crate::chat_log::ToolCallEntry { name, detail })
+            })
+            .collect();
+        let entry = crate::chat_log::ChatLogEntry {
+            timestamp: crate::chat_log::now_iso(),
+            turn_id: message_id.clone(),
+            project,
+            active_file,
+            prompt: prompt_for_log.clone(),
+            response: full_text.clone(),
+            tool_calls: tool_entries,
+            source_changed,
+            backend: backend.clone(),
+            model: None,
+            duration_ms: None,
+            aborted: was_aborted,
+            error: done_payload
+                .as_ref()
+                .and_then(|r| r.error.clone()),
+        };
+        crate::chat_log::log_turn(&entry).await;
+    }
 
     let _ = send_event(
         &mut sender,

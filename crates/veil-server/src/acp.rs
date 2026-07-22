@@ -601,6 +601,17 @@ pub fn reset_acp() {
     }
 }
 
+/// Abort the current ACP turn by killing the child process.
+/// The next prompt will respawn a fresh session.
+pub fn cancel_acp() {
+    if let Ok(mut g) = ACP.lock() {
+        if g.is_some() {
+            tracing::info!("ACP turn cancelled — killing agent process for respawn");
+            *g = None; // Drop triggers child.kill() + child.wait()
+        }
+    }
+}
+
 // Silence unused Arc import warning path if any
 #[allow(dead_code)]
 fn _arc_marker() -> Arc<()> {

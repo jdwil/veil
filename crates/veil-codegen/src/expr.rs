@@ -453,7 +453,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             if ctx.state_locals.contains(name.as_str()) {
                 // Shared saga state: read from the threaded JSON state.
                 format!("state[\"{}\"]", name)
-            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) {
+            } else if ctx.in_aggregate_fn && ctx.self_fields.contains(name.as_str()) && !ctx.locals.contains(name.as_str()) {
                 format!("&self.{}", to_snake(name))
             } else {
                 name.clone()
@@ -621,13 +621,25 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 }
                 _ => {
                     let val = expr_to_rust(inner, ctx);
-                    // `ret null` → Ok(None); `ret x` into Result<Option<T>> → Ok(Some(x))
+                    // Check if the function returns Result<...> — if so, wrap in Ok().
+                    let returns_result = ctx
+                        .expected_return_rust
+                        .as_deref()
+                        .map(|t| t.starts_with("Result<"))
+                        .unwrap_or(true); // default to Result wrapping
                     let returns_option = ctx
                         .expected_return_rust
                         .as_deref()
                         .map(|t| t.contains("Option<"))
                         .unwrap_or(false);
-                    if returns_option && val != "None" && !val.starts_with("Some(") {
+                    if !returns_result {
+                        // Direct return (not Result-wrapped)
+                        if returns_option && val != "None" && !val.starts_with("Some(") {
+                            format!("return Some({})", val)
+                        } else {
+                            format!("return {}", val)
+                        }
+                    } else if returns_option && val != "None" && !val.starts_with("Some(") {
                         format!("return Ok(Some({}))", val)
                     } else {
                         format!("return Ok({})", val)
@@ -1200,8 +1212,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             ("Uuid", "new_v4") => Some("Uuid::new_v4()".to_string()),
             ("Map", "new") => Some("HashMap::new()".to_string()),
             ("List", "new") => Some("Vec::new()".to_string()),
-            ("Opt", "empty") => Some("None".to_string()),
-            ("Opt", "some") if call.args.len() == 1 => {
+            ("Opt", "empty") | ("Opt", "none") => Some("None".to_string()),
+            ("Opt", "some") | ("Opt", "of") if call.args.len() == 1 => {
                 Some(format!("Some({})", expr_to_rust(&call.args[0], ctx)))
             }
             ("Env", "get_or") if call.args.len() == 2 => {
@@ -1972,6 +1984,19 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
         Expr::Call(call) => {
             if ctx.is_trait_target(&call.target) {
                 deps.insert(call.target.clone());
+            } else if call.method.ends_with('!') && !call.target.is_empty() {
+                // VEIL convention: method! marks port/repo calls. Find matching trait.
+                for (name, shape) in &ctx.name_to_shape {
+                    if *shape == Shape::Trait {
+                        let trait_snake = to_snake(name);
+                        if trait_snake == call.target
+                            || trait_snake.ends_with(&call.target)
+                        {
+                            deps.insert(name.clone());
+                            break;
+                        }
+                    }
+                }
             }
             if let Some(recv) = &call.receiver {
                 collect_deps_from_expr(recv, ctx, deps);

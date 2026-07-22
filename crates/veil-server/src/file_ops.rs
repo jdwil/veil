@@ -83,11 +83,10 @@ pub fn default_package_source(stem: &str) -> String {
     format!("pkg {stem}\n  use ddd\n\n  # New package — add constructs here\n")
 }
 
-/// Scaffold for reaction-mode packages: `use reaction` is mandatory (palette lock).
+/// Scaffold for reaction-mode packages: bare package that loads reaction.layer.
+/// Palette vocabulary comes from the layer via `use reaction` (VEIL design).
 pub fn reaction_package_source(stem: &str) -> String {
-    format!(
-        "pkg {stem}\n  use ddd\n  # Locked: reaction.layer palette (Guard / Activate / Map / EmitEvent / End)\n  use reaction\n\n  # Author reaction graph constructs only — do not remove `use reaction`.\n"
-    )
+    format!("pkg {stem}\n  use reaction\n")
 }
 
 /// True when this serve root is the reaction hub project (or VEIL_IDE_MODE=reaction).

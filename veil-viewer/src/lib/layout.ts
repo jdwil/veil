@@ -170,10 +170,10 @@ export async function layoutByType(
   const GAP_Y = 36;
   const positions = new Map<string, { x: number; y: number }>();
 
-  let x = 24;
+  let x = 60;
   for (const type of types) {
     const col = groups[type];
-    let y = 24;
+    let y = 60;
     let colW = 0;
     for (const node of col) {
       const size = measurements.get(node.id)!;

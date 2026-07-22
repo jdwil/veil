@@ -161,6 +161,14 @@ impl FilesystemProvider {
             return Err("invalid file index".to_string());
         }
         *self.active.lock().unwrap() = idx;
+
+        // Publish revision event so viewer auto-switches to the new file.
+        let name = {
+            let files = self.files.lock().unwrap();
+            files[idx].name.clone()
+        };
+        crate::revision::bus().publish_select(&name);
+
         Ok(())
     }
 

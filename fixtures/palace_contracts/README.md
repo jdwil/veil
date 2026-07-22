@@ -10,6 +10,7 @@ agent) and as offline fixtures when palace is off in CI.
 | `veil-contract-multi-package` | Multi-package `[dev].packages` (ACS-003) |
 | `veil-contract-stubs` | Stubs / cargo_deps / harness_field |
 | `veil-contract-routes` | `@route` + `list_routes` |
+| `veil-harness-devloop` | App harness, dev loop, veil.toml, multi-package |
 
 Each file: contract bullets + one example — not essays.
 

@@ -1,11 +1,22 @@
 <script lang="ts">
   /**
-   * Bottom review dock — VEIL source + Agent.
+   * Bottom review dock — VEIL source + Agent (when placement is bottom).
    * Resizable height, single-panel tabs, or side-by-side split.
+   * Agent can also live left/right of canvas or in a pop-out window
+   * (see agentLayout + AgentSideRail).
    */
+  import { onMount } from 'svelte';
   import VeilSourcePanel from './VeilSourcePanel.svelte';
   import AetherAgentPanel from './AetherAgentPanel.svelte';
-  import { selectedNodeId, irGraph } from '$lib/store';
+  import AgentPlacementControl from './AgentPlacementControl.svelte';
+  import { selectedNodeId, irGraph, refreshAfterEdit } from '$lib/store';
+  import {
+    agentPlacement,
+    agentPopoutRef,
+    onAgentLayoutMessage,
+    openAgentPopout,
+    setAgentPlacement
+  } from '$lib/agentLayout';
 
   type DockTab = 'source' | 'agent' | 'split';
 
@@ -57,6 +68,11 @@
   function setTab(next: DockTab) {
     expanded = true;
     tab = next;
+    // Refresh source when switching to a tab that shows it — ensures
+    // edits made during an agent turn are visible immediately.
+    if (next === 'source' || next === 'split') {
+      void refreshAfterEdit();
+    }
     try {
       localStorage.setItem(MODE_KEY, next);
     } catch {
@@ -165,6 +181,48 @@
       localStorage.setItem(HEIGHT_KEY, String(heightPx));
     }
   }
+
+  /** Agent is shown in this bottom dock only when placement is bottom. */
+  let agentInDock = $derived($agentPlacement === 'bottom');
+
+  /** Effective tab when agent is not in the dock: force source-only UI. */
+  let effectiveTab = $derived.by(() => {
+    if (!agentInDock) return 'source' as DockTab;
+    return tab;
+  });
+
+  onMount(() => {
+    const unsub = onAgentLayoutMessage((msg) => {
+      if (msg.type === 'popout-closed') {
+        agentPopoutRef.set(null);
+        // Restore handoff conversation into the main window
+        try {
+          const load = (window as unknown as { __veilAgentLoadHandoff?: () => void })
+            .__veilAgentLoadHandoff;
+          load?.();
+        } catch {
+          /* ignore */
+        }
+        if ($agentPlacement === 'window') {
+          setAgentPlacement('right');
+        }
+      } else if (msg.type === 'popout-ready') {
+        setAgentPlacement('window');
+      }
+    });
+    // Poll popout closed (BroadcastChannel may miss hard kills)
+    const iv = setInterval(() => {
+      const w = $agentPopoutRef;
+      if (w && w.closed) {
+        agentPopoutRef.set(null);
+        if ($agentPlacement === 'window') setAgentPlacement('right');
+      }
+    }, 800);
+    return () => {
+      unsub();
+      clearInterval(iv);
+    };
+  });
 </script>
 
 <div
@@ -172,6 +230,7 @@
   class:collapsed={!expanded}
   class:resizing
   class:split-resizing={splitResizing}
+  class:source-only-mode={!agentInDock}
   style:height={expanded ? `${heightPx}px` : undefined}
   bind:this={dockEl}
 >
@@ -194,36 +253,48 @@
         type="button"
         role="tab"
         class="dock-tab"
-        class:active={tab === 'source'}
-        aria-selected={tab === 'source'}
+        class:active={effectiveTab === 'source'}
+        aria-selected={effectiveTab === 'source'}
         onclick={() => setTab('source')}
       >
         VEIL source
       </button>
-      <button
-        type="button"
-        role="tab"
-        class="dock-tab"
-        class:active={tab === 'agent'}
-        aria-selected={tab === 'agent'}
-        onclick={() => setTab('agent')}
-      >
-        Agent
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="dock-tab"
-        class:active={tab === 'split'}
-        aria-selected={tab === 'split'}
-        title="Source and agent side by side"
-        onclick={() => setTab('split')}
-      >
-        Split
-      </button>
+      {#if agentInDock}
+        <button
+          type="button"
+          role="tab"
+          class="dock-tab"
+          class:active={tab === 'agent'}
+          aria-selected={tab === 'agent'}
+          onclick={() => setTab('agent')}
+        >
+          Agent
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="dock-tab"
+          class:active={tab === 'split'}
+          aria-selected={tab === 'split'}
+          title="Source and agent side by side"
+          onclick={() => setTab('split')}
+        >
+          Split
+        </button>
+      {:else if $agentPlacement === 'window'}
+        <button
+          type="button"
+          class="dock-tab"
+          title="Focus agent window"
+          onclick={() => openAgentPopout()}
+        >
+          Agent ↗
+        </button>
+      {/if}
     </div>
     <div class="dock-actions">
-      {#if selectionLabel}
+      <AgentPlacementControl variant="compact" />
+      {#if selectionLabel && agentInDock}
         <button
           type="button"
           class="insert-btn"
@@ -251,23 +322,22 @@
     -->
     <div
       class="dock-body"
-      class:split={tab === 'split'}
-      class:source-only={tab === 'source'}
-      class:agent-only={tab === 'agent'}
+      class:split={agentInDock && tab === 'split'}
+      class:source-only={!agentInDock || tab === 'source'}
+      class:agent-only={agentInDock && tab === 'agent'}
     >
       <div
         class="split-pane source-pane"
-        class:pane-hidden={tab === 'agent'}
-        hidden={tab === 'agent'}
-        aria-hidden={tab === 'agent'}
-        style:flex={tab === 'split' ? `0 0 ${splitRatio * 100}%` : undefined}
+        class:pane-hidden={agentInDock && tab === 'agent'}
+        aria-hidden={agentInDock && tab === 'agent'}
+        style:flex={agentInDock && tab === 'split' ? `0 0 ${splitRatio * 100}%` : undefined}
       >
-        {#if tab === 'split'}
+        {#if agentInDock && tab === 'split'}
           <div class="pane-label">Source</div>
         {/if}
         <VeilSourcePanel embedded />
       </div>
-      {#if tab === 'split'}
+      {#if agentInDock && tab === 'split'}
         <div
           class="split-handle"
           role="separator"
@@ -278,17 +348,19 @@
           title="Drag to resize panes"
         ></div>
       {/if}
-      <div
-        class="split-pane agent-pane"
-        class:pane-hidden={tab === 'source'}
-        hidden={tab === 'source'}
-        aria-hidden={tab === 'source'}
-      >
-        {#if tab === 'split'}
-          <div class="pane-label">Agent</div>
-        {/if}
-        <AetherAgentPanel embedded insertToken={agentInsert} />
-      </div>
+      {#if agentInDock}
+        <div
+          class="split-pane agent-pane"
+          class:pane-hidden={tab === 'source'}
+          hidden={tab === 'source'}
+          aria-hidden={tab === 'source'}
+        >
+          {#if tab === 'split'}
+            <div class="pane-label">Agent</div>
+          {/if}
+          <AetherAgentPanel embedded insertToken={agentInsert} />
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

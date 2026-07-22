@@ -57,6 +57,18 @@
     }
   });
 
+  // Local state for step field values — enables cascading selects.
+  // Initialized from node IR properties; updated on user interaction.
+  let stepFieldValues: Record<string, string> = $state({});
+  $effect(() => {
+    const props = node.data.properties ?? [];
+    const vals: Record<string, string> = {};
+    for (const [k, v] of props) {
+      vals[k] = v;
+    }
+    stepFieldValues = vals;
+  });
+
   // Check if any impl-shaped construct in the palette targets this node's subkind.
   // If so, we can offer a "Create [impl label]" button.
   // tgt may be a comma-separated list (e.g. "Port, Repository").
@@ -429,33 +441,42 @@
           <span class="label-text">{paletteEntry.label || subkind} config</span>
           <div class="step-fields">
             {#each paletteEntry.step_fields as field}
-              {@const currentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === field.name)?.[1] ?? ''}
               {@const fieldLabel = field.label || field.name}
+              {@const _mof = paletteEntry.step_fields.find((f: any) => f.meta?.type === 'method_of')}
+              {@const _selMethodName = _mof ? (stepFieldValues[_mof.name] ?? '') : ''}
+              {@const _callableFieldName = _mof?.meta?.source_field}
+              {@const _selCallableName = _callableFieldName ? (stepFieldValues[_callableFieldName] ?? '') : ''}
+              {@const _selCallable = callableOptions.find((c) => c.name === _selCallableName)}
+              {@const _selMethod = _selCallable?.methods?.find((m: any) => m.name === _selMethodName)}
+              {@const _methodReturns = _selMethod?.returns || ''}
+              {@const _hasReturn = _methodReturns && _methodReturns !== 'Res!' && _methodReturns !== ''}
+              {@const shouldShow = field.name !== 'result_binding' || _hasReturn}
+              {#if shouldShow}
               <label class="step-field">
                 <span class="step-field-name">{fieldLabel}</span>
                 {#if field.meta.type === 'callable'}
-                  <select class="step-field-input">
+                  <select class="step-field-input" onchange={(e) => { stepFieldValues[field.name] = (e.target as HTMLSelectElement).value; }}>
                     <option value="">— select —</option>
                     {#each callableOptions as opt}
-                      <option value={opt.name} selected={currentValue === opt.name}>{opt.name}</option>
+                      <option value={opt.name} selected={stepFieldValues[field.name] === opt.name}>{opt.name}</option>
                     {/each}
                   </select>
                 {:else if field.meta.type === 'method_of'}
-                  {@const parentValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === field.meta.source_field)?.[1] ?? ''}
+                  {@const parentValue = stepFieldValues[field.meta.source_field] ?? ''}
                   {@const parentCallable = callableOptions.find((c) => c.name === parentValue)}
-                  <select class="step-field-input">
+                  <select class="step-field-input" onchange={(e) => { stepFieldValues[field.name] = (e.target as HTMLSelectElement).value; }}>
                     <option value="">— select —</option>
                     {#if parentCallable}
                       {#each parentCallable.methods as m}
-                        <option value={m.name} selected={currentValue === m.name}>{m.name}({m.params}) → {m.returns}</option>
+                        <option value={m.name} selected={stepFieldValues[field.name] === m.name}>{m.name}({m.params}) → {m.returns}</option>
                       {/each}
                     {/if}
                   </select>
                 {:else if field.meta.type === 'params_of'}
                   {@const methodField = field.meta.source_field}
-                  {@const methodValue = (node.data.properties ?? []).find(([k]: [string, string]) => k === methodField)?.[1] ?? ''}
+                  {@const methodValue = stepFieldValues[methodField] ?? ''}
                   {@const callableField = paletteEntry.step_fields.find((f: any) => f.meta?.type === 'method_of')?.meta?.source_field}
-                  {@const callableValue = callableField ? ((node.data.properties ?? []).find(([k]: [string, string]) => k === callableField)?.[1] ?? '') : ''}
+                  {@const callableValue = callableField ? (stepFieldValues[callableField] ?? '') : ''}
                   {@const callable = callableOptions.find((c) => c.name === callableValue)}
                   {@const method = callable?.methods?.find((m: any) => m.name === methodValue)}
                   {#if method?.params}
@@ -474,19 +495,33 @@
                     <span class="step-field-hint">Select a method first</span>
                   {/if}
                 {:else if field.meta.type === 'plain' && field.meta.type_hint === 'Bool'}
-                  <select class="step-field-input">
-                    <option value="true" selected={currentValue === 'true'}>true</option>
-                    <option value="false" selected={currentValue !== 'true'}>false</option>
+                  <select class="step-field-input" onchange={(e) => { stepFieldValues[field.name] = (e.target as HTMLSelectElement).value; }}>
+                    <option value="true" selected={stepFieldValues[field.name] === 'true'}>true</option>
+                    <option value="false" selected={stepFieldValues[field.name] !== 'true'}>false</option>
                   </select>
                 {:else}
-                  <input
-                    type="text"
-                    class="step-field-input"
-                    value={currentValue}
-                    placeholder={field.meta.type_hint || ''}
-                  />
+                  {@const methodOfField = paletteEntry.step_fields.find((f: any) => f.meta?.type === 'method_of')}
+                  {@const selectedMethodName = methodOfField ? (stepFieldValues[methodOfField.name] ?? '') : ''}
+                  {@const callableFieldName = methodOfField?.meta?.source_field}
+                  {@const selectedCallableName = callableFieldName ? (stepFieldValues[callableFieldName] ?? '') : ''}
+                  {@const selCallable = callableOptions.find((c) => c.name === selectedCallableName)}
+                  {@const selMethod = selCallable?.methods?.find((m: any) => m.name === selectedMethodName)}
+                  {@const methodReturns = selMethod?.returns || ''}
+                  {@const hasReturnValue = methodReturns && methodReturns !== 'Res!' && methodReturns !== ''}
+                  {#if field.name !== 'result_binding' || hasReturnValue}
+                    <input
+                      type="text"
+                      class="step-field-input"
+                      value={stepFieldValues[field.name] ?? ''}
+                      placeholder={field.meta.type_hint || ''}
+                      onchange={(e) => { stepFieldValues[field.name] = (e.target as HTMLInputElement).value; }}
+                    />
+                  {:else}
+                    <!-- result_binding hidden: method has no return value -->
+                  {/if}
                 {/if}
               </label>
+              {/if}
             {/each}
           </div>
         </div>

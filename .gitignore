@@ -11,5 +11,11 @@ runtime/bootstrap/static/viewer/
 /target
 .veil-dev/
 
+# Agent scratch / palace draft notes (not durable docs — see tmp/README.md)
+/tmp/
+
 # Git checkouts of sibling repos (see scripts/sync-git-deps.sh)
 vendor/
+
+.grok/
+.kiro/

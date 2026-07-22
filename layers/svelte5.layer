@@ -2,6 +2,24 @@ pkg svelte5 v1
   desc "Svelte 5 component layer — runes-based reactivity, props, snippets"
   author "VEIL"
 
+  # ─── Reactivity emission (MISSION: framework APIs live in layers) ───────
+  # typescript.rs substitutes {name}/{type}/{default}/{expr}/{body} only.
+  # It must NEVER hardcode $state / $derived / $props / $effect / $bindable.
+  reactivity_policy
+    props_call $props()
+    state_line let {name}: {type} = $state({default});
+    derived_line let {name} = $derived({expr});
+    effect_sync   $effect(() => { // {name}
+{body}
+  });
+    effect_async  $effect(() => { // {name}
+    void (async () => {
+{body}
+    })();
+  });
+    bindable $bindable()
+    bindable_default $bindable({default})
+
   # ─── Component Structure ────────────────────────────────────────────────
 
   construct App
@@ -183,6 +201,8 @@ pkg svelte5 v1
     trait ApiClient
       fetch(endpoint: Str, params: Json) -> Res!<Json>
       mutate(endpoint: Str, body: Json) -> Res!<Json>
+      put(endpoint: Str, body: Json) -> Res!<Json>
+      delete(endpoint: Str) -> Res!<Json>
 
     # Browser localStorage — lowered to localStorage.* in TS
     struct LocalStorage
@@ -201,6 +221,14 @@ pkg svelte5 v1
     fn goto(url: Str) -> Res!
       navigate(url)
       ret Ok
+
+    # Browser path helpers (codegen → window.location)
+    fn location_pathname() -> Str
+      ret ""
+
+    # Last path segment, or "" when empty / root. e.g. /wear-tests/{id} → id
+    fn location_last_segment() -> Str
+      ret ""
 
     fn invalidateAll() -> Res!
       invalidate("all")
