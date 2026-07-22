@@ -44,6 +44,10 @@ veil check examples/di_example.veil
 | Name-derived REST | `rest_english` pack (`ddd`/`rust` use it); override via `rest_rpc` or `[codegen]` |
 | Bus message key strip | `bus_handle` pack; `[codegen] bus_strip_prefix` |
 | Product policy knobs | `veil.toml` `[codegen]` (see POLICY_ROLES.md) |
+| Auth default | Open only with `VEIL_DEV=1`; else require `VEIL_API_KEY` |
+| Secret redaction | HTTP via `veil_json_public` (role:secret + header values); storage full Serialize |
+| ApplicationService | Thin delegate to DomainService twin when names match after bus strip |
+| DELETE extras | Query string (`?tenant_id=`), not JSON body |
 | Multi-context Bus orchestration | Opt-in when steps have `ctx` refs **and** layer defines routing traits (INV-003) |
 | Smart constructors / timestamps | `rust.layer` `constructor_policy` (INV-002) |
 

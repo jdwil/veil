@@ -2086,6 +2086,24 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     }
 }
 
+/// Classify a `guard` failure message → DomainError variant.
+/// Missing/forbidden resources use NotFound (404, no enumeration via 400).
+/// Real input validation stays Validation (400).
+fn guard_error_variant(msg: &str) -> &'static str {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("not found")
+        || lower.contains("cross-tenant")
+        || lower.contains("access denied")
+        || lower.contains("forbidden")
+        || lower.contains("unauthorized")
+        || (lower.contains("denied") && !lower.contains("validation"))
+    {
+        "NotFound"
+    } else {
+        "Validation"
+    }
+}
+
 /// Translate a layer-defined Action that was NOT desugared (e.g. emit, guard).
 fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
     match a.shape {
@@ -2093,12 +2111,10 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
             // guard: the condition must hold for the flow to continue.
             let msg = a.message.as_deref().unwrap_or("precondition failed");
             let msg_escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+            let err_var = guard_error_variant(msg);
             match a.condition.as_deref() {
                 // Fallible-call guard (`guard call X.method(...)`): the call
-                // returns a Result that must be Ok — propagate its error as a
-                // domain validation error. Ports/traits and Result-returning
-                // value methods (e.g. Email.validate) use map_err; bool
-                // predicates use the branch below.
+                // returns a Result that must be Ok — map_err with policy variant.
                 Some(cond @ Expr::Call(c))
                     if !c.method.is_empty()
                         && (ctx.name_to_shape.contains_key(&c.target)
@@ -2112,26 +2128,30 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                         .strip_suffix(".await?")
                         .or_else(|| call_str.strip_suffix('?'))
                         .unwrap_or(&call_str);
-                    format!(
-                        "{}.map_err(|_| DomainError::Validation(\"{}\".to_string()))?",
-                        base, msg_escaped
-                    )
+                    if err_var == "NotFound" {
+                        format!("{base}.map_err(|_| DomainError::NotFound)?")
+                    } else {
+                        format!(
+                            "{base}.map_err(|_| DomainError::Validation(\"{msg_escaped}\".to_string()))?"
+                        )
+                    }
                 }
                 Some(cond @ Expr::Await(_)) => {
                     let call_str = expr_to_rust(cond, ctx);
                     let base = call_str.strip_suffix('?').unwrap_or(&call_str);
-                    format!(
-                        "{}.map_err(|_| DomainError::Validation(\"{}\".to_string()))?",
-                        base, msg_escaped
-                    )
+                    if err_var == "NotFound" {
+                        format!("{base}.map_err(|_| DomainError::NotFound)?")
+                    } else {
+                        format!(
+                            "{base}.map_err(|_| DomainError::Validation(\"{msg_escaped}\".to_string()))?"
+                        )
+                    }
                 }
                 // Boolean guard: the condition must evaluate to true.
                 Some(cond) => {
                     let cond_str = expr_to_rust(cond, ctx);
                     // Suppress redundant `.is_some()` guards only when we *know*
                     // the local is already unwrapped (port call + `.ok_or(NotFound)?`).
-                    // If type is unknown, keep the guard — domain helpers like
-                    // `get_endpoint` return Option without auto-ok_or (review Issue 1).
                     if let Expr::Call(c) = cond {
                         if c.method == "is_some" && ctx.locals.contains(&c.target) {
                             let var_type = ctx.local_types.get(&c.target);
@@ -2144,18 +2164,26 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                                     msg_escaped
                                 );
                             }
-                            // Prefer explicit is_none → Validation so following
-                            // `.unwrap()` is only reached when Some (still lower
-                            // unwrap to ok_or for panic-free paths).
+                            // is_none → NotFound when message is resource-missing
+                            let err = if err_var == "NotFound" {
+                                "DomainError::NotFound".to_string()
+                            } else {
+                                format!("DomainError::Validation(\"{msg_escaped}\".to_string())")
+                            };
                             return format!(
-                                "if {}.is_none() {{ return Err(DomainError::Validation(\"{}\".to_string())); }}",
-                                c.target, msg_escaped
+                                "if {}.is_none() {{ return Err({err}); }}",
+                                c.target
                             );
                         }
                     }
+                    let err = if err_var == "NotFound" {
+                        "DomainError::NotFound".to_string()
+                    } else {
+                        format!("DomainError::Validation(\"{msg_escaped}\".to_string())")
+                    };
                     format!(
-                        "if !({}) {{ return Err(DomainError::Validation(\"{}\".to_string())); }}",
-                        cond_str, msg_escaped
+                        "if !({}) {{ return Err({err}); }}",
+                        cond_str
                     )
                 }
                 None => format!("/* guard: {} (no condition) */", msg_escaped),

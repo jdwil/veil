@@ -787,13 +787,13 @@ fn gen_local_harness_main(
                 !registry.field_is_dependency(i)
                     && !path_params.iter().any(|p| p == &to_snake(&i.name))
             });
-            // DELETE with extra inputs (e.g. tenant_id) uses JSON body.
-            let needs_body = method == "post"
-                || method == "put"
-                || method == "patch"
-                || (method == "delete" && has_non_path_inputs);
+            // DELETE with extra inputs (e.g. tenant_id) uses query string —
+            // many clients drop DELETE bodies (review / HTTP practice).
+            let needs_body =
+                method == "post" || method == "put" || method == "patch";
             let needs_query =
-                harness_handler_needs_query(svc, registry, &method, &path, &path_params);
+                harness_handler_needs_query(svc, registry, &method, &path, &path_params)
+                    || (method == "delete" && has_non_path_inputs);
 
             // Path extractors: single param → Path(String); multi → Path<(String, …)>.
             let path_extractor = match path_params.len() {
@@ -860,7 +860,7 @@ fn gen_local_harness_main(
                     }
                     // else: already String from Path extractor
                 } else if needs_query {
-                    // GET List*: query string ?tenant_id=… (required for Uuid)
+                    // GET/DELETE: query string ?tenant_id=… (not DELETE body)
                     if rust_type == "Uuid" {
                         out.push_str(&format!(
                             "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok())\
@@ -952,11 +952,19 @@ fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {{
 }}
 
 fn veil_redact_secrets(v: &mut serde_json::Value) {{
+    // Scalar secret fields from role:secret annotations (INV-001).
     const SECRET_KEYS: &[&str] = &[{keys}];
+    // Header maps/lists often carry API keys — redact values, keep names.
+    const HEADER_CONTAINERS: &[&str] = &["headers"];
     match v {{
         serde_json::Value::Object(map) => {{
             for k in SECRET_KEYS {{
                 map.remove(*k);
+            }}
+            for hk in HEADER_CONTAINERS {{
+                if let Some(headers) = map.get_mut(*hk) {{
+                    veil_redact_header_values(headers);
+                }}
             }}
             for (_k, child) in map.iter_mut() {{
                 veil_redact_secrets(child);
@@ -970,6 +978,30 @@ fn veil_redact_secrets(v: &mut serde_json::Value) {{
         _ => {{}}
     }}
 }}
+
+fn veil_redact_header_values(v: &mut serde_json::Value) {{
+    match v {{
+        serde_json::Value::Array(items) => {{
+            for item in items.iter_mut() {{
+                if let serde_json::Value::Object(h) = item {{
+                    if h.contains_key("value") {{
+                        h.insert("value".into(), serde_json::Value::String(String::new()));
+                    }}
+                    if h.contains_key("Value") {{
+                        h.insert("Value".into(), serde_json::Value::String(String::new()));
+                    }}
+                }}
+            }}
+        }}
+        serde_json::Value::Object(map) => {{
+            // Map-shaped headers: redact all values
+            for (_k, val) in map.iter_mut() {{
+                *val = serde_json::Value::String(String::new());
+            }}
+        }}
+        _ => {{}}
+    }}
+}}
 "#
     )
 }
@@ -977,10 +1009,12 @@ fn veil_redact_secrets(v: &mut serde_json::Value) {{
 /// API key middleware + CORS policy for dual-loop harness.
 fn harness_auth_cors_helpers() -> &'static str {
     r#"
-/// When `VEIL_API_KEY` is set, require matching `X-Api-Key` or
-/// `Authorization: Bearer <key>`. `/health` and CORS preflight `OPTIONS` are
-/// always open. Set `VEIL_REQUIRE_AUTH=1` to deny when the key is unset
-/// (non-dev deploy). Product env names do not belong in the engine (INV).
+/// Auth policy (long-term harness default):
+/// - `/health` and CORS preflight `OPTIONS` always open
+/// - `VEIL_DEV=1` → open without key (local dual-loop)
+/// - otherwise require `VEIL_API_KEY` (default-deny outside explicit dev)
+/// - when key is set, require `X-Api-Key` or `Authorization: Bearer <key>`
+/// - `VEIL_REQUIRE_AUTH=1` forces deny even under VEIL_DEV if key unset
 async fn veil_api_key_middleware(
     headers: HeaderMap,
     request: Request,
@@ -989,6 +1023,8 @@ async fn veil_api_key_middleware(
     if request.uri().path() == "/health" || request.method() == axum::http::Method::OPTIONS {
         return Ok(next.run(request).await);
     }
+    let dev = std::env::var("VEIL_DEV").ok().as_deref() == Some("1");
+    let require = std::env::var("VEIL_REQUIRE_AUTH").ok().as_deref() == Some("1");
     let expected = std::env::var("VEIL_API_KEY").ok().filter(|s| !s.is_empty());
     if let Some(key) = expected {
         let header_key = headers
@@ -1005,8 +1041,10 @@ async fn veil_api_key_middleware(
             eprintln!("warn: unauthorized — set X-Api-Key or Authorization: Bearer");
             return Err(StatusCode::UNAUTHORIZED);
         }
-    } else if std::env::var("VEIL_REQUIRE_AUTH").ok().as_deref() == Some("1") {
-        eprintln!("error: VEIL_REQUIRE_AUTH=1 but VEIL_API_KEY unset");
+    } else if require || !dev {
+        eprintln!(
+            "error: auth required — set VEIL_API_KEY, or VEIL_DEV=1 for open local dual-loop"
+        );
         return Err(StatusCode::UNAUTHORIZED);
     }
     Ok(next.run(request).await)
@@ -1080,8 +1118,8 @@ fn veil_domain_error_status(e: DomainError) -> StatusCode {
 "#
 }
 
-/// Whether a GET handler needs `Query(q)` — non-dep inputs that are not path
-/// params (list filters **or** tenant_id scoping on GET-by-id).
+/// Whether a handler needs `Query(q)` — non-dep inputs that are not path
+/// params (GET list/filters, GET-by-id tenant_id, DELETE tenant_id).
 fn harness_handler_needs_query(
     svc: &Construct,
     registry: &LayerRegistry,
@@ -1089,7 +1127,7 @@ fn harness_handler_needs_query(
     path: &str,
     path_params: &[String],
 ) -> bool {
-    if method != "get" {
+    if method != "get" && method != "delete" {
         return false;
     }
     let _ = path; // reserved for future path-only heuristics
@@ -4593,14 +4631,35 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         out.push_str("}\n\n");
     }
 
+    // DomainService twins for ApplicationService (handler) collapse.
+    // Message key = bus_policy strip (e.g. HandleGetX → GetX) → domain construct.
+    let mut domain_by_message: std::collections::HashMap<String, &Construct> =
+        std::collections::HashMap::new();
+    // Filled when domain fns are emitted so thin wrappers share exact signatures.
+    let mut domain_ret_by_message: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for flow in flows {
-        let (name, subkind, annotations, inputs, steps) = match flow {
+        if let FlowLike::Construct(c) = flow {
+            let is_domain = registry.is_a(&c.keyword, "DomainService")
+                || registry.is_a(&c.subkind, "DomainService")
+                || c.subkind.eq_ignore_ascii_case("DomainService")
+                || c.keyword == "svc";
+            if is_domain {
+                let msg = registry.bus_message_name(&c.name);
+                domain_by_message.insert(msg, c);
+            }
+        }
+    }
+
+    for flow in flows {
+        let (name, subkind, annotations, inputs, steps, keyword) = match flow {
             FlowLike::Flow(f) => (
                 &f.name,
                 "Flow",
                 &f.annotations,
                 &f.inputs,
                 &f.steps,
+                "flow",
             ),
             FlowLike::Construct(c) => (
                 &c.name,
@@ -4608,6 +4667,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
                 &c.annotations,
                 &c.inputs,
                 &c.steps,
+                c.keyword.as_str(),
             ),
         };
 
@@ -4642,6 +4702,40 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         let flow_deps = collect_deps(steps, &base_ctx);
         let has_deps = !flow_deps.is_empty() || !dep_inputs.is_empty();
         let deps_param = if has_deps { "deps: &Deps, " } else { "" };
+
+        // ApplicationService with a DomainService twin → thin delegate (no 2× body).
+        let is_app = registry.is_a(keyword, "ApplicationService")
+            || registry.is_a(subkind, "ApplicationService")
+            || subkind.eq_ignore_ascii_case("ApplicationService")
+            || keyword == "handler";
+        if is_app && runtime.is_none() {
+            let msg = registry.bus_message_name(name);
+            if let Some(domain_c) = domain_by_message.get(&msg) {
+                let domain_fn = to_snake(&domain_c.name);
+                let call_args: Vec<String> = inputs
+                    .iter()
+                    .filter(|f| !registry.field_is_dependency(f))
+                    .map(|f| to_snake(&f.name))
+                    .collect();
+                // Prefer return type recorded when domain twin was emitted.
+                let ret_type = domain_ret_by_message
+                    .get(&msg)
+                    .cloned()
+                    .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                let deps_arg = if has_deps { "deps, " } else { "" };
+                let rest = call_args.join(", ");
+                out.push_str(&format!(
+                    "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n\
+                        // Thin HTTP/application surface — delegates to domain `{domain_fn}`.\n\
+                        {domain_fn}({deps_arg}{rest}).await\n}}\n\n",
+                    to_snake(name),
+                    deps_param,
+                    params,
+                    ret_type,
+                ));
+                continue;
+            }
+        }
 
         // Build context for this flow
         let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
@@ -4704,6 +4798,15 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         } else {
             infer_flow_return_type(return_expr, steps, &ctx, envelope_routing)
         };
+
+        // Record domain return types for thin ApplicationService wrappers.
+        let is_domain_emit = registry.is_a(keyword, "DomainService")
+            || registry.is_a(subkind, "DomainService")
+            || subkind.eq_ignore_ascii_case("DomainService")
+            || keyword == "svc";
+        if is_domain_emit {
+            domain_ret_by_message.insert(registry.bus_message_name(name), ret_type.clone());
+        }
 
         out.push_str(&format!(
             "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",

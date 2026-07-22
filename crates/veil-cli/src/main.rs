@@ -1143,7 +1143,7 @@ fn convert_rustdoc_json_to_stub(
             ));
         }
     }
-    // reqwest / HTTP clients: zero-arg Client::new() harness
+    // reqwest / HTTP clients: builder with connect + total timeouts (hang/SSRF hygiene)
     if struct_names.contains("Client")
         && (crate_name == "reqwest"
             || struct_impls
@@ -1153,9 +1153,15 @@ fn convert_rustdoc_json_to_stub(
         && !crate_name.starts_with("aws_sdk_")
         && !crate_name.starts_with("aws-sdk-")
     {
-        out.push_str(&format!(
-            "  harness_field Client \"\"\"\n{{\n    {rust_crate}::Client::new()\n}}\n\"\"\"\n"
-        ));
+        if crate_name == "reqwest" {
+            out.push_str(&format!(
+                "  harness_field Client \"\"\"\n{{\n    {rust_crate}::Client::builder()\n        .connect_timeout(std::time::Duration::from_secs(5))\n        .timeout(std::time::Duration::from_secs(30))\n        .build()\n        .expect(\"reqwest client\")\n}}\n\"\"\"\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "  harness_field Client \"\"\"\n{{\n    {rust_crate}::Client::new()\n}}\n\"\"\"\n"
+            ));
+        }
     }
     // AWS SDK clients (aws-sdk-*): load_defaults + optional AWS_ENDPOINT_URL
     // (LocalStack / custom endpoints). Do not hand-edit .stub for this — re-run

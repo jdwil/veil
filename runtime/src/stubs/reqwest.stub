@@ -1,8 +1,13 @@
 stub reqwest 0.12
   # Minimal surface for outbound HTTP adapters (expand via `veil stub-gen reqwest`).
+  # Timeouts prevent hung upstreams from pinning workers (SSRF/hang hardening).
   harness_field Client """
 {
-    reqwest::Client::new()
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client")
 }
 """
 
