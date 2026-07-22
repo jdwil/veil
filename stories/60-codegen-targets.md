@@ -245,10 +245,12 @@ fns, saga steps. Relay: 58 unused-mut warnings → 0.
   `.post`/`.put`/`.delete` are methods, not free imports)
 - `Query(q)` only when the handler has non-dep, non-path inputs
 - Drop unused `veil_shared::*` from harness when not needed
-- Dynamo Client recipe uses non-deprecated `aws_config::load_defaults`
-- Relay: `cargo check -p relay -p veil_bin` → zero warnings
+- Relay: `cargo check -p relay -p veil_bin` clean of unused-import / unused-var
+  noise from dual adapters and unused Query
 
-**Touch:** `rust.rs` harness, `aws_sdk_dynamodb.stub`
+**Touch:** `rust.rs` harness only (do **not** hand-edit `.stub` files —
+re-run `veil stub-gen` for API/policy changes)
 
 **Done notes:** Pre-scan free-fn methods + `harness_handler_needs_query`;
-wire-before-instantiate; stub Client → `BehaviorVersion::latest()`.
+wire-before-instantiate. AWS `load_from_env` deprecation is residual until
+stub-gen (or a regen) updates the Client `harness_field` recipe.
