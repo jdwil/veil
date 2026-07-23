@@ -3181,16 +3181,22 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let start_span = self.current().span;
                 let name = self.advance().text;
-                // Handle name!(args) — Bang before LParen means fallible call
-                let _is_bang = if self.at(&TokenKind::Bang)
+                // Handle name!(args) — Bang before LParen means fallible call.
+                // Keep `!` on the target so codegen can unwrap Res! (same as method!).
+                let is_bang = if self.at(&TokenKind::Bang)
                     && self.tokens.get(self.pos + 1).map(|t| t.kind == TokenKind::LParen).unwrap_or(false) {
                     self.advance(); true
                 } else { false };
                 let atom = if self.at(&TokenKind::LParen) {
-                    // Bare function call: `name(args)`.
+                    // Bare function call: `name(args)` / `name!(args)`.
                     let args = self.parse_paren_args();
+                    let target = if is_bang {
+                        format!("{name}!")
+                    } else {
+                        name
+                    };
                     Expr::Call(CallExpr {
-                        target: name,
+                        target,
                         method: String::new(),
                         args,
                         receiver: None,

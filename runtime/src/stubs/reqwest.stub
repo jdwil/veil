@@ -6,6 +6,8 @@ stub reqwest 0.12
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
+        // SSRF: do not follow redirects to private/metadata hosts
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("reqwest client")
 }

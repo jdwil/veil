@@ -63,13 +63,14 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             _ => None,
         })
         .collect();
-    // Top-level free functions (e.g. the layer-declared saga coordinator) also
-    // live in the shared crate so every context can call them through the Bus.
+    // Layer-declared free functions (e.g. the saga coordinator) live in the
+    // shared crate so every context can call them. Product free fns that touch
+    // domain types are emitted in the product crate (see gen_impls).
     let shared_fns: Vec<&FnDef> = solution
         .items
         .iter()
         .filter_map(|i| match i {
-            TopLevelItem::Function(f) => Some(f),
+            TopLevelItem::Function(f) if f.layer_provided => Some(f),
             _ => None,
         })
         .collect();
@@ -3385,6 +3386,7 @@ futures = "0.3"
             Some(t) => type_to_rust_with_traits(t, &trait_names),
             None => "Result<(), DomainError>".to_string(),
         };
+        ctx.expected_return_rust = Some(ret.clone());
         lib.push_str(&format!(
             "/// Layer-declared coordinator.\npub async fn {}({}) -> {} {{\n",
             to_snake(&f.name),
@@ -3532,12 +3534,41 @@ fn gen_impls(
 
     // Collect external-effect hooks (`target.method(...)` where target is not a
     // known construct/local) so we can emit compiling stub fns for them.
+    // Product free fns and stub package free-fn roots are real symbols — skip.
+    let product_free_fn_names: std::collections::HashSet<String> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Function(f) if !f.layer_provided => Some(to_snake(&f.name)),
+            _ => None,
+        })
+        .collect();
+    let stub_pkg_roots: std::collections::HashSet<String> = registry
+        .stubs
+        .iter()
+        .flat_map(|s| {
+            let rust = s.name.replace('-', "_");
+            let mut names = vec![s.name.clone(), rust];
+            if let Some(a) = &s.alias {
+                names.push(a.clone());
+            }
+            names
+        })
+        .collect();
     let mut hooks: std::collections::BTreeSet<(String, usize)> = std::collections::BTreeSet::new();
     for c in impls {
         for mimpl in &c.impls {
-            let locals: std::collections::HashSet<String> = mimpl.params.iter().cloned().collect();
+            let mut locals: std::collections::HashSet<String> =
+                mimpl.params.iter().cloned().collect();
             for expr in &mimpl.body {
-                collect_effect_hooks(expr, &name_to_shape, &locals, &mut hooks);
+                collect_effect_hooks_tracked(
+                    expr,
+                    &name_to_shape,
+                    &mut locals,
+                    &mut hooks,
+                    &product_free_fn_names,
+                    &stub_pkg_roots,
+                );
             }
         }
     }
@@ -3823,9 +3854,21 @@ fn gen_impls(
                 // Translate the body. Adapter bodies call external targets
                 // (e.g. `http.post(...)`) that resolve to runtime stubs.
                 let mut ctx = GenCtx::new(name_to_shape.clone());
-                // The impl's bare params are locals in the body.
+                // The impl's bare params are locals in the body; seed types from
+                // the trait signature so Json/Option methods lower correctly.
                 for p in &mimpl.params {
                     ctx.locals.insert(p.clone());
+                }
+                if let Some(m) = trait_method {
+                    for p in &m.params {
+                        let ty = match target_trait {
+                            Some(t) => monomorphize_type(&p.type_expr, c, t),
+                            None => p.type_expr.clone(),
+                        };
+                        ctx.local_types
+                            .insert(to_snake(&p.name), type_to_rust(&ty));
+                        ctx.locals.insert(to_snake(&p.name));
+                    }
                 }
                 ctx.mut_locals = crate::expr::analyze_mut_locals(&mimpl.body);
                 // @env annotation fields are available as self.field in the body.
@@ -3865,6 +3908,9 @@ fn gen_impls(
                 ctx.stub_type_crate = seeded.stub_type_crate;
                 ctx.fallible_methods = seeded.fallible_methods;
                 ctx.async_fallible_methods = seeded.async_fallible_methods;
+                ctx.stub_pkg_crate = seeded.stub_pkg_crate;
+                ctx.stub_free_fns = seeded.stub_free_fns;
+                ctx.async_fns = seeded.async_fns;
                 ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
@@ -3994,9 +4040,102 @@ fn gen_impls(
         }
     }
 
+    // Product free functions (non-layer) live next to adapters so they can use
+    // domain types. Layer free fns stay in veil_shared.
+    let product_fns: Vec<&FnDef> = solution
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Function(f) if !f.layer_provided => Some(f),
+            _ => None,
+        })
+        .collect();
+    if !product_fns.is_empty() {
+        let name_to_shape = build_name_to_shape(solution, registry);
+        for f in product_fns {
+            let mut ctx = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
+            for p in &f.params {
+                ctx.locals.insert(p.name.clone());
+                ctx.local_types
+                    .insert(p.name.clone(), type_to_rust(&p.type_expr));
+            }
+            ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
+            let params = f
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret = match &f.return_type {
+                Some(t) => type_to_rust(t),
+                None => "()".to_string(),
+            };
+            ctx.expected_return_rust = Some(ret.clone());
+            // Sync helpers unless the body calls layer async free fns.
+            let needs_async = f.body.iter().any(|e| expr_calls_async_fn(e, &ctx));
+            let async_kw = if needs_async { "async " } else { "" };
+            out.push_str(&format!(
+                "/// Product free function.\npub {async_kw}fn {}({}) -> {} {{\n",
+                to_snake(&f.name),
+                params,
+                ret,
+            ));
+            for expr in &f.body {
+                out.push_str(&format!(
+                    "{}\n",
+                    crate::expr::stmt_to_rust(expr, &mut ctx)
+                ));
+            }
+            let ends_in_return = matches!(f.body.last(), Some(Expr::Return(_)));
+            if !ends_in_return && ret == "()" {
+                out.push_str("    // ok\n");
+            }
+            out.push_str("}\n\n");
+        }
+    }
+
     GeneratedFile {
         path: format!("crates/{}/src/adapters/mod.rs", crate_name),
         content: out,
+    }
+}
+
+/// True if any call in `expr` targets a known async free function.
+fn expr_calls_async_fn(expr: &Expr, ctx: &crate::expr::GenCtx) -> bool {
+    match expr {
+        Expr::Call(c) if c.method.is_empty() && ctx.async_fns.contains(&c.target) => true,
+        Expr::Call(c) => {
+            c.args.iter().any(|a| expr_calls_async_fn(a, ctx))
+                || c.receiver
+                    .as_ref()
+                    .map(|r| expr_calls_async_fn(r, ctx))
+                    .unwrap_or(false)
+        }
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs) => {
+            expr_calls_async_fn(rhs, ctx)
+        }
+        Expr::IfExpr(ie) => {
+            expr_calls_async_fn(&ie.condition, ctx)
+                || ie.then_body.iter().any(|e| expr_calls_async_fn(e, ctx))
+                || ie
+                    .else_body
+                    .as_ref()
+                    .map(|b| b.iter().any(|e| expr_calls_async_fn(e, ctx)))
+                    .unwrap_or(false)
+        }
+        Expr::WhileLoop { condition, body } => {
+            expr_calls_async_fn(condition, ctx) || body.iter().any(|e| expr_calls_async_fn(e, ctx))
+        }
+        Expr::ForLoop { iterable, body, .. } => {
+            expr_calls_async_fn(iterable, ctx) || body.iter().any(|e| expr_calls_async_fn(e, ctx))
+        }
+        Expr::BinaryOp(b) => {
+            expr_calls_async_fn(&b.left, ctx) || expr_calls_async_fn(&b.right, ctx)
+        }
+        Expr::FieldAccess(base, _) | Expr::Try(base) | Expr::Await(base) => {
+            expr_calls_async_fn(base, ctx)
+        }
+        _ => false,
     }
 }
 
@@ -4338,11 +4477,13 @@ fn is_known_codegen_module(target: &str) -> bool {
         || target.starts_with("aws_config")
 }
 
-fn collect_effect_hooks(
+fn collect_effect_hooks_tracked(
     expr: &Expr,
     name_to_shape: &std::collections::HashMap<String, Shape>,
-    locals: &std::collections::HashSet<String>,
+    locals: &mut std::collections::HashSet<String>,
     hooks: &mut std::collections::BTreeSet<(String, usize)>,
+    product_free_fns: &std::collections::HashSet<String>,
+    stub_pkg_roots: &std::collections::HashSet<String>,
 ) {
     match expr {
         Expr::Call(call) => {
@@ -4353,40 +4494,214 @@ fn collect_effect_hooks(
                 && !call.target.is_empty()
                 && !call.target.contains('.') // dotted paths resolve as Struct::method
                 && !is_known_codegen_module(&call.target)
+                && !stub_pkg_roots.contains(&call.target)
             {
-                let name = format!("{}_{}", to_snake(&call.target), to_snake(&call.method));
+                let name = format!(
+                    "{}_{}",
+                    to_snake(&call.target),
+                    to_snake(call.method.trim_end_matches(['!', '?']))
+                );
                 hooks.insert((name, call.args.len()));
             }
-            // Bare function calls: target is the function name, method is empty
+            // Bare function calls: skip product free fns (emitted later in this module).
+            // Bang form stores target as `name!` — strip for lookup and hook name.
+            let bare_target = call.target.trim_end_matches(['!', '?']);
             if call.method.is_empty()
                 && call.receiver.is_none()
-                && !name_to_shape.contains_key(&call.target)
-                && !locals.contains(&call.target)
+                && !name_to_shape.contains_key(bare_target)
+                && !locals.contains(bare_target)
                 && !call.target.is_empty()
-                && call.target.chars().next().map_or(true, |c| c.is_lowercase())
-                && !is_known_codegen_module(&call.target)
+                && bare_target
+                    .chars()
+                    .next()
+                    .map_or(true, |c| c.is_lowercase())
+                && !is_known_codegen_module(bare_target)
+                && !product_free_fns.contains(&to_snake(bare_target))
             {
-                let name = to_snake(&call.target);
+                let name = to_snake(bare_target);
                 hooks.insert((name, call.args.len()));
             }
             if let Some(recv) = &call.receiver {
-                collect_effect_hooks(recv, name_to_shape, locals, hooks);
+                collect_effect_hooks_tracked(
+                    recv,
+                    name_to_shape,
+                    locals,
+                    hooks,
+                    product_free_fns,
+                    stub_pkg_roots,
+                );
             }
             for a in &call.args {
-                collect_effect_hooks(a, name_to_shape, locals, hooks);
+                collect_effect_hooks_tracked(
+                    a,
+                    name_to_shape,
+                    locals,
+                    hooks,
+                    product_free_fns,
+                    stub_pkg_roots,
+                );
             }
         }
-        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs) | Expr::Await(rhs) => {
-            collect_effect_hooks(rhs, name_to_shape, locals, hooks);
+        Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
+            collect_effect_hooks_tracked(
+                rhs,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
+            if !name.contains('.') {
+                locals.insert(name.clone());
+            }
+        }
+        Expr::Return(rhs) | Expr::Await(rhs) => {
+            collect_effect_hooks_tracked(
+                rhs,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
         }
         Expr::StructLit(_, fields) => {
             for (_, v) in fields {
-                collect_effect_hooks(v, name_to_shape, locals, hooks);
+                collect_effect_hooks_tracked(
+                    v,
+                    name_to_shape,
+                    locals,
+                    hooks,
+                    product_free_fns,
+                    stub_pkg_roots,
+                );
             }
         }
         Expr::BinaryOp(op) => {
-            collect_effect_hooks(&op.left, name_to_shape, locals, hooks);
-            collect_effect_hooks(&op.right, name_to_shape, locals, hooks);
+            collect_effect_hooks_tracked(
+                &op.left,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
+            collect_effect_hooks_tracked(
+                &op.right,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
+        }
+        Expr::IfExpr(ie) => {
+            collect_effect_hooks_tracked(
+                &ie.condition,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
+            let mut then_locals = locals.clone();
+            for e in &ie.then_body {
+                collect_effect_hooks_tracked(
+                    e,
+                    name_to_shape,
+                    &mut then_locals,
+                    hooks,
+                    product_free_fns,
+                    stub_pkg_roots,
+                );
+            }
+            if let Some(eb) = &ie.else_body {
+                let mut else_locals = locals.clone();
+                for e in eb {
+                    collect_effect_hooks_tracked(
+                        e,
+                        name_to_shape,
+                        &mut else_locals,
+                        hooks,
+                        product_free_fns,
+                        stub_pkg_roots,
+                    );
+                }
+            }
+        }
+        Expr::WhileLoop { condition, body } => {
+            collect_effect_hooks_tracked(
+                condition,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
+            let mut body_locals = locals.clone();
+            for e in body {
+                collect_effect_hooks_tracked(
+                    e,
+                    name_to_shape,
+                    &mut body_locals,
+                    hooks,
+                    product_free_fns,
+                    stub_pkg_roots,
+                );
+            }
+        }
+        Expr::ForLoop {
+            binding,
+            index,
+            iterable,
+            body,
+        } => {
+            collect_effect_hooks_tracked(
+                iterable,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
+            let mut body_locals = locals.clone();
+            body_locals.insert(binding.clone());
+            if let Some(idx) = index {
+                body_locals.insert(idx.clone());
+            }
+            for e in body {
+                collect_effect_hooks_tracked(
+                    e,
+                    name_to_shape,
+                    &mut body_locals,
+                    hooks,
+                    product_free_fns,
+                    stub_pkg_roots,
+                );
+            }
+        }
+        Expr::Match(scrutinee, arms) => {
+            collect_effect_hooks_tracked(
+                scrutinee,
+                name_to_shape,
+                locals,
+                hooks,
+                product_free_fns,
+                stub_pkg_roots,
+            );
+            for arm in arms {
+                let mut arm_locals = locals.clone();
+                for e in &arm.body {
+                    collect_effect_hooks_tracked(
+                        e,
+                        name_to_shape,
+                        &mut arm_locals,
+                        hooks,
+                        product_free_fns,
+                        stub_pkg_roots,
+                    );
+                }
+            }
         }
         _ => {}
     }

@@ -77,6 +77,11 @@ pub struct GenCtx {
     /// or receiver of a known mutating method). Plain `Assign` without this
     /// set emits immutable `let`. Explicit `mut x = …` always uses `let mut`.
     pub mut_locals: HashSet<String>,
+    /// Stub package free-fn roots: use-alias / crate name → rust crate ident.
+    /// e.g. `crypto` / `relay_crypto` / `relay-crypto` → `relay_crypto`.
+    pub stub_pkg_crate: HashMap<String, String>,
+    /// Stub free functions: (rust_crate, fn_name_without_bang) → fallible (Res!).
+    pub stub_free_fns: HashMap<(String, String), bool>,
 }
 
 impl GenCtx {
@@ -102,6 +107,8 @@ impl GenCtx {
             defaultable_types: HashSet::new(),
             dep_fields: HashMap::new(),
             mut_locals: HashSet::new(),
+            stub_pkg_crate: HashMap::new(),
+            stub_free_fns: HashMap::new(),
         }
     }
 
@@ -321,6 +328,27 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
 
     // Register stub crate type information
     for stub in &registry.stubs {
+        let rust_crate = stub.name.replace('-', "_");
+        // Package free-fn roots: bare crate, snake, and use-alias all resolve.
+        ctx.stub_pkg_crate
+            .insert(stub.name.clone(), rust_crate.clone());
+        ctx.stub_pkg_crate
+            .insert(rust_crate.clone(), rust_crate.clone());
+        if let Some(alias) = &stub.alias {
+            ctx.stub_pkg_crate
+                .insert(alias.clone(), rust_crate.clone());
+        }
+        for ff in &stub.free_fns {
+            let bare = ff.name.trim_end_matches(['!', '?']).to_string();
+            let ret = ff.return_type.as_deref().unwrap_or("()");
+            let fallible = ret.starts_with("Res!") || ret.starts_with("Res!<") || ret.contains("Res!");
+            if fallible {
+                ctx.fallible_methods.insert(ff.name.clone());
+                ctx.fallible_methods.insert(bare.clone());
+            }
+            ctx.stub_free_fns
+                .insert((rust_crate.clone(), bare), fallible);
+        }
         for s in &stub.structs {
             // Compute the aliased name for this type
             let type_name = if let Some(alias) = &stub.alias {
@@ -405,10 +433,13 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     ctx.routing_ref = ctx.default_routing_ref_as_dep();
 
     // Track layer-declared free functions as async — they generate as
-    // `pub async fn` and calls to them need `.await?`.
+    // `pub async fn` and calls to them need `.await?`. Product free fns are
+    // emitted in the product crate (sync unless they call async helpers).
     for item in &solution.items {
         if let TopLevelItem::Function(f) = item {
-            ctx.async_fns.insert(f.name.clone());
+            if f.layer_provided {
+                ctx.async_fns.insert(f.name.clone());
+            }
         }
     }
 
@@ -679,13 +710,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::IfExpr(ie) => {
             let cond = expr_to_rust(&ie.condition, ctx);
-            let then_body = ie.then_body.iter()
-                .map(|e| format!("    {};", expr_to_rust(e, ctx)))
-                .collect::<Vec<_>>().join("\n");
+            let then_body = emit_tracked_block(&ie.then_body, ctx, "    ");
             if let Some(else_body) = &ie.else_body {
-                let else_stmts = else_body.iter()
-                    .map(|e| format!("    {};", expr_to_rust(e, ctx)))
-                    .collect::<Vec<_>>().join("\n");
+                let else_stmts = emit_tracked_block(else_body, ctx, "    ");
                 format!("if {} {{\n{}\n}} else {{\n{}\n}}", cond, then_body, else_stmts)
             } else {
                 format!("if {} {{\n{}\n}}", cond, then_body)
@@ -753,6 +780,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::MutAssign(name, rhs, ty_ann) => {
             let rhs_str = expr_to_rust(rhs, ctx);
+            // Reassignment of an already-bound local (e.g. `mut req` inside while).
+            if ctx.is_local(name) {
+                return format!("{} = {}", name, rhs_str);
+            }
             match ty_ann {
                 Some(ty) => format!("let mut {}: {} = {}", name, crate::rust::type_to_rust(ty), rhs_str),
                 None => format!("let mut {} = {}", name, rhs_str),
@@ -841,9 +872,38 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 Expr::StringLit(s) => format!(
                     "{b}.get(\"{s}\").cloned().ok_or(DomainError::NotFound)?"
                 ),
+                // Dynamic key (e.g. params[p.name] on serde_json::Value)
                 other => {
                     let i = expr_to_rust(other, ctx);
-                    format!("{b}[{i}]")
+                    let base_ty = match base.as_ref() {
+                        Expr::Ident(n) => ctx.local_type(n).unwrap_or(""),
+                        _ => "",
+                    };
+                    // Integer / usize indices → slice/vec indexing, never `.as_str()`.
+                    let idx_is_int = matches!(other, Expr::IntLit(_))
+                        || matches!(
+                            other,
+                            Expr::Ident(n) if matches!(
+                                ctx.local_type(n),
+                                Some("i64")
+                                    | Some("i32")
+                                    | Some("u64")
+                                    | Some("u32")
+                                    | Some("usize")
+                                    | Some("isize")
+                            )
+                        );
+                    if idx_is_int {
+                        format!("{b}[({i}) as usize]")
+                    } else if base_ty.contains("Value") || base_ty == "Json" || base_ty.is_empty()
+                    {
+                        // String-keyed JSON map access.
+                        format!(
+                            "{b}.get({i}.as_str()).cloned().unwrap_or(serde_json::Value::Null)"
+                        )
+                    } else {
+                        format!("{b}[{i}]")
+                    }
                 }
             }
         }
@@ -960,7 +1020,15 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             out
         }
         Expr::ForLoop { binding, index, iterable, body } => {
-            let iter_str = expr_to_rust(iterable, ctx);
+            let mut iter_str = expr_to_rust(iterable, ctx);
+            // Avoid moving struct fields reused across loops (while + second for).
+            // Skip bare idents: they are often already `&[T]` (e.g. Dynamo items()).
+            if matches!(iterable.as_ref(), Expr::FieldAccess(_, _))
+                && !iter_str.ends_with(".clone()")
+                && !iter_str.ends_with(".iter()")
+            {
+                iter_str = format!("{iter_str}.clone()");
+            }
             let bind = if let Some(idx) = index {
                 format!("({}, {})", idx, binding)
             } else {
@@ -1008,10 +1076,21 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::WhileLoop { condition, body } => {
             let cond_str = expr_to_rust(condition, ctx);
-            let body_str = body.iter()
-                .map(|e| format!("        {};", expr_to_rust(e, ctx)))
-                .collect::<Vec<_>>().join("\n");
-            format!("while {} {{\n{}\n    }}", cond_str, body_str)
+            // Track locals across the loop body so `mut req = …` then `req = …`
+            // reassigns (adapters / retries) instead of shadowing or free fns.
+            let mut body_ctx = ctx.clone_for_inference();
+            body_ctx.mut_locals.extend(analyze_mut_locals(body));
+            let mut lines = Vec::new();
+            for e in body {
+                let line = expr_to_rust(e, &body_ctx);
+                if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
+                    if !name.contains('.') {
+                        body_ctx.locals.insert(name.clone());
+                    }
+                }
+                lines.push(format!("        {};", line));
+            }
+            format!("while {} {{\n{}\n    }}", cond_str, lines.join("\n"))
         }
         Expr::Tuple(items) => {
             let parts = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
@@ -1023,12 +1102,32 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             let mut args = Vec::new();
             for p in parts {
                 match p {
-                    StringPart::Literal(l) => fmt.push_str(l),
-                    StringPart::Expr(e) => { fmt.push_str("{}"); args.push(expr_to_rust(e, ctx)); }
+                    // Escape `{`/`}` so literal braces survive `format!` (e.g. path `{id}`).
+                    StringPart::Literal(l) => {
+                        for ch in l.chars() {
+                            match ch {
+                                '{' => fmt.push_str("{{"),
+                                '}' => fmt.push_str("}}"),
+                                _ => fmt.push(ch),
+                            }
+                        }
+                    }
+                    StringPart::Expr(e) => {
+                        fmt.push_str("{}");
+                        args.push(expr_to_rust(e, ctx));
+                    }
                 }
             }
             if args.is_empty() {
-                format!("\"{}\"", fmt)
+                // Still a format-free string; unescape was only for format! — rebuild raw.
+                let raw: String = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        StringPart::Literal(l) => Some(l.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                format!("\"{}\".to_string()", raw.replace('\\', "\\\\").replace('"', "\\\""))
             } else {
                 format!("format!(\"{}\", {})", fmt, args.join(", "))
             }
@@ -1316,20 +1415,34 @@ fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
 /// `basic_auth` takes `Option` password).
 fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> String {
     let method = method.trim_end_matches(['!', '?']);
-    // str::starts_with / contains / ends_with take Pattern — string lits as &str,
-    // not owned String (Pattern not implemented for String).
-    if matches!(method, "starts_with" | "contains" | "ends_with" | "strip_prefix" | "strip_suffix") {
+    // str::starts_with / contains / ends_with / replace take Pattern / &str —
+    // string lits as &str, not owned String (Pattern not implemented for String).
+    if matches!(
+        method,
+        "starts_with"
+            | "contains"
+            | "ends_with"
+            | "strip_prefix"
+            | "strip_suffix"
+            | "replace"
+            | "replacen"
+            | "split"
+    ) {
         return args
             .iter()
             .map(|a| match a {
-                Expr::StringLit(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+                Expr::StringLit(s) => {
+                    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+                }
                 _ => {
                     let s = expr_to_rust(a, ctx);
-                    // Owned String locals: borrow for Pattern
+                    // Owned String locals: borrow for Pattern / &str
                     if matches!(a, Expr::Ident(_)) {
-                        format!("{s}.as_str()")
-                    } else {
+                        format!("&{s}")
+                    } else if s.starts_with('&') {
                         s
+                    } else {
+                        format!("&({s})")
                     }
                 }
             })
@@ -1466,10 +1579,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 );
             }
         }
+        // serde_json::Value::as_str → Option<String> (owned) for assigns/unwrap.
+        if call.method == "as_str" && call.args.is_empty() {
+            return format!("{}.as_str().map(|s| s.to_string())", recv_str);
+        }
         // DynamoDB AttributeValue .as_s() / .as_n() returns Result<&str, &AttributeValue>
         // which doesn't implement From for DomainError — use map_err.
         if (call.method == "as_s" || call.method == "as_n" || call.method.starts_with("as_"))
             && call.args.is_empty()
+            && call.method != "as_str"
         {
             // Keep as_s / as_n (not snake-cased away) — AWS AttributeValue API.
             let m = if call.method.starts_with("as_") {
@@ -1486,6 +1604,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // A trait method invoked on a chained receiver is async + fallible.
         let suffix = receiver_call_suffix(recv, &call.method, ctx);
         let m = rust_method_name(&call.method);
+        let bare_m = call.method.trim_end_matches(['!', '?']);
+        if (bare_m == "unwrap_or" || bare_m == "unwrap_or_else") && call.args.len() == 1 {
+            if let Expr::StringLit(s) = &call.args[0] {
+                // Default to owned String (Option<String> / after as_str map-to-owned).
+                return format!("{}.{m}(\"{s}\".to_string()){suffix}", recv_str);
+            }
+        }
         return format!(
             "{}.{}({}){}",
             recv_str,
@@ -1620,9 +1745,20 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 }
                 ("Env", "get_or") if call.args.len() == 2 => {
                     let var = expr_to_rust(&call.args[0], ctx);
-                    let default = expr_to_rust(&call.args[1], ctx);
+                    // StringLit already becomes `"…".to_string()` — do not double.
+                    let default = match &call.args[1] {
+                        Expr::StringLit(s) => format!("\"{}\".to_string()", s),
+                        other => {
+                            let d = expr_to_rust(other, ctx);
+                            if d.ends_with(".to_string()") {
+                                d
+                            } else {
+                                format!("{d}.to_string()")
+                            }
+                        }
+                    };
                     Some(format!(
-                        "std::env::var({}).unwrap_or_else(|_| {}.to_string())",
+                        "std::env::var({}).unwrap_or_else(|_| {})",
                         var, default
                     ))
                 }
@@ -1993,6 +2129,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 method
             );
         }
+        // serde_json::Value::as_str → Option<String> so assigns/unwrap are owned.
+        if call.method == "as_str" && call.args.is_empty() {
+            return format!("{}.as_str().map(|s| s.to_string())", call.target);
+        }
         // Unknown method on local — clone args to avoid move issues.
         // Collection predicate methods need .iter() prefix in Rust.
         let iter_methods = ["any", "all", "find", "filter", "map", "for_each", "count", "flat_map"];
@@ -2009,6 +2149,18 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             &call.method,
             ctx,
         );
+        // unwrap_or on Option<String> needs owned default; Option<&str> (e.g. after
+        // `.as_str()`) needs a bare str. Prefer owned — callers of as_str use the
+        // chained-receiver path below.
+        let bare_m = call.method.trim_end_matches(['!', '?']);
+        if (bare_m == "unwrap_or" || bare_m == "unwrap_or_else") && call.args.len() == 1 {
+            if let Expr::StringLit(s) = &call.args[0] {
+                return format!(
+                    "{}.{}(\"{}\".to_string()){}",
+                    call.target, method, s, suffix
+                );
+            }
+        }
         return format!(
             "{}.{}({}){}",
             call.target,
@@ -2020,13 +2172,23 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     if call.method.is_empty() {
         // Bare call: now() → Utc::now(), others → as-is (cloning value args so
         // passing locals/state into a by-value param doesn't move them).
-        match call.target.as_str() {
+        // Bang form `name!(args)` stores target as `name!` — strip for symbol, keep `?`.
+        let bare_target = call.target.trim_end_matches(['!', '?']);
+        match bare_target {
             "now" => "Utc::now()".to_string(),
             _ => {
-                let base = format!("{}({})", to_snake(&call.target), clone_args(&call.args, ctx));
+                let base = format!(
+                    "{}({})",
+                    to_snake(bare_target),
+                    clone_args(&call.args, ctx)
+                );
+                let is_bang = call.target.ends_with('!');
                 // Layer-declared async functions (e.g. unwind, run_saga) need .await?
-                if ctx.async_fns.contains(&call.target) {
+                if ctx.async_fns.contains(bare_target) || ctx.async_fns.contains(&call.target)
+                {
                     format!("{}.await?", base)
+                } else if is_bang {
+                    format!("{}?", base)
                 } else {
                     base
                 }
@@ -2100,9 +2262,66 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             } else {
                 args_str.clone()
             };
+            // from_str needs a turbofish when the enclosing method return type
+            // names a concrete domain type (else inference fails with `?`).
+            if target_snake == "serde_json" && m == "from_str" {
+                if let Some(ty) = from_str_turbofish_type(ctx) {
+                    return format!(
+                        "serde_json::from_str::<{ty}>({final_args}){suffix}"
+                    );
+                }
+            }
             return format!("{}::{}({}){}", target_snake, m, final_args, suffix);
         }
-        format!("{}_{}({})", to_snake(&call.target), to_snake(&call.method), args_str)
+        // Stub package free functions: `crypto.hmac_sha256_hex(s, m)` or
+        // `relay_crypto.aes_gcm_encrypt!(k, p)` → `relay_crypto::fn(&…)` (+ `?` if Res!).
+        if let Some(rust_crate) = ctx
+            .stub_pkg_crate
+            .get(&call.target)
+            .or_else(|| ctx.stub_pkg_crate.get(&target_snake))
+        {
+            let bare = call.method.trim_end_matches(['!', '?']);
+            if let Some(&fallible) = ctx
+                .stub_free_fns
+                .get(&(rust_crate.clone(), bare.to_string()))
+            {
+                let m = to_snake(bare);
+                // Helper crates typically take &str / shared refs.
+                let final_args = call
+                    .args
+                    .iter()
+                    .map(|a| {
+                        let s = expr_to_rust(a, ctx);
+                        match a {
+                            Expr::StringLit(_) => format!("&{s}"),
+                            Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("&{s}"),
+                            _ => {
+                                if s.starts_with('&') {
+                                    s
+                                } else {
+                                    format!("&({s})")
+                                }
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if fallible {
+                    ".map_err(|e| DomainError::External(e.to_string()))?"
+                } else {
+                    ""
+                };
+                return format!("{rust_crate}::{m}({final_args}){suffix}");
+            }
+        }
+        // Last resort: keep a compiling hook name (no bang / special chars).
+        let m_clean = call.method.trim_end_matches(['!', '?']);
+        format!(
+            "{}_{}({})",
+            to_snake(&call.target),
+            to_snake(m_clean),
+            args_str
+        )
     }
 }
 
@@ -2346,8 +2565,67 @@ impl GenCtx {
             defaultable_types: self.defaultable_types.clone(),
             dep_fields: self.dep_fields.clone(),
             mut_locals: self.mut_locals.clone(),
+            stub_pkg_crate: self.stub_pkg_crate.clone(),
+            stub_free_fns: self.stub_free_fns.clone(),
         }
     }
+}
+
+/// Infer turbofish type for `serde_json::from_str` from the enclosing return type.
+fn from_str_turbofish_type(ctx: &GenCtx) -> Option<String> {
+    let ret = ctx.expected_return_rust.as_deref()?;
+    // Result<Option<T>, _> / Result<Vec<T>, _> / Result<T, _> / Option<T>
+    let mut s = ret.trim();
+    if let Some(inner) = s.strip_prefix("Result<").and_then(|x| {
+        // split last , DomainError>
+        let depth = 0i32;
+        let _ = depth;
+        x.rsplit_once(", ").map(|(a, _)| a.trim())
+    }) {
+        s = inner;
+    }
+    if let Some(inner) = s.strip_prefix("Option<").and_then(|x| x.strip_suffix('>')) {
+        s = inner.trim();
+    }
+    if let Some(inner) = s.strip_prefix("Vec<").and_then(|x| x.strip_suffix('>')) {
+        s = inner.trim();
+    }
+    // Domain types are PascalCase; skip Value / primitives.
+    if s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+        && s != "DomainError"
+        && !s.starts_with("Result")
+    {
+        return Some(s.to_string());
+    }
+    // OAuth token JSON and similar → Value
+    Some("serde_json::Value".into())
+}
+
+/// Emit a block of statements, tracking locals so later lines see earlier binds
+/// (needed for if/while/for bodies: `mut req = …` then `req = req.header(…)`).
+fn emit_tracked_block(body: &[Expr], ctx: &GenCtx, indent: &str) -> String {
+    let mut body_ctx = ctx.clone_for_inference();
+    body_ctx.mut_locals.extend(analyze_mut_locals(body));
+    let mut lines = Vec::new();
+    for e in body {
+        let line = expr_to_rust(e, &body_ctx);
+        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
+            if !name.contains('.') {
+                body_ctx.locals.insert(name.clone());
+                if let Some(t) = infer_expr_type(
+                    match e {
+                        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => rhs,
+                        _ => unreachable!(),
+                    },
+                    &body_ctx,
+                ) {
+                    body_ctx.local_types.insert(name.clone(), t);
+                }
+            }
+        }
+        lines.push(format!("{indent}{};", line));
+    }
+    lines.join("\n")
 }
 
 /// Names that need `let mut` on first bind: explicit `mut`, reassignment,

@@ -1415,6 +1415,10 @@ pub struct StubCrate {
     pub structs: Vec<StubStruct>,
     /// Impl blocks (methods grouped by target type).
     pub impls: Vec<StubImpl>,
+    /// Package-level free functions (`fn name(...)` at stub root, not under struct/impl).
+    /// Called as `use_alias.fn(...)` or `crate_name.fn(...)` → `rust_crate::fn(...)`.
+    #[serde(default)]
+    pub free_fns: Vec<StubMethod>,
 }
 
 impl StubCrate {
@@ -1715,6 +1719,12 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             if let Some(i) = current_impl.take() { stub.impls.push(i); }
             let target = trimmed.strip_prefix("impl ").unwrap().trim().to_string();
             current_impl = Some(StubImpl { target, methods: Vec::new() });
+            continue;
+        }
+
+        // Package-level free functions (indent under stub header, not under struct/impl)
+        if indent <= 2 && trimmed.starts_with("fn ") && current_struct.is_none() && current_impl.is_none() {
+            stub.free_fns.push(parse_stub_method(trimmed));
             continue;
         }
 
