@@ -1316,6 +1316,26 @@ fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
 /// `basic_auth` takes `Option` password).
 fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> String {
     let method = method.trim_end_matches(['!', '?']);
+    // str::starts_with / contains / ends_with take Pattern — string lits as &str,
+    // not owned String (Pattern not implemented for String).
+    if matches!(method, "starts_with" | "contains" | "ends_with" | "strip_prefix" | "strip_suffix") {
+        return args
+            .iter()
+            .map(|a| match a {
+                Expr::StringLit(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+                _ => {
+                    let s = expr_to_rust(a, ctx);
+                    // Owned String locals: borrow for Pattern
+                    if matches!(a, Expr::Ident(_)) {
+                        format!("{s}.as_str()")
+                    } else {
+                        s
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
     if method == "basic_auth" && args.len() >= 2 {
         let user = clone_args(&args[..1], ctx);
         let pass = expr_to_rust(&args[1], ctx);

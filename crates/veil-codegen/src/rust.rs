@@ -823,8 +823,19 @@ fn gen_local_harness_main(
             } else {
                 ""
             };
+            // Prefer X-Tenant-Id header when handler takes tenant_id (multi-tenant dual-loop).
+            let needs_tenant_header = svc.inputs.iter().any(|i| {
+                !registry.field_is_dependency(i) && to_snake(&i.name) == "tenant_id"
+            });
+            let headers_extractor = if needs_tenant_header {
+                // Named req_headers so body field `headers` does not shadow.
+                "\n    req_headers: HeaderMap,"
+            } else {
+                ""
+            };
+            // Axum: body extractors (Json) must be last.
             out.push_str(&format!(
-                "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}{query_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
+                "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}{query_extractor}{headers_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
             ));
 
             // Only pass &deps when the application fn actually takes deps
@@ -859,6 +870,30 @@ fn gen_local_harness_main(
                         ));
                     }
                     // else: already String from Path extractor
+                } else if field == "tenant_id" && needs_tenant_header && rust_type == "Uuid" {
+                    // Prefer X-Tenant-Id; fall back to query/body for local tools.
+                    out.push_str(
+                        "    let tenant_id = if let Some(Ok(s)) = req_headers.get(\"x-tenant-id\").map(|v| v.to_str()) {\n\
+                         \x20       s.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?\n\
+                         \x20   } else {\n",
+                    );
+                    if needs_query {
+                        out.push_str(
+                            "        q.get(\"tenant_id\").and_then(|s| s.parse::<Uuid>().ok())\
+                             .ok_or(StatusCode::BAD_REQUEST)?\n",
+                        );
+                    } else if needs_body {
+                        out.push_str(
+                            "        body.get(\"tenant_id\").and_then(|v| v.as_str())\
+                             .and_then(|s| s.parse::<Uuid>().ok())\
+                             .ok_or(StatusCode::BAD_REQUEST)?\n",
+                        );
+                    } else {
+                        out.push_str(
+                            "        return Err(StatusCode::BAD_REQUEST);\n",
+                        );
+                    }
+                    out.push_str("    };\n");
                 } else if needs_query {
                     // GET/DELETE: query string ?tenant_id=… (not DELETE body)
                     if rust_type == "Uuid" {

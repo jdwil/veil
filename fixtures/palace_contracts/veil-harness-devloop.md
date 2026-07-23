@@ -61,7 +61,12 @@ Bus message keys: optional `bus_policy.strip_name_prefix` (e.g. `Handle`).
 
 - List inputs from **query string** (not random UUIDs)
 - Create/Update inputs from JSON body
-- Handlers call generated `fn`s with wired Deps
+- **DELETE** extras (e.g. `tenant_id`) → **query**, not body
+- Handlers call generated `fn`s with wired Deps (thin wrap when DomainService twin exists)
+- Auth: default-deny unless `VEIL_DEV=1` or `VEIL_API_KEY`; CORS outside API-key; OPTIONS open
+- Secrets: full Serialize for storage; `veil_json_public` redacts API JSON
+
+See **veil-contract-inv001-harness** and **veil-contract-veil-authoring**.
 
 ## Dual-Loop Dev Workflow
 
