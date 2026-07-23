@@ -882,12 +882,12 @@ fn convert_rustdoc_json_to_stub(
             None => continue,
         };
 
-        // Public free functions (crate-level)
+        // Public free functions (crate-level only). Methods also appear as
+        // `function` items in rustdoc; skip any signature that takes `self`.
         if inner.contains_key("function") {
-            // Skip associated items that still show as function (methods already handled via impl)
-            // Free functions typically have no parent or are module items — rustdoc marks them as function.
-            // Heuristic: if name is snake_case and not already a method-only noise, keep it.
-            if name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+            if name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
+                && !function_item_has_self(item)
+            {
                 if let Some(sig) = extract_method_sig(item) {
                     free_fns.insert(name.to_string(), sig);
                 }
@@ -1143,7 +1143,10 @@ fn convert_rustdoc_json_to_stub(
             ));
         }
     }
-    // reqwest / HTTP clients: builder with connect + total timeouts (hang/SSRF hygiene)
+    // reqwest / HTTP clients: builder with connect + total timeouts and no
+    // automatic redirects (hang/SSRF hygiene — do not follow off-origin).
+    // Re-run `veil stub-gen reqwest` after changing this recipe; do not hand-edit
+    // the .stub harness_field.
     if struct_names.contains("Client")
         && (crate_name == "reqwest"
             || struct_impls
@@ -1154,8 +1157,10 @@ fn convert_rustdoc_json_to_stub(
         && !crate_name.starts_with("aws-sdk-")
     {
         if crate_name == "reqwest" {
+            // Single-line format! body: `\` line-continuation in Rust strips
+            // leading whitespace on the next source line (would lose indent).
             out.push_str(&format!(
-                "  harness_field Client \"\"\"\n{{\n    {rust_crate}::Client::builder()\n        .connect_timeout(std::time::Duration::from_secs(5))\n        .timeout(std::time::Duration::from_secs(30))\n        .build()\n        .expect(\"reqwest client\")\n}}\n\"\"\"\n"
+                "  harness_field Client \"\"\"\n{{\n    {rust_crate}::Client::builder()\n        .connect_timeout(std::time::Duration::from_secs(5))\n        .timeout(std::time::Duration::from_secs(30))\n        .redirect({rust_crate}::redirect::Policy::none())\n        .build()\n        .expect(\"reqwest client\")\n}}\n\"\"\"\n"
             ));
         } else {
             out.push_str(&format!(
@@ -1198,6 +1203,42 @@ fn convert_rustdoc_json_to_stub(
             (struct_name, n.clone())
         })
         .collect();
+
+    // Package-level free functions (surface for typecheck / codegen lowering).
+    // Emitted as top-level `fn` under the stub root (not under struct/impl) so
+    // `use crate as alias` + `alias.fn(...)` / `crate.fn(...)` resolve.
+    //
+    // Filters:
+    // - Skip free fns used as typed_variant bases (`query` when `query_as` exists).
+    // - Skip names that already appear as methods/associated fns on a struct —
+    //   rustdoc lists those as `function` items without `self` too (e.g. `new`,
+    //   `Client::builder`), which must not pollute the package free-fn surface.
+    let method_names: std::collections::HashSet<String> = struct_impls
+        .values()
+        .flat_map(|ms| {
+            ms.iter().filter_map(|sig| {
+                let rest = sig.strip_prefix("fn ")?;
+                let name = rest.split('(').next()?;
+                Some(name.to_string())
+            })
+        })
+        .collect();
+    let mut free_fn_names: Vec<_> = free_fns.keys().cloned().collect();
+    free_fn_names.sort();
+    for name in &free_fn_names {
+        if method_names.contains(name) {
+            continue;
+        }
+        if free_fn_bases.values().any(|base| base == name) {
+            let typed = format!("{name}_as");
+            if free_fns.contains_key(&typed) {
+                continue; // constructor free-fn, surfaced on the struct
+            }
+        }
+        if let Some(sig) = free_fns.get(name) {
+            out.push_str(&format!("  {sig}\n"));
+        }
+    }
 
     // Emit structs with their methods
     for (_, name) in &struct_ids {
@@ -1306,6 +1347,33 @@ fn snake_to_pascal(s: &str) -> String {
         .collect()
 }
 
+/// True when a rustdoc function item is a method (has a `self` receiver).
+fn function_item_has_self(item: &serde_json::Value) -> bool {
+    let Some(func) = item
+        .get("inner")
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("function"))
+        .and_then(|v| v.as_object())
+    else {
+        return false;
+    };
+    let Some(inputs) = func
+        .get("sig")
+        .and_then(|v| v.as_object())
+        .and_then(|s| s.get("inputs"))
+        .and_then(|v| v.as_array())
+    else {
+        return false;
+    };
+    inputs.iter().any(|input| {
+        input
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|n| n.as_str())
+            == Some("self")
+    })
+}
+
 /// Extract a method signature from a rustdoc JSON item.
 fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
     let name = item.get("name")?.as_str()?;
@@ -1324,13 +1392,32 @@ fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
         Some(format!("{}: {}", param_name, type_str))
     }).collect();
 
-    // Build return type
+    // Build return type (unwrap impl Future / mark async as BoxFuture for codegen).
+    let is_async = func
+        .get("header")
+        .and_then(|h| h.as_object())
+        .and_then(|h| h.get("is_async"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let output = sig.get("output");
-    let ret = output.and_then(|o| {
-        if o.is_null() { return None; }
+    let mut ret = output.and_then(|o| {
+        if o.is_null() {
+            return None;
+        }
         let t = rustdoc_type_to_veil(o);
-        if t == "()" { None } else { Some(t) }
+        if t == "()" {
+            None
+        } else {
+            Some(t)
+        }
     });
+    // `async fn` → BoxFuture so codegen applies `.await.map_err…?`
+    if is_async {
+        ret = Some(match ret {
+            Some(inner) => format!("BoxFuture<{inner}>"),
+            None => "BoxFuture<()>".into(),
+        });
+    }
 
     let sig_str = if let Some(ret) = ret {
         format!("fn {}({}) -> {}", name, params.join(", "), ret)
@@ -1391,6 +1478,54 @@ fn rustdoc_type_to_veil(ty: &serde_json::Value) -> String {
         if let Some(borrow) = obj.get("borrowed_ref").and_then(|v| v.as_object()) {
             if let Some(inner) = borrow.get("type") {
                 return rustdoc_type_to_veil(inner);
+            }
+        }
+        // `impl Future<Output = T>` (sync methods returning futures, e.g. reqwest send)
+        if let Some(bounds) = obj.get("impl_trait").and_then(|v| v.as_array()) {
+            for b in bounds {
+                if let Some(tb) = b
+                    .as_object()
+                    .and_then(|o| o.get("trait_bound"))
+                    .and_then(|v| v.as_object())
+                {
+                    let path = tb
+                        .get("trait")
+                        .and_then(|t| t.as_object())
+                        .and_then(|t| t.get("path"))
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("");
+                    if path.ends_with("Future") || path == "Future" {
+                        // Constraints: Output = Type
+                        if let Some(constraints) = tb
+                            .get("trait")
+                            .and_then(|t| t.as_object())
+                            .and_then(|t| t.get("args"))
+                            .and_then(|a| a.as_object())
+                            .and_then(|a| a.get("angle_bracketed"))
+                            .and_then(|a| a.as_object())
+                            .and_then(|a| a.get("constraints"))
+                            .and_then(|c| c.as_array())
+                        {
+                            for c in constraints {
+                                if let Some(binding) = c
+                                    .as_object()
+                                    .and_then(|o| o.get("binding"))
+                                    .and_then(|b| b.as_object())
+                                {
+                                    if let Some(ty) = binding
+                                        .get("equality")
+                                        .and_then(|e| e.as_object())
+                                        .and_then(|e| e.get("type"))
+                                    {
+                                        let inner = rustdoc_type_to_veil(ty);
+                                        return format!("BoxFuture<{inner}>");
+                                    }
+                                }
+                            }
+                        }
+                        return "BoxFuture<()>".into();
+                    }
+                }
             }
         }
     }

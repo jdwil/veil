@@ -1,47 +1,261 @@
-stub reqwest 0.12
-  # Minimal surface for outbound HTTP adapters (expand via `veil stub-gen reqwest`).
-  # Timeouts prevent hung upstreams from pinning workers (SSRF/hang hardening).
+stub reqwest 0.13.4
+  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
   harness_field Client """
 {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(30))
-        // SSRF: do not follow redirects to private/metadata hosts
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("reqwest client")
 }
 """
+  fn for_host(host: S) -> Builder
+  fn never() -> Builder
 
-  struct Client
-
-  struct RequestBuilder
+  struct Body
+    fn as_bytes() -> Opt<Str>
+    fn wrap(inner: B) -> Body
 
   struct Response
     fn status() -> StatusCode
-    # BoxFuture marks async fallible for codegen (.await.map_err)
+    fn version() -> Version
+    fn headers() -> HeaderMap
+    fn headers_mut() -> HeaderMap
+    fn content_length() -> Opt<Int>
+    fn url() -> Url
+    fn remote_addr() -> Opt<SocketAddr>
+    fn extensions() -> Extensions
+    fn extensions_mut() -> Extensions
     fn text() -> BoxFuture<Res!<Str>>
+    fn text_with_charset(default_encoding: Str) -> BoxFuture<Res!<Str>>
     fn bytes() -> BoxFuture<Res!<Bytes>>
+    fn chunk() -> BoxFuture<Res!<Opt<Bytes>>>
+    fn error_for_status() -> Res!<Self>
+    fn error_for_status_ref() -> Res!<Self>
+    fn upgrade() -> BoxFuture<Res!<Upgraded>>
 
-  struct StatusCode
-    fn is_success() -> Bool
-    fn as_u16() -> Int
+  struct ClientBuilder
+    fn new() -> Self
+    fn build() -> Res!<Client>
+    fn user_agent(value: V) -> ClientBuilder
+    fn default_headers(headers: HeaderMap) -> ClientBuilder
+    fn no_gzip() -> ClientBuilder
+    fn no_brotli() -> ClientBuilder
+    fn no_zstd() -> ClientBuilder
+    fn no_deflate() -> ClientBuilder
+    fn redirect(policy: Policy) -> ClientBuilder
+    fn referer(enable: Bool) -> ClientBuilder
+    fn retry(policy: Builder) -> ClientBuilder
+    fn proxy(proxy: Proxy) -> ClientBuilder
+    fn no_proxy() -> ClientBuilder
+    fn timeout(timeout: Duration) -> ClientBuilder
+    fn read_timeout(timeout: Duration) -> ClientBuilder
+    fn connect_timeout(timeout: Duration) -> ClientBuilder
+    fn connection_verbose(verbose: Bool) -> ClientBuilder
+    fn pool_idle_timeout(val: D) -> ClientBuilder
+    fn pool_max_idle_per_host(max: usize) -> ClientBuilder
+    fn http1_title_case_headers() -> ClientBuilder
+    fn http1_allow_obsolete_multiline_headers_in_responses(value: Bool) -> ClientBuilder
+    fn http1_ignore_invalid_headers_in_responses(value: Bool) -> ClientBuilder
+    fn http1_allow_spaces_after_header_name_in_responses(value: Bool) -> ClientBuilder
+    fn http1_only() -> ClientBuilder
+    fn http09_responses() -> ClientBuilder
+    fn http2_prior_knowledge() -> ClientBuilder
+    fn http2_initial_stream_window_size(sz: Str) -> ClientBuilder
+    fn http2_initial_connection_window_size(sz: Str) -> ClientBuilder
+    fn http2_adaptive_window(enabled: Bool) -> ClientBuilder
+    fn http2_max_frame_size(sz: Str) -> ClientBuilder
+    fn http2_max_header_list_size(max_header_size_bytes: Int) -> ClientBuilder
+    fn http2_keep_alive_interval(interval: Str) -> ClientBuilder
+    fn http2_keep_alive_timeout(timeout: Duration) -> ClientBuilder
+    fn http2_keep_alive_while_idle(enabled: Bool) -> ClientBuilder
+    fn tcp_nodelay(enabled: Bool) -> ClientBuilder
+    fn local_address(addr: T) -> ClientBuilder
+    fn interface(interface: Str) -> ClientBuilder
+    fn tcp_keepalive(val: D) -> ClientBuilder
+    fn tcp_keepalive_interval(val: D) -> ClientBuilder
+    fn tcp_keepalive_retries(retries: C) -> ClientBuilder
+    fn tcp_user_timeout(val: D) -> ClientBuilder
+    fn unix_socket(path: Str) -> ClientBuilder
+    fn tls_certs_merge(certs: Str) -> ClientBuilder
+    fn tls_certs_only(certs: Str) -> ClientBuilder
+    fn add_root_certificate(cert: Certificate) -> ClientBuilder
+    fn tls_crls_only(crls: Str) -> ClientBuilder
+    fn add_crl(crl: CertificateRevocationList) -> ClientBuilder
+    fn add_crls(crls: Str) -> ClientBuilder
+    fn identity(identity: Identity) -> ClientBuilder
+    fn tls_danger_accept_invalid_hostnames(accept_invalid_hostname: Bool) -> ClientBuilder
+    fn danger_accept_invalid_hostnames(accept_invalid_hostname: Bool) -> ClientBuilder
+    fn tls_danger_accept_invalid_certs(accept_invalid_certs: Bool) -> ClientBuilder
+    fn danger_accept_invalid_certs(accept_invalid_certs: Bool) -> ClientBuilder
+    fn tls_sni(tls_sni: Bool) -> ClientBuilder
+    fn tls_sslkeylogfile(on: Bool) -> ClientBuilder
+    fn tls_version_min(version: Version) -> ClientBuilder
+    fn min_tls_version(version: Version) -> ClientBuilder
+    fn tls_version_max(version: Version) -> ClientBuilder
+    fn max_tls_version(version: Version) -> ClientBuilder
+    fn tls_backend_rustls() -> ClientBuilder
+    fn use_rustls_tls() -> ClientBuilder
+    fn tls_backend_preconfigured(tls: Str) -> ClientBuilder
+    fn use_preconfigured_tls(tls: Str) -> ClientBuilder
+    fn tls_info(tls_info: Bool) -> ClientBuilder
+    fn https_only(enabled: Bool) -> ClientBuilder
+    fn no_hickory_dns() -> ClientBuilder
+    fn resolve(domain: Str, addr: SocketAddr) -> ClientBuilder
+    fn resolve_to_addrs(domain: Str, addrs: Str) -> ClientBuilder
+    fn dns_resolver(resolver: R) -> ClientBuilder
+    fn connector_layer(layer: L) -> ClientBuilder
 
-  impl Client
+  struct Client
     fn new() -> Client
-    fn get(url: Str) -> RequestBuilder
-    fn post(url: Str) -> RequestBuilder
-    fn put(url: Str) -> RequestBuilder
-    fn patch(url: Str) -> RequestBuilder
-    fn delete(url: Str) -> RequestBuilder
+    fn builder() -> ClientBuilder
+    fn get(url: U) -> RequestBuilder
+    fn post(url: U) -> RequestBuilder
+    fn put(url: U) -> RequestBuilder
+    fn patch(url: U) -> RequestBuilder
+    fn delete(url: U) -> RequestBuilder
+    fn head(url: U) -> RequestBuilder
+    fn request(method: Method, url: U) -> RequestBuilder
+    fn execute(request: Request) -> BoxFuture<Res!<Response>>
 
-  impl RequestBuilder
-    fn header(name: Str, value: Str) -> RequestBuilder
-    fn bearer_auth(token: Str) -> RequestBuilder
-    # password is Option in reqwest; VEIL passes Opt or plain Str (codegen wraps).
-    fn basic_auth(user: Str, pass: Str) -> RequestBuilder
-    fn body(body: Str) -> RequestBuilder
-    fn json(body: Str) -> RequestBuilder
-    fn query(key: Str, value: Str) -> RequestBuilder
-    fn send() -> Res!<Response>
+  struct RequestBuilder
+    fn from_parts(client: Client, request: Request) -> RequestBuilder
+    fn header(key: K, value: V) -> RequestBuilder
+    fn headers(headers: HeaderMap) -> RequestBuilder
+    fn basic_auth(username: U, password: Opt<P>) -> RequestBuilder
+    fn bearer_auth(token: T) -> RequestBuilder
+    fn body(body: T) -> RequestBuilder
+    fn timeout(timeout: Duration) -> RequestBuilder
+    fn version(version: Version) -> RequestBuilder
+    fn build() -> Res!<Request>
+    fn build_split() -> Str
+    fn send() -> BoxFuture<Res!<Response>>
+    fn try_clone() -> Opt<RequestBuilder>
 
+  struct Request
+    fn new(method: Method, url: Url) -> Self
+    fn method() -> Method
+    fn method_mut() -> Method
+    fn url() -> Url
+    fn url_mut() -> Url
+    fn headers() -> HeaderMap
+    fn headers_mut() -> HeaderMap
+    fn body() -> Opt<Body>
+    fn body_mut() -> Opt<Body>
+    fn timeout() -> Opt<Duration>
+    fn timeout_mut() -> Opt<Duration>
+    fn version() -> Version
+    fn version_mut() -> Version
+    fn try_clone() -> Opt<Request>
+
+  struct Error
+    fn url() -> Opt<Url>
+    fn url_mut() -> Opt<Url>
+    fn with_url(url: Url) -> Self
+    fn without_url() -> Self
+    fn is_builder() -> Bool
+    fn is_redirect() -> Bool
+    fn is_status() -> Bool
+    fn is_timeout() -> Bool
+    fn is_request() -> Bool
+    fn is_connect() -> Bool
+    fn is_body() -> Bool
+    fn is_decode() -> Bool
+    fn status() -> Opt<StatusCode>
+    fn is_upgrade() -> Bool
+
+  struct Pending
+
+  struct Policy
+    fn limited(max: usize) -> Self
+    fn none() -> Self
+    fn custom(policy: T) -> Self
+    fn redirect(attempt: Attempt) -> Action
+
+  struct Builder
+    fn scoped(scope: Str) -> Self
+    fn no_budget() -> Self
+    fn max_extra_load(extra_percent: F64) -> Self
+    fn max_retries_per_request(max: Int) -> Self
+    fn classify_fn(func: F) -> Self
+    fn classify(classifier: Str) -> Self
+
+  struct Proxy
+    fn http(proxy_scheme: U) -> Res!<Proxy>
+    fn https(proxy_scheme: U) -> Res!<Proxy>
+    fn all(proxy_scheme: U) -> Res!<Proxy>
+    fn custom(fun: F) -> Proxy
+    fn basic_auth(username: Str, password: Str) -> Proxy
+    fn custom_http_auth(header_value: HeaderValue) -> Proxy
+    fn headers(headers: HeaderMap) -> Proxy
+    fn no_proxy(no_proxy: Opt<NoProxy>) -> Proxy
+
+  struct Certificate
+    fn from_der(der: Str) -> Res!<Certificate>
+    fn from_pem(pem: Str) -> Res!<Certificate>
+    fn from_pem_bundle(pem_bundle: Str) -> Res!<List<Certificate>>
+
+  struct CertificateRevocationList
+    fn from_pem(pem: Str) -> Res!<CertificateRevocationList>
+    fn from_pem_bundle(pem_bundle: Str) -> Res!<List<CertificateRevocationList>>
+
+  struct Identity
+    fn from_pem(buf: Str) -> Res!<Identity>
+
+  struct Version
+
+  struct Unnameable
+
+  struct Conn
+
+  struct Upgraded
+
+  struct Internal
+
+  struct InvalidNameError
+
+  struct Name
+    fn as_str() -> Str
+
+  struct NoProxy
+    fn from_env() -> Opt<NoProxy>
+    fn from_string(no_proxy_list: Str) -> Opt<Self>
+
+  struct Attempt
+    fn status() -> StatusCode
+    fn url() -> Url
+    fn previous() -> Str
+    fn follow() -> Action
+    fn stop() -> Action
+    fn error(error: E) -> Action
+
+  struct Action
+
+  struct ReqRep
+
+  struct TlsInfo
+    fn peer_certificate() -> Opt<Str>
+
+  enum Action
+    Success
+    Retryable
+
+  trait ResponseBuilderExt
+    fn url(url: Url) -> Self
+
+  trait Resolve
+    fn resolve(name: Name) -> Resolving
+
+  trait IntoProxy
+    fn into_proxy() -> Res!<Url>
+
+  trait Scope
+    fn applies_to(req: Request<Body>) -> Bool
+
+  trait Classify
+    fn classify(req_rep: ReqRep) -> Action
+
+  trait IntoUrlSealed
+    fn into_url() -> Res!<Url>
+    fn as_str() -> Str
