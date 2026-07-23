@@ -2,7 +2,7 @@
 
 **Type:** Concept  
 **Summary:** How VEIL generates runnable applications via @main, the dual-loop dev workflow (gen + cargo + smoke), HTTP route generation, multi-package harness, and the veil.toml target configuration.  
-**Links:** veil-project-index, veil-di-layer, veil-editing-patterns, veil-codegen-targets-vs-layers
+**Links:** veil-project-index, veil-di-layer, veil-editing-patterns, veil-codegen-targets-vs-layers, veil-contract-inv001-harness, veil-contract-veil-authoring
 
 ## App Harness Overview
 
