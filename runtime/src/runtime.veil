@@ -3483,8 +3483,8 @@ pkg VeilRuntime
           # Copy all files from from_ref to new branch prefix
           prefix = f"repos/{slug}/{from_ref}/"
           files = s3.list_objects_v2().bucket(self.bucket).prefix(prefix).send!()
-          if files.contents().is_some()
-            for obj in files.contents().unwrap()
+          if !files.contents().is_empty()
+            for obj in files.contents()
               src_key = obj.key().unwrap()
               dest_key = src_key.replace(f"/{from_ref}/", f"/{branch_name}/")
               s3.copy_object().bucket(self.bucket).copy_source(f"{self.bucket}/{src_key}").key(dest_key).send!()
@@ -3493,8 +3493,8 @@ pkg VeilRuntime
         impl delete_branch(slug, branch_name)
           prefix = f"repos/{slug}/{branch_name}/"
           files = s3.list_objects_v2().bucket(self.bucket).prefix(prefix).send!()
-          if files.contents().is_some()
-            for obj in files.contents().unwrap()
+          if !files.contents().is_empty()
+            for obj in files.contents()
               k = obj.key().unwrap()
               s3.delete_object().bucket(self.bucket).key(k).send!()
 
@@ -3502,8 +3502,8 @@ pkg VeilRuntime
           prefix = f"repos/{slug}/"
           resp = s3.list_objects_v2().bucket(self.bucket).prefix(prefix).delimiter("/").send!()
           out = []
-          if resp.common_prefixes().is_some()
-            for p in resp.common_prefixes().unwrap()
+          if !resp.common_prefixes().is_empty()
+            for p in resp.common_prefixes()
               branch = p.prefix().unwrap().replace(prefix, "").trim_end_matches("/")
               if branch != ".initialized"
                 out = out + [branch]
@@ -3513,10 +3513,13 @@ pkg VeilRuntime
           # Return latest commit hash (stored as metadata)
           key = f"repos/{slug}/{branch}/.head"
           resp = s3.get_object().bucket(self.bucket).key(key).send()
-          if resp.is_ok()
-            body = resp.unwrap().body().collect!().into_bytes()
-            ret String.from_utf8_lossy(body).to_string()
-          ret "initial"
+          match resp
+            Ok(output) ->
+              agg = output.body().collect!()
+              body = agg.into_bytes()
+              ret std.str.from_utf8(body).unwrap_or("initial").to_string()
+            Err(_) ->
+              ret "initial"
 
         impl commit_file(slug, branch, path, content, message, author)
           key = f"repos/{slug}/{branch}/{path}"
@@ -3530,17 +3533,21 @@ pkg VeilRuntime
         impl read_file(slug, branch, path)
           key = f"repos/{slug}/{branch}/{path}"
           resp = s3.get_object().bucket(self.bucket).key(key).send()
-          if resp.is_ok()
-            body = resp.unwrap().body().collect!().into_bytes()
-            ret Opt.some(String.from_utf8_lossy(body).to_string())
+          match resp
+            Ok(output) ->
+              agg = output.body().collect!()
+              body = agg.into_bytes()
+              ret Opt.some(std.str.from_utf8(body).unwrap_or("").to_string())
+            Err(_) ->
+              ret null
           ret null
 
         impl list_files(slug, branch)
           prefix = f"repos/{slug}/{branch}/"
           resp = s3.list_objects_v2().bucket(self.bucket).prefix(prefix).send!()
           out = []
-          if resp.contents().is_some()
-            for obj in resp.contents().unwrap()
+          if !resp.contents().is_empty()
+            for obj in resp.contents()
               k = obj.key().unwrap().replace(prefix, "")
               if !k.starts_with(".")
                 out = out + [k]
@@ -3554,8 +3561,8 @@ pkg VeilRuntime
           # Simple overwrite merge: copy all files from source branch to target
           prefix = f"repos/{slug}/{source}/"
           files = s3.list_objects_v2().bucket(self.bucket).prefix(prefix).send!()
-          if files.contents().is_some()
-            for obj in files.contents().unwrap()
+          if !files.contents().is_empty()
+            for obj in files.contents()
               src_key = obj.key().unwrap()
               dest_key = src_key.replace(f"/{source}/", f"/{target}/")
               if !src_key.ends_with("/.head")
