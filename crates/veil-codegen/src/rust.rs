@@ -134,7 +134,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         || package_has_main_annotation(solution, registry)
         || !modules.is_empty(); // Packages with modules always get a harness binary.
     if has_main {
-        let module_crates: Vec<String> = modules.iter().map(|m| to_snake(&m.name)).collect();
+        let module_crates: Vec<String> = modules.iter().map(|m| module_crate_name(m, solution)).collect();
         // CAP-002/006: product host bin when package links veil_server.
         let wants_product_host = resolved_links
             .iter()
@@ -243,13 +243,15 @@ fn expr_mentions_port_call(expr: &Expr) -> bool {
             let is_ctor = method.is_empty() || method == "new";
             if !is_ctor && !call.method.is_empty() {
                 let t = call.target.as_str();
+                // Language primitives are not port calls
+                let is_lang = matches!(t, "Dt" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "UUID" | "Int" | "Float" | "Bool");
                 // Port/trait calls: PascalCase target, or snake_case @dep local ending in _repo/_port/_svc
                 let pascal = t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
                 let dep_local = t.ends_with("_repo")
                     || t.ends_with("_port")
                     || t.ends_with("_svc")
                     || t.ends_with("_client");
-                if pascal || dep_local {
+                if !is_lang && (pascal || dep_local) {
                     return true;
                 }
             }
@@ -276,6 +278,14 @@ fn expr_mentions_port_call(expr: &Expr) -> bool {
                     .unwrap_or(false)
         }
         Expr::ArrayLit(items) => items.iter().any(expr_mentions_port_call),
+        Expr::Match(scrutinee, arms) => {
+            expr_mentions_port_call(scrutinee)
+                || arms.iter().any(|a| a.body.iter().any(expr_mentions_port_call))
+        }
+        Expr::ForLoop { iterable, body, .. } | Expr::WhileLoop { condition: iterable, body } => {
+            expr_mentions_port_call(iterable) || body.iter().any(expr_mentions_port_call)
+        }
+        Expr::Action(_) => true, // invoke/request layer actions always need Bus dep
         _ => false,
     }
 }
@@ -500,19 +510,38 @@ fn gen_local_harness_main(
     out.push_str("use tower_http::cors::{{Any, CorsLayer}};\n");
     out.push_str("use uuid::Uuid;\n");
     out.push_str("use serde_json::Value;\n");
+    out.push_str("use veil_shared::*;\n");
     for m in modules {
-        let cn = to_snake(&m.name);
-        out.push_str(&format!(
-            "use {cn}::application::{{self as {cn}_app, Deps as {cn}_Deps}};\n"
-        ));
-        out.push_str(&format!("use {cn}::adapters::*;\n"));
-        out.push_str(&format!("use {cn}::ports::*;\n"));
+        let cn = module_crate_name(m, sol);
+        let flat = flatten_module(m);
+        let name_to_shape_temp = build_name_to_shape(sol, registry);
+        let (deps_set, _) = collect_deps_field_map(&flat.fns, registry, &name_to_shape_temp);
+        if !deps_set.is_empty() {
+            out.push_str(&format!(
+                "use {cn}::application::{{self as {cn}_app, Deps as {cn}_Deps}};\n"
+            ));
+        } else {
+            out.push_str(&format!("use {cn}::application::{{self as {cn}_app}};\n"));
+        }
     }
     out.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
     out.push_str("    let port: u16 = std::env::var(\"PORT\").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);\n\n");
 
+    // Instantiate the shared InProcessBus for inter-context routing.
+    let has_bus = !registry.routing_traits().is_empty();
+    if has_bus {
+        out.push_str("    let bus = veil_shared::InProcessBus::new();\n\n");
+    }
+
+    // Cross-context route uniqueness: first module wins the bare path; later
+    // collisions get `/api/{crate}/…` so axum::merge does not panic.
+    let mut global_method_path: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    // Remember (crate, deps_var, svc) for bus handler registration after wiring.
+    let mut bus_handler_targets: Vec<(String, bool, Construct)> = Vec::new();
+
     for module in modules {
-        let crate_name = to_snake(&module.name);
+        let crate_name = module_crate_name(module, sol);
         let flat = flatten_module(module);
         let adapters = &flat.impls;
         let services = &flat.fns;
@@ -631,7 +660,7 @@ fn gen_local_harness_main(
                         {
                             format!("{let_name}.clone()")
                         } else {
-                            "Default::default()".to_string()
+                            harness_string_field_default(&fname, ftype)
                         };
                         field_inits.insert(fname, init);
                     }
@@ -686,16 +715,18 @@ fn gen_local_harness_main(
             for (fname, init) in &field_inits {
                 fields_init.push_str(&format!("        {fname}: {init},\n"));
             }
-            let dyn_ty = adapter_dyn_type(sol, ad);
+            let raw_dyn_ty = adapter_dyn_type(sol, ad);
+            // Qualify with crate::ports to avoid ambiguity when multiple crates export same trait
+            let dyn_ty = format!("{}::ports::{}", crate_name, raw_dyn_ty);
             if fields_init.is_empty() {
                 out.push_str(&format!(
-                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({name}{{}});\n",
+                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({crate_name}::adapters::{name}{{}});\n",
                     sn = to_snake(&ad.name),
                     name = ad.name,
                 ));
             } else {
                 out.push_str(&format!(
-                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({name} {{\n{fields_init}    }});\n",
+                    "    let {sn}_inst: Arc<dyn {dyn_ty} + Send + Sync> = Arc::new({crate_name}::adapters::{name} {{\n{fields_init}    }});\n",
                     sn = to_snake(&ad.name),
                     name = ad.name,
                 ));
@@ -707,10 +738,18 @@ fn gen_local_harness_main(
         }
 
         // Required Deps fields with no adapter → fail closed with a clear message.
+        // Exception: routing traits (Bus) are auto-wired with InProcessBus.
+        let routing_traits = registry.routing_traits();
         let mut missing: Vec<String> = Vec::new();
+        let mut auto_bus_field: Option<String> = None;
         for (trait_name, field) in &dep_fields {
             if !wired_fields.contains(field) {
-                missing.push(format!("`{field}` (trait {trait_name})"));
+                if routing_traits.contains(trait_name) {
+                    // Auto-wire the routing trait with InProcessBus
+                    auto_bus_field = Some(field.clone());
+                } else {
+                    missing.push(format!("`{field}` (trait {trait_name})"));
+                }
             }
         }
         if !missing.is_empty() {
@@ -719,28 +758,53 @@ fn gen_local_harness_main(
                 missing.join(", ")
             ));
         }
-        out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
-        for (field, sn, _) in &wired {
-            out.push_str(&format!("        {field}: {sn}_inst.clone(),\n"));
+        let has_deps = !dep_fields.is_empty();
+        if has_deps {
+            out.push_str(&format!("    let {crate_name}_deps = Arc::new({crate_name}_Deps {{\n"));
+            for (field, sn, _) in &wired {
+                out.push_str(&format!("        {field}: {sn}_inst.clone(),\n"));
+            }
+            // Auto-wire routing trait (Bus) with the shared InProcessBus instance
+            if let Some(bus_field) = &auto_bus_field {
+                out.push_str(&format!("        {bus_field}: Arc::new(bus.clone()),\n"));
+            }
+            out.push_str("    });\n\n");
         }
-        out.push_str("    });\n\n");
+
+        // Collect application fns for bus registration (after all deps exist).
+        if has_bus {
+            for svc in services {
+                bus_handler_targets.push((crate_name.clone(), has_deps, (*svc).clone()));
+            }
+        }
 
         // HTTP surface: prefer `@route` endpoints; dedupe (method, path).
         // Without any @route in the module, fall back to name-derived for all fns.
         let routable = http_routable_services(&services, registry);
-        out.push_str("    let app = Router::new()\n");
+        out.push_str(&format!("    let {crate_name}_router = Router::new()\n"));
         let mut routes_emitted: std::collections::BTreeMap<String, Vec<(String, String)>> =
             std::collections::BTreeMap::new();
         // path → list of (method, handler_fn_name)
         let mut seen_method_path: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
         for svc in &routable {
-            let fn_name = to_snake(&svc.name);
-            let (method, path) = rest_route_for_service(svc, registry);
+            let fn_name = format!("{}_{}", crate_name, to_snake(&svc.name));
+            let (method, mut path) = rest_route_for_service(svc, registry);
+            // Workspace-wide uniqueness (tools DeployTool vs deploy DeployTool).
             let key = (method.clone(), path.clone());
-            if !seen_method_path.insert(key) {
+            if global_method_path.contains(&key) {
+                // Prefix with context crate name: /api/foo → /api/{crate}/foo
+                if let Some(rest) = path.strip_prefix("/api/") {
+                    path = format!("/api/{crate_name}/{rest}");
+                } else {
+                    path = format!("/{crate_name}{path}");
+                }
+            }
+            let key = (method.clone(), path.clone());
+            if !seen_method_path.insert(key.clone()) {
                 continue; // duplicate GET /api/foo from svc + handler
             }
+            global_method_path.insert(key);
             routes_emitted
                 .entry(path)
                 .or_default()
@@ -754,30 +818,75 @@ fn gen_local_harness_main(
                 .join(".");
             out.push_str(&format!("        .route(\"{path}\", {chained})\n"));
         }
-        out.push_str("        .route(\"/health\", get(|| async { \"ok\" }))\n");
+        // /health is attached once on the merged app (not each context router)
+        // so Router::merge does not panic on overlapping routes.
         // Tower: last layer is outermost. CORS must be outside auth so browser
         // OPTIONS preflight is not blocked by missing API key.
         out.push_str("        .layer(from_fn(veil_api_key_middleware))\n");
         out.push_str("        .layer(veil_cors_layer())\n");
-        out.push_str(&format!("        .with_state({crate_name}_deps);\n\n"));
+        if !dep_fields.is_empty() {
+            // Clone so bus registration can still capture {crate}_deps.
+            out.push_str(&format!("        .with_state({crate_name}_deps.clone());\n\n"));
+        } else {
+            out.push_str("        .with_state(());\n\n");
+        }
     }
 
+    // Wire bus handlers so cross-context `invoke` / `request` resolve.
+    if has_bus && !bus_handler_targets.is_empty() {
+        out.push_str("    // ── bus handlers (cross-context invoke / request) ──\n");
+        let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (crate_name, has_deps, svc) in &bus_handler_targets {
+            let message = registry.bus_message_name(&svc.name);
+            if !registered.insert(message.clone()) {
+                continue; // first context wins on name collision
+            }
+            out.push_str(&gen_bus_handler_registration(
+                crate_name,
+                *has_deps,
+                svc,
+                &message,
+                registry,
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Merge all context routers into a single app
+    let router_names: Vec<String> = modules.iter()
+        .filter(|m| {
+            let flat = flatten_module(m);
+            !flat.fns.is_empty()
+        })
+        .map(|m| format!("{}_router", module_crate_name(m, sol)))
+        .collect();
+    if router_names.is_empty() {
+        out.push_str("    let app = Router::new().route(\"/health\", get(|| async { \"ok\" }));\n");
+    } else {
+        out.push_str(&format!("    let app = {}", router_names[0]));
+        for r in &router_names[1..] {
+            out.push_str(&format!(".merge({})", r));
+        }
+        // Single shared health probe after merge (avoids path overlap across contexts).
+        out.push_str("\n        .route(\"/health\", get(|| async { \"ok\" }));\n");
+    }
     out.push_str(&format!(
         "    println!(\"veil_bin: listening on :{{}}\", port);\n"
     ));
     out.push_str("    let listener = tokio::net::TcpListener::bind(format!(\"0.0.0.0:{}\", port)).await?;\n");
-    out.push_str("    axum::serve(listener, app).await?;\n");
+    out.push_str("    axum::serve(listener, app.into_make_service()).await?;\n");
     out.push_str("    Ok(())\n}\n\n");
 
     // Generate handler functions only for HTTP-routable services
     for module in modules {
-        let crate_name = to_snake(&module.name);
+        let crate_name = module_crate_name(module, sol);
         let flat = flatten_module(module);
         let routable = http_routable_services(&flat.fns, registry);
         let mut seen_method_path: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
         for svc in &routable {
-            let fn_name = to_snake(&svc.name);
+            let app_fn_name = to_snake(&svc.name);
+            let fn_name = format!("{}_{}", crate_name, &app_fn_name);
             let (method, path) = rest_route_for_service(svc, registry);
             if !seen_method_path.insert((method.clone(), path.clone())) {
                 continue;
@@ -835,13 +944,22 @@ fn gen_local_harness_main(
                 ""
             };
             // Axum: body extractors (Json) must be last.
+            // Only include State(deps) when the context has deps
+            let name_to_shape_h = build_name_to_shape(sol, registry);
+            let (deps_set_h, _) = collect_deps_field_map(&flat.fns, registry, &name_to_shape_h);
+            let has_deps = !deps_set_h.is_empty();
+            let state_extractor = if !has_deps {
+                String::new()
+            } else {
+                format!("\n    State(deps): State<Arc<{crate_name}_Deps>>,")
+            };
             out.push_str(&format!(
-                "async fn {fn_name}_handler(\n    State(deps): State<Arc<{crate_name}_Deps>>,{path_extractor}{query_extractor}{headers_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
+                "async fn {fn_name}_handler({state_extractor}{path_extractor}{query_extractor}{headers_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
             ));
 
             // Only pass &deps when the application fn actually takes deps
             // (dependency-role inputs or body references ports).
-            let svc_has_deps = svc.inputs.iter().any(|i| registry.field_is_dependency(i))
+            let svc_has_deps = !deps_set_h.is_empty() && (svc.inputs.iter().any(|i| registry.field_is_dependency(i))
                 || {
                     svc.steps.iter().any(|st| {
                         if let FlowStep::Step(s) = st {
@@ -850,7 +968,7 @@ fn gen_local_harness_main(
                             false
                         }
                     })
-                };
+                });
             let mut args: Vec<String> = if svc_has_deps {
                 vec!["&deps".to_string()]
             } else {
@@ -890,7 +1008,8 @@ fn gen_local_harness_main(
                         );
                     }
                 } else if needs_query {
-                    // GET/DELETE: query string ?tenant_id=… (not DELETE body)
+                    // GET/DELETE: plain query string values (not JSON-encoded).
+                    // Opt/Option fields are optional — missing → None (do not 400).
                     if rust_type == "Uuid" {
                         out.push_str(&format!(
                             "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok())\
@@ -899,6 +1018,34 @@ fn gen_local_harness_main(
                     } else if rust_type == "String" {
                         out.push_str(&format!(
                             "    let {field} = q.get(\"{field}\").cloned().unwrap_or_default();\n"
+                        ));
+                    } else if rust_type == "Option<String>" {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").filter(|s| !s.is_empty()).cloned();\n"
+                        ));
+                    } else if rust_type == "Option<i64>" {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<i64>().ok());\n"
+                        ));
+                    } else if rust_type == "Option<bool>" {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").map(|s| s == \"true\" || s == \"1\");\n"
+                        ));
+                    } else if rust_type.starts_with("Option<") {
+                        // Optional complex: try JSON parse of query value; missing → None
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").filter(|s| !s.is_empty())\
+                             .and_then(|s| serde_json::from_str(s).ok());\n"
+                        ));
+                    } else if rust_type == "i64" {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<i64>().ok())\
+                             .ok_or(StatusCode::BAD_REQUEST)?;\n"
+                        ));
+                    } else if rust_type == "bool" {
+                        out.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").map(|s| s == \"true\" || s == \"1\")\
+                             .unwrap_or(false);\n"
                         ));
                     } else {
                         out.push_str(&format!(
@@ -913,7 +1060,7 @@ fn gen_local_harness_main(
                 args.push(field);
             }
             out.push_str(&format!(
-                "    match {crate_name}_app::{fn_name}({}).await {{\n",
+                "    match {crate_name}_app::{app_fn_name}({}).await {{\n",
                 args.join(", ")
             ));
             if method == "delete" {
@@ -1377,6 +1524,7 @@ pub fn list_rest_routes_from_solution(
 /// - `"GET /api/foo"` / `"POST /api/foo"` …
 /// - `"/api/foo"` alone → method from service name (`derive_rest_route`)
 pub fn rest_route_for_service(svc: &Construct, registry: &LayerRegistry) -> (String, String) {
+    let use_id = service_has_id_input(svc, registry);
     if let Some(ann) = registry.http_route_annotation(svc) {
         if let Some(raw) = ann.args.first() {
             let s = raw.trim().trim_matches('"').trim_matches('\'');
@@ -1385,12 +1533,12 @@ pub fn rest_route_for_service(svc: &Construct, registry: &LayerRegistry) -> (Str
             }
             // Path-only: keep derived method
             if s.starts_with('/') {
-                let (method, _) = derive_rest_route(&svc.name, registry);
+                let (method, _) = derive_rest_route(&svc.name, registry, use_id);
                 return (method, s.to_string());
             }
         }
     }
-    derive_rest_route(&svc.name, registry)
+    derive_rest_route(&svc.name, registry, use_id)
 }
 
 fn parse_route_annotation(s: &str) -> Option<(String, String)> {
@@ -1410,7 +1558,14 @@ fn parse_route_annotation(s: &str) -> Option<(String, String)> {
 /// CreateInitiative → (post, /api/initiatives)
 /// UpdateInitiative → (put, /api/initiatives/{id})
 /// DeleteInitiative → (delete, /api/initiatives/{id})
-fn derive_rest_route(service_name: &str, registry: &LayerRegistry) -> (String, String) {
+///
+/// `use_id_path`: only emit `/{id}` when the service has an id-like input; otherwise
+/// collection path + query (avoids unused Path extractors).
+fn derive_rest_route(
+    service_name: &str,
+    registry: &LayerRegistry,
+    use_id_path: bool,
+) -> (String, String) {
     let pol = &registry.http_name_policy;
     let path_root = pol.path_prefix.as_deref().unwrap_or("/api/");
     let pairs: [(&Option<String>, &str, bool); 5] = [
@@ -1432,12 +1587,8 @@ fn derive_rest_route(service_name: &str, registry: &LayerRegistry) -> (String, S
                 continue;
             }
             let resource_snake = to_snake(resource);
-            let resource_plural = if resource_snake.ends_with('s') {
-                resource_snake.clone()
-            } else {
-                format!("{resource_snake}s")
-            };
-            let path = if collection || method == "post" {
+            let resource_plural = pluralize_resource(&resource_snake);
+            let path = if collection || method == "post" || !use_id_path {
                 format!("{path_root}{resource_plural}")
             } else {
                 format!("{path_root}{resource_plural}/{{id}}")
@@ -1451,6 +1602,173 @@ fn derive_rest_route(service_name: &str, registry: &LayerRegistry) -> (String, S
         format!("/{}", to_snake(service_name).replace('_', "-"))
     );
     ("post".to_string(), fallback_path)
+}
+
+/// Emit `bus.register("Msg", …)` that deserializes the JSON envelope and calls
+/// the application function for `svc`.
+fn gen_bus_handler_registration(
+    crate_name: &str,
+    module_has_deps: bool,
+    svc: &Construct,
+    message: &str,
+    registry: &LayerRegistry,
+) -> String {
+    let app_fn = to_snake(&svc.name);
+    // Only pass &deps when *this* service takes dependency-role inputs (or
+    // uses ports in its body). Module-level Deps may exist for other svcs.
+    let svc_takes_deps = module_has_deps
+        && (svc
+            .inputs
+            .iter()
+            .any(|i| registry.field_is_dependency(i))
+            || svc.steps.iter().any(|st| {
+                if let FlowStep::Step(s) = st {
+                    s.body.iter().any(expr_mentions_port_call)
+                } else {
+                    false
+                }
+            }));
+
+    let mut out = String::new();
+    if svc_takes_deps {
+        out.push_str(&format!(
+            "    {{\n\
+             \x20       let __deps = {crate_name}_deps.clone();\n\
+             \x20       bus.register(\"{message}\", move |cmd| {{\n\
+             \x20           let __deps = __deps.clone();\n\
+             \x20           async move {{\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "    {{\n\
+             \x20       bus.register(\"{message}\", move |cmd| {{\n\
+             \x20           async move {{\n"
+        ));
+    }
+
+    // Build call args with from_value so domain types resolve via inference
+    // against the application function signature (no bare RepoId in bin scope).
+    let mut call_parts: Vec<String> = Vec::new();
+    if svc_takes_deps {
+        call_parts.push("&__deps".to_string());
+    }
+    for input in &svc.inputs {
+        if registry.field_is_dependency(input) {
+            continue;
+        }
+        let field = to_snake(&input.name);
+        let rust_type = type_to_rust(&input.type_expr);
+        if rust_type == "String" {
+            call_parts.push(format!(
+                "cmd.get(\"{field}\").and_then(|v| v.as_str()).unwrap_or(\"\").to_string()"
+            ));
+        } else if rust_type == "bool" {
+            call_parts.push(format!(
+                "cmd.get(\"{field}\").and_then(|v| v.as_bool()).unwrap_or(false)"
+            ));
+        } else if rust_type == "i64" {
+            call_parts.push(format!(
+                "cmd.get(\"{field}\").and_then(|v| v.as_i64()).unwrap_or(0)"
+            ));
+        } else if rust_type == "serde_json::Value" {
+            call_parts.push(format!(
+                "cmd.get(\"{field}\").cloned().unwrap_or(serde_json::Value::Null)"
+            ));
+        } else {
+            // Option / domain structs / enums — deserialize; null → None for Option.
+            call_parts.push(format!(
+                "serde_json::from_value(cmd.get(\"{field}\").cloned()\
+                 .unwrap_or(serde_json::Value::Null))\
+                 .map_err(|e| DomainError::External(e.to_string()))?"
+            ));
+        }
+    }
+
+    let call_args = call_parts.join(", ");
+    out.push_str(&format!(
+        "                let __result = {crate_name}_app::{app_fn}({call_args}).await?;\n\
+         \x20               Ok(serde_json::to_value(__result)\
+         .map_err(|e| DomainError::External(e.to_string()))?)\n\
+         \x20           }}\n\
+         \x20       }});\n\
+         \x20   }}\n"
+    ));
+    out
+}
+
+/// Default for non-client adapter fields (`table`, `bucket`, `dir`, plain Str).
+fn harness_string_field_default(fname: &str, ftype: &str) -> String {
+    let f = fname.to_ascii_lowercase();
+    let ty = ftype.trim();
+    let is_stringish = matches!(ty, "Str" | "String" | "str" | "")
+        || ty.ends_with("String");
+    if !is_stringish && ty != "Str" {
+        // Non-string typed fields without a stub harness still need *something*.
+        if f == "table" || f == "bucket" || f == "dir" {
+            // fall through to string env defaults
+        } else {
+            return "Default::default()".to_string();
+        }
+    }
+    match f.as_str() {
+        "table" => {
+            "std::env::var(\"VEIL_DDB_TABLE\")\
+             .or_else(|_| std::env::var(\"TABLE\"))\
+             .unwrap_or_else(|_| \"veil\".into())"
+                .to_string()
+        }
+        "bucket" => {
+            "std::env::var(\"VEIL_S3_BUCKET\")\
+             .or_else(|_| std::env::var(\"BUCKET\"))\
+             .unwrap_or_else(|_| \"veil\".into())"
+                .to_string()
+        }
+        "dir" => {
+            "std::env::var(\"VEIL_EXTENSIONS_DIR\")\
+             .unwrap_or_else(|_| \".veil/extensions\".into())"
+                .to_string()
+        }
+        _ => format!(
+            "std::env::var(\"{}\").unwrap_or_else(|_| \"default\".into())",
+            fname.to_ascii_uppercase()
+        ),
+    }
+}
+
+/// English-ish plural for REST resource segments (`branch` → `branches`).
+fn pluralize_resource(snake: &str) -> String {
+    if snake.is_empty() {
+        return snake.to_string();
+    }
+    // Already plural (or ends with s): keep as-is (`branches`, `files`).
+    if snake.ends_with('s') {
+        return snake.to_string();
+    }
+    if snake.ends_with("sh")
+        || snake.ends_with("ch")
+        || snake.ends_with('x')
+        || snake.ends_with('z')
+    {
+        return format!("{snake}es");
+    }
+    if snake.ends_with('y') {
+        let prev = snake.chars().rev().nth(1);
+        if prev.map(|c| !"aeiou".contains(c)).unwrap_or(true) {
+            return format!("{}ies", &snake[..snake.len() - 1]);
+        }
+    }
+    format!("{snake}s")
+}
+
+fn service_has_id_input(svc: &Construct, registry: &LayerRegistry) -> bool {
+    // Only a bare `id` input maps to REST `/{id}`. Fields like `repo_id` are
+    // query/body params, not path segments from name-derived routes.
+    svc.inputs.iter().any(|i| {
+        if registry.field_is_dependency(i) {
+            return false;
+        }
+        to_snake(&i.name) == "id"
+    })
 }
 
 /// RT-001b: dedicated binary crate for `@main` / composition root.
@@ -1554,7 +1872,7 @@ fn gen_workspace_toml(
     for item in &sol.items {
         if let TopLevelItem::Construct(c) = item {
             if c.shape == Shape::Mod {
-                members.push(format!("    \"crates/{}\"", to_snake(&c.name)));
+                members.push(format!("    \"crates/{}\"", module_crate_name(c, sol)));
             }
         }
     }
@@ -1562,44 +1880,49 @@ fn gen_workspace_toml(
     // GEN-006: deps/features from stub metadata only (no engine hardcode).
     // Emit every stub the package loaded via `use` plus cargo_deps companions
     // (e.g. aws-config for aws-sdk-dynamodb) so veil_bin workspace=true resolves.
-    let mut extra_deps = String::new();
+    // Use BTreeMap keyed by crate name to prevent duplicate entries (Issue 7).
+    let mut dep_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for stub in &registry.stubs {
         if !stub_is_active_cargo(stub) {
             continue;
         }
         // Path stubs: version line `path:../relative` (local platform crates, not crates.io).
         // Keeps filesystem/SDK details out of the engine; the .stub still declares the API.
-        if let Some(rel) = stub.version.strip_prefix("path:") {
-            extra_deps.push_str(&format!(
-                "{} = {{ path = \"{}\" }}\n",
-                stub.name, rel
-            ));
+        let dep_line = if let Some(rel) = stub.version.strip_prefix("path:") {
+            format!("{} = {{ path = \"{}\" }}", stub.name, rel)
         } else if stub.cargo_features.is_empty() {
-            extra_deps.push_str(&format!("{} = \"{}\"\n", stub.name, stub.version));
+            format!("{} = \"{}\"", stub.name, stub.version)
         } else {
             let feats: Vec<String> = stub
                 .cargo_features
                 .iter()
                 .map(|f| format!("\"{f}\""))
                 .collect();
-            extra_deps.push_str(&format!(
-                "{} = {{ version = \"{}\", features = [{}] }}\n",
+            format!(
+                "{} = {{ version = \"{}\", features = [{}] }}",
                 stub.name,
                 stub.version,
                 feats.join(", ")
-            ));
-        }
+            )
+        };
+        // Direct stubs take priority over companion deps (more specific version).
+        dep_map.insert(stub.name.clone(), dep_line);
+
         // Companion crates declared on the stub (e.g. aws-config for dynamodb).
         for (dep_name, dep_ver) in &stub.cargo_deps {
-            if !extra_deps.contains(dep_name) {
-                extra_deps.push_str(&format!("{dep_name} = \"{dep_ver}\"\n"));
-            }
+            dep_map.entry(dep_name.clone())
+                .or_insert_with(|| format!("{dep_name} = \"{dep_ver}\""));
         }
     }
     // CAP-001: path deps from `link` declarations.
     for link in links {
-        extra_deps.push_str(&crate::links::cargo_dep_line(link));
+        let line = crate::links::cargo_dep_line(link);
+        if let Some(name) = line.split('=').next() {
+            dep_map.entry(name.trim().to_string())
+                .or_insert(line.trim_end().to_string());
+        }
     }
+    let extra_deps: String = dep_map.values().map(|v| format!("{v}\n")).collect();
 
     let content = format!(
         r#"[workspace]
@@ -1632,6 +1955,30 @@ serde_json = "1"
     }
 }
 
+/// Compute a unique crate name for a Mod-shaped construct. When multiple modules
+/// share the same snake_case name (e.g. `ctx Deploy` and `svc Deploy`), prefix
+/// with the keyword to disambiguate.
+fn module_crate_name(module: &Construct, solution: &Solution) -> String {
+    let base = to_snake(&module.name);
+    let collision = solution.items.iter().any(|i| {
+        if let TopLevelItem::Construct(c) = i {
+            // Another top-level Shape::Mod whose snake_case name collides with
+            // ours (same base name from a different keyword OR different
+            // PascalCase that happens to produce the same snake_case).
+            c.shape == Shape::Mod
+                && to_snake(&c.name) == base
+                && !std::ptr::eq(c, module)
+        } else {
+            false
+        }
+    });
+    if collision {
+        format!("{}_{}", to_snake(&module.keyword), base)
+    } else {
+        base
+    }
+}
+
 fn gen_module_crate(
     module: &Construct,
     all_impls: &[&Construct],
@@ -1641,7 +1988,7 @@ fn gen_module_crate(
     registry: &LayerRegistry,
     links: &[crate::links::ResolvedLink],
 ) -> Vec<GeneratedFile> {
-    let crate_name = to_snake(&module.name);
+    let crate_name = module_crate_name(module, solution);
     let mut files = Vec::new();
     let mut contents = flatten_module(module);
 
@@ -1677,11 +2024,15 @@ uuid.workspace = true"#);
             // Shared error types + Bus trait, defined once.
             cargo.push_str("veil_shared = { path = \"../veil_shared\" }\n");
             // Stub crate dependencies (active only — same policy as veil_bin / workspace)
+            let mut has_ddb_or_s3 = false;
             for stub in &registry.stubs {
                 if !stub_is_active_cargo(stub) {
                     continue;
                 }
                 cargo.push_str(&format!("{}.workspace = true\n", stub.name));
+                if stub.name == "aws-sdk-dynamodb" || stub.name == "aws-sdk-s3" {
+                    has_ddb_or_s3 = true;
+                }
             }
             // CAP-001: external crate links
             for link in links {
@@ -2324,6 +2675,21 @@ fn gen_struct(
             out.push_str(&format!(
                 "impl Default for {} {{\n    fn default() -> Self {{\n        Self::new()\n    }}\n}}\n\n",
                 c.name
+            ));
+        }
+    }
+
+    // Single-field String wrappers (newtypes like RepoId, ArtifactId) get
+    // From<T> for String and From<String> for T so they work with APIs
+    // accepting impl Into<String>.
+    if fields.len() == 1 {
+        let single = &fields[0];
+        let is_string = matches!(&single.type_expr, TypeExpr::Named(n) if n == "Str" || n == "String");
+        if is_string {
+            let fname = to_snake(&single.name);
+            out.push_str(&format!(
+                "impl From<{}> for String {{\n    fn from(v: {}) -> String {{\n        v.{}\n    }}\n}}\n\nimpl From<String> for {} {{\n    fn from(s: String) -> Self {{\n        Self {{ {}: s }}\n    }}\n}}\n\n",
+                c.name, c.name, fname, c.name, fname
             ));
         }
     }
@@ -3282,6 +3648,7 @@ futures = "0.3"
     lib.push_str("}\n\n");
     lib.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for DomainError {\n    fn from(e: ValidationError) -> Self {\n        DomainError::Validation(e.0)\n    }\n}\n\n");
     lib.push_str("impl From<serde_json::Error> for DomainError {\n    fn from(e: serde_json::Error) -> Self {\n        DomainError::External(e.to_string())\n    }\n}\n\n");
+    lib.push_str("impl From<String> for DomainError {\n    fn from(e: String) -> Self {\n        DomainError::External(e)\n    }\n}\n\n");
 
     // Trait names in scope — used to box value-position references (List<Trait>).
     let trait_names: std::collections::HashSet<String> =
@@ -4100,6 +4467,23 @@ fn gen_impls(
     }
 }
 
+/// Recursively check if an expression contains a Return (ret) at any depth
+/// (including inside match arms, if bodies, etc.).
+fn expr_contains_return(expr: &Expr) -> bool {
+    match expr {
+        Expr::Return(_) => true,
+        Expr::Match(_, arms) => arms.iter().any(|a| a.body.iter().any(|e| expr_contains_return(e))),
+        Expr::IfExpr(ie) => {
+            ie.then_body.iter().any(|e| expr_contains_return(e))
+                || ie.else_body.as_ref().map(|b| b.iter().any(|e| expr_contains_return(e))).unwrap_or(false)
+        }
+        Expr::ForLoop { body, .. } | Expr::WhileLoop { body, .. } | Expr::Loop(body) => {
+            body.iter().any(|e| expr_contains_return(e))
+        }
+        _ => false,
+    }
+}
+
 /// True if any call in `expr` targets a known async free function.
 fn expr_calls_async_fn(expr: &Expr, ctx: &crate::expr::GenCtx) -> bool {
     match expr {
@@ -4915,6 +5299,18 @@ fn scan_dep_calls(
                 for e in eb { scan_dep_calls(e, name_to_shape, deps, field_names); }
             }
         }
+        Expr::ForLoop { iterable, body, .. } => {
+            scan_dep_calls(iterable, name_to_shape, deps, field_names);
+            for e in body {
+                scan_dep_calls(e, name_to_shape, deps, field_names);
+            }
+        }
+        Expr::WhileLoop { condition, body } => {
+            scan_dep_calls(condition, name_to_shape, deps, field_names);
+            for e in body {
+                scan_dep_calls(e, name_to_shape, deps, field_names);
+            }
+        }
         Expr::Return(inner) => scan_dep_calls(inner, name_to_shape, deps, field_names),
         _ => {}
     }
@@ -5015,7 +5411,14 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
     // same collection logic by synthesizing from FlowLike below.
     let (mut all_deps, mut dep_field_names) =
         collect_deps_field_map(&flow_constructs, registry, &effective_name_to_shape);
-    let base_ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
+    let mut base_ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
+    // Types this crate can name (`use crate::domain::types::*`).
+    for s in &module_contents.structs {
+        base_ctx.local_domain_types.insert(s.name.clone());
+    }
+    for e in &module_contents.enums {
+        base_ctx.local_domain_types.insert(e.name.clone());
+    }
     for flow in flows {
         let (steps, inputs) = match flow {
             FlowLike::Flow(f) => (&f.steps, &f.inputs),
@@ -5145,6 +5548,8 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         let deps_param = if has_deps { "deps: &Deps, " } else { "" };
 
         // ApplicationService with a DomainService twin → thin delegate (no 2× body).
+        // Skip delegation when the handler has extra steps (e.g. authorize) that the
+        // domain service doesn't — emit full body so macro-expanded auth runs.
         let is_app = registry.is_a(keyword, "ApplicationService")
             || registry.is_a(subkind, "ApplicationService")
             || subkind.eq_ignore_ascii_case("ApplicationService")
@@ -5152,6 +5557,11 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         if is_app && runtime.is_none() {
             let msg = registry.bus_message_name(name);
             if let Some(domain_c) = domain_by_message.get(&msg) {
+                // Only delegate if step counts match — extra steps (authorize, etc.)
+                // mean the handler has its own logic to emit.
+                let domain_step_count = domain_c.steps.len();
+                let handler_step_count = steps.len();
+                if handler_step_count <= domain_step_count {
                 let domain_fn = to_snake(&domain_c.name);
                 let call_args: Vec<String> = inputs
                     .iter()
@@ -5175,6 +5585,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
                     ret_type,
                 ));
                 continue;
+                } // handler_step_count <= domain_step_count
             }
         }
 
@@ -5185,12 +5596,24 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             ctx.routing_ref = ctx.default_routing_ref_as_dep();
         }
         ctx.dep_fields = dep_field_names.clone();
+        ctx.local_domain_types = base_ctx.local_domain_types.clone();
+        ctx.bus_returns = base_ctx.bus_returns.clone();
         // Register inputs as locals, with their declared types for inference.
         // Skip dependency-role inputs — accessed via deps.x, not as locals.
         for input in inputs {
             if registry.field_is_dependency(input) {
                 // Register the dep field name as Trait so calls route through deps.x
                 ctx.name_to_shape.insert(input.name.clone(), Shape::Trait);
+                // Also register the type name (PascalCase) so macro-expanded code
+                // that references services by type (e.g. CheckScope.check!) routes correctly.
+                let type_name = match &input.type_expr {
+                    veil_ir::TypeExpr::Named(n) => Some(n.clone()),
+                    veil_ir::TypeExpr::Generic(base, _) => Some(base.clone()),
+                    _ => None,
+                };
+                if let Some(tn) = type_name {
+                    ctx.name_to_shape.insert(tn, Shape::Trait);
+                }
                 continue;
             }
             ctx.locals.insert(input.name.clone());
@@ -5298,7 +5721,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             // Only emit Ok(()) if no step body contains an explicit `ret`
             let has_return_in_body = steps.iter().any(|s| {
                 if let FlowStep::Step(sd) = s {
-                    sd.body.iter().any(|e| matches!(e, Expr::Return(_)))
+                    sd.body.iter().any(|e| expr_contains_return(e))
                 } else { false }
             });
             if !has_return_in_body {
@@ -5582,7 +6005,7 @@ fn detect_sibling_refs(module: &Construct, solution: &Solution) -> Vec<String> {
     let mut needed = std::collections::HashSet::new();
     let module_names: std::collections::HashMap<String, String> = solution.items.iter()
         .filter_map(|i| match i {
-            TopLevelItem::Construct(c) if c.shape == Shape::Mod => Some((c.name.clone(), to_snake(&c.name))),
+            TopLevelItem::Construct(c) if c.shape == Shape::Mod => Some((c.name.clone(), module_crate_name(c, solution))),
             _ => None,
         }).collect();
 
@@ -5937,7 +6360,7 @@ pub fn generate_multi_package_harness(
         for item in &sol.items {
             if let TopLevelItem::Construct(c) = item {
                 if c.shape == Shape::Mod {
-                    let cn = to_snake(&c.name);
+                    let cn = module_crate_name(c, sol);
                     all_modules.push((c, Box::leak(cn.clone().into_boxed_str()), reg, sol));
                     if !all_crate_names.contains(&cn) {
                         all_crate_names.push(cn);
@@ -6060,7 +6483,7 @@ pub fn generate_multi_package_harness(
                         {
                             format!("{let_name}.clone()")
                         } else {
-                            "Default::default()".to_string()
+                            harness_string_field_default(&fname, ftype)
                         };
                         field_inits.insert(fname, init);
                     }
@@ -6274,7 +6697,7 @@ pub fn generate_multi_package_harness(
                 }
                 let rust_type = type_to_rust(&input.type_expr);
                 if is_list_get {
-                    // Query string
+                    // Query string (plain values; Opt/Option never hard-400)
                     if rust_type == "Uuid" {
                         main_rs.push_str(&format!(
                             "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok()).ok_or(StatusCode::BAD_REQUEST)?;\n"
@@ -6282,6 +6705,14 @@ pub fn generate_multi_package_harness(
                     } else if rust_type == "String" {
                         main_rs.push_str(&format!(
                             "    let {field} = q.get(\"{field}\").cloned().unwrap_or_default();\n"
+                        ));
+                    } else if rust_type == "Option<String>" {
+                        main_rs.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").filter(|s| !s.is_empty()).cloned();\n"
+                        ));
+                    } else if rust_type.starts_with("Option<") {
+                        main_rs.push_str(&format!(
+                            "    let {field} = q.get(\"{field}\").filter(|s| !s.is_empty()).and_then(|s| serde_json::from_str(s).ok());\n"
                         ));
                     } else {
                         main_rs.push_str(&format!(
@@ -6342,6 +6773,7 @@ pub fn generate_multi_package_harness(
 
     // Stub crates from the packages being harnessed — Cargo keys use published names (hyphens).
     let mut seen_stub = std::collections::BTreeSet::new();
+    let mut bin_has_ddb_or_s3 = false;
     for (_, reg) in packages {
         for stub in &reg.stubs {
             if !seen_stub.insert(stub.name.clone()) {
@@ -6349,6 +6781,9 @@ pub fn generate_multi_package_harness(
             }
             if !stub_is_active_cargo(stub) {
                 continue;
+            }
+            if stub.name == "aws-sdk-dynamodb" || stub.name == "aws-sdk-s3" {
+                bin_has_ddb_or_s3 = true;
             }
             // `name.workspace = true` is invalid; use `name = { workspace = true }`.
             let key = &stub.name;
