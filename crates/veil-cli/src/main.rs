@@ -273,13 +273,51 @@ enum ProjectsCmd {
 
 /// Load the layer registry for a .veil file, exiting on layer errors.
 fn registry_for(file: &std::path::Path) -> LayerRegistry {
-    match LayerRegistry::for_veil_file(file) {
+    let (layer_resolver, source_resolver) = build_external_resolvers();
+    match LayerRegistry::for_veil_file_with_resolvers(file, layer_resolver, source_resolver) {
         Ok(reg) => reg,
         Err(e) => {
             eprintln!("Layer error: {}", e);
             std::process::exit(1);
         }
     }
+}
+
+/// When VEIL_DDB_TABLE is set, build DDB/S3-backed resolvers for layers and package source.
+/// This enables `veil gen` to work in deployed environments without filesystem access to layers.
+fn build_external_resolvers() -> (
+    Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+) {
+    let Some(resolver) = veil_local::SourceResolver::from_env() else {
+        return (None, None);
+    };
+    if std::env::var("VEIL_DEV").is_ok() {
+        eprintln!("  [resolver] DDB-backed source resolver active (table: {})",
+            std::env::var("VEIL_DDB_TABLE").unwrap_or_default());
+    }
+    let resolver = std::sync::Arc::new(resolver);
+    let r1 = resolver.clone();
+    let r2 = resolver;
+    let layer_resolver: Box<dyn Fn(&str) -> Option<String> + Send + Sync> =
+        Box::new(move |name| {
+            let result = r1.resolve_layer(name);
+            if std::env::var("VEIL_DEV").is_ok() {
+                eprintln!("  [resolver] layer '{}' → {}", name,
+                    if result.is_some() { "found" } else { "not found" });
+            }
+            result
+        });
+    let source_resolver: Box<dyn Fn(&str) -> Option<String> + Send + Sync> =
+        Box::new(move |name| {
+            let result = r2.resolve_package_source(name);
+            if std::env::var("VEIL_DEV").is_ok() {
+                eprintln!("  [resolver] source '{}' → {}", name,
+                    if result.is_some() { "found" } else { "not found" });
+            }
+            result
+        });
+    (Some(layer_resolver), Some(source_resolver))
 }
 
 /// After single-file `veil gen`, remove `crates/<name>/` directories that this
@@ -595,6 +633,122 @@ fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Sol
                 }
             }
         }
+    }
+}
+
+/// Load macros from use'd packages for cross-package macro expansion.
+///
+/// Resolution order for each `use X`:
+/// 1. Filesystem: find X/main.veil or X.veil via adapt search paths
+/// 2. Source resolver (DDB/S3): registry.source_resolver("X")
+///
+/// Returns a HashMap of macro_name → MacroDef for all external macros found.
+fn load_external_macros(
+    pkg: &veil_ir::Package,
+    leaf_path: &std::path::Path,
+    registry: &veil_ir::LayerRegistry,
+) -> std::collections::HashMap<String, veil_ir::ast::MacroDef> {
+    use std::collections::HashMap;
+    let mut macros: HashMap<String, veil_ir::ast::MacroDef> = HashMap::new();
+    let search = veil_ir::adapt_search_paths_for_file(leaf_path);
+
+    for use_ref in &pkg.uses {
+        let name = &use_ref.package_name;
+        // Skip layer/stub-only uses (they won't have macros)
+        if veil_ir::is_adapt_denied(name) {
+            continue;
+        }
+
+        // Try filesystem first
+        let source = if let Some(path) = veil_ir::find_package_source(name, &search) {
+            std::fs::read_to_string(&path).ok()
+        } else {
+            None
+        };
+
+        // Fall back to source_resolver (DDB/S3)
+        let source = source.or_else(|| {
+            registry.source_resolver.as_ref().and_then(|resolver| resolver(name))
+        });
+
+        let Some(src) = source else { continue };
+
+        // Parse the source to extract macros. Use the same registry as the parent
+        // package so layer-specific keywords are recognized.
+        let tokens = veil_parser::lex(&src);
+        let found_macros = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {
+            Ok(veil_ir::VeilFile::Package(dep_pkg)) => {
+                dep_pkg.macros
+            }
+            Ok(_) => Vec::new(),
+            Err(_) => {
+                // Full parse failed (e.g. rich enum variants not supported).
+                // Fall back: re-lex and extract just macro definitions by parsing
+                // only the macro blocks at the package top level.
+                extract_macros_from_source(&src)
+            }
+        };
+        for m in &found_macros {
+            macros.insert(m.name.clone(), m.clone());
+        }
+    }
+
+    macros
+}
+
+/// Extract macro definitions from source when full parsing fails.
+/// Uses a simplified approach: wraps the macro definitions in a minimal pkg
+/// that the parser can handle, skipping everything else.
+fn extract_macros_from_source(source: &str) -> Vec<veil_ir::ast::MacroDef> {
+    // Find macro blocks by scanning indentation: `  macro name(...)` at pkg body level.
+    // Extract just those blocks and wrap in a minimal pkg for parsing.
+    let mut macro_blocks = String::new();
+    let mut in_macro = false;
+    let mut macro_indent = 0;
+
+    for line in source.lines() {
+        if !in_macro {
+            let trimmed = line.trim();
+            if trimmed.starts_with("macro ") {
+                in_macro = true;
+                macro_indent = line.len() - line.trim_start().len();
+                macro_blocks.push_str(line);
+                macro_blocks.push('\n');
+            }
+        } else {
+            // Continue collecting macro body: lines indented deeper than the macro keyword
+            let line_indent = line.len() - line.trim_start().len();
+            if line.trim().is_empty() {
+                // Empty line inside macro body
+                macro_blocks.push('\n');
+            } else if line_indent > macro_indent {
+                macro_blocks.push_str(line);
+                macro_blocks.push('\n');
+            } else {
+                // End of macro block
+                in_macro = false;
+                // Check if this line starts a new macro
+                if line.trim().starts_with("macro ") {
+                    in_macro = true;
+                    macro_indent = line_indent;
+                    macro_blocks.push_str(line);
+                    macro_blocks.push('\n');
+                }
+            }
+        }
+    }
+
+    if macro_blocks.is_empty() {
+        return Vec::new();
+    }
+
+    // Wrap in a minimal pkg and parse
+    let wrapper = format!("pkg __macros__\n{}", macro_blocks);
+    let tokens = veil_parser::lex(&wrapper);
+    let reg = veil_ir::LayerRegistry::builtin();
+    match veil_parser::parse_file_with_registry(&tokens, reg) {
+        Ok(veil_ir::VeilFile::Package(pkg)) => pkg.macros,
+        _ => Vec::new(),
     }
 }
 
@@ -1941,6 +2095,14 @@ fn main() {
                     let mut pkg = pkg.clone();
                     let search = veil_ir::adapt_search_paths_for_file(&file);
                     veil_ir::inject_implicit_adapts(&mut pkg, &search);
+                    // Expand macros before codegen (AST→AST transform).
+                    // Load macros from use'd packages (cross-package macro resolution).
+                    let external_macros = load_external_macros(&pkg, &file, &registry);
+                    if external_macros.is_empty() {
+                        veil_ir::macros::expand_macros(&mut pkg);
+                    } else {
+                        veil_ir::macros::expand_macros_with(&mut pkg, &external_macros);
+                    }
                     let sol = if !pkg.adapts.is_empty() || !pkg.patches.is_empty() {
                         match merge_package_or_exit(&pkg, &file) {
                             Ok(s) => s,

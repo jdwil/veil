@@ -92,7 +92,7 @@ impl S3ObjectStore {
 }
 
 /// AWS Signature Version 4 headers (minimal S3 subset).
-fn sigv4_headers(
+pub(crate) fn sigv4_headers(
     method: &str,
     url: &str,
     payload: &[u8],
@@ -152,14 +152,92 @@ fn sigv4_headers(
     ])
 }
 
-fn aws_signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
+/// AWS SigV4 headers with optional session token (for STS temporary credentials).
+pub(crate) fn sigv4_headers_with_token(
+    method: &str,
+    url: &str,
+    payload: &[u8],
+    access_key: &str,
+    secret_key: &str,
+    region: &str,
+    service: &str,
+    session_token: Option<&str>,
+) -> Result<Vec<(String, String)>, StorageError> {
+    use sha2::{Digest, Sha256};
+
+    let parsed = reqwest::Url::parse(url).map_err(|e| StorageError::Http(format!("url: {e}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| StorageError::Http("url missing host".into()))?
+        .to_string();
+    let path = if parsed.path().is_empty() {
+        "/".to_string()
+    } else {
+        parsed.path().to_string()
+    };
+    let query = parsed.query().unwrap_or("");
+
+    let amz_date = chrono_like_now();
+    let date = amz_date[..8].to_string();
+
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let payload_hash = hex::encode(hasher.finalize());
+
+    let (canonical_headers, signed_headers) = if let Some(token) = session_token {
+        (
+            format!(
+                "host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\nx-amz-security-token:{token}\n"
+            ),
+            "host;x-amz-content-sha256;x-amz-date;x-amz-security-token",
+        )
+    } else {
+        (
+            format!(
+                "host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+            ),
+            "host;x-amz-content-sha256;x-amz-date",
+        )
+    };
+
+    let canonical_request = format!(
+        "{method}\n{path}\n{query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    );
+
+    let mut cr_hasher = Sha256::new();
+    cr_hasher.update(canonical_request.as_bytes());
+    let cr_hash = hex::encode(cr_hasher.finalize());
+
+    let credential_scope = format!("{date}/{region}/{service}/aws4_request");
+    let string_to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{cr_hash}");
+
+    let signing_key = aws_signing_key(secret_key, &date, region, service);
+    let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+    );
+
+    let mut headers = vec![
+        ("Authorization".into(), auth),
+        ("x-amz-date".into(), amz_date),
+        ("x-amz-content-sha256".into(), payload_hash),
+        ("host".into(), host),
+    ];
+    if let Some(token) = session_token {
+        headers.push(("x-amz-security-token".into(), token.to_string()));
+    }
+    Ok(headers)
+}
+
+pub(crate) fn aws_signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
     let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), date.as_bytes());
     let k_region = hmac_sha256(&k_date, region.as_bytes());
     let k_service = hmac_sha256(&k_region, service.as_bytes());
     hmac_sha256(&k_service, b"aws4_request")
 }
 
-fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+pub(crate) fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     // HMAC-SHA256 without extra crate: pad key, inner/outer
     let mut k = key.to_vec();
@@ -185,7 +263,7 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     outer.finalize().to_vec()
 }
 
-fn chrono_like_now() -> String {
+pub(crate) fn chrono_like_now() -> String {
     // UTC YYYYMMDDTHHMMSSZ via system time
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

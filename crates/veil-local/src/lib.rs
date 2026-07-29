@@ -9,11 +9,13 @@ mod http;
 mod meta;
 mod object;
 mod s3;
+pub mod source_resolver;
 
 pub use ddb::DdbMetaStore;
 pub use meta::FileMetaStore;
 pub use object::ObjectStorage;
 pub use s3::S3ObjectStore;
+pub use source_resolver::SourceResolver;
 
 use std::fs;
 use std::io;

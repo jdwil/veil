@@ -15,6 +15,7 @@ veil-parser.workspace = true
 veil-ir.workspace = true
 veil-codegen.workspace = true
 veil-server.workspace = true
+veil-local = { path = "../veil-local" }
 clap.workspace = true
 tokio.workspace = true
 axum.workspace = true

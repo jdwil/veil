@@ -98,6 +98,19 @@ pub enum FieldMeta {
     ParamsOf { source_field: String },
     /// Pick a type defined in scope.
     TypeRef,
+    /// Call an exposed operation on a dependency service to populate a select.
+    /// `operation` is a dotted path like `relay.ListIntegrations`.
+    /// `depends_on` optionally names another field whose value is passed as
+    /// input to the query (cascading selects).
+    ServiceQuery {
+        operation: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        depends_on: Option<String>,
+    },
+    /// Render a dynamic form from the schema of the item selected in another field.
+    /// The source field should reference a ServiceQuery-populated value whose
+    /// response includes parameter/schema metadata.
+    SchemaOf { source_field: String },
 }
 
 /// A field declared in a step-type construct's `has` block with meta-type info.
@@ -111,11 +124,16 @@ pub struct StepFieldSpec {
     /// Optional filter hint (from field_hints). E.g. "subkind:Repository".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub filter: String,
+    /// Optional editor hint (from field_hints). E.g. "rule_builder".
+    /// Tells the IDE to render this field with a specialized editor widget.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub editor: String,
 }
 
 impl FieldMeta {
     /// Parse a type string from a `has` block into a FieldMeta.
-    /// Recognizes: Callable, MethodOf<field>, ParamsOf<field>, Construct<shape>, TypeRef
+    /// Recognizes: Callable, MethodOf<field>, ParamsOf<field>, Construct<shape>,
+    /// TypeRef, ServiceQuery<pkg.Op>, ServiceQuery<pkg.Op, field>, SchemaOf<field>
     /// Everything else is Plain.
     pub fn parse(type_str: &str) -> FieldMeta {
         let s = type_str.trim();
@@ -133,6 +151,22 @@ impl FieldMeta {
         }
         if let Some(inner) = s.strip_prefix("Construct<").and_then(|r| r.strip_suffix('>')) {
             return FieldMeta::Construct { shape: inner.trim().to_string() };
+        }
+        // ServiceQuery<pkg.Operation> or ServiceQuery<pkg.Operation, depends_on_field>
+        if let Some(inner) = s.strip_prefix("ServiceQuery<").and_then(|r| r.strip_suffix('>')) {
+            if let Some((op, dep)) = inner.split_once(',') {
+                return FieldMeta::ServiceQuery {
+                    operation: op.trim().to_string(),
+                    depends_on: Some(dep.trim().to_string()),
+                };
+            }
+            return FieldMeta::ServiceQuery {
+                operation: inner.trim().to_string(),
+                depends_on: None,
+            };
+        }
+        if let Some(inner) = s.strip_prefix("SchemaOf<").and_then(|r| r.strip_suffix('>')) {
+            return FieldMeta::SchemaOf { source_field: inner.trim().to_string() };
         }
         FieldMeta::Plain { type_hint: s.to_string() }
     }
@@ -334,7 +368,7 @@ pub struct ConstructorPolicy {
 ///
 /// Placeholders in templates:
 /// - `state_line`: `{name}` `{type}` `{default}`
-/// - `derived_line`: `{name}` `{expr}`
+/// - `derived_line`: `{name}` `{expr}` (prefer value form, not arrow — objects stay valid)
 /// - `effect_sync` / `effect_async`: `{name}` `{body}`
 /// - `props_call`: no placeholders (e.g. `$props()`)
 /// - `bindable` / `bindable_default`: `{default}` for the latter
@@ -342,9 +376,9 @@ pub struct ConstructorPolicy {
 pub struct ReactivityPolicy {
     /// e.g. `$props()`
     pub props_call: String,
-    /// e.g. `let {name}: {type} = $state({default});`
+    /// e.g. `let {name} = $state<{type}>({default});`
     pub state_line: String,
-    /// e.g. `let {name} = $derived({expr});`
+    /// e.g. `let {name} = $derived({expr});` — value form, not `$derived(() => …)`
     pub derived_line: String,
     /// e.g. `$effect(() => { // {name}\n{body}\n  });`
     pub effect_sync: String,
@@ -425,6 +459,9 @@ pub struct LayerRegistry {
     /// External layer resolver — called when a layer isn't found locally or in system.
     /// Provided by the hosting runtime (e.g. veil-runtime for database-backed resolution).
     pub external_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    /// External package source resolver — resolves `use X` package .veil content
+    /// when not found on filesystem (DDB/S3 in deployed environments).
+    pub source_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     /// Smart-constructor / field-default policy (INV-002). Filled from target layers.
     pub constructor_policy: ConstructorPolicy,
     /// UI framework reactivity forms (Svelte runes, etc.). From layers only.
@@ -487,6 +524,7 @@ impl Default for LayerRegistry {
             codegen_templates: Vec::new(),
             stubs: Vec::new(),
             external_resolver: None,
+            source_resolver: None,
             constructor_policy: ConstructorPolicy::default(),
             reactivity_policy: ReactivityPolicy::default(),
             identity_policy: IdentityPolicy::default(),
@@ -509,6 +547,7 @@ impl Clone for LayerRegistry {
             codegen_templates: self.codegen_templates.clone(),
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
+            source_resolver: None, // resolver is not cloneable — cleared on clone
             constructor_policy: self.constructor_policy.clone(),
             reactivity_policy: self.reactivity_policy.clone(),
             identity_policy: self.identity_policy.clone(),
@@ -529,6 +568,7 @@ impl std::fmt::Debug for LayerRegistry {
             .field("declarations", &self.declarations.len())
             .field("stubs", &self.stubs.len())
             .field("external_resolver", &self.external_resolver.is_some())
+            .field("source_resolver", &self.source_resolver.is_some())
             .finish()
     }
 }
@@ -1091,7 +1131,21 @@ impl LayerRegistry {
     /// Build a registry for a `.veil` file: built-ins plus every layer the
     /// file references via `use` lines. Layer resolution is transitive.
     pub fn for_veil_file(veil_path: &Path) -> Result<Self, String> {
+        Self::for_veil_file_with_resolvers(veil_path, None, None)
+    }
+
+    /// Build a registry with optional external resolvers for deployed environments.
+    ///
+    /// - `layer_resolver`: called when a layer isn't found on disk (e.g. DDB lookup)
+    /// - `pkg_source_resolver`: called to get package .veil source for cross-package deps
+    pub fn for_veil_file_with_resolvers(
+        veil_path: &Path,
+        layer_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+        pkg_source_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    ) -> Result<Self, String> {
         let mut reg = LayerRegistry::builtin();
+        reg.external_resolver = layer_resolver;
+        reg.source_resolver = pkg_source_resolver;
         // R20: product deps from veil.toml feed layer search roots
         reg.extra_layer_roots = crate::deps::resolve_dependency_roots_for(veil_path);
         let dir = veil_path.parent().unwrap_or(Path::new("."));
@@ -2194,6 +2248,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                             meta: FieldMeta::parse(shape_str),
                             label: String::new(),
                             filter: String::new(),
+                            editor: String::new(),
                         });
                     }
                     c.contains.push(entry.trim_end_matches("[]").to_string());
@@ -2262,6 +2317,8 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                                 spec.filter = v.trim().to_string();
                             } else if let Some(v) = rest.strip_prefix("label ") {
                                 spec.label = unquote(v);
+                            } else if let Some(v) = rest.strip_prefix("editor ") {
+                                spec.editor = v.trim().to_string();
                             }
                         }
                     }
