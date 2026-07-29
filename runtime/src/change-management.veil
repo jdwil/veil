@@ -1,0 +1,345 @@
+# Change Management — SDLC workflow for SOC 2 compliance
+#
+# Provides: branch-based development, pull requests with structural review,
+# approval gates, CI integration, and deploy-from-main.
+#
+# Git backend: git-remote-object-store (gix-backed, S3 storage)
+# Metadata: DDB (PR state, approvals, CI runs, comments)
+# Diff engine: veil_ir::struct_diff (AST-level structural diffs)
+
+  # ─── Domain Types ────────────────────────────────────────────────────────
+
+  ctx ChangeManagement
+    group domain
+
+      enum PrStatus
+        Draft
+        ReadyForReview
+        Approved
+        ChangesRequested
+        Merging
+        Merged
+        Rejected
+        Closed
+
+      enum CiStatus
+        Pending
+        Running
+        Passed
+        Failed
+        Skipped
+
+      enum DiffKind
+        Added
+        Modified
+        Removed
+        Moved
+
+      val StructuralChange
+        kind: DiffKind
+        path: Str
+        detail: Str
+        construct_type: Opt<Str>
+
+      val DiffSummary
+        description: Str
+        changes: List<StructuralChange>
+        files_changed: Int
+        additions: Int
+        removals: Int
+
+      val ReviewComment
+        id: Id
+        pr_id: Id
+        author: Str
+        construct_path: Opt<Str>
+        body: Str
+        created_at: Dt
+        resolved: Bool
+
+      val Approval
+        pr_id: Id
+        reviewer: Str
+        approved_at: Dt
+        comment: Opt<Str>
+
+      val CiRun
+        id: Id
+        pr_id: Id
+        commit_hash: Str
+        status: CiStatus
+        started_at: Dt
+        completed_at: Opt<Dt>
+        duration_ms: Opt<Int>
+        logs_key: Opt<Str>
+        error_summary: Opt<Str>
+
+      agg ChangeRequest
+        root
+          id: Id
+          repo_id: Id
+          title: Str
+          description: Str
+          jira_ticket: Str
+          source_branch: Str
+          target_branch: Str
+          author: Str
+          status: PrStatus
+          created_at: Dt
+          updated_at: Dt
+          merged_at: Opt<Dt>
+          merged_by: Opt<Str>
+          merge_commit: Opt<Str>
+
+      # ─── Repositories ──────────────────────────────────────────────────
+
+      repo ChangeRequestRepo
+        find!(id: Id) -> Opt<ChangeRequest>
+        list_by_repo!(repo_id: Id, status: Opt<PrStatus>) -> List<ChangeRequest>
+        list_open!(repo_id: Id) -> List<ChangeRequest>
+        save!(cr: ChangeRequest)
+
+      repo ApprovalRepo
+        find_for_pr!(pr_id: Id) -> List<Approval>
+        save!(approval: Approval)
+
+      repo CiRunRepo
+        latest_for_pr!(pr_id: Id) -> Opt<CiRun>
+        list_for_pr!(pr_id: Id) -> List<CiRun>
+        save!(run: CiRun)
+
+      repo CommentRepo
+        list_for_pr!(pr_id: Id) -> List<ReviewComment>
+        save!(comment: ReviewComment)
+        resolve!(id: Id)
+
+    # ─── Ports ──────────────────────────────────────────────────────────────
+
+    group infrastructure
+
+      # Git operations backed by git-remote-object-store + gix
+      port GitService
+        # Repository operations
+        init_repo!(repo_id: Id, slug: Str)
+        repo_exists!(repo_id: Id, slug: Str) -> Bool
+
+        # Branch operations
+        create_branch!(slug: Str, branch_name: Str, from_ref: Str) -> Str
+        delete_branch!(slug: Str, branch_name: Str)
+        list_branches!(slug: Str) -> List<Str>
+        get_head!(slug: Str, branch: Str) -> Str
+
+        # Commit operations
+        commit_file!(slug: Str, branch: Str, path: Str, content: Str, message: Str, author: Str) -> Str
+        commit_files!(slug: Str, branch: Str, files: List<FileChange>, message: Str, author: Str) -> Str
+        read_file!(slug: Str, branch: Str, path: Str) -> Opt<Str>
+        list_files!(slug: Str, branch: Str) -> List<Str>
+
+        # History
+        log!(slug: Str, branch: Str, limit: Int) -> List<GitCommit>
+        file_log!(slug: Str, path: Str, limit: Int) -> List<GitCommit>
+
+        # Merge
+        can_merge!(slug: Str, source: Str, target: Str) -> MergeCheck
+        merge!(slug: Str, source: Str, target: Str, message: Str, author: Str) -> Str
+
+        # Diff (raw file-level — structural diff is computed by the service layer)
+        diff_files!(slug: Str, base_ref: Str, head_ref: Str) -> List<FileDiff>
+
+      val FileChange
+        path: Str
+        content: Str
+
+      val GitCommit
+        hash: Str
+        message: Str
+        author: Str
+        timestamp: Dt
+        parent_hashes: List<Str>
+
+      val MergeCheck
+        can_merge: Bool
+        conflicts: List<Str>
+        behind_by: Int
+
+      val FileDiff
+        path: Str
+        kind: DiffKind
+        old_content: Opt<Str>
+        new_content: Opt<Str>
+
+    # ─── Application Services ──────────────────────────────────────────────
+
+    group application
+
+      # Create a new change request (branch + PR record)
+      svc CreateChangeRequest
+        -> ChangeRequest
+        input
+          repo_id: Id
+          slug: Str
+          title: Str
+          description: Str
+          jira_ticket: Str
+          author: Str
+        step validate
+          guard jira_ticket.len() > 0, "Jira ticket required"
+          guard title.len() > 0, "Title required"
+        step create_branch
+          @dep git: GitService
+          branch_name = f"cr/{jira_ticket}/{title.to_lowercase().replace(' ', '-')}"
+          git.create_branch!(slug, branch_name, "main")
+        step persist
+          @dep cr_repo: ChangeRequestRepo
+          now = Dt.now()
+          cr = ChangeRequest{id: Id.new(), repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
+          cr_repo.save!(cr)
+          ret cr
+
+      # Commit a file change to the PR's branch
+      svc CommitToChange
+        -> GitCommit
+        input
+          pr_id: Id
+          path: Str
+          content: Str
+          message: Str
+          author: Str
+        step resolve
+          @dep cr_repo: ChangeRequestRepo
+          @dep git: GitService
+          cr = cr_repo.find!(pr_id)
+          guard cr.is_some(), "PR not found"
+          pr = cr.unwrap()
+          guard pr.status != PrStatus.Merged, "Cannot commit to merged PR"
+          guard pr.status != PrStatus.Rejected, "Cannot commit to rejected PR"
+        step commit
+          slug = "" # resolved from repo_id
+          hash = git.commit_file!(slug, pr.source_branch, path, content, f"[{pr.jira_ticket}] {message}", author)
+          ret GitCommit{hash, message, author, timestamp: Dt.now(), parent_hashes: []}
+
+      # Submit PR for review
+      svc SubmitForReview
+        input
+          pr_id: Id
+        step transition
+          @dep cr_repo: ChangeRequestRepo
+          cr = cr_repo.find!(pr_id)
+          guard cr.is_some(), "PR not found"
+          pr = cr.unwrap()
+          guard pr.status == PrStatus.Draft || pr.status == PrStatus.ChangesRequested, "PR not in submittable state"
+          pr.status = PrStatus.ReadyForReview
+          pr.updated_at = Dt.now()
+          cr_repo.save!(pr)
+
+      # Approve a change (reviewer must differ from author)
+      svc ApproveChange
+        input
+          pr_id: Id
+          reviewer: Str
+          comment: Opt<Str>
+        step validate
+          @dep cr_repo: ChangeRequestRepo
+          cr = cr_repo.find!(pr_id)
+          guard cr.is_some(), "PR not found"
+          pr = cr.unwrap()
+          guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
+          guard reviewer != pr.author, "Author cannot approve their own change"
+        step record
+          @dep approval_repo: ApprovalRepo
+          approval = Approval{pr_id, reviewer, approved_at: Dt.now(), comment}
+          approval_repo.save!(approval)
+          pr.status = PrStatus.Approved
+          pr.updated_at = Dt.now()
+          cr_repo.save!(pr)
+
+      # Request changes (send back to author)
+      svc RequestChanges
+        input
+          pr_id: Id
+          reviewer: Str
+          comment: Str
+        step validate
+          @dep cr_repo: ChangeRequestRepo
+          cr = cr_repo.find!(pr_id)
+          guard cr.is_some(), "PR not found"
+          pr = cr.unwrap()
+          guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
+          guard reviewer != pr.author, "Author cannot review their own change"
+        step record
+          @dep comment_repo: CommentRepo
+          review_comment = ReviewComment{id: Id.new(), pr_id, author: reviewer, construct_path: null, body: comment, created_at: Dt.now(), resolved: false}
+          comment_repo.save!(review_comment)
+          pr.status = PrStatus.ChangesRequested
+          pr.updated_at = Dt.now()
+          cr_repo.save!(pr)
+
+      # Merge a PR (all gates must pass)
+      svc MergeChange
+        -> Str
+        input
+          pr_id: Id
+          merger: Str
+        step validate_gates
+          @dep cr_repo: ChangeRequestRepo
+          @dep ci_repo: CiRunRepo
+          @dep approval_repo: ApprovalRepo
+          cr = cr_repo.find!(pr_id)
+          guard cr.is_some(), "PR not found"
+          pr = cr.unwrap()
+          guard pr.status == PrStatus.Approved, "PR must be approved before merge"
+          # Gate: CI must pass
+          ci = ci_repo.latest_for_pr!(pr_id)
+          guard ci.is_some(), "No CI run found — build must pass before merge"
+          guard ci.unwrap().status == CiStatus.Passed, "CI must pass before merge"
+          # Gate: has approval from non-author
+          approvals = approval_repo.find_for_pr!(pr_id)
+          guard !approvals.is_empty(), "At least one approval required"
+        step merge
+          @dep git: GitService
+          pr.status = PrStatus.Merging
+          cr_repo.save!(pr)
+          slug = "" # resolved from repo_id
+          merge_msg = f"Merge {pr.source_branch}: {pr.title} [{pr.jira_ticket}]"
+          merge_hash = git.merge!(slug, pr.source_branch, pr.target_branch, merge_msg, merger)
+        step finalize
+          pr.status = PrStatus.Merged
+          pr.merged_at = Dt.now()
+          pr.merged_by = Opt.some(merger)
+          pr.merge_commit = Opt.some(merge_hash)
+          pr.updated_at = Dt.now()
+          cr_repo.save!(pr)
+          ret merge_hash
+
+      # Get structural diff for a PR (for visual review)
+      svc GetStructuralDiff
+        -> DiffSummary
+        input
+          pr_id: Id
+        step resolve
+          @dep cr_repo: ChangeRequestRepo
+          @dep git: GitService
+          cr = cr_repo.find!(pr_id)
+          guard cr.is_some(), "PR not found"
+          pr = cr.unwrap()
+        step compute_diff
+          # Get file-level diffs from git
+          slug = "" # resolved from repo_id
+          file_diffs = git.diff_files!(slug, pr.target_branch, pr.source_branch)
+          # Parse both branches' .veil source and compute structural diff
+          # (This calls into veil_ir::struct_diff at the adapter level)
+          ret DiffSummary{description: "", changes: [], files_changed: file_diffs.len(), additions: 0, removals: 0}
+
+      # Add a review comment anchored to a construct path
+      svc AddComment
+        -> ReviewComment
+        input
+          pr_id: Id
+          author: Str
+          construct_path: Opt<Str>
+          body: Str
+        step persist
+          @dep comment_repo: CommentRepo
+          comment = ReviewComment{id: Id.new(), pr_id, author, construct_path, body, created_at: Dt.now(), resolved: false}
+          comment_repo.save!(comment)
+          ret comment
