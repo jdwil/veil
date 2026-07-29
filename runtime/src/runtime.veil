@@ -3583,6 +3583,8 @@ pkg VeilRuntime
       # Create a new change request (branch + PR record)
       svc CreateChangeRequest
         -> ChangeRequest
+        @dep(git: GitService)
+        @dep(cr_repo: ChangeRequestRepo)
         input
           repo_id: Id
           slug: Str
@@ -3594,11 +3596,9 @@ pkg VeilRuntime
           guard jira_ticket.len() > 0, "Jira ticket required"
           guard title.len() > 0, "Title required"
         step create_branch
-          @dep git: GitService
           branch_name = f"cr/{jira_ticket}/{title.to_lowercase().replace(' ', '-')}"
           git.create_branch!(slug, branch_name, "main")
         step persist
-          @dep cr_repo: ChangeRequestRepo
           now = Dt.now()
           id = Id.new()
           cr = ChangeRequest{id, repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
@@ -3608,6 +3608,8 @@ pkg VeilRuntime
       # Commit a file to a PR's branch
       svc CommitToChange
         -> Json
+        @dep(git: GitService)
+        @dep(cr_repo: ChangeRequestRepo)
         input
           pr_id: Id
           slug: Str
@@ -3616,23 +3618,21 @@ pkg VeilRuntime
           message: Str
           author: Str
         step resolve
-          @dep cr_repo: ChangeRequestRepo
           cr = cr_repo.find!(pr_id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status != PrStatus.Merged, "Cannot commit to merged PR"
           guard pr.status != PrStatus.Rejected, "Cannot commit to rejected PR"
         step commit
-          @dep git: GitService
           hash = git.commit_file!(slug, pr.source_branch, path, content, f"[{pr.jira_ticket}] {message}", author)
           ret Json.stringify({hash: hash, branch: pr.source_branch})
 
       # Submit PR for review
       svc SubmitForReview
+        @dep(cr_repo: ChangeRequestRepo)
         input
           pr_id: Id
         step transition
-          @dep cr_repo: ChangeRequestRepo
           cr = cr_repo.find!(pr_id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
@@ -3643,19 +3643,19 @@ pkg VeilRuntime
 
       # Approve a change
       svc ApproveChange
+        @dep(cr_repo: ChangeRequestRepo)
+        @dep(approval_repo: ApprovalRepo)
         input
           pr_id: Id
           reviewer: Str
           comment: Opt<Str>
         step validate
-          @dep cr_repo: ChangeRequestRepo
           cr = cr_repo.find!(pr_id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
           guard reviewer != pr.author, "Author cannot approve their own change"
         step record
-          @dep approval_repo: ApprovalRepo
           approval = Approval{pr_id, reviewer, approved_at: Dt.now(), comment}
           approval_repo.save!(approval)
           pr.status = PrStatus.Approved
@@ -3664,20 +3664,19 @@ pkg VeilRuntime
 
       # Request changes
       svc RequestChanges
+        @dep(cr_repo: ChangeRequestRepo)
+        @dep(comment_repo: CommentRepo)
         input
           pr_id: Id
           reviewer: Str
           comment: Str
         step validate
-          @dep cr_repo: ChangeRequestRepo
           cr = cr_repo.find!(pr_id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
           guard reviewer != pr.author, "Author cannot review their own change"
         step record
-          @dep comment_repo: CommentRepo
-          @dep cr_repo: ChangeRequestRepo
           review_comment = ReviewComment{id: Id.new(), pr_id, author: reviewer, construct_path: null, body: comment, created_at: Dt.now(), resolved: false}
           comment_repo.save!(review_comment)
           pr.status = PrStatus.ChangesRequested
@@ -3687,14 +3686,15 @@ pkg VeilRuntime
       # Merge a PR (all gates must pass)
       svc MergeChange
         -> Json
+        @dep(git: GitService)
+        @dep(cr_repo: ChangeRequestRepo)
+        @dep(ci_repo: CiRunRepo)
+        @dep(approval_repo: ApprovalRepo)
         input
           pr_id: Id
           merger: Str
           slug: Str
         step validate_gates
-          @dep cr_repo: ChangeRequestRepo
-          @dep ci_repo: CiRunRepo
-          @dep approval_repo: ApprovalRepo
           cr = cr_repo.find!(pr_id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
@@ -3707,7 +3707,6 @@ pkg VeilRuntime
           approvals = approval_repo.find_for_pr!(pr_id)
           guard !approvals.is_empty(), "At least one approval required"
         step merge
-          @dep git: GitService
           pr.status = PrStatus.Merging
           cr_repo.save!(pr)
           merge_msg = f"Merge {pr.source_branch}: {pr.title} [{pr.jira_ticket}]"
@@ -3724,12 +3723,12 @@ pkg VeilRuntime
       # Get structural diff for visual review
       svc GetStructuralDiff
         -> Json
+        @dep(git: GitService)
+        @dep(cr_repo: ChangeRequestRepo)
         input
           pr_id: Id
           slug: Str
         step resolve
-          @dep cr_repo: ChangeRequestRepo
-          @dep git: GitService
           cr = cr_repo.find!(pr_id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
@@ -3739,13 +3738,13 @@ pkg VeilRuntime
       # Add a review comment
       svc AddComment
         -> ReviewComment
+        @dep(comment_repo: CommentRepo)
         input
           pr_id: Id
           author: Str
           construct_path: Opt<Str>
           body: Str
         step persist
-          @dep comment_repo: CommentRepo
           comment = ReviewComment{id: Id.new(), pr_id, author, construct_path, body, created_at: Dt.now(), resolved: false}
           comment_repo.save!(comment)
           ret comment
@@ -3753,24 +3752,24 @@ pkg VeilRuntime
       # List PRs for a repo
       svc ListChangeRequests
         -> List<ChangeRequest>
+        @dep(cr_repo: ChangeRequestRepo)
         input
           repo_id: Id
           status: Opt<PrStatus>
         step query
-          @dep cr_repo: ChangeRequestRepo
           items = cr_repo.list_by_repo!(repo_id, status)
           ret items
 
       # Get PR detail
       svc GetChangeRequest
         -> Json
+        @dep(cr_repo: ChangeRequestRepo)
+        @dep(approval_repo: ApprovalRepo)
+        @dep(comment_repo: CommentRepo)
+        @dep(ci_repo: CiRunRepo)
         input
           pr_id: Id
         step load
-          @dep cr_repo: ChangeRequestRepo
-          @dep approval_repo: ApprovalRepo
-          @dep comment_repo: CommentRepo
-          @dep ci_repo: CiRunRepo
           cr = cr_repo.find!(pr_id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
