@@ -5544,7 +5544,9 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             .filter(|f| registry.field_is_dependency(f))
             .collect();
         let flow_deps = collect_deps(steps, &base_ctx);
-        let has_deps = !flow_deps.is_empty() || !dep_inputs.is_empty();
+        // Also check construct-level @dep(name: Type) annotations
+        let has_annotation_deps = annotations.iter().any(|a| registry.is_dependency_annotation(&a.name));
+        let has_deps = !flow_deps.is_empty() || !dep_inputs.is_empty() || has_annotation_deps;
         let deps_param = if has_deps { "deps: &Deps, " } else { "" };
 
         // ApplicationService with a DomainService twin → thin delegate (no 2× body).
@@ -6190,6 +6192,21 @@ fn collect_deps_field_map(
     let base_ctx = crate::expr::GenCtx::new(name_to_shape.clone());
 
     for f in fns {
+        // Process construct-level @dep(name: Type) annotations.
+        // These declare named dependencies for the service.
+        for ann in &f.annotations {
+            if registry.is_dependency_annotation(&ann.name) {
+                for arg in &ann.args {
+                    if let Some((field_name, type_name)) = arg.split_once(':') {
+                        let field_name = field_name.trim().to_string();
+                        let type_name = type_name.trim().to_string();
+                        all_deps.insert(type_name.clone());
+                        dep_field_names.insert(type_name, field_name);
+                    }
+                }
+            }
+        }
+
         all_deps.extend(crate::expr::collect_deps(&f.steps, &base_ctx));
         for field in &f.inputs {
             if registry.field_is_dependency(field) {

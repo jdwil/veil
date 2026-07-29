@@ -1,5 +1,6 @@
 pkg VeilRuntime
   use ddd
+  use di
   use aws_storage
   use rig
   use transports
