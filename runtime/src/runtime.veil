@@ -3472,7 +3472,8 @@ pkg VeilRuntime
         impl init_repo(slug)
           # Create marker file
           key = f"repos/{slug}/.initialized"
-          s3.put_object().bucket(self.bucket).key(key).body("true".into_bytes().into()).send!()
+          content = "true"
+          s3.put_object().bucket(self.bucket).key(key).body(content.into_bytes().into()).send!()
 
         impl repo_exists(slug)
           key = f"repos/{slug}/.initialized"
@@ -3504,7 +3505,7 @@ pkg VeilRuntime
           out = []
           if !resp.common_prefixes().is_empty()
             for p in resp.common_prefixes()
-              branch = p.prefix().unwrap().replace(prefix, "").trim_end_matches("/")
+              branch = p.prefix().unwrap_or("").replace(prefix, "").trim_end_matches("/")
               if branch != ".initialized"
                 out = out + [branch]
           ret out
@@ -3721,7 +3722,7 @@ pkg VeilRuntime
           merge_hash = git.merge!(slug, pr.source_branch, pr.target_branch, merge_msg, merger)
         step finalize
           pr.status = PrStatus.Merged
-          pr.merged_at = Dt.now()
+          pr.merged_at = Opt.some(Dt.now())
           pr.merged_by = Opt.some(merger)
           pr.merge_commit = Opt.some(merge_hash)
           pr.updated_at = Dt.now()
