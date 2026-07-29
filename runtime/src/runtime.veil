@@ -3374,8 +3374,8 @@ pkg VeilRuntime
           out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr = Json.parse(data)
-            if status.is_none() || cr.status == status.unwrap()
+            cr: ChangeRequest = Json.parse(data)
+            if status.is_none() || cr.status == status.clone().unwrap_or(cr.status.clone())
               out = out + [cr]
           ret out
 
@@ -3385,8 +3385,8 @@ pkg VeilRuntime
           out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr = Json.parse(data)
-            if cr.status != "Merged" && cr.status != "Rejected" && cr.status != "Closed"
+            cr: ChangeRequest = Json.parse(data)
+            if cr.status != PrStatus.Merged && cr.status != PrStatus.Rejected && cr.status != PrStatus.Closed
               out = out + [cr]
           ret out
 
@@ -3503,11 +3503,11 @@ pkg VeilRuntime
           prefix = f"repos/{slug}/"
           resp = s3.list_objects_v2().bucket(self.bucket).prefix(prefix).delimiter("/").send!()
           out = []
-          if !resp.common_prefixes().is_empty()
-            for p in resp.common_prefixes()
-              branch = p.prefix().unwrap_or("").replace(prefix, "").trim_end_matches("/")
-              if branch != ".initialized"
-                out = out + [branch]
+          for p in resp.common_prefixes()
+            raw = p.prefix.clone().unwrap_or_default()
+            branch = raw.replace(prefix, "").replace("/", "")
+            if branch != ".initialized" && branch != ""
+              out = out + [branch]
           ret out
 
         impl get_head(slug, branch)
@@ -3516,9 +3516,10 @@ pkg VeilRuntime
           resp = s3.get_object().bucket(self.bucket).key(key).send()
           match resp
             Ok(output) ->
-              agg = output.body().collect!()
+              agg = output.body.collect!()
               body = agg.into_bytes()
-              ret std.str.from_utf8(body).unwrap_or("initial").to_string()
+              text = body.to_vec()
+              ret std.str.from_utf8(text.as_slice()).unwrap_or("initial").to_string()
             Err(_) ->
               ret "initial"
 
@@ -3536,9 +3537,10 @@ pkg VeilRuntime
           resp = s3.get_object().bucket(self.bucket).key(key).send()
           match resp
             Ok(output) ->
-              agg = output.body().collect!()
+              agg = output.body.collect!()
               body = agg.into_bytes()
-              ret Opt.some(std.str.from_utf8(body).unwrap_or("").to_string())
+              text = body.to_vec()
+              ret Opt.some(std.str.from_utf8(text.as_slice()).unwrap_or("").to_string())
             Err(_) ->
               ret null
           ret null
@@ -3556,7 +3558,7 @@ pkg VeilRuntime
 
         impl log(slug, branch, limit)
           # Stub: return empty log until git-remote-object-store is wired
-          ret "[]"
+          ret Json.array()
 
         impl merge(slug, source, target, message, author)
           # Simple overwrite merge: copy all files from source branch to target
@@ -3581,11 +3583,11 @@ pkg VeilRuntime
           base_files = s3.list_objects_v2().bucket(self.bucket).prefix(base_prefix).send!()
           head_files = s3.list_objects_v2().bucket(self.bucket).prefix(head_prefix).send!()
           # Stub: return empty diff until proper implementation
-          ret "[]"
+          ret Json.array()
 
         impl can_merge(slug, source, target)
           # S3 flat files have no conflicts — always mergeable
-          ret Json.stringify({can_merge: true, conflicts: [], behind_by: 0})
+          ret {can_merge: true, conflicts: [], behind_by: 0}
 
     group application
 
@@ -3634,7 +3636,7 @@ pkg VeilRuntime
           guard pr.status != PrStatus.Rejected, "Cannot commit to rejected PR"
         step commit
           hash = git.commit_file!(slug, pr.source_branch, path, content, f"[{pr.jira_ticket}] {message}", author)
-          ret Json.stringify({hash: hash, branch: pr.source_branch})
+          ret {hash: hash, branch: pr.source_branch}
 
       # Submit PR for review
       svc SubmitForReview
@@ -3724,10 +3726,10 @@ pkg VeilRuntime
           pr.status = PrStatus.Merged
           pr.merged_at = Opt.some(Dt.now())
           pr.merged_by = Opt.some(merger)
-          pr.merge_commit = Opt.some(merge_hash)
+          pr.merge_commit = Opt.some(merge_hash.clone())
           pr.updated_at = Dt.now()
           cr_repo.save!(pr)
-          ret Json.stringify({merge_commit: merge_hash, branch: pr.source_branch, target: pr.target_branch})
+          ret {merge_commit: merge_hash, branch: pr.source_branch, target: pr.target_branch}
 
       # Get structural diff for visual review
       svc GetStructuralDiff
@@ -3766,7 +3768,8 @@ pkg VeilRuntime
           repo_id: Id
           status: Opt<PrStatus>
         step query
-          items = cr_repo.list_by_repo!(repo_id, status)
+          filter = status.clone()
+          items = cr_repo.list_by_repo!(repo_id, filter)
           ret items
 
       # Get PR detail
@@ -3785,4 +3788,4 @@ pkg VeilRuntime
           approvals = approval_repo.find_for_pr!(pr_id)
           comments = comment_repo.list_for_pr!(pr_id)
           ci_runs = ci_repo.list_for_pr!(pr_id)
-          ret Json.stringify({pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs})
+          ret {pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs}

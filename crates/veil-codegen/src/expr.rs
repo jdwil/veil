@@ -2282,7 +2282,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             ("Dt", "now") => Some("Utc::now()".to_string()),
             ("Json", "parse") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("serde_json::from_str(&{})?", arg))
+                Some(format!("serde_json::from_str::<_>(&{})?", arg))
             }
             ("Json", "stringify") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
@@ -2435,7 +2435,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 format!("{}::{}", prefix, effective_target)
             }
         } else if let Some((crate_name, original_name)) = ctx.stub_type_crate.get(&effective_target) {
-            format!("{}::{}", crate_name, original_name)
+            // Never crate-qualify Rust built-in types (String, Vec, etc.) even if a
+            // stub happens to declare a struct with the same name (e.g. gix has `struct String`).
+            let is_builtin = matches!(effective_target.as_str(),
+                "String" | "Vec" | "Option" | "Result" | "Box" | "Arc" | "HashMap" | "HashSet" |
+                "Path" | "PathBuf" | "Bytes" | "Duration" | "Instant"
+            );
+            if is_builtin {
+                effective_target.clone()
+            } else {
+                format!("{}::{}", crate_name, original_name)
+            }
         } else {
             effective_target.clone()
         };
