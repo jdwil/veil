@@ -133,6 +133,8 @@ pub enum TokenKind {
     Deny,
     Export,
     Impl,
+    /// Macro definition: `macro name(params) body`
+    Macro,
 }
 
 /// Lex VEIL source code into a token stream.
@@ -178,6 +180,7 @@ impl Lexer {
                 '#' => self.lex_comment(),
                 '@' => self.lex_annotation(),
                 '"' => self.lex_string(),
+                '\'' => self.lex_single_quote_string(),
                 '-' if self.peek() == Some('>') => {
                     self.emit(TokenKind::Arrow, self.pos, self.pos + 2);
                     self.pos += 2;
@@ -438,6 +441,31 @@ impl Lexer {
         self.emit(TokenKind::StringLit, start, self.pos);
     }
 
+    /// Lex a single-quoted string: 'hello world' → StringLit token.
+    /// Emitted as StringLit (same as double-quoted) so codegen handles it uniformly.
+    fn lex_single_quote_string(&mut self) {
+        let start = self.pos;
+        self.pos += 1; // skip opening '
+        while self.pos < self.chars.len() && self.chars[self.pos] != '\'' {
+            if self.chars[self.pos] == '\\' {
+                self.pos += 1; // skip escape char
+            }
+            self.pos += 1;
+        }
+        if self.pos < self.chars.len() {
+            self.pos += 1; // skip closing '
+        }
+        // Rewrite the token text to use double quotes so downstream (extract_string_content)
+        // strips them uniformly.
+        let inner: String = self.chars[start + 1..self.pos - 1].iter().collect();
+        let synthetic_text = format!("\"{}\"", inner);
+        self.tokens.push(Token {
+            kind: TokenKind::StringLit,
+            text: synthetic_text,
+            span: Span { start, end: self.pos },
+        });
+    }
+
     /// Lex an f-string: f"Hello {name}!" → FStringLit token (including f prefix)
     fn lex_fstring(&mut self) {
         let start = self.pos;
@@ -562,6 +590,7 @@ fn keyword_lookup(text: &str) -> TokenKind {
         "continue" => TokenKind::Continue,
         "boundary" => TokenKind::Boundary,
         "as" => TokenKind::As,
+        "macro" => TokenKind::Macro,
         "desc" => TokenKind::Desc,
         "output" => TokenKind::Output,
         "constraints" => TokenKind::Constraints,
