@@ -1,144 +1,22 @@
 stub gix 0.70.0
-
-  struct Prepare
-    fn receive(progress: P, should_interrupt: AtomicBool) -> Res!<Outcome>
-    fn ref_map() -> RefMap
-    fn with_dry_run(enabled: Bool) -> Self
-    fn with_write_packed_refs_only(enabled: Bool) -> Self
-    fn with_reflog_message(reflog_message: RefLogMessage) -> Self
-    fn with_shallow(shallow: Shallow) -> Self
-
-  struct Platform
-    fn all() -> Res!<Iter>
-    fn prefixed(prefix: Str) -> Res!<Iter>
-    fn tags() -> Res!<Iter>
-    fn local_branches() -> Res!<Iter>
-    fn remote_branches() -> Res!<Iter>
-    fn dirwalk_options(cb: Str) -> Self
-    fn dirwalk_options_mut(cb: Str) -> Self
-    fn untracked_files(untracked_files: UntrackedFiles) -> Self
-    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
-    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
-    fn index_worktree_submodules(submodules: Str) -> Self
-    fn index(index: IndexPersistedOrInMemory) -> Self
-    fn index_worktree_rewrites(rewrites: Str) -> Self
-    fn index_worktree_options_mut(cb: Str) -> Self
-    fn head_tree(tree: Str) -> Self
-    fn tree_index_track_renames(renames: TrackRenames) -> Self
-    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
-    fn into_iter(patterns: Str) -> Res!<Iter>
-    fn lines(process_hunk: FnH) -> Res!<Outcome>
-    fn line_counts() -> Res!<Opt<Counter<Str>>>
-    fn sorting(sorting: Sorting) -> Self
-    fn first_parent_only() -> Self
-    fn use_commit_graph(toggle: Str) -> Self
-    fn with_commit_graph(graph: Opt<Graph>) -> Self
-    fn with_pruned(ids: Str) -> Self
-    fn selected(filter: Str) -> Res!<Walk>
-    fn all() -> Res!<Walk>
-    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
-    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
-    fn options(change_opts: Str) -> Self
-    fn stats(other: Tree) -> Res!<Stats>
-    fn breadthfirst(delegate: V) -> Res!<Str>
-    fn depthfirst(delegate: V) -> Res!<Str>
-    fn names(select: SelectRef) -> Self
-    fn traverse_first_parent(first_parent: Bool) -> Self
-    fn max_candidates(candidates: usize) -> Self
-    fn id_as_fallback(use_fallback: Bool) -> Self
-    fn try_format() -> Res!<Opt<Format>>
-    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
-    fn try_resolve() -> Res!<Opt<Resolution>>
-    fn format() -> Res!<Format>
-
-  struct Negotiate
-
-  struct Update
-
-  struct Outcome
-    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
-    fn has_changes() -> Bool
-    fn write_changes() -> Opt<Res!<Str>>
-
-  struct Submodule
-    fn status(ignore: Ignore, check_dirty: Bool) -> Res!<Status>
-    fn status_opts(ignore: Ignore, check_dirty: Bool, adjust_options: Str) -> Res!<Status>
-    fn name() -> BStr
-    fn path() -> Res!<Cow<BStr>>
-    fn url() -> Res!<Url>
-    fn update() -> Res!<Opt<Update>>
-    fn branch() -> Res!<Opt<Branch>>
-    fn fetch_recurse() -> Res!<Opt<FetchRecurse>>
-    fn ignore() -> Res!<Opt<Ignore>>
-    fn shallow() -> Res!<Opt<Bool>>
-    fn is_active() -> Res!<Bool>
-    fn index_id() -> Res!<Opt<ObjectId>>
-    fn head_id() -> Res!<Opt<ObjectId>>
-    fn git_dir() -> PathBuf
-    fn work_dir() -> Res!<PathBuf>
-    fn git_dir_try_old_form() -> Res!<PathBuf>
-    fn state() -> Res!<State>
-    fn open() -> Res!<Opt<Repository>>
-
-  struct Proxy
-    fn base() -> Res!<PathBuf>
-    fn git_dir() -> Path
-    fn id() -> BStr
-    fn is_locked() -> Bool
-    fn lock_reason() -> Opt<BString>
-    fn into_repo_with_possibly_inaccessible_worktree() -> Res!<Repository>
-    fn into_repo() -> Res!<Repository>
-
-  struct Read
-    fn new(read: R) -> Self
-    fn into_inner() -> R
-
-  struct Options
-    fn isolated() -> Self
-    fn modify(f: Str)
-    fn config_overrides(values: Str) -> Self
-    fn cli_overrides(values: Str) -> Self
-    fn object_store_slots(slots: Slots) -> Self
-    fn permissions(permissions: Permissions) -> Self
-    fn open_path_as_is(enable: Bool) -> Self
-    fn with(trust: Trust) -> Self
-    fn bail_if_untrusted(toggle: Bool) -> Self
-    fn filter_config_section(filter: Str) -> Self
-    fn lossy_config(toggle: Bool) -> Self
-    fn strict_config(toggle: Bool) -> Self
-    fn open(path: Str) -> Res!<ThreadSafeRepository>
-    fn no_locations() -> Self
-    fn track_filename() -> Self
-    fn track_path() -> Self
-    fn track_rewrites(renames: Opt<Rewrites>) -> Self
-    fn with_rewrites(renames: Opt<Rewrites>) -> Self
-    fn empty_patterns_match_prefix(toggle: Bool) -> Self
-    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
-    fn recurse_repositories(toggle: Bool) -> Self
-    fn set_recurse_repositories(toggle: Bool) -> Self
-    fn emit_pruned(toggle: Bool) -> Self
-    fn set_emit_pruned(toggle: Bool) -> Self
-    fn emit_ignored(value: Opt<EmissionMode>) -> Self
-    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
-    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
-    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
-    fn emit_tracked(toggle: Bool) -> Self
-    fn set_emit_tracked(toggle: Bool) -> Self
-    fn emit_untracked(mode: EmissionMode) -> Self
-    fn set_emit_untracked(mode: EmissionMode) -> Self
-    fn emit_empty_directories(toggle: Bool) -> Self
-    fn set_emit_empty_directories(toggle: Bool) -> Self
-    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
-    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
-    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
-    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
-    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
-    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
-
-  struct Outcome
-    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
-    fn has_changes() -> Bool
-    fn write_changes() -> Opt<Res!<Str>>
+  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
+  cargo_features tree-editor
+  fn agent() -> Str
+  fn args_os() -> Str
+  fn args_os_opt(precompose_unicode: Bool) -> Str
+  fn init_bare(directory: Str) -> Res!<Repository>
+  fn init_handler(grace_count: usize, interrupt: Str) -> Res!<Deregister>
+  fn into(directory: Str, kind: Kind, _: Options) -> Res!<Path>
+  fn is_triggered() -> Bool
+  fn is_trusted(meta: Metadata) -> Bool
+  fn new_rewrites(config: File, lenient: Bool) -> Res!<Str>
+  fn os_str_to_bstring(input: OsStr) -> Opt<BString>
+  fn prepare_clone(url: Url, path: Str) -> Res!<PrepareFetch>
+  fn prepare_clone_bare(url: Url, path: Str) -> Res!<PrepareFetch>
+  fn reset()
+  fn resource_cache(repo: Repository, mode: Mode, attr_stack: Stack, roots: WorktreeRoots) -> Res!<Platform>
+  fn trigger()
+  fn validated(name: Str) -> Res!<BString>
 
   struct Platform
     fn all() -> Res!<Iter>
@@ -187,7 +65,6 @@ stub gix 0.70.0
     fn new(repo: ThreadSafeRepository, mode: Submodule) -> Res!<Self>
 
   struct Outcome
-    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
     fn has_changes() -> Bool
     fn write_changes() -> Opt<Res!<Str>>
 
@@ -203,6 +80,35 @@ stub gix 0.70.0
     fn outcome_mut() -> Opt<Outcome>
     fn into_outcome() -> Opt<Outcome>
 
+  struct Submodule
+    fn status(ignore: Ignore, check_dirty: Bool) -> Res!<Status>
+    fn status_opts(ignore: Ignore, check_dirty: Bool, adjust_options: Str) -> Res!<Status>
+    fn name() -> BStr
+    fn path() -> Res!<Cow<BStr>>
+    fn url() -> Res!<Url>
+    fn update() -> Res!<Opt<Update>>
+    fn branch() -> Res!<Opt<Branch>>
+    fn fetch_recurse() -> Res!<Opt<FetchRecurse>>
+    fn ignore() -> Res!<Opt<Ignore>>
+    fn shallow() -> Res!<Opt<Bool>>
+    fn is_active() -> Res!<Bool>
+    fn index_id() -> Res!<Opt<ObjectId>>
+    fn head_id() -> Res!<Opt<ObjectId>>
+    fn git_dir() -> PathBuf
+    fn work_dir() -> Res!<PathBuf>
+    fn git_dir_try_old_form() -> Res!<PathBuf>
+    fn state() -> Res!<State>
+    fn open() -> Res!<Opt<Repository>>
+
+  struct Proxy
+    fn base() -> Res!<PathBuf>
+    fn git_dir() -> Path
+    fn id() -> BStr
+    fn is_locked() -> Bool
+    fn lock_reason() -> Opt<BString>
+    fn into_repo_with_possibly_inaccessible_worktree() -> Res!<Repository>
+    fn into_repo() -> Res!<Repository>
+
   struct Iter
     fn outcome_mut() -> Opt<Outcome>
     fn into_outcome() -> Opt<Outcome>
@@ -215,11 +121,100 @@ stub gix 0.70.0
     fn outcome_mut() -> Opt<Outcome>
     fn into_outcome() -> Opt<Outcome>
 
+  struct Read
+    fn new(read: R) -> Self
+    fn into_inner() -> R
+
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+
+  struct Outcome
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
+  struct Platform
+    fn all() -> Res!<Iter>
+    fn prefixed(prefix: Str) -> Res!<Iter>
+    fn tags() -> Res!<Iter>
+    fn local_branches() -> Res!<Iter>
+    fn remote_branches() -> Res!<Iter>
+    fn dirwalk_options(cb: Str) -> Self
+    fn dirwalk_options_mut(cb: Str) -> Self
+    fn untracked_files(untracked_files: UntrackedFiles) -> Self
+    fn should_interrupt_shared(should_interrupt: AtomicBool) -> Self
+    fn should_interrupt_owned(should_interrupt: Arc<AtomicBool>) -> Self
+    fn index_worktree_submodules(submodules: Str) -> Self
+    fn index(index: IndexPersistedOrInMemory) -> Self
+    fn index_worktree_rewrites(rewrites: Str) -> Self
+    fn index_worktree_options_mut(cb: Str) -> Self
+    fn head_tree(tree: Str) -> Self
+    fn tree_index_track_renames(renames: TrackRenames) -> Self
+    fn into_index_worktree_iter(patterns: Str) -> Res!<Iter>
+    fn into_iter(patterns: Str) -> Res!<Iter>
+    fn lines(process_hunk: FnH) -> Res!<Outcome>
+    fn line_counts() -> Res!<Opt<Counter<Str>>>
+    fn sorting(sorting: Sorting) -> Self
+    fn first_parent_only() -> Self
+    fn use_commit_graph(toggle: Str) -> Self
+    fn with_commit_graph(graph: Opt<Graph>) -> Self
+    fn with_pruned(ids: Str) -> Self
+    fn selected(filter: Str) -> Res!<Walk>
+    fn all() -> Res!<Walk>
+    fn for_each_to_obtain_tree(other: Tree, for_each: Str) -> Res!<Opt<Outcome>>
+    fn for_each_to_obtain_tree_with_cache(other: Tree, resource_cache: Platform, for_each: Str) -> Res!<Opt<Outcome>>
+    fn options(change_opts: Str) -> Self
+    fn stats(other: Tree) -> Res!<Stats>
+    fn breadthfirst(delegate: V) -> Res!<Str>
+    fn depthfirst(delegate: V) -> Res!<Str>
+    fn names(select: SelectRef) -> Self
+    fn traverse_first_parent(first_parent: Bool) -> Self
+    fn max_candidates(candidates: usize) -> Self
+    fn id_as_fallback(use_fallback: Bool) -> Self
+    fn try_format() -> Res!<Opt<Format>>
+    fn try_resolve_with_cache(cache: Opt<Graph>) -> Res!<Opt<Resolution>>
+    fn try_resolve() -> Res!<Opt<Resolution>>
+    fn format() -> Res!<Format>
+
   struct PrepareFetch
-    fn configure_connection(f: Str) -> Self
-    fn with_fetch_options(opts: Options) -> Self
-    fn fetch_only(progress: P, should_interrupt: AtomicBool) -> Res!<Str>
-    fn fetch_then_checkout(progress: P, should_interrupt: AtomicBool) -> Res!<Str>
     fn configure_remote(f: Str) -> Self
     fn with_remote_name(name: Str) -> Res!<Self>
     fn with_shallow(shallow: Shallow) -> Self
@@ -275,17 +270,6 @@ stub gix 0.70.0
     fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
     fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
 
-  struct Connection
-    fn with_credentials(helper: Str) -> Self
-    fn with_transport_options(config: Box<Str>) -> Self
-    fn set_credentials(helper: Str) -> Self
-    fn set_transport_options(config: Box<Str>) -> Self
-    fn configured_credentials(url: Url) -> Res!<AuthenticateFn>
-    fn remote() -> Remote
-    fn transport_mut() -> T
-    fn ref_map(progress: Str, options: Options) -> Res!<Str>
-    fn prepare_fetch(progress: Str, options: Options) -> Res!<Prepare<T>>
-
   struct PathspecDetached
     fn pattern_matching_relative_path(relative_path: Str, is_dir: Opt<Bool>) -> Opt<Match>
     fn is_included(relative_path: Str, is_dir: Opt<Bool>) -> Bool
@@ -311,13 +295,11 @@ stub gix 0.70.0
     fn branch_remote(short_branch_name: Str, direction: Direction) -> Opt<Res!<Remote>>
     fn remote_names() -> Names
     fn remote_default_name(direction: Direction) -> Opt<Cow<BStr>>
-    fn transport_options(url: Str, remote_name: Opt<BStr>) -> Res!<Opt<Box<Str>>>
     fn config_snapshot() -> Snapshot
     fn config_snapshot_mut() -> SnapshotMut
     fn filesystem_options() -> Res!<Capabilities>
     fn stat_options() -> Res!<Options>
     fn open_options() -> Options
-    fn ssh_connect_options() -> Res!<Options>
     fn command_context() -> Res!<Context>
     fn object_hash() -> Kind
     fn diff_algorithm() -> Res!<Algorithm>
@@ -357,6 +339,7 @@ stub gix 0.70.0
     fn kind() -> Kind
     fn open_mailmap() -> Snapshot
     fn open_mailmap_into(target: Snapshot) -> Res!<Str>
+    fn edit_tree(id: Str) -> Res!<Editor>
     fn find_object(id: Str) -> Res!<Object>
     fn find_commit(id: Str) -> Res!<Commit>
     fn find_tree(id: Str) -> Res!<Tree>
@@ -427,6 +410,10 @@ stub gix 0.70.0
     fn tree_index_status(tree_id: oid, worktree_index: State, pathspec: Opt<Pathspec>, renames: TrackRenames, cb: Str) -> Res!<Outcome>
     fn status(progress: P) -> Res!<Platform<P>>
 
+  struct ObjectId
+    fn is_null() -> Bool
+    fn kind() -> Kind
+
   struct Id
     fn object() -> Res!<Object>
     fn header() -> Res!<Header>
@@ -436,6 +423,12 @@ stub gix 0.70.0
     fn shorten_or_id() -> Prefix
     fn detach() -> ObjectId
     fn ancestors() -> Platform
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Reference
     fn remote_name(direction: Direction) -> Opt<Name>
@@ -468,11 +461,7 @@ stub gix 0.70.0
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
-
-  struct Error
-    fn from_value(key: Str, value: BString) -> Self
-    fn with_source(err: E) -> Self
-    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Spec
     fn from_bstr(spec: Str, repo: Repository, opts: Options) -> Res!<Self>
@@ -484,52 +473,9 @@ stub gix 0.70.0
     fn second_reference() -> Opt<Reference>
     fn single() -> Opt<Id>
 
-  struct Options
-    fn isolated() -> Self
-    fn modify(f: Str)
-    fn config_overrides(values: Str) -> Self
-    fn cli_overrides(values: Str) -> Self
-    fn object_store_slots(slots: Slots) -> Self
-    fn permissions(permissions: Permissions) -> Self
-    fn open_path_as_is(enable: Bool) -> Self
-    fn with(trust: Trust) -> Self
-    fn bail_if_untrusted(toggle: Bool) -> Self
-    fn filter_config_section(filter: Str) -> Self
-    fn lossy_config(toggle: Bool) -> Self
-    fn strict_config(toggle: Bool) -> Self
-    fn open(path: Str) -> Res!<ThreadSafeRepository>
-    fn no_locations() -> Self
-    fn track_filename() -> Self
-    fn track_path() -> Self
-    fn track_rewrites(renames: Opt<Rewrites>) -> Self
-    fn with_rewrites(renames: Opt<Rewrites>) -> Self
-    fn empty_patterns_match_prefix(toggle: Bool) -> Self
-    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
-    fn recurse_repositories(toggle: Bool) -> Self
-    fn set_recurse_repositories(toggle: Bool) -> Self
-    fn emit_pruned(toggle: Bool) -> Self
-    fn set_emit_pruned(toggle: Bool) -> Self
-    fn emit_ignored(value: Opt<EmissionMode>) -> Self
-    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
-    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
-    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
-    fn emit_tracked(toggle: Bool) -> Self
-    fn set_emit_tracked(toggle: Bool) -> Self
-    fn emit_untracked(mode: EmissionMode) -> Self
-    fn set_emit_untracked(mode: EmissionMode) -> Self
-    fn emit_empty_directories(toggle: Bool) -> Self
-    fn set_emit_empty_directories(toggle: Bool) -> Self
-    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
-    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
-    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
-    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
-    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
-    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
-
-  struct Outcome
-    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
-    fn has_changes() -> Bool
-    fn write_changes() -> Opt<Res!<Str>>
+  struct Resolution
+    fn format() -> Res!<Format>
+    fn format_with_dirty_suffix(dirty_suffix: Str) -> Res!<Format>
 
   struct EntryRef
     fn mode() -> EntryMode
@@ -540,10 +486,6 @@ stub gix 0.70.0
     fn object_id() -> ObjectId
     fn detach() -> EntryRef
 
-  struct Resolution
-    fn format() -> Res!<Format>
-    fn format_with_dirty_suffix(dirty_suffix: Str) -> Res!<Format>
-
   struct Entry
     fn mode() -> EntryMode
     fn filename() -> BStr
@@ -553,17 +495,19 @@ stub gix 0.70.0
     fn object_id() -> ObjectId
     fn detach() -> Entry
 
+  struct Item
+    fn summary() -> Opt<Summary>
+    fn rela_path() -> BStr
+    fn location() -> BStr
+
+  struct Outcome
+    fn has_changes() -> Bool
+    fn write_changes() -> Opt<Res!<Str>>
+
   struct Deregister
     fn deregister() -> Res!<Str>
     fn with_reset(toggle: Bool) -> Self
     fn auto_deregister() -> AutoDeregister
-
-  struct Item
-
-  struct Outcome
-    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
-    fn has_changes() -> Bool
-    fn write_changes() -> Opt<Res!<Str>>
 
   struct Worktree
     fn open_index() -> Res!<File>
@@ -638,6 +582,12 @@ stub gix 0.70.0
     fn try_resolve() -> Res!<Opt<Resolution>>
     fn format() -> Res!<Format>
 
+  struct Cursor
+    fn upsert(rela_path: Str, kind: EntryKind, id: Str) -> Res!<Self>
+    fn remove(rela_path: Str) -> Res!<Self>
+    fn write() -> Res!<Id>
+    fn get(rela_path: Str) -> Opt<EntryRef>
+
   struct Head
     fn into_remote(direction: Direction) -> Opt<Res!<Remote>>
     fn log_iter() -> Platform
@@ -662,9 +612,6 @@ stub gix 0.70.0
     fn push_url_without_url_rewrite(url: Url) -> Res!<Self>
     fn with_fetch_tags(tags: Tags) -> Self
     fn with_refspecs(specs: Str, direction: Direction) -> Res!<Self>
-    fn to_connection_with_transport(transport: T) -> Connection<T>
-    fn connect(direction: Direction) -> Res!<Connection<Box<Str>>>
-    fn sanitized_url_and_version(direction: Direction) -> Res!<Str>
     fn save_to(config: File) -> Res!<Str>
     fn save_as_to(name: Str, config: File) -> Res!<Str>
     fn name() -> Opt<Name>
@@ -740,6 +687,7 @@ stub gix 0.70.0
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Platform
     fn all() -> Res!<Iter>
@@ -788,6 +736,7 @@ stub gix 0.70.0
     fn attach(repo: Repository) -> Object
 
   struct Tree
+    fn edit() -> Res!<Editor>
     fn changes() -> Res!<Platform>
     fn traverse() -> Platform
     fn iter() -> Str
@@ -821,11 +770,13 @@ stub gix 0.70.0
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Error
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Config
     fn all() -> Self
@@ -843,6 +794,25 @@ stub gix 0.70.0
     fn secure() -> Self
     fn all() -> Self
     fn isolated() -> Self
+
+  enum EntryKind
+    path objs::tree
+    Blob
+    BlobExecutable
+    Tree
+    Link
+    Commit
+
+  struct Editor
+    fn new(tree: Tree) -> Res!<Self>
+    fn detach() -> Editor
+    fn to_cursor() -> Cursor
+    fn cursor_at(rela_path: Str) -> Res!<Cursor>
+    fn set_root(root: Tree) -> Res!<Self>
+    fn upsert(rela_path: Str, kind: EntryKind, id: Str) -> Res!<Self>
+    fn remove(rela_path: Str) -> Res!<Self>
+    fn write() -> Res!<Id>
+    fn get(rela_path: Str) -> Opt<EntryRef>
 
   struct Platform
     fn all() -> Res!<Iter>
@@ -931,6 +901,7 @@ stub gix 0.70.0
     fn format() -> Res!<Format>
 
   struct Tree
+    fn edit() -> Res!<Editor>
     fn changes() -> Res!<Platform>
     fn traverse() -> Platform
     fn iter() -> Str
@@ -990,9 +961,6 @@ stub gix 0.70.0
     fn push_url_without_url_rewrite(url: Url) -> Res!<Self>
     fn with_fetch_tags(tags: Tags) -> Self
     fn with_refspecs(specs: Str, direction: Direction) -> Res!<Self>
-    fn to_connection_with_transport(transport: T) -> Connection<T>
-    fn connect(direction: Direction) -> Res!<Connection<Box<Str>>>
-    fn sanitized_url_and_version(direction: Direction) -> Res!<Str>
     fn save_to(config: File) -> Res!<Str>
     fn save_as_to(name: Str, config: File) -> Res!<Str>
     fn name() -> Opt<Name>
@@ -1041,11 +1009,8 @@ stub gix 0.70.0
     fn try_into_extra_header(values: List<Cow<BStr>>) -> Res!<List<Str>>
     fn try_into_index_threads(value: Cow<BStr>) -> Res!<usize>
     fn try_into_index_version(value: Res!<Int>) -> Res!<Version>
-    fn try_into_allow(value: Cow<BStr>, scheme: Opt<Str>) -> Res!<Allow>
-    fn try_into_protocol_version(value: Opt<Res!<Int>>) -> Res!<Protocol>
     fn try_into_default(value: Cow<BStr>) -> Res!<Default>
     fn try_into_tag_opt(value: Cow<BStr>) -> Res!<Tags>
-    fn try_into_variant(value: Cow<BStr>) -> Res!<Opt<ProgramKind>>
     fn try_into_show_untracked_files(value: Cow<BStr>) -> Res!<UntrackedFiles>
     fn new_duration(name: Str, section: Str) -> Self
     fn try_into_duration(value: Res!<Int>) -> Res!<Duration>
@@ -1271,23 +1236,27 @@ stub gix 0.70.0
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Error
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Error
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
-
-  struct Error
-    fn from_value(key: Str, value: BString) -> Self
-    fn with_source(err: E) -> Self
-    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct AutoDeregister
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Snapshot
     fn boolean(key: Str) -> Opt<Bool>
@@ -1299,6 +1268,12 @@ stub gix 0.70.0
     fn trusted_program(key: Str) -> Opt<Cow<OsStr>>
     fn plumbing() -> File
     fn credential_helpers(url: Url) -> Res!<Str>
+
+  struct Error
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct SnapshotMut
     fn append_config(values: Str, source: Source) -> Res!<Self>
@@ -1350,10 +1325,47 @@ stub gix 0.70.0
     fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
     fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
 
-  struct Error
-    fn from_value(key: Str, value: BString) -> Self
-    fn with_source(err: E) -> Self
-    fn with_value(value: BString) -> Self
+  struct Options
+    fn isolated() -> Self
+    fn modify(f: Str)
+    fn config_overrides(values: Str) -> Self
+    fn cli_overrides(values: Str) -> Self
+    fn object_store_slots(slots: Slots) -> Self
+    fn permissions(permissions: Permissions) -> Self
+    fn open_path_as_is(enable: Bool) -> Self
+    fn with(trust: Trust) -> Self
+    fn bail_if_untrusted(toggle: Bool) -> Self
+    fn filter_config_section(filter: Str) -> Self
+    fn lossy_config(toggle: Bool) -> Self
+    fn strict_config(toggle: Bool) -> Self
+    fn open(path: Str) -> Res!<ThreadSafeRepository>
+    fn no_locations() -> Self
+    fn track_filename() -> Self
+    fn track_path() -> Self
+    fn track_rewrites(renames: Opt<Rewrites>) -> Self
+    fn with_rewrites(renames: Opt<Rewrites>) -> Self
+    fn empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
+    fn recurse_repositories(toggle: Bool) -> Self
+    fn set_recurse_repositories(toggle: Bool) -> Self
+    fn emit_pruned(toggle: Bool) -> Self
+    fn set_emit_pruned(toggle: Bool) -> Self
+    fn emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
+    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
+    fn emit_tracked(toggle: Bool) -> Self
+    fn set_emit_tracked(toggle: Bool) -> Self
+    fn emit_untracked(mode: EmissionMode) -> Self
+    fn set_emit_untracked(mode: EmissionMode) -> Self
+    fn emit_empty_directories(toggle: Bool) -> Self
+    fn set_emit_empty_directories(toggle: Bool) -> Self
+    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
+    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
+    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
+    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
 
   struct CommitAutoRollback
     fn rollback() -> Res!<Repository>
@@ -1400,50 +1412,7 @@ stub gix 0.70.0
     fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
     fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
 
-  struct Options
-    fn isolated() -> Self
-    fn modify(f: Str)
-    fn config_overrides(values: Str) -> Self
-    fn cli_overrides(values: Str) -> Self
-    fn object_store_slots(slots: Slots) -> Self
-    fn permissions(permissions: Permissions) -> Self
-    fn open_path_as_is(enable: Bool) -> Self
-    fn with(trust: Trust) -> Self
-    fn bail_if_untrusted(toggle: Bool) -> Self
-    fn filter_config_section(filter: Str) -> Self
-    fn lossy_config(toggle: Bool) -> Self
-    fn strict_config(toggle: Bool) -> Self
-    fn open(path: Str) -> Res!<ThreadSafeRepository>
-    fn no_locations() -> Self
-    fn track_filename() -> Self
-    fn track_path() -> Self
-    fn track_rewrites(renames: Opt<Rewrites>) -> Self
-    fn with_rewrites(renames: Opt<Rewrites>) -> Self
-    fn empty_patterns_match_prefix(toggle: Bool) -> Self
-    fn set_empty_patterns_match_prefix(toggle: Bool) -> Self
-    fn recurse_repositories(toggle: Bool) -> Self
-    fn set_recurse_repositories(toggle: Bool) -> Self
-    fn emit_pruned(toggle: Bool) -> Self
-    fn set_emit_pruned(toggle: Bool) -> Self
-    fn emit_ignored(value: Opt<EmissionMode>) -> Self
-    fn set_emit_ignored(value: Opt<EmissionMode>) -> Self
-    fn for_deletion(value: Opt<ForDeletionMode>) -> Self
-    fn set_for_deletion(value: Opt<ForDeletionMode>) -> Self
-    fn emit_tracked(toggle: Bool) -> Self
-    fn set_emit_tracked(toggle: Bool) -> Self
-    fn emit_untracked(mode: EmissionMode) -> Self
-    fn set_emit_untracked(mode: EmissionMode) -> Self
-    fn emit_empty_directories(toggle: Bool) -> Self
-    fn set_emit_empty_directories(toggle: Bool) -> Self
-    fn classify_untracked_bare_repositories(toggle: Bool) -> Self
-    fn set_classify_untracked_bare_repositories(toggle: Bool) -> Self
-    fn emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
-    fn set_emit_collapsed(value: Opt<CollapsedEntriesEmissionMode>) -> Self
-    fn symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
-    fn set_symlinks_to_directories_are_ignored_like_directories(toggle: Bool) -> Self
-
   struct Outcome
-    fn iter_mapping_updates(mappings: Str, refspecs: Str, extra_refspecs: Str) -> Str
     fn has_changes() -> Bool
     fn write_changes() -> Opt<Res!<Str>>
 
@@ -1471,14 +1440,6 @@ stub gix 0.70.0
 
   struct Walk
 
-  struct Info
-    fn id() -> Id
-    fn object() -> Res!<Commit>
-    fn parent_ids() -> Str
-    fn commit_time() -> SecondsSinceUnixEpoch
-    fn new(info: Info, repo: Repository) -> Self
-    fn detach() -> Info
-
   struct ThreadSafeRepository
     fn to_thread_local() -> Repository
     fn path() -> Path
@@ -1494,6 +1455,14 @@ stub gix 0.70.0
     fn discover_opts(directory: Str, options: Options, trust_map: Mapping<Options>) -> Res!<Self>
     fn discover_with_environment_overrides(directory: Str) -> Res!<Self>
     fn discover_with_environment_overrides_opts(directory: Str, options: Options, trust_map: Mapping<Options>) -> Res!<Self>
+
+  struct Info
+    fn id() -> Id
+    fn object() -> Res!<Commit>
+    fn parent_ids() -> Str
+    fn commit_time() -> SecondsSinceUnixEpoch
+    fn new(info: Info, repo: Repository) -> Self
+    fn detach() -> Info
 
   struct Options
     fn isolated() -> Self
@@ -1541,6 +1510,7 @@ stub gix 0.70.0
     fn from_value(key: Str, value: BString) -> Self
     fn with_source(err: E) -> Self
     fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   struct Pathspec
     fn new(repo: Repository, empty_patterns_match_prefix: Bool, patterns: Str, inherit_ignore_case: Bool, make_attributes: Str) -> Res!<Self>
@@ -1551,6 +1521,1371 @@ stub gix 0.70.0
     fn pattern_matching_relative_path(relative_path: Str, is_dir: Opt<Bool>) -> Opt<Match>
     fn is_included(relative_path: Str, is_dir: Opt<Bool>) -> Bool
     fn index_entries_with_paths(index: State) -> Opt<Str>
+
+  enum Error
+    Find(Error)
+    NotFound
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Head(Error)
+    PeelToId(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Head(Error)
+    PeelToCommit(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    HeadCommit(Error)
+    DecodeCommit(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    HeadCommit(Error)
+    CommitTree(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Find(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Url(Error)
+    RewrittenUrlInvalid
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    TagOpt(GenericErrorWithValue)
+    RefSpec
+    UrlMissing
+    Url
+    Init(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FindExisting(Error)
+    FindExistingReferences(Error)
+    Init(Error)
+    UrlParse(Error)
+    ExactlyOneRemoteNotAvailable
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    PeelToId
+    Malformed
+    UnbornHeadsHaveNoRefLog
+    UnbornHeadForSibling
+    NoTrackingBranch
+    GetTrackingBranch
+    MissingRefLog
+    PriorCheckoutOutOfRange
+    RefLogEntryOutOfRange
+    AncestorOutOfRange
+    ParentOutOfRange
+    IndexLookup
+    FindHead(Error)
+    Index(Error)
+    RevWalkIterInit(Error)
+    RevWalkAllReferences(Error)
+    InvalidRegex(Error)
+    NoRegexMatch
+    NoRegexMatchAllRefs
+    AmbiguousRefAndObject
+    IdFromHex(Error)
+    FindReference(Error)
+    FindObject(Error)
+    LookupPrefix(Error)
+    PeelToKind(Error)
+    ObjectKind
+    Parse(Error)
+    PrefixNotFound
+    AmbiguousPrefix
+    PathNotFound
+    Multi
+    Traverse(Error)
+    Walk(Error)
+    SingleNotFound
+    EmptyReflog
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Parse(Error)
+    RangedRev
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    OpenCache(Error)
+    FindMergeBase(Error)
+    NotFound
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    SubmoduleStatus(Error)
+    IgnoreConfig(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FindMergeBase(Error)
+    NotFound
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    MissingCommit
+    NoMergeBase
+    MergeBase(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    OpenCache(Error)
+    MergeBaseOctopus(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Submodule
+    AsConfigured
+    Given
+
+    fn status(ignore: Ignore, check_dirty: Bool) -> Res!<Status>
+    fn status_opts(ignore: Ignore, check_dirty: Bool, adjust_options: Str) -> Res!<Status>
+    fn name() -> BStr
+    fn path() -> Res!<Cow<BStr>>
+    fn url() -> Res!<Url>
+    fn update() -> Res!<Opt<Update>>
+    fn branch() -> Res!<Opt<Branch>>
+    fn fetch_recurse() -> Res!<Opt<FetchRecurse>>
+    fn ignore() -> Res!<Opt<Ignore>>
+    fn shallow() -> Res!<Opt<Bool>>
+    fn is_active() -> Res!<Bool>
+    fn index_id() -> Res!<Opt<ObjectId>>
+    fn head_id() -> Res!<Opt<ObjectId>>
+    fn git_dir() -> PathBuf
+    fn work_dir() -> Res!<PathBuf>
+    fn git_dir_try_old_form() -> Res!<PathBuf>
+    fn state() -> Res!<State>
+    fn open() -> Res!<Opt<Repository>>
+
+  enum Item
+    Modification
+    DirectoryContents
+    Rewrite
+
+    fn summary() -> Opt<Summary>
+    fn rela_path() -> BStr
+    fn location() -> BStr
+
+  enum RewriteSource
+    RewriteFromIndex
+    CopyFromDirectoryEntry
+
+    fn rela_path() -> BStr
+
+  enum InProgress
+    ApplyMailbox
+    ApplyMailboxRebase
+    Bisect
+    CherryPick
+    CherryPickSequence
+    Merge
+    Rebase
+    RebaseInteractive
+    Revert
+    RevertSequence
+
+  enum Error
+    Configuration(Error)
+    Io(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    OpenModulesFile(Error)
+    OpenIndex(Error)
+    FindExistingBlob(Error)
+    FindHeadCommit(Error)
+    TreeFromCommit(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Config(Error)
+    NotARepository
+    Io(Error)
+    UnsafeGitDir
+    EnvironmentAccessDenied(Error<PathBuf>)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FindTree(Error)
+    OpenTree(Error)
+    AttributesCache(Error)
+    FilterPipeline(Error)
+    CommandContext(Error)
+    NotATree
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    StatusPlatform(Error)
+    CreateStatusIterator(Error)
+    TreeIndexStatus(Error)
+    HeadTreeId(Error)
+    OpenWorktreeIndex(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    MissingWorkDir
+    AttributesAndExcludes(Error)
+    Pathspec(Error)
+    Prefix(Error)
+    FilesystemOptions(Error)
+    IndexAsWorktreeWithRenames(Error)
+    StatOptions(Error)
+    ResourceCache(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum TrackRenames
+    AsConfigured
+    Given(Rewrites)
+    Disabled
+
+  enum Error
+    IndexFromMTree(Error)
+    RewritesConfiguration(Error)
+    DiffResourceCache(Error)
+    TreeIndexDiff(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    DirwalkOptions(Error)
+    ConfigureUntrackedFiles(GenericErrorWithValue)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Kind
+    WithWorktree
+    Bare
+
+    fn attach(repo: Repository) -> Head
+    fn is_bare() -> Bool
+
+  enum Error
+    CurrentDir(Error)
+    Init(Error)
+    Open(Error)
+    InvalidBranchName
+    EditHeadForDefaultBranch(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Discover(Error)
+    Open(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    NameMissing
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum AsError
+    Save(Error)
+    Name(Error)
+
+  enum Error
+    State(Error)
+    HeadId(Error)
+    IndexId(Error)
+    OpenRepository(Error)
+    IgnoreConfiguration(Error)
+    StatusPlatform(Error)
+    StatusIter(Error)
+    NextStatusItem(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ModuleBoolean(Error)
+    ConfigurationFallback(GenericErrorWithValue)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    InitIsActivePlatform(Error)
+    QueryIsActive(Error)
+    InitAttributes(Error)
+    InitPathspecDefaults(Error)
+    ObtainIndex(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    PathConfiguration(Error)
+    Index(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    HeadCommit(Error)
+    CommitTree(Error)
+    PeelTree(Error)
+    PathConfiguration(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    OpenRepository(Error)
+    PathConfiguration(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ConfigCheckStat(GenericErrorWithValue)
+    ConfigBoolean(Error)
+    CheckoutWorkers(Error)
+    Attributes(Error)
+    FilterPipelineOptions(Error)
+    CommandContext(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    BareRepository
+    NoHeadTree(Error)
+    IndexFromTree
+    BooleanConfig(Error)
+    WriteIndex(Error)
+    CheckoutOptions(Error)
+    IndexCheckout(Error)
+    Peel(Error)
+    OpenArcOdb(Error)
+    FindHead(Error)
+    PeelHeadToId(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum ProgressId
+    CheckoutFiles
+    BytesWritten
+
+  enum Error
+    Init(Error)
+    UrlParse(Error)
+    CanonicalizeUrl
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    OpenCache(Error)
+    Describe(Error)
+    ShortId(Error)
+    RefIter(Error)
+    RefIterInit(Error)
+    DetermineIsDirty(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Io(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum SelectRef
+    AnnotatedTags
+    AllTags
+    AllRefs
+
+  enum Change
+    Addition
+    Deletion
+    Modification
+    Rewrite
+
+    fn diff(resource_cache: Platform) -> Res!<Platform>
+    fn from_change_ref(change: ChangeRef, old_repo: Repository, new_repo: Repository) -> Self
+    fn detach() -> ChangeDetached
+    fn id() -> Id
+    fn location() -> BStr
+    fn entry_mode() -> EntryMode
+
+  enum Error
+    ConfigIndexThreads(GenericErrorWithValue)
+    ConfigSkipHash(Error)
+    IndexFile(Error)
+    IndexCorrupt(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    OpenIndex(Error)
+    CreateCache(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    OpenIndex(Error)
+    CreateCache(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Init(Error)
+    OpenIndex(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    WriteTree(Error)
+    MissingObject
+    InvalidFilename
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ProcessHunk(E)
+    PrepareDiff(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Change
+    Addition
+    Deletion
+    Modification
+
+    fn diff(resource_cache: Platform) -> Res!<Platform>
+    fn from_change_ref(change: ChangeRef, old_repo: Repository, new_repo: Repository) -> Self
+    fn detach() -> ChangeDetached
+    fn id() -> Id
+    fn location() -> BStr
+    fn entry_mode() -> EntryMode
+
+  enum Error
+    Diff(Error)
+    ForEach(Box<Str>)
+    ResourceCache(Error)
+    RenameTracking(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    CreateResourceCache(Error)
+    ForEachChange(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Action
+    Continue
+    Cancel
+
+  enum Kind
+    Symbolic(Reference)
+    Unborn(FullName)
+    Detached
+
+    fn attach(repo: Repository) -> Head
+    fn is_bare() -> Bool
+
+  enum Direction
+    Push
+    Fetch
+
+    fn as_str() -> Str
+
+  enum Error
+    Find(Error)
+    UrlParse(Error)
+    NotFound
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Peel(Error)
+    Unborn
+    ObjectKind(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Peel(Error)
+    Unborn
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FindExistingObject(Error)
+    PeelReference(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    PeelToObject(Error)
+    ObjectKind(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Index(Error)
+    SpawnThread(Error)
+    ConfigSkipHash(Error)
+    PrepareSubmodules(Error)
+    HeadTreeIndex(Error)
+    HeadTreeId(Error)
+    AttributesAndExcludes(Error)
+    Pathspec(Error)
+    HeadTreeDiff(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    PackedObjectsCount(Error)
+    DisambiguatePrefix(Error)
+    NotFound
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Open(Error)
+    FindExistingReference(Error)
+    RemoteInit(Error)
+    FindExistingRemote(Error)
+    CredentialHelperConfig(Error)
+    Other(E)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    CheckRoundTripEncodings(Error)
+    SafeCrlf(GenericErrorWithValue)
+    Driver
+    CommandContext(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    DiffAlgorithm(Error)
+    WorktreeFilterOptions(Error)
+    DiffDrivers(Error)
+    DiffPipelineOptions(Error)
+    CommandContext(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FindExistingObject(Error)
+    NotFound
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Decode(Error)
+    UnexpectedType
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Item
+    IndexWorktree(Item)
+    TreeIndex(Change)
+
+    fn summary() -> Opt<Summary>
+    fn rela_path() -> BStr
+    fn location() -> BStr
+
+  enum Error
+    IndexWorktree(Error)
+    TreeIndex(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Default
+    Nothing
+    Current
+    Upstream
+    Simple
+    Matching
+
+  enum Error
+    ConfigDiffRenames(GenericError)
+    ConfigDiffRenameLimit(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Tracking
+    Disabled
+    Renames
+    RenamesAndCopies
+
+  enum Error
+    FilesystemCapabilities(Error)
+    BigFileThreshold(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    CurrentDir(Error)
+    IoOpen
+    IoWrite
+    DirectoryExists
+    DirectoryNotEmpty
+    CreateDirectory
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    DecodeTree(Error)
+    ValidationOptions(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ConfigBoolean(Error)
+    ConfigUnsigned(Error)
+    ConfigTypedString(GenericErrorWithValue)
+    RefsNamespace(Error)
+    UnsupportedObjectFormat
+    CoreAbbrev(Error)
+    Io
+    Init(Error)
+    ResolveIncludes(Error)
+    FromEnv(Error)
+    PathInterpolation
+    ConfigOverrides
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    RewritesConfiguration(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Open(Error)
+    MissingWorktree
+    MissingGitDirFile(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    InvalidUseHttpPath
+    CoreAskpass(Error)
+    BooleanConfig(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Boolean(Error)
+    UnsignedInteger(Error)
+    ConnectTimeout(Error)
+    InvalidProxyAuthMethod
+    ConfigureProxyAuthenticate(Error)
+    InvalidSslVersion(Error)
+    InvalidHttpVersion(GenericErrorWithValue)
+    InvalidFollowRedirects(GenericErrorWithValue)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    InvalidKey
+    SectionKey
+    SectionHeader(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FindExistingObject(Error)
+    Decode(Error)
+    ObjectKind
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Name
+    Symbol(Cow<Str>)
+    Url(Cow<BStr>)
+
+    fn as_bstr() -> BStr
+    fn as_symbol() -> Opt<Str>
+    fn as_url() -> Opt<BStr>
+    fn to_owned() -> Name
+
+  enum Error
+    ValidateFetchRemoteRefName(Error)
+    PushDefault(GenericErrorWithValue)
+    FindPushRemote(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ValidateTrackingRef(Error)
+    RemoteRef(Error)
+    FindRemote(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    SymbolicReference
+    ReferenceEdit(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FileTransactionPrepare(Error)
+    FileTransactionCommit(Error)
+    NameValidation(Error)
+    LockTimeoutConfiguration(Error)
+    ParseCommitterTime(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ToId(Error)
+    PackedRefsOpen(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum SubSectionRequirement
+    Never
+    Parameter(Str)
+
+  enum Link
+    EnvironmentOverride(Str)
+    FallbackKey(Str)
+
+  enum Note
+    Informative(Str)
+    Deviation(Str)
+
+  enum Error
+    FollowToObject(Error)
+    PackedRefsOpen(Error)
+    FindObject(Error)
+    PeelObject(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum ObjectKindHint
+    Commit
+    Committish
+    Tree
+    Treeish
+    Blob
+
+  enum UntrackedFiles
+    None
+    Collapsed
+    Files
+
+  enum Error
+    FollowToObject(Error)
+    PackedRefsOpen(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Validate(Error)
+    Name
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    SetRaw(Error)
+    Validate(Error)
+    SubSectionRequired
+    SubSectionForbidden
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    BigFileThreshold(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ConfigBoolean(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ConfigureAttributes(Error)
+    ConfigureExcludes(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Io(Error)
+    AttributesFileInterpolation(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Io(Error)
+    EnvironmentPermission(Error<PathBuf>)
+    ExcludesFilePathInterpolation(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    BranchCategory
+    FindRemote(Error)
+    AmbiguousRemotes
+    ValidateUpstreamBranch(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ConfigCheckStat(GenericErrorWithValue)
+    ConfigBoolean(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    SimpleTraversal(Error)
+    ShallowCommits(Error)
+    ConfigBoolean(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Boolean(Error)
+    ParseBool(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Unknown
+    Unimplemented
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    InvalidInteger
+    ConfigValue
+    InterpolatePath
+    IllformedUtf8
+    ParseUrl(Error)
+    Http(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ResourceCache(Error)
+    Index(Error)
+    AttributeStack(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    DiffOptions(Error)
+    CreateResourceCache(Error)
+    TreeDiff(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Walk(Error)
+    MissingWorkDir
+    Excludes(Error)
+    Pathspec(Error)
+    Prefix(Error)
+    FilesystemOptions(Error)
+    ListWorktrees(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum IndexPersistedOrInMemory
+    Persisted(Index)
+    InMemory(File)
+
+    fn into_owned() -> File
+
+  enum OwnedOrStaticAtomicBool
+    Owned
+    Shared(AtomicBool)
+
+  enum Error
+    SpawnThread(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    HeadCommit(Error)
+    DecodeCommit(Error)
+    TreeTraverse(Error)
+    BareAttributes(Error)
+    WorktreeIndex(Error)
+    Init(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ConfigBoolean(Error)
+    OpenCommitGraph(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    HeadCommit(Error)
+    TreeId(Error)
+    TraverseTree(Error)
+    OpenIndex(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ReadHead(Error)
+    FindCommit(Error)
+    PeelToTree(Error)
+    TreeId(Error)
+    TraverseTree(Error)
+    OpenIndex(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    SimpleTraversal(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    IndexFromTree
+    BooleanConfig(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Sorting
+    BreadthFirst
+    ByCommitTime(CommitTimeOrder)
+    ByCommitTimeCutoff
+
+  enum Kind
+    Submodule
+    Bare
+    WorkTree
+
+    fn attach(repo: Repository) -> Head
+    fn is_bare() -> Bool
+
+  enum RefsHint
+    PreferObjectOnFullLengthHexShaUseRefOtherwise
+    PreferObject
+    PreferRef
+    Fail
+
+  enum Error
+    Io(Error)
+    BlobSpec(Error)
+    PathInterpolate(Error)
+    FindExisting(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FindTree(Error)
+    InitEditor(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    Find(Error)
+    Convert(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum CandidateInfo
+    FindError
+    Object
+    Tag
+    Commit
+
+  enum Error
+    ReferenceNameValidation(Error)
+    WriteObject(Error)
+    ReferenceEdit(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    ParseTime(Error)
+    CommitterMissing
+    AuthorMissing
+    ReferenceNameValidation(Error)
+    WriteObject(Error)
+    ReferenceEdit(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    WorktreeCacheAtPath(Error)
+    Convert(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    MakeAttributes(Box<Str>)
+    Defaults(Error)
+    ParseSpec(Error)
+    NormalizeSpec(Error)
+    RepoPrefix(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    WorktreeCacheAtPath(Error)
+    Convert(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
+
+  enum Error
+    FilesystemConfig(Error)
+    Defaults(Error)
+
+    fn from_value(key: Str, value: BString) -> Self
+    fn with_source(err: E) -> Self
+    fn with_value(value: BString) -> Self
+    fn is_corrupted() -> Bool
 
   trait ObjectIdExt
     fn ancestors(find: Find) -> Simple<Find, Str>
@@ -1573,6 +2908,9 @@ stub gix 0.70.0
 
   trait TreeDiffChangeExt
     fn attach(old_repo: Repository, new_repo: Repository) -> Change
+
+  trait ToComponents
+    fn to_components() -> Str
 
   trait Section
     fn name() -> Str

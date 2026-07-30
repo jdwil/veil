@@ -1241,6 +1241,16 @@ fn expr_to_veil(expr: &Expr) -> String {
                 format!("loop {{ {} }}", b)
             }
         }
+        Expr::DoBlock(body) => {
+            if body.is_empty() {
+                "do".to_string()
+            } else if body.len() == 1 && !expr_is_multiline(&body[0]) {
+                format!("do\n  {}", expr_to_veil(&body[0]))
+            } else {
+                let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("; ");
+                format!("do {{ {} }}", b)
+            }
+        }
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_veil(expr), ty),
         Expr::Try(expr) => format!("{}?", expr_to_veil(expr)),
         Expr::StructUpdate { name, fields, base } => {

@@ -11,7 +11,7 @@
 //! Unknown types are not errors (avoid false positives until inference grows).
 //! Limitations are encoded as diagnostic codes and hints.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, Severity};
@@ -468,7 +468,168 @@ pub fn check_types(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
         }
     }
 
+    // Cross-context invoke/request must name a real service/tool in this solution.
+    let handlers = collect_bus_handler_names(sol, registry);
+    for item in &sol.items {
+        if let TopLevelItem::Construct(c) = item {
+            walk_construct_for_missing_handlers(c, &handlers, registry, &mut diagnostics);
+        }
+    }
+
     diagnostics
+}
+
+/// Bus message names that have an application fn (svc/tool/handler/…).
+fn collect_bus_handler_names(sol: &Solution, registry: &LayerRegistry) -> HashSet<String> {
+    let mut names = HashSet::new();
+    fn visit(c: &Construct, registry: &LayerRegistry, names: &mut HashSet<String>) {
+        if c.shape == Shape::Fn {
+            names.insert(registry.bus_message_name(&c.name));
+            names.insert(c.name.clone());
+        }
+        for child in &c.children {
+            visit(child, registry, names);
+        }
+        for f in &c.fns {
+            names.insert(registry.bus_message_name(&f.name));
+            names.insert(f.name.clone());
+        }
+    }
+    for item in &sol.items {
+        match item {
+            TopLevelItem::Construct(c) => visit(c, registry, &mut names),
+            TopLevelItem::Function(f) => {
+                names.insert(registry.bus_message_name(&f.name));
+                names.insert(f.name.clone());
+            }
+            TopLevelItem::Flow(f) => {
+                names.insert(registry.bus_message_name(&f.name));
+                names.insert(f.name.clone());
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn walk_construct_for_missing_handlers(
+    c: &Construct,
+    handlers: &HashSet<String>,
+    registry: &LayerRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for step in &c.steps {
+        if let FlowStep::Step(s) = step {
+            for e in &s.body {
+                walk_expr_for_missing_handlers(e, &c.name, handlers, registry, diagnostics);
+            }
+        }
+    }
+    for f in &c.fns {
+        for e in &f.body {
+            walk_expr_for_missing_handlers(e, &f.name, handlers, registry, diagnostics);
+        }
+    }
+    for child in &c.children {
+        walk_construct_for_missing_handlers(child, handlers, registry, diagnostics);
+    }
+}
+
+fn walk_expr_for_missing_handlers(
+    expr: &Expr,
+    location: &str,
+    handlers: &HashSet<String>,
+    registry: &LayerRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::Call(call) => {
+            // Desugared `invoke Msg{…}` → Call{target:Bus, method:invoke, sugar, args:[StructLit]}
+            let sugar = call.sugar.as_deref().unwrap_or("");
+            if matches!(sugar, "invoke" | "request" | "dispatch")
+                || (call.target == "Bus"
+                    && matches!(
+                        call.method.trim_end_matches(['!', '?']),
+                        "invoke" | "request" | "dispatch"
+                    ))
+            {
+                if let Some(msg) = bus_message_from_call_args(&call.args) {
+                    let canonical = registry.bus_message_name(&msg);
+                    if !handlers.contains(&msg) && !handlers.contains(&canonical) {
+                        diagnostics.push(diag(
+                            Severity::Error,
+                            "missing_handler",
+                            format!(
+                                "{sugar} target '{msg}' has no svc/tool/handler in this package"
+                            ),
+                            location,
+                            Some(call.span),
+                            Some(
+                                "declare a service/tool with that name, or fix the invoke payload type"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                }
+            }
+            for a in &call.args {
+                walk_expr_for_missing_handlers(a, location, handlers, registry, diagnostics);
+            }
+        }
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs) => {
+            walk_expr_for_missing_handlers(rhs, location, handlers, registry, diagnostics);
+        }
+        Expr::IfExpr(ie) => {
+            walk_expr_for_missing_handlers(&ie.condition, location, handlers, registry, diagnostics);
+            for e in &ie.then_body {
+                walk_expr_for_missing_handlers(e, location, handlers, registry, diagnostics);
+            }
+            if let Some(eb) = &ie.else_body {
+                for e in eb {
+                    walk_expr_for_missing_handlers(e, location, handlers, registry, diagnostics);
+                }
+            }
+        }
+        Expr::Match(scrut, arms) => {
+            walk_expr_for_missing_handlers(scrut, location, handlers, registry, diagnostics);
+            for arm in arms {
+                for e in &arm.body {
+                    walk_expr_for_missing_handlers(e, location, handlers, registry, diagnostics);
+                }
+            }
+        }
+        Expr::Action(a) => {
+            // Non-desugared invoke (no port_target) still carries the message name.
+            if matches!(a.keyword.as_str(), "invoke" | "request" | "dispatch")
+                && !a.target.is_empty()
+                && !handlers.contains(&a.target)
+                && !handlers.contains(&registry.bus_message_name(&a.target))
+            {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "missing_handler",
+                    format!(
+                        "{} target '{}' has no svc/tool/handler in this package",
+                        a.keyword, a.target
+                    ),
+                    location,
+                    Some(a.span),
+                    Some(
+                        "declare a service/tool with that name, or fix the invoke target".into(),
+                    ),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn bus_message_from_call_args(args: &[Expr]) -> Option<String> {
+    match args.first() {
+        Some(Expr::StructLit(name, _)) => Some(name.clone()),
+        Some(Expr::Ident(name)) => Some(name.clone()),
+        _ => None,
+    }
 }
 
 fn check_bare_fields(c: &Construct, diagnostics: &mut Vec<Diagnostic>) {
@@ -1032,6 +1193,13 @@ fn infer_expr(
             }
             Ty::Unit
         }
+        Expr::DoBlock(body) => {
+            let mut ls = scope.child();
+            for e in body {
+                infer_expr(e, &mut ls, env, self_type, location, diagnostics);
+            }
+            Ty::Unit
+        }
         Expr::Closure { params, body } => {
             let mut cs = scope.child();
             for p in params {
@@ -1112,15 +1280,14 @@ fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
     }
 }
 
-/// Unwrap return type for a bang `!` call under the **current dual-loop law**
-/// (ACS-001 transitional): strip Res then Opt → T.
+/// Unwrap return type for a bang `!` call under **ACS-010 portable law** (default):
+/// strip Res only — `Opt` stays `Opt`. Force-present is explicit `.unwrap()` /
+/// future `require`, not an invisible side effect of `!`.
 ///
-/// Codegen: `.await?` + `.ok_or(NotFound)?` for port Opt returns.
-///
-/// ACS-010 preferred portable law is [`unwrap_bang_return_portable`] (Res only).
-/// Default engine still uses this transitional unwrap until migration flips.
+/// Dual-loop Rust codegen matches: `.await?` only; no automatic `.ok_or(NotFound)?`.
+/// Transitional helper remains available as [`unwrap_bang_return_transitional`].
 fn unwrap_bang_return(ty: Ty) -> Ty {
-    unwrap_bang_return_transitional(ty)
+    unwrap_bang_return_portable(ty)
 }
 
 /// Transitional dual-loop: Res!<Opt<T>> → T, Res!<T> → T, Opt<T> → T.
@@ -1240,7 +1407,7 @@ fn infer_call(
                 if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
                     check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
                     let ret = sig.ret.clone();
-                    // Bang calls: codegen adds `?` (unwraps Res!) then `.ok_or()?` (unwraps Opt)
+                    // Bang calls: codegen adds `?` (Res only; Opt preserved — ACS-010)
                     if is_bang {
                         return unwrap_bang_return(ret);
                     }
@@ -1268,6 +1435,30 @@ fn infer_call(
                     "is_ok" | "is_err" => Ty::Named("Bool".into()),
                     _ => Ty::Unknown,
                 };
+            }
+            // Opt methods on non-Opt (ACS-010: bang no longer forces Opt→T)
+            other
+                if matches!(
+                    method,
+                    "is_some" | "is_none" | "unwrap_or" | "unwrap_or_else"
+                ) && !matches!(other, Ty::Unknown) =>
+            {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "opt_method_on_non_opt",
+                    format!(
+                        "method '{method}' requires Opt<_>, found {}",
+                        other.display()
+                    ),
+                    location,
+                    Some(call.span),
+                    Some(
+                        "bang (!) only unwraps Res! — Opt stays Opt. \
+                         Call is_some/is_none on Opt, or .unwrap() to force T."
+                            .into(),
+                    ),
+                ));
+                return Ty::Unknown;
             }
             _ => {}
         }
@@ -1315,7 +1506,7 @@ fn infer_call(
         if let Some(sig) = info.methods.get(method) {
             check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
             let ret = sig.ret.clone();
-            // Bang calls: codegen adds `?` (unwraps Res!) then `.ok_or()?` (unwraps Opt)
+            // Bang: ACS-010 portable — strip Res only (Opt preserved)
             if is_bang {
                 return unwrap_bang_return(ret);
             }
@@ -1713,10 +1904,9 @@ mod tests {
         assert_eq!(unwrap_bang_return_portable(res_t).display(), "User");
     }
 
-    /// Bang call on port method returning Opt<T>: after Res! + Opt unwrap, result is T
-    /// so it can be passed to another bang method expecting T (matches codegen ? + ok_or).
+    /// ACS-010 portable: bang keeps Opt — passing Opt to a param expecting T is mismatch.
     #[test]
-    fn bang_call_strips_res_and_opt() {
+    fn bang_call_keeps_opt_type_mismatch_without_unwrap() {
         let mut port = Construct::new("port", "Port", Shape::Trait, "Repo".into(), Span::new(0, 0));
         port.methods.push(Method {
             name: "find!".into(),
@@ -1739,7 +1929,6 @@ mod tests {
             return_type: None,
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
-        // @dep-style local: repo: Repo
         svc.inputs.push(Field {
             name: "repo".into(),
             type_expr: TypeExpr::Named("Repo".into()),
@@ -1784,8 +1973,84 @@ mod tests {
             &reg(),
         );
         assert!(
-            !diags.iter().any(|d| d.code == "type_mismatch"),
-            "expected no type_mismatch after bang Opt unwrap, got: {:?}",
+            diags.iter().any(|d| d.code == "type_mismatch"),
+            "portable bang keeps Opt — save(User) with Opt should mismatch: {:?}",
+            diags
+        );
+    }
+
+    /// ACS-010: after find!, is_some is valid (value is still Opt).
+    #[test]
+    fn bang_call_portable_allows_is_some_on_opt() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Repo".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "find!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "id".into(),
+                type_expr: TypeExpr::Named("Id".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named("User".into())))),
+        });
+        let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
+        svc.inputs.push(Field {
+            name: "repo".into(),
+            type_expr: TypeExpr::Named("Repo".into()),
+            span: Span::new(0, 0),
+            annotations: Vec::new(),
+            default_expr: None,
+        });
+        svc.inputs.push(Field {
+            name: "id".into(),
+            type_expr: TypeExpr::Named("Id".into()),
+            span: Span::new(0, 0),
+            annotations: Vec::new(),
+            default_expr: None,
+        });
+        svc.steps.push(step(vec![
+            Expr::Assign(
+                "u".into(),
+                Box::new(Expr::Call(CallExpr {
+                    target: "repo".into(),
+                    method: "find!".into(),
+                    args: vec![Expr::Ident("id".into())],
+                    receiver: None,
+                    sugar: None,
+                    span: Span::new(0, 0),
+                })),
+                None,
+            ),
+            Expr::IfExpr(IfExprData {
+                condition: Box::new(Expr::Call(CallExpr {
+                    target: "u".into(),
+                    method: "is_some".into(),
+                    args: vec![],
+                    receiver: None,
+                    sugar: None,
+                    span: Span::new(5, 10),
+                })),
+                then_body: vec![Expr::Return(Box::new(Expr::Call(CallExpr {
+                    target: "u".into(),
+                    method: "unwrap".into(),
+                    args: vec![],
+                    receiver: None,
+                    sugar: None,
+                    span: Span::new(10, 15),
+                })))],
+                else_body: None,
+            }),
+        ]));
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(svc),
+            ]),
+            &reg(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "opt_method_on_non_opt"),
+            "is_some/unwrap on Opt after bang must be allowed: {:?}",
             diags
         );
     }

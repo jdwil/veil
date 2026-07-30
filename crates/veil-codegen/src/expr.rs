@@ -60,6 +60,13 @@ pub struct GenCtx {
     pub stub_typed_ctors: HashMap<String, (String, String)>,
     /// Methods whose stub return type is `Res!` / fallible (e.g. builder `send`).
     pub fallible_methods: HashSet<String>,
+    /// Methods that exist with a NON-fallible return on at least one stub type.
+    /// When a method is in both `fallible_methods` and `non_fallible_methods`,
+    /// the untyped-receiver fallback must NOT apply the fallible suffix (ambiguous).
+    pub non_fallible_methods: HashSet<String>,
+    /// Per-type fallible method tracking: (TypeName, method_name) pairs where the
+    /// method IS fallible on that specific type. Used for precise disambiguation.
+    pub type_fallible_methods: HashSet<(String, String)>,
     /// Methods whose stub return type is async AND fallible (e.g. `BoxFuture<Res!<...>>`
     /// or declared with `Res!` on a struct that acts as an executor).
     /// These get `.await.map_err(...)?` instead of just `?`.
@@ -113,6 +120,8 @@ impl GenCtx {
             stub_type_crate: HashMap::new(),
             stub_typed_ctors: HashMap::new(),
             fallible_methods: HashSet::new(),
+            non_fallible_methods: HashSet::new(),
+            type_fallible_methods: HashSet::new(),
             async_fallible_methods: HashSet::new(),
             expected_return_rust: None,
             defaultable_types: HashSet::new(),
@@ -405,9 +414,24 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             if fallible {
                 ctx.fallible_methods.insert(ff.name.clone());
                 ctx.fallible_methods.insert(bare.clone());
+            } else {
+                ctx.non_fallible_methods.insert(ff.name.clone());
+                ctx.non_fallible_methods.insert(bare.clone());
             }
             ctx.stub_free_fns
-                .insert((rust_crate.clone(), bare), fallible);
+                .insert((rust_crate.clone(), bare.clone()), fallible);
+            // Register return type for type inference (crate name acts as "type"):
+            let inner = if ret.starts_with("Res!<") {
+                ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
+            } else if ret == "Res!" {
+                "()"
+            } else {
+                ret
+            };
+            ctx.method_returns.insert(
+                (stub.name.clone(), bare),
+                inner.to_string(),
+            );
         }
         for s in &stub.structs {
             // Compute the aliased name for this type
@@ -429,6 +453,9 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     }));
                 if fallible {
                     ctx.fallible_methods.insert(method.name.clone());
+                    ctx.type_fallible_methods.insert((type_name.clone(), method.name.clone()));
+                } else {
+                    ctx.non_fallible_methods.insert(method.name.clone());
                 }
                 if is_async_fallible {
                     ctx.async_fallible_methods.insert(method.name.clone());
@@ -479,6 +506,9 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 let fallible = ret.starts_with("Res!") || ret.starts_with("Res!<");
                 if fallible {
                     ctx.fallible_methods.insert(method.name.clone());
+                    ctx.type_fallible_methods.insert((i.target.clone(), method.name.clone()));
+                } else {
+                    ctx.non_fallible_methods.insert(method.name.clone());
                 }
                 let inner = if ret.starts_with("Res!<") {
                     ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
@@ -1105,6 +1135,36 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::ArrayLit(items) => { let s = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", "); format!("vec![{}]", s) }
         Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let e = end.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
         Expr::Loop(body) => { let b = body.iter().map(|e| format!("    {};", expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n"); format!("loop {{\n{}\n}}", b) }
+        Expr::DoBlock(body) => {
+            if body.is_empty() {
+                "{}".to_string()
+            } else {
+                // Child scope for type tracking — locals don't leak out of the block
+                let mut block_ctx = ctx.clone_for_inference();
+                let mut lines = Vec::new();
+                for (i, e) in body.iter().enumerate() {
+                    let rust = expr_to_rust(e, &block_ctx);
+                    // Track local types so subsequent lines resolve receiver types
+                    if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = e {
+                        if !name.contains('.') {
+                            block_ctx.locals.insert(name.clone());
+                            if let Some(ty) = ty_ann {
+                                block_ctx.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
+                            } else if let Some(t) = infer_expr_type(rhs, &block_ctx) {
+                                block_ctx.local_types.insert(name.clone(), t);
+                            }
+                        }
+                    }
+                    if i == body.len() - 1 {
+                        // Last expression: no semicolon (block return value)
+                        lines.push(format!("    {}", rust));
+                    } else {
+                        lines.push(format!("    {};", rust));
+                    }
+                }
+                format!("{{\n{}\n}}", lines.join("\n"))
+            }
+        }
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_rust(expr, ctx), ty),
         Expr::Try(expr) => format!("{}?", expr_to_rust(expr, ctx)),
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)) }
@@ -1677,7 +1737,16 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                 }
             }
             if ctx.fallible_methods.contains(method) {
-                return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+                // Only apply fallible suffix if this specific type has the method as fallible.
+                // Use type_fallible_methods: (Type, method) set for precision.
+                if ctx.type_fallible_methods.contains(&(bare.clone(), method.to_string())) {
+                    return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+                }
+                // If the method is ONLY fallible (not ambiguous), apply it.
+                if !ctx.non_fallible_methods.contains(method) {
+                    return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+                }
+                // Ambiguous and not confirmed fallible on this type: no suffix.
             }
             return String::new();
         }
@@ -1720,8 +1789,12 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     // in builder chains (returning Self) should not get fallible suffixes even if
     // a method of the same name is fallible on a different type (Issue 5/global
     // name collision: e.g. gix.prefix() is Res! but S3 builder.prefix() is not).
+    // Also skip if the method is ambiguous — exists as both fallible and non-fallible
+    // across different stub types (e.g. gix Id.detach() is non-fallible but
+    // Pathspec.detach() is fallible).
     let recv_is_chain = matches!(recv, Expr::Call(_));
-    if ctx.fallible_methods.contains(method) && !recv_is_chain {
+    let is_ambiguous = ctx.non_fallible_methods.contains(method);
+    if ctx.fallible_methods.contains(method) && !recv_is_chain && !is_ambiguous {
         return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
     }
     // Terminal builder `.build!()` is fallible (BuildError) even on chains.
@@ -2920,6 +2993,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         let bare_target = call.target.trim_end_matches(['!', '?']);
         match bare_target {
             "now" => "Utc::now()".to_string(),
+            "drop" => {
+                // Rust builtin drop() — pass through without cloning.
+                let args_str = call.args.iter()
+                    .map(|a| expr_to_rust(a, ctx))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("drop({})", args_str)
+            }
             _ => {
                 let base = format!(
                     "{}({})",
@@ -3358,6 +3439,8 @@ impl GenCtx {
             stub_type_crate: self.stub_type_crate.clone(),
             stub_typed_ctors: self.stub_typed_ctors.clone(),
             fallible_methods: self.fallible_methods.clone(),
+            non_fallible_methods: self.non_fallible_methods.clone(),
+            type_fallible_methods: self.type_fallible_methods.clone(),
             async_fallible_methods: self.async_fallible_methods.clone(),
             expected_return_rust: self.expected_return_rust.clone(),
             defaultable_types: self.defaultable_types.clone(),
@@ -3575,6 +3658,11 @@ fn walk_mut_needs(expr: &Expr, needs: &mut HashSet<String>, bound: &mut HashSet<
             }
         }
         Expr::Loop(body) => {
+            for e in body {
+                walk_mut_needs(e, needs, bound);
+            }
+        }
+        Expr::DoBlock(body) => {
             for e in body {
                 walk_mut_needs(e, needs, bound);
             }
@@ -3841,7 +3929,9 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             // Envelope routing: cross-boundary calls yield `serde_json::Value`
             // (unless the target is a direct trait dep).
             if ctx.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target) {
-                if ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty() {
+                if (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty())
+                    && !ctx.stub_pkg_crate.contains_key(&call.target)
+                {
                     return Some("serde_json::Value".to_string());
                 }
             }
@@ -3876,6 +3966,42 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             if ctx.is_local(&call.target) || ctx.is_trait_target(&call.target) {
                 if let Some(t) = ctx.return_type_of(&call.target, &call.method) {
                     return Some(t.to_string());
+                }
+                // Resolve through the local's inferred type:
+                // e.g. `repo` has type `Repository`, so `repo.write_blob(...)` → look up
+                // `Repository.write_blob` return type.
+                if let Some(local_ty) = ctx.local_type(&call.target) {
+                    let method = call.method.trim_end_matches(['!', '?']);
+                    if let Some(t) = ctx.return_type_of(local_ty, method) {
+                        return Some(t.to_string());
+                    }
+                }
+            }
+            // Stub package free functions: `gix.init_bare(path)` → target is "gix",
+            // method is "init_bare". Look up (stub_name, method) in method_returns.
+            if ctx.stub_pkg_crate.contains_key(&call.target) {
+                let method = call.method.trim_end_matches(['!', '?']);
+                if let Some(t) = ctx.return_type_of(&call.target, method) {
+                    return Some(t.to_string());
+                }
+            }
+            // Also handle receiver-based form: `receiver.method(args)` where receiver is a stub pkg ident.
+            if let Some(recv) = &call.receiver {
+                if let Expr::Ident(recv_name) = recv.as_ref() {
+                    // Receiver is a stub package (e.g. `gix.init_bare(...)`)
+                    if ctx.stub_pkg_crate.contains_key(recv_name) {
+                        let method = call.method.trim_end_matches(['!', '?']);
+                        if let Some(t) = ctx.return_type_of(recv_name, &method) {
+                            return Some(t.to_string());
+                        }
+                    }
+                    // Receiver is a local variable with a known type
+                    if let Some(local_ty) = ctx.local_type(recv_name) {
+                        let method = call.method.trim_end_matches(['!', '?']);
+                        if let Some(t) = ctx.return_type_of(local_ty, method) {
+                            return Some(t.to_string());
+                        }
+                    }
                 }
             }
             None

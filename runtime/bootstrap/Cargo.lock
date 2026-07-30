@@ -234,6 +234,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-apigatewayv2"
+version = "1.107.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2556c6504e3507cf79aecdad3419a9c55fc2a9c54ce405b2332f5cecc4590207"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.2",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-bedrockruntime"
 version = "1.136.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -272,6 +298,33 @@ dependencies = [
  "aws-credential-types",
  "aws-runtime",
  "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.2",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-lambda"
+version = "1.135.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "606b6b79742c529c90e2305f9d3f986b8f842e82243ffe0cfe621aea14cf40ac"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
  "aws-smithy-http",
  "aws-smithy-json",
  "aws-smithy-observability",
@@ -330,6 +383,59 @@ name = "aws-sdk-s3vectors"
 version = "1.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2a88282c893b5db913aae97a4dfca447786ff39bb4642c955d7de44f663a5e5"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.2",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-sns"
+version = "1.105.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3e3fb02359b1ca6b10d0322d58d3581aaf6ebdb63601ad74eb9816231f83e04"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.2",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-sqs"
+version = "1.103.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52add2841d4ed9995145a0e87e53f6731b88cf643b77bcbe1cad726ce8307e5a"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -944,6 +1050,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "change_management"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-apigatewayv2",
+ "aws-sdk-dynamodb",
+ "aws-sdk-lambda",
+ "aws-sdk-s3",
+ "aws-sdk-sns",
+ "aws-sdk-sqs",
+ "axum",
+ "chrono",
+ "gix",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "veil_ext_store",
+ "veil_local_fs",
+ "veil_shared",
+ "zip",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1416,8 +1552,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-config",
+ "aws-sdk-apigatewayv2",
  "aws-sdk-dynamodb",
+ "aws-sdk-lambda",
  "aws-sdk-s3",
+ "aws-sdk-sns",
+ "aws-sdk-sqs",
  "axum",
  "chrono",
  "gix",
@@ -4801,8 +4941,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-config",
+ "aws-sdk-apigatewayv2",
  "aws-sdk-dynamodb",
+ "aws-sdk-lambda",
  "aws-sdk-s3",
+ "aws-sdk-sns",
+ "aws-sdk-sqs",
  "axum",
  "chrono",
  "gix",
@@ -5521,7 +5665,11 @@ name = "veil-runtime-bootstrap"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
  "axum",
+ "change_management",
  "chrono",
  "extensions",
  "futures",
@@ -5573,6 +5721,10 @@ dependencies = [
 [[package]]
 name = "veil_local_fs"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "toml",
+]
 
 [[package]]
 name = "veil_shared"

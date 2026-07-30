@@ -1486,6 +1486,12 @@ impl StubCrate {
         if self.root_types.iter().any(|t| t == type_name || t == &rust_name) {
             return rust_name;
         }
+        // Per-type module path (e.g. `path objs::tree` on EntryKind → objs::tree::EntryKind).
+        if let Some(s) = self.structs.iter().find(|s| s.name == type_name) {
+            if let Some(ref mp) = s.module_path {
+                return format!("{mp}::{rust_name}");
+            }
+        }
         if let Some(module) = &self.types_module {
             if !module.is_empty() {
                 return format!("{module}::{rust_name}");
@@ -1499,6 +1505,10 @@ impl StubCrate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubStruct {
     pub name: String,
+    /// Optional module path within the crate (e.g. "objs::tree" for gix::objs::tree::EntryKind).
+    /// When set, codegen qualifies as `crate::module_path::Name` instead of `crate::Name`.
+    #[serde(default)]
+    pub module_path: Option<String>,
     /// Methods declared directly on the struct (instance methods).
     pub methods: Vec<StubMethod>,
     /// When `new` lowers to a free function, optional typed free-fn name used when
@@ -1719,6 +1729,7 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             let name = trimmed.strip_prefix("struct ").unwrap().trim().to_string();
             current_struct = Some(StubStruct {
                 name,
+                module_path: None,
                 methods: Vec::new(),
                 typed_variant: None,
                 typed_type_params: None,
@@ -1734,6 +1745,7 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             let name = trimmed.strip_prefix("enum ").unwrap().trim().to_string();
             current_struct = Some(StubStruct {
                 name,
+                module_path: None,
                 methods: Vec::new(),
                 typed_variant: None,
                 typed_type_params: None,
@@ -1743,6 +1755,17 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
 
         // Struct-level metadata (indented under struct, not a method)
         if indent >= 4 && current_struct.is_some() && !trimmed.starts_with("fn ") {
+            if trimmed.starts_with("path ") {
+                let v = trimmed
+                    .strip_prefix("path ")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if let Some(ref mut s) = current_struct {
+                    s.module_path = Some(v);
+                }
+                continue;
+            }
             if trimmed.starts_with("typed_variant ") {
                 let v = trimmed
                     .strip_prefix("typed_variant ")

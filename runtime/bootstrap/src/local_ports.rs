@@ -186,6 +186,7 @@ impl LocalMetadataStore {
                         value: name.clone(),
                     },
                     name: name.clone(),
+                    slug: name.clone(),
                     description: None,
                     default_branch: "main".into(),
                     created_at: Utc::now(),
@@ -537,7 +538,8 @@ pub fn extensions_deps() -> extensions::application::Deps {
     let _ = std::fs::create_dir_all(&dir);
     // Default dual-loop: file backend (no AWS). Deploy sets VEIL_EXTENSIONS_BACKEND=ddb.
     if std::env::var("VEIL_EXTENSIONS_BACKEND").is_err() {
-        std::env::set_var("VEIL_EXTENSIONS_BACKEND", "file");
+        // SAFETY: single-threaded startup; no concurrent reads of this env var.
+        unsafe { std::env::set_var("VEIL_EXTENSIONS_BACKEND", "file") };
     }
     extensions::application::Deps {
         extension_artifact_store: std::sync::Arc::new(FileExtensionArtifactStore {
@@ -560,4 +562,47 @@ pub async fn ensure_stock_catalog_veil(
         Some("wear_test".into()),
     )
     .await
+}
+
+
+// ─── Change Management Deps (DDB + S3 adapters) ─────────────────────────────
+// SDLC domain: runtime.veil → change_management::application
+// IO: DDB adapters (single table), S3 flat-file git adapter
+
+use change_management::adapters::{
+    DdbApprovalRepo, DdbChangeRequestRepo, DdbCiRunRepo, DdbCommentRepo, S3GitServiceAdapter,
+};
+
+/// Build change_management Deps backed by DDB + S3.
+/// Uses VEIL_DDB_TABLE for all DDB repos, BUCKET for S3 git.
+pub async fn change_management_deps() -> change_management::application::Deps {
+    let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let ddb_client = aws_sdk_dynamodb::Client::new(&config);
+    let s3_client = aws_sdk_s3::Client::new(&config);
+
+    let table = std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "veil-runtime-dev".into());
+    let bucket = std::env::var("BUCKET").unwrap_or_else(|_| "veil-runtime-dev".into());
+
+    change_management::application::Deps {
+        git: std::sync::Arc::new(S3GitServiceAdapter {
+            bucket,
+            s3: s3_client,
+        }),
+        cr_repo: std::sync::Arc::new(DdbChangeRequestRepo {
+            client: ddb_client.clone(),
+            table: table.clone(),
+        }),
+        approval_repo: std::sync::Arc::new(DdbApprovalRepo {
+            client: ddb_client.clone(),
+            table: table.clone(),
+        }),
+        ci_repo: std::sync::Arc::new(DdbCiRunRepo {
+            client: ddb_client.clone(),
+            table: table.clone(),
+        }),
+        comment_repo: std::sync::Arc::new(DdbCommentRepo {
+            client: ddb_client,
+            table,
+        }),
+    }
 }

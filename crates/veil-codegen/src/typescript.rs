@@ -235,6 +235,24 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
             format!("while (true) {{\n{}\n{}}}", body_str, pad)
         }
 
+        Expr::DoBlock(body) => {
+            // Lower to IIFE: (() => { stmts; return last; })()
+            if body.is_empty() {
+                "(() => {})()".to_string()
+            } else {
+                let inner_pad = "  ".repeat(indent + 1);
+                let mut lines = Vec::new();
+                for (i, e) in body.iter().enumerate() {
+                    if i == body.len() - 1 {
+                        lines.push(format!("{}return {};", inner_pad, expr_to_ts(e, indent + 1)));
+                    } else {
+                        lines.push(format!("{}{};", inner_pad, expr_to_ts(e, indent + 1)));
+                    }
+                }
+                format!("(() => {{\n{}\n{}}})()", lines.join("\n"), pad)
+            }
+        }
+
         Expr::Break => "break".to_string(),
         Expr::Continue => "continue".to_string(),
 
@@ -414,6 +432,19 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
                     "(async () => {{ const __r = await fetch({url}, {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({body}) }}); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; }})()"
                 );
             }
+            "put" if args_list.len() >= 1 => {
+                let url = &args_list[0];
+                let body = args_list.get(1).map(|s| s.as_str()).unwrap_or("{}");
+                return format!(
+                    "(async () => {{ const __r = await fetch({url}, {{ method: 'PUT', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({body}) }}); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; }})()"
+                );
+            }
+            "delete" if args_list.len() >= 1 => {
+                let url = &args_list[0];
+                return format!(
+                    "(async () => {{ const __r = await fetch({url}, {{ method: 'DELETE' }}); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; }})()"
+                );
+            }
             _ => {}
         }
     }
@@ -526,7 +557,21 @@ fn effect_body_needs_await(body: &[Expr]) -> bool {
 /// Recurses into `if` / blocks so nested `membership_options = ApiClient.fetch(...)` awaits.
 fn expr_to_ts_async(expr: &Expr, indent: usize) -> String {
     match expr {
-        Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
+        // Keep `let` for mut bindings: `mut repo = ApiClient.fetch(...)`
+        // must not become bare `repo = await ...` (ReferenceError).
+        Expr::MutAssign(name, rhs, ty_ann) => {
+            let r = expr_to_ts(rhs, indent);
+            let rhs_str = if r.contains("await fetch") || r.contains("(async () =>") {
+                format!("await {}", r)
+            } else {
+                r
+            };
+            match ty_ann {
+                Some(ty) => format!("let {}: {} = {}", name, type_to_ts(ty), rhs_str),
+                None => format!("let {} = {}", name, rhs_str),
+            }
+        }
+        Expr::Assign(name, rhs, _) => {
             let r = expr_to_ts(rhs, indent);
             if r.contains("await fetch") || r.contains("(async () =>") {
                 format!("{} = await {}", name, r)
@@ -1264,7 +1309,7 @@ fn gen_svelte_components(modules: &[&Construct], registry: &LayerRegistry) -> Ve
     for module in modules {
         let components = collect_all_components(module, registry);
         for comp in components {
-            files.push(gen_svelte_file(comp));
+            files.push(gen_svelte_file(comp, registry));
         }
     }
 
@@ -1308,10 +1353,15 @@ fn collect_all_components<'a>(c: &'a Construct, registry: &LayerRegistry) -> Vec
 }
 
 /// Generate a single .svelte file from a Component construct.
-fn gen_svelte_file(comp: &Construct) -> TsFile {
+///
+/// Framework runes (`$state` / `$derived` / `$props` / `$effect` / `$bindable`)
+/// come **only** from `LayerRegistry::reactivity_policy` (svelte5.layer etc.).
+/// This function substitutes `{name}` / `{type}` / `{default}` / `{expr}` / `{body}`.
+fn gen_svelte_file(comp: &Construct, registry: &LayerRegistry) -> TsFile {
     let mut script = String::new();
     let mut template_content = String::new();
     let mut style_content = String::new();
+    let pol = &registry.reactivity_policy;
 
     // Collect blocks by keyword
     let props_block = comp.blocks.iter().find(|b| b.keyword == "props");
@@ -1356,13 +1406,6 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
             }
         }
     }
-    // Also check direct fields named template/style
-    for field in &comp.fields {
-        if field.name == "template" || field.name == "style" {
-            // The field default value would be in a StringLit — but fields don't
-            // carry default values in the current AST. Check blocks instead.
-        }
-    }
 
     // ─── <script lang="ts"> ───────────────────────────────────────────
     script.push_str("<script lang=\"ts\">\n");
@@ -1396,73 +1439,191 @@ fn gen_svelte_file(comp: &Construct) -> TsFile {
         }
     }
 
-    // Props: interface + $props()
+    // Props: TS interface (language) + destructure via layer `props_call`.
+    // Field names stay as written in VEIL so templates match bindings.
     if let Some(props) = props_block {
         script.push_str("\n  interface Props {\n");
         for field in &props.fields {
             let ty = field_type_ts(field);
-            script.push_str(&format!("    {}: {};\n", to_camel(&field.name), ty));
+            let optional = field.default_expr.is_some()
+                || ty.contains("null")
+                || ty.starts_with("Snippet");
+            if optional {
+                script.push_str(&format!("    {}?: {};\n", field.name, ty));
+            } else {
+                script.push_str(&format!("    {}: {};\n", field.name, ty));
+            }
         }
         script.push_str("  }\n");
-        let prop_names: Vec<String> = props.fields.iter()
-            .map(|f| to_camel(&f.name))
-            .collect();
-        script.push_str(&format!("  let {{ {} }}: Props = $props();\n", prop_names.join(", ")));
+        let mut bindings: Vec<String> = Vec::new();
+        for field in &props.fields {
+            if let Some(expr) = &field.default_expr {
+                // @bind → layer bindable / bindable_default when policy present
+                let is_bind =
+                    field.annotations.iter().any(|a| a.name == "bind" || a.name == "bindable");
+                if is_bind && !pol.bindable.is_empty() {
+                    let def = expr_to_ts(expr, 1);
+                    let bind_expr = if def == "undefined" || def.is_empty() {
+                        pol.bindable.clone()
+                    } else {
+                        veil_ir::ReactivityPolicy::fill(
+                            &pol.bindable_default,
+                            &[("default", def.as_str())],
+                        )
+                    };
+                    bindings.push(format!("{} = {}", field.name, bind_expr));
+                } else {
+                    bindings.push(format!("{} = {}", field.name, expr_to_ts(expr, 1)));
+                }
+            } else {
+                let is_bind =
+                    field.annotations.iter().any(|a| a.name == "bind" || a.name == "bindable");
+                if is_bind && !pol.bindable.is_empty() {
+                    bindings.push(format!("{} = {}", field.name, pol.bindable));
+                } else {
+                    bindings.push(field.name.clone());
+                }
+            }
+        }
+        let props_call = if pol.props_call.is_empty() {
+            // No UI reactivity layer loaded — plain TS placeholder (non-Svelte).
+            "undefined as any /* no reactivity_policy.props_call */".to_string()
+        } else {
+            pol.props_call.clone()
+        };
+        script.push_str(&format!(
+            "  let {{ {} }}: Props = {};\n",
+            bindings.join(", "),
+            props_call
+        ));
     }
 
-    // State: $state() declarations
+    // State — layer `state_line` template
     if let Some(state) = state_block {
         script.push('\n');
         for field in &state.fields {
             let ty = field_type_ts(field);
-            let default = default_value_for_ts(&ty);
-            script.push_str(&format!("  let {} = $state<{}>({});\n", field.name, ty, default));
+            let default = if let Some(expr) = &field.default_expr {
+                expr_to_ts(expr, 1)
+            } else {
+                default_value_for_ts(&ty).to_string()
+            };
+            if pol.state_line.is_empty() {
+                script.push_str(&format!(
+                    "  let {}: {} = {};\n",
+                    field.name, ty, default
+                ));
+            } else {
+                let line = veil_ir::ReactivityPolicy::fill(
+                    &pol.state_line,
+                    &[
+                        ("name", field.name.as_str()),
+                        ("type", ty.as_str()),
+                        ("default", default.as_str()),
+                    ],
+                );
+                script.push_str("  ");
+                script.push_str(&line);
+                if !line.trim_end().ends_with(';') {
+                    script.push(';');
+                }
+                script.push('\n');
+            }
         }
     }
 
-    // Derived: $derived() declarations
+    // Derived — layer `derived_line` template
     if let Some(derived) = derived_block {
         script.push('\n');
         for field in &derived.fields {
             let ty = field_type_ts(field);
             if let Some(expr) = &field.default_expr {
                 let expr_str = expr_to_ts(expr, 1);
-                script.push_str(&format!("  let {} = $derived(() => {});\n", to_camel(&field.name), expr_str));
+                if pol.derived_line.is_empty() {
+                    script.push_str(&format!(
+                        "  let {}: {} = {};\n",
+                        field.name, ty, expr_str
+                    ));
+                } else {
+                    let line = veil_ir::ReactivityPolicy::fill(
+                        &pol.derived_line,
+                        &[("name", field.name.as_str()), ("expr", expr_str.as_str())],
+                    );
+                    script.push_str("  ");
+                    script.push_str(&line);
+                    if !line.trim_end().ends_with(';') {
+                        script.push(';');
+                    }
+                    script.push('\n');
+                }
+            } else if pol.derived_line.is_empty() {
+                script.push_str(&format!(
+                    "  let {}: {} = undefined as any;\n",
+                    field.name, ty
+                ));
             } else {
-                script.push_str(&format!("  let {} = $derived<{}>(() => undefined as any);\n", to_camel(&field.name), ty));
+                // No expr — still emit a binding so templates don't ReferenceError
+                let line = veil_ir::ReactivityPolicy::fill(
+                    &pol.derived_line,
+                    &[("name", field.name.as_str()), ("expr", "undefined as any")],
+                );
+                script.push_str("  ");
+                script.push_str(&line);
+                if !line.trim_end().ends_with(';') {
+                    script.push(';');
+                }
+                script.push('\n');
             }
         }
     }
 
-    // Effects: $effect(() => { ... }) — VEIL bodies lowered to TS (not raw script).
-    // Mount-style loads use async IIFE so await works inside $effect.
+    // Effects — layer `effect_sync` / `effect_async` templates
     if !comp.effects.is_empty() {
         script.push('\n');
         for eff in &comp.effects {
             let async_body = effect_body_needs_await(&eff.body);
+            let mut body = String::new();
             if async_body {
-                script.push_str(&format!(
-                    "  $effect(() => {{ // {}\n    void (async () => {{\n",
-                    eff.name
-                ));
                 for expr in &eff.body {
-                    script.push_str(&format!("      {};\n", expr_to_ts_async(expr, 3)));
+                    body.push_str(&format!("      {};\n", expr_to_ts_async(expr, 3)));
                 }
-                script.push_str("    })();\n");
             } else {
-                script.push_str(&format!("  $effect(() => {{ // {}\n", eff.name));
                 for expr in &eff.body {
-                    script.push_str(&format!("    {};\n", expr_to_ts(expr, 2)));
+                    body.push_str(&format!("    {};\n", expr_to_ts(expr, 2)));
                 }
             }
             if !eff.cleanup.is_empty() {
-                script.push_str("    return () => {\n");
+                body.push_str("    return () => {\n");
                 for expr in &eff.cleanup {
-                    script.push_str(&format!("      {};\n", expr_to_ts(expr, 3)));
+                    body.push_str(&format!("      {};\n", expr_to_ts(expr, 3)));
                 }
-                script.push_str("    };\n");
+                body.push_str("    };\n");
             }
-            script.push_str("  });\n");
+            // Trim trailing newline so layer template's closing `});` sits cleanly
+            let body = body.trim_end_matches('\n').to_string();
+
+            let template = if async_body {
+                &pol.effect_async
+            } else {
+                &pol.effect_sync
+            };
+            if template.is_empty() {
+                // No policy — emit a no-op comment (framework-agnostic)
+                script.push_str(&format!(
+                    "  // effect {} (no reactivity_policy.effect_*):\n{}\n",
+                    eff.name, body
+                ));
+            } else {
+                let filled = veil_ir::ReactivityPolicy::fill(
+                    template,
+                    &[("name", eff.name.as_str()), ("body", body.as_str())],
+                );
+                for line in filled.lines() {
+                    script.push_str("  ");
+                    script.push_str(line);
+                    script.push('\n');
+                }
+            }
         }
     }
 

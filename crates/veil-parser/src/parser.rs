@@ -536,7 +536,11 @@ impl<'a> Parser<'a> {
     fn parse_field(&mut self) -> Result<Field, ParseError> {
         let field_annotations = self.parse_annotations();
         let start_span = self.current().span;
-        let name = self.expect_ident()?;
+        let name = if self.at(&TokenKind::Input) || self.at(&TokenKind::Output) {
+            self.advance().text
+        } else {
+            self.expect_ident()?
+        };
         self.expect(&TokenKind::Colon)?;
         let type_expr = self.parse_type()?;
         // Optional default expression: `name: Type = expr`
@@ -566,7 +570,10 @@ impl<'a> Parser<'a> {
         leading_annotations: Vec<Annotation>,
     ) -> Result<(), ParseError> {
         let mut first = true;
-        while self.at(&TokenKind::Ident) {
+        while self.at(&TokenKind::Ident)
+            || self.at(&TokenKind::Input)
+            || self.at(&TokenKind::Output)
+        {
             let start_span = self.current().span;
             let name = self.advance().text;
             if self.at(&TokenKind::Colon) {
@@ -748,6 +755,7 @@ impl<'a> Parser<'a> {
         let mut links = Vec::new();
         let mut adapts = Vec::new();
         let mut patches = Vec::new();
+        let mut macros = Vec::new();
         let mut items = Vec::new();
         let mut expose = None;
 
@@ -825,6 +833,10 @@ impl<'a> Parser<'a> {
                     TokenKind::Expose => {
                         expose = Some(self.parse_expose_block()?);
                     }
+                    TokenKind::Macro => {
+                        let macro_def = self.parse_macro_def()?;
+                        macros.push(macro_def);
+                    }
                     TokenKind::Flow => {
                         let mut flow = self.parse_flow()?;
                         let mut all = annotations;
@@ -883,6 +895,7 @@ impl<'a> Parser<'a> {
             links,
             adapts,
             patches,
+            macros,
             items,
             expose,
         })
@@ -1489,7 +1502,8 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
-                if self.at(&TokenKind::Ident) || self.at(&TokenKind::Annotation) {
+                if self.at(&TokenKind::Ident) || self.at(&TokenKind::Annotation)
+                    || self.at(&TokenKind::Input) || self.at(&TokenKind::Output) {
                     fields.push(self.parse_field()?);
                 } else {
                     self.advance();
@@ -1817,7 +1831,10 @@ impl<'a> Parser<'a> {
                     }
                 }
                 // Field line(s) — typed (`name: Type` / `name: Type = expr`) or shorthand
-                if self.at(&TokenKind::Ident) {
+                if self.at(&TokenKind::Ident)
+                    || self.at(&TokenKind::Input)
+                    || self.at(&TokenKind::Output)
+                {
                     self.parse_field_or_shorthand_line(&mut c.fields, Vec::new())?;
                 } else {
                     self.errors.push(self.error(format!(
@@ -2436,6 +2453,80 @@ impl<'a> Parser<'a> {
     }
 }
 
+// ─── Macro parsing ────────────────────────────────────────────────────────
+
+impl<'a> Parser<'a> {
+    /// Parse a macro definition:
+    /// ```veil
+    /// macro secure(scopes: List<Str>)
+    ///   claims = auth.validate_token!(token)
+    ///   CheckScope.check!(claims, scopes)
+    /// ```
+    fn parse_macro_def(&mut self) -> Result<veil_ir::ast::MacroDef, ParseError> {
+        let start_span = self.current().span;
+        self.expect(&TokenKind::Macro)?;
+        let name = self.expect_ident()?;
+
+        // Parse parameters: (name: Type, name: Type = default, ...)
+        let mut params = Vec::new();
+        if self.at(&TokenKind::LParen) {
+            self.advance();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                let param_name = self.expect_ident()?;
+                let type_expr = if self.at(&TokenKind::Colon) {
+                    self.advance();
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                let default = if self.at(&TokenKind::Eq) {
+                    self.advance();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                params.push(veil_ir::ast::MacroParam {
+                    name: param_name,
+                    type_expr,
+                    default,
+                });
+                if self.at(&TokenKind::Comma) {
+                    self.advance();
+                }
+            }
+            if self.at(&TokenKind::RParen) {
+                self.advance();
+            }
+        }
+
+        // Parse body as indented block of expressions
+        let mut body = Vec::new();
+        if self.at_block_start() {
+            self.enter_block()?;
+            while !self.at_block_end() {
+                self.skip_newlines();
+                if self.at_block_end() {
+                    break;
+                }
+                match self.parse_expr() {
+                    Ok(expr) => body.push(expr),
+                    Err(_) => {
+                        self.advance();
+                    }
+                }
+            }
+            self.exit_block();
+        }
+
+        Ok(veil_ir::ast::MacroDef {
+            name,
+            span: start_span.merge(self.current().span),
+            params,
+            body,
+        })
+    }
+}
+
 // ─── Flow parsing (core language) ─────────────────────────────────────────
 
 impl<'a> Parser<'a> {
@@ -2861,6 +2952,17 @@ impl<'a> Parser<'a> {
                     }
                     return Ok(Expr::Loop(body));
                 }
+                // Scoped block expression: `do` followed by indented body
+                if word == "do" && self.tokens.get(self.pos + 1).map(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Indent)).unwrap_or(false) {
+                    self.advance();
+                    let mut body = Vec::new();
+                    if self.at_block_start() {
+                        let _ = self.enter_block();
+                        loop { self.skip_newlines(); if self.at_block_end() { break; } body.push(self.parse_expr()?); }
+                        self.exit_block();
+                    }
+                    return Ok(Expr::DoBlock(body));
+                }
                 // Layer-defined statement?
                 if let Some(stmt) = self.registry.statement(&word).cloned() {
                     return self.parse_action(&word, &stmt);
@@ -3031,11 +3133,24 @@ impl<'a> Parser<'a> {
     fn parse_brace_args(&mut self) -> Result<Vec<(String, Expr)>, ParseError> {
         let mut named = Vec::new();
         self.expect(&TokenKind::LBrace)?;
+        let _brace_start_pos = self.pos;
         while !self.at(&TokenKind::RBrace)
             && !self.at(&TokenKind::Eof)
             && !self.at(&TokenKind::Newline)
         {
-            let name = self.expect_ident()?;
+            let before_pos = self.pos;
+            // Accept keywords as field names in struct literals (e.g. {input, output: x}).
+            // Many VEIL keywords (input, output, desc, etc.) are valid field names.
+            let name = if self.at(&TokenKind::Ident) {
+                self.advance().text
+            } else if self.current().text.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+                && !matches!(self.peek_kind(), TokenKind::Eof | TokenKind::Newline | TokenKind::RBrace)
+            {
+                // Accept any keyword-token whose text looks like an identifier
+                self.advance().text
+            } else {
+                return Err(self.error(format!("expected field name, got {:?}", self.peek_kind())));
+            };
             let value = if self.at(&TokenKind::Colon) {
                 self.advance();
                 self.parse_expr()?
@@ -3268,7 +3383,20 @@ impl<'a> Parser<'a> {
                 let fields = self.parse_brace_args()?;
                 Ok(Expr::StructLit(String::new(), fields))
             }
-            _ => Err(self.error(format!("expected expression, got {:?}", self.peek_kind()))),
+            _ => {
+                // Treat keyword tokens that look like identifiers as identifiers
+                // when they appear in expression position (e.g. `output = ...`, `input.field`).
+                let text = self.current().text.clone();
+                if text.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+                    && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    let start_span = self.current().span;
+                    self.advance();
+                    let atom = Expr::Ident(text);
+                    return self.parse_postfix(atom, start_span);
+                }
+                Err(self.error(format!("expected expression, got {:?}", self.peek_kind())))
+            },
         }
     }
 
@@ -3294,7 +3422,14 @@ impl<'a> Parser<'a> {
                     continue;
                 }
 
-                let field = self.expect_ident()?;
+                let field = if self.at(&TokenKind::Ident) {
+                    self.advance().text
+                } else if self.current().text.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+                    // Accept keywords as field/method names (e.g. .output, .input, .type)
+                    self.advance().text
+                } else {
+                    return Err(self.error(format!("expected field name after '.', got {:?}", self.peek_kind())));
+                };
 
                 // Handle method!(args) — the ! is part of the method name (fallible shorthand).
                 // Must keep `!` on CallExpr.method so typecheck can unwrap Res!/Opt (codegen ? + ok_or).
@@ -3543,9 +3678,10 @@ impl<'a> Parser<'a> {
                 }
                 let arm_span = self.current().span;
 
-                // Parse pattern: everything up to `->`
+                // Parse pattern: everything up to `->` or `=>`
                 let mut pattern_parts = Vec::new();
                 while !self.at(&TokenKind::Arrow)
+                    && !self.at(&TokenKind::FatArrow)
                     && !self.at(&TokenKind::Newline)
                     && !self.at(&TokenKind::Eof)
                     && !self.at(&TokenKind::Dedent)
@@ -3562,11 +3698,11 @@ impl<'a> Parser<'a> {
                     None
                 };
 
-                if !self.at(&TokenKind::Arrow) {
+                if !self.at(&TokenKind::Arrow) && !self.at(&TokenKind::FatArrow) {
                     // Skip malformed arm
                     continue;
                 }
-                self.advance(); // consume ->
+                self.advance(); // consume -> or =>
 
                 // Parse body: either a single expression on the same line, or an indented block
                 let mut body = Vec::new();
@@ -3732,6 +3868,26 @@ impl<'a> Parser<'a> {
 
         // Parse condition (everything up to the block)
         let condition = self.parse_expr()?;
+
+        // Inline form: `if COND then EXPR [else EXPR]`
+        // `else` is optional so `if items.is_empty() then ret null` works in
+        // adapter bodies (previously required else and was dropped on error recovery).
+        if self.at(&TokenKind::Ident) && self.current().text == "then" {
+            self.advance(); // consume 'then'
+            let then_expr = self.parse_expr()?;
+            let else_body = if self.at(&TokenKind::Else) {
+                self.advance(); // consume 'else'
+                let else_expr = self.parse_expr()?;
+                Some(vec![else_expr])
+            } else {
+                None
+            };
+            return Ok(Expr::IfExpr(IfExprData {
+                condition: Box::new(condition),
+                then_body: vec![then_expr],
+                else_body,
+            }));
+        }
 
         // Parse then-body
         let mut then_body = Vec::new();
@@ -3900,18 +4056,27 @@ fn parse_fstring_parts(s: &str) -> Vec<StringPart> {
                 i += 1;
             }
             i += 1; // skip closing }
+            // Unescape quotes that were escaped for the f-string delimiters
+            let expr_text = expr_text.replace("\\\"", "\"");
+            // Convert single-quote strings to double-quote strings
+            let expr_text = convert_single_quotes_in_expr(&expr_text);
             // Parse the expression text into an Expr
-            let expr = if expr_text.contains('.') {
-                // Field access: obj.field
+            let expr = if expr_text.contains(" then ") || expr_text.contains(" if ") {
+                // Complex expression with ternary/conditional — keep as raw ident
+                // for the codegen to translate (Issue 5).
+                Expr::Ident(expr_text)
+            } else if expr_text.contains('(') {
+                // Method call or function call (e.g. reason.unwrap_or("x"), count.to_string())
+                // Keep as raw ident — the codegen will emit it directly.
+                Expr::Ident(expr_text)
+            } else if expr_text.contains('.') {
+                // Pure field access (no method calls): obj.field.subfield
                 let dot_parts: Vec<&str> = expr_text.split('.').collect();
                 let mut expr = Expr::Ident(dot_parts[0].to_string());
                 for field in &dot_parts[1..] {
                     expr = Expr::FieldAccess(Box::new(expr), field.to_string());
                 }
                 expr
-            } else if expr_text.contains('(') {
-                // Function call — simplified, just use as ident for now
-                Expr::Ident(expr_text)
             } else {
                 Expr::Ident(expr_text)
             };
@@ -3919,6 +4084,10 @@ fn parse_fstring_parts(s: &str) -> Vec<StringPart> {
         } else if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '{' {
             // Escaped {{ → literal {
             current_lit.push('{');
+            i += 2;
+        } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
+            // Escaped }} → literal }  (must pair with {{; e.g. f".../{{proxy+}}")
+            current_lit.push('}');
             i += 2;
         } else {
             current_lit.push(chars[i]);
@@ -3933,6 +4102,46 @@ fn parse_fstring_parts(s: &str) -> Vec<StringPart> {
 
 /// Parse a pattern string into a structured Pattern for common cases.
 /// Falls back to Pattern::Ident for unrecognized patterns.
+/// Convert single-quote string literals within an expression to double-quote.
+/// E.g. `x.unwrap_or('hello')` → `x.unwrap_or("hello")`
+fn convert_single_quotes_in_expr(expr: &str) -> String {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut result = String::with_capacity(expr.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            // Find matching closing single quote
+            let start = i;
+            i += 1;
+            let mut content = String::new();
+            while i < chars.len() && chars[i] != '\'' {
+                if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '\'' {
+                    content.push('\'');
+                    i += 2;
+                } else {
+                    content.push(chars[i]);
+                    i += 1;
+                }
+            }
+            if i < chars.len() {
+                // Found closing quote — emit as double-quoted string
+                result.push('"');
+                result.push_str(&content);
+                result.push('"');
+                i += 1; // skip closing '
+            } else {
+                // No closing quote found — emit original
+                result.push('\'');
+                result.push_str(&content);
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
 fn parse_pattern_string(s: &str) -> Option<Pattern> {
     let s = s.trim();
     if s.is_empty() { return None; }

@@ -143,6 +143,7 @@ pub fn expr_to_display(expr: &Expr) -> String {
         Expr::ArrayLit(items) => { let s = items.iter().map(expr_to_display).collect::<Vec<_>>().join(", "); format!("[{}]", s) }
         Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| expr_to_display(e)).unwrap_or_default(); let e = end.as_ref().map(|e| expr_to_display(e)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
         Expr::Loop(_) => "loop { ... }".to_string(),
+        Expr::DoBlock(_) => "do { ... }".to_string(),
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_display(expr), ty),
         Expr::Try(expr) => format!("{}?", expr_to_display(expr)),
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_display(v))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_display(base)) }

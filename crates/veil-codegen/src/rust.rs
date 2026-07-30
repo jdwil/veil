@@ -4274,6 +4274,8 @@ fn gen_impls(
                 ctx.struct_fields = seeded.struct_fields;
                 ctx.stub_type_crate = seeded.stub_type_crate;
                 ctx.fallible_methods = seeded.fallible_methods;
+                ctx.non_fallible_methods = seeded.non_fallible_methods;
+                ctx.type_fallible_methods = seeded.type_fallible_methods;
                 ctx.async_fallible_methods = seeded.async_fallible_methods;
                 ctx.stub_pkg_crate = seeded.stub_pkg_crate;
                 ctx.stub_free_fns = seeded.stub_free_fns;
@@ -4324,9 +4326,16 @@ fn gen_impls(
                         };
                         let rust_expr = expr_to_rust(&expr, &ctx);
                         // Track local assignments AFTER translation so first use gets 'let mut'
-                        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = &expr {
+                        if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = &expr {
                             if !name.contains('.') {
                                 ctx.locals.insert(name.clone());
+                                // Infer type for local variables so downstream calls
+                                // (e.g. `blob_id.detach()`) resolve the receiver type.
+                                if let Some(ty) = ty_ann {
+                                    ctx.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
+                                } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
+                                    ctx.local_types.insert(name.clone(), t);
+                                }
                             }
                         }
                         if is_last {
@@ -4895,6 +4904,7 @@ fn collect_effect_hooks_tracked(
                 && !name_to_shape.contains_key(bare_target)
                 && !locals.contains(bare_target)
                 && !call.target.is_empty()
+                && bare_target != "drop"
                 && bare_target
                     .chars()
                     .next()

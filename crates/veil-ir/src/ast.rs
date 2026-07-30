@@ -37,6 +37,9 @@ pub struct Package {
     /// Path patches applied after base merge (`ins`/`rfn`/`rpl`/`omit`/`ren`).
     #[serde(default)]
     pub patches: Vec<AdaptPatch>,
+    /// Macro definitions (`macro name(params) body`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macros: Vec<MacroDef>,
     pub items: Vec<TopLevelItem>,
     pub expose: Option<ExposeBlock>,
 }
@@ -646,6 +649,25 @@ pub struct Annotation {
     pub span: Span,
 }
 
+/// A macro definition: reusable code template that expands at parse/IR time.
+/// Macros are invoked with `name!(args)` and expand into their body with
+/// parameters substituted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroDef {
+    pub name: String,
+    pub span: Span,
+    pub params: Vec<MacroParam>,
+    pub body: Vec<Expr>,
+}
+
+/// A parameter in a macro definition, with optional default value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroParam {
+    pub name: String,
+    pub type_expr: Option<TypeExpr>,
+    pub default: Option<Expr>,
+}
+
 /// An expression. Only core language constructs — layer statements become `Action`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
@@ -719,6 +741,10 @@ pub enum Expr {
     WhileLet { pattern: String, expr: Box<Expr>, body: Vec<Expr> },
     /// Let binding with destructuring pattern: `let (a, b) = expr` (with optional type annotation)
     LetPattern(Pattern, Box<Expr>, Option<TypeExpr>),
+    /// Scoped block expression: `do { stmts; last_expr }`.
+    /// All locals declared inside are dropped at block exit.
+    /// The last expression is the block's value.
+    DoBlock(Vec<Expr>),
 }
 
 /// Part of an interpolated string.

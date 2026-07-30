@@ -549,6 +549,12 @@ fn check_expr(
                 check_expr(e, location, &mut loop_scope, index, self_type, diagnostics);
             }
         }
+        Expr::DoBlock(body) => {
+            let mut loop_scope = scope.child();
+            for e in body {
+                check_expr(e, location, &mut loop_scope, index, self_type, diagnostics);
+            }
+        }
         Expr::Closure { params, body } => {
             let mut c_scope = scope.child();
             for p in params {
