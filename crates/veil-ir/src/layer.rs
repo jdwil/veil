@@ -1533,8 +1533,8 @@ pub struct StubImpl {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StubMethod {
     pub name: String,
-    pub params: Vec<(String, String)>, // (param_name, type_string)
-    pub return_type: Option<String>,   // VEIL type syntax (e.g. "Res!<Str>")
+    pub params: Vec<(String, String, bool)>, // (param_name, type_string, is_ref)
+    pub return_type: Option<String>,         // VEIL type syntax (e.g. "Res!<Str>")
 }
 
 /// Parse a `.stub` file into a StubCrate.
@@ -1821,10 +1821,10 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             let (vname, params) = if let Some(paren_start) = trimmed.find('(') {
                 let name = trimmed[..paren_start].trim().to_string();
                 let params_str = &trimmed[paren_start + 1..trimmed.len() - 1];
-                let params: Vec<(String, String)> = params_str
+                let params: Vec<(String, String, bool)> = params_str
                     .split(',')
                     .enumerate()
-                    .map(|(i, t)| (format!("v{}", i), t.trim().to_string()))
+                    .map(|(i, t)| (format!("v{}", i), t.trim().to_string(), false))
                     .collect();
                 (name, params)
             } else {
@@ -1870,15 +1870,21 @@ fn parse_stub_method(line: &str) -> StubMethod {
         (sig.to_string(), String::new())
     };
 
-    let params: Vec<(String, String)> = if params_str.is_empty() {
+    let params: Vec<(String, String, bool)> = if params_str.is_empty() {
         Vec::new()
     } else {
         params_str.split(',').map(|p| {
             let p = p.trim();
-            if let Some((name, ty)) = p.split_once(':') {
-                (name.trim().to_string(), ty.trim().to_string())
+            // Check for `ref` keyword prefix
+            let (is_ref, p) = if p.starts_with("ref ") {
+                (true, p.strip_prefix("ref ").unwrap().trim())
             } else {
-                (p.to_string(), "Str".to_string())
+                (false, p)
+            };
+            if let Some((name, ty)) = p.split_once(':') {
+                (name.trim().to_string(), ty.trim().to_string(), is_ref)
+            } else {
+                (p.to_string(), "Str".to_string(), is_ref)
             }
         }).collect()
     };

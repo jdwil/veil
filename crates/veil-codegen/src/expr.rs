@@ -31,6 +31,9 @@ pub struct GenCtx {
     /// Method parameter types: (ConstructName, method_name) → vec of param type strings.
     /// Used to decide whether Option<T> args should be auto-unwrapped at the call site.
     pub method_params: HashMap<(String, String), Vec<String>>,
+    /// Ref-pass parameters: (TypeName, method_name) → vec of bools per param position.
+    /// When true, codegen emits `&arg` instead of `arg.clone()` for that param.
+    pub ref_params: HashMap<(String, String), Vec<bool>>,
     /// Inferred types for local variables: var_name → type_name.
     pub local_types: HashMap<String, String>,
     /// Struct field maps: type_name → vec of (field_name, field_type_name).
@@ -111,6 +114,7 @@ impl GenCtx {
             envelope_routing: false,
             method_returns: HashMap::new(),
             method_params: HashMap::new(),
+            ref_params: HashMap::new(),
             local_types: HashMap::new(),
             struct_fields: HashMap::new(),
             routing_ref: String::new(),
@@ -471,6 +475,15 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     (type_name.clone(), method.name.clone()),
                     inner.to_string(),
                 );
+                // Track ref-pass parameters for this method
+                let has_any_ref = method.params.iter().any(|p| p.2);
+                if has_any_ref {
+                    let ref_flags: Vec<bool> = method.params.iter().map(|p| p.2).collect();
+                    ctx.ref_params.insert(
+                        (type_name.clone(), method.name.clone()),
+                        ref_flags,
+                    );
+                }
             }
             // Register as a known struct with qualified crate path from stub
             // metadata (`types_module` / `root_types`) — never crate-family hardcoding.
@@ -1916,7 +1929,42 @@ fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
 /// Like `clone_args` but applies method-specific argument shaping (e.g. reqwest
 /// `basic_auth` takes `Option` password).
 fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> String {
+    clone_args_for_typed_method(None, method, args, ctx)
+}
+
+/// Clone/ref args for a method call, with optional receiver type for ref-param resolution.
+fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: &[Expr], ctx: &GenCtx) -> String {
     let method = method.trim_end_matches(['!', '?']);
+
+    // Check ref_params for this specific (type, method) combination.
+    // If found, emit &arg for ref positions instead of arg.clone().
+    if let Some(type_name) = recv_type {
+        if let Some(ref_flags) = ctx.ref_params.get(&(type_name.to_string(), method.to_string())) {
+            return args.iter().enumerate().map(|(i, a)| {
+                let is_ref = ref_flags.get(i).copied().unwrap_or(false);
+                if is_ref {
+                    let s = expr_to_rust(a, ctx);
+                    if s.starts_with('&') {
+                        s
+                    } else if matches!(a, Expr::Ident(n) if ctx.is_local(n)) {
+                        format!("&{s}")
+                    } else if matches!(a, Expr::StringLit(_)) {
+                        s // string lits are already &str
+                    } else {
+                        format!("&{s}")
+                    }
+                } else {
+                    // Normal clone behavior for non-ref params
+                    match a {
+                        Expr::Ident(n) if ctx.is_local(n) && !is_copy_local(n, ctx) => {
+                            format!("{}.clone()", n)
+                        }
+                        _ => expr_to_rust(a, ctx),
+                    }
+                }
+            }).collect::<Vec<_>>().join(", ");
+        }
+    }
     // str::starts_with / contains / ends_with / replace take Pattern / &str —
     // string lits as &str, not owned String (Pattern not implemented for String).
     if matches!(
@@ -2212,11 +2260,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!("{}.limit(({}) as i32){}", recv_str, arg, suffix);
             }
         }
+        // Resolve receiver type for ref-param passing
+        let recv_type_for_args: Option<&str> = if let Expr::Ident(name) = recv.as_ref() {
+            ctx.local_type(name)
+        } else {
+            None
+        };
         return format!(
             "{}.{}({}){}",
             recv_str,
             m,
-            clone_args_for_method(&call.method, &call.args, ctx),
+            clone_args_for_typed_method(recv_type_for_args, &call.method, &call.args, ctx),
             suffix
         );
     }
@@ -3430,6 +3484,7 @@ impl GenCtx {
             envelope_routing: self.envelope_routing,
             method_returns: self.method_returns.clone(),
             method_params: self.method_params.clone(),
+            ref_params: self.ref_params.clone(),
             local_types: self.local_types.clone(),
             struct_fields: self.struct_fields.clone(),
             routing_ref: self.routing_ref.clone(),

@@ -341,7 +341,7 @@ stub gix 0.70.0
     fn open_mailmap_into(target: Snapshot) -> Res!<Str>
     fn edit_tree(id: Str) -> Res!<Editor>
     fn find_object(id: Str) -> Res!<Object>
-    fn find_commit(id: Str) -> Res!<Commit>
+    fn find_commit(ref id: Str) -> Res!<Commit>
     fn find_tree(id: Str) -> Res!<Tree>
     fn find_tag(id: Str) -> Res!<Tag>
     fn find_blob(id: Str) -> Res!<Blob>
@@ -354,7 +354,7 @@ stub gix 0.70.0
     fn write_blob_stream(bytes: Str) -> Res!<Id>
     fn tag(name: Str, target: Str, target_kind: Kind, tagger: Opt<SignatureRef>, message: Str, constraint: PreviousValue) -> Res!<Reference>
     fn commit_as(committer: Str, author: Str, reference: Name, message: Str, tree: Str, parents: Str) -> Res!<Id>
-    fn commit(reference: Name, message: Str, tree: Str, parents: Str) -> Res!<Id>
+    fn commit(ref reference: Name, ref message: Str, tree: Str, parents: Str) -> Res!<Id>
     fn empty_tree() -> Tree
     fn empty_blob() -> Blob
     fn pathspec(empty_patterns_match_prefix: Bool, patterns: Str, inherit_ignore_case: Bool, index: State, attributes_source: Source) -> Res!<Pathspec>
@@ -374,7 +374,7 @@ stub gix 0.70.0
     fn head_commit() -> Res!<Commit>
     fn head_tree_id() -> Res!<Id>
     fn head_tree() -> Res!<Tree>
-    fn find_reference(name: Name) -> Res!<Reference>
+    fn find_reference(ref name: Name) -> Res!<Reference>
     fn references() -> Res!<Platform>
     fn try_find_reference(name: Name) -> Res!<Opt<Reference>>
     fn remote_at(url: Url) -> Res!<Remote>
@@ -385,7 +385,7 @@ stub gix 0.70.0
     fn find_fetch_remote(name_or_url: Opt<BStr>) -> Res!<Remote>
     fn try_find_remote_without_url_rewrite(name_or_url: Str) -> Opt<Res!<Remote>>
     fn rev_parse(spec: Str) -> Res!<Spec>
-    fn rev_parse_single(spec: Str) -> Res!<Id>
+    fn rev_parse_single(ref spec: Str) -> Res!<Id>
     fn merge_base(one: Str, two: Str) -> Res!<Id>
     fn merge_base_with_graph(one: Str, two: Str, graph: Graph<Commit<Flags>>) -> Res!<Id>
     fn merge_bases_many_with_graph(one: Str, others: Str, graph: Graph<Commit<Flags>>) -> Res!<List<Id>>
@@ -1278,7 +1278,7 @@ stub gix 0.70.0
   struct SnapshotMut
     fn append_config(values: Str, source: Source) -> Res!<Self>
     fn commit() -> Res!<Repository>
-    fn set_value(key: Str, new_value: Str) -> Res!<Opt<BString>>
+    fn set_value(ref key: Str, ref new_value: Str) -> Res!<Opt<BString>>
     fn set_subsection_value(key: Str, subsection: Str, new_value: Str) -> Res!<Opt<BString>>
     fn commit_auto_rollback() -> Res!<CommitAutoRollback>
     fn forget() -> File

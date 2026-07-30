@@ -4280,6 +4280,7 @@ fn gen_impls(
                 ctx.stub_pkg_crate = seeded.stub_pkg_crate;
                 ctx.stub_free_fns = seeded.stub_free_fns;
                 ctx.async_fns = seeded.async_fns;
+                ctx.ref_params = seeded.ref_params;
                 ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
