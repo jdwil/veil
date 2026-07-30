@@ -882,13 +882,16 @@ fn gen_local_harness_main(
         let crate_name = module_crate_name(module, sol);
         let flat = flatten_module(module);
         let routable = http_routable_services(&flat.fns, registry);
-        let mut seen_method_path: std::collections::HashSet<(String, String)> =
+        let mut seen_handler_fns: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for svc in &routable {
             let app_fn_name = to_snake(&svc.name);
             let fn_name = format!("{}_{}", crate_name, &app_fn_name);
             let (method, path) = rest_route_for_service(svc, registry);
-            if !seen_method_path.insert((method.clone(), path.clone())) {
+            // Deduplicate by handler fn name — two services that name-derive to
+            // the same (method, path) may still need distinct handlers when one
+            // gets a collision-adjusted path prefix during route registration.
+            if !seen_handler_fns.insert(fn_name.clone()) {
                 continue;
             }
             let path_params = path_param_names(&path);

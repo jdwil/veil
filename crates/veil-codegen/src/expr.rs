@@ -1504,15 +1504,22 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 }
                 s
             };
+            // Clone ctx and add closure params as locals so that calls on
+            // them (e.g. `item.field()`) resolve as method calls, not external-
+            // effect hooks.
+            let mut closure_ctx = ctx.clone_for_inference();
+            for param in params {
+                closure_ctx.locals.insert(param.clone());
+            }
             if body.len() == 1 {
-                let body_str = expr_to_rust(&body[0], ctx);
+                let body_str = expr_to_rust(&body[0], &closure_ctx);
                 let body_str = fixup_closure_body(body_str);
                 let body_str = fixup_question(body_str);
                 format!("|{}| {}", p, body_str)
             } else {
                 let stmts = body.iter()
                     .map(|e| {
-                        let s = expr_to_rust(e, ctx);
+                        let s = expr_to_rust(e, &closure_ctx);
                         let s = fixup_closure_body(s);
                         let s = fixup_question(s);
                         format!("    {};", s)
@@ -1947,9 +1954,12 @@ fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: &[Ex
                     if s.starts_with('&') {
                         s
                     } else if matches!(a, Expr::Ident(n) if ctx.is_local(n)) {
-                        format!("&{s}")
-                    } else if matches!(a, Expr::StringLit(_)) {
-                        s // string lits are already &str
+                        // Deref to &str for String locals — avoids &String which
+                        // doesn't satisfy generic bounds like TryInto<FullName>.
+                        format!("&*{s}")
+                    } else if let Expr::StringLit(lit) = a {
+                        // ref params expecting &str: emit bare string literal
+                        format!("\"{}\"", lit.replace('\\', "\\\\").replace('"', "\\\""))
                     } else {
                         format!("&{s}")
                     }
@@ -3060,6 +3070,40 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 format!("drop({})", args_str)
             }
             _ => {
+                // Bare dep-method resolution: `authenticate!()` → `deps.auth.authenticate().await?`
+                // when `authenticate` matches a method on an in-scope dep. Two strategies:
+                // 1. Exact method match in method_returns (formally declared dep methods)
+                // 2. Dep field name prefix match (e.g. dep "auth" → call "authenticate")
+                let dep_method_match = ctx.dep_fields.iter().find_map(|(trait_name, field_name)| {
+                    // Strategy 1: bare_target is a registered method on this trait
+                    let key = (trait_name.clone(), bare_target.to_string());
+                    if ctx.method_returns.contains_key(&key) {
+                        return Some(field_name.clone());
+                    }
+                    let key2 = (field_name.clone(), bare_target.to_string());
+                    if ctx.method_returns.contains_key(&key2) {
+                        return Some(field_name.clone());
+                    }
+                    // Strategy 2: bare_target starts with the dep field name
+                    // (e.g. dep "auth" → call "authenticate", dep "check_scope" → call "check_scope")
+                    if bare_target.starts_with(field_name.as_str())
+                        && (bare_target.len() == field_name.len()
+                            || bare_target.as_bytes().get(field_name.len()) == Some(&b'_')
+                            || bare_target[field_name.len()..].chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false))
+                    {
+                        return Some(field_name.clone());
+                    }
+                    None
+                });
+                if let Some(dep_field) = dep_method_match {
+                    let args_str = clone_args(&call.args, ctx);
+                    return format!(
+                        "deps.{}.{}({}).await?",
+                        dep_field,
+                        to_snake(bare_target),
+                        args_str
+                    );
+                }
                 let base = format!(
                     "{}({})",
                     to_snake(bare_target),
@@ -3197,9 +3241,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!("{rust_crate}::{m}({final_args}){suffix}");
             }
         }
-        // Last resort: if target looks like a variable (lowercase, no dots),
-        // emit as a method call `target.method(args)` — this handles closure
-        // params and other untracked locals (Issue 1).
+        // Last resort: target is not a known local, construct, self-field,
+        // module, or stub. It is either (a) an external-effect target (e.g.
+        // `http.post(...)`) that should be flattened to `http_post(args)` to
+        // match the generated runtime-hook stubs, or (b) a closure/iterator
+        // parameter calling a method. Closure params are now properly tracked
+        // in ctx.locals (see Closure branch above), so anything reaching here
+        // IS an external effect — emit the flattened hook form.
         let m_clean = call.method.trim_end_matches(['!', '?']);
         let target_is_var_like = call.target.chars().next()
             .map(|c| c.is_lowercase())
@@ -3231,20 +3279,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     call.target, m_clean
                 );
             }
-            format!(
-                "{}.{}({})",
-                call.target,
-                to_snake(m_clean),
-                args_str
-            )
-        } else {
-            format!(
-                "{}_{}({})",
-                to_snake(&call.target),
-                to_snake(m_clean),
-                args_str
-            )
         }
+        // Emit flattened external-effect hook: `target_method(args)`.
+        format!(
+            "{}_{}({})",
+            to_snake(&call.target),
+            to_snake(m_clean),
+            args_str
+        )
     }
 }
 
@@ -4019,7 +4061,10 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             // If calling a struct constructor
             if ctx.is_struct_target(&call.target) {
                 let method = if call.method.is_empty() { "new" } else { &call.method };
-                return ctx.return_type_of(&call.target, method).map(|s| s.to_string());
+                return ctx.return_type_of(&call.target, method).map(|s| {
+                    // Resolve "Self" to the actual struct name
+                    if s == "Self" { call.target.clone() } else { s.to_string() }
+                });
             }
             // If calling a method on a local (e.g. @dep wear_test_repo typed as trait via name_to_shape)
             if ctx.is_local(&call.target) || ctx.is_trait_target(&call.target) {
@@ -4060,6 +4105,18 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                         if let Some(t) = ctx.return_type_of(local_ty, method) {
                             return Some(t.to_string());
                         }
+                    }
+                }
+                // Receiver is a chained call (e.g. `ThreadSafeRepository.open(path).to_thread_local()`)
+                // Recursively infer the receiver's type, then look up the method on that type.
+                if let Some(recv_type) = infer_expr_type(recv, ctx) {
+                    let method = call.method.trim_end_matches(['!', '?']);
+                    // "Self" return means same type as receiver
+                    if let Some(t) = ctx.return_type_of(&recv_type, method) {
+                        if t == "Self" {
+                            return Some(recv_type);
+                        }
+                        return Some(t.to_string());
                     }
                 }
             }

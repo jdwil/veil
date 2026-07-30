@@ -262,6 +262,22 @@ pub fn product_provides_use(root: &Path, use_name: &str) -> bool {
         || root.join("layers").join(format!("{use_name}.layer")).is_file()
 }
 
+/// Convert PascalCase to snake_case (e.g. "DlxAuth" → "dlx_auth").
+fn pascal_to_snake(name: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Absolute path to primary package source for `use_name` inside a product root.
 pub fn package_source_in_root(root: &Path, use_name: &str) -> Option<PathBuf> {
     if let Some(entry) = load_package_entry(root) {
@@ -274,8 +290,17 @@ pub fn package_source_in_root(root: &Path, use_name: &str) -> Option<PathBuf> {
     }
     // main.veil when package declares this use name via pkg line (peek)
     let main = root.join("main.veil");
-    if main.is_file() && package_file_use_name(&main).as_deref() == Some(use_name) {
-        return Some(main);
+    if main.is_file() {
+        if let Some(pkg_name) = package_file_use_name(&main) {
+            // Case-insensitive + snake_case normalization (use dlx_auth matches pkg DlxAuth)
+            let norm_use = use_name.to_lowercase().replace('-', "_");
+            let norm_pkg = pkg_name.to_lowercase().replace('-', "_");
+            // Also try converting PascalCase to snake_case for pkg name
+            let norm_pkg_snake = pascal_to_snake(&pkg_name);
+            if norm_pkg == norm_use || norm_pkg_snake == norm_use || pkg_name == use_name {
+                return Some(main);
+            }
+        }
     }
     let legacy = root.join(format!("{use_name}.veil"));
     if legacy.is_file() {
