@@ -2386,7 +2386,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         "Dt" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "UUID"
     );
     let is_typed_local = ctx.is_local(&call.target) && ctx.local_type(&call.target).is_some();
-    if ctx.envelope_routing && !is_lang_target && !is_typed_local && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty()) {
+    if ctx.envelope_routing && !is_lang_target && !is_typed_local
+        && !ctx.stub_pkg_crate.contains_key(&call.target)
+        && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty()) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
         let rref = if ctx.routing_ref.is_empty() {
             "deps".to_string() // should not happen when envelope_routing is set
