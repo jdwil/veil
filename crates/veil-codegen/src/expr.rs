@@ -2961,7 +2961,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     call.method.trim_end_matches(['!', '?']).to_string(),
                 ))
             {
-                let cloned_args = clone_args_for_method(&call.method, &call.args, ctx);
+                let cloned_args = clone_args_for_typed_method(Some(&type_name), &call.method, &call.args, ctx);
                 let suffix = receiver_call_suffix(
                     &Expr::Ident(call.target.clone()),
                     &call.method,
@@ -3032,11 +3032,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 }
             }
         }
+        // Resolve target type for ref-param passing
+        let target_type: Option<&str> = ctx.local_type(&call.target);
         return format!(
             "{}.{}({}){}",
             call.target,
             method,
-            clone_args_for_method(&call.method, &call.args, ctx),
+            clone_args_for_typed_method(target_type, &call.method, &call.args, ctx),
             suffix
         );
     }
