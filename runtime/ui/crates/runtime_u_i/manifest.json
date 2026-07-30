@@ -1,0 +1,12 @@
+{
+  "context": "RuntimeUI",
+  "crate": "runtime_u_i",
+  "deps": {
+    "api_client": {
+      "provided_by": "runtime",
+      "trait": "ApiClient"
+    }
+  },
+  "expose": [],
+  "handlers": {}
+}
