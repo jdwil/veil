@@ -938,8 +938,13 @@ pkg App
         app.content
     );
     assert!(
-        app.content.contains("Result<Item, DomainError>"),
-        "find bang should return Item not Option:\n{}",
+        app.content.contains("Result<Option<Item>, DomainError>"),
+        "find bang preserves Opt (bang only unwraps Result, not Option):\n{}",
+        app.content
+    );
+    assert!(
+        !app.content.contains(".ok_or(DomainError::NotFound)?"),
+        "bang+Opt must not auto-unwrap Option with ok_or:\n{}",
         app.content
     );
 }
