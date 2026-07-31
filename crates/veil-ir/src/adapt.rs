@@ -1656,6 +1656,7 @@ mod tests {
             links: vec![],
             adapts: vec![],
             patches: vec![],
+            macros: vec![],
             items: vec![],
             expose: None,
         }
