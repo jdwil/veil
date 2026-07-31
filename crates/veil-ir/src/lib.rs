@@ -12,6 +12,7 @@ pub mod escape;
 pub mod ir;
 pub mod layer;
 pub mod layer_graph;
+pub mod macros;
 pub mod names;
 pub mod presentation;
 pub mod project;
