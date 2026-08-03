@@ -180,6 +180,11 @@ enum Commands {
         #[arg(long, alias = "yes")]
         non_interactive: bool,
     },
+    /// Create a new VEIL component from a template (extension, layer, etc.)
+    New {
+        #[command(subcommand)]
+        what: NewCmd,
+    },
     /// Manage the local projects directory (runtime hub; independent git repos).
     ///
     /// Config: `~/.veil/config.json` (first run prompts for projects_dir).
@@ -253,6 +258,21 @@ enum Commands {
         /// Update snapshot files (passed through to target runner)
         #[arg(long)]
         update_snapshots: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum NewCmd {
+    /// Scaffold a new VEIL extension package with templates
+    Extension {
+        /// Extension name (kebab-case, e.g. "my-reaction")
+        name: String,
+        /// Extension kind (reaction, signal, activation, ui-panel)
+        #[arg(short, long, default_value = "reaction")]
+        kind: String,
+        /// Directory to create in (default: current directory)
+        #[arg(short, long)]
+        dir: Option<PathBuf>,
     },
 }
 
@@ -2525,6 +2545,90 @@ fn main() {
                 Err(e) => {
                     eprintln!("Error generating stub: {}", e);
                     std::process::exit(1);
+                }
+            }
+        }
+        Commands::New { what } => {
+            match what {
+                NewCmd::Extension { name, kind, dir } => {
+                    let target_dir = dir.unwrap_or_else(|| PathBuf::from(".")).join(&name);
+                    if target_dir.exists() {
+                        eprintln!("error: directory '{}' already exists", target_dir.display());
+                        std::process::exit(1);
+                    }
+                    std::fs::create_dir_all(&target_dir).expect("create extension dir");
+                    
+                    // Generate veil.toml
+                    let veil_toml = format!(
+                        r#"[package]
+name = "{name}"
+version = "0.1.0"
+kind = "{kind}"
+
+[extension]
+scope = "Product"
+provenance = "Custom"
+
+[build]
+target = "rust"
+"#,
+                        name = name,
+                        kind = kind,
+                    );
+                    std::fs::write(target_dir.join("veil.toml"), &veil_toml).expect("write veil.toml");
+
+                    // Generate main.veil
+                    let kind_pascal = kind.split('-').map(|s| {
+                        let mut c = s.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                        }
+                    }).collect::<String>();
+                    let pkg_name = name.replace('-', "_");
+                    let main_veil = format!(
+                        r#"pkg {pkg_name}
+
+  struct {kind_pascal}Input
+    trigger: Str
+    payload: Json
+
+  struct {kind_pascal}Output
+    success: Bool
+    result: Json
+
+  fn handle_{pkg_name}
+    -> {kind_pascal}Output
+    input
+      request: {kind_pascal}Input
+    step execute
+      # TODO: implement extension logic
+      ret {kind_pascal}Output{{success: true, result: {{handled: request.trigger}}}}
+"#,
+                        pkg_name = pkg_name,
+                        kind_pascal = kind_pascal,
+                    );
+                    std::fs::write(target_dir.join("main.veil"), &main_veil).expect("write main.veil");
+
+                    // Generate README
+                    let readme = format!(
+                        "# {name}\n\nA VEIL extension ({kind}).\n\n## Development\n\n```bash\nveil check main.veil\nveil gen main.veil -o generated -t rust\n```\n\n## Deploy\n\n```bash\nveil deploy --env dev\n```\n",
+                        name = name,
+                        kind = kind,
+                    );
+                    std::fs::write(target_dir.join("README.md"), &readme).expect("write README");
+
+                    println!("✓ Created extension '{}' at {}", name, target_dir.display());
+                    println!("  Kind: {}", kind);
+                    println!("  Files:");
+                    println!("    veil.toml    — package config");
+                    println!("    main.veil    — extension source");
+                    println!("    README.md    — documentation");
+                    println!();
+                    println!("  Next steps:");
+                    println!("    cd {}", name);
+                    println!("    veil check main.veil");
+                    println!("    # Edit main.veil to implement your extension logic");
                 }
             }
         }
