@@ -24,7 +24,7 @@ pkg VeilRuntimeUI
           open_cr_count: Int
         effect load_open_count
           open_cr_count = 0
-          resp = ApiClient.fetch("/api/change_requests?status=ReadyForReview")
+          mut resp = ApiClient.fetch("/api/change_requests?status=ReadyForReview")
           open_cr_count = resp.length
         template """
           <aside class="sidebar">
@@ -1409,7 +1409,7 @@ pkg VeilRuntimeUI
         fn sendTest()
           sending = true
           error = ""
-          resp = ApiClient.mutate("/api/bus/invoke", {message: testMessage})
+          mut resp = ApiClient.mutate("/api/bus/invoke", {message: testMessage})
           result = resp.result
           sending = false
         template """
@@ -1457,7 +1457,7 @@ pkg VeilRuntimeUI
           sending = true
           error = ""
           messages = messages.concat([{role: "user", content: user_input}])
-          resp = ApiClient.mutate("/api/agent", {message: user_input})
+          mut resp = ApiClient.mutate("/api/agent", {message: user_input})
           messages = messages.concat([{role: "assistant", content: resp.message}])
           user_input = ""
           sending = false

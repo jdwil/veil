@@ -2573,6 +2573,18 @@ fn parse_codegen_block(target: &str, lines: &[String], layer_name: &str) -> Code
                 }
 
                 if rule_line.starts_with("emit_file ") {
+                    // If we already have a pending emit_file+emit_body pair, push it
+                    // as its own rule before starting the next one.
+                    if emit_file.is_some() && !emit_body.is_empty() {
+                        rules.push(CodegenRule {
+                            match_shape: match_shape.clone(),
+                            condition: condition.clone(),
+                            emit_body: std::mem::take(&mut emit_body),
+                            emit_to: emit_to.take(),
+                            emit_file: emit_file.take(),
+                            priority,
+                        });
+                    }
                     emit_file = Some(unquote(&rule_line[10..]));
                     i += 1;
                 } else if rule_line.starts_with("emit_to ") {

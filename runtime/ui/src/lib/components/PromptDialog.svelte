@@ -17,7 +17,7 @@
   }
   let { open = $bindable(false), title = "Input", message = "", default_value = "", placeholder = "", confirm_label = "OK", cancel_label = "Cancel", on_confirm, on_cancel, agent = {  } }: Props = $props();
 
-  let value = $state<string>("");
+  let value: string = $state("");
 
   let veil_agent = $derived({ version: 1, role: "prompt-dialog", product: agent, runtime: { open, title } });
 

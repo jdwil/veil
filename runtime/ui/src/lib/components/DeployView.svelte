@@ -5,10 +5,10 @@
   import FormSection from './FormSection.svelte';
   import FormField from './FormField.svelte';
 
-  let artifactId = $state<string>('');
-  let targetType = $state<string>('');
-  let deploying = $state<boolean>(false);
-  let error = $state<string>('');
+  let artifactId: string = $state('');
+  let targetType: string = $state('');
+  let deploying: boolean = $state(false);
+  let error: string = $state('');
 
   async function triggerDeploy() {
     deploying = true;

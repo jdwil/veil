@@ -16,7 +16,7 @@
   }
   let { items = $bindable([]), label = "Items", add_label = "Add item", empty_label = "No items yet", collapsible = true, summary_key = "name", max_items = 0, item_template, on_add, on_remove, agent = {  } }: Props = $props();
 
-  let collapsed = $state<boolean[]>([]);
+  let collapsed: boolean[] = $state([]);
 
   let can_add = $derived(max_items === 0 || items.length < max_items);
   let veil_agent = $derived({ version: 1, role: "repeat-editor", product: agent, runtime: { label, count: items.length, max_items } });

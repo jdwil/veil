@@ -5,19 +5,19 @@
   import StatusPill from './StatusPill.svelte';
   import FormField from './FormField.svelte';
 
-  let id = $state<string>('');
-  let cr = $state<Record<string, unknown>>(undefined as any);
-  let diff = $state<Record<string, unknown>>(undefined as any);
-  let comments = $state<Record<string, unknown>[]>([]);
-  let approvals = $state<Record<string, unknown>[]>([]);
-  let ci = $state<Record<string, unknown>>(undefined as any);
-  let loading = $state<boolean>(false);
-  let error = $state<string>('');
-  let loaded = $state<boolean>(false);
-  let action_busy = $state<boolean>(false);
-  let new_comment = $state<string>('');
-  let new_comment_path = $state<string>('');
-  let comment_submitting = $state<boolean>(false);
+  let id: string = $state('');
+  let cr: Record<string, unknown> = $state(undefined as any);
+  let diff: Record<string, unknown> = $state(undefined as any);
+  let comments: Record<string, unknown>[] = $state([]);
+  let approvals: Record<string, unknown>[] = $state([]);
+  let ci: Record<string, unknown> = $state(undefined as any);
+  let loading: boolean = $state(false);
+  let error: string = $state('');
+  let loaded: boolean = $state(false);
+  let action_busy: boolean = $state(false);
+  let new_comment: string = $state('');
+  let new_comment_path: string = $state('');
+  let comment_submitting: boolean = $state(false);
 
     $effect(() => { // init
       loading = true;

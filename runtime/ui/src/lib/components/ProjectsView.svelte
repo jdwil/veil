@@ -6,14 +6,14 @@
   import EntityIdentity from './EntityIdentity.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
 
-  let repos = $state<Record<string, unknown>[]>([]);
-  let loading = $state<boolean>(false);
-  let error = $state<string>('');
-  let project_href_tpl = $state<string>("/projects/{id}");
-  let delete_open = $state<boolean>(false);
-  let deleting_id = $state<string>('');
-  let delete_name = $state<string>('');
-  let delete_busy = $state<boolean>(false);
+  let repos: Record<string, unknown>[] = $state([]);
+  let loading: boolean = $state(false);
+  let error: string = $state('');
+  let project_href_tpl: string = $state("/projects/{id}");
+  let delete_open: boolean = $state(false);
+  let deleting_id: string = $state('');
+  let delete_name: string = $state('');
+  let delete_busy: boolean = $state(false);
 
    $effect(() => { // load_on_mount
   void (async () => {

@@ -69,6 +69,7 @@ pub fn execute_templates(
         construct: &Construct,
         templates: &[&CodegenTemplate],
         registry: &LayerRegistry,
+        target: &str,
         sections: &mut HashMap<String, Vec<SectionContribution>>,
         files: &mut Vec<TemplateFile>,
         file_fragments: &mut Vec<String>,
@@ -76,7 +77,7 @@ pub fn execute_templates(
         for template in templates {
             for rule in &template.rules {
                 if matches_construct(construct, rule, registry) {
-                    let output = render_template(construct, rule, registry);
+                    let output = render_template(construct, rule, registry, target);
 
                     if let Some(ref file_pattern) = rule.emit_file {
                         // Emit to a specific file path (expand pattern).
@@ -111,7 +112,7 @@ pub fn execute_templates(
             }
         }
         for child in &construct.children {
-            visit_construct(child, templates, registry, sections, files, file_fragments);
+            visit_construct(child, templates, registry, target, sections, files, file_fragments);
         }
     }
 
@@ -122,6 +123,7 @@ pub fn execute_templates(
                     c,
                     &templates,
                     registry,
+                    target,
                     &mut sections,
                     &mut files,
                     &mut file_fragments,
@@ -247,7 +249,7 @@ fn expand_file_path(pattern: &str, construct: &Construct, registry: &LayerRegist
 }
 
 /// Render a template body with interpolation against a construct.
-fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRegistry) -> String {
+fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRegistry, target: &str) -> String {
     let mut output = rule.emit_body.clone();
 
     // Simple interpolations
@@ -326,6 +328,97 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
             String::new()
         };
         output = output.replace("{{state_decl}}", &state_script);
+    }
+
+    // {{fn_declarations}} — exported functions from construct.fns (target-aware).
+    if output.contains("{{fn_declarations}}") {
+        let fn_script = if !construct.fns.is_empty() {
+            let mut s = String::new();
+            for f in &construct.fns {
+                // Skip raw block fns (template, style, script)
+                if f.name == "template" || f.name == "style" || f.name == "script" {
+                    continue;
+                }
+                match target {
+                    "typescript" => {
+                        let params = f.params.iter()
+                            .map(|p| format!("{}: {}", p.name, svelte_type_display(&p.type_expr)))
+                            .collect::<Vec<_>>().join(", ");
+                        let is_async = f.return_type.as_ref()
+                            .map(|t| matches!(t, veil_ir::TypeExpr::Result(_)))
+                            .unwrap_or(false);
+                        let ret_type = match &f.return_type {
+                            Some(veil_ir::TypeExpr::Result(Some(inner))) =>
+                                format!(": Promise<{}>", svelte_type_display(inner)),
+                            Some(veil_ir::TypeExpr::Result(None)) => ": Promise<void>".into(),
+                            Some(ty) => format!(": {}", svelte_type_display(ty)),
+                            None => String::new(),
+                        };
+                        let async_kw = if is_async { "async " } else { "" };
+                        s.push_str(&format!(
+                            "export {}function {}({}){} {{\n",
+                            async_kw, f.name, params, ret_type
+                        ));
+                        for expr in &f.body {
+                            s.push_str(&format!("  {};\n", expr_to_display(expr)));
+                        }
+                        s.push_str("}\n\n");
+                    }
+                    "rust" => {
+                        let params = f.params.iter()
+                            .map(|p| format!("{}: {}", p.name, type_to_display(&p.type_expr)))
+                            .collect::<Vec<_>>().join(", ");
+                        let is_async = f.return_type.as_ref()
+                            .map(|t| matches!(t, veil_ir::TypeExpr::Result(_)))
+                            .unwrap_or(false);
+                        let ret_type = match &f.return_type {
+                            Some(ty) => format!(" -> {}", type_to_display(ty)),
+                            None => String::new(),
+                        };
+                        let async_kw = if is_async { "async " } else { "" };
+                        s.push_str(&format!(
+                            "pub {}fn {}({}){} {{\n",
+                            async_kw, f.name, params, ret_type
+                        ));
+                        for expr in &f.body {
+                            s.push_str(&format!("    {};\n", expr_to_display(expr)));
+                        }
+                        s.push_str("}\n\n");
+                    }
+                    _ => {
+                        // Generic fallback
+                        let params = f.params.iter()
+                            .map(|p| format!("{}: {}", p.name, type_to_display(&p.type_expr)))
+                            .collect::<Vec<_>>().join(", ");
+                        s.push_str(&format!("function {}({}) {{\n", f.name, params));
+                        for expr in &f.body {
+                            s.push_str(&format!("  {};\n", expr_to_display(expr)));
+                        }
+                        s.push_str("}\n\n");
+                    }
+                }
+            }
+            s
+        } else {
+            String::new()
+        };
+        output = output.replace("{{fn_declarations}}", &fn_script);
+    }
+
+    // {{state_exports}} — export statement for state fields (e.g. `export { field1, field2 };`)
+    if output.contains("{{state_exports}}") {
+        let state_block = construct.blocks.iter().find(|b| b.keyword == "state");
+        let exports = if let Some(state) = state_block {
+            if state.fields.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<&str> = state.fields.iter().map(|f| f.name.as_str()).collect();
+                format!("export {{ {} }};\n", names.join(", "))
+            }
+        } else {
+            String::new()
+        };
+        output = output.replace("{{state_exports}}", &exports);
     }
 
     // {{children_names}} — comma-separated child construct names

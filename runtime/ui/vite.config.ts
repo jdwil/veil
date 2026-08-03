@@ -1,9 +1,13 @@
     import { sveltekit } from '@sveltejs/kit/vite';
     import { defineConfig } from 'vite';
-    // server.watch.ignored: dual-loop gen rewrites these; watching them
-    // restarts Vite mid-HMR and can crash the process (Node HMR race).
     export default defineConfig({
       plugins: [sveltekit()],
+      optimizeDeps: {
+        exclude: ['@aether-ui/core'],
+      },
+      ssr: {
+        noExternal: ['@aether-ui/core'],
+      },
       server: {
         watch: {
           ignored: [

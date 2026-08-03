@@ -5,15 +5,15 @@
   import FormSection from './FormSection.svelte';
   import FormField from './FormField.svelte';
 
-  let testMessage = $state<string>('');
-  let result = $state<string | null>(null);
-  let sending = $state<boolean>(false);
-  let error = $state<string>('');
+  let testMessage: string = $state('');
+  let result: string | null = $state(null);
+  let sending: boolean = $state(false);
+  let error: string = $state('');
 
   async function sendTest() {
     sending = true;
     error = "";
-    resp = await (async () => { const __r = await fetch("/api/bus/invoke", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: testMessage }) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
+    let resp = await (async () => { const __r = await fetch("/api/bus/invoke", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: testMessage }) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
     result = resp.result;
     sending = false;
   }

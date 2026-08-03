@@ -4,11 +4,11 @@
   import CollectionView from './CollectionView.svelte';
   import StatusPill from './StatusPill.svelte';
 
-  let change_requests = $state<Record<string, unknown>[]>([]);
-  let loading = $state<boolean>(false);
-  let error = $state<string>('');
-  let active_filter = $state<string>('');
-  let cr_href_tpl = $state<string>("/changes/{id}");
+  let change_requests: Record<string, unknown>[] = $state([]);
+  let loading: boolean = $state(false);
+  let error: string = $state('');
+  let active_filter: string = $state('');
+  let cr_href_tpl: string = $state("/changes/{id}");
 
    $effect(() => { // load_on_mount
   void (async () => {

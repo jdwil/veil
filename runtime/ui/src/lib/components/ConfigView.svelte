@@ -5,12 +5,12 @@
   import FormSection from './FormSection.svelte';
   import FormField from './FormField.svelte';
 
-  let aws_region = $state<string>('');
-  let s3_bucket = $state<string>('');
-  let ddb_table = $state<string>('');
-  let llm_model = $state<string>('');
-  let saving = $state<boolean>(false);
-  let error = $state<string>('');
+  let aws_region: string = $state('');
+  let s3_bucket: string = $state('');
+  let ddb_table: string = $state('');
+  let llm_model: string = $state('');
+  let saving: boolean = $state(false);
+  let error: string = $state('');
 
   async function save() {
     saving = true;

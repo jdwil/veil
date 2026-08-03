@@ -4,16 +4,16 @@
   import PageHeader from './PageHeader.svelte';
   import EmptyState from './EmptyState.svelte';
 
-  let messages = $state<Record<string, unknown>[]>([]);
-  let user_input = $state<string>('');
-  let sending = $state<boolean>(false);
-  let error = $state<string>('');
+  let messages: Record<string, unknown>[] = $state([]);
+  let user_input: string = $state('');
+  let sending: boolean = $state(false);
+  let error: string = $state('');
 
   async function sendMessage() {
     sending = true;
     error = "";
     messages = messages.concat([{ role: "user", content: user_input }]);
-    resp = await (async () => { const __r = await fetch("/api/agent", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: user_input }) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
+    let resp = await (async () => { const __r = await fetch("/api/agent", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: user_input }) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
     messages = messages.concat([{ role: "assistant", content: resp.message }]);
     user_input = "";
     sending = false;

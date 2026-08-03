@@ -5,10 +5,10 @@
   import FormSection from './FormSection.svelte';
   import FormField from './FormField.svelte';
 
-  let name = $state<string>('');
-  let description = $state<string>('');
-  let submitting = $state<boolean>(false);
-  let error = $state<string>('');
+  let name: string = $state('');
+  let description: string = $state('');
+  let submitting: boolean = $state(false);
+  let error: string = $state('');
 
    $effect(() => { // submit
   void (async () => {

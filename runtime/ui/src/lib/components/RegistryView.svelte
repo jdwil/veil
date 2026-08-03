@@ -4,10 +4,10 @@
   import PageHeader from './PageHeader.svelte';
   import CollectionView from './CollectionView.svelte';
 
-  let layers = $state<Record<string, unknown>[]>([]);
-  let stubs = $state<Record<string, unknown>[]>([]);
-  let loading = $state<boolean>(false);
-  let error = $state<string>('');
+  let layers: Record<string, unknown>[] = $state([]);
+  let stubs: Record<string, unknown>[] = $state([]);
+  let loading: boolean = $state(false);
+  let error: string = $state('');
 
    $effect(() => { // load_on_mount
   void (async () => {

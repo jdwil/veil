@@ -4185,6 +4185,7 @@ dependencies = [
  "tracing-subscriber",
  "veil-codegen",
  "veil-ir",
+ "veil-local",
  "veil-parser",
  "veil-server",
 ]

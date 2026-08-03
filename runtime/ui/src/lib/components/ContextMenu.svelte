@@ -10,9 +10,9 @@
   }
   let { items = [], align = "right", aria_label = "Actions", children, agent = {  } }: Props = $props();
 
-  let open = $state<boolean>(false);
-  let root_el = $state<Any>(undefined as any);
-  let menu_el = $state<Any>(undefined as any);
+  let open: boolean = $state(false);
+  let root_el: Any = $state(undefined as any);
+  let menu_el: Any = $state(undefined as any);
 
   let veil_agent = $derived({ version: 1, role: "context-menu", product: agent, runtime: { open } });
 

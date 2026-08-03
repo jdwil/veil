@@ -13,7 +13,7 @@
   }
   let { open = $bindable(false), title = "", size = "md", close_on_backdrop = true, children, footer, on_close, agent = {  } }: Props = $props();
 
-  let dialog_el = $state<Any>(undefined as any);
+  let dialog_el: Any = $state(undefined as any);
 
   let veil_agent = $derived({ version: 1, role: "modal", product: agent, runtime: { open, title, size } });
 

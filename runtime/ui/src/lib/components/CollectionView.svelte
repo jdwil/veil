@@ -32,7 +32,7 @@
   }
   let { title = "", description = "", items = [], loading = false, error = "", view_mode = "both", default_layout = "tiles", show_avatar = true, empty_title = "Nothing here yet", empty_description = "", empty_action_href = "", empty_action_label = "", primary_href = "", primary_label = "", item_href_template = "", layout_storage_key = "", columns = [], tile, row, header_actions, agent = {  } }: Props = $props();
 
-  let layout = $state<string>("tiles");
+  let layout: string = $state("tiles");
 
   let show_toggle = $derived(view_mode === "both");
   let veil_agent = $derived({ version: 1, role: "collection", product: agent, runtime: { loading, error, layout, view_mode, primary_href, primary_label, item_href_template, layout_storage_key } });
