@@ -16,6 +16,7 @@ pub struct Deps {
     pub cache: std::sync::Arc<dyn MetaArtifactCache + Send + Sync>,
     pub compiler: std::sync::Arc<dyn MetaCompilationBackend + Send + Sync>,
     pub objects: std::sync::Arc<dyn ObjectStorage + Send + Sync>,
+    pub subprocess_runner: std::sync::Arc<dyn SubprocessRunner + Send + Sync>,
 }
 
 /// DomainService: ResolveContentHash
@@ -108,12 +109,16 @@ pub async fn execute_meta_function(
         },
     };
     let timeout = timeout_ms.clone().unwrap_or(30000);
-    let output = SubprocessOutput {
-        success: true,
-        output: Some(input.clone()),
-        error: None,
-        emitted_events: vec![],
-    };
+    let input_json = serde_json::to_string(&subprocess_input)?;
+    let output = deps
+        .subprocess_runner
+        .run(
+            binary_path.clone(),
+            input_json.clone(),
+            timeout.clone(),
+            256,
+        )
+        .await?;
     return Ok(ExecutionResult {
         output: serde_json::json!(output.output.unwrap_or(serde_json::Value::Null)),
         metadata: ExecutionMetadata {

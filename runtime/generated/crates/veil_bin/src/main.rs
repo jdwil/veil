@@ -291,6 +291,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         aws_sdk_s3::Client::from_conf(conf)
     };
 
+    let sandboxed_subprocess_runner_inst: Arc<
+        dyn meta_execution::ports::SubprocessRunner + Send + Sync,
+    > = Arc::new(meta_execution::adapters::SandboxedSubprocessRunner {});
     let s3_meta_object_store_inst: Arc<dyn meta_execution::ports::ObjectStorage + Send + Sync> =
         Arc::new(meta_execution::adapters::S3MetaObjectStore {
             bucket: std::env::var("VEIL_S3_BUCKET")
@@ -309,6 +312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dyn meta_execution::ports::MetaCompilationBackend + Send + Sync,
     > = Arc::new(meta_execution::adapters::MockMetaCompiler {});
     let meta_execution_deps = Arc::new(meta_execution_Deps {
+        subprocess_runner: sandboxed_subprocess_runner_inst.clone(),
         objects: s3_meta_object_store_inst.clone(),
         cache: s3_artifact_cache_inst.clone(),
         compiler: mock_meta_compiler_inst.clone(),

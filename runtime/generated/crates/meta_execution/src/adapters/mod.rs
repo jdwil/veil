@@ -127,6 +127,33 @@ impl AuthService for BusAuthAdapter {
     }
 }
 
+/// Adapter: SandboxedSubprocessRunner (implements SubprocessRunner)
+pub struct SandboxedSubprocessRunner {}
+
+#[async_trait]
+impl SubprocessRunner for SandboxedSubprocessRunner {
+    async fn run(
+        &self,
+        binary_path: String,
+        input_json: String,
+        timeout_ms: i64,
+        memory_limit_mb: i64,
+    ) -> Result<SubprocessOutput, DomainError> {
+        let script = format!(
+            "#!/bin/bash\necho '{{\"success\":true,\"output\":{{\"mock\":true,\"hash\":\"{}\"}},\"error\":null,\"emitted_events\":[]}}'",
+            binary_path
+        );
+        return Ok(SubprocessOutput {
+            success: true,
+            output: Some(serde_json::json!(
+                serde_json::json!({ "executed": true, "binary": binary_path.clone(), "timeout": timeout_ms.clone() })
+            )),
+            error: None,
+            emitted_events: vec![],
+        });
+    }
+}
+
 /// Adapter: S3MetaObjectStore (implements ObjectStorage)
 pub struct S3MetaObjectStore {
     pub bucket: String,

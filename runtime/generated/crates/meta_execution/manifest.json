@@ -36,6 +36,10 @@
     "saga_step": {
       "provided_by": "runtime",
       "trait": "SagaStep"
+    },
+    "subprocess_runner": {
+      "adapter": "SandboxedSubprocessRunner",
+      "trait": "SubprocessRunner"
     }
   },
   "expose": [],

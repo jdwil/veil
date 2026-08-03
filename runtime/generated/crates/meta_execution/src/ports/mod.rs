@@ -47,3 +47,15 @@ pub trait MetaArtifactCache: Send + Sync {
     async fn evict(&self, content_hash: String) -> Result<(), DomainError>;
     async fn stats(&self) -> Result<CacheStats, DomainError>;
 }
+
+/// Port: SubprocessRunner
+#[async_trait]
+pub trait SubprocessRunner: Send + Sync {
+    async fn run(
+        &self,
+        binary_path: String,
+        input_json: String,
+        timeout_ms: i64,
+        memory_limit_mb: i64,
+    ) -> Result<SubprocessOutput, DomainError>;
+}
