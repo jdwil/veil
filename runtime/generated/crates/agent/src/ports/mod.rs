@@ -28,3 +28,11 @@ pub trait AcpSessionRegistry: Send + Sync {
         result: AcpToolResult,
     ) -> Result<(), DomainError>;
 }
+
+/// Port: AgentMetricsStore
+#[async_trait]
+pub trait AgentMetricsStore: Send + Sync {
+    async fn record_change(&self, metrics: AgentLoopMetrics) -> Result<(), DomainError>;
+    async fn get_recent(&self, limit: i64) -> Result<Vec<AgentLoopMetrics>, DomainError>;
+    async fn get_summary(&self) -> Result<serde_json::Value, DomainError>;
+}

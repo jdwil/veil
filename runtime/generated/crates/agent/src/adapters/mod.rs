@@ -109,3 +109,25 @@ impl AcpSessionRegistry for InMemoryAcpRegistry {
         Ok(())
     }
 }
+
+/// Adapter: InMemoryAgentMetrics (implements AgentMetricsStore)
+pub struct InMemoryAgentMetrics {
+    pub records: Vec<AgentLoopMetrics>,
+}
+
+#[async_trait]
+impl AgentMetricsStore for InMemoryAgentMetrics {
+    async fn get_recent(&self, limit: i64) -> Result<Vec<AgentLoopMetrics>, DomainError> {
+        return Ok(vec![]);
+    }
+
+    async fn get_summary(&self) -> Result<serde_json::Value, DomainError> {
+        return Ok(
+            serde_json::json!({ "total": 0, "avg_tokens": 0, "avg_failures": 0, "avg_time_to_approve_ms": 0 }),
+        );
+    }
+
+    async fn record_change(&self, metrics: AgentLoopMetrics) -> Result<(), DomainError> {
+        todo!("empty adapter body: InMemoryAgentMetrics::record_change")
+    }
+}

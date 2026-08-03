@@ -3967,6 +3967,25 @@ pkg VeilRuntime
         token: Opt<Str>
         agent_name: Opt<Str>
 
+      # ─── Agent Loop Metrics ─────────────────────────────────────────────
+      val AgentLoopMetrics
+        change_id: Str
+        tokens_consumed: Int
+        check_failures_before_green: Int
+        time_to_approve_ms: Opt<Int>
+        started_at: Dt
+        completed_at: Opt<Dt>
+        approved_at: Opt<Dt>
+        status: AgentChangeStatus
+
+      enum AgentChangeStatus
+        InProgress
+        CheckFailed
+        CheckPassed
+        AwaitingApproval
+        Approved
+        Rejected
+
     group application
       # ─── Provider Configuration ─────────────────────────────────────────
       svc ResolveProvider
@@ -4149,3 +4168,19 @@ pkg VeilRuntime
           # In production: send via channel to the ACP WebSocket task
         impl send_tool_result(user_id, result)
           # In production: forward to the ACP agent process
+
+      # ─── Agent Loop Metrics ─────────────────────────────────────────────
+      port AgentMetricsStore
+        record_change!(metrics: AgentLoopMetrics)
+        get_recent!(limit: Int) -> List<AgentLoopMetrics>
+        get_summary!() -> Json
+
+      adapter InMemoryAgentMetrics for AgentMetricsStore
+        @field(records: List<AgentLoopMetrics>)
+        impl record_change(metrics)
+          # Append metrics record (production: use RwLock or persistent store)
+          ret ()
+        impl get_recent(limit)
+          ret []
+        impl get_summary()
+          ret {total: 0, avg_tokens: 0, avg_failures: 0, avg_time_to_approve_ms: 0}

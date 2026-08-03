@@ -64,6 +64,18 @@ pub enum AcpTurnError {
     AgentError { message: String },
 }
 
+/// enum: AgentChangeStatus
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum AgentChangeStatus {
+    #[default]
+    InProgress,
+    CheckFailed,
+    CheckPassed,
+    AwaitingApproval,
+    Approved,
+    Rejected,
+}
+
 /// ValueObject: AcpMessage
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcpMessage {
@@ -332,5 +344,33 @@ impl AcpConnectParams {
 impl Default for AcpConnectParams {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// ValueObject: AgentLoopMetrics
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentLoopMetrics {
+    pub change_id: String,
+    pub tokens_consumed: i64,
+    pub check_failures_before_green: i64,
+    pub time_to_approve_ms: Option<i64>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub status: AgentChangeStatus,
+}
+
+impl AgentLoopMetrics {
+    pub fn new(change_id: String, started_at: DateTime<Utc>, status: AgentChangeStatus) -> Self {
+        Self {
+            change_id,
+            tokens_consumed: 0,
+            check_failures_before_green: 0,
+            time_to_approve_ms: None,
+            started_at,
+            completed_at: None,
+            approved_at: None,
+            status,
+        }
     }
 }

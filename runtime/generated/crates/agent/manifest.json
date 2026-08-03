@@ -6,6 +6,10 @@
       "adapter": "InMemoryAcpRegistry",
       "trait": "AcpSessionRegistry"
     },
+    "agent_metrics_store": {
+      "adapter": "InMemoryAgentMetrics",
+      "trait": "AgentMetricsStore"
+    },
     "auth_service": {
       "provided_by": "runtime",
       "strategy": "bus",
