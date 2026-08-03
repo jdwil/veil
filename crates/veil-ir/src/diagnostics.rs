@@ -74,10 +74,34 @@ impl Diagnostic {
             span_end: None,
         }
     }
+
+    /// Guidance diagnostic: style/form suggestion (non-blocking).
+    pub fn guidance(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        hint: impl Into<String>,
+    ) -> Self {
+        let code = code.into();
+        Diagnostic {
+            severity: Severity::Guidance,
+            message: message.into(),
+            node_id: None,
+            node_name: None,
+            constraint: code.clone(),
+            code,
+            parent: None,
+            hint: Some(hint.into()),
+            span_start: None,
+            span_end: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub enum Severity {
+    /// Agent guidance: prefer terse form, style suggestion, etc.
+    /// Does not indicate a problem — just an authoring hint.
+    Guidance,
     Warning,
     Error,
 }

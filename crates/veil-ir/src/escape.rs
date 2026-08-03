@@ -843,6 +843,7 @@ mod tests {
             links: vec![],
             items,
             expose: None,
+            guidance: Vec::new(),
         }
     }
 

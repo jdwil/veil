@@ -936,6 +936,7 @@ mod tests {
             links: vec![],
 items: Vec::new(),
             expose: None,
+            guidance: Vec::new(),
         };
         let err = apply_edit(&mut sol, &EditOp::Rename { span_start: 42, name: "X".to_string() });
         assert!(matches!(err, Err(EditError::TargetNotFound(42))));
@@ -959,6 +960,7 @@ items: Vec::new(),
             links: vec![],
 items: vec![TopLevelItem::Construct(svc)],
             expose: None,
+            guidance: Vec::new(),
         }
     }
 
@@ -1068,6 +1070,7 @@ items: vec![TopLevelItem::Construct(svc)],
             links: vec![],
 items: vec![TopLevelItem::Construct(parent)],
             expose: None,
+            guidance: Vec::new(),
         };
         apply_edit(
             &mut sol,
@@ -1107,6 +1110,7 @@ items: vec![TopLevelItem::Construct(parent)],
             links: vec![],
 items: vec![TopLevelItem::Construct(bus)],
             expose: None,
+            guidance: Vec::new(),
         };
         let err = apply_edit(
             &mut sol,
@@ -1126,6 +1130,7 @@ items: vec![TopLevelItem::Construct(bus)],
             links: vec![],
 items: Vec::new(),
             expose: None,
+            guidance: Vec::new(),
         };
         let err = apply_edit(&mut sol, &EditOp::DeleteConstruct { span_start: 99 });
         assert!(matches!(err, Err(EditError::TargetNotFound(99))));

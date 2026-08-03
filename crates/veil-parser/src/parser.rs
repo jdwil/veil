@@ -101,7 +101,8 @@ pub fn parse_with_registry(
     tokens: &[Token],
     registry: LayerRegistry,
 ) -> Result<Solution, Vec<ParseError>> {
-    let mut sol = match parse_file_with_registry(tokens, registry.clone())? {
+    let (file, guidance) = parse_file_with_guidance(tokens, registry.clone())?;
+    let mut sol = match file {
         VeilFile::Solution(sol) => sol,
         VeilFile::Package(pkg) => Solution {
             name: pkg.name,
@@ -110,6 +111,7 @@ pub fn parse_with_registry(
             links: pkg.links,
             items: pkg.items,
             expose: pkg.expose,
+            guidance: Vec::new(),
         },
         VeilFile::Composition(comp) => Solution {
             name: "composition".to_string(),
@@ -118,8 +120,12 @@ pub fn parse_with_registry(
             links: Vec::new(),
             items: comp.flows.into_iter().map(TopLevelItem::Flow).collect(),
             expose: None,
+            guidance: Vec::new(),
         },
     };
+
+    // Attach parser-emitted guidance diagnostics
+    sol.guidance = guidance;
 
     // Inject layer declarations (e.g. `port Bus` from ddd.layer's declare section)
     inject_declarations(&mut sol, &registry);
@@ -195,12 +201,31 @@ pub fn parse_file_with_registry(
     tokens: &[Token],
     registry: LayerRegistry,
 ) -> Result<VeilFile, Vec<ParseError>> {
+    let (file, _guidance) = parse_file_with_guidance(tokens, registry)?;
+    Ok(file)
+}
+
+/// Internal: parse file and return any guidance diagnostics alongside.
+fn parse_file_with_guidance(
+    tokens: &[Token],
+    registry: LayerRegistry,
+) -> Result<(VeilFile, Vec<veil_ir::ast::GuidanceDiagnostic>), Vec<ParseError>> {
     let mut parser = Parser::new(tokens, registry);
     parser.skip_newlines();
 
     let result = match parser.peek_kind().clone() {
         TokenKind::Pkg => parser.parse_package().map(VeilFile::Package),
-        TokenKind::Sol => parser.parse_package().map(VeilFile::Package), // sol is a deprecated alias for pkg
+        TokenKind::Sol => {
+            // Emit guidance diagnostic for verbose form
+            let span = parser.current().span;
+            parser.guidance.push(veil_ir::ast::GuidanceDiagnostic {
+                code: "prefer_terse".to_string(),
+                message: "Use `pkg` instead of `sol` — `sol` is the deprecated verbose form".to_string(),
+                hint: "Replace `sol` with `pkg` for canonical terse syntax".to_string(),
+                span,
+            });
+            parser.parse_package().map(VeilFile::Package)
+        }
         TokenKind::Use => parser.parse_composition().map(VeilFile::Composition),
         _ => parser.parse_solution().map(VeilFile::Solution),
     };
@@ -222,13 +247,14 @@ pub fn parse_file_with_registry(
                         links: pkg.links.clone(),
                         items: std::mem::take(&mut pkg.items),
                         expose: pkg.expose.clone(),
+                        guidance: Vec::new(),
                     };
                     inject_declarations(&mut sol, &parser.registry);
                     pkg.items = sol.items;
                 }
                 _ => {}
             }
-            Ok(file)
+            Ok((file, parser.guidance))
         }
         Ok(_) => Err(parser.errors),
         Err(e) => {
@@ -243,6 +269,7 @@ struct Parser<'a> {
     pos: usize,
     errors: Vec<ParseError>,
     registry: LayerRegistry,
+    guidance: Vec<veil_ir::ast::GuidanceDiagnostic>,
 }
 
 impl<'a> Parser<'a> {
@@ -252,6 +279,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             errors: Vec::new(),
             registry,
+            guidance: Vec::new(),
         }
     }
 
@@ -835,6 +863,7 @@ impl<'a> Parser<'a> {
             links,
             items,
             expose: None,
+            guidance: Vec::new(),
         })
     }
 

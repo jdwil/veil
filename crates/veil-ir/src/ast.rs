@@ -245,6 +245,19 @@ pub struct Solution {
     /// packages are lowered to Solution for check/codegen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<ExposeBlock>,
+    /// Parser-time guidance diagnostics (terse form suggestions, style hints).
+    /// These are non-blocking and informational only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guidance: Vec<GuidanceDiagnostic>,
+}
+
+/// A lightweight parser-time guidance diagnostic (non-blocking).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuidanceDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub hint: String,
+    pub span: Span,
 }
 
 /// Top-level items within a solution or package.

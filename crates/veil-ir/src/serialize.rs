@@ -1624,6 +1624,7 @@ mod tests {
             links: vec![],
 items: vec![TopLevelItem::Construct(c)],
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(
@@ -1657,6 +1658,7 @@ items: vec![TopLevelItem::Construct(c)],
             links: vec![],
 items: vec![TopLevelItem::Construct(c)],
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(
@@ -1684,6 +1686,7 @@ items: vec![TopLevelItem::Construct(c)],
             links: vec![],
 items: vec![TopLevelItem::Construct(c)],
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(out.contains("input"), "missing input block:\n{}", out);
@@ -1709,6 +1712,7 @@ items: vec![TopLevelItem::Construct(c)],
             links: vec![],
 items: vec![TopLevelItem::Construct(c)],
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(!out.contains("__internal"), "leaked internal ann:\n{}", out);
@@ -1732,6 +1736,7 @@ items: vec![TopLevelItem::Construct(c)],
             links: vec![],
 items: vec![TopLevelItem::Construct(c)],
             expose: None,
+            guidance: Vec::new(),
         }
     }
 
@@ -1899,6 +1904,7 @@ items: vec![TopLevelItem::Construct(c)],
             links: vec![],
 items: Vec::new(),
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(out.starts_with("pkg App\n"), "expected pkg:\n{}", out);
@@ -1917,6 +1923,7 @@ items: Vec::new(),
             links: vec![],
 items: vec![TopLevelItem::Construct(c)],
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(out.contains("+struct S") || out.contains("+struct  S"), "expected +export:\n{}", out);
@@ -1961,6 +1968,7 @@ items: vec![TopLevelItem::Construct(Construct::new(
                 Span::new(0, 0),
             ))],
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(out.ends_with('\n'), "missing final newline");
@@ -1985,6 +1993,7 @@ items: vec![
                 TopLevelItem::Construct(other),
             ],
             expose: None,
+            guidance: Vec::new(),
         };
         let out = serialize_solution(&sol);
         assert!(!out.contains("Bus"), "layer-provided leaked:\n{}", out);

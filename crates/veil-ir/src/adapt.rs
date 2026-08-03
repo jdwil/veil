@@ -59,6 +59,7 @@ pub fn package_as_solution(pkg: &Package) -> Solution {
         links: pkg.links.clone(),
         items: pkg.items.clone(),
         expose: pkg.expose.clone(),
+        guidance: Vec::new(),
     }
 }
 

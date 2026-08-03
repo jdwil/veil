@@ -1168,6 +1168,7 @@ items: vec![
                 TopLevelItem::Construct(member),
             ],
             expose: None,
+            guidance: Vec::new(),
         };
         let graph = build_ir_with_registry(&sol, Some(&reg));
         let refs: Vec<_> = graph
@@ -1217,6 +1218,7 @@ items: vec![
             links: vec![],
 items: vec![TopLevelItem::Construct(member)],
             expose: None,
+            guidance: Vec::new(),
         };
         let graph = build_ir_with_registry(&sol, Some(&reg));
         assert!(!graph.edges.iter().any(|e| e.kind == EdgeKind::References));

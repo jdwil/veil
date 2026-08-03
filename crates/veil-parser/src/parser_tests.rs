@@ -1431,4 +1431,16 @@ sol App
             "expected error about 'badstuff'"
         );
     }
+
+    #[test]
+    fn guidance_diagnostic_for_sol_keyword() {
+        // Use parse() which handles core keywords natively (struct, enum, etc.)
+        let source = "sol MyApp\n  struct User\n    name\n    email\n";
+        let tokens = lex(source);
+        let sol = parse(&tokens).expect("should parse");
+        assert_eq!(sol.name, "MyApp");
+        assert!(!sol.guidance.is_empty(), "expected guidance diagnostic for 'sol' keyword");
+        assert_eq!(sol.guidance[0].code, "prefer_terse");
+        assert!(sol.guidance[0].message.contains("pkg"), "guidance should suggest pkg");
+    }
 }

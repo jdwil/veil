@@ -237,6 +237,9 @@ fn assemble_preamble_inner(source: &str, registry: &LayerRegistry, tier0_text: &
                     diags.push_str(&format!("WARN  {line}\n"));
                 }
             }
+            veil_ir::Severity::Guidance => {
+                diags.push_str(&format!("GUIDE {line}\n"));
+            }
         }
     }
     if warn_n > 40 {

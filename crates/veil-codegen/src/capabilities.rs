@@ -797,6 +797,7 @@ mod tests {
             links: vec![],
 items: vec![TopLevelItem::Construct(c)],
             expose: None,
+            guidance: Vec::new(),
         }
     }
 
@@ -927,6 +928,7 @@ items: vec![TopLevelItem::Function(FnDef {
             steps: Vec::new(),
             })],
             expose: None,
+            guidance: Vec::new(),
         };
         let reg = LayerRegistry::builtin();
         let diags = check_target_capabilities(&sol, &reg, CodegenTarget::Swift);
@@ -956,6 +958,7 @@ items: vec![TopLevelItem::Function(FnDef {
             steps: Vec::new(),
             })],
             expose: None,
+            guidance: Vec::new(),
         };
         let reg = LayerRegistry::builtin();
         let diags = check_target_capabilities(&sol, &reg, CodegenTarget::Kotlin);

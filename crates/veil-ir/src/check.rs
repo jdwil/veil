@@ -70,6 +70,22 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
     diagnostics.extend(crate::escape::check_escape_hatches(sol, registry));
     diagnostics.extend(crate::test_lint::check_tests(sol));
 
+    // Include parser-emitted guidance diagnostics (terse form hints, etc.)
+    for g in &sol.guidance {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Guidance,
+            message: g.message.clone(),
+            node_id: None,
+            node_name: None,
+            code: g.code.clone(),
+            constraint: g.code.clone(),
+            parent: None,
+            hint: Some(g.hint.clone()),
+            span_start: Some(g.span.start),
+            span_end: Some(g.span.end),
+        });
+    }
+
     sort_diagnostics(&mut diagnostics);
 
     CheckResult {
@@ -93,6 +109,7 @@ fn severity_rank(s: &Severity) -> u8 {
     match s {
         Severity::Error => 0,
         Severity::Warning => 1,
+        Severity::Guidance => 2,
     }
 }
 
@@ -127,6 +144,7 @@ pub fn format_diagnostic_line(d: &Diagnostic) -> String {
     let sev = match d.severity {
         Severity::Error => "error",
         Severity::Warning => "warning",
+        Severity::Guidance => "guidance",
     };
     let where_ = d
         .node_name
@@ -185,6 +203,7 @@ impl From<&Diagnostic> for StructuredDiagnostic {
             severity: match d.severity {
                 Severity::Error => "error".into(),
                 Severity::Warning => "warning".into(),
+                Severity::Guidance => "guidance".into(),
             },
             message: d.message.clone(),
             span,
@@ -320,6 +339,7 @@ mod tests {
             links: vec![],
 items: vec![TopLevelItem::Construct(root)],
             expose: None,
+            guidance: Vec::new(),
         }
     }
 

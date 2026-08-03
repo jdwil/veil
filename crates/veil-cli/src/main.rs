@@ -196,6 +196,15 @@ enum Commands {
         /// Path to the .veil file
         file: PathBuf,
     },
+    /// Connect a local ACP agent to the runtime for LLM reasoning.
+    ///
+    /// Spawns a local agent process and bridges its stdin/stdout to the runtime's
+    /// `/api/agent/acp` WebSocket endpoint. The agent provides LLM reasoning;
+    /// tool execution still happens on the runtime.
+    Agent {
+        #[command(subcommand)]
+        action: AgentCmd,
+    },
     /// Generate a .stub file from a Rust crate's rustdoc JSON
     StubGen {
         /// Crate name (e.g. "reqwest")
@@ -268,6 +277,36 @@ enum ProjectsCmd {
     /// Print absolute path to a named project
     Path {
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// Connect a local ACP agent to the runtime.
+    ///
+    /// Default command: `kiro-cli acp --agent hive --trust-all-tools`
+    /// Override with --command.
+    Connect {
+        /// Command to spawn as the ACP agent process.
+        /// The process must read ACP turn_request frames from stdin (JSON lines)
+        /// and write content_delta / tool_use / turn_complete frames to stdout.
+        #[arg(long, default_value = "kiro-cli acp --agent hive --trust-all-tools")]
+        command: String,
+        /// Runtime URL (default: read from ~/.veil/config.json or http://localhost:8080)
+        #[arg(long)]
+        runtime_url: Option<String>,
+        /// Auth token (default: read from ~/.veil/config.json)
+        #[arg(long)]
+        token: Option<String>,
+        /// Display name for this agent shown in the dashboard
+        #[arg(long, default_value = "Kiro")]
+        agent_name: String,
+    },
+    /// Show the current agent connection status.
+    Status {
+        /// Runtime URL (default: read from ~/.veil/config.json or http://localhost:8080)
+        #[arg(long)]
+        runtime_url: Option<String>,
     },
 }
 
@@ -1686,6 +1725,255 @@ fn rustdoc_type_to_veil(ty: &serde_json::Value) -> String {
     "Str".to_string() // fallback
 }
 
+// ─── Agent Connect (ACP Tunnel Bridge) ──────────────────────────────────────
+
+/// Read runtime URL and token from ~/.veil/config.json.
+fn read_veil_config() -> (Option<String>, Option<String>) {
+    let config_path = dirs::home_dir()
+        .map(|h| h.join(".veil/config.json"))
+        .unwrap_or_default();
+    if let Ok(contents) = std::fs::read_to_string(&config_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&contents) {
+            let url = val.get("runtime_url").and_then(|v| v.as_str()).map(String::from);
+            let token = val.get("token").and_then(|v| v.as_str()).map(String::from);
+            return (url, token);
+        }
+    }
+    (None, None)
+}
+
+/// `veil agent connect` — spawn a local ACP agent and bridge to the runtime.
+async fn run_agent_connect(command: &str, runtime_url: Option<String>, token: Option<String>, agent_name: &str) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let (config_url, config_token) = read_veil_config();
+    let base_url = runtime_url
+        .or(config_url)
+        .unwrap_or_else(|| "http://localhost:8080".into());
+    let auth_token = token
+        .or(config_token)
+        .unwrap_or_else(|| "default_user".into());
+
+    // Build WebSocket URL
+    let ws_url = {
+        let base = base_url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
+        let encoded_name = agent_name.replace(' ', "+");
+        format!("{base}/api/agent/acp?token={auth_token}&agent_name={encoded_name}")
+    };
+
+    eprintln!("╭─ veil agent connect");
+    eprintln!("│  Agent:   {agent_name}");
+    eprintln!("│  Command: {command}");
+    eprintln!("│  Runtime: {base_url}");
+    eprintln!("│  WebSocket: {ws_url}");
+    eprintln!("╰─");
+    eprintln!();
+
+    // Connect WebSocket to the runtime
+    eprintln!("Connecting to runtime...");
+    let (ws_stream, _response) = match tokio_tungstenite::connect_async(&ws_url).await {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("error: Failed to connect to runtime at {ws_url}: {e}");
+            eprintln!();
+            eprintln!("Is the runtime running? Try:");
+            eprintln!("  cd runtime/bootstrap && cargo run");
+            std::process::exit(1);
+        }
+    };
+    eprintln!("✓ Connected to runtime");
+
+    let (mut ws_write, mut ws_read) = futures::StreamExt::split(ws_stream);
+
+    // Read the welcome message
+    if let Some(Ok(msg)) = futures::StreamExt::next(&mut ws_read).await {
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+            if let Ok(frame) = serde_json::from_str::<serde_json::Value>(&text) {
+                if frame.get("type").and_then(|v| v.as_str()) == Some("connected") {
+                    eprintln!("✓ ACP tunnel established");
+                }
+            }
+        }
+    }
+
+    // Spawn the local agent process
+    eprintln!("Spawning agent: {command}");
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        eprintln!("error: empty command");
+        std::process::exit(1);
+    }
+
+    let mut child = match TokioCommand::new(parts[0])
+        .args(&parts[1..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: Failed to spawn agent process `{command}`: {e}");
+            eprintln!();
+            if command.contains("kiro-cli") {
+                eprintln!("Is kiro-cli installed? Check: which kiro-cli");
+            }
+            std::process::exit(1);
+        }
+    };
+    eprintln!("✓ Agent process started (PID: {})", child.id().unwrap_or(0));
+    eprintln!();
+    eprintln!("Bridge active. Ctrl+C to disconnect.");
+    eprintln!("Dashboard should now show: Agent: Connected ({agent_name})");
+    eprintln!();
+
+    let mut child_stdin = child.stdin.take().expect("child stdin");
+    let child_stdout = child.stdout.take().expect("child stdout");
+    let mut stdout_reader = BufReader::new(child_stdout).lines();
+
+    // Bridge: Runtime WS → Agent stdin, Agent stdout → Runtime WS
+    loop {
+        tokio::select! {
+            // Runtime → Agent: forward turn_request and tool_result frames to the process stdin
+            ws_msg = futures::StreamExt::next(&mut ws_read) => {
+                match ws_msg {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        // Forward the frame to the agent process stdin (JSON line)
+                        let mut line = text.to_string();
+                        if !line.ends_with('\n') {
+                            line.push('\n');
+                        }
+                        if child_stdin.write_all(line.as_bytes()).await.is_err() {
+                            eprintln!("Agent process stdin closed");
+                            break;
+                        }
+                        let _ = child_stdin.flush().await;
+                    }
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => {
+                        eprintln!("Runtime WebSocket closed");
+                        break;
+                    }
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(data))) => {
+                        let _ = futures::SinkExt::send(
+                            &mut ws_write,
+                            tokio_tungstenite::tungstenite::Message::Pong(data)
+                        ).await;
+                    }
+                    Some(Err(e)) => {
+                        eprintln!("WebSocket error: {e}");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            // Agent → Runtime: read JSON lines from stdout and send to WS
+            line = stdout_reader.next_line() => {
+                match line {
+                    Ok(Some(text)) => {
+                        let text = text.trim().to_string();
+                        if text.is_empty() { continue; }
+                        // Validate it's JSON before sending
+                        if serde_json::from_str::<serde_json::Value>(&text).is_err() {
+                            eprintln!("warning: non-JSON line from agent, skipping: {}", &text[..text.len().min(80)]);
+                            continue;
+                        }
+                        if futures::SinkExt::send(
+                            &mut ws_write,
+                            tokio_tungstenite::tungstenite::Message::Text(text.into())
+                        ).await.is_err() {
+                            eprintln!("Failed to send to runtime WebSocket");
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        eprintln!("Agent process stdout closed (process exited)");
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading agent stdout: {e}");
+                        break;
+                    }
+                }
+            }
+            // Agent process exit
+            status = child.wait() => {
+                match status {
+                    Ok(s) => eprintln!("Agent process exited with: {s}"),
+                    Err(e) => eprintln!("Agent process error: {e}"),
+                }
+                break;
+            }
+        }
+    }
+
+    // Cleanup
+    let _ = child.kill().await;
+    let _ = futures::SinkExt::close(&mut ws_write).await;
+    eprintln!();
+    eprintln!("ACP tunnel disconnected.");
+}
+
+/// `veil agent status` — query the runtime for agent provider info.
+async fn run_agent_status(runtime_url: Option<String>) {
+    let (config_url, _) = read_veil_config();
+    let base_url = runtime_url
+        .or(config_url)
+        .unwrap_or_else(|| "http://localhost:8080".into());
+
+    let url = format!("{base_url}/api/agent/status");
+    match reqwest::get(&url).await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        let provider = data.get("provider").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let mode = data.get("provider_mode")
+                            .and_then(|v| v.get("mode"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let connected = data.get("acp_tunnel")
+                            .and_then(|v| v.get("connected"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        println!("Agent Status");
+                        println!("────────────────────────────");
+                        println!("  Provider: {provider} ({mode})");
+                        println!("  ACP Tunnel: {}", if connected { "connected ✓" } else { "not connected" });
+
+                        if let Some(agents) = data.get("acp_tunnel")
+                            .and_then(|v| v.get("agents"))
+                            .and_then(|v| v.as_array())
+                        {
+                            for agent in agents {
+                                let name = agent.get("agent_name").and_then(|v| v.as_str()).unwrap_or("?");
+                                let uid = agent.get("user_id").and_then(|v| v.as_str()).unwrap_or("?");
+                                println!("    → {name} ({uid})");
+                            }
+                        }
+
+                        if !connected {
+                            println!();
+                            println!("  Connect with: veil agent connect");
+                        }
+                    }
+                    Err(e) => eprintln!("error: invalid JSON response: {e}"),
+                }
+            } else {
+                eprintln!("error: runtime returned {}", resp.status());
+            }
+        }
+        Err(e) => {
+            eprintln!("error: cannot reach runtime at {url}: {e}");
+            eprintln!();
+            eprintln!("Is the runtime running?");
+        }
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -2116,6 +2404,7 @@ fn main() {
                             links: pkg.links.clone(),
                             items: pkg.items.clone(),
                             expose: pkg.expose.clone(),
+                            guidance: Vec::new(),
                         }
                     };
                     match codegen_target {
@@ -2206,6 +2495,19 @@ fn main() {
             let (sol, _) = parse_solution_or_exit(&source, &file);
             let output = veil_ir::serialize_solution(&sol);
             print!("{}", output);
+        }
+        Commands::Agent { action } => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                match action {
+                    AgentCmd::Connect { command, runtime_url, token, agent_name } => {
+                        run_agent_connect(&command, runtime_url, token, &agent_name).await;
+                    }
+                    AgentCmd::Status { runtime_url } => {
+                        run_agent_status(runtime_url).await;
+                    }
+                }
+            });
         }
         Commands::StubGen {
             crate_name,
@@ -2561,6 +2863,7 @@ fn main() {
                                 links: pkg.links.clone(),
                                 items: pkg.items.clone(),
                                 expose: pkg.expose.clone(),
+                                guidance: Vec::new(),
                             };
                             veil_ir::build_ir_with_registry(&sol, Some(&registry))
                         }
