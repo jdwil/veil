@@ -1,4 +1,16 @@
 stub aws-sdk-sqs 1.102.0
+  harness_field Client """
+{
+    let conf = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let conf = aws_sdk_sqs::config::Builder::from(&conf);
+    let conf = if let Ok(ep) = std::env::var("AWS_ENDPOINT_URL") {
+        conf.endpoint_url(ep).build()
+    } else {
+        conf.build()
+    };
+    aws_sdk_sqs::Client::from_conf(conf)
+}
+"""
 
   struct InvalidMessageContentsBuilder
     fn message(input: Str) -> Self

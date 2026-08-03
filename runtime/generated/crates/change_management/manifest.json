@@ -1,0 +1,256 @@
+{
+  "context": "ChangeManagement",
+  "crate": "change_management",
+  "deps": {
+    "approval_repo": {
+      "adapter": "DdbApprovalRepo",
+      "env": [
+        "VEIL_DDB_TABLE"
+      ],
+      "trait": "ApprovalRepo"
+    },
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "change_request_repo": {
+      "adapter": "DdbChangeRequestRepo",
+      "env": [
+        "VEIL_DDB_TABLE"
+      ],
+      "trait": "ChangeRequestRepo"
+    },
+    "ci_run_repo": {
+      "adapter": "DdbCiRunRepo",
+      "env": [
+        "VEIL_DDB_TABLE"
+      ],
+      "trait": "CiRunRepo"
+    },
+    "comment_repo": {
+      "adapter": "DdbCommentRepo",
+      "env": [
+        "VEIL_DDB_TABLE"
+      ],
+      "trait": "CommentRepo"
+    },
+    "entity_repo": {
+      "provided_by": "runtime",
+      "trait": "EntityRepo"
+    },
+    "git_service": {
+      "adapter": "S3GitServiceAdapter",
+      "env": [
+        "BUCKET"
+      ],
+      "trait": "GitService"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {
+    "AddComment": {
+      "function": "add_comment",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "author",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "construct_path",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "body",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ApproveChange": {
+      "function": "approve_change",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "reviewer",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "comment",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "CommitToChange": {
+      "function": "commit_to_change",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "slug",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "path",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "content",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "message",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "author",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ComputeStructuralDiffFromSource": {
+      "function": "compute_structural_diff_from_source",
+      "inputs": [
+        {
+          "name": "base_content",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "branch_content",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "base_label",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "head_label",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "CreateChangeRequest": {
+      "function": "create_change_request",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "slug",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "title",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "description",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "jira_ticket",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "author",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "GetChangeRequest": {
+      "function": "get_change_request",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        }
+      ]
+    },
+    "GetStructuralDiff": {
+      "function": "get_structural_diff",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "slug",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ListChangeRequests": {
+      "function": "list_change_requests",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Optional(Named(\"Id\"))"
+        },
+        {
+          "name": "status",
+          "type": "Optional(Named(\"PrStatus\"))"
+        }
+      ]
+    },
+    "MergeChange": {
+      "function": "merge_change",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "merger",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "slug",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "RequestChanges": {
+      "function": "request_changes",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "reviewer",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "comment",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "SubmitForReview": {
+      "function": "submit_for_review",
+      "inputs": [
+        {
+          "name": "pr_id",
+          "type": "Named(\"Id\")"
+        }
+      ]
+    }
+  }
+}

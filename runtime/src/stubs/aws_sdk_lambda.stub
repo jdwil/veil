@@ -1,4 +1,33 @@
 stub aws-sdk-lambda 1.131.0
+  types_module types
+  root_types Client
+  harness_field Client """
+{
+    let conf = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let conf = aws_sdk_lambda::config::Builder::from(&conf);
+    let conf = if let Ok(ep) = std::env::var("AWS_ENDPOINT_URL") {
+        conf.endpoint_url(ep).build()
+    } else {
+        conf.build()
+    };
+    aws_sdk_lambda::Client::from_conf(conf)
+}
+"""
+
+  struct Runtime
+
+  struct Architecture
+
+  struct FunctionCode
+    fn builder() -> FunctionCodeBuilder
+
+  struct FunctionCodeBuilder
+    fn s3_bucket(input: Str) -> Self
+    fn s3_key(input: Str) -> Self
+    fn s3_object_version(input: Str) -> Self
+    fn zip_file(input: Blob) -> Self
+    fn image_uri(input: Str) -> Self
+    fn build() -> FunctionCode
 
   struct Builder
     fn new() -> Self

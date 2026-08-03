@@ -1,0 +1,124 @@
+# Minimal AWS API Gateway HTTP API surface for VEIL LocalDeployExec attach.
+# Real crate: aws-sdk-apigatewayv2. Not a product facade — SDK types only.
+stub aws-sdk-apigatewayv2 1
+  types_module types
+  root_types Client
+  cargo_deps aws-config=1.8
+  harness_field Client """
+{
+    let conf = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let conf = aws_sdk_apigatewayv2::config::Builder::from(&conf).build();
+    aws_sdk_apigatewayv2::Client::from_conf(conf)
+}
+"""
+
+  enum ProtocolType
+    Http
+    Websocket
+
+  enum IntegrationType
+    Aws
+    AwsProxy
+    Http
+    HttpProxy
+    Mock
+
+  enum ConnectionType
+    Internet
+    VpcLink
+
+  enum AuthorizationType
+    None
+    AwsIam
+    Custom
+    Jwt
+
+  struct Client
+    fn new(conf: SdkConfig) -> Self
+    fn from_conf(conf: Config) -> Self
+    fn get_apis() -> GetApisFluentBuilder
+    fn get_api() -> GetApiFluentBuilder
+    fn get_integrations() -> GetIntegrationsFluentBuilder
+    fn create_integration() -> CreateIntegrationFluentBuilder
+    fn get_routes() -> GetRoutesFluentBuilder
+    fn create_route() -> CreateRouteFluentBuilder
+    fn update_route() -> UpdateRouteFluentBuilder
+
+  struct GetApisFluentBuilder
+    fn next_token(input: Str) -> Self
+    fn max_results(input: Str) -> Self
+    fn send() -> Res!<GetApisOutput>
+
+  struct GetApisOutput
+    fn items() -> List<Api>
+    fn next_token() -> Opt<Str>
+
+  struct GetApiFluentBuilder
+    fn api_id(input: Str) -> Self
+    fn send() -> Res!<GetApiOutput>
+
+  struct GetApiOutput
+    fn api_id() -> Opt<Str>
+    fn name() -> Opt<Str>
+    fn protocol_type() -> Opt<ProtocolType>
+
+  struct Api
+    fn api_id() -> Opt<Str>
+    fn name() -> Opt<Str>
+    fn protocol_type() -> Opt<ProtocolType>
+
+  struct GetIntegrationsFluentBuilder
+    fn api_id(input: Str) -> Self
+    fn next_token(input: Str) -> Self
+    fn send() -> Res!<GetIntegrationsOutput>
+
+  struct GetIntegrationsOutput
+    fn items() -> List<Integration>
+    fn next_token() -> Opt<Str>
+
+  struct Integration
+    fn integration_id() -> Opt<Str>
+    fn integration_uri() -> Opt<Str>
+
+  struct CreateIntegrationFluentBuilder
+    fn api_id(input: Str) -> Self
+    fn integration_type(input: IntegrationType) -> Self
+    fn integration_uri(input: Str) -> Self
+    fn payload_format_version(input: Str) -> Self
+    fn connection_type(input: ConnectionType) -> Self
+    fn send() -> Res!<CreateIntegrationOutput>
+
+  struct CreateIntegrationOutput
+    fn integration_id() -> Opt<Str>
+
+  struct GetRoutesFluentBuilder
+    fn api_id(input: Str) -> Self
+    fn next_token(input: Str) -> Self
+    fn send() -> Res!<GetRoutesOutput>
+
+  struct GetRoutesOutput
+    fn items() -> List<Route>
+    fn next_token() -> Opt<Str>
+
+  struct Route
+    fn route_id() -> Opt<Str>
+    fn route_key() -> Opt<Str>
+
+  struct CreateRouteFluentBuilder
+    fn api_id(input: Str) -> Self
+    fn route_key(input: Str) -> Self
+    fn target(input: Str) -> Self
+    fn authorization_type(input: AuthorizationType) -> Self
+    fn send() -> Res!<CreateRouteOutput>
+
+  struct CreateRouteOutput
+    fn route_id() -> Opt<Str>
+
+  struct UpdateRouteFluentBuilder
+    fn api_id(input: Str) -> Self
+    fn route_id(input: Str) -> Self
+    fn target(input: Str) -> Self
+    fn send() -> Res!<UpdateRouteOutput>
+
+  struct UpdateRouteOutput
+    fn route_id() -> Opt<Str>

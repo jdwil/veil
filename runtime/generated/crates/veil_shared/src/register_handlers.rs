@@ -1,0 +1,123 @@
+//! CAP-003: generated Bus handler registry.
+//! Host calls `register_all` once to wire names → dispatch.
+
+/// All Bus message types exported by this workspace.
+pub const HANDLER_NAMES: &[&str] = &[
+    "AddComment",
+    "AgentMessage",
+    "AgentStatus",
+    "ApproveChange",
+    "CheckWarmStatus",
+    "CommitToChange",
+    "Compile",
+    "CompileTool",
+    "ComputeStructuralDiffFromSource",
+    "Connection",
+    "CreateBranch",
+    "CreateBranchTool",
+    "CreateChangeRequest",
+    "CreateExtension",
+    "CreateRepo",
+    "CreateRepoTool",
+    "DeleteRepo",
+    "Deploy",
+    "DeployTool",
+    "DeployUnit",
+    "DeploymentDiffTool",
+    "DeploymentStatusTool",
+    "DiffTool",
+    "EnsureCompiled",
+    "EnsureStockCatalog",
+    "ExecuteAcpTurn",
+    "ExecuteMetaFunction",
+    "ExecuteMetaLayerTool",
+    "ExecuteTool",
+    "ForkExtension",
+    "GetChangeRequest",
+    "GetCommitLog",
+    "GetDeploymentStatus",
+    "GetDiff",
+    "GetExtension",
+    "GetExtensionVersion",
+    "GetProjectInfra",
+    "GetProvisionJob",
+    "GetRepo",
+    "GetStructuralDiff",
+    "GetToolRegistry",
+    "HealthCheck",
+    "InvokeExtension",
+    "ListAllDeployments",
+    "ListBranches",
+    "ListBranchesTool",
+    "ListChangeRequests",
+    "ListDeployEnvironments",
+    "ListDeploymentsTool",
+    "ListExtensionVersions",
+    "ListExtensions",
+    "ListExtensionsByScope",
+    "ListFiles",
+    "ListFilesTool",
+    "ListRepos",
+    "ListReposTool",
+    "ListStockExtensions",
+    "LoadConfig",
+    "LoadEnvConfig",
+    "LogTool",
+    "MergeChange",
+    "MetaLayerStatusTool",
+    "MountUiExtension",
+    "ParseManifest",
+    "PlanProvision",
+    "PromoteExtension",
+    "ProposeReactionGraphTool",
+    "ProvisionProject",
+    "PublishExtension",
+    "ReadAllManifests",
+    "ReadFile",
+    "ReadFileTool",
+    "Reconcile",
+    "RequestChanges",
+    "ResolveContentHash",
+    "ResolveProvider",
+    "RollbackDeployment",
+    "RollbackTool",
+    "RunSecurityScan",
+    "SaveExtensionVersion",
+    "ScaleService",
+    "ScaleTool",
+    "SendToolResult",
+    "StartHarness",
+    "SubmitForReview",
+    "SyncRepoToObjectStore",
+    "ToolCall",
+    "UpsertStockExtension",
+    "ValidateReactionPalette",
+    "ValidateReactionPaletteTool",
+    "WarmFunction",
+    "WarmMetaLayerTool",
+    "WireApplication",
+    "WriteFile",
+    "WriteFileTool",
+    "WsAgentAcp",
+    "WsAgentChat",
+    "run_saga",
+    "unwind",
+];
+
+/// Register every generated handler name with a host-supplied registrar.
+///
+/// The host provides the actual dispatch (ports / platform). This module
+/// only owns the name list so trampoline code never hardcodes it.
+pub fn register_all<F>(mut register: F)
+where
+    F: FnMut(&'static str),
+{
+    for name in HANDLER_NAMES {
+        register(name);
+    }
+}
+
+/// Number of handlers in this workspace.
+pub fn handler_count() -> usize {
+    HANDLER_NAMES.len()
+}

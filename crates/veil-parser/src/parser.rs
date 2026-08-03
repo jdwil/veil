@@ -709,15 +709,39 @@ fn parse_annotation_text(text: &str) -> (String, Vec<String>) {
     if let Some(paren_idx) = text.find('(') {
         let name = text[..paren_idx].to_string();
         let args_str = &text[paren_idx + 1..text.len() - 1];
-        let args: Vec<String> = args_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        // Split on commas but respect angle-bracket nesting (generics like Map<Str, X>).
+        let args = split_annotation_args(args_str);
         (name, args)
     } else {
         (text.to_string(), Vec::new())
     }
+}
+
+/// Split annotation args on commas, respecting `<>` nesting so that
+/// `Map<Str, AcpSession>` is not split at the inner comma.
+fn split_annotation_args(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut angle_depth = 0u32;
+    for ch in s.chars() {
+        match ch {
+            '<' => { angle_depth += 1; current.push(ch); }
+            '>' => { angle_depth = angle_depth.saturating_sub(1); current.push(ch); }
+            ',' if angle_depth == 0 => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    args.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        args.push(trimmed);
+    }
+    args
 }
 
 // ─── Top-level parsing ────────────────────────────────────────────────────
@@ -3077,7 +3101,27 @@ impl<'a> Parser<'a> {
                 }
                 // Layer-defined statement?
                 if let Some(stmt) = self.registry.statement(&word).cloned() {
-                    return self.parse_action(&word, &stmt);
+                    // Only treat as a statement if the next token looks like a
+                    // statement continuation (an ident target, brace, paren, or
+                    // condition expr). When followed by `=`, `:`, `,`, `)`, or
+                    // `]` the word is being used as a plain identifier (variable
+                    // name, function argument, etc.) and must NOT be consumed as
+                    // a layer statement keyword.
+                    let next_kind = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+                    let is_statement_context = !matches!(
+                        next_kind,
+                        Some(TokenKind::Eq)
+                            | Some(TokenKind::Colon)
+                            | Some(TokenKind::Comma)
+                            | Some(TokenKind::RParen)
+                            | Some(TokenKind::RBracket)
+                            | Some(TokenKind::Newline)
+                            | Some(TokenKind::Eof)
+                            | Some(TokenKind::Dedent)
+                    );
+                    if is_statement_context {
+                        return self.parse_action(&word, &stmt);
+                    }
                 }
             }
             _ => {}

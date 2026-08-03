@@ -3821,3 +3821,302 @@ pkg VeilRuntime
           comments = comment_repo.list_for_pr!(pr_id)
           ci_runs = ci_repo.list_for_pr!(pr_id)
           ret {pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Agent — Unified runtime agent with ACP tunnel for LLM provider switching
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  ctx Agent
+    group domain
+      # ─── LLM Provider Modes ─────────────────────────────────────────────
+      enum LlmProvider
+        Bedrock
+          model_id: Str
+        Byok
+          provider: Str
+          model: Str
+          api_key: Str
+        AcpTunnel
+          user_id: Str
+        VeilServerProxy
+
+      enum AgentProviderMode
+        Bedrock
+        Byok
+        Acp
+        VeilServer
+
+      # ─── ACP Protocol Types ─────────────────────────────────────────────
+      val AcpMessage
+        role: Str
+        content: Str
+        tool_use: Opt<List<AcpToolCall>>
+
+      val AcpToolDef
+        name: Str
+        description: Str
+        parameters: Json
+
+      val AcpToolCall
+        id: Str
+        name: Str
+        arguments: Json
+
+      val AcpTurnRequest
+        turn_id: Str
+        messages: List<AcpMessage>
+        tools: List<AcpToolDef>
+
+      val AcpToolResult
+        turn_id: Str
+        call_id: Str
+        output: Json
+
+      enum AcpAgentFrame
+        ContentDelta
+          turn_id: Str
+          delta: Str
+        ToolUse
+          turn_id: Str
+          tool_call: AcpToolCall
+        TurnComplete
+          turn_id: Str
+        Error
+          turn_id: Opt<Str>
+          message: Str
+
+      enum AcpTurnError
+        NotConnected
+        SessionClosed
+        AgentError
+          message: Str
+
+      # ─── Session State ──────────────────────────────────────────────────
+      val AcpSession
+        user_id: Str
+        agent_name: Str
+        connected_at: Dt
+
+      val AcpConnectionStatus
+        agent_name: Str
+        connected: Bool
+
+      val AgentStatusResponse
+        provider: Str
+        provider_mode: Json
+        acp_tunnel: Json
+
+      # ─── Chat Protocol Types ────────────────────────────────────────────
+      val ChatMsg
+        role: Str
+        content: Str
+
+      val ChatRequest
+        messages: List<ChatMsg>
+        model: Opt<Str>
+        provider: Opt<Str>
+        system_prompt: Opt<Str>
+        context: Opt<AgentContext>
+
+      val AgentContext
+        page: Opt<Str>
+        project: Opt<Str>
+        surfaces: Opt<List<Json>>
+
+      val ToolDef
+        name: Str
+        description: Str
+        category: Str
+
+      val ToolExecutionResult
+        output: Json
+        is_error: Bool
+        navigation: Opt<Json>
+
+      # ─── ACP Tunnel Config ──────────────────────────────────────────────
+      val AcpConnectParams
+        token: Opt<Str>
+        agent_name: Opt<Str>
+
+    group application
+      # ─── Provider Configuration ─────────────────────────────────────────
+      svc ResolveProvider
+        -> LlmProvider
+        step resolve
+          provider_env = Env.get_or("VEIL_AGENT_PROVIDER", "veil-server")
+          match provider_env
+            "bedrock" =>
+              model_id = Env.get_or("VEIL_BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+              ret LlmProvider.Bedrock{model_id}
+            "openai" =>
+              api_key = Env.get_or("VEIL_OPENAI_KEY", "")
+              model = Env.get_or("VEIL_OPENAI_MODEL", "gpt-4o")
+              ret LlmProvider.Byok{provider: "openai", model, api_key}
+            "anthropic" =>
+              api_key = Env.get_or("VEIL_ANTHROPIC_KEY", "")
+              model = Env.get_or("VEIL_ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+              ret LlmProvider.Byok{provider: "anthropic", model, api_key}
+            "acp" =>
+              ret LlmProvider.AcpTunnel{user_id: "default_user"}
+            _ =>
+              ret LlmProvider.VeilServerProxy
+
+      # ─── Tool Registry ──────────────────────────────────────────────────
+      svc GetToolRegistry
+        -> List<ToolDef>
+        step build
+          mut tools = []
+          tools = tools.concat([ToolDef{name: "navigate_to", description: "Navigate the runtime UI to a specific page", category: "navigation"}])
+          tools = tools.concat([ToolDef{name: "open_ide", description: "Open the IDE for a specific project", category: "navigation"}])
+          tools = tools.concat([ToolDef{name: "switch_project", description: "Switch to a different project", category: "navigation"}])
+          tools = tools.concat([ToolDef{name: "list_changes", description: "List open change requests", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "create_change", description: "Create a new change request", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "approve_change", description: "Approve a change request", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "merge_change", description: "Merge an approved change request", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "deploy_project", description: "Deploy a project to an environment", category: "deploy"}])
+          tools = tools.concat([ToolDef{name: "deploy_status", description: "Get deployment status", category: "deploy"}])
+          tools = tools.concat([ToolDef{name: "rollback", description: "Rollback a deployment", category: "deploy"}])
+          tools = tools.concat([ToolDef{name: "edit_file", description: "Edit a file in a project via the IDE", category: "ide"}])
+          tools = tools.concat([ToolDef{name: "read_file", description: "Read a file from a project", category: "ide"}])
+          tools = tools.concat([ToolDef{name: "gen_package", description: "Generate code from a veil package", category: "ide"}])
+          tools = tools.concat([ToolDef{name: "list_projects", description: "List all projects in the runtime", category: "meta"}])
+          tools = tools.concat([ToolDef{name: "get_current_context", description: "Get current page and project context", category: "meta"}])
+          tools = tools.concat([ToolDef{name: "search_registry", description: "Search the layer/extension registry", category: "registry"}])
+          tools = tools.concat([ToolDef{name: "wiki_search", description: "Search the mind-palace wiki", category: "wiki"}])
+          tools = tools.concat([ToolDef{name: "wiki_read", description: "Read a wiki page", category: "wiki"}])
+          tools = tools.concat([ToolDef{name: "wiki_create", description: "Create a wiki page", category: "wiki"}])
+          tools = tools.concat([ToolDef{name: "wiki_update", description: "Update a wiki page", category: "wiki"}])
+          ret tools
+
+      # ─── Tool Execution ─────────────────────────────────────────────────
+      svc ExecuteTool
+        -> ToolExecutionResult
+        input
+          name: Str
+          args: Json
+          ctx: Opt<AgentContext>
+        step execute
+          match name
+            "navigate_to" =>
+              path = args["path"].as_str().unwrap_or("/dashboard")
+              ret ToolExecutionResult{output: {navigated_to: path}, is_error: false, navigation: {action: "goto", path}}
+            "open_ide" =>
+              project = args["project"].as_str().unwrap_or("unknown")
+              ret ToolExecutionResult{output: {opened_ide: project}, is_error: false, navigation: {action: "open-ide", project}}
+            "switch_project" =>
+              project = args["project"].as_str().unwrap_or("unknown")
+              ret ToolExecutionResult{output: {switched_to: project}, is_error: false, navigation: {action: "switch-project", project}}
+            "list_projects" =>
+              ret ToolExecutionResult{output: {projects: []}, is_error: false, navigation: null}
+            "get_current_context" =>
+              page = ctx.and_then(|c| c.page).unwrap_or("/")
+              project = ctx.and_then(|c| c.project)
+              ret ToolExecutionResult{output: {page, project}, is_error: false, navigation: null}
+            _ =>
+              ret ToolExecutionResult{output: {error: f"unknown tool: {name}"}, is_error: true, navigation: null}
+
+      # ─── ACP Turn Execution ─────────────────────────────────────────────
+      svc ExecuteAcpTurn
+        -> Str
+        @dep(registry: AcpSessionRegistry)
+        input
+          user_id: Str
+          turn_id: Str
+          messages: List<AcpMessage>
+          tools: List<AcpToolDef>
+        step execute
+          connected = registry.is_connected(user_id)
+          guard connected, "No ACP agent connected"
+          request = AcpTurnRequest{turn_id, messages, tools}
+          registry.send_turn_request!(user_id, request)
+          ret "turn_sent"
+
+      svc SendToolResult
+        -> Str
+        @dep(registry: AcpSessionRegistry)
+        input
+          user_id: Str
+          turn_id: Str
+          call_id: Str
+          output: Json
+        step send
+          result = AcpToolResult{turn_id, call_id, output}
+          registry.send_tool_result!(user_id, result)
+          ret "sent"
+
+      # ─── WebSocket Handlers ─────────────────────────────────────────────
+      ws_handler WsAgentChat
+        @path("/api/agent/chat")
+        input
+          msg: Str
+        step handle
+          # Parse ChatRequest from first frame
+          # Stream events back to client (content_delta, tool_call_start, tool_result, done)
+          # Dispatch to LLM provider (Bedrock, BYOK, ACP tunnel, or veil-server proxy)
+          provider = invoke ResolveProvider{}
+          tools = invoke GetToolRegistry{}
+          send_ws {event: "message_start", data: {messageId: "msg_1", role: "assistant", model: "veil-agent", provider: "veil"}}
+          send_ws {event: "content_delta", data: {messageId: "msg_1", delta: "I'm the VEIL Runtime agent."}}
+          send_ws {event: "done", data: {messageId: "msg_1"}}
+
+      ws_handler WsAgentAcp
+        @path("/api/agent/acp")
+        input
+          msg: Str
+        step handle
+          # ACP tunnel: accept inbound connection from local agent
+          # Register session, bridge turn_request/tool_result frames
+          # Parse agent_name from query params
+          send_ws {type: "connected", message: "ACP tunnel established. Waiting for turn requests."}
+
+      # ─── HTTP Endpoints ─────────────────────────────────────────────────
+      http_route AgentStatus
+        -> Json
+        @method("GET")
+        @path("/api/agent/status")
+        step handle
+          provider = invoke ResolveProvider{}
+          provider_name = match provider
+            LlmProvider.Bedrock{model_id} => "Bedrock"
+            LlmProvider.Byok{provider, ..} => provider
+            LlmProvider.AcpTunnel{..} => "ACP Tunnel"
+            LlmProvider.VeilServerProxy => "veil-server (proxy)"
+          provider_mode = match provider
+            LlmProvider.Bedrock{model_id} => {mode: "bedrock", model: model_id}
+            LlmProvider.Byok{provider, model, ..} => {mode: "byok", provider, model}
+            LlmProvider.AcpTunnel{..} => {mode: "acp"}
+            LlmProvider.VeilServerProxy => {mode: "veil-server"}
+          # TODO: query AcpSessionRegistry for connected sessions
+          acp_tunnel = {connected: false, agents: []}
+          ret {provider: provider_name, provider_mode, acp_tunnel}
+
+    group infrastructure
+      # ─── ACP Session Registry Port ─────────────────────────────────────
+      port AcpSessionRegistry
+        is_connected(user_id: Str) -> Bool
+        register!(user_id: Str, session: AcpSession)
+        unregister!(user_id: Str)
+        get_status(user_id: Str) -> Opt<AcpConnectionStatus>
+        list_sessions() -> List<AcpConnectionStatus>
+        send_turn_request!(user_id: Str, request: AcpTurnRequest)
+        send_tool_result!(user_id: Str, result: AcpToolResult)
+
+      adapter InMemoryAcpRegistry for AcpSessionRegistry
+        @field(sessions: Map<Str, AcpSession>)
+        impl is_connected(user_id)
+          ret sessions.contains_key(user_id)
+        impl register(user_id, session)
+          sessions.insert(user_id, session)
+        impl unregister(user_id)
+          sessions.remove(user_id)
+        impl get_status(user_id)
+          session = sessions.get(user_id)
+          if session.is_none() then ret null
+          s = session.unwrap()
+          ret AcpConnectionStatus{agent_name: s.agent_name, connected: true}
+        impl list_sessions()
+          ret sessions.values().map(|s| AcpConnectionStatus{agent_name: s.agent_name, connected: true}).collect()
+        impl send_turn_request(user_id, request)
+          # In production: send via channel to the ACP WebSocket task
+        impl send_tool_result(user_id, result)
+          # In production: forward to the ACP agent process

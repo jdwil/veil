@@ -1,0 +1,119 @@
+{
+  "context": "Agent",
+  "crate": "agent",
+  "deps": {
+    "acp_session_registry": {
+      "adapter": "InMemoryAcpRegistry",
+      "trait": "AcpSessionRegistry"
+    },
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "entity_repo": {
+      "provided_by": "runtime",
+      "trait": "EntityRepo"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {
+    "AgentStatus": {
+      "function": "agent_status",
+      "inputs": []
+    },
+    "ExecuteAcpTurn": {
+      "function": "execute_acp_turn",
+      "inputs": [
+        {
+          "name": "user_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "turn_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "messages",
+          "type": "List(Named(\"AcpMessage\"))"
+        },
+        {
+          "name": "tools",
+          "type": "List(Named(\"AcpToolDef\"))"
+        }
+      ]
+    },
+    "ExecuteTool": {
+      "function": "execute_tool",
+      "inputs": [
+        {
+          "name": "name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "args",
+          "type": "Named(\"Json\")"
+        },
+        {
+          "name": "ctx",
+          "type": "Optional(Named(\"AgentContext\"))"
+        }
+      ]
+    },
+    "GetToolRegistry": {
+      "function": "get_tool_registry",
+      "inputs": []
+    },
+    "ResolveProvider": {
+      "function": "resolve_provider",
+      "inputs": []
+    },
+    "SendToolResult": {
+      "function": "send_tool_result",
+      "inputs": [
+        {
+          "name": "user_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "turn_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "call_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "output",
+          "type": "Named(\"Json\")"
+        }
+      ]
+    },
+    "WsAgentAcp": {
+      "function": "ws_agent_acp",
+      "inputs": [
+        {
+          "name": "msg",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "WsAgentChat": {
+      "function": "ws_agent_chat",
+      "inputs": [
+        {
+          "name": "msg",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    }
+  }
+}

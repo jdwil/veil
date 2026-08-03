@@ -251,7 +251,9 @@ fn expr_mentions_port_call(expr: &Expr) -> bool {
                     || t.ends_with("_port")
                     || t.ends_with("_svc")
                     || t.ends_with("_client");
-                if !is_lang && (pascal || dep_local) {
+                // Bang-suffix methods (method!) are always port/repo calls
+                let is_bang = call.method.ends_with('!');
+                if !is_lang && (pascal || dep_local || (is_bang && !t.is_empty())) {
                     return true;
                 }
             }
@@ -4020,7 +4022,8 @@ fn gen_impls(
                             {
                                 format!("{crate_name}::{path}")
                             } else {
-                                ftype.to_string()
+                                // Convert VEIL primitive types to Rust equivalents
+                                veil_field_type_to_rust(ftype)
                             };
                             adapter_fields.insert(fname, qualified_type);
                         } else {
@@ -4075,7 +4078,13 @@ fn gen_impls(
                 }
             }
             for (fname, fty) in &adapter_fields {
-                out.push_str(&format!("    pub {fname}: {fty},\n"));
+                // Map/HashMap fields need interior mutability since trait methods
+                // take `&self` but insert/remove require mutation. Wrap in RwLock.
+                if fty.contains("HashMap") || fty.starts_with("std::collections::HashMap") {
+                    out.push_str(&format!("    pub {fname}: tokio::sync::RwLock<{fty}>,\n"));
+                } else {
+                    out.push_str(&format!("    pub {fname}: {fty},\n"));
+                }
             }
             // PhantomData for generic adapters
             if !c.type_params.is_empty() {
@@ -4270,6 +4279,11 @@ fn gen_impls(
                             ctx.self_fields.insert(fname);
                         }
                     }
+                }
+                // Populate self_field_types so the expression translator can detect
+                // Map/HashMap fields that need RwLock lock acquisition + &key args.
+                for (fname, fty) in &adapter_fields {
+                    ctx.self_field_types.insert(fname.clone(), fty.clone());
                 }
                 // Seed name→shape and method returns from stubs too.
                 let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
@@ -5284,14 +5298,19 @@ fn scan_dep_calls(
     match expr {
         Expr::Call(call) => {
             if !call.target.is_empty() && call.method.ends_with('!') {
-                // Find matching trait
-                for (name, shape) in name_to_shape {
-                    if *shape == Shape::Trait {
-                        let trait_snake = to_snake(name);
-                        if trait_snake == call.target || trait_snake.ends_with(&call.target) {
-                            deps.insert(name.clone());
-                            field_names.entry(name.clone()).or_insert_with(|| call.target.clone());
-                            break;
+                // If a field name matching call.target is already claimed by an
+                // explicit @dep annotation, skip inference — the dep is resolved.
+                let already_claimed = field_names.values().any(|v| v == &call.target);
+                if !already_claimed {
+                    // Find matching trait
+                    for (name, shape) in name_to_shape {
+                        if *shape == Shape::Trait {
+                            let trait_snake = to_snake(name);
+                            if trait_snake == call.target || trait_snake.ends_with(&call.target) {
+                                deps.insert(name.clone());
+                                field_names.entry(name.clone()).or_insert_with(|| call.target.clone());
+                                break;
+                            }
                         }
                     }
                 }
@@ -6248,6 +6267,31 @@ fn collect_deps_field_map(
             }
         }
     }
+
+    // Remove inferred deps that conflict with explicitly-declared @dep annotations.
+    // If `@dep(registry: AcpSessionRegistry)` is declared, an inferred dep like
+    // `ExtensionRegistry` (whose field name "registry" or suffix matches) is spurious.
+    let explicit_field_names: std::collections::HashSet<String> =
+        dep_field_names.values().cloned().collect();
+    all_deps.retain(|t| {
+        // Keep if it's already explicitly declared (has entry in dep_field_names)
+        if dep_field_names.contains_key(t) {
+            return true;
+        }
+        // Otherwise, the inferred field name would be to_snake(t).
+        // If that field name (or a suffix of it) is already claimed, discard.
+        let inferred_field = to_snake(t);
+        // Check if any explicit field name is a suffix of the inferred one
+        // e.g. explicit "registry" vs inferred "extension_registry" - the call.target
+        // "registry" was already resolved by the @dep annotation.
+        for ef in &explicit_field_names {
+            if &inferred_field == ef || inferred_field.ends_with(&format!("_{}", ef)) {
+                return false;
+            }
+        }
+        true
+    });
+
     // Ensure every dep has a field name.
     for t in &all_deps {
         dep_field_names
@@ -6838,4 +6882,65 @@ pub fn generate_multi_package_harness(
         GeneratedFile { path: "crates/veil_bin/Cargo.toml".to_string(), content: cargo_toml },
         GeneratedFile { path: "crates/veil_bin/src/main.rs".to_string(), content: main_rs },
     ]
+}
+
+/// Convert a VEIL type annotation string (from @field) to a Rust type.
+/// Handles: Str → String, Int → i64, Bool → bool, Map<K,V> → HashMap<K,V>,
+/// List<T> → Vec<T>, Opt<T> → Option<T>, and passes domain types through.
+fn veil_field_type_to_rust(veil_type: &str) -> String {
+    let t = veil_type.trim();
+    // Handle generic wrappers
+    if let Some(inner) = t.strip_prefix("Map<").and_then(|s| s.strip_suffix('>')) {
+        // Split at the top-level comma (respect nested generics)
+        let parts = split_generic_args(inner);
+        if parts.len() == 2 {
+            let k = veil_field_type_to_rust(&parts[0]);
+            let v = veil_field_type_to_rust(&parts[1]);
+            return format!("std::collections::HashMap<{}, {}>", k, v);
+        }
+        return format!("std::collections::HashMap<String, String>");
+    }
+    if let Some(inner) = t.strip_prefix("List<").and_then(|s| s.strip_suffix('>')) {
+        let inner_rust = veil_field_type_to_rust(inner);
+        return format!("Vec<{}>", inner_rust);
+    }
+    if let Some(inner) = t.strip_prefix("Opt<").and_then(|s| s.strip_suffix('>')) {
+        let inner_rust = veil_field_type_to_rust(inner);
+        return format!("Option<{}>", inner_rust);
+    }
+    // Primitive mappings
+    match t {
+        "Str" => "String".to_string(),
+        "Int" => "i64".to_string(),
+        "Bool" => "bool".to_string(),
+        "F64" => "f64".to_string(),
+        "Dt" => "chrono::DateTime<chrono::Utc>".to_string(),
+        "Id" => "uuid::Uuid".to_string(),
+        "Json" => "serde_json::Value".to_string(),
+        "Bytes" => "Vec<u8>".to_string(),
+        _ => t.to_string(), // Domain types pass through as-is
+    }
+}
+
+/// Split generic args at top-level commas (respecting nested `<>`).
+fn split_generic_args(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0u32;
+    for ch in s.chars() {
+        match ch {
+            '<' => { depth += 1; current.push(ch); }
+            '>' => { depth = depth.saturating_sub(1); current.push(ch); }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        parts.push(trimmed);
+    }
+    parts
 }

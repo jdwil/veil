@@ -1,0 +1,316 @@
+{
+  "context": "Deploy",
+  "crate": "deploy",
+  "deps": {
+    "action_executor": {
+      "adapter": "MockActionExecutor",
+      "trait": "ActionExecutor"
+    },
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "deploy_exec": {
+      "adapter": "LocalDeployExec",
+      "env": [
+        "BUCKET"
+      ],
+      "trait": "DeployExec"
+    },
+    "deployment_state_store": {
+      "adapter": "DdbDeploymentStore",
+      "trait": "DeploymentStateStore"
+    },
+    "entity_repo": {
+      "provided_by": "runtime",
+      "trait": "EntityRepo"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {
+    "DeployTool": {
+      "function": "deploy_tool",
+      "inputs": [
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "artifact_hash",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "message",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "DeployUnit": {
+      "function": "deploy_unit",
+      "inputs": [
+        {
+          "name": "desired",
+          "type": "Named(\"DeployUnitConfig\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "artifact_hash",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "actor",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "message",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "DeploymentDiffTool": {
+      "function": "deployment_diff_tool",
+      "inputs": [
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "DeploymentStatusTool": {
+      "function": "deployment_status_tool",
+      "inputs": [
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "GetDeploymentStatus": {
+      "function": "get_deployment_status",
+      "inputs": [
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "GetProvisionJob": {
+      "function": "get_provision_job",
+      "inputs": [
+        {
+          "name": "job_id",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ListAllDeployments": {
+      "function": "list_all_deployments",
+      "inputs": [
+        {
+          "name": "environment",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "project",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "ListDeployEnvironments": {
+      "function": "list_deploy_environments",
+      "inputs": []
+    },
+    "ListDeploymentsTool": {
+      "function": "list_deployments_tool",
+      "inputs": [
+        {
+          "name": "environment",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "project",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "PlanProvision": {
+      "function": "plan_provision",
+      "inputs": [
+        {
+          "name": "project_slug",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "repo_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "branch",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ProvisionProject": {
+      "function": "provision_project",
+      "inputs": [
+        {
+          "name": "project_slug",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "repo_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "branch",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "Reconcile": {
+      "function": "reconcile",
+      "inputs": [
+        {
+          "name": "desired",
+          "type": "Named(\"DeployUnitConfig\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "new_artifact_hash",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "RollbackDeployment": {
+      "function": "rollback_deployment",
+      "inputs": [
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "target_version",
+          "type": "Optional(Named(\"Int\"))"
+        },
+        {
+          "name": "actor",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "reason",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "RollbackTool": {
+      "function": "rollback_tool",
+      "inputs": [
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "target_version",
+          "type": "Optional(Named(\"Int\"))"
+        },
+        {
+          "name": "reason",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "ScaleService": {
+      "function": "scale_service",
+      "inputs": [
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "desired_count",
+          "type": "Named(\"Int\")"
+        },
+        {
+          "name": "actor",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "reason",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "ScaleTool": {
+      "function": "scale_tool",
+      "inputs": [
+        {
+          "name": "unit_name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "desired_count",
+          "type": "Named(\"Int\")"
+        },
+        {
+          "name": "reason",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    }
+  }
+}

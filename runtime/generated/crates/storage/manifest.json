@@ -1,0 +1,251 @@
+{
+  "context": "Storage",
+  "crate": "storage",
+  "deps": {
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "entity_repo": {
+      "provided_by": "runtime",
+      "trait": "EntityRepo"
+    },
+    "metadata_store": {
+      "adapter": "DdbMetadataStore",
+      "trait": "MetadataStore"
+    },
+    "object_storage": {
+      "adapter": "S3ObjectStorage",
+      "env": [
+        "BUCKET"
+      ],
+      "trait": "ObjectStorage"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {
+    "Compile": {
+      "function": "compile",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        },
+        {
+          "name": "branch",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "target",
+          "type": "Named(\"CompilationTarget\")"
+        }
+      ]
+    },
+    "CreateBranch": {
+      "function": "create_branch",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        },
+        {
+          "name": "name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "from_ref",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "CreateRepo": {
+      "function": "create_repo",
+      "inputs": [
+        {
+          "name": "name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "description",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "DeleteRepo": {
+      "function": "delete_repo",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "Deploy": {
+      "function": "deploy",
+      "inputs": [
+        {
+          "name": "artifact_id",
+          "type": "Named(\"ArtifactId\")"
+        },
+        {
+          "name": "target",
+          "type": "Named(\"DeployTarget\")"
+        }
+      ]
+    },
+    "GetCommitLog": {
+      "function": "get_commit_log",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        },
+        {
+          "name": "branch",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "limit",
+          "type": "Named(\"Int\")"
+        },
+        {
+          "name": "offset",
+          "type": "Named(\"Int\")"
+        }
+      ]
+    },
+    "GetDiff": {
+      "function": "get_diff",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        },
+        {
+          "name": "from_ref",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "to_ref",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "GetProjectInfra": {
+      "function": "get_project_infra",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "environment",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "GetRepo": {
+      "function": "get_repo",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ListBranches": {
+      "function": "list_branches",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        }
+      ]
+    },
+    "ListFiles": {
+      "function": "list_files",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        },
+        {
+          "name": "branch",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "prefix",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ListRepos": {
+      "function": "list_repos",
+      "inputs": []
+    },
+    "ReadFile": {
+      "function": "read_file",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        },
+        {
+          "name": "branch",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "path",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "SyncRepoToObjectStore": {
+      "function": "sync_repo_to_object_store",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "branch",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "WriteFile": {
+      "function": "write_file",
+      "inputs": [
+        {
+          "name": "repo_id",
+          "type": "Named(\"RepoId\")"
+        },
+        {
+          "name": "branch",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "path",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "content",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "message",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    }
+  }
+}

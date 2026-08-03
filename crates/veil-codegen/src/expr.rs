@@ -102,6 +102,10 @@ pub struct GenCtx {
     /// (structs/enums in this context). Used so typed bus decode never emits
     /// foreign domain paths (tools cannot name storage::Repo).
     pub local_domain_types: HashSet<String>,
+    /// Rust type names for self_fields (adapter struct fields). Keyed by field
+    /// name. Used to detect Map/HashMap fields that require interior mutability
+    /// (`tokio::sync::RwLock`) and reference-passing for key arguments.
+    pub self_field_types: HashMap<String, String>,
 }
 
 impl GenCtx {
@@ -135,6 +139,7 @@ impl GenCtx {
             stub_free_fns: HashMap::new(),
             bus_returns: HashMap::new(),
             local_domain_types: HashSet::new(),
+            self_field_types: HashMap::new(),
         }
     }
 
@@ -807,6 +812,24 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         return format!("{}::{}::{}", crate_name, path_type, field);
                     }
                 }
+                // Lowercase variant on a stub-known type (e.g. BillingMode.pay_per_request
+                // → aws_sdk_dynamodb::types::BillingMode::PayPerRequest).
+                if !field_is_variant {
+                    if let Some((crate_name, path_type)) = ctx.stub_type_crate.get(name.as_str()) {
+                        // Convert snake_case variant to PascalCase
+                        let variant: String = field
+                            .split('_')
+                            .map(|seg| {
+                                let mut chars = seg.chars();
+                                match chars.next() {
+                                    Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                                    None => String::new(),
+                                }
+                            })
+                            .collect();
+                        return format!("{}::{}::{}", crate_name, path_type, variant);
+                    }
+                }
             }
             // Envelope routing: a field of a routing-returned local is a JSON
             // index (`result["code"]`). Envelope results are serde_json::Value.
@@ -828,9 +851,21 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // Emit `.clone().ok_or(DomainError::NotFound)?.field` so the Option is
             // unwrapped at point of use.  This handles the common pattern where a
             // port method returns `Opt<T>` and the VEIL code accesses fields directly.
+            // When the enclosing function returns Option<T>, use `?` directly
+            // (returns None early) instead of converting to Result.
             if let Expr::Ident(name) = base.as_ref() {
                 if let Some(ty) = ctx.local_type(name) {
                     if ty.starts_with("Option<") {
+                        let enclosing_returns_option = ctx.expected_return_rust.as_ref()
+                            .map(|r| r.starts_with("Option<"))
+                            .unwrap_or(false);
+                        if enclosing_returns_option {
+                            return format!(
+                                "{}.clone()?.{}",
+                                base_str,
+                                to_snake(field)
+                            );
+                        }
                         return format!(
                             "{}.clone().ok_or(DomainError::NotFound)?.{}",
                             base_str,
@@ -930,6 +965,21 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     }
                 }
             }
+            // List concat sugar: `x = x.concat([items])` → `x.extend(vec![items])`
+            // when target == LHS name and arg is an array literal.
+            if let Expr::Call(call) = rhs.as_ref() {
+                let bare_m = call.method.trim_end_matches('!');
+                if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
+                    if let Some(Expr::ArrayLit(items)) = call.args.first() {
+                        let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
+                        if items.len() == 1 {
+                            return format!("{}.push({})", name, item_strs[0]);
+                        } else {
+                            return format!("{}.extend(vec![{}])", name, item_strs.join(", "));
+                        }
+                    }
+                }
+            }
             let rhs_str = expr_to_rust(rhs, ctx);
             // Field assignment: `wt.name = x` stored as Assign("wt.name", …)
             // Emit path with snake_case fields; never introduce a `let` binding.
@@ -995,6 +1045,20 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             }
         }
         Expr::MutAssign(name, rhs, ty_ann) => {
+            // List concat sugar: `x = x.concat([items])` → `x.extend(vec![items])`
+            if let Expr::Call(call) = rhs.as_ref() {
+                let bare_m = call.method.trim_end_matches('!');
+                if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
+                    if let Some(Expr::ArrayLit(items)) = call.args.first() {
+                        let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
+                        if items.len() == 1 {
+                            return format!("{}.push({})", name, item_strs[0]);
+                        } else {
+                            return format!("{}.extend(vec![{}])", name, item_strs.join(", "));
+                        }
+                    }
+                }
+            }
             let rhs_str = expr_to_rust(rhs, ctx);
             // Reassignment of an already-bound local (e.g. `mut req` inside while).
             if ctx.is_local(name) {
@@ -1250,7 +1314,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     } else if field_ty == "serde_json::Value" || field_ty == "Option<serde_json::Value>" {
                         // Non-JSON value going into a Json field → wrap with json!()
                         if field_ty.starts_with("Option") {
-                            format!("Some(serde_json::json!({}))", cloned)
+                            // null → None (not Some(json!(None)))
+                            if cloned == "None" {
+                                "None".to_string()
+                            } else {
+                                format!("Some(serde_json::json!({}))", cloned)
+                            }
                         } else {
                             format!("serde_json::json!({})", cloned)
                         }
@@ -1314,6 +1383,21 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 format!("{}.as_str()", scrutinee_str)
             } else {
                 scrutinee_str
+            };
+            // When the scrutinee is a local variable matched against enum
+            // patterns with field destructuring, clone it so the variable is
+            // not moved and can be reused in subsequent match expressions or
+            // later statements. Pattern bindings stay owned (no ref issues).
+            let has_enum_patterns = arms.iter().any(|a| a.pattern.contains('.') || a.pattern.contains("::"));
+            let scrutinee_is_local_ident = if let Expr::Ident(name) = scrutinee.as_ref() {
+                ctx.is_local(name) && !has_string_patterns
+            } else {
+                false
+            };
+            let scrutinee_final = if scrutinee_is_local_ident && has_enum_patterns {
+                format!("{}.clone()", scrutinee_final)
+            } else {
+                scrutinee_final
             };
             let mut out = format!("match {} {{\n", scrutinee_final);
             for arm in arms {
@@ -2166,6 +2250,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                             "{}.clone().ok_or(DomainError::NotFound)?",
                             recv_str
                         );
+                    } else {
+                        // Consuming Option methods (and_then, map, unwrap, filter, etc.)
+                        // move self — clone to allow reuse of the local variable.
+                        let non_consuming = ["is_some", "is_none", "as_ref", "as_mut", "clone"];
+                        if !non_consuming.contains(&bare_method) {
+                            recv_str = format!("{}.clone()", recv_str);
+                        }
                     }
                 }
             }
@@ -2240,11 +2331,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if (bare_m == "unwrap_or" || bare_m == "unwrap_or_else") && call.args.len() == 1 {
             if let Expr::StringLit(s) = &call.args[0] {
                 let lit = s.replace('\\', "\\\\").replace('"', "\\\"");
-                // Option<String> (after .map(|s| s.to_string()) / .clone() / .as_str().map(...)):
+                // Option<String> (after .map(|s| s.to_string()) / .clone() / .as_str().map(...)
+                // / .and_then(|c| c.field)):
                 // need owned default. Option<&str> (AWS getters): bare &str.
+                // VEIL Str always maps to Rust String, so .and_then() / .map()
+                // chains on domain types produce Option<String>. Only explicit
+                // AWS getter patterns (handled via as_str() → map) stay &str.
                 let owned_default = recv_str.contains("to_string()")
                     || recv_str.contains("as_str().map")
-                    || recv_str.ends_with(".clone()");
+                    || recv_str.ends_with(".clone()")
+                    || recv_str.contains(".and_then(")
+                    || recv_str.contains(".map(");
                 if owned_default {
                     return format!("{}.{m}(\"{lit}\".to_string()){suffix}", recv_str);
                 }
@@ -2377,11 +2474,34 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Bang on ports means fallible/async (Result), not "unwrap Opt".
         // Keep Option so callers can use .is_some() / .is_none() / .unwrap().
         let method_key = method.trim_end_matches(['!', '?']);
+        // Port methods that return non-Result types (e.g. Bool, plain Str)
+        // should NOT have `?` appended — they are async but not fallible.
+        // However, bang (`!`) on the call site always means fallible — the
+        // method wraps its return in Result even if the inner type is `()`.
+        let has_bang = method.ends_with('!');
+        let ret_type = ctx.return_type_of(&call.target, method)
+            .or_else(|| {
+                // Also try the PascalCase trait name via dep_fields reverse lookup
+                ctx.dep_fields.iter()
+                    .find(|(_, v)| *v == &call.target)
+                    .and_then(|(trait_name, _)| ctx.return_type_of(trait_name, method))
+            });
+        let is_fallible = if has_bang {
+            true // Bang always means Result-wrapped (fallible)
+        } else {
+            match ret_type {
+                Some("bool") | Some("Bool") | Some("i64") | Some("f64")
+                | Some("String") => false,
+                _ => true, // Default to fallible for unknown/unit return types
+            }
+        };
+        let suffix = if is_fallible { ".await?" } else { ".await" };
         return format!(
-            "deps.{}.{}({}).await?",
+            "deps.{}.{}({}){}",
             dep_name,
             to_snake(method_key),
             final_args,
+            suffix,
         );
     }
 
@@ -2869,6 +2989,84 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 &call.method,
                 ctx,
             );
+            // Map/HashMap fields wrapped in RwLock need lock acquisition and
+            // reference-passing for key arguments (get/contains_key/remove take &Q).
+            let field_type = ctx.self_field_types.get(field).or_else(|| ctx.self_field_types.get(&to_snake(field)));
+            let is_map_field = field_type
+                .map(|t| t.contains("HashMap") || t.starts_with("std::collections::HashMap"))
+                .unwrap_or(false);
+            if is_map_field {
+                let bare_method = call.method.trim_end_matches(['!', '?']);
+                match bare_method {
+                    "get" | "contains_key" => {
+                        // Read-only access: acquire read lock, pass key by reference.
+                        // For `get`, append `.cloned()` so the returned value is owned
+                        // and does not borrow the lock guard.
+                        let key_arg = if !call.args.is_empty() {
+                            let s = expr_to_rust(&call.args[0], ctx);
+                            format!("&{}", s)
+                        } else {
+                            String::new()
+                        };
+                        let clone_suffix = if bare_method == "get" { ".cloned()" } else { "" };
+                        return format!(
+                            "self.{}.read().await.{}({}){}",
+                            to_snake(field),
+                            method,
+                            key_arg,
+                            clone_suffix,
+                        );
+                    }
+                    "insert" => {
+                        // Mutating access: acquire write lock
+                        let map_args = call.args.iter()
+                            .map(|a| {
+                                let s = expr_to_rust(a, ctx);
+                                match a {
+                                    Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{}.clone()", s),
+                                    _ => s,
+                                }
+                            }).collect::<Vec<_>>().join(", ");
+                        return format!(
+                            "self.{}.write().await.insert({})",
+                            to_snake(field),
+                            map_args,
+                        );
+                    }
+                    "remove" => {
+                        // Mutating access: acquire write lock, pass key by reference
+                        let key_arg = if !call.args.is_empty() {
+                            let s = expr_to_rust(&call.args[0], ctx);
+                            format!("&{}", s)
+                        } else {
+                            String::new()
+                        };
+                        return format!(
+                            "self.{}.write().await.remove({})",
+                            to_snake(field),
+                            key_arg,
+                        );
+                    }
+                    "values" | "keys" | "iter" | "len" | "is_empty" => {
+                        // Read-only access, no key arg
+                        return format!(
+                            "self.{}.read().await.{}({})",
+                            to_snake(field),
+                            method,
+                            clone_args_for_method(&call.method, &call.args, ctx),
+                        );
+                    }
+                    _ => {
+                        // Other methods: default to write lock (safe fallback)
+                        return format!(
+                            "self.{}.write().await.{}({})",
+                            to_snake(field),
+                            method,
+                            clone_args_for_method(&call.method, &call.args, ctx),
+                        );
+                    }
+                }
+            }
             return format!(
                 "self.{}.{}({}){}",
                 to_snake(field),
@@ -2914,6 +3112,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 .map(|t| t.starts_with("Option<"))
                 .unwrap_or(true); // default to true if type unknown
             if is_option {
+                // When the enclosing function returns Option<T>, use `?` directly
+                // on the Option (returns None early) instead of converting to Result.
+                let enclosing_returns_option = ctx.expected_return_rust.as_ref()
+                    .map(|r| r.starts_with("Option<"))
+                    .unwrap_or(false);
+                if enclosing_returns_option {
+                    return format!("{}.clone()?", call.target);
+                }
                 return format!(
                     "{}.clone().ok_or(DomainError::NotFound)?",
                     call.target
@@ -2963,6 +3169,33 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     return format!(
                         "{}.clone().ok_or(DomainError::NotFound)?.{}({})",
                         call.target, method, cloned_args
+                    );
+                }
+                // Consuming Option methods (and_then, map, unwrap, filter, etc.)
+                // move self — clone to allow reuse of the local variable.
+                let non_consuming = ["is_some", "is_none", "as_ref", "as_mut", "clone"];
+                if !non_consuming.contains(&bare_method) {
+                    let cloned_args = clone_args_for_method(&call.method, &call.args, ctx);
+                    let suffix = receiver_call_suffix(
+                        &Expr::Ident(call.target.clone()),
+                        &call.method,
+                        ctx,
+                    );
+                    // unwrap_or with a string lit on Option<String> needs .to_string()
+                    if (bare_method == "unwrap_or" || bare_method == "unwrap_or_else")
+                        && call.args.len() == 1
+                    {
+                        if let Expr::StringLit(s) = &call.args[0] {
+                            let lit = s.replace('\\', "\\\\").replace('"', "\\\"");
+                            return format!(
+                                "{}.clone().{}(\"{}\".to_string()){}",
+                                call.target, method, lit, suffix
+                            );
+                        }
+                    }
+                    return format!(
+                        "{}.clone().{}({}){}",
+                        call.target, method, cloned_args, suffix
                     );
                 }
             }
@@ -3551,6 +3784,7 @@ impl GenCtx {
             stub_free_fns: self.stub_free_fns.clone(),
             bus_returns: self.bus_returns.clone(),
             local_domain_types: self.local_domain_types.clone(),
+            self_field_types: self.self_field_types.clone(),
         }
     }
 }
@@ -4213,8 +4447,12 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
                 for (name, shape) in &ctx.name_to_shape {
                     if *shape == Shape::Trait {
                         let trait_snake = to_snake(name);
+                        // Require exact match or underscore-boundary suffix match
+                        // (e.g. "registry" matches "registry" or "acp_session_registry"
+                        //  with suffix "_registry", but NOT "extension_registry" matching
+                        //  bare "registry" — that's handled by explicit @dep annotations)
                         if trait_snake == call.target
-                            || trait_snake.ends_with(&call.target)
+                            || trait_snake.ends_with(&format!("_{}", call.target))
                         {
                             deps.insert(name.clone());
                             break;

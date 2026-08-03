@@ -1,0 +1,14 @@
+stub Jwks
+  # JWKS JWT validation — wraps axum-jwks / jsonwebtoken crate
+  # The host adapter fetches the JWKS keyset from the OIDC discovery URL
+  # and validates token signature, expiry, and issuer.
+
+  fn validate(jwks_url: Str, token: Str, client_id: Opt<Str>) -> Res!<Json>
+    # Fetch JWKS from the discovery URL, validate signature + expiry.
+    # Returns the decoded claims as JSON on success, error on failure.
+    # client_id is optional audience validation (pass None to skip).
+
+  fn decode_unverified(token: Str) -> Res!<Json>
+    # Decode JWT payload WITHOUT signature verification.
+    # Used only in dev mode (local development with mock tokens).
+    # Splits the token on '.', base64-decodes the payload segment.

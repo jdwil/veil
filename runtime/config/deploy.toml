@@ -1,0 +1,37 @@
+# Platform deploy environments for veil-runtime (dashlx-shaped defaults).
+# Override per host: copy to ~/.veil/deploy.toml or set VEIL_DEPLOY_CONFIG.
+#
+# Cross-account: set assume_role_arn so provision runs as that role in the target account.
+# Gateway logical names (from project veil.toml) map to fuzzy patterns for *existing* APIs.
+
+default = "dev"
+
+[env.dev]
+region = "us-west-2"
+# account_id = "086261225885"
+# Cross-account provision role (optional). Leave unset to use host credentials.
+# assume_role_arn = "arn:aws:iam::086261225885:role/veil-provision"
+# external_id = ""
+# Lambda execution role for product functions (required for CreateFunction).
+# DashLX standard shared role for dev:
+lambda_execution_role_arn = "arn:aws:iam::086261225885:role/dlx-lambda-dev"
+
+[env.dev.gateways]
+# Prefer dlx-rust-* (e.g. dlx-rust-dev), then regional service API naming.
+dashlx-services = ["dlx-rust-*", "*-dev-service-api", "dashlx-services"]
+
+[env.staging]
+region = "us-west-2"
+# assume_role_arn = "arn:aws:iam::444455556666:role/veil-provision"
+# lambda_execution_role_arn = "arn:aws:iam::ACCOUNT:role/dlx-lambda-staging"
+
+[env.staging.gateways]
+dashlx-services = ["dlx-rust-*", "*-staging-service-api", "dashlx-services"]
+
+[env.prod]
+region = "us-west-2"
+# assume_role_arn = "arn:aws:iam::777788889999:role/veil-provision"
+# lambda_execution_role_arn = "arn:aws:iam::ACCOUNT:role/dlx-lambda-prod"
+
+[env.prod.gateways]
+dashlx-services = ["dlx-rust-*", "*-prod-service-api", "dashlx-services"]

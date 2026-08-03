@@ -1,0 +1,168 @@
+{
+  "context": "MetaExecution",
+  "crate": "meta_execution",
+  "deps": {
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "entity_repo": {
+      "provided_by": "runtime",
+      "trait": "EntityRepo"
+    },
+    "meta_artifact_cache": {
+      "adapter": "S3ArtifactCache",
+      "trait": "MetaArtifactCache"
+    },
+    "meta_compilation_backend": {
+      "adapter": "MockMetaCompiler",
+      "trait": "MetaCompilationBackend"
+    },
+    "meta_layer_executor": {
+      "trait": "MetaLayerExecutor"
+    },
+    "object_storage": {
+      "adapter": "S3ObjectStorage",
+      "env": [
+        "BUCKET"
+      ],
+      "trait": "ObjectStorage"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {
+    "CheckWarmStatus": {
+      "function": "check_warm_status",
+      "inputs": [
+        {
+          "name": "function_id",
+          "type": "Named(\"MetaFunctionId\")"
+        }
+      ]
+    },
+    "EnsureCompiled": {
+      "function": "ensure_compiled",
+      "inputs": [
+        {
+          "name": "function_id",
+          "type": "Named(\"MetaFunctionId\")"
+        },
+        {
+          "name": "content_hash",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "ExecuteMetaFunction": {
+      "function": "execute_meta_function",
+      "inputs": [
+        {
+          "name": "function_id",
+          "type": "Named(\"MetaFunctionId\")"
+        },
+        {
+          "name": "input",
+          "type": "Named(\"Json\")"
+        },
+        {
+          "name": "capabilities",
+          "type": "List(Named(\"GrantedCapability\"))"
+        },
+        {
+          "name": "timeout_ms",
+          "type": "Optional(Named(\"Int\"))"
+        },
+        {
+          "name": "idempotency_key",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "ExecuteMetaLayerTool": {
+      "function": "execute_meta_layer_tool",
+      "inputs": [
+        {
+          "name": "tenant_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "function_path",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "version",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "input",
+          "type": "Named(\"Json\")"
+        },
+        {
+          "name": "timeout_ms",
+          "type": "Optional(Named(\"Int\"))"
+        }
+      ]
+    },
+    "MetaLayerStatusTool": {
+      "function": "meta_layer_status_tool",
+      "inputs": [
+        {
+          "name": "tenant_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "function_path",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "version",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "ResolveContentHash": {
+      "function": "resolve_content_hash",
+      "inputs": [
+        {
+          "name": "function_id",
+          "type": "Named(\"MetaFunctionId\")"
+        }
+      ]
+    },
+    "WarmFunction": {
+      "function": "warm_function",
+      "inputs": [
+        {
+          "name": "function_id",
+          "type": "Named(\"MetaFunctionId\")"
+        }
+      ]
+    },
+    "WarmMetaLayerTool": {
+      "function": "warm_meta_layer_tool",
+      "inputs": [
+        {
+          "name": "tenant_id",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "function_path",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "version",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    }
+  }
+}

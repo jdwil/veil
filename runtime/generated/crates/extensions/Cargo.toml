@@ -1,0 +1,32 @@
+[package]
+name = "extensions"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+veil_shared = { path = "../veil_shared" }
+axum.workspace = true
+gix.workspace = true
+tempfile.workspace = true
+schemars.workspace = true
+sha2.workspace = true
+zip.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-dynamodb.workspace = true
+aws-sdk-lambda.workspace = true
+aws-sdk-sqs.workspace = true
+aws-sdk-sns.workspace = true
+aws-sdk-apigatewayv2.workspace = true
+aws-config.workspace = true
+veil_local_fs.workspace = true
+veil_ext_store.workspace = true
+veil-parser.workspace = true
+veil-ir.workspace = true

@@ -1,0 +1,65 @@
+{
+  "context": "Daemon",
+  "crate": "daemon",
+  "deps": {
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "entity_repo": {
+      "provided_by": "runtime",
+      "trait": "EntityRepo"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {
+    "AgentMessage": {
+      "function": "handle_agent_message",
+      "inputs": [
+        {
+          "name": "message",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "Connection": {
+      "function": "handle_connection",
+      "inputs": [
+        {
+          "name": "msg",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "HealthCheck": {
+      "function": "health_check",
+      "inputs": []
+    },
+    "LoadConfig": {
+      "function": "load_config",
+      "inputs": []
+    },
+    "ToolCall": {
+      "function": "handle_tool_call",
+      "inputs": [
+        {
+          "name": "tool",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "args",
+          "type": "Named(\"Json\")"
+        }
+      ]
+    }
+  }
+}

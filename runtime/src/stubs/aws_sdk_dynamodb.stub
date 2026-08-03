@@ -29,6 +29,12 @@ stub aws-sdk-dynamodb 1.116.0
     fn as_s() -> Res!<Str>
     fn as_n() -> Res!<Str>
 
+  struct BillingMode
+
+  struct ScalarAttributeType
+
+  struct KeyType
+
   struct IncrementalExportSpecification
     fn export_from_time() -> Opt<DateTime>
     fn export_to_time() -> Opt<DateTime>

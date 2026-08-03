@@ -1,0 +1,362 @@
+{
+  "context": "Extensions",
+  "crate": "extensions",
+  "deps": {
+    "auth_service": {
+      "provided_by": "runtime",
+      "strategy": "bus",
+      "trait": "AuthService"
+    },
+    "bus": {
+      "provided_by": "runtime",
+      "trait": "Bus"
+    },
+    "entity_repo": {
+      "provided_by": "runtime",
+      "trait": "EntityRepo"
+    },
+    "extension_artifact_store": {
+      "adapter": "FileExtensionArtifactStore",
+      "env": [
+        "VEIL_EXTENSIONS_DIR"
+      ],
+      "trait": "ExtensionArtifactStore"
+    },
+    "extension_executor": {
+      "adapter": "FileExtensionExecutor",
+      "env": [
+        "VEIL_EXTENSIONS_DIR"
+      ],
+      "trait": "ExtensionExecutor"
+    },
+    "extension_registry": {
+      "adapter": "FileExtensionRegistry",
+      "env": [
+        "VEIL_EXTENSIONS_DIR"
+      ],
+      "trait": "ExtensionRegistry"
+    },
+    "extension_source_store": {
+      "adapter": "FileExtensionSourceStore",
+      "env": [
+        "VEIL_EXTENSIONS_DIR"
+      ],
+      "trait": "ExtensionSourceStore"
+    },
+    "saga_step": {
+      "provided_by": "runtime",
+      "trait": "SagaStep"
+    }
+  },
+  "expose": [],
+  "handlers": {
+    "CreateExtension": {
+      "function": "create_extension",
+      "inputs": [
+        {
+          "name": "name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "kind",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "scope",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "provenance",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "product_id",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "tenant_id",
+          "type": "Optional(Named(\"Id\"))"
+        },
+        {
+          "name": "initiative_id",
+          "type": "Optional(Named(\"Id\"))"
+        },
+        {
+          "name": "description",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "params_schema",
+          "type": "Optional(Named(\"Json\"))"
+        }
+      ]
+    },
+    "EnsureStockCatalog": {
+      "function": "ensure_stock_catalog",
+      "inputs": [
+        {
+          "name": "activate_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "guard_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "product_id",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "ForkExtension": {
+      "function": "fork_extension",
+      "inputs": [
+        {
+          "name": "source_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "source_version",
+          "type": "Named(\"Int\")"
+        },
+        {
+          "name": "name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "tenant_id",
+          "type": "Optional(Named(\"Id\"))"
+        },
+        {
+          "name": "initiative_id",
+          "type": "Optional(Named(\"Id\"))"
+        }
+      ]
+    },
+    "GetExtension": {
+      "function": "get_extension",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Id\")"
+        }
+      ]
+    },
+    "GetExtensionVersion": {
+      "function": "get_extension_version",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "version",
+          "type": "Named(\"Int\")"
+        }
+      ]
+    },
+    "InvokeExtension": {
+      "function": "invoke_extension",
+      "inputs": [
+        {
+          "name": "extension_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "version",
+          "type": "Named(\"Int\")"
+        },
+        {
+          "name": "kind",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "params",
+          "type": "Named(\"Json\")"
+        },
+        {
+          "name": "context",
+          "type": "Named(\"Json\")"
+        }
+      ]
+    },
+    "ListExtensionVersions": {
+      "function": "list_extension_versions",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Id\")"
+        }
+      ]
+    },
+    "ListExtensions": {
+      "function": "list_extensions",
+      "inputs": [
+        {
+          "name": "scope",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "kind",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "product_id",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "tenant_id",
+          "type": "Optional(Named(\"Id\"))"
+        }
+      ]
+    },
+    "ListExtensionsByScope": {
+      "function": "list_extensions_by_scope",
+      "inputs": [
+        {
+          "name": "scope",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "kind",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "product_id",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "tenant_id",
+          "type": "Optional(Named(\"Id\"))"
+        }
+      ]
+    },
+    "ListStockExtensions": {
+      "function": "list_stock_extensions",
+      "inputs": [
+        {
+          "name": "scope",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "kind",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "product_id",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "MountUiExtension": {
+      "function": "mount_ui_extension",
+      "inputs": [
+        {
+          "name": "extension_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "version",
+          "type": "Named(\"Int\")"
+        },
+        {
+          "name": "slot",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "props",
+          "type": "Named(\"Json\")"
+        }
+      ]
+    },
+    "PromoteExtension": {
+      "function": "promote_extension",
+      "inputs": [
+        {
+          "name": "extension_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "target_scope",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "allow_promote",
+          "type": "Named(\"Bool\")"
+        }
+      ]
+    },
+    "PublishExtension": {
+      "function": "publish_extension",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Id\")"
+        }
+      ]
+    },
+    "SaveExtensionVersion": {
+      "function": "save_extension_version",
+      "inputs": [
+        {
+          "name": "extension_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "source_commit",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "artifact_uris",
+          "type": "Named(\"Json\")"
+        },
+        {
+          "name": "changelog",
+          "type": "Optional(Named(\"Str\"))"
+        }
+      ]
+    },
+    "UpsertStockExtension": {
+      "function": "upsert_stock_extension",
+      "inputs": [
+        {
+          "name": "extension_id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "name",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "description",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "product_id",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "params_schema",
+          "type": "Optional(Named(\"Json\"))"
+        },
+        {
+          "name": "capabilities",
+          "type": "List(Named(\"Str\"))"
+        },
+        {
+          "name": "palette_layer_refs",
+          "type": "List(Named(\"Str\"))"
+        }
+      ]
+    },
+    "ValidateReactionPalette": {
+      "function": "validate_reaction_palette",
+      "inputs": [
+        {
+          "name": "node_kinds",
+          "type": "List(Named(\"Str\"))"
+        }
+      ]
+    }
+  }
+}

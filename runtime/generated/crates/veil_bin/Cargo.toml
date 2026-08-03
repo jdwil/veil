@@ -1,0 +1,42 @@
+[package]
+name = "veil_bin"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "veil_bin"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+veil_shared = { path = "../veil_shared" }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+storage = { path = "../storage" }
+tools = { path = "../tools" }
+daemon = { path = "../daemon" }
+exec = { path = "../exec" }
+extensions = { path = "../extensions" }
+meta_execution = { path = "../meta_execution" }
+deploy = { path = "../deploy" }
+change_management = { path = "../change_management" }
+agent = { path = "../agent" }
+veil-parser.workspace = true
+veil-ir.workspace = true
+gix = { workspace = true }
+tempfile = { workspace = true }
+schemars = { workspace = true }
+sha2 = { workspace = true }
+zip = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-lambda = { workspace = true }
+aws-sdk-sqs = { workspace = true }
+aws-sdk-sns = { workspace = true }
+aws-sdk-apigatewayv2 = { workspace = true }
+veil_local_fs = { workspace = true }
+veil_ext_store = { workspace = true }

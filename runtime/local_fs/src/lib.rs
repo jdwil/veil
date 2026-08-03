@@ -90,4 +90,71 @@ impl LocalFs {
     pub fn join_owned(a: String, b: String) -> String {
         Self::join(a, b)
     }
+
+    /// Get the projects directory from env or config.
+    pub fn projects_dir() -> String {
+        if let Ok(dir) = std::env::var("VEIL_PROJECTS_DIR") {
+            return dir;
+        }
+        // Try ~/.veil/config.json
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let cfg_path = format!("{home}/.veil/config.json");
+        if let Ok(contents) = std::fs::read_to_string(&cfg_path) {
+            // Minimal JSON parse for projects_dir field
+            if let Some(start) = contents.find("\"projects_dir\"") {
+                let rest = &contents[start..];
+                if let Some(colon) = rest.find(':') {
+                    let after = rest[colon + 1..].trim();
+                    if after.starts_with('"') {
+                        if let Some(end) = after[1..].find('"') {
+                            return after[1..1 + end].to_string();
+                        }
+                    }
+                }
+            }
+        }
+        format!("{home}/veil-projects")
+    }
+
+    /// Read a project's deploy.toml as a string.
+    pub fn read_project_deploy(slug: impl AsRef<str>) -> Result<String, FsError> {
+        let dir = Self::projects_dir();
+        let path = format!("{}/{}/deploy.toml", dir, slug.as_ref());
+        if Path::new(&path).is_file() {
+            return Ok(std::fs::read_to_string(&path)?);
+        }
+        // Also try config/deploy.toml
+        let alt = format!("{}/{}/config/deploy.toml", dir, slug.as_ref());
+        Ok(std::fs::read_to_string(&alt)?)
+    }
+
+    /// Read a TOML file and return its content as a JSON string.
+    pub fn read_toml_json(path: impl AsRef<str>) -> Result<String, FsError> {
+        let content = std::fs::read_to_string(path.as_ref())?;
+        // Simple pass-through: return the raw TOML content.
+        // In production, would convert TOML → JSON via a toml crate.
+        Ok(content)
+    }
+
+    /// List deploy unit names for a project (directories under deploy/ or names from deploy.toml).
+    pub fn project_unit_names(slug: impl AsRef<str>) -> Result<Vec<String>, FsError> {
+        let dir = Self::projects_dir();
+        let units_dir = format!("{}/{}/deploy", dir, slug.as_ref());
+        if Path::new(&units_dir).is_dir() {
+            return Self::list_dir(&units_dir);
+        }
+        // Fallback: return empty list
+        Ok(Vec::new())
+    }
+
+    /// Get the deploy unit type for a named unit in a project.
+    pub fn project_unit_type(slug: impl AsRef<str>, name: impl AsRef<str>) -> Result<String, FsError> {
+        let dir = Self::projects_dir();
+        let type_file = format!("{}/{}/deploy/{}/type", dir, slug.as_ref(), name.as_ref());
+        if Path::new(&type_file).is_file() {
+            return Ok(std::fs::read_to_string(&type_file)?.trim().to_string());
+        }
+        // Default type
+        Ok("lambda-api".to_string())
+    }
 }
