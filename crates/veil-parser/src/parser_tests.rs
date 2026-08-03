@@ -1263,3 +1263,172 @@ sol App
         assert_eq!(mount.props[0].name, "name");
     }
 }
+
+#[cfg(test)]
+mod recovery_tests {
+    use crate::lexer::lex;
+    use crate::parser::{parse, parse_with_registry};
+    use veil_ir::layer::{LayerRegistry, ConstructSpec, Shape};
+    use veil_ir::layer::Visual;
+
+    fn make_spec(kw: &str, name: &str, shape: Shape) -> ConstructSpec {
+        ConstructSpec {
+            keyword: kw.to_string(),
+            name: name.to_string(),
+            maps_to: shape.name().to_string(),
+            shape,
+            layer: "test".to_string(),
+            desc: String::new(),
+            contains: Vec::new(),
+            blocks: Vec::new(),
+            raw_block_keywords: Vec::new(),
+            constraints: Vec::new(),
+            allowed_in: "any".to_string(),
+            group: String::new(),
+            visual: Visual {
+                icon: "📦".to_string(),
+                color: "#000".to_string(),
+                label: name.to_string(),
+            },
+            au: false,
+            is_step: false,
+            step_fields: Vec::new(),
+            annotations: Vec::new(),
+            runtime: None,
+            tgt: String::new(),
+            dg: String::new(),
+            presentation: Default::default(),
+        }
+    }
+
+    /// After a construct with a syntax error, subsequent valid constructs
+    /// should still be parsed successfully.
+    #[test]
+    fn recovers_past_broken_construct() {
+        // "Broken" has a malformed field — no type/value after colon.
+        // "AlsoGood" is valid and should be parsed.
+        let src = r#"
+sol App
+  struct Good
+    name: Str
+  struct Broken
+    field: 
+  struct AlsoGood
+    age: Int
+"#;
+        let tokens = lex(src);
+        let result = parse(&tokens);
+        // Parse should fail (errors present) but return them all
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        // At least one error for the broken construct
+        assert!(!errors.is_empty(), "expected errors but got none");
+    }
+
+    /// Multiple errors should be accumulated rather than stopping at the first.
+    #[test]
+    fn accumulates_multiple_errors() {
+        let src = r#"
+sol App
+  struct First
+    name: Str
+  unknownthing Foo
+    bar: Baz
+  struct Second
+    age: Int
+  anotherbad Qux
+    stuff: Things
+  struct Third
+    valid: Bool
+"#;
+        let tokens = lex(src);
+        let result = parse(&tokens);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        // Should have at least 2 errors (for unknownthing and anotherbad)
+        assert!(
+            errors.len() >= 2,
+            "expected >=2 errors, got {}: {:?}",
+            errors.len(),
+            errors
+        );
+    }
+
+    /// With layer registry, unknown keywords are caught and subsequent
+    /// valid constructs from the same registry are still parsed.
+    #[test]
+    fn recovery_with_layer_registry() {
+        let mut registry = LayerRegistry::builtin();
+        registry.constructs.push(make_spec("agg", "Aggregate", Shape::Struct));
+
+        let src = r#"
+sol App
+  agg Customer
+    name: Str
+  badword Broken
+    field: Int
+  agg Order
+    total: Int
+"#;
+        let tokens = lex(src);
+        let result = parse_with_registry(&tokens, registry);
+        // Should fail with errors
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.message.contains("badword")),
+            "expected error about 'badword', got: {:?}",
+            errors
+        );
+    }
+
+    /// ParseError now includes an optional hint field.
+    #[test]
+    fn error_has_hint_for_unknown_keyword() {
+        let src = r#"
+sol App
+  unknownkw Foo
+    bar: Baz
+"#;
+        let tokens = lex(src);
+        let result = parse(&tokens);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        let err = &errors[0];
+        assert!(
+            err.hint.is_some(),
+            "expected hint on unknown keyword error"
+        );
+        assert!(
+            err.hint.as_ref().unwrap().contains("use <layer>"),
+            "hint should suggest loading a layer"
+        );
+    }
+
+    /// Recovery inside nested mod-shaped constructs should not abort the parent.
+    #[test]
+    fn recovery_inside_mod_shape() {
+        let mut registry = LayerRegistry::builtin();
+        registry.constructs.push(make_spec("ctx", "Context", Shape::Mod));
+        registry.constructs.push(make_spec("agg", "Aggregate", Shape::Struct));
+
+        let src = r#"
+sol App
+  ctx Identity
+    agg Customer
+      name: Str
+    badstuff Broken
+      x: Y
+    agg Order
+      total: Int
+"#;
+        let tokens = lex(src);
+        let result = parse_with_registry(&tokens, registry);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.message.contains("badstuff")),
+            "expected error about 'badstuff'"
+        );
+    }
+}

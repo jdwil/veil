@@ -291,6 +291,58 @@ export function embedShellConfig(): EmbedShellConfig {
   return applyQueryOverrides(cfg);
 }
 
+/**
+ * Apply layer-declared IDE constraints to an EmbedShellConfig.
+ * Called after the presentation model is loaded — merges `ide` constraints
+ * from `GET /api/presentation` on top of the base config.
+ *
+ * Query-string overrides (`?showX=`) still take precedence (applied after this).
+ */
+export function applyIdeConstraints(
+  cfg: EmbedShellConfig,
+  ide: import('./presentation').IdeConstraints,
+): EmbedShellConfig {
+  const out = { ...cfg };
+
+  // Map hide/show feature names to config keys
+  const featureMap: Record<string, keyof EmbedShellConfig> = {
+    palette: 'showOutline', // palette doesn't have a direct flag; map to outline as proxy
+    outline: 'showOutline',
+    diff: 'showDiff',
+    infraToggle: 'showInfraToggle',
+    criticalToggle: 'showCriticalToggle',
+    devToolbar: 'showDevToolbar',
+    reviewDock: 'showReviewDock',
+    codePreview: 'showCodePreview',
+    agentRail: 'showAgentRail',
+    viewBar: 'showViewBar',
+    groupTabs: 'showGroupTabs',
+    scopeBar: 'showScopeBar',
+    diagnostics: 'showDiagnostics',
+    miniMap: 'showMiniMap',
+    themeToggle: 'showThemeToggle',
+    flowControls: 'showFlowControls',
+  };
+
+  if (ide.hide) {
+    for (const feat of ide.hide) {
+      const key = featureMap[feat];
+      if (key) (out as Record<string, unknown>)[key] = false;
+    }
+  }
+  if (ide.show) {
+    for (const feat of ide.show) {
+      const key = featureMap[feat];
+      if (key) (out as Record<string, unknown>)[key] = true;
+    }
+  }
+  if (ide.drill_depth === 0) {
+    out.allowDrillDown = false;
+  }
+
+  return applyQueryOverrides(out);
+}
+
 /** Headers for IDE API calls (mode + layer scope for palette / write locks). */
 export function ideRequestHeaders(extra?: Record<string, string>): Record<string, string> {
   const h: Record<string, string> = { ...(extra || {}) };
@@ -1067,23 +1119,38 @@ export type EditOp =
   /** Remove construct / step / free-fn by AST span start (SER-006). */
   | { op: 'delete_construct'; span_start: number };
 
+/** Edit annotation metadata (UX-030). */
+export interface EditAnnotation {
+  intent?: string;
+  category?: 'structure' | 'behavior' | 'constraint' | 'integration' | 'cosmetic' | 'docs';
+  criticality?: 'critical' | 'high' | 'normal' | 'low';
+}
+
 /**
  * Persist a batch of structured edits to the server. The server applies them
  * to the AST, re-serializes + validates, writes the .veil file, and returns
  * fresh source / IR / generated code, which we push into the stores so every
  * panel (graph, source, code preview) updates live.
  *
+ * @param annotations Optional per-edit metadata (same length as edits; null entries = no annotation).
  * Returns true on success; on failure sets `saveError` and leaves state intact.
  */
-export async function saveEdits(edits: EditOp[]): Promise<boolean> {
+export async function saveEdits(
+  edits: EditOp[],
+  annotations?: (EditAnnotation | null)[],
+): Promise<boolean> {
   if (edits.length === 0) return true;
   saving.set(true);
   saveError.set(null);
   try {
+    const body: { edits: EditOp[]; annotations?: (EditAnnotation | null)[] } = { edits };
+    if (annotations && annotations.some((a) => a != null)) {
+      body.annotations = annotations;
+    }
     const res = await fetch(EDIT_URL(), {
       method: 'POST',
       headers: ideRequestHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ edits }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const msg = await res.text();
@@ -1095,6 +1162,7 @@ export async function saveEdits(edits: EditOp[]): Promise<boolean> {
       ir: IrGraph;
       generated: Record<string, string>;
       diagnostics?: Diagnostic[];
+      resolved_annotations?: EditAnnotation[];
     } = await res.json();
     irGraph.set(data.ir);
     veilSource.set(data.source);

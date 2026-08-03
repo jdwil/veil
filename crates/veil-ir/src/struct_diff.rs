@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::ir::{IrGraph, IrNode, NodeKind};
 
+/// One segment of a projection-aware container path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathSegment {
+    /// Construct name (e.g. "Customer")
+    pub name: String,
+    /// Layer subkind if available (e.g. "Aggregate", "Context")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subkind: Option<String>,
+}
+
 /// One structural change between two IR snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -16,12 +26,17 @@ pub enum DiffItem {
         node_kind: String,
         name: String,
         subkind: Option<String>,
+        /// Projection-aware container path (subkind + name segments).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        container_path: Vec<PathSegment>,
     },
     Removed {
         path: String,
         node_kind: String,
         name: String,
         subkind: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        container_path: Vec<PathSegment>,
     },
     Renamed {
         path: String,
@@ -29,6 +44,8 @@ pub enum DiffItem {
         from_name: String,
         to_name: String,
         subkind: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        container_path: Vec<PathSegment>,
     },
     SignatureChanged {
         path: String,
@@ -36,6 +53,8 @@ pub enum DiffItem {
         name: String,
         before: String,
         after: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        container_path: Vec<PathSegment>,
     },
     BodyChanged {
         path: String,
@@ -45,6 +64,8 @@ pub enum DiffItem {
         after_lines: usize,
         before_preview: Vec<String>,
         after_preview: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        container_path: Vec<PathSegment>,
     },
     AnnotationsChanged {
         path: String,
@@ -52,6 +73,8 @@ pub enum DiffItem {
         name: String,
         before: Vec<String>,
         after: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        container_path: Vec<PathSegment>,
     },
 }
 
@@ -63,6 +86,10 @@ pub struct StructDiff {
     pub added: usize,
     pub removed: usize,
     pub changed: usize,
+    /// Per-item edit annotations (same length as `items` when populated).
+    /// Populated by the server from the transient annotation cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_annotations: Option<Vec<Option<crate::edit::EditAnnotation>>>,
 }
 
 fn kind_str(k: &NodeKind) -> String {
@@ -91,6 +118,35 @@ fn parent_path(graph: &IrGraph, node: &IrNode) -> String {
     }
     parts.reverse();
     parts.join("/")
+}
+
+/// Build a projection-aware container path with subkind labels.
+/// Returns segments like [PathSegment{name:"Identity", subkind:"Context"}, ...]
+fn container_segments(graph: &IrGraph, node: &IrNode) -> Vec<PathSegment> {
+    let by_id: std::collections::HashMap<_, _> =
+        graph.nodes.iter().map(|n| (n.id, n)).collect();
+    let mut segments = Vec::new();
+    let mut walk = node.metadata.parent;
+    let mut guard = 0;
+    while let Some(pid) = walk {
+        if guard > 64 {
+            break;
+        }
+        guard += 1;
+        if let Some(p) = by_id.get(&pid) {
+            if p.kind != NodeKind::Solution {
+                segments.push(PathSegment {
+                    name: p.name.clone(),
+                    subkind: p.metadata.subkind.clone(),
+                });
+            }
+            walk = p.metadata.parent;
+        } else {
+            break;
+        }
+    }
+    segments.reverse();
+    segments
 }
 
 /// Key for matching constructs across rebuilds (exclude Action noise optionally).
@@ -244,6 +300,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
             from_name: bn.name.clone(),
             to_name: hn.name.clone(),
             subkind: bn.metadata.subkind.clone(),
+            container_path: container_segments(base, bn),
         });
         renamed_base.insert(bk.clone());
         renamed_head.insert(hk.clone());
@@ -259,6 +316,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
             node_kind: kind_str(&bn.kind),
             name: bn.name.clone(),
             subkind: bn.metadata.subkind.clone(),
+            container_path: container_segments(base, bn),
         });
     }
     for k in &added_keys {
@@ -271,6 +329,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
             node_kind: kind_str(&hn.kind),
             name: hn.name.clone(),
             subkind: hn.metadata.subkind.clone(),
+            container_path: container_segments(head, hn),
         });
     }
 
@@ -280,6 +339,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
             continue;
         };
         let path = parent_path(head, hn);
+        let segments = container_segments(head, hn);
         let bsig = signature_of(bn);
         let hsig = signature_of(hn);
         if bsig != hsig {
@@ -289,6 +349,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
                 name: hn.name.clone(),
                 before: bsig,
                 after: hsig,
+                container_path: segments.clone(),
             });
         }
         let bann: Vec<_> = bn
@@ -312,6 +373,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
                 name: hn.name.clone(),
                 before: bann,
                 after: hann,
+                container_path: segments.clone(),
             });
         }
         // Body: steps and methods
@@ -330,6 +392,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
                     after_lines: hp.len(),
                     before_preview: bp.into_iter().take(6).collect(),
                     after_preview: hp.into_iter().take(6).collect(),
+                    container_path: segments,
                 });
             }
         }
@@ -352,6 +415,7 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
         added,
         removed,
         changed,
+        item_annotations: None,
     }
 }
 

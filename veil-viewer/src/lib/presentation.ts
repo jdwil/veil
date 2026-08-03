@@ -40,10 +40,21 @@ export interface ConstructRoleDto {
   default_view?: string | null;
 }
 
+/** Layer-declared IDE constraints (restrict shell features declaratively). */
+export interface IdeConstraints {
+  allowed_views?: string[];
+  drill_depth?: number | null;
+  hide?: string[];
+  show?: string[];
+  fixed_view?: boolean | null;
+}
+
 export interface PresentationModel {
   version: number;
   hosts: Record<string, HostPresentation>;
   constructs: Record<string, ConstructRoleDto>;
+  /** Layer-declared IDE constraints (from `present > ide` block). */
+  ide?: IdeConstraints | null;
 }
 
 /** MVP layouts (LAY-006). Unknown ids fall back to `flat` at runtime. */

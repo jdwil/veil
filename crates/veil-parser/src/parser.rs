@@ -16,11 +16,13 @@ use veil_ir::span::Span;
 
 use crate::lexer::{Token, TokenKind};
 
-/// Parse error with span information.
+/// Parse error with span information and optional recovery hint.
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
+    /// Optional actionable hint for resolving this error.
+    pub hint: Option<String>,
 }
 
 impl std::fmt::Display for ParseError {
@@ -29,7 +31,11 @@ impl std::fmt::Display for ParseError {
             f,
             "parse error at {}-{}: {}",
             self.span.start, self.span.end, self.message
-        )
+        )?;
+        if let Some(hint) = &self.hint {
+            write!(f, " (hint: {})", hint)?;
+        }
+        Ok(())
     }
 }
 
@@ -51,6 +57,7 @@ pub fn parse_expr_str(source: &str, registry: &LayerRegistry) -> Result<Expr, Pa
         return Err(ParseError {
             message: "empty expression".into(),
             span: Span::new(0, 0),
+            hint: Some("provide a VEIL expression (e.g. a function call or guard)".into()),
         });
     }
     let tokens = crate::lexer::lex(source);
@@ -375,6 +382,15 @@ impl<'a> Parser<'a> {
         ParseError {
             message,
             span: self.current().span,
+            hint: None,
+        }
+    }
+
+    fn error_with_hint(&self, message: String, hint: String) -> ParseError {
+        ParseError {
+            message,
+            span: self.current().span,
+            hint: Some(hint),
         }
     }
 
@@ -437,6 +453,68 @@ impl<'a> Parser<'a> {
             self.exit_block();
         }
         Ok(())
+    }
+
+    // ─── Error recovery ───────────────────────────────────────────────
+
+    /// Returns true if the current token could be the start of a new
+    /// top-level item (construct keyword, core keyword, annotation, export).
+    fn is_construct_sync_token(&self) -> bool {
+        match self.peek_kind() {
+            // Core structural keywords that start top-level items
+            TokenKind::Use | TokenKind::Link | TokenKind::Adapt |
+            TokenKind::Ins | TokenKind::Rfn | TokenKind::Rpl |
+            TokenKind::Omit | TokenKind::Ren | TokenKind::Lang |
+            TokenKind::Expose | TokenKind::Flow | TokenKind::Fn |
+            TokenKind::Group | TokenKind::TypeKw | TokenKind::ConstKw |
+            TokenKind::Export | TokenKind::Plus | TokenKind::Macro => true,
+            // Annotation starts a new annotated construct
+            TokenKind::Annotation => true,
+            // Ident could be a layer-defined construct keyword
+            TokenKind::Ident => {
+                let word = self.current().text.as_str();
+                self.registry.construct(word).is_some()
+            }
+            // Core construct shape keywords when used directly
+            TokenKind::Struct | TokenKind::Enum | TokenKind::Trait |
+            TokenKind::Mod | TokenKind::Impl => true,
+            _ => false,
+        }
+    }
+
+    /// Panic-mode recovery: skip tokens until we reach a position that could
+    /// start a new top-level construct, or reach the block end / EOF.
+    ///
+    /// This is the primary recovery strategy — when a parse error occurs inside
+    /// a construct, we skip forward to the next construct boundary so remaining
+    /// constructs can still be parsed, giving the user (or agent) multiple
+    /// errors in one pass.
+    fn synchronize_to_construct(&mut self) {
+        loop {
+            // Already at a sync point
+            if self.at_block_end() || self.at(&TokenKind::Eof) {
+                break;
+            }
+            // Skip any nested blocks we encounter during recovery
+            if self.at_block_start() {
+                // Try to skip the block; if that fails, just advance
+                if self.skip_block().is_err() {
+                    self.advance();
+                }
+                continue;
+            }
+            // After a newline, check if the next non-whitespace is a sync token
+            if self.at(&TokenKind::Newline) {
+                self.advance();
+                self.skip_newlines();
+                if self.is_construct_sync_token() || self.at_block_end() || self.at(&TokenKind::Eof) {
+                    break;
+                }
+                continue;
+            }
+            // Advance past non-sync tokens
+            self.advance();
+        }
     }
 
     // ─── Type parsing ─────────────────────────────────────────────────
@@ -665,60 +743,62 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
-                match self.peek_kind().clone() {
-                    TokenKind::Use => {
-                        // Layer reference — vocabulary already loaded into the
-                        // registry by the caller; keep for serialization.
-                        uses.push(self.parse_use_import()?);
-                    }
-                    TokenKind::Link => {
-                        links.push(self.parse_link_decl()?);
-                    }
-                    TokenKind::Allow | TokenKind::Deny => {
-                        self.advance();
-                        self.skip_block()?;
-                    }
-                    TokenKind::Lang => {
-                        items.push(TopLevelItem::Lang(self.parse_lang_block()?));
-                    }
-                    TokenKind::Flow => {
-                        let mut flow = self.parse_flow()?;
-                        let mut all = annotations;
-                        all.extend(flow.annotations);
-                        flow.annotations = all;
-                        items.push(TopLevelItem::Flow(flow));
-                    }
-                    // Free function: `fn name(params) -> T` with expression body.
-                    // Construct-shaped: `fn Name` + indent (svc-like) → parse as construct.
-                    TokenKind::Fn if self.is_free_function_header() => {
-                        let mut func = self.parse_fn_def()?;
-                        let mut all = annotations;
-                        all.extend(func.annotations);
-                        func.annotations = all;
-                        items.push(TopLevelItem::Function(func));
-                    }
-                    TokenKind::TypeKw => {
-                        self.advance(); // consume 'type'
-                        let alias_name = self.expect_ident()?;
-                        self.expect(&TokenKind::Eq)?;
-                        let target = self.parse_type()?;
-                        items.push(TopLevelItem::TypeAlias { name: alias_name, target });
-                    }
-                    TokenKind::ConstKw => {
-                        self.advance(); // consume 'const'
-                        let const_name = self.expect_ident()?;
-                        self.expect(&TokenKind::Eq)?;
-                        let value = self.parse_expr()?;
-                        items.push(TopLevelItem::Const { name: const_name, value });
-                    }
-                    _ => {
-                        // Check for testing framework contextual keywords
-                        if let Some(test_item) = self.try_parse_test_item()? {
-                            items.push(test_item);
-                        } else if let Some(c) = self.parse_any_construct(annotations)? {
-                            items.push(TopLevelItem::Construct(c));
+                let item_result: Result<(), ParseError> = (|| {
+                    match self.peek_kind().clone() {
+                        TokenKind::Use => {
+                            uses.push(self.parse_use_import()?);
+                        }
+                        TokenKind::Link => {
+                            links.push(self.parse_link_decl()?);
+                        }
+                        TokenKind::Allow | TokenKind::Deny => {
+                            self.advance();
+                            self.skip_block()?;
+                        }
+                        TokenKind::Lang => {
+                            items.push(TopLevelItem::Lang(self.parse_lang_block()?));
+                        }
+                        TokenKind::Flow => {
+                            let mut flow = self.parse_flow()?;
+                            let mut all = annotations.clone();
+                            all.extend(flow.annotations);
+                            flow.annotations = all;
+                            items.push(TopLevelItem::Flow(flow));
+                        }
+                        TokenKind::Fn if self.is_free_function_header() => {
+                            let mut func = self.parse_fn_def()?;
+                            let mut all = annotations.clone();
+                            all.extend(func.annotations);
+                            func.annotations = all;
+                            items.push(TopLevelItem::Function(func));
+                        }
+                        TokenKind::TypeKw => {
+                            self.advance();
+                            let alias_name = self.expect_ident()?;
+                            self.expect(&TokenKind::Eq)?;
+                            let target = self.parse_type()?;
+                            items.push(TopLevelItem::TypeAlias { name: alias_name, target });
+                        }
+                        TokenKind::ConstKw => {
+                            self.advance();
+                            let const_name = self.expect_ident()?;
+                            self.expect(&TokenKind::Eq)?;
+                            let value = self.parse_expr()?;
+                            items.push(TopLevelItem::Const { name: const_name, value });
+                        }
+                        _ => {
+                            if let Some(test_item) = self.try_parse_test_item()? {
+                                items.push(test_item);
+                            } else if let Some(c) = self.parse_any_construct(annotations.clone())? {
+                                items.push(TopLevelItem::Construct(c));
+                            }
                         }
                     }
+                    Ok(())
+                })();
+                if let Err(e) = item_result {
+                    self.errors.push(e);
+                    self.synchronize_to_construct();
                 }
             }
             self.exit_block();
@@ -770,117 +850,124 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
-                match self.peek_kind().clone() {
-                    TokenKind::Ident if self.is_metadata_key() => {
-                        let key_span = self.current().span;
-                        let key = self.advance().text;
-                        let value = if self.at(&TokenKind::StringLit) {
-                            let text = self.advance().text;
-                            Self::extract_string_content(&text)
-                        } else if self.at(&TokenKind::Ident) {
-                            self.advance().text
-                        } else {
-                            String::new()
-                        };
-                        metadata.push(PackageMeta {
-                            key,
-                            value,
-                            span: key_span,
-                        });
-                    }
-                    TokenKind::Desc => {
-                        let key_span = self.current().span;
-                        self.advance();
-                        let value = if self.at(&TokenKind::StringLit) {
-                            let text = self.advance().text;
-                            Self::extract_string_content(&text)
-                        } else {
-                            String::new()
-                        };
-                        metadata.push(PackageMeta {
-                            key: "desc".to_string(),
-                            value,
-                            span: key_span,
-                        });
-                    }
-                    TokenKind::Use => {
-                        uses.push(self.parse_use_import()?);
-                    }
-                    TokenKind::Link => {
-                        links.push(self.parse_link_decl()?);
-                    }
-                    TokenKind::Adapt => {
-                        adapts.push(self.parse_adapt_decl()?);
-                    }
-                    TokenKind::Ins => {
-                        patches.push(self.parse_adapt_ins()?);
-                    }
-                    TokenKind::Rfn => {
-                        patches.push(self.parse_adapt_rfn_or_rpl(true)?);
-                    }
-                    TokenKind::Rpl => {
-                        patches.push(self.parse_adapt_rfn_or_rpl(false)?);
-                    }
-                    TokenKind::Omit => {
-                        patches.push(self.parse_adapt_omit()?);
-                    }
-                    TokenKind::Ren => {
-                        patches.push(self.parse_adapt_ren()?);
-                    }
-                    TokenKind::Lang => {
-                        items.push(TopLevelItem::Lang(self.parse_lang_block()?));
-                    }
-                    TokenKind::Expose => {
-                        expose = Some(self.parse_expose_block()?);
-                    }
-                    TokenKind::Macro => {
-                        let macro_def = self.parse_macro_def()?;
-                        macros.push(macro_def);
-                    }
-                    TokenKind::Flow => {
-                        let mut flow = self.parse_flow()?;
-                        let mut all = annotations;
-                        all.extend(flow.annotations);
-                        flow.annotations = all;
-                        items.push(TopLevelItem::Flow(flow));
-                    }
-                    // Free function: `fn name(params) -> T` (layer declare coordinators).
-                    // Construct-shaped `fn Name` with steps → fall through to construct parse.
-                    TokenKind::Fn if self.is_free_function_header() => {
-                        let mut func = self.parse_fn_def()?;
-                        let mut all = annotations;
-                        all.extend(func.annotations);
-                        func.annotations = all;
-                        items.push(TopLevelItem::Function(func));
-                    }
-                    TokenKind::TypeKw => {
-                        self.advance();
-                        let alias_name = self.expect_ident()?;
-                        self.expect(&TokenKind::Eq)?;
-                        let target = self.parse_type()?;
-                        items.push(TopLevelItem::TypeAlias {
-                            name: alias_name,
-                            target,
-                        });
-                    }
-                    TokenKind::ConstKw => {
-                        self.advance();
-                        let const_name = self.expect_ident()?;
-                        self.expect(&TokenKind::Eq)?;
-                        let value = self.parse_expr()?;
-                        items.push(TopLevelItem::Const {
-                            name: const_name,
-                            value,
-                        });
-                    }
-                    _ => {
-                        // Check for testing framework contextual keywords
-                        if let Some(test_item) = self.try_parse_test_item()? {
-                            items.push(test_item);
-                        } else if let Some(c) = self.parse_any_construct(annotations)? {
-                            items.push(TopLevelItem::Construct(c));
+                let item_result: Result<(), ParseError> = (|| {
+                    match self.peek_kind().clone() {
+                        TokenKind::Ident if self.is_metadata_key() => {
+                            let key_span = self.current().span;
+                            let key = self.advance().text;
+                            let value = if self.at(&TokenKind::StringLit) {
+                                let text = self.advance().text;
+                                Self::extract_string_content(&text)
+                            } else if self.at(&TokenKind::Ident) {
+                                self.advance().text
+                            } else {
+                                String::new()
+                            };
+                            metadata.push(PackageMeta {
+                                key,
+                                value,
+                                span: key_span,
+                            });
+                        }
+                        TokenKind::Desc => {
+                            let key_span = self.current().span;
+                            self.advance();
+                            let value = if self.at(&TokenKind::StringLit) {
+                                let text = self.advance().text;
+                                Self::extract_string_content(&text)
+                            } else {
+                                String::new()
+                            };
+                            metadata.push(PackageMeta {
+                                key: "desc".to_string(),
+                                value,
+                                span: key_span,
+                            });
+                        }
+                        TokenKind::Use => {
+                            uses.push(self.parse_use_import()?);
+                        }
+                        TokenKind::Link => {
+                            links.push(self.parse_link_decl()?);
+                        }
+                        TokenKind::Adapt => {
+                            adapts.push(self.parse_adapt_decl()?);
+                        }
+                        TokenKind::Ins => {
+                            patches.push(self.parse_adapt_ins()?);
+                        }
+                        TokenKind::Rfn => {
+                            patches.push(self.parse_adapt_rfn_or_rpl(true)?);
+                        }
+                        TokenKind::Rpl => {
+                            patches.push(self.parse_adapt_rfn_or_rpl(false)?);
+                        }
+                        TokenKind::Omit => {
+                            patches.push(self.parse_adapt_omit()?);
+                        }
+                        TokenKind::Ren => {
+                            patches.push(self.parse_adapt_ren()?);
+                        }
+                        TokenKind::Lang => {
+                            items.push(TopLevelItem::Lang(self.parse_lang_block()?));
+                        }
+                        TokenKind::Expose => {
+                            expose = Some(self.parse_expose_block()?);
+                        }
+                        TokenKind::Macro => {
+                            let macro_def = self.parse_macro_def()?;
+                            macros.push(macro_def);
+                        }
+                        TokenKind::Flow => {
+                            let mut flow = self.parse_flow()?;
+                            let mut all = annotations.clone();
+                            all.extend(flow.annotations);
+                            flow.annotations = all;
+                            items.push(TopLevelItem::Flow(flow));
+                        }
+                        // Free function: `fn name(params) -> T` (layer declare coordinators).
+                        // Construct-shaped `fn Name` with steps → fall through to construct parse.
+                        TokenKind::Fn if self.is_free_function_header() => {
+                            let mut func = self.parse_fn_def()?;
+                            let mut all = annotations.clone();
+                            all.extend(func.annotations);
+                            func.annotations = all;
+                            items.push(TopLevelItem::Function(func));
+                        }
+                        TokenKind::TypeKw => {
+                            self.advance();
+                            let alias_name = self.expect_ident()?;
+                            self.expect(&TokenKind::Eq)?;
+                            let target = self.parse_type()?;
+                            items.push(TopLevelItem::TypeAlias {
+                                name: alias_name,
+                                target,
+                            });
+                        }
+                        TokenKind::ConstKw => {
+                            self.advance();
+                            let const_name = self.expect_ident()?;
+                            self.expect(&TokenKind::Eq)?;
+                            let value = self.parse_expr()?;
+                            items.push(TopLevelItem::Const {
+                                name: const_name,
+                                value,
+                            });
+                        }
+                        _ => {
+                            // Check for testing framework contextual keywords
+                            if let Some(test_item) = self.try_parse_test_item()? {
+                                items.push(test_item);
+                            } else if let Some(c) = self.parse_any_construct(annotations.clone())? {
+                                items.push(TopLevelItem::Construct(c));
+                            }
                         }
                     }
+                    Ok(())
+                })();
+                if let Err(e) = item_result {
+                    self.errors.push(e);
+                    self.synchronize_to_construct();
                 }
             }
             self.exit_block();
@@ -1550,10 +1637,17 @@ impl<'a> Parser<'a> {
         };
 
         let Some(spec) = self.registry.construct(&word).cloned() else {
-            self.errors.push(self.error(format!(
-                "unknown construct keyword '{}' — not defined by any loaded layer",
-                word
-            )));
+            self.errors.push(ParseError {
+                message: format!(
+                    "unknown construct keyword '{}' — not defined by any loaded layer",
+                    word
+                ),
+                span: self.current().span,
+                hint: Some(format!(
+                    "add 'use <layer>' to load the layer that defines '{}', or check spelling",
+                    word
+                )),
+            });
             // Skip the line and any block under it to recover.
             while !self.at(&TokenKind::Newline)
                 && !self.at(&TokenKind::Eof)
@@ -1565,14 +1659,22 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
 
-        let mut c = match spec.shape {
-            Shape::Mod => self.parse_mod_shape(&spec)?,
-            Shape::Struct => self.parse_struct_shape(&spec)?,
-            Shape::Enum => self.parse_enum_shape(&spec)?,
-            Shape::Trait => self.parse_trait_shape(&spec)?,
-            Shape::Impl => self.parse_impl_shape(&spec)?,
-            Shape::Fn => self.parse_fn_shape(&spec)?,
-            Shape::Group => self.parse_group_construct()?,
+        let c = match spec.shape {
+            Shape::Mod => self.parse_mod_shape(&spec),
+            Shape::Struct => self.parse_struct_shape(&spec),
+            Shape::Enum => self.parse_enum_shape(&spec),
+            Shape::Trait => self.parse_trait_shape(&spec),
+            Shape::Impl => self.parse_impl_shape(&spec),
+            Shape::Fn => self.parse_fn_shape(&spec),
+            Shape::Group => self.parse_group_construct(),
+        };
+        let mut c = match c {
+            Ok(c) => c,
+            Err(e) => {
+                self.errors.push(e);
+                self.synchronize_to_construct();
+                return Ok(None);
+            }
         };
         let mut all = annotations;
         all.extend(c.annotations);
@@ -1651,8 +1753,13 @@ impl<'a> Parser<'a> {
                     c.deployment_unit = true;
                     continue;
                 }
-                if let Some(child) = self.parse_any_construct(annotations)? {
-                    c.children.push(child);
+                match self.parse_any_construct(annotations) {
+                    Ok(Some(child)) => c.children.push(child),
+                    Ok(None) => {} // error already recorded inside parse_any_construct
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.synchronize_to_construct();
+                    }
                 }
             }
             self.exit_block();
@@ -1679,8 +1786,13 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
-                if let Some(child) = self.parse_any_construct(annotations)? {
-                    c.children.push(child);
+                match self.parse_any_construct(annotations) {
+                    Ok(Some(child)) => c.children.push(child),
+                    Ok(None) => {} // error already recorded inside parse_any_construct
+                    Err(e) => {
+                        self.errors.push(e);
+                        self.synchronize_to_construct();
+                    }
                 }
             }
             self.exit_block();

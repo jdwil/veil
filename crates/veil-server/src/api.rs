@@ -22,6 +22,18 @@ use crate::provider::hub::{
 };
 use crate::provider::{FileKind, SourceProvider};
 
+// ─── Transient annotation cache (UX-030) ──────────────────────────────────
+// Stores resolved annotations from the most recent POST /api/edit batch.
+// GET /api/diff correlates diff items with this cache by (path, change_kind).
+use std::sync::Mutex;
+use std::collections::HashMap;
+
+/// Key for annotation cache: (construct path, diff kind like "added"/"body_changed").
+type AnnotationCacheKey = (String, String);
+
+static ANNOTATION_CACHE: std::sync::LazyLock<Mutex<HashMap<AnnotationCacheKey, veil_ir::EditAnnotation>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 async fn ws_aether_chat_route<P: SourceProvider + 'static>(
     ws: WebSocketUpgrade,
     State(provider): State<Arc<P>>,
@@ -499,7 +511,29 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
         }
     };
 
-    let diff = veil_ir::structural_diff(&base_ir, &head_ir, &base_label, "working tree");
+    let mut diff = veil_ir::structural_diff(&base_ir, &head_ir, &base_label, "working tree");
+
+    // Enrich diff items with annotations from the transient cache.
+    if let Ok(cache) = ANNOTATION_CACHE.lock() {
+        if !cache.is_empty() {
+            let mut annotations: Vec<Option<veil_ir::EditAnnotation>> = Vec::with_capacity(diff.items.len());
+            for item in &diff.items {
+                let (name, kind) = match item {
+                    veil_ir::DiffItem::Added { name, .. } => (name.clone(), "added".to_string()),
+                    veil_ir::DiffItem::Removed { name, .. } => (name.clone(), "removed".to_string()),
+                    veil_ir::DiffItem::Renamed { to_name, .. } => (to_name.clone(), "renamed".to_string()),
+                    veil_ir::DiffItem::SignatureChanged { name, .. } => (name.clone(), "signature_changed".to_string()),
+                    veil_ir::DiffItem::BodyChanged { name, .. } => (name.clone(), "body_changed".to_string()),
+                    veil_ir::DiffItem::AnnotationsChanged { name, .. } => (name.clone(), "annotations_changed".to_string()),
+                };
+                annotations.push(cache.get(&(name, kind)).cloned());
+            }
+            if annotations.iter().any(|a| a.is_some()) {
+                diff.item_annotations = Some(annotations);
+            }
+        }
+    }
+
     match serde_json::to_string(&diff) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1017,6 +1051,7 @@ async fn post_layer_edit<P: SourceProvider>(
         ir: serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null),
         generated: serde_json::json!({}),
         diagnostics: Some(diags),
+        resolved_annotations: None,
     };
     Json(response).into_response()
 }
@@ -1416,13 +1451,106 @@ async fn post_edit<P: SourceProvider>(
         .map(|f| (f.path.clone(), f.content.clone()))
         .collect();
 
+    // Resolve edit annotations: merge agent-provided with inference.
+    let resolved_annotations = {
+        let presentation = veil_ir::presentation_from_registry(&state.registry());
+        let mut resolved = Vec::with_capacity(req.edits.len());
+        for (i, op) in req.edits.iter().enumerate() {
+            let provided = req.annotations.as_ref()
+                .and_then(|a| a.get(i))
+                .and_then(|a| a.as_ref());
+
+            let mut ann = provided.cloned().unwrap_or_default();
+            // Infer criticality when not explicitly provided.
+            if ann.criticality.is_none() {
+                // Find lenses for the target construct (by span lookup in IR).
+                let lenses = find_target_lenses(op, &graph, &presentation);
+                ann.criticality = Some(veil_ir::infer_criticality(op, &lenses));
+            }
+            resolved.push(ann);
+        }
+        resolved
+    };
+
+    // Populate transient annotation cache for diff correlation.
+    if let Ok(mut cache) = ANNOTATION_CACHE.lock() {
+        cache.clear();
+        for (i, op) in req.edits.iter().enumerate() {
+            if let Some(ann) = resolved_annotations.get(i) {
+                // Key by the target node's name + op kind for diff matching.
+                let node = match op {
+                    veil_ir::EditOp::Rename { span_start, name, .. } => Some((*span_start, name.clone(), "renamed")),
+                    veil_ir::EditOp::SetAnnotations { span_start, .. } => {
+                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                        Some((*span_start, n, "annotations_changed"))
+                    }
+                    veil_ir::EditOp::SetFields { span_start, .. } | veil_ir::EditOp::SetMethods { span_start, .. } => {
+                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                        Some((*span_start, n, "signature_changed"))
+                    }
+                    veil_ir::EditOp::SetBody { span_start, .. } => {
+                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                        Some((*span_start, n, "body_changed"))
+                    }
+                    veil_ir::EditOp::CreateConstruct { name, .. } => Some((0, name.clone(), "added")),
+                    veil_ir::EditOp::CreateStep { name, .. } => Some((0, name.clone(), "added")),
+                    veil_ir::EditOp::DeleteConstruct { span_start } => {
+                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                        Some((*span_start, n, "removed"))
+                    }
+                };
+                if let Some((_span, name, kind)) = node {
+                    if !name.is_empty() {
+                        cache.insert((name, kind.to_string()), ann.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let response = EditResponse {
         source: new_source,
         ir: serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null),
         generated: serde_json::to_value(&generated).unwrap_or(serde_json::Value::Null),
         diagnostics: Some(check_resp.diagnostics),
+        resolved_annotations: Some(resolved_annotations),
     };
     Json(response).into_response()
+}
+
+/// Look up presentation lenses for the construct targeted by an EditOp.
+/// Returns lens strings (e.g. ["critical"]) or empty if no lenses found.
+fn find_target_lenses(
+    op: &veil_ir::EditOp,
+    graph: &veil_ir::IrGraph,
+    presentation: &veil_ir::PresentationModel,
+) -> Vec<String> {
+    // Get the span_start that identifies the target node.
+    let target_span = match op {
+        veil_ir::EditOp::Rename { span_start, .. }
+        | veil_ir::EditOp::SetAnnotations { span_start, .. }
+        | veil_ir::EditOp::SetFields { span_start, .. }
+        | veil_ir::EditOp::SetMethods { span_start, .. }
+        | veil_ir::EditOp::SetBody { span_start, .. }
+        | veil_ir::EditOp::DeleteConstruct { span_start } => Some(*span_start),
+        veil_ir::EditOp::CreateConstruct { parent_span, .. }
+        | veil_ir::EditOp::CreateStep { parent_span, .. } => Some(*parent_span),
+    };
+    let Some(span) = target_span else {
+        return Vec::new();
+    };
+    // Find the IR node by span start.
+    let node = graph.nodes.iter().find(|n| n.span.start == span);
+    let Some(node) = node else {
+        return Vec::new();
+    };
+    // Look up the subkind (construct name) in the presentation model.
+    let subkind = node.metadata.subkind.as_deref().unwrap_or("");
+    if let Some(dto) = presentation.constructs.get(subkind) {
+        dto.lenses.clone()
+    } else {
+        Vec::new()
+    }
 }
 
 // ─── Agent (AGT-001) ───────────────────────────────────────────────────────

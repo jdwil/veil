@@ -92,6 +92,83 @@ pub struct MethodSpec {
     pub return_type: String,
 }
 
+// ─── Edit annotations (UX-030) ────────────────────────────────────────────
+
+/// Structural category of an edit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EditCategory {
+    /// Topology / naming / containment changes.
+    Structure,
+    /// Expression bodies, control flow, logic.
+    Behavior,
+    /// Guards, validation, invariants, type constraints.
+    Constraint,
+    /// Ports, adapters, external wiring.
+    Integration,
+    /// Annotations, visual metadata, non-functional.
+    Cosmetic,
+    /// Comments, prompts, layer docs.
+    Docs,
+}
+
+/// Review priority for an edit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Criticality {
+    /// Potential data loss, security boundary, breaking contract change.
+    Critical = 3,
+    /// Important business logic change requiring careful review.
+    High = 2,
+    /// Standard change — default for most edits.
+    Normal = 1,
+    /// Trivial / cosmetic / low-risk mechanical change.
+    Low = 0,
+}
+
+impl Default for Criticality {
+    fn default() -> Self {
+        Criticality::Normal
+    }
+}
+
+/// Optional metadata attached to a single EditOp by the requesting agent.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EditAnnotation {
+    /// Short declarative description of what the edit accomplishes.
+    /// Example: "Add email validation guard", "Rename for clarity".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+
+    /// Structural category of the change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<EditCategory>,
+
+    /// Review priority. When omitted on input, inferred from lenses/shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criticality: Option<Criticality>,
+}
+
+/// Infer criticality from the edit operation type when the agent didn't provide one.
+pub fn infer_criticality(op: &EditOp, lenses: &[String]) -> Criticality {
+    // Layer-declared lenses override everything
+    if lenses.iter().any(|l| l == "critical") {
+        return Criticality::Critical;
+    }
+    if lenses.iter().any(|l| l == "integration") {
+        return Criticality::High;
+    }
+    // Op-type heuristics
+    match op {
+        EditOp::DeleteConstruct { .. } => Criticality::High,
+        EditOp::SetBody { .. } => Criticality::High,
+        EditOp::SetAnnotations { .. } => Criticality::Low,
+        EditOp::Rename { .. } => Criticality::Normal,
+        EditOp::SetFields { .. } | EditOp::SetMethods { .. } => Criticality::Normal,
+        EditOp::CreateConstruct { .. } | EditOp::CreateStep { .. } => Criticality::Normal,
+    }
+}
+
 /// Error applying an edit.
 #[derive(Debug)]
 pub enum EditError {

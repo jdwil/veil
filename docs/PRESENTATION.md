@@ -121,6 +121,15 @@ present
   nestable_in <view_id> as root
   nestable_in <view_id> under <ParentName>
   lens <lens_id>                     # critical | integration | ...
+
+  # --- IDE constraints (optional, on host construct) ---
+  ide
+    views <view_id> [, <view_id>...]   # allowed views (single = no switcher)
+    drill_depth <n>                    # max drill depth (0 = no drill)
+    no_drill                           # alias for drill_depth 0
+    hide <feature> [, <feature>...]    # shell features to hide
+    show <feature> [, <feature>...]    # shell features to force-show
+    fixed_view                         # suppress view switcher
 ```
 
 **Lexical notes:**
@@ -405,6 +414,90 @@ Palette drop → `EditOp::CreateConstruct` with `parent_span` chosen as:
 Missing groups are created first (`keyword: group`). Failures surface via the
 edit/check API (invalid parent, validation errors). See
 `veil-viewer/src/lib/createPlacement.ts`.
+
+---
+---
+
+## 6.7 IDE constraints (`present > ide`)
+
+Layers can restrict which IDE chrome and features appear when the layer's
+constructs are active. This replaces URL `?mode=flow` with **declarative**
+constraints that travel with the layer — no coordination needed between
+layer authors and viewer embed URLs.
+
+### Grammar
+
+```
+present
+  ide
+    views <view_id> [, <view_id>...]   # only these views available
+    drill_depth <n>                    # max drill into children (0 = flat only)
+    no_drill                           # alias for drill_depth 0
+    hide <feature>, <feature>          # suppress shell features
+    show <feature>, <feature>          # force-show (overrides flow-mode defaults)
+    fixed_view                         # suppress switcher even with multiple views
+```
+
+### Feature names (match `EmbedShellConfig` flags)
+
+`palette`, `outline`, `diff`, `infraToggle`, `criticalToggle`, `devToolbar`,
+`reviewDock`, `codePreview`, `agentRail`, `viewBar`, `groupTabs`, `scopeBar`,
+`diagnostics`, `miniMap`, `themeToggle`, `flowControls`
+
+### Semantics
+
+- **`views`**: If a single id, the switcher is hidden. If multiple, only these
+  are shown (others from the same host's `view` list are suppressed).
+- **`drill_depth`**: How many levels of double-click drill are allowed.
+  `0` means no drill at all; `1` means one level below the root host.
+- **`hide`/`show`**: Directly map to `EmbedShellConfig` boolean flags. `hide`
+  sets the flag to `false`; `show` to `true`. Query-string `?showX=` overrides
+  still work (escape hatch for debugging).
+- **Layer stacking**: Later layer overrides earlier IDE constraints entirely
+  (same as views: the last `ide` block wins).
+
+### API shape
+
+The `GET /api/presentation` response gains an optional `ide` field:
+
+```json
+{
+  "version": 1,
+  "hosts": { ... },
+  "constructs": { ... },
+  "ide": {
+    "allowed_views": ["model"],
+    "drill_depth": 1,
+    "hide": ["devToolbar", "outline"],
+    "show": ["agentRail"],
+    "fixed_view": true
+  }
+}
+```
+
+When absent, the viewer uses its default `EmbedShellConfig` logic (full mode
+or flow mode from URL params — existing behavior preserved).
+
+### Example
+
+```
+construct ReactionFlow
+  kw rflow
+  mt fn
+  present
+    view steps
+      label "Steps"
+      layout flow
+      default
+    ide
+      views steps
+      no_drill
+      hide outline, diff, devToolbar, codePreview
+      show agentRail, flowControls
+```
+
+This replaces the current `?mode=flow&showOutline=0&...` URL hack with a
+single declarative block in the layer.
 
 ---
 

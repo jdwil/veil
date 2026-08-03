@@ -48,7 +48,10 @@ pub use diagnostics::{Diagnostic, Severity};
 pub use escape::{
     check_escape_hatches, is_escape_hatch_code, promote_escape_hatches, EscapeHatchSummary,
 };
-pub use edit::{apply_edit, apply_edit_with, apply_edits, apply_edits_with, EditError, EditOp};
+pub use edit::{
+    apply_edit, apply_edit_with, apply_edits, apply_edits_with, Criticality, EditAnnotation,
+    EditCategory, EditError, EditOp, infer_criticality,
+};
 pub use ir::*;
 pub use layer::{
     palette_from_registry, parse_layer_file, parse_stub_file, CodegenRule, CodegenTemplate,
@@ -57,8 +60,8 @@ pub use layer::{
 };
 pub use layer_graph::{build_layer_ir, check_layer, layer_prompt};
 pub use presentation::{
-    presentation_from_registry, ConstructPresentation, HostPresentation, NestRule, NestableHint,
-    PresentationModel, ViewSpec,
+    presentation_from_registry, ConstructPresentation, ConstructRoleDto, HostPresentation,
+    IdeConstraints, NestRule, NestableHint, PresentationModel, ViewSpec,
 };
 pub use project::{
     orphan_policy_valid, parse_orphan_policy, project_view, project_view_with_edges, resolve_layout,
@@ -67,6 +70,6 @@ pub use project::{
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;
-pub use struct_diff::{structural_diff, DiffItem, StructDiff};
+pub use struct_diff::{structural_diff, DiffItem, PathSegment, StructDiff};
 pub use test_lint::check_tests;
 pub use coverage::{compute_coverage, CoverageReport, CoverageMetric, UncoveredItem};

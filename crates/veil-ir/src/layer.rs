@@ -2368,7 +2368,24 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             }
             Section::Present => {
                 if let Item::Construct(c) = item {
-                    if let Some(rest) = trimmed.strip_prefix("view ") {
+                    if trimmed == "ide" {
+                        // Enter IDE constraints sub-block; flush any in-progress view.
+                        if let Some(v) = present_view.take() {
+                            c.presentation.views.push(v);
+                        }
+                        if c.presentation.ide_constraints.is_none() {
+                            c.presentation.ide_constraints = Some(crate::presentation::IdeConstraints::default());
+                        }
+                    } else if c.presentation.ide_constraints.is_some()
+                        && crate::presentation::is_ide_constraint_line(trimmed)
+                    {
+                        if let Err(e) = crate::presentation::apply_ide_constraint_line(
+                            c.presentation.ide_constraints.as_mut().unwrap(),
+                            trimmed,
+                        ) {
+                            errors.push(format!("construct '{}': {}", c.name, e));
+                        }
+                    } else if let Some(rest) = trimmed.strip_prefix("view ") {
                         if let Some(v) = present_view.take() {
                             c.presentation.views.push(v);
                         }

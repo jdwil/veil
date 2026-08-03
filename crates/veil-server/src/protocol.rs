@@ -1,12 +1,16 @@
 //! Protocol types — request/response shapes shared with the viewer.
 
 use serde::{Deserialize, Serialize};
-use veil_ir::EditOp;
+use veil_ir::{EditAnnotation, EditOp};
 
 /// Request body for `POST /api/edit`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EditRequest {
     pub edits: Vec<EditOp>,
+    /// Optional per-edit metadata. When present, must be same length as `edits`.
+    /// Entries may be `null` (no annotation for that op).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Vec<Option<EditAnnotation>>>,
 }
 
 /// Response for a successful edit.
@@ -18,6 +22,9 @@ pub struct EditResponse {
     /// Fresh diagnostics after the edit (same pipeline as `/api/check`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Vec<veil_ir::Diagnostic>>,
+    /// Resolved annotations (inference applied). Same length as input edits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_annotations: Option<Vec<EditAnnotation>>,
 }
 
 /// Response for `GET|POST /api/check` — full check pipeline result.

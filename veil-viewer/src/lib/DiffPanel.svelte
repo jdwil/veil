@@ -1,8 +1,14 @@
 <script lang="ts">
   /**
    * UX-021: structural / semantic diff panel (vs git HEAD).
+   * Enhanced with projection-term container grouping (UX-030).
    */
   import { focusDiagnostic, ideApiBase } from '$lib/store';
+
+  interface PathSegment {
+    name: string;
+    subkind?: string | null;
+  }
 
   interface DiffItem {
     kind: string;
@@ -18,6 +24,13 @@
     after_preview?: string[];
     before_lines?: number;
     after_lines?: number;
+    container_path?: PathSegment[];
+  }
+
+  interface EditAnnotation {
+    intent?: string;
+    category?: string;
+    criticality?: 'critical' | 'high' | 'normal' | 'low';
   }
 
   interface StructDiff {
@@ -27,12 +40,60 @@
     added: number;
     removed: number;
     changed: number;
+    item_annotations?: (EditAnnotation | null)[];
+  }
+
+  interface GroupedDiff {
+    label: string;
+    items: DiffItem[];
+    itemIndices: number[];
   }
 
   let open = $state(false);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let diff = $state<StructDiff | null>(null);
+  let grouped = $state(true);
+
+  function groupByContainer(items: DiffItem[]): GroupedDiff[] {
+    const map = new Map<string, { items: DiffItem[]; indices: number[] }>();
+    for (let idx = 0; idx < items.length; idx++) {
+      const item = items[idx];
+      const cp = item.container_path;
+      let label: string;
+      if (cp && cp.length > 0) {
+        label = cp
+          .map((seg) => (seg.subkind ? `${seg.subkind} ${seg.name}` : seg.name))
+          .join(' → ');
+      } else {
+        label = item.path || '(root)';
+      }
+      if (!map.has(label)) map.set(label, { items: [], indices: [] });
+      const entry = map.get(label)!;
+      entry.items.push(item);
+      entry.indices.push(idx);
+    }
+    return Array.from(map.entries()).map(([label, { items, indices }]) => ({
+      label,
+      items,
+      itemIndices: indices,
+    }));
+  }
+
+  function critBadge(ann: EditAnnotation | null | undefined): string {
+    if (!ann?.criticality) return '';
+    switch (ann.criticality) {
+      case 'critical': return '!!';
+      case 'high': return '!';
+      case 'low': return '·';
+      default: return '';
+    }
+  }
+
+  function critClass(ann: EditAnnotation | null | undefined): string {
+    if (!ann?.criticality) return '';
+    return `crit-${ann.criticality}`;
+  }
 
   async function load() {
     loading = true;
@@ -60,20 +121,19 @@
 
   function itemLabel(i: DiffItem): string {
     const sk = i.subkind ? ` (${i.subkind})` : '';
-    const path = i.path ? `${i.path}/` : '';
     switch (i.kind) {
       case 'added':
-        return `+ ${path}${i.name}${sk}`;
+        return `+ ${i.name}${sk}`;
       case 'removed':
-        return `− ${path}${i.name}${sk}`;
+        return `− ${i.name}${sk}`;
       case 'renamed':
-        return `~ ${path}${i.from_name} → ${i.to_name}${sk}`;
+        return `~ ${i.from_name} → ${i.to_name}${sk}`;
       case 'signature_changed':
-        return `sig ${path}${i.name}`;
+        return `sig ${i.name}`;
       case 'body_changed':
-        return `body ${path}${i.name} (${i.before_lines}→${i.after_lines})`;
+        return `body ${i.name} (${i.before_lines}→${i.after_lines})`;
       case 'annotations_changed':
-        return `@ ${path}${i.name}`;
+        return `@ ${i.name}`;
       default:
         return i.kind;
     }
@@ -129,35 +189,80 @@
       {:else if diff && diff.items.length === 0}
         <p class="empty">No structural changes vs {diff.base_label}.</p>
       {:else if diff}
-        <ul class="items">
-          {#each diff.items as i}
-            <li class={kindClass(i.kind)}>
-              <button type="button" class="item-btn" onclick={() => jump(i)}>
-                <span class="kind-tag">{i.kind.replace('_', ' ')}</span>
-                <span class="label">{itemLabel(i)}</span>
-              </button>
-              {#if i.kind === 'body_changed'}
-                <div class="body-cols">
-                  <div class="col before">
-                    {#each i.before_preview ?? [] as line}
-                      <div class="line">− {line}</div>
-                    {/each}
+        {#if grouped && diff.items.some((i) => i.container_path && i.container_path.length > 0)}
+          {@const groups = groupByContainer(diff.items)}
+          <ul class="items">
+            {#each groups as group}
+              <li class="group-header">
+                <span class="container-label">{group.label}</span>
+              </li>
+              {#each group.items as i, idx}
+                {@const ann = diff.item_annotations?.[group.itemIndices[idx]]}
+                <li class="{kindClass(i.kind)} {critClass(ann)}">
+                  <button type="button" class="item-btn" onclick={() => jump(i)}>
+                    {#if critBadge(ann)}
+                      <span class="crit-badge {critClass(ann)}">{critBadge(ann)}</span>
+                    {/if}
+                    <span class="kind-tag">{i.kind.replace('_', ' ')}</span>
+                    <span class="label">{itemLabel(i)}</span>
+                    {#if ann?.intent}
+                      <span class="intent" title={ann.intent}>💬</span>
+                    {/if}
+                  </button>
+                  {#if i.kind === 'body_changed'}
+                    <div class="body-cols">
+                      <div class="col before">
+                        {#each i.before_preview ?? [] as line}
+                          <div class="line">− {line}</div>
+                        {/each}
+                      </div>
+                      <div class="col after">
+                        {#each i.after_preview ?? [] as line}
+                          <div class="line">+ {line}</div>
+                        {/each}
+                      </div>
+                    </div>
+                  {:else if i.kind === 'signature_changed'}
+                    <div class="sig">
+                      <div class="line rem-t">{i.before}</div>
+                      <div class="line add-t">{i.after}</div>
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            {/each}
+          </ul>
+        {:else}
+          <ul class="items">
+            {#each diff.items as i}
+              <li class={kindClass(i.kind)}>
+                <button type="button" class="item-btn" onclick={() => jump(i)}>
+                  <span class="kind-tag">{i.kind.replace('_', ' ')}</span>
+                  <span class="label">{itemLabel(i)}</span>
+                </button>
+                {#if i.kind === 'body_changed'}
+                  <div class="body-cols">
+                    <div class="col before">
+                      {#each i.before_preview ?? [] as line}
+                        <div class="line">− {line}</div>
+                      {/each}
+                    </div>
+                    <div class="col after">
+                      {#each i.after_preview ?? [] as line}
+                        <div class="line">+ {line}</div>
+                      {/each}
+                    </div>
                   </div>
-                  <div class="col after">
-                    {#each i.after_preview ?? [] as line}
-                      <div class="line">+ {line}</div>
-                    {/each}
+                {:else if i.kind === 'signature_changed'}
+                  <div class="sig">
+                    <div class="line rem-t">{i.before}</div>
+                    <div class="line add-t">{i.after}</div>
                   </div>
-                </div>
-              {:else if i.kind === 'signature_changed'}
-                <div class="sig">
-                  <div class="line rem-t">{i.before}</div>
-                  <div class="line add-t">{i.after}</div>
-                </div>
-              {/if}
-            </li>
-          {/each}
-        </ul>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -305,5 +410,45 @@
   }
   .err {
     color: #f87171;
+  }
+  .group-header {
+    padding: 6px 12px 2px;
+    border-top: 1px solid var(--veil-border);
+  }
+  .group-header:first-child {
+    border-top: none;
+  }
+  .container-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--veil-text-faint);
+    font-weight: 500;
+  }
+  .crit-badge {
+    font-size: 9px;
+    font-weight: 700;
+    min-width: 12px;
+    text-align: center;
+  }
+  .crit-badge.crit-critical {
+    color: #ef4444;
+  }
+  .crit-badge.crit-high {
+    color: #f97316;
+  }
+  .crit-badge.crit-low {
+    color: var(--veil-text-faint);
+  }
+  li.crit-critical {
+    border-left: 2px solid #ef4444;
+  }
+  li.crit-high {
+    border-left: 2px solid #f97316;
+  }
+  .intent {
+    font-size: 10px;
+    opacity: 0.6;
+    cursor: help;
   }
 </style>

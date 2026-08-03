@@ -30,6 +30,9 @@ pub struct ConstructPresentation {
     /// Review lens tags (`critical`, `integration`, …).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lenses: Vec<String>,
+    /// Layer-declared IDE constraints (`ide` sub-block).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ide_constraints: Option<IdeConstraints>,
 }
 
 impl ConstructPresentation {
@@ -39,6 +42,7 @@ impl ConstructPresentation {
             && self.default_view.is_none()
             && self.nestable.is_empty()
             && self.lenses.is_empty()
+            && self.ide_constraints.is_none()
     }
 }
 
@@ -110,6 +114,39 @@ pub struct NestableHint {
 
 // ─── API / machine IR ──────────────────────────────────────────────────────
 
+/// Layer-declared IDE constraints — restrict which chrome/features the viewer
+/// shows when this layer is active. Declared in `present > ide` block.
+/// See `docs/PRESENTATION.md` §N.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct IdeConstraints {
+    /// If set, only these view ids are available (no switcher when len == 1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_views: Vec<String>,
+    /// Maximum drill depth. `0` means no drill allowed. `None` means unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drill_depth: Option<u32>,
+    /// Shell features to hide (matching EmbedShellConfig flag names).
+    /// E.g. `["palette", "outline", "diff", "devToolbar"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
+    /// Shell features to force-show (overrides flow-mode defaults).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub show: Vec<String>,
+    /// When true, the view switcher is suppressed even if multiple views exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_view: Option<bool>,
+}
+
+impl IdeConstraints {
+    pub fn is_empty(&self) -> bool {
+        self.allowed_views.is_empty()
+            && self.drill_depth.is_none()
+            && self.hide.is_empty()
+            && self.show.is_empty()
+            && self.fixed_view.is_none()
+    }
+}
+
 /// Serializable presentation model for the IDE (PRESENTATION.md §8).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PresentationModel {
@@ -118,6 +155,9 @@ pub struct PresentationModel {
     pub hosts: BTreeMap<String, HostPresentation>,
     /// Per-construct roles / lenses.
     pub constructs: BTreeMap<String, ConstructRoleDto>,
+    /// Layer-declared IDE constraints (chrome visibility, drill limits).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ide: Option<IdeConstraints>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,6 +183,7 @@ pub struct ConstructRoleDto {
 pub fn presentation_from_registry(reg: &LayerRegistry) -> PresentationModel {
     let mut hosts = BTreeMap::new();
     let mut constructs = BTreeMap::new();
+    let mut merged_ide: Option<IdeConstraints> = None;
 
     for c in &reg.constructs {
         let p = &c.presentation;
@@ -184,12 +225,18 @@ pub fn presentation_from_registry(reg: &LayerRegistry) -> PresentationModel {
                 },
             );
         }
+
+        // Merge IDE constraints (later layer overrides earlier).
+        if let Some(ide) = &p.ide_constraints {
+            merged_ide = Some(ide.clone());
+        }
     }
 
     PresentationModel {
         version: 1,
         hosts,
         constructs,
+        ide: merged_ide.filter(|c| !c.is_empty()),
     }
 }
 
@@ -440,6 +487,50 @@ fn unquote(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+// ─── IDE constraints parsing ───────────────────────────────────────────────
+
+/// Known property prefixes for `present > ide` sub-block.
+pub fn is_ide_constraint_line(trimmed: &str) -> bool {
+    trimmed.starts_with("views ")
+        || trimmed.starts_with("drill_depth ")
+        || trimmed == "no_drill"
+        || trimmed.starts_with("hide ")
+        || trimmed.starts_with("show ")
+        || trimmed == "fixed_view"
+}
+
+/// Parse one line inside `present > ide`.
+pub fn apply_ide_constraint_line(ide: &mut IdeConstraints, trimmed: &str) -> Result<(), String> {
+    if let Some(rest) = trimmed.strip_prefix("views ") {
+        ide.allowed_views = split_names(rest);
+        return Ok(());
+    }
+    if let Some(rest) = trimmed.strip_prefix("drill_depth ") {
+        let depth = rest.trim().parse::<u32>().map_err(|_| {
+            format!("ide drill_depth must be a non-negative integer, got '{}'", rest.trim())
+        })?;
+        ide.drill_depth = Some(depth);
+        return Ok(());
+    }
+    if trimmed == "no_drill" {
+        ide.drill_depth = Some(0);
+        return Ok(());
+    }
+    if let Some(rest) = trimmed.strip_prefix("hide ") {
+        ide.hide = split_names(rest);
+        return Ok(());
+    }
+    if let Some(rest) = trimmed.strip_prefix("show ") {
+        ide.show = split_names(rest);
+        return Ok(());
+    }
+    if trimmed == "fixed_view" {
+        ide.fixed_view = Some(true);
+        return Ok(());
+    }
+    Err(format!("unknown ide constraint: '{trimmed}'"))
 }
 
 #[cfg(test)]
