@@ -773,6 +773,14 @@ impl Serializer {
             Expr::Match(scrutinee, arms) => {
                 self.emit_match_expr(scrutinee, arms);
             }
+            Expr::DoBlock(body) => {
+                self.line("do");
+                self.indent();
+                for e in body {
+                    self.emit_expr(e);
+                }
+                self.dedent();
+            }
             Expr::Closure { params, body } => {
                 // Multi-line closure body when more than one statement
                 if body.len() <= 1 {
@@ -787,8 +795,94 @@ impl Serializer {
                     self.dedent();
                 }
             }
+            // Assignments with multiline RHS (match, if, for, etc.) need block emission
+            Expr::Assign(name, rhs, ty) if expr_is_multiline(rhs) => {
+                let prefix = if let Some(t) = ty {
+                    format!("{}: {} = ", name, type_to_veil(t))
+                } else {
+                    format!("{} = ", name)
+                };
+                self.emit_assign_multiline_rhs(&prefix, rhs);
+            }
+            Expr::MutAssign(name, rhs, ty) if expr_is_multiline(rhs) => {
+                let prefix = if let Some(t) = ty {
+                    format!("mut {}: {} = ", name, type_to_veil(t))
+                } else {
+                    format!("mut {} = ", name)
+                };
+                self.emit_assign_multiline_rhs(&prefix, rhs);
+            }
             // Single-line forms
             other => self.line(&expr_to_veil(other)),
+        }
+    }
+
+    /// Emit an assignment whose RHS is a multiline expression (match, if, for, etc.).
+    /// Produces: `prefix match scrutinee\n  arm1\n  arm2...` with proper indent tokens.
+    fn emit_assign_multiline_rhs(&mut self, prefix: &str, rhs: &Expr) {
+        match rhs {
+            Expr::Match(scrutinee, arms) => {
+                self.line(&format!("{}{}", prefix, format!("match {}", expr_to_veil(scrutinee))));
+                self.indent();
+                for arm in arms {
+                    let pat = arm
+                        .rich_pattern
+                        .as_ref()
+                        .map(|p| p.to_string_repr())
+                        .unwrap_or_else(|| arm.pattern.clone());
+                    let head = if let Some(g) = &arm.guard {
+                        format!("{} if {} ->", pat, expr_to_veil(g))
+                    } else {
+                        format!("{} ->", pat)
+                    };
+                    if arm.body.len() == 1 && !expr_is_multiline(&arm.body[0]) {
+                        self.line(&format!("{} {}", head, expr_to_veil(&arm.body[0])));
+                    } else {
+                        self.line(&head);
+                        self.indent();
+                        for expr in &arm.body {
+                            self.emit_expr(expr);
+                        }
+                        self.dedent();
+                    }
+                }
+                self.dedent();
+            }
+            Expr::IfExpr(ie) => {
+                self.line(&format!("{}if {}", prefix, expr_to_veil(&ie.condition)));
+                self.indent();
+                for e in &ie.then_body {
+                    self.emit_expr(e);
+                }
+                self.dedent();
+                if let Some(else_body) = &ie.else_body {
+                    self.line("else");
+                    self.indent();
+                    for e in else_body {
+                        self.emit_expr(e);
+                    }
+                    self.dedent();
+                }
+            }
+            Expr::ForLoop { binding, index, iterable, body } => {
+                let idx = index.as_ref().map(|i| format!("{}, ", i)).unwrap_or_default();
+                self.line(&format!("{}for {}{} in {}", prefix, idx, binding, expr_to_veil(iterable)));
+                self.indent();
+                for e in body {
+                    self.emit_expr(e);
+                }
+                self.dedent();
+            }
+            Expr::DoBlock(body) => {
+                self.line(&format!("{}do", prefix));
+                self.indent();
+                for e in body {
+                    self.emit_expr(e);
+                }
+                self.dedent();
+            }
+            // Fallback: shouldn't reach here due to the guard, but be safe
+            other => self.line(&format!("{}{}", prefix, expr_to_veil(other))),
         }
     }
 
@@ -1247,8 +1341,10 @@ fn expr_to_veil(expr: &Expr) -> String {
             } else if body.len() == 1 && !expr_is_multiline(&body[0]) {
                 format!("do\n  {}", expr_to_veil(&body[0]))
             } else {
-                let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("; ");
-                format!("do {{ {} }}", b)
+                // Use indented form with semicolons between statements on separate lines
+                // (parser expects `do` followed by newline+indent, not `do { }`)
+                let b = body.iter().map(expr_to_veil).collect::<Vec<_>>().join("\n  ");
+                format!("do\n  {}", b)
             }
         }
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_veil(expr), ty),
@@ -1416,8 +1512,39 @@ fn expr_to_veil(expr: &Expr) -> String {
             let s: String = parts
                 .iter()
                 .map(|p| match p {
-                    StringPart::Literal(l) => l.clone(),
-                    StringPart::Expr(e) => format!("{{{}}}", expr_to_veil(e)),
+                    StringPart::Literal(l) => {
+                        // Re-escape characters that are special inside f"..." delimiters:
+                        // - Bare `"` (not preceded by `\`) → `\"` (would terminate the f-string)
+                        // - `{` → `{{` (would start interpolation)
+                        // - `}` → `}}` (would end interpolation)
+                        let chars: Vec<char> = l.chars().collect();
+                        let mut out = String::with_capacity(l.len() + 8);
+                        let mut i = 0;
+                        while i < chars.len() {
+                            match chars[i] {
+                                '\\' => {
+                                    // Keep backslash sequences verbatim (they're already valid)
+                                    out.push('\\');
+                                    if i + 1 < chars.len() {
+                                        i += 1;
+                                        out.push(chars[i]);
+                                    }
+                                }
+                                '"' => out.push_str("\\\""),
+                                '{' => out.push_str("{{"),
+                                '}' => out.push_str("}}"),
+                                other => out.push(other),
+                            }
+                            i += 1;
+                        }
+                        out
+                    }
+                    StringPart::Expr(e) => {
+                        // Escape quotes in the expression since it's inside f"..." delimiters
+                        let expr_str = expr_to_veil(e);
+                        let escaped = expr_str.replace('"', "\\\"");
+                        format!("{{{}}}", escaped)
+                    }
                 })
                 .collect();
             format!("f\"{}\"", s)
@@ -1451,7 +1578,8 @@ fn expr_is_multiline(expr: &Expr) -> bool {
         | Expr::WhileLoop { .. }
         | Expr::Loop(_)
         | Expr::ForLoop { .. }
-        | Expr::Match(_, _) => true,
+        | Expr::Match(_, _)
+        | Expr::DoBlock(_) => true,
         Expr::Closure { body, .. } => body.len() > 1,
         _ => false,
     }

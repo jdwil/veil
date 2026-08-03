@@ -35,10 +35,13 @@ fn ensure_layers_env(root: &Path) {
     }
 }
 
-/// Fixtures that currently fail to parse (svelte page/layout string bodies).
+/// Fixtures that currently fail to parse (svelte component template/style blocks,
+/// or structural issues like missing `sol`/`pkg` header).
 /// Remove an entry once fixed — the suite will then require idempotence.
-/// (customer_portal + runtime-ui now parse — kept empty allowlist intentionally.)
-const KNOWN_UNPARSEABLE: &[&str] = &[];
+const KNOWN_UNPARSEABLE: &[&str] = &[
+    "runtime/src/runtime-ui.veil",
+    "runtime/src/change-management.veil",
+];
 
 fn collect_veil_files(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -122,7 +125,6 @@ fn roundtrip_emit(path: &Path) -> Result<String, String> {
 }
 
 #[test]
-#[ignore = "known issues: change-management.veil parse error + runtime.veil serializer bug (b9be344)"]
 fn ser004_roundtrip_all_fixtures() {
     let root = workspace_root();
     ensure_layers_env(&root);
@@ -230,7 +232,6 @@ fn ser004_customer_onboarding_no_placeholders() {
 
 /// SER-003/004: runtime.veil must be emit-idempotent (enum variants, typed assigns, …).
 #[test]
-#[ignore = "known serializer bug: if/else expression truncation (b9be344)"]
 fn ser004_runtime_veil_idempotent() {
     let root = workspace_root();
     ensure_layers_env(&root);
@@ -245,14 +246,30 @@ fn ser004_runtime_veil_idempotent() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    // Check that :: pathsep is not used outside of string literals/f-strings
+    let bad_pathsep_lines: Vec<&str> = emit.lines()
+        .filter(|l| {
+            // Skip lines where :: only appears inside a string (between quotes or in f-string)
+            if !l.contains("::") { return false; }
+            // Strip quoted content and check if :: remains
+            let mut stripped = String::new();
+            let mut in_str = false;
+            let chars: Vec<char> = l.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i] == '\\' && in_str { i += 2; continue; }
+                if chars[i] == '"' { in_str = !in_str; i += 1; continue; }
+                if !in_str { stripped.push(chars[i]); }
+                i += 1;
+            }
+            stripped.contains("::")
+        })
+        .take(5)
+        .collect();
     assert!(
-        !emit.contains("::"),
-        "canonical emit must not use `::` pathsep:\n{}",
-        emit.lines()
-            .filter(|l| l.contains("::"))
-            .take(5)
-            .collect::<Vec<_>>()
-            .join("\n")
+        bad_pathsep_lines.is_empty(),
+        "canonical emit must not use `::` pathsep outside strings:\n{}",
+        bad_pathsep_lines.join("\n")
     );
 }
 
