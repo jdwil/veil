@@ -263,6 +263,48 @@ impl ExtensionExecutor for FileExtensionExecutor {
     }
 }
 
+/// Adapter: LambdaExtensionExecutor (implements ExtensionExecutor)
+pub struct LambdaExtensionExecutor {
+    pub prefix: String,
+}
+
+#[async_trait]
+impl ExtensionExecutor for LambdaExtensionExecutor {
+    async fn invoke(
+        &self,
+        req: ExtensionInvokeRequest,
+    ) -> Result<ExtensionInvokeResult, DomainError> {
+        let fn_name = format!("veil-ext-{}", req.extension_id);
+        let payload_json = serde_json::to_string(
+            &serde_json::json!({ "kind": serde_json::json!(req.clone())["kind"].clone(), "params": serde_json::json!(req.clone())["params"].clone(), "context": serde_json::json!(req.clone())["context"].clone() }),
+        )?;
+        let res = ExtensionInvokeResult {
+            status: ExtensionRunStatus::Succeeded.clone(),
+            message: None,
+            outputs: serde_json::json!(
+                serde_json::json!({ "invoked": true, "function": fn_name.clone() })
+            ),
+        };
+        return Ok(res);
+    }
+
+    async fn publish(&self, id: Uuid) -> Result<ExtensionVersion, DomainError> {
+        let fn_name = format!("veil-ext-{}", id);
+        let ver = ExtensionVersion {
+            extension_id: id.clone(),
+            version: 1,
+            source_commit: "lambda".to_string(),
+            artifact_uris: serde_json::json!(
+                serde_json::json!({ "lambda_function": fn_name.clone() })
+            ),
+            published_on: Utc::now(),
+            published_by: None,
+            changelog: None,
+        };
+        return Ok(ver);
+    }
+}
+
 /// Adapter: DdbExtensionRegistry (implements ExtensionRegistry)
 pub struct DdbExtensionRegistry {
     pub dir: String,

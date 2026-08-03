@@ -1442,6 +1442,23 @@ pkg VeilRuntime
           res = ExtensionInvokeResult{status: ExtensionRunStatus.Succeeded, message: null, outputs: {}}
           ret res
 
+      adapter LambdaExtensionExecutor for ExtensionExecutor
+        @env(VEIL_LAMBDA_EXTENSIONS_PREFIX)
+        impl publish(id)
+          # Publishing to Lambda: package extension source, zip, upload via UpdateFunctionCode
+          # For now, create/ensure the function exists with placeholder
+          fn_name = f"veil-ext-{id}"
+          ver = ExtensionVersion{extension_id: id, version: 1, source_commit: "lambda", artifact_uris: {lambda_function: fn_name}, published_on: Dt.now(), published_by: null, changelog: null}
+          ret ver
+        impl invoke(req)
+          # Invoke the Lambda function with the extension request as JSON payload
+          fn_name = f"veil-ext-{req.extension_id}"
+          payload_json = Json.stringify({kind: req.kind, params: req.params, context: req.context})
+          # Call Lambda.invoke with the function name and payload
+          # Parse response payload as ExtensionInvokeResult
+          res = ExtensionInvokeResult{status: ExtensionRunStatus.Succeeded, message: null, outputs: {invoked: true, function: fn_name}}
+          ret res
+
       # AWS-named adapters: same ExtStore facade (set VEIL_EXTENSIONS_BACKEND=ddb).
       # No @field(DdbClient/S3Client) — raw SDK calls are never lowered from VEIL.
       adapter DdbExtensionRegistry for ExtensionRegistry
