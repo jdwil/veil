@@ -188,11 +188,16 @@ impl AcpProcess {
             // Streamed session updates (collect text)
             if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
                 if method == "session/update" || method.ends_with("/update") {
-                    let before = text_chunks.len();
+                    let before_text = text_chunks.len();
+                    let before_tools = tool_hints.len();
                     collect_update(&msg, &mut text_chunks, &mut tool_hints);
                     if let Some(cb) = on_text.as_mut() {
-                        for t in &text_chunks[before..] {
+                        for t in &text_chunks[before_text..] {
                             cb(t);
+                        }
+                        // Emit tool markers as they arrive (real-time)
+                        for t in &tool_hints[before_tools..] {
+                            cb(&format!("\x01TOOL:{}\x01", t));
                         }
                     }
                 }

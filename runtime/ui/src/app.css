@@ -1,4 +1,18 @@
 @import "tailwindcss";
+@source "../../../vendor/aether-ui/packages/aether-ui/src/lib/components/**/*.svelte";
+
+@theme {
+  --color-aether-50: #f0fdfa;
+  --color-aether-100: #ccfbf1;
+  --color-aether-200: #99f6e4;
+  --color-aether-300: #5eead4;
+  --color-aether-400: #2dd4bf;
+  --color-aether-500: #14b8a6;
+  --color-aether-600: #0d9488;
+  --color-aether-700: #0f766e;
+  --color-aether-800: #115e59;
+  --color-aether-900: #134e4a;
+}
 
     /* designkit — modern professional UI (motion · depth · glass)
      * Override --dk-brand* / --accent on :root to rebrand without forking. */
@@ -43,6 +57,26 @@
       --accent: var(--dk-brand-light);
       --accent-hover: #6fcfbd;
       --radius: var(--dk-radius-sm);
+
+      /* aether-ui component theme bridge */
+      --color-surface-0: var(--dk-bg);
+      --color-surface-1: var(--dk-surface);
+      --color-surface-2: var(--dk-surface-2);
+      --color-surface-3: var(--dk-surface-3);
+      --color-surface-border: var(--dk-border);
+      --color-text-primary: var(--dk-text);
+      --color-text-secondary: var(--dk-text-muted);
+      --color-text-muted: var(--dk-text-muted);
+      --color-aether-300: var(--dk-brand-light);
+      --color-aether-600: var(--dk-brand);
+      --font-mono: "JetBrains Mono", "Fira Code", monospace;
+      --radius-message: var(--dk-radius);
+      --radius-card: var(--dk-radius);
+      --radius-button: var(--dk-radius-sm);
+      --radius-input: var(--dk-radius-sm);
+      --shadow-message: var(--dk-shadow-sm);
+      --shadow-card: var(--dk-shadow);
+      --shadow-elevated: var(--dk-shadow-lg);
     }
     * { box-sizing: border-box; margin: 0; }
     html { color-scheme: dark; }

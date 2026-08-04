@@ -36,6 +36,15 @@ async fn emit_typed(tx: &StreamTx, text: &str) {
     }
 }
 
+/// Emit a chunk as either a tool event or text, depending on marker.
+async fn emit_chunk_or_tool(tx: &StreamTx, chunk: &str) {
+    if let Some(name) = chunk.strip_prefix("\x01TOOL:").and_then(|s| s.strip_suffix('\x01')) {
+        emit(tx, "tool", json!({ "name": name, "detail": "running" })).await;
+    } else {
+        emit_typed(tx, chunk).await;
+    }
+}
+
 /// Run a turn and stream text + final response on `tx`.
 pub async fn run_turn_stream<P: SourceProvider>(
     provider: Arc<P>,
@@ -156,7 +165,7 @@ async fn stream_acp_turn<P: SourceProvider>(
         tokio::select! {
             chunk = chunk_rx.recv() => {
                 match chunk {
-                    Some(t) => emit_typed(tx, &t).await,
+                    Some(t) => emit_chunk_or_tool(tx, &t).await,
                     None => {
                         // All chunk senders dropped — blocking task finished (or panicked).
                         break join.await.map_err(|e| e.to_string())??;
@@ -166,7 +175,7 @@ async fn stream_acp_turn<P: SourceProvider>(
             res = &mut join => {
                 // Drain any remaining chunks still in the queue.
                 while let Ok(t) = chunk_rx.try_recv() {
-                    emit_typed(tx, &t).await;
+                    emit_chunk_or_tool(tx, &t).await;
                 }
                 break res.map_err(|e| e.to_string())??;
             }
@@ -201,14 +210,8 @@ async fn stream_acp_turn<P: SourceProvider>(
             detail: turn.session_id.clone(),
         });
     }
-    for t in &tool_calls {
-        emit(
-            tx,
-            "tool",
-            json!({ "name": t.name, "detail": t.detail }),
-        )
-        .await;
-    }
+    // Tool events already streamed in real-time via \x01TOOL: markers.
+    // Don't re-emit them here.
 
     let resp = AgentTurnResponse {
         turn_id: turn_id.to_string(),

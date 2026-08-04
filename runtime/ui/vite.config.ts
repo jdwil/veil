@@ -10,9 +10,12 @@
       },
       server: {
         proxy: {
-          '/api/agent/chat': {
-            target: 'http://127.0.0.1:3000',
+          '/api/agent': {
+            target: 'http://127.0.0.1:3001',
             ws: true,
+          },
+          '/api': {
+            target: 'http://127.0.0.1:3000',
           },
         },
         watch: {

@@ -146,10 +146,7 @@ function handleEvent(event: StreamEvent) {
 				prev.map((m) => {
 					if (m.id !== id) return m;
 					const blocks = [...m.content];
-					const lastIdx = blocks.length - 1;
-					const insertIdx =
-						lastIdx >= 0 && blocks[lastIdx].type === 'text' ? lastIdx : blocks.length;
-					blocks.splice(insertIdx, 0, {
+					blocks.push({
 						type: 'tool_call',
 						toolCall: {
 							id: event.data.callId,
@@ -169,10 +166,7 @@ function handleEvent(event: StreamEvent) {
 				prev.map((m) => {
 					if (m.id !== id) return m;
 					const blocks = [...m.content];
-					const lastIdx = blocks.length - 1;
-					const insertIdx =
-						lastIdx >= 0 && blocks[lastIdx].type === 'text' ? lastIdx : blocks.length;
-					blocks.splice(insertIdx, 0, {
+					blocks.push({
 						type: 'tool_result',
 						toolResult: {
 							callId: event.data.callId,
