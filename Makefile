@@ -51,11 +51,14 @@ VEIL_ACP_COMMAND    ?= kiro-cli
 VEIL_ACP_ARGS       ?= acp --trust-all-tools
 # ACP session cwd: project root (so .kiro/settings/mcp.json + workspace files resolve)
 VEIL_ACP_CWD        ?= $(if $(PROJECT),$(PROJECT),$(CURDIR))
+# Agent role (kiro agent name); override: make serve VEIL_ACP_AGENT=personal
+VEIL_ACP_AGENT      ?= hive
 
 export VEIL_MODEL_PROVIDER
 export VEIL_ACP_COMMAND
 export VEIL_ACP_ARGS
 export VEIL_ACP_CWD
+export VEIL_ACP_AGENT
 ifneq ($(origin VEIL_PROJECTS_DIR), undefined)
 export VEIL_PROJECTS_DIR
 endif
