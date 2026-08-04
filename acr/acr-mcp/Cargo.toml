@@ -1,0 +1,24 @@
+[package]
+name = "acr-mcp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "acr-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+acr-core = { path = "../acr-core" }
+acr-library = { path = "../acr-library" }
+acr-eval = { path = "../acr-eval" }

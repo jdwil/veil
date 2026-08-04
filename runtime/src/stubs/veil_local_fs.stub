@@ -14,3 +14,9 @@ stub veil_local_fs path:../local_fs
     fn list_dir(path: Str) -> Res!<List<Str>>
     fn list_json_files(path: Str) -> Res!<List<Str>>
     fn join(a: Str, b: Str) -> Str
+    # Deploy / storage helpers
+    fn projects_dir() -> Str
+    fn read_project_deploy(slug: Str) -> Res!<Str>
+    fn read_toml_json(path: Str) -> Res!<Str>
+    fn project_unit_names(slug: Str) -> Res!<List<Str>>
+    fn project_unit_type(slug: Str, name: Str) -> Res!<Str>

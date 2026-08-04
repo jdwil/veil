@@ -9,6 +9,12 @@
         noExternal: ['@aether-ui/core'],
       },
       server: {
+        proxy: {
+          '/api/agent/chat': {
+            target: 'http://127.0.0.1:3000',
+            ws: true,
+          },
+        },
         watch: {
           ignored: [
             '**/svelte.config.js',

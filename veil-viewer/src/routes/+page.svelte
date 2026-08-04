@@ -70,7 +70,9 @@
     resolveCreateParentSpan,
     uniqueConstructName,
   } from '$lib/createPlacement';
-  import { isCriticalNode, countCritical } from '$lib/lenses';
+  import { isCriticalNode, countCritical, collectAllLenses, countByLenses, nodeMatchesLenses } from '$lib/lenses';
+  import { TreeLayout, FlatLayout, DetailPanel } from '$lib/layouts';
+  import type { ProjectResult } from '$lib/presentation';
 
   const nodeTypes: NodeTypes = {
     veil: VeilNode as any,
@@ -88,6 +90,14 @@
   let showLayerProvided = $state(false);
   /** LAY-009 / UX-022: filter canvas to presentation lens `critical` + escape diags. */
   let showCriticalOnly = $state(false);
+  /** Multi-lens selector: active filter lenses. Empty = show all. */
+  let activeLenses = $state<Set<string>>(new Set());
+  /** Lens picker popover visibility. */
+  let lensPickerOpen = $state(false);
+  /** Active projection result for native layout renderers (tree/flat). */
+  let currentProjected = $state<ProjectResult | null>(null);
+  /** Resolved layout for the current view — drives renderer dispatch. */
+  let currentLayout = $state<string>('flat');
   let newProjectName = $state('');
   let creatingProject = $state(false);
   /** Inline “new file” form in the breadcrumb bar. */
@@ -506,6 +516,9 @@
     if (showCriticalOnly) {
       list = items.filter((c) => isCriticalNode(c, pres, diags));
     }
+    if (activeLenses.size > 0) {
+      list = list.filter((c) => nodeMatchesLenses(c, pres, diags, activeLenses));
+    }
     return list.map((child) => {
       const childChildren = getChildren(graph, child.id);
       const refs = getCrossRefs(graph, child.id, visibleIds);
@@ -612,6 +625,8 @@
     if (isSolutionLevel && modules.length > 0) {
       hostViews = [];
       activeViewId = null;
+      currentProjected = null;
+      currentLayout = 'flow';
       const visibleIds = new Set(children.map((c) => c.id));
       const solNodes = toFlowNodes(graph, children, visibleIds);
       const solEdges: Edge[] = [];
@@ -658,6 +673,8 @@
       });
 
       if (projected.layout === 'tabs') {
+        currentProjected = null;
+        currentLayout = 'tabs';
         tabs = projected.tabs;
         let currentTab = activeTab;
         if (!currentTab || !tabs.includes(currentTab)) {
@@ -690,6 +707,19 @@
       // flat | tree | flow — driven only by projected.layout (LAY-006/007)
       tabs = [];
       activeTab = null;
+
+      // Native renderers for tree/flat — skip SvelteFlow node computation
+      if (projected.layout === 'tree' || projected.layout === 'flat') {
+        currentProjected = projected;
+        currentLayout = projected.layout;
+        nodes = [];
+        edges = [];
+        return;
+      }
+
+      // flow layout — uses SvelteFlow canvas
+      currentProjected = null;
+      currentLayout = projected.layout;
       let displayNodes = [...projected.nodes];
       // Domain model: show nested ownership children too (segregated by nest edges),
       // not only roots — user wants the full domain visible without drilling.
@@ -811,6 +841,8 @@
     // ─── Fallback: no presentation (legacy requires_groups / flat) ─────
     hostViews = [];
     activeViewId = null;
+    currentProjected = null;
+    currentLayout = 'flow';
     const visibleIds = new Set(children.map((c) => c.id));
 
     const groupNodes = children.filter((c) => c.kind === 'Group');
@@ -1249,7 +1281,7 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeyDown} />
+<svelte:window onkeydown={handleKeyDown} onpointerdown={() => { if (lensPickerOpen) lensPickerOpen = false; }} />
 
 <div
   class="viewer-container"
@@ -1372,11 +1404,69 @@
         </label>
       {/if}
       {#if shell.showCriticalToggle}
-        <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
-          <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
-          <span>Critical only</span>
-          <span class="critical-count">{criticalCountLabel()}</span>
-        </label>
+        {@const allLenses = collectAllLenses(get(presentationModel))}
+        {#if allLenses.length > 0}
+          <div class="lens-picker-wrapper" onpointerdown={(e) => e.stopPropagation()}>
+            <button
+              class="lens-picker-btn"
+              class:active={activeLenses.size > 0}
+              onclick={() => { lensPickerOpen = !lensPickerOpen; }}
+              title="Filter by review lens (LAY-009)"
+            >
+              🔍 Lenses
+              {#if activeLenses.size > 0}
+                <span class="lens-active-count">{activeLenses.size}</span>
+              {/if}
+            </button>
+            {#if lensPickerOpen}
+              <div class="lens-picker-popover" role="menu">
+                {#each allLenses as lens}
+                  {@const active = activeLenses.has(lens)}
+                  {@const count = countByLenses(get(irGraph) ?? { nodes: [], edges: [], next_id: 0 }, get(presentationModel), get(diagnostics), new Set([lens]))}
+                  <label class="lens-picker-item" role="menuitemcheckbox" aria-checked={active}>
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      onchange={() => {
+                        const next = new Set(activeLenses);
+                        if (active) next.delete(lens);
+                        else next.add(lens);
+                        activeLenses = next;
+                        // Sync legacy showCriticalOnly for backward compat
+                        showCriticalOnly = next.has('critical');
+                        const g = get(irGraph); const p = get(currentParent);
+                        if (g) computeView(g, p, get(paletteConfig));
+                      }}
+                    />
+                    <span class="lens-name">{lens}</span>
+                    <span class="lens-count">{count}</span>
+                  </label>
+                {/each}
+                {#if activeLenses.size > 0}
+                  <button
+                    class="lens-clear-btn"
+                    onclick={() => {
+                      activeLenses = new Set();
+                      showCriticalOnly = false;
+                      lensPickerOpen = false;
+                      const g = get(irGraph); const p = get(currentParent);
+                      if (g) computeView(g, p, get(paletteConfig));
+                    }}
+                  >
+                    Clear all
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <!-- Fallback: simple critical toggle when no lenses declared -->
+          <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
+            <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
+            <span>Critical only</span>
+            <span class="critical-count">{criticalCountLabel()}</span>
+          </label>
+        {/if}
       {/if}
       {#if shell.showThemeToggle}
         <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
@@ -1496,6 +1586,44 @@
           </div>
         {/if}
         <div class="graph-container" bind:this={graphContainerEl} ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
+        {#if currentLayout === 'tree' && currentProjected && $irGraph}
+          <!-- Native tree renderer -->
+          <div class="native-layout-container">
+            <div class="native-layout-sidebar">
+              <TreeLayout
+                projected={currentProjected}
+                graph={$irGraph}
+                presentationModel={$presentationModel}
+                onDrillDown={(node) => drillDown(node)}
+              />
+            </div>
+            <div class="native-layout-detail">
+              <DetailPanel
+                graph={$irGraph}
+                presentationModel={$presentationModel}
+              />
+            </div>
+          </div>
+        {:else if currentLayout === 'flat' && currentProjected && $irGraph}
+          <!-- Native flat renderer -->
+          <div class="native-layout-container">
+            <div class="native-layout-sidebar">
+              <FlatLayout
+                projected={currentProjected}
+                graph={$irGraph}
+                presentationModel={$presentationModel}
+                onDrillDown={(node) => drillDown(node)}
+              />
+            </div>
+            <div class="native-layout-detail">
+              <DetailPanel
+                graph={$irGraph}
+                presentationModel={$presentationModel}
+              />
+            </div>
+          </div>
+        {:else}
+          <!-- Flow/tabs: SvelteFlow canvas -->
         {#if shell.mode === 'flow'}
           {@const parentNode = $irGraph?.nodes.find((n) => n.id === $currentParent)}
           {@const fnParams = parentNode?.metadata.properties.find(([k]) => k === 'params')?.[1] ?? ''}
@@ -1545,6 +1673,7 @@
             onClose={() => selectedNodeId.set(null)}
             
           />
+        {/if}
         {/if}
       </div>
       </div>
@@ -1914,6 +2043,29 @@
     position: relative;
   }
 
+  /* Native layout renderers (tree/flat) */
+  .native-layout-container {
+    display: flex;
+    width: 100%;
+    height: 100%;
+  }
+
+  .native-layout-sidebar {
+    width: 320px;
+    min-width: 240px;
+    max-width: 400px;
+    border-right: 1px solid var(--veil-border);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .native-layout-detail {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--veil-surface);
+  }
+
   .graph-wrapper {
     flex: 1;
     display: flex;
@@ -1957,6 +2109,113 @@
     font-size: 10px;
     opacity: 0.75;
     margin-left: 2px;
+  }
+
+  /* Multi-lens picker (LAY-009) */
+  .lens-picker-wrapper {
+    position: relative;
+  }
+
+  .lens-picker-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border: 1px solid var(--veil-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--veil-text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .lens-picker-btn:hover {
+    background: var(--veil-accent-hover);
+    color: var(--veil-text-secondary);
+  }
+
+  .lens-picker-btn.active {
+    border-color: var(--veil-accent);
+    color: var(--veil-text);
+    background: var(--veil-accent-subtle);
+  }
+
+  .lens-active-count {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 8px;
+    background: var(--veil-accent);
+    color: var(--veil-bg);
+    font-weight: 600;
+  }
+
+  .lens-picker-popover {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    min-width: 160px;
+    padding: 6px;
+    background: var(--veil-surface);
+    border: 1px solid var(--veil-border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px var(--veil-shadow);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .lens-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+
+  .lens-picker-item:hover {
+    background: var(--veil-accent-hover);
+  }
+
+  .lens-picker-item input[type="checkbox"] {
+    width: 13px;
+    height: 13px;
+    accent-color: var(--veil-accent);
+  }
+
+  .lens-name {
+    flex: 1;
+    color: var(--veil-text);
+    text-transform: capitalize;
+  }
+
+  .lens-count {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 8px;
+    background: var(--veil-accent-subtle);
+    color: var(--veil-text-faint);
+  }
+
+  .lens-clear-btn {
+    margin-top: 4px;
+    padding: 4px 8px;
+    border: none;
+    border-top: 1px solid var(--veil-border);
+    background: transparent;
+    color: var(--veil-text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .lens-clear-btn:hover {
+    color: var(--veil-text);
   }
 
   .tab-bar {

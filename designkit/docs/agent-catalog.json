@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "namespace": "designkit",
+  "components": {
+    "CollectionView": {
+      "role": "collection",
+      "purpose": "Browse a list/grid of entities with optional create CTA, empty state, and custom row/tile content.",
+      "howTo": [
+        "Wait until runtime.loading is false before acting on items or empty state.",
+        "Create: click primary CTA (primaryHref/primaryLabel) or empty-state action when list is empty.",
+        "Open an item: use product.actions edit hrefTemplate with the item id, or ContextMenu on the row/tile.",
+        "Delete: usually via ContextMenu → ConfirmDialog (product.actions delete.confirm).",
+        "Toggle tiles/list when viewMode is both."
+      ],
+      "config": {
+        "title": { "type": "string", "desc": "Page/section title" },
+        "description": { "type": "string", "desc": "Subtitle under title" },
+        "items": { "type": "array", "desc": "Entity records to render" },
+        "loading": { "type": "boolean", "desc": "Show spinner; empty state must not show while true", "default": false },
+        "error": { "type": "string", "desc": "Error message banner" },
+        "viewMode": { "type": "tiles|list|both", "desc": "Layout modes available", "default": "both" },
+        "defaultLayout": { "type": "tiles|list", "desc": "Initial layout when viewMode is both", "default": "tiles" },
+        "primaryHref": { "type": "string", "desc": "URL for primary create/add action" },
+        "primaryLabel": { "type": "string", "desc": "Label for primary create/add button" },
+        "emptyTitle": { "type": "string", "desc": "Empty-state heading when items is empty and not loading" },
+        "emptyDescription": { "type": "string", "desc": "Empty-state body copy" },
+        "emptyActionHref": { "type": "string", "desc": "CTA href when empty (falls back to primaryHref)" },
+        "emptyActionLabel": { "type": "string", "desc": "CTA label when empty" },
+        "columns": { "type": "ColumnDef[]", "desc": "Table/tile column keys, labels, cell types (identity|pill|text)" },
+        "showAvatar": { "type": "boolean", "desc": "Monogram avatars on identity cells", "default": true },
+        "tile": { "type": "snippet", "desc": "Custom tile renderer; receives item" },
+        "row": { "type": "snippet", "desc": "Custom table row cells; receives item" },
+        "header_actions": { "type": "snippet", "desc": "Extra header controls next to view toggle / primary CTA" },
+        "item_href_template": { "type": "string", "desc": "When set (e.g. /items/{id}), tile and row click navigates; skips interactive controls" },
+        "layout_storage_key": { "type": "string", "desc": "localStorage key for tiles|list preference (survives navigation when viewMode is both)" },
+        "agent": { "type": "AgentProduct", "desc": "Product intent/entity/actions overlay for agents" }
+      }
+    },
+    "CreateFormShell": {
+      "role": "create-form",
+      "purpose": "CRUD form page shell for create or edit: sticky chrome, progress submit, body/footer slots.",
+      "howTo": [
+        "Fill FormField controls inside children until requiredValues are non-empty.",
+        "Submit via FormProgress primary button when complete (when show_submit).",
+        "Back navigates to backHref (list or detail).",
+        "mode=edit sets role edit-form; use footer for delete / danger actions.",
+        "loading shows spinner instead of children."
+      ],
+      "config": {
+        "title": { "type": "string", "desc": "Form title (e.g. Add Wear Test / Edit Wear Test)" },
+        "subtitle": { "type": "string", "desc": "Supporting line under title" },
+        "backHref": { "type": "string", "desc": "Back navigation target (fallback when history unavailable)", "default": ".." },
+        "back_behavior": { "type": "href|history", "desc": "href=always backHref; history=history.back() when possible", "default": "href" },
+        "mode": { "type": "create|edit", "desc": "Agent role create-form vs edit-form", "default": "create" },
+        "submitLabel": { "type": "string", "desc": "Submit button label", "default": "Create" },
+        "savingLabel": { "type": "string", "desc": "Submit label while saving" },
+        "saving": { "type": "boolean", "desc": "Disable submit / show saving state" },
+        "show_submit": { "type": "boolean", "desc": "Show FormProgress primary submit", "default": true },
+        "requiredValues": { "type": "string[]", "desc": "Values that must be non-empty for submit readiness" },
+        "onSubmit": { "type": "fn", "desc": "Called when user submits a complete form" },
+        "loading": { "type": "boolean", "desc": "Shell-level loading spinner" },
+        "error": { "type": "string", "desc": "Shell-level error banner" },
+        "children": { "type": "snippet", "desc": "Form body (FormSection / FormField)" },
+        "header_actions": { "type": "snippet", "desc": "Extra header CTAs left of submit" },
+        "footer": { "type": "snippet", "desc": "Below body — danger zone, secondary actions" },
+        "agent": { "type": "AgentProduct", "desc": "Product intent (create-X / update-X), entity, fields, api" }
+      }
+    },
+    "DetailShell": {
+      "role": "detail-view",
+      "purpose": "CRUD read-only detail page shell: back + title + header actions; body slots for sections.",
+      "howTo": [
+        "Wait until runtime.loading is false before reading fields.",
+        "Primary actions (Edit) live in header_actions.",
+        "Body children typically FormSection + DetailField (or custom).",
+        "Back uses backHref (usually collection list)."
+      ],
+      "config": {
+        "title": { "type": "string", "desc": "Entity title (often name)" },
+        "subtitle": { "type": "string", "desc": "Supporting line under title" },
+        "backHref": { "type": "string", "desc": "Back navigation target", "default": ".." },
+        "loading": { "type": "boolean", "desc": "Shell-level loading spinner" },
+        "error": { "type": "string", "desc": "Shell-level error banner" },
+        "header_actions": { "type": "snippet", "desc": "Primary detail actions (Edit, …)" },
+        "summary": { "type": "snippet", "desc": "Optional band under header" },
+        "children": { "type": "snippet", "desc": "Main sections" },
+        "sidebar": { "type": "snippet", "desc": "Optional right rail" },
+        "footer": { "type": "snippet", "desc": "Secondary / danger actions" },
+        "agent": { "type": "AgentProduct", "desc": "Product intent view-X, entity, fields, api" }
+      }
+    },
+    "DetailField": {
+      "role": "detail-field",
+      "purpose": "Read-only labeled attribute for DetailShell body sections.",
+      "howTo": [
+        "Prefer value/empty_label for text; pre for JSON; mono for ids.",
+        "Use children for custom value UI (StatusPill, links)."
+      ],
+      "config": {
+        "id": { "type": "string", "desc": "Field key / data-veil-field" },
+        "label": { "type": "string", "desc": "Visible label" },
+        "value": { "type": "string", "desc": "Display string; empty uses empty_label" },
+        "empty_label": { "type": "string", "default": "—" },
+        "mono": { "type": "boolean", "desc": "Monospace value styling" },
+        "pre": { "type": "boolean", "desc": "Render value as preformatted block" },
+        "children": { "type": "snippet", "desc": "Custom value content" },
+        "agent": { "type": "AgentProduct", "desc": "Optional entity property mapping" }
+      }
+    },
+    "FormField": {
+      "role": "form-field",
+      "purpose": "Labeled input with required indicator and incomplete/filled/error bar.",
+      "howTo": [
+        "Set value on the control (text/date/select/textarea).",
+        "Required fields show amber bar when empty, green when filled.",
+        "Prefer product.fields metadata on the parent form for entity field meaning."
+      ],
+      "config": {
+        "id": { "type": "string", "desc": "DOM id / field key" },
+        "label": { "type": "string", "desc": "Visible label" },
+        "type": { "type": "text|url|password|date|email|select|textarea", "default": "text" },
+        "required": { "type": "boolean", "default": false },
+        "placeholder": { "type": "string" },
+        "hint": { "type": "string" },
+        "error": { "type": "string" },
+        "value": { "type": "string", "desc": "Bindable current value" },
+        "options": { "type": "{value,label}[]", "desc": "Select options when type=select" },
+        "agent": { "type": "AgentProduct", "desc": "Optional field-level entity property mapping" }
+      }
+    },
+    "ContextMenu": {
+      "role": "context-menu",
+      "purpose": "Vertical-ellipsis (⋮) menu for row/tile actions (Edit, Delete, …).",
+      "howTo": [
+        "Click the ⋮ trigger to open the menu.",
+        "Choose an item by label; href items navigate, onSelect items run handlers.",
+        "Destructive items use danger styling; may open ConfirmDialog."
+      ],
+      "config": {
+        "items": { "type": "ContextMenuItem[]", "desc": "{ label, href?, danger?, disabled?, onSelect? }" },
+        "align": { "type": "left|right", "default": "right" },
+        "ariaLabel": { "type": "string", "default": "Actions" },
+        "agent": { "type": "AgentProduct", "desc": "Usually inherits entity from parent collection row" }
+      }
+    },
+    "ConfirmDialog": {
+      "role": "confirm-dialog",
+      "purpose": "Modal confirm/cancel — Svelte replacement for window.confirm.",
+      "howTo": [
+        "Only act when runtime.open is true (or open the dialog via product flow first).",
+        "Confirm runs onConfirm then closes; Cancel/Escape/backdrop runs onCancel.",
+        "variant=danger styles confirm as destructive (delete)."
+      ],
+      "config": {
+        "open": { "type": "boolean", "desc": "Bindable visibility" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "confirmLabel": { "type": "string", "default": "Confirm" },
+        "cancelLabel": { "type": "string", "default": "Cancel" },
+        "variant": { "type": "default|danger", "default": "default" },
+        "busy": { "type": "boolean", "desc": "Disable buttons while async work runs" },
+        "onConfirm": { "type": "fn" },
+        "onCancel": { "type": "fn" },
+        "agent": { "type": "AgentProduct", "desc": "e.g. intent delete-wear-test" }
+      }
+    },
+    "AlertDialog": {
+      "role": "alert-dialog",
+      "purpose": "Modal OK notice — replacement for window.alert.",
+      "howTo": ["When open, read message and click OK (onOk)."],
+      "config": {
+        "open": { "type": "boolean" },
+        "title": { "type": "string", "default": "Notice" },
+        "message": { "type": "string" },
+        "okLabel": { "type": "string", "default": "OK" },
+        "onOk": { "type": "fn" },
+        "agent": { "type": "AgentProduct" }
+      }
+    },
+    "PromptDialog": {
+      "role": "prompt-dialog",
+      "purpose": "Modal text input — replacement for window.prompt.",
+      "howTo": ["When open, set the input value, then OK (onConfirm) or Cancel."],
+      "config": {
+        "open": { "type": "boolean" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "defaultValue": { "type": "string" },
+        "placeholder": { "type": "string" },
+        "confirmLabel": { "type": "string", "default": "OK" },
+        "cancelLabel": { "type": "string", "default": "Cancel" },
+        "onConfirm": { "type": "fn(value: string)" },
+        "onCancel": { "type": "fn" },
+        "agent": { "type": "AgentProduct" }
+      }
+    },
+    "Modal": {
+      "role": "modal",
+      "purpose": "Base modal overlay used by dialogs.",
+      "howTo": ["Prefer ConfirmDialog/AlertDialog/PromptDialog for agent flows."],
+      "config": {
+        "open": { "type": "boolean" },
+        "title": { "type": "string" },
+        "size": { "type": "sm|md|lg", "default": "md" },
+        "closeOnBackdrop": { "type": "boolean", "default": true },
+        "agent": { "type": "AgentProduct" }
+      }
+    },
+    "EmptyState": {
+      "role": "empty-state",
+      "purpose": "Centered empty placeholder with optional CTA.",
+      "howTo": ["If actionHref/actionLabel present, that is the create/add path when the collection is empty."],
+      "config": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "actionHref": { "type": "string" },
+        "actionLabel": { "type": "string" },
+        "agent": { "type": "AgentProduct" }
+      }
+    },
+    "PageHeader": {
+      "role": "page-header",
+      "purpose": "Title, description, and action slot for a page section.",
+      "howTo": ["Primary actions may live in the actions snippet (toggles, create buttons)."],
+      "config": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "agent": { "type": "AgentProduct" }
+      }
+    },
+    "AgentSurface": {
+      "role": "agent-surface-host",
+      "purpose": "Collects all data-veil-agent nodes into window.__veilAgentSurface for agents.",
+      "howTo": [
+        "Mount once per app/layout.",
+        "Read window.__veilAgentSurface.surfaces or listen for veil:agent-surface."
+      ],
+      "config": {}
+    }
+  }
+}

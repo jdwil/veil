@@ -1,0 +1,18 @@
+# veil-runtime UX package — platform shell UI
+name = "veil-runtime-ui"
+
+[package]
+name = "veil_runtime_ui"
+veil = "src/runtime-ui.veil"
+
+[dependencies]
+# Stock chrome + tokens (public designkit in this monorepo)
+designkit = { path = "../designkit" }
+
+[[targets]]
+name = "frontend"
+package = "src/runtime-ui.veil"
+target = "typescript"
+output = "ui"
+dev_command = "cd ui && npm install --silent && npx vite dev --port 5180"
+dev_port = 5180

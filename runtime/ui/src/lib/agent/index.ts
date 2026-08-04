@@ -1,0 +1,31 @@
+// Agent module — public API
+export {
+	agentMessages,
+	agentIsStreaming,
+	agentIsThinking,
+	agentError,
+	agentStatusLine,
+	agentComposerKey,
+	agentPendingSeed,
+	agentPanelOpen,
+	agentUnreadCount,
+	agentSend,
+	agentAbort,
+	agentClear,
+	agentInsertToken,
+	agentApproveToolCall,
+	setAgentContext,
+	getAgentContext,
+	onAgentNavigation,
+	restoreSession,
+	initIdeBridge,
+	destroyIdeBridge,
+	registerIdeFrame,
+	unregisterIdeFrame,
+	sendToIde,
+	type AgentContext,
+	type NavigationAction,
+	type IdeBridgeMessage,
+} from './runtimeAgentSession';
+
+export { default as AgentDock } from './AgentDock.svelte';

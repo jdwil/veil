@@ -1449,66 +1449,95 @@ pkg VeilRuntimeUI
 
       comp AgentsView
         state
-          messages: List<Json>
-          user_input: Str
-          sending: Bool
+          status: Json
+          loading: Bool
           error: Str
-        fn sendMessage()
-          sending = true
+        fn fetchStatus()
+          loading = true
           error = ""
-          messages = messages.concat([{role: "user", content: user_input}])
-          mut resp = ApiClient.mutate("/api/agent", {message: user_input})
-          messages = messages.concat([{role: "assistant", content: resp.message}])
-          user_input = ""
-          sending = false
+          mut resp = ApiClient.query("/api/agent/status")
+          status = resp
+          loading = false
+        on mount
+          fetchStatus()
+          setInterval(fetchStatus, 5000)
         template """
           <div class="agents">
-            <PageHeader title="Agents" description="Chat with the runtime agent over HTTPS." />
-            <div class="panel card">
-              <div class="msgs">
-                {#if messages.length === 0}
-                  <EmptyState title="No messages yet" description="Send a prompt to start a conversation." />
-                {:else}
-                  {#each messages as m, i}
-                    <div class="bubble {m.role}" style="--dk-i: {i}">{m.content}</div>
-                  {/each}
+            <PageHeader title="Agents" description="Runtime agent configuration and connection status." />
+            {#if loading && !status}
+              <div class="panel card"><p class="loading">Loading…</p></div>
+            {:else if error}
+              <div class="panel card"><p class="dk-error">{error}</p></div>
+            {:else if status}
+              <section class="panel card">
+                <h3 class="section-title">LLM Provider</h3>
+                <div class="provider-row">
+                  <div class="provider-badge">
+                    <span class="provider-dot"></span>
+                    <span class="provider-name">{status.provider}</span>
+                  </div>
+                  <span class="provider-mode">{status.provider_mode?.mode ?? ''}</span>
+                  {#if status.provider_mode?.model}
+                    <span class="provider-model">{status.provider_mode.model}</span>
+                  {/if}
+                </div>
+                <p class="hint">Set <code>VEIL_AGENT_PROVIDER</code> to switch: <code>bedrock</code>, <code>openai</code>, <code>anthropic</code>, <code>acp</code>.</p>
+              </section>
+              <section class="panel card">
+                <h3 class="section-title">ACP Tunnel</h3>
+                <div class="tunnel-status">
+                  <div class="status-indicator" class:connected={status.acp_tunnel?.connected} class:disconnected={!status.acp_tunnel?.connected}>
+                    <span class="status-dot"></span>
+                    <span class="status-text">{status.acp_tunnel?.connected ? 'Connected' : 'Not connected'}</span>
+                  </div>
+                  {#if status.acp_tunnel?.connected && status.acp_tunnel?.agents?.length > 0}
+                    <div class="agents-list">
+                      {#each status.acp_tunnel.agents as agent}
+                        <div class="agent-entry"><span class="agent-name">{agent.agent_name}</span> <span class="agent-user">({agent.user_id})</span></div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+                {#if !status.acp_tunnel?.connected}
+                  <div class="connect-box">
+                    <p>Connect your local ACP agent:</p>
+                    <code class="cmd-block">veil agent connect</code>
+                    <p class="hint">Connects Kiro CLI (or any ACP-compatible agent) as the reasoning backend.</p>
+                  </div>
                 {/if}
-              </div>
-              {#if error}
-                <p class="dk-error">{error}</p>
-              {/if}
-              <div class="row">
-                <input bind:value={user_input} placeholder="Message…" aria-label="Agent message" />
-                <button type="button" class="btn-primary" onclick={sendMessage} disabled={sending || !user_input}>
-                  {sending ? "…" : "Send"}
-                </button>
-              </div>
-            </div>
+              </section>
+            {/if}
           </div>
         """
         style """
           .agents { max-width: 52rem; animation: dk-fade-in var(--dk-dur-slow, 420ms) var(--dk-ease-out, ease) both; }
-          .panel { padding: 1rem; display: flex; flex-direction: column; gap: 0.85rem; min-height: 22rem; }
-          .msgs { flex: 1; min-height: 16rem; max-height: 28rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem; }
-          .bubble {
-            padding: 0.65rem 0.85rem;
-            border-radius: var(--dk-radius-sm, 0.55rem);
-            animation: dk-fade-up 0.32s var(--dk-ease-out, ease) both;
-            animation-delay: calc(var(--dk-i, 0) * 30ms);
-            max-width: 90%;
-          }
-          .bubble.user {
-            align-self: flex-end;
-            background: color-mix(in srgb, var(--accent) 14%, transparent);
-            border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
-          }
-          .bubble.assistant {
-            align-self: flex-start;
-            background: var(--dk-surface-2, var(--surface));
-            border: 1px solid var(--dk-border-soft, var(--border));
-          }
-          .row { display: flex; gap: 0.55rem; }
-          .row input { flex: 1; }
+          .panel { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
+          .section-title { font-size: 0.85rem; font-weight: 700; color: var(--dk-text, #f4f5f7); margin: 0; }
+          .loading { color: var(--dk-text-muted, #9ca3af); font-size: 0.85rem; }
+          .provider-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+          .provider-badge { display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.75rem; border-radius: 999px; background: color-mix(in srgb, var(--accent, #148770) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #148770) 35%, transparent); }
+          .provider-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent, #1fa88a); }
+          .provider-name { font-weight: 600; font-size: 0.8rem; color: var(--accent, #1fa88a); }
+          .provider-mode { font-size: 0.75rem; color: var(--dk-text-muted, #9ca3af); text-transform: uppercase; letter-spacing: 0.05em; }
+          .provider-model { font-size: 0.7rem; color: var(--dk-text-muted, #9ca3af); font-family: monospace; }
+          .hint { font-size: 0.75rem; color: var(--dk-text-muted, #9ca3af); margin: 0; }
+          .hint code { background: var(--dk-surface-3, #22222f); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; }
+          .tunnel-status { display: flex; flex-direction: column; gap: 0.5rem; }
+          .status-indicator { display: flex; align-items: center; gap: 0.5rem; }
+          .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+          .connected .status-dot { background: #34d399; box-shadow: 0 0 6px rgba(52, 211, 153, 0.5); animation: pulse 2s ease infinite; }
+          .disconnected .status-dot { background: var(--dk-text-muted, #6b7280); }
+          .status-text { font-size: 0.8rem; font-weight: 600; }
+          .connected .status-text { color: #34d399; }
+          .disconnected .status-text { color: var(--dk-text-muted, #9ca3af); }
+          .agents-list { display: flex; flex-direction: column; gap: 0.3rem; padding-left: 1.25rem; }
+          .agent-entry { font-size: 0.75rem; color: var(--dk-text, #f4f5f7); }
+          .agent-name { font-weight: 600; }
+          .agent-user { color: var(--dk-text-muted, #9ca3af); }
+          .connect-box { margin-top: 0.5rem; padding: 0.75rem; background: var(--dk-surface-2, #1a1a26); border-radius: var(--dk-radius-sm, 0.55rem); border: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55)); }
+          .connect-box p { margin: 0 0 0.4rem; font-size: 0.8rem; color: var(--dk-text, #f4f5f7); }
+          .cmd-block { display: block; padding: 0.5rem 0.75rem; background: var(--dk-surface-3, #22222f); border-radius: 4px; font-size: 0.8rem; color: var(--accent, #1fa88a); margin-bottom: 0.4rem; }
+          @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
         """
 
       comp ConfigView

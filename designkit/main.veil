@@ -1,0 +1,1685 @@
+# designkit — stock UI components (public)
+#
+# Source of truth: THIS FILE (VEIL).
+#   props / state / derived / effect / fn  → lowered to TypeScript (sveltekit5)
+#   template / style                        → raw HTML+CSS surfaces only
+#
+# Layer tokens/CSS:  ../../layers/designkit.layer  (system layer)
+# Agent contracts:   docs/AGENT_SURFACE.md
+# Gen library:       veil gen main.veil -t typescript -o generated/library
+#
+# Products: depend on this package + `use designkit` (or adapt stock shells).
+
+pkg designkit
+  use designkit
+
+  app DesignKit
+    group components
+
+      # ── View mode toggle (tiles | list) ─────────────────────────────────
+      comp ViewModeToggle
+        props
+          @bind
+          mode: Str = "tiles"
+          class_name: Str = ""
+        fn set_tiles()
+          mode = "tiles"
+        fn set_list()
+          mode = "list"
+        template """
+          <div class="dk-view-toggle {class_name}" role="group" aria-label="View mode">
+            <button
+              type="button"
+              class="dk-view-toggle__btn"
+              class:dk-view-toggle__btn--active={mode === 'tiles'}
+              title="Tile view"
+              aria-pressed={mode === 'tiles'}
+              onclick={set_tiles}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <rect x="3" y="3" width="7" height="7" rx="1" />
+                <rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" />
+                <rect x="14" y="14" width="7" height="7" rx="1" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="dk-view-toggle__btn"
+              class:dk-view-toggle__btn--active={mode === 'list'}
+              title="List view"
+              aria-pressed={mode === 'list'}
+              onclick={set_list}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <line x1="8" y1="6" x2="21" y2="6" />
+                <line x1="8" y1="12" x2="21" y2="12" />
+                <line x1="8" y1="18" x2="21" y2="18" />
+                <line x1="3" y1="6" x2="3.01" y2="6" />
+                <line x1="3" y1="12" x2="3.01" y2="12" />
+                <line x1="3" y1="18" x2="3.01" y2="18" />
+              </svg>
+            </button>
+          </div>
+        """
+
+      # ── Page header ────────────────────────────────────────────────────
+      comp PageHeader
+        props
+          title: Str
+          description: Str = ""
+          actions: Opt<Snippet>
+          children: Opt<Snippet>
+          agent: Json = {}
+        derived
+          veil_agent: Json = {version: 1, role: "page-header", product: agent, runtime: {title: title, description: description}}
+        template """
+          <div
+            class="dk-page-header"
+            data-veil-role="page-header"
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            <div class="dk-page-header__text">
+              <h1 class="dk-page-header__title">{title}</h1>
+              {#if description}
+                <p class="dk-page-header__desc">{description}</p>
+              {/if}
+              {#if children}
+                {@render children()}
+              {/if}
+            </div>
+            {#if actions}
+              <div class="dk-page-header__actions">
+                {@render actions()}
+              </div>
+            {/if}
+          </div>
+        """
+
+      # ── Empty state ────────────────────────────────────────────────────
+      comp EmptyState
+        props
+          title: Str
+          description: Str = ""
+          action_href: Str = ""
+          action_label: Str = ""
+          agent: Json = {}
+        derived
+          has_action: Bool = action_href != ""
+          veil_agent: Json = {version: 1, role: "empty-state", product: agent, runtime: {has_action: has_action, action_href: action_href, action_label: action_label}}
+        template """
+          <div class="dk-empty card" data-veil-role="empty-state" data-veil-agent={JSON.stringify(veil_agent)}>
+            <div class="dk-empty__icon" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              </svg>
+            </div>
+            <h3 class="dk-empty__title">{title}</h3>
+            {#if description}
+              <p class="dk-empty__desc">{description}</p>
+            {/if}
+            {#if action_href && action_label}
+              <a href={action_href} class="btn-primary" data-veil-action="empty-cta">{action_label}</a>
+            {/if}
+          </div>
+        """
+
+      # ── Form progress / submit ─────────────────────────────────────────
+      comp FormProgress
+        props
+          required_values: List<Str> = []
+          submit_label: Str = "Create"
+          saving_label: Str = "Saving…"
+          saving: Bool = false
+          on_submit: Opt<fn()>
+        fn handle_submit()
+          if saving == false
+            if on_submit != null
+              on_submit()
+        template """
+          {#if true}
+          {@const total = Array.isArray(required_values) ? required_values.length : 0}
+          {@const filled = Array.isArray(required_values) ? required_values.filter((v) => v != null && String(v).trim() !== '').length : 0}
+          {@const isComplete = total === 0 || filled >= total}
+          {@const pct = total === 0 ? 100 : Math.round((filled / total) * 100)}
+          <div class="dk-form-progress">
+            <div class="dk-form-progress__meter">
+              <div class="dk-form-progress__track" aria-hidden="true">
+                <div
+                  class="dk-form-progress__fill"
+                  class:dk-form-progress__fill--ready={isComplete}
+                  style="width: {pct}%"
+                ></div>
+              </div>
+              <span class:dk-form-progress__ready={isComplete}>
+                {isComplete ? 'Ready' : `${filled}/${total}`}
+              </span>
+            </div>
+            <button
+              type="button"
+              class="btn-primary"
+              class:dk-form-progress__submit--ready={isComplete}
+              disabled={saving || !isComplete}
+              onclick={() => { if (!saving && isComplete && on_submit) on_submit(); }}
+            >
+              {saving ? saving_label : submit_label}
+            </button>
+          </div>
+          {/if}
+        """
+
+      # ── Form section ───────────────────────────────────────────────────
+      comp FormSection
+        props
+          title: Str = ""
+          columns: Int = 1
+          children: Opt<Snippet>
+        template """
+          <section class="dk-form-section">
+            {#if title}
+              <h2 class="dk-form-section__title">{title}</h2>
+            {/if}
+            <div
+              class="dk-form-section__grid"
+              class:dk-form-section__grid--1={columns === 1}
+              class:dk-form-section__grid--2={columns === 2}
+              class:dk-form-section__grid--3={columns === 3}
+            >
+              {#if children}
+                {@render children()}
+              {/if}
+            </div>
+          </section>
+        """
+
+      # ── Form field ─────────────────────────────────────────────────────
+      comp FormField
+        props
+          id: Str
+          label: Str
+          input_type: Str = "text"
+          required: Bool = false
+          placeholder: Str = ""
+          hint: Str = ""
+          error: Str = ""
+          @bind
+          value: Str = ""
+          options: List<Json> = []
+          rows: Int = 3
+          children: Opt<Snippet>
+          agent: Json = {}
+          onchange: Opt<Fn> = undefined
+          oninput: Opt<Fn> = undefined
+        derived
+          veil_agent: Json = {version: 1, role: "form-field", product: agent, runtime: {id: id, label: label, input_type: input_type, required: required}}
+        template """
+          {#if true}
+          {@const empty = value === undefined || value === null || String(value).trim() === ''}
+          {@const incomplete = required && empty && !error}
+          {@const filled = required && !empty && !error}
+          <div
+            class="dk-field"
+            data-veil-role="form-field"
+            data-veil-agent={JSON.stringify({ ...veil_agent, runtime: { ...veil_agent.runtime, empty, filled, error: error || undefined } })}
+            data-veil-field={id}
+          >
+            <label for={id} class="dk-field__label">
+              {label}
+              {#if required}
+                <span
+                  class="dk-field__req"
+                  class:dk-field__req--filled={filled}
+                  title={empty ? 'Required' : 'Filled'}
+                >●</span>
+              {/if}
+            </label>
+            <div class="dk-field__control">
+              <div
+                class="dk-field__bar"
+                class:dk-field__bar--incomplete={incomplete}
+                class:dk-field__bar--filled={filled}
+                class:dk-field__bar--error={!!error}
+              ></div>
+              {#if children}
+                {@render children()}
+              {:else if input_type === 'select'}
+                <select {id} class="input" class:input-error={!!error} bind:value onchange={onchange}>
+                  {#each (options || []) as opt}
+                    <option value={opt.value}>{opt.label}</option>
+                  {/each}
+                </select>
+              {:else if input_type === 'textarea'}
+                <textarea {id} class="input" class:input-error={!!error} {placeholder} rows={rows} bind:value oninput={oninput}></textarea>
+              {:else}
+                <input {id} type={input_type} class="input" class:input-error={!!error} {placeholder} bind:value oninput={oninput} />
+              {/if}
+            </div>
+            {#if hint && !error}
+              <p class="dk-field__hint">{hint}</p>
+            {/if}
+            {#if error}
+              <p class="dk-field__error">{error}</p>
+            {/if}
+          </div>
+          {/if}
+        """
+
+      # ── Create / edit form page shell (CRUD form) ─────────────────────
+      # Generic entity form page: back + title | optional header_actions +
+      # FormProgress. Body: loading | error | children | footer (e.g. danger zone).
+      # Product fills children with FormSection/FormField; domain stays product-side.
+      comp CreateFormShell
+        props
+          title: Str
+          subtitle: Str = ""
+          # Fallback target when not using history, or when history is unavailable.
+          back_href: Str = ".."
+          # "href" = always navigate to back_href.
+          # "history" = history.back() when possible; else back_href (middle-click still uses href).
+          back_behavior: Str = "href"
+          # "create" | "edit" → data-veil-role create-form | edit-form
+          mode: Str = "create"
+          submit_label: Str = "Create"
+          saving_label: Str = "Creating…"
+          saving: Bool = false
+          show_submit: Bool = true
+          required_values: List<Str> = []
+          on_submit: Opt<fn()>
+          loading: Bool = false
+          loading_label: Str = "Loading…"
+          error: Str = ""
+          children: Opt<Snippet>
+          header_actions: Opt<Snippet>
+          footer: Opt<Snippet>
+          agent: Json = {}
+        derived
+          veil_agent: Json = {version: 1, role: "create-form", product: agent, runtime: {saving: saving, loading: loading, error: error, submit_label: submit_label, back_href: back_href, back_behavior: back_behavior, mode: mode, show_submit: show_submit}}
+        fn handle_submit()
+          if saving == false
+            if on_submit != null
+              on_submit()
+        template """
+          <div
+            class="dk-page-shell dk-create-shell"
+            data-veil-role={mode === "edit" ? "edit-form" : "create-form"}
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            <header class="dk-page-shell__header dk-create-shell__header">
+              <div class="dk-page-shell__left dk-create-shell__left">
+                <a
+                  href={back_href}
+                  class="btn-ghost dk-page-shell__back dk-create-shell__back"
+                  aria-label="Back"
+                  data-veil-action="back"
+                  data-back-behavior={back_behavior}
+                  onclick={(e) => {
+                    if (back_behavior !== 'history') return;
+                    if (typeof window === 'undefined') return;
+                    // Prefer prior page in this tab (list vs detail). Fall back to href.
+                    if (window.history.length > 1) {
+                      e.preventDefault();
+                      window.history.back();
+                    }
+                  }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </a>
+                <div>
+                  <h1 class="dk-page-shell__title dk-create-shell__title">{title}</h1>
+                  {#if subtitle}
+                    <p class="dk-page-shell__subtitle dk-create-shell__subtitle">{subtitle}</p>
+                  {/if}
+                </div>
+              </div>
+              <div class="dk-page-shell__header-actions">
+                {#if header_actions}
+                  {@render header_actions()}
+                {/if}
+                {#if show_submit}
+                  <FormProgress
+                    required_values={required_values}
+                    submit_label={submit_label}
+                    saving_label={saving_label}
+                    saving={saving}
+                    on_submit={on_submit}
+                  />
+                {/if}
+              </div>
+            </header>
+            <div class="dk-page-shell__body dk-create-shell__body">
+              {#if loading}
+                <div class="card dk-loading">
+                  <div class="dk-spinner" aria-hidden="true"></div>
+                  <span>{loading_label}</span>
+                </div>
+              {:else}
+                {#if error}
+                  <p class="dk-error">{error}</p>
+                {/if}
+                {#if children}
+                  {@render children()}
+                {/if}
+                {#if footer}
+                  <div class="dk-page-shell__footer" data-veil-slot="footer">
+                    {@render footer()}
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          </div>
+        """
+
+      # ── Detail / view page shell (CRUD read) ──────────────────────────
+      # Generic entity detail page: back + title | header_actions.
+      # Slots: summary, children (sections), sidebar, footer.
+      # Product supplies domain fields via DetailField / FormSection children.
+      comp DetailShell
+        props
+          title: Str
+          subtitle: Str = ""
+          back_href: Str = ".."
+          # "href" | "history" — same semantics as CreateFormShell
+          back_behavior: Str = "href"
+          loading: Bool = false
+          loading_label: Str = "Loading…"
+          error: Str = ""
+          children: Opt<Snippet>
+          header_actions: Opt<Snippet>
+          summary: Opt<Snippet>
+          sidebar: Opt<Snippet>
+          footer: Opt<Snippet>
+          agent: Json = {}
+        derived
+          veil_agent: Json = {version: 1, role: "detail-view", product: agent, runtime: {loading: loading, error: error, title: title, back_href: back_href, back_behavior: back_behavior}}
+        template """
+          <div
+            class="dk-page-shell dk-detail-shell dk-create-shell"
+            data-veil-role="detail-view"
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            <header class="dk-page-shell__header dk-create-shell__header dk-detail-shell__header">
+              <div class="dk-page-shell__left dk-create-shell__left">
+                <a
+                  href={back_href}
+                  class="btn-ghost dk-page-shell__back dk-create-shell__back"
+                  aria-label="Back"
+                  data-veil-action="back"
+                  data-back-behavior={back_behavior}
+                  onclick={(e) => {
+                    if (back_behavior !== 'history') return;
+                    if (typeof window === 'undefined') return;
+                    if (window.history.length > 1) {
+                      e.preventDefault();
+                      window.history.back();
+                    }
+                  }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                </a>
+                <div>
+                  <h1 class="dk-page-shell__title dk-create-shell__title">{title}</h1>
+                  {#if subtitle}
+                    <p class="dk-page-shell__subtitle dk-create-shell__subtitle">{subtitle}</p>
+                  {/if}
+                </div>
+              </div>
+              {#if header_actions}
+                <div class="dk-page-shell__header-actions" data-veil-slot="header_actions">
+                  {@render header_actions()}
+                </div>
+              {/if}
+            </header>
+            <div class="dk-page-shell__body dk-create-shell__body dk-detail-shell__body">
+              {#if loading}
+                <div class="card dk-loading">
+                  <div class="dk-spinner" aria-hidden="true"></div>
+                  <span>{loading_label}</span>
+                </div>
+              {:else}
+                {#if error}
+                  <p class="dk-error">{error}</p>
+                {/if}
+                {#if summary}
+                  <div class="dk-detail-shell__summary" data-veil-slot="summary">
+                    {@render summary()}
+                  </div>
+                {/if}
+                {#if sidebar}
+                  <div class="dk-detail-shell__layout">
+                    <div class="dk-detail-shell__content" data-veil-slot="children">
+                      {#if children}
+                        {@render children()}
+                      {/if}
+                    </div>
+                    <aside class="dk-detail-shell__sidebar" data-veil-slot="sidebar">
+                      {@render sidebar()}
+                    </aside>
+                  </div>
+                {:else if children}
+                  <div class="dk-detail-shell__children" data-veil-slot="children">
+                    {@render children()}
+                  </div>
+                {/if}
+                {#if footer}
+                  <div class="dk-page-shell__footer" data-veil-slot="footer">
+                    {@render footer()}
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          </div>
+        """
+
+      # ── Read-only detail field ────────────────────────────────────────
+      # Pair with DetailShell + FormSection. children overrides default value UI.
+      comp DetailField
+        props
+          id: Str = ""
+          label: Str
+          value: Str = ""
+          empty_label: Str = "—"
+          mono: Bool = false
+          pre: Bool = false
+          children: Opt<Snippet>
+          agent: Json = {}
+        derived
+          is_empty: Bool = value == ""
+          veil_agent: Json = {version: 1, role: "detail-field", product: agent, runtime: {id: id, label: label, empty: is_empty, mono: mono, pre: pre}}
+        template """
+          {#if true}
+          {@const display = (value === undefined || value === null || String(value).trim() === '') ? empty_label : String(value)}
+          {@const empty = (value === undefined || value === null || String(value).trim() === '')}
+          <div
+            class="dk-field dk-detail-field"
+            data-veil-role="detail-field"
+            data-veil-field={id || undefined}
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            <span class="dk-field__label">{label}</span>
+            {#if children}
+              <div class="dk-detail__value" class:dk-detail__value--muted={empty} class:dk-detail__mono={mono}>
+                {@render children()}
+              </div>
+            {:else if pre && !empty}
+              <pre class="dk-detail__pre" class:dk-detail__mono={mono}>{value}</pre>
+            {:else}
+              <p
+                class="dk-detail__value"
+                class:dk-detail__value--muted={empty}
+                class:dk-detail__mono={mono}
+              >{display}</p>
+            {/if}
+          </div>
+          {/if}
+        """
+
+      # ── Status pill ────────────────────────────────────────────────────
+      comp StatusPill
+        props
+          label: Str = ""
+          status: Str = ""
+          variant: Str = ""
+          pill_map: Json = {}
+        derived
+          text: Str = label
+        template """
+          {#if true}
+          {@const text = (label || status || '').toString()}
+          {@const key = text.trim().toLowerCase()}
+          {@const defaults = { draft: 'info', active: 'success', completed: 'success', archived: 'neutral', enabled: 'success', disabled: 'warning' }}
+          {@const resolved = variant || (pill_map && (pill_map[text] || pill_map[key])) || defaults[key] || 'info'}
+          {@const cls = resolved === 'success' ? 'badge-success' : resolved === 'warning' ? 'badge-warning' : resolved === 'error' ? 'badge-error' : resolved === 'neutral' ? 'badge-neutral' : 'badge-info'}
+          {#if text}
+            <span class="badge {cls}">{text}</span>
+          {/if}
+          {/if}
+        """
+
+      # ── Entity identity ────────────────────────────────────────────────
+      comp EntityIdentity
+        props
+          name: Str = ""
+          subtitle: Str = ""
+          show_avatar: Bool = true
+          size: Str = "md"
+        derived
+          letter: Str = "?"
+        template """
+          {#if true}
+          {@const letter = (name || '?').toString().charAt(0).toUpperCase()}
+          <div class="dk-tile__identity">
+            {#if show_avatar}
+              <div class="dk-avatar" class:dk-avatar--sm={size === 'sm'} aria-hidden="true">{letter}</div>
+            {/if}
+            <div class="dk-tile__identity-text">
+              <p class="dk-tile__name">{name}</p>
+              {#if subtitle}
+                <p class="dk-tile__meta">{subtitle}</p>
+              {/if}
+            </div>
+          </div>
+          {/if}
+        """
+
+      # ── Modal (native dialog top-layer) ────────────────────────────────
+      # Host DOM (showModal / body portal) is expressed in the template surface;
+      # open/close API is VEIL props + fn.
+      comp Modal
+        props
+          @bind
+          open: Bool = false
+          title: Str = ""
+          size: Str = "md"
+          close_on_backdrop: Bool = true
+          children: Opt<Snippet>
+          footer: Opt<Snippet>
+          on_close: Opt<fn()>
+          agent: Json = {}
+        state
+          dialog_el: Any
+        derived
+          veil_agent: Json = {version: 1, role: "modal", product: agent, runtime: {open: open, title: title, size: size}}
+        fn request_close()
+          if open == true
+            open = false
+            if on_close != null
+              on_close()
+        template """
+          {#if true}
+          {@const _sync = (() => {
+            const d = dialog_el;
+            if (!d || typeof document === 'undefined') return;
+            if (d.parentElement !== document.body) document.body.appendChild(d);
+            if (open) {
+              if (!d.open) { try { d.showModal(); } catch { d.setAttribute('open', ''); } }
+            } else if (d.open) {
+              d.close();
+            }
+          })()}
+          <dialog
+            bind:this={dialog_el}
+            class="dk-modal-dialog"
+            class:dk-modal-dialog--open={open}
+            data-veil-role="modal"
+            data-veil-agent={JSON.stringify(veil_agent)}
+            oncancel={(e) => { e.preventDefault(); request_close(); }}
+            onclick={(e) => { if (close_on_backdrop && e.target === dialog_el) request_close(); }}
+          >
+            <div class="dk-modal__panel dk-modal__panel--{size}" role="document">
+              {#if title}
+                <div class="dk-modal__header">
+                  <h3 id="dk-modal-title" class="dk-modal__title">{title}</h3>
+                  <button type="button" class="btn-ghost dk-modal__close" aria-label="Close" onclick={request_close} data-veil-action="close">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              {/if}
+              <div class="dk-modal__body">
+                {#if children}
+                  {@render children()}
+                {/if}
+              </div>
+              {#if footer}
+                <div class="dk-modal__footer">
+                  {@render footer()}
+                </div>
+              {/if}
+            </div>
+          </dialog>
+          {/if}
+        """
+
+      # ── Confirm dialog ─────────────────────────────────────────────────
+      comp ConfirmDialog
+        props
+          @bind
+          open: Bool = false
+          title: Str = "Confirm"
+          message: Str = "Are you sure?"
+          confirm_label: Str = "Confirm"
+          cancel_label: Str = "Cancel"
+          variant: Str = "default"
+          busy: Bool = false
+          on_confirm: Opt<fn()>
+          on_cancel: Opt<fn()>
+          agent: Json = {}
+        derived
+          veil_agent: Json = {version: 1, role: "confirm-dialog", product: agent, runtime: {open: open, title: title, variant: variant, busy: busy}}
+        fn do_cancel()
+          if busy == false
+            open = false
+            if on_cancel != null
+              on_cancel()
+        fn do_confirm()
+          if busy == false
+            if on_confirm != null
+              on_confirm()
+            open = false
+        template """
+          <div class="dk-confirm-anchor" data-veil-role="confirm-dialog" data-veil-agent={JSON.stringify(veil_agent)} hidden aria-hidden="true"></div>
+          <Modal bind:open={open} title={title} size="sm" on_close={do_cancel} agent={agent}>
+            <p class="dk-dialog__message">{message}</p>
+            {#snippet footer()}
+              <button type="button" class="btn-outline" disabled={busy} onclick={do_cancel} data-veil-action="cancel">{cancel_label}</button>
+              <button
+                type="button"
+                class={variant === 'danger' ? 'btn-danger' : 'btn-primary'}
+                disabled={busy}
+                onclick={do_confirm}
+                data-veil-action="confirm"
+              >{busy ? '…' : confirm_label}</button>
+            {/snippet}
+          </Modal>
+        """
+
+      # ── Alert dialog ───────────────────────────────────────────────────
+      comp AlertDialog
+        props
+          @bind
+          open: Bool = false
+          title: Str = "Notice"
+          message: Str = ""
+          ok_label: Str = "OK"
+          on_ok: Opt<fn()>
+          agent: Json = {}
+        derived
+          veil_agent: Json = {version: 1, role: "alert-dialog", product: agent, runtime: {open: open, title: title}}
+        fn do_ok()
+          open = false
+          if on_ok != null
+            on_ok()
+        template """
+          <div class="dk-alert-anchor" data-veil-role="alert-dialog" data-veil-agent={JSON.stringify(veil_agent)} hidden aria-hidden="true"></div>
+          <Modal bind:open={open} title={title} size="sm" on_close={do_ok} agent={agent}>
+            <p class="dk-dialog__message">{message}</p>
+            {#snippet footer()}
+              <button type="button" class="btn-primary" onclick={do_ok} data-veil-action="ok">{ok_label}</button>
+            {/snippet}
+          </Modal>
+        """
+
+      # ── Prompt dialog ──────────────────────────────────────────────────
+      comp PromptDialog
+        props
+          @bind
+          open: Bool = false
+          title: Str = "Input"
+          message: Str = ""
+          default_value: Str = ""
+          placeholder: Str = ""
+          confirm_label: Str = "OK"
+          cancel_label: Str = "Cancel"
+          on_confirm: Opt<fn(Str)>
+          on_cancel: Opt<fn()>
+          agent: Json = {}
+        state
+          value: Str = ""
+        derived
+          veil_agent: Json = {version: 1, role: "prompt-dialog", product: agent, runtime: {open: open, title: title}}
+        effect reset_value
+          if open == true
+            value = default_value
+        fn do_cancel()
+          open = false
+          if on_cancel != null
+            on_cancel()
+        fn do_confirm()
+          if on_confirm != null
+            on_confirm(value)
+          open = false
+        template """
+          <div class="dk-prompt-anchor" data-veil-role="prompt-dialog" data-veil-agent={JSON.stringify(veil_agent)} hidden aria-hidden="true"></div>
+          <Modal bind:open={open} title={title} size="sm" on_close={do_cancel} agent={agent}>
+            {#if message}
+              <p class="dk-dialog__message">{message}</p>
+            {/if}
+            <input class="input dk-dialog__input" type="text" placeholder={placeholder} bind:value data-veil-action="prompt-input" />
+            {#snippet footer()}
+              <button type="button" class="btn-outline" onclick={do_cancel} data-veil-action="cancel">{cancel_label}</button>
+              <button type="button" class="btn-primary" onclick={do_confirm} data-veil-action="confirm">{confirm_label}</button>
+            {/snippet}
+          </Modal>
+        """
+
+      # ── Context menu (⋮) ───────────────────────────────────────────────
+      # open/close is VEIL state; fixed positioning portal is template surface.
+      comp ContextMenu
+        props
+          items: List<Json> = []
+          align: Str = "right"
+          aria_label: Str = "Actions"
+          children: Opt<Snippet>
+          agent: Json = {}
+        state
+          open: Bool = false
+          root_el: Any
+          menu_el: Any
+        derived
+          veil_agent: Json = {version: 1, role: "context-menu", product: agent, runtime: {open: open}}
+        fn close()
+          open = false
+        fn open_menu()
+          open = true
+        fn toggle()
+          open = !open
+        template """
+          {#if true}
+          {@const _portal = (() => {
+            if (!open || !root_el || !menu_el || typeof document === 'undefined') return;
+            const r = root_el.getBoundingClientRect();
+            document.body.appendChild(menu_el);
+            menu_el.style.position = 'fixed';
+            menu_el.style.top = `${Math.round(r.bottom + 4)}px`;
+            menu_el.style.zIndex = '10000';
+            if (align === 'right') {
+              menu_el.style.right = `${Math.round(window.innerWidth - r.right)}px`;
+              menu_el.style.left = 'auto';
+            } else {
+              menu_el.style.left = `${Math.round(r.left)}px`;
+              menu_el.style.right = 'auto';
+            }
+          })()}
+          {/if}
+          <svelte:window
+            onclick={(e) => {
+              if (!open) return;
+              const t = e.target;
+              if (root_el?.contains?.(t) || menu_el?.contains?.(t)) return;
+              open = false;
+            }}
+            onkeydown={(e) => { if (e.key === 'Escape' && open) open = false; }}
+          />
+          <div
+            class="dk-ctx"
+            class:dk-ctx--open={open}
+            bind:this={root_el}
+            data-veil-role="context-menu"
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            <button
+              type="button"
+              class="dk-ctx__trigger"
+              aria-label={aria_label}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              onclick={(e) => { e.stopPropagation(); e.preventDefault(); open = !open; }}
+            >
+              <span class="dk-ctx__dots" aria-hidden="true">⋮</span>
+            </button>
+            {#if open}
+              <div
+                bind:this={menu_el}
+                class="dk-ctx__menu"
+                class:dk-ctx__menu--left={align === 'left'}
+                class:dk-ctx__menu--right={align === 'right'}
+                role="menu"
+              >
+                {#if children}
+                  {@render children()}
+                {:else}
+                  {#each (items || []) as item}
+                    {#if item.href && !item.disabled}
+                      <a
+                        href={item.href}
+                        class="dk-ctx__item"
+                        class:dk-ctx__item--danger={item.danger}
+                        role="menuitem"
+                        onclick={(e) => { e.preventDefault(); open = false; if (item.onSelect) item.onSelect(); else if (item.href) window.location.href = item.href; }}
+                      >{item.label}</a>
+                    {:else}
+                      <button
+                        type="button"
+                        class="dk-ctx__item"
+                        class:dk-ctx__item--danger={item.danger}
+                        role="menuitem"
+                        disabled={item.disabled}
+                        onclick={() => { if (!item.disabled) { open = false; if (item.onSelect) item.onSelect(); } }}
+                      >{item.label}</button>
+                    {/if}
+                  {/each}
+                {/if}
+              </div>
+            {/if}
+          </div>
+        """
+
+      # ── Collection view ────────────────────────────────────────────────
+      comp CollectionView
+        props
+          title: Str = ""
+          description: Str = ""
+          items: List<Json> = []
+          loading: Bool = false
+          error: Str = ""
+          view_mode: Str = "both"
+          default_layout: Str = "tiles"
+          show_avatar: Bool = true
+          empty_title: Str = "Nothing here yet"
+          empty_description: Str = ""
+          empty_action_href: Str = ""
+          empty_action_label: Str = ""
+          primary_href: Str = ""
+          primary_label: Str = ""
+          # When set (e.g. "/wear-tests/{id}"), tile/row click navigates. Clicks on
+          # links, buttons, context menus, and .dk-tile__actions do not navigate.
+          item_href_template: Str = ""
+          # When set (e.g. "wear_tests.layout"), tiles|list preference is read/written
+          # via localStorage so it survives navigation away and back.
+          layout_storage_key: Str = ""
+          columns: List<Json> = []
+          tile: Opt<Snippet>
+          row: Opt<Snippet>
+          header_actions: Opt<Snippet>
+          agent: Json = {}
+        state
+          layout: Str = "tiles"
+        effect init_layout
+          if view_mode == "tiles"
+            layout = "tiles"
+          else if view_mode == "list"
+            layout = "list"
+          else if layout_storage_key != ""
+            mut saved = LocalStorage.get_or(layout_storage_key, default_layout)
+            if saved == "list"
+              layout = "list"
+            else if saved == "tiles"
+              layout = "tiles"
+            else
+              layout = default_layout
+          else
+            layout = default_layout
+        effect sync_layout
+          if view_mode == "tiles"
+            layout = "tiles"
+          if view_mode == "list"
+            layout = "list"
+        effect persist_layout
+          if layout_storage_key != ""
+            if view_mode == "both"
+              if layout == "tiles"
+                LocalStorage.set(layout_storage_key, "tiles")
+              if layout == "list"
+                LocalStorage.set(layout_storage_key, "list")
+        derived
+          show_toggle: Bool = view_mode == "both"
+          veil_agent: Json = {version: 1, role: "collection", product: agent, runtime: {loading: loading, error: error, layout: layout, view_mode: view_mode, primary_href: primary_href, primary_label: primary_label, item_href_template: item_href_template, layout_storage_key: layout_storage_key}}
+        template """
+          {#if true}
+          {@const list = Array.isArray(items) ? items : []}
+          {@const colDefs = (Array.isArray(columns) ? columns : []).map((c) => typeof c === 'string' ? { label: c } : c)}
+          {@const headerLabels = colDefs.map((c) => c.label)}
+          {@const autoCells = colDefs.length > 0 && colDefs.every((c) => !!c.key)}
+          {@const displayValue = (item, key) => {
+            if (!key || item == null || typeof item !== 'object') return '';
+            const v = item[key];
+            if (v == null) return '';
+            const raw = typeof v === 'object' ? JSON.stringify(v) : String(v);
+            if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw.slice(0, 10);
+            return raw;
+          }}
+          {@const identitySubtitle = (item, col) => {
+            if (!col) return '';
+            const start = col.subtitleKey ? displayValue(item, col.subtitleKey) : '';
+            const end = col.subtitleEndKey ? displayValue(item, col.subtitleEndKey) : '';
+            if (start && end) return `${start} → ${end}`;
+            return start || end || '';
+          }}
+          {@const tileExtra = (cols, first) => {
+            const used = new Set([first?.key, first?.subtitleKey, first?.subtitleEndKey].filter(Boolean));
+            return cols.filter((col) => col.key && !used.has(col.key) && (col.cell === 'pill' || col.showOnTile === true));
+          }}
+          {@const itemHref = (item) => {
+            if (!item_href_template) return '';
+            const fieldStr = (v) => {
+              if (v == null) return '';
+              if (typeof v === 'object' && v.value != null) return String(v.value);
+              if (typeof v === 'object') return '';
+              return String(v);
+            };
+            // Prefer explicit id, then nested id.value, then slug (common for repos).
+            const id =
+              fieldStr(item?.id) ||
+              fieldStr(item?.slug) ||
+              '';
+            return String(item_href_template).replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (_, key) => {
+              if (key === 'id') return id;
+              return fieldStr(item?.[key]);
+            });
+          }}
+          {@const goItem = (item, e) => {
+            const href = itemHref(item);
+            if (!href) return;
+            const t = e?.target;
+            if (t?.closest?.('a, button, input, select, textarea, [role="menu"], [role="menuitem"], .dk-tile__actions, .dk-table__actions, .dk-ctx')) return;
+            window.location.href = href;
+          }}
+          <div
+            class="dk-collection"
+            data-veil-role="collection"
+            data-veil-agent={JSON.stringify({
+              ...veil_agent,
+              runtime: {
+                ...veil_agent.runtime,
+                itemCount: list.length,
+                emptyActionHref: empty_action_href || primary_href || undefined,
+                state: loading ? 'loading' : error ? 'error' : list.length === 0 ? 'empty' : 'ready',
+              },
+            })}
+          >
+            {#if title || primary_label || show_toggle || header_actions}
+              <PageHeader {title} description={description}>
+                {#snippet actions()}
+                  {#if show_toggle}
+                    <ViewModeToggle bind:mode={layout} />
+                  {/if}
+                  {#if header_actions}
+                    {@render header_actions()}
+                  {/if}
+                  {#if primary_href && primary_label}
+                    <a href={primary_href} class="btn-primary">
+                      <span aria-hidden="true">+</span>
+                      {primary_label}
+                    </a>
+                  {/if}
+                {/snippet}
+              </PageHeader>
+            {/if}
+
+            {#if error}
+              <p class="dk-error">{error}</p>
+            {:else if loading}
+              <div class="card dk-loading">
+                <div class="dk-spinner" aria-hidden="true"></div>
+                <span>Loading…</span>
+              </div>
+            {:else if list.length === 0}
+              <EmptyState
+                title={empty_title}
+                description={empty_description}
+                action_href={empty_action_href || primary_href}
+                action_label={empty_action_label || primary_label}
+              />
+            {:else if layout === 'tiles'}
+              <div class="dk-tile-grid">
+                {#each list as item, i (i)}
+                  {@const href = itemHref(item)}
+                  <div
+                    class="card dk-tile"
+                    class:dk-tile--clickable={!!href}
+                    style="--dk-i: {i}"
+                    role={href ? 'link' : undefined}
+                    tabindex={href ? 0 : undefined}
+                    data-href={href || undefined}
+                    onclick={(e) => goItem(item, e)}
+                    onkeydown={(e) => {
+                      if (!href) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        goItem(item, e);
+                      }
+                    }}
+                  >
+                    {#if tile}
+                      {@render tile(item)}
+                    {:else if autoCells}
+                      {@const first = colDefs[0]}
+                      {@const tileCols = tileExtra(colDefs.slice(1), first)}
+                      <div class="dk-tile__row">
+                        {#if first?.cell === 'identity' || first?.key === 'name'}
+                          <EntityIdentity
+                            name={displayValue(item, first.key)}
+                            subtitle={identitySubtitle(item, first)}
+                            show_avatar={first.showAvatar ?? show_avatar}
+                          />
+                        {:else}
+                          <p class="dk-tile__name">{displayValue(item, first?.key)}</p>
+                        {/if}
+                      </div>
+                      {#if tileCols.length > 0}
+                        <div class="dk-tile__badges">
+                          {#each tileCols as col}
+                            {#if col.cell === 'pill'}
+                              <StatusPill label={displayValue(item, col.key)} pill_map={col.pillMap ?? {}} />
+                            {:else}
+                              <span class="dk-tile__meta">{displayValue(item, col.key) || '—'}</span>
+                            {/if}
+                          {/each}
+                        </div>
+                      {/if}
+                    {:else}
+                      <pre class="dk-fallback">{JSON.stringify(item, null, 2)}</pre>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <div class="card dk-table-wrap">
+                <table class="dk-table">
+                  {#if headerLabels.length > 0}
+                    <thead>
+                      <tr>
+                        {#each headerLabels as col}
+                          <th>{col}</th>
+                        {/each}
+                      </tr>
+                    </thead>
+                  {/if}
+                  <tbody>
+                    {#each list as item, i (i)}
+                      {@const href = itemHref(item)}
+                      <tr
+                        class="dk-table__row"
+                        class:dk-table__row--clickable={!!href}
+                        style="--dk-i: {i}"
+                        role={href ? 'link' : undefined}
+                        tabindex={href ? 0 : undefined}
+                        data-href={href || undefined}
+                        onclick={(e) => goItem(item, e)}
+                        onkeydown={(e) => {
+                          if (!href) return;
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            goItem(item, e);
+                          }
+                        }}
+                      >
+                        {#if row}
+                          {@render row(item)}
+                        {:else if autoCells}
+                          {#each colDefs as col}
+                            <td>
+                              {#if col.cell === 'pill'}
+                                <StatusPill label={displayValue(item, col.key)} pill_map={col.pillMap ?? {}} />
+                              {:else if col.cell === 'identity' || (col.key === 'name' && col.cell !== 'text')}
+                                <EntityIdentity name={displayValue(item, col.key)} show_avatar={col.showAvatar ?? show_avatar} size="sm" />
+                              {:else}
+                                <span class="dk-tile__meta">{displayValue(item, col.key) || '—'}</span>
+                              {/if}
+                            </td>
+                          {/each}
+                        {:else}
+                          <td colspan={headerLabels.length || 1}>
+                            <pre class="dk-fallback">{JSON.stringify(item, null, 2)}</pre>
+                          </td>
+                        {/if}
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          </div>
+          {/if}
+        """
+
+      # ── Wizard shell (multi-step flows) ────────────────────────────────
+      # Reusable multi-step container: title, step chips, body, footer actions.
+      # Products set current_step (1-based) and pass steps labels; body/footer are snippets.
+      comp WizardShell
+        props
+          title: Str
+          subtitle: Str = ""
+          steps: List<Str> = []
+          current_step: Int = 1
+          children: Opt<Snippet>
+          footer: Opt<Snippet>
+          on_close: Opt<fn()>
+          agent: Json = {}
+        derived
+          veil_agent: Json = {version: 1, role: "wizard", product: agent, runtime: {title: title, current_step: current_step}}
+        fn request_close()
+          if on_close != null
+            on_close()
+        template """
+          <section
+            class="dk-wizard"
+            data-veil-role="wizard"
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            <header class="dk-wizard__head">
+              <div class="dk-wizard__titles">
+                <h2 class="dk-wizard__title">{title}</h2>
+                {#if subtitle}
+                  <p class="dk-wizard__subtitle">{subtitle}</p>
+                {/if}
+              </div>
+              {#if on_close}
+                <button type="button" class="btn-ghost dk-wizard__close" aria-label="Close" onclick={request_close} data-veil-action="close">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              {/if}
+            </header>
+            {#if steps && steps.length > 0}
+              <ol class="dk-wizard__steps" aria-label="Wizard progress">
+                {#each steps as label, i}
+                  <li
+                    class="dk-wizard__step"
+                    class:dk-wizard__step--done={i + 1 < current_step}
+                    class:dk-wizard__step--current={i + 1 === current_step}
+                  >
+                    <span class="dk-wizard__step-num">{i + 1}</span>
+                    <span class="dk-wizard__step-label">{label}</span>
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+            <div class="dk-wizard__body">
+              {#if children}
+                {@render children()}
+              {/if}
+            </div>
+            {#if footer}
+              <footer class="dk-wizard__footer">
+                {@render footer()}
+              </footer>
+            {/if}
+          </section>
+        """
+        style """
+          .dk-wizard {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            padding: 1.25rem 1.35rem 1.35rem;
+            border-radius: var(--dk-radius, 0.85rem);
+            border: 1px solid rgba(20, 135, 112, 0.35);
+            background:
+              linear-gradient(155deg, rgba(255, 255, 255, 0.03) 0%, transparent 42%),
+              linear-gradient(165deg, var(--dk-surface, #12121a) 0%, var(--dk-bg, #07070c) 100%);
+            box-shadow: var(--dk-shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.28));
+          }
+          .dk-wizard__head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+          }
+          .dk-wizard__title {
+            margin: 0;
+            font-size: 1.1rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--dk-text, #f4f5f7);
+          }
+          .dk-wizard__subtitle {
+            margin: 0.3rem 0 0;
+            font-size: 0.84rem;
+            color: var(--dk-text-muted, #9ca3af);
+            line-height: 1.45;
+          }
+          .dk-wizard__close { padding: 0.4rem !important; flex-shrink: 0; }
+          .dk-wizard__steps {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem 0.5rem;
+          }
+          .dk-wizard__step {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.28rem 0.65rem 0.28rem 0.35rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            color: var(--dk-text-muted, #9ca3af);
+            border: 1px solid transparent;
+            background: rgba(255, 255, 255, 0.03);
+          }
+          .dk-wizard__step-num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.25rem;
+            height: 1.25rem;
+            border-radius: 999px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--dk-text-muted, #9ca3af);
+          }
+          .dk-wizard__step--done {
+            color: var(--dk-brand-light, #1fa88a);
+          }
+          .dk-wizard__step--done .dk-wizard__step-num {
+            background: rgba(20, 135, 112, 0.25);
+            color: var(--dk-brand-light, #1fa88a);
+          }
+          .dk-wizard__step--current {
+            color: var(--dk-text, #f4f5f7);
+            border-color: rgba(20, 135, 112, 0.45);
+            background: rgba(20, 135, 112, 0.12);
+            font-weight: 600;
+          }
+          .dk-wizard__step--current .dk-wizard__step-num {
+            background: var(--dk-brand, #148770);
+            color: #fff;
+          }
+          .dk-wizard__body {
+            display: flex;
+            flex-direction: column;
+            gap: 0.9rem;
+            padding: 1.05rem 1.1rem;
+            border-radius: var(--dk-radius-sm, 0.55rem);
+            border: 1px solid rgba(20, 135, 112, 0.22);
+            background: rgba(20, 135, 112, 0.05);
+          }
+          .dk-wizard__footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            padding-top: 0.15rem;
+          }
+        """
+
+      # ── Choice cards (icon + title + description, single-select) ────────
+      # options: [{ value, label, description?, icon? }]
+      # icon: hand | calendar | clock | bolt | spark | list | repeat | play | sun | moon
+      # layout: "row" (icon left) | "tile" (icon on top — great for primary choices)
+      comp ChoiceCards
+        props
+          @bind
+          value: Str = ""
+          options: List<Json> = []
+          columns: Int = 2
+          layout: Str = "row"
+          agent: Json = {}
+        derived
+          veil_agent: Json = {version: 1, role: "choice-cards", product: agent, runtime: {value: value}}
+        template """
+          <div
+            class="dk-choice-cards"
+            class:dk-choice-cards--1={columns === 1}
+            class:dk-choice-cards--2={columns === 2}
+            class:dk-choice-cards--3={columns === 3}
+            class:dk-choice-cards--4={columns === 4}
+            class:dk-choice-cards--tile={layout === 'tile'}
+            role="radiogroup"
+            data-veil-role="choice-cards"
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            {#each (options || []) as opt}
+              <button
+                type="button"
+                role="radio"
+                class="dk-choice-card"
+                class:dk-choice-card--on={value === opt.value}
+                class:dk-choice-card--tile={layout === 'tile'}
+                aria-checked={value === opt.value}
+                onclick={() => { value = opt.value; }}
+                data-veil-action="choose"
+                data-value={opt.value}
+              >
+                <span class="dk-choice-card__icon" data-icon={opt.icon || 'hand'} aria-hidden="true">
+                  {#if opt.icon === 'calendar'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="3" y="5" width="18" height="16" rx="2.5" />
+                      <path d="M3 10h18" />
+                      <path d="M8 3v4M16 3v4" />
+                      <circle cx="8.5" cy="15" r="1" fill="currentColor" stroke="none" />
+                      <circle cx="12" cy="15" r="1" fill="currentColor" stroke="none" />
+                      <circle cx="15.5" cy="15" r="1" fill="currentColor" stroke="none" />
+                    </svg>
+                  {:else if opt.icon === 'clock'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M12 7v5.2l3.2 1.8" />
+                    </svg>
+                  {:else if opt.icon === 'bolt'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
+                    </svg>
+                  {:else if opt.icon === 'spark'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 2.5 13.6 8.2 19 9.5l-4.2 3.8 1.2 5.7L12 16.2 7.9 19l1.2-5.7L4.9 9.5l5.4-1.3L12 2.5z" />
+                    </svg>
+                  {:else if opt.icon === 'list'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M9 6h12M9 12h12M9 18h12" />
+                      <circle cx="4.5" cy="6" r="1.25" fill="currentColor" stroke="none" />
+                      <circle cx="4.5" cy="12" r="1.25" fill="currentColor" stroke="none" />
+                      <circle cx="4.5" cy="18" r="1.25" fill="currentColor" stroke="none" />
+                    </svg>
+                  {:else if opt.icon === 'repeat'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M17 2.5 20.5 6 17 9.5" />
+                      <path d="M4 12V9a5 5 0 0 1 5-5h11.5" />
+                      <path d="M7 21.5 3.5 18 7 14.5" />
+                      <path d="M20 12v3a5 5 0 0 1-5 5H3.5" />
+                    </svg>
+                  {:else if opt.icon === 'play'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M10 9.2v5.6L15.2 12 10 9.2z" fill="currentColor" stroke="none" />
+                    </svg>
+                  {:else if opt.icon === 'sun'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="4" />
+                      <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6" />
+                    </svg>
+                  {:else if opt.icon === 'moon'}
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M20 14.2A8.2 8.2 0 0 1 9.8 4 7.4 7.4 0 1 0 20 14.2z" />
+                    </svg>
+                  {:else}
+                    <!-- hand / manual default -->
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M8 13.2V6.2a1.6 1.6 0 0 1 3.2 0v5.4" />
+                      <path d="M11.2 11.4V4.3a1.6 1.6 0 0 1 3.2 0v7.1" />
+                      <path d="M14.4 10.8V5.8a1.6 1.6 0 0 1 3.2 0V14" />
+                      <path d="M17.6 13v-1.2a1.6 1.6 0 0 1 3.2 0V16a6.2 6.2 0 0 1-6.2 6.2h-1.4a7.2 7.2 0 0 1-5.8-2.9L5 15.7a1.85 1.85 0 0 1 2.8-2.4l1.4 1.2" />
+                    </svg>
+                  {/if}
+                </span>
+                <span class="dk-choice-card__text">
+                  <strong class="dk-choice-card__label">{opt.label}</strong>
+                  {#if opt.description}
+                    <span class="dk-choice-card__desc">{opt.description}</span>
+                  {/if}
+                </span>
+                <span class="dk-choice-card__check" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 13l4 4L19 7" />
+                  </svg>
+                </span>
+              </button>
+            {/each}
+          </div>
+        """
+        style """
+          .dk-choice-cards {
+            display: grid;
+            gap: 0.85rem;
+            grid-template-columns: 1fr;
+          }
+          @media (min-width: 560px) {
+            .dk-choice-cards--2 { grid-template-columns: 1fr 1fr; }
+            .dk-choice-cards--3 { grid-template-columns: 1fr 1fr 1fr; }
+            .dk-choice-cards--4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+          }
+          .dk-choice-card {
+            position: relative;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.95rem;
+            text-align: left;
+            padding: 1.05rem 1.15rem;
+            border-radius: 0.85rem;
+            border: 1px solid var(--dk-border, #2a2a38);
+            background:
+              linear-gradient(160deg, rgba(255, 255, 255, 0.035) 0%, transparent 50%),
+              rgba(18, 18, 26, 0.78);
+            color: var(--dk-text, #f4f5f7);
+            cursor: pointer;
+            font-family: inherit;
+            overflow: hidden;
+            transition:
+              border-color 0.16s ease,
+              background 0.16s ease,
+              box-shadow 0.2s ease,
+              transform 0.16s ease;
+          }
+          .dk-choice-card:hover {
+            border-color: rgba(255, 255, 255, 0.16);
+            background:
+              linear-gradient(160deg, rgba(255, 255, 255, 0.05) 0%, transparent 50%),
+              rgba(26, 26, 38, 0.95);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+          }
+          .dk-choice-card:focus-visible {
+            outline: 2px solid rgba(20, 135, 112, 0.55);
+            outline-offset: 2px;
+          }
+          .dk-choice-card--on {
+            border-color: rgba(20, 135, 112, 0.65);
+            background:
+              linear-gradient(145deg, rgba(20, 135, 112, 0.2) 0%, rgba(20, 135, 112, 0.06) 55%, transparent 100%),
+              rgba(14, 22, 20, 0.9);
+            box-shadow:
+              0 0 0 1px rgba(20, 135, 112, 0.28),
+              0 12px 30px rgba(20, 135, 112, 0.12);
+          }
+          .dk-choice-card--tile {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.85rem;
+            min-height: 9.5rem;
+            padding: 1.2rem 1.15rem 1.15rem;
+          }
+          .dk-choice-card__icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3rem;
+            height: 3rem;
+            flex-shrink: 0;
+            border-radius: 0.9rem;
+            background:
+              radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.12), transparent 55%),
+              rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--dk-text-muted, #9ca3af);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+          }
+          .dk-choice-card--tile .dk-choice-card__icon {
+            width: 3.35rem;
+            height: 3.35rem;
+            border-radius: 1rem;
+          }
+          .dk-choice-card--on .dk-choice-card__icon {
+            background:
+              radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.18), transparent 55%),
+              linear-gradient(145deg, rgba(31, 168, 138, 0.35), rgba(20, 135, 112, 0.18));
+            border-color: rgba(20, 135, 112, 0.45);
+            color: #5eead4;
+            box-shadow:
+              inset 0 1px 0 rgba(255, 255, 255, 0.12),
+              0 6px 16px rgba(20, 135, 112, 0.18);
+          }
+          .dk-choice-card__text {
+            display: flex;
+            flex-direction: column;
+            gap: 0.32rem;
+            min-width: 0;
+            padding-top: 0.15rem;
+            flex: 1;
+          }
+          .dk-choice-card--tile .dk-choice-card__text {
+            padding-top: 0;
+          }
+          .dk-choice-card__label {
+            font-size: 1.02rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            line-height: 1.25;
+          }
+          .dk-choice-card__desc {
+            font-size: 0.8rem;
+            line-height: 1.45;
+            color: var(--dk-text-muted, #9ca3af);
+            font-weight: 400;
+          }
+          .dk-choice-card__check {
+            position: absolute;
+            top: 0.7rem;
+            right: 0.7rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.35rem;
+            height: 1.35rem;
+            border-radius: 999px;
+            background: var(--dk-brand, #148770);
+            color: #fff;
+            opacity: 0;
+            transform: scale(0.7);
+            transition: opacity 0.15s ease, transform 0.15s ease;
+          }
+          .dk-choice-card--on .dk-choice-card__check {
+            opacity: 1;
+            transform: scale(1);
+          }
+        """
+
+      # ── Agent surface host ─────────────────────────────────────────────
+      # Collects data-veil-agent nodes for agents. Host DOM scan is template surface.
+      comp AgentSurface
+        props
+          poll_ms: Int = 0
+        template """
+          {#if true}
+          {@const publish = () => {
+            if (typeof document === 'undefined' || typeof window === 'undefined') return;
+            const surfaces = [];
+            document.querySelectorAll('[data-veil-agent]').forEach((el) => {
+              const raw = el.getAttribute('data-veil-agent');
+              if (!raw) return;
+              try {
+                const parsed = JSON.parse(raw);
+                surfaces.push({
+                  ...parsed,
+                  role: el.getAttribute('data-veil-role') || parsed.role,
+                  _dom: { tag: el.tagName.toLowerCase(), id: el.id || undefined },
+                });
+              } catch { /* ignore */ }
+            });
+            const payload = {
+              version: 1,
+              collectedAt: new Date().toISOString(),
+              path: window.location.pathname,
+              surfaces,
+            };
+            window.__veilAgentSurface = payload;
+            window.dispatchEvent(new CustomEvent('veil:agent-surface', { detail: payload }));
+          }}
+          {@const _ = (() => {
+            if (typeof document === 'undefined') return;
+            publish();
+            const mo = new MutationObserver(() => publish());
+            mo.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-veil-agent', 'data-veil-role'] });
+            return true;
+          })()}
+          <div
+            class="dk-agent-surface-host"
+            data-veil-role="agent-surface-host"
+            data-veil-agent={JSON.stringify({
+              version: 1,
+              role: 'agent-surface-host',
+              stock: {
+                component: 'AgentSurface',
+                purpose: 'Collects page agent contracts into window.__veilAgentSurface',
+                howTo: ['Read window.__veilAgentSurface after load or on veil:agent-surface'],
+                config: {},
+              },
+            })}
+            hidden
+            aria-hidden="true"
+          ></div>
+          {/if}
+        """
+
+      # ── Repeat editor (add/remove/reorder list items) ──────────────────
+      # Generic dynamic-list editor for forms with nested objects (endpoints,
+      # parameters, headers, etc.). Each item rendered via a snippet.
+      # Products supply the item template; RepeatEditor manages add/remove/collapse.
+      comp RepeatEditor
+        props
+          @bind
+          items: List<Json> = []
+          label: Str = "Items"
+          add_label: Str = "Add item"
+          empty_label: Str = "No items yet"
+          collapsible: Bool = true
+          # If set, collapsed items show this field as summary text.
+          summary_key: Str = "name"
+          max_items: Int = 0
+          item_template: Opt<Snippet>
+          on_add: Opt<fn()>
+          on_remove: Opt<fn(Int)>
+          agent: Json = {}
+        state
+          collapsed: List<Bool> = []
+        derived
+          can_add: Bool = max_items == 0 || items.length < max_items
+          veil_agent: Json = {version: 1, role: "repeat-editor", product: agent, runtime: {label: label, count: items.length, max_items: max_items}}
+        fn add_item()
+          if on_add != null
+            on_add()
+          else
+            items = items.concat([{}])
+          collapsed = collapsed.concat([false])
+        fn remove_item(index: Int)
+          if on_remove != null
+            on_remove(index)
+          else
+            items = items.toSpliced(index, 1)
+          collapsed = collapsed.toSpliced(index, 1)
+        fn toggle_collapse(index: Int)
+          collapsed = collapsed.with(index, !collapsed[index])
+        template """
+          {#if true}
+          {@const list = Array.isArray(items) ? items : []}
+          <div
+            class="dk-repeat-editor"
+            data-veil-role="repeat-editor"
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            <div class="dk-repeat-editor__header">
+              <span class="dk-repeat-editor__label">{label} ({list.length}{max_items > 0 ? `/${max_items}` : ''})</span>
+              {#if can_add}
+                <button type="button" class="btn-ghost dk-repeat-editor__add" onclick={add_item} data-veil-action="add">
+                  <span aria-hidden="true">+</span> {add_label}
+                </button>
+              {/if}
+            </div>
+            {#if list.length === 0}
+              <p class="dk-repeat-editor__empty">{empty_label}</p>
+            {:else}
+              <div class="dk-repeat-editor__list">
+                {#each list as item, i (i)}
+                  {@const isCollapsed = collapsible && collapsed[i]}
+                  {@const summaryText = item && summary_key && item[summary_key] ? String(item[summary_key]) : `Item ${i + 1}`}
+                  <div class="dk-repeat-editor__item" class:dk-repeat-editor__item--collapsed={isCollapsed}>
+                    <div class="dk-repeat-editor__item-header">
+                      {#if collapsible}
+                        <button type="button" class="btn-ghost dk-repeat-editor__toggle" onclick={() => toggle_collapse(i)} aria-label={isCollapsed ? 'Expand' : 'Collapse'}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: rotate({isCollapsed ? '0' : '90'}deg); transition: transform 0.15s;">
+                            <path d="M9 18l6-6-6-6" />
+                          </svg>
+                        </button>
+                      {/if}
+                      <span class="dk-repeat-editor__summary">{summaryText}</span>
+                      <button type="button" class="btn-ghost dk-repeat-editor__remove" onclick={() => remove_item(i)} aria-label="Remove item" data-veil-action="remove">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <path d="M18 6 6 18M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                    {#if !isCollapsed}
+                      <div class="dk-repeat-editor__item-body">
+                        {#if item_template}
+                          {@render item_template(item, i)}
+                        {:else}
+                          <pre class="dk-fallback">{JSON.stringify(item, null, 2)}</pre>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+          {/if}
+        """

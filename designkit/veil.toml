@@ -1,0 +1,22 @@
+# Public designkit stock package (ships with VEIL).
+# Layer vocabulary + CSS: layers/designkit.layer (system layer via `use designkit`).
+#
+# Consumers (product veil.toml):
+#   [dependencies]
+#   designkit = { path = "../path/to/veil/designkit" }
+#   # or, on a projects hub:
+#   designkit = { project = "designkit" }
+
+name = "designkit"
+
+[package]
+name = "designkit"
+veil = "main.veil"
+# Tokens/constructs: system layer in the VEIL monorepo (relative to this package).
+layer = "../layers/designkit.layer"
+
+[[targets]]
+name = "library"
+package = "main.veil"
+target = "typescript"
+output = "generated/library"
