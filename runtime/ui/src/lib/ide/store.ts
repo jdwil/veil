@@ -310,9 +310,10 @@ export function embedShellConfig(): EmbedShellConfig {
       attachPickerOnConnect: false,
     };
   }
-  // Runtime shell owns AgentDock — never mount a second agent rail in the IDE canvas.
+  // Runtime shell owns AgentDock + global theme — hide IDE-local chrome.
   if (isNativeShellIde()) {
     cfg.showAgentRail = false;
+    cfg.showThemeToggle = false;
   }
   return applyQueryOverrides(cfg);
 }
@@ -860,19 +861,12 @@ async function loadActiveFile(
   let prevParent: number | null = null;
   let prevCrumbs: { id: number | null; name: string }[] = [];
   let prevSel: string | null = null;
+  let prevGraphSnap: IrGraph | null = null;
   if (preserveNav) {
-    const unsubP = currentParent.subscribe((v) => {
-      prevParent = v;
-    });
-    unsubP();
-    const unsubB = breadcrumbs.subscribe((v) => {
-      prevCrumbs = v;
-    });
-    unsubB();
-    const unsubS = selectedNodeId.subscribe((v) => {
-      prevSel = v;
-    });
-    unsubS();
+    prevParent = get(currentParent);
+    prevCrumbs = get(breadcrumbs).slice();
+    prevSel = get(selectedNodeId);
+    prevGraphSnap = get(irGraph);
   }
 
   const modeHeaders = ideRequestHeaders();
@@ -977,23 +971,51 @@ async function loadActiveFile(
     .catch(() => {});
 
   if (preserveNav) {
-    const parentStill =
-      prevParent == null || data.nodes.some((n) => n.id === prevParent);
-    if (parentStill && prevParent != null) {
-      currentParent.set(prevParent);
+    // Restore drill-down parent (by id, then by name/kind from previous graph)
+    let restoredParent = prevParent;
+    if (prevParent != null && !data.nodes.some((n) => n.id === prevParent)) {
+      const oldP = prevGraphSnap?.nodes.find((n) => n.id === prevParent);
+      const match = oldP
+        ? data.nodes.find((n) => n.name === oldP.name && n.kind === oldP.kind)
+        : undefined;
+      restoredParent = match?.id ?? null;
+    }
+    if (restoredParent != null && data.nodes.some((n) => n.id === restoredParent)) {
+      currentParent.set(restoredParent);
+      const crumbs = prevCrumbs
+        .map((c) => {
+          if (c.id == null) return c;
+          if (data.nodes.some((n) => n.id === c.id)) return c;
+          const oldC = prevGraphSnap?.nodes.find((n) => n.id === c.id);
+          const hit = oldC
+            ? data.nodes.find((n) => n.name === oldC.name && n.kind === oldC.kind)
+            : undefined;
+          return hit ? { id: hit.id, name: hit.name } : null;
+        })
+        .filter((c): c is { id: number | null; name: string } => c != null);
       breadcrumbs.set(
-        prevCrumbs.filter(
-          (c) => c.id == null || data.nodes.some((n) => n.id === c.id)
-        )
+        crumbs.length
+          ? crumbs
+          : [{ id: restoredParent, name: data.nodes.find((n) => n.id === restoredParent)?.name ?? '' }]
       );
     } else {
       applyRootNavigation(data);
     }
-    if (prevSel && data.nodes.some((n) => String(n.id) === prevSel)) {
-      selectedNodeId.set(prevSel);
-    } else {
-      selectedNodeId.set(null);
+
+    // Restore selection for detail/main panel (id, then name+kind)
+    let restoredSel: string | null = null;
+    if (prevSel) {
+      if (data.nodes.some((n) => String(n.id) === prevSel)) {
+        restoredSel = prevSel;
+      } else {
+        const oldN = prevGraphSnap?.nodes.find((n) => String(n.id) === prevSel);
+        const hit = oldN
+          ? data.nodes.find((n) => n.name === oldN.name && n.kind === oldN.kind)
+          : undefined;
+        if (hit) restoredSel = String(hit.id);
+      }
     }
+    selectedNodeId.set(restoredSel);
     viewRevision.update((n) => n + 1);
     await checkPromise;
   } else {

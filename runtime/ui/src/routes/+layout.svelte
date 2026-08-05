@@ -13,7 +13,10 @@
         restoreSession,
       } from '$lib/agent';
       import StatusBar from '$lib/components/StatusBar.svelte';
-      import { toggleSidebarCollapsed } from '$lib/shellLayout';
+      import {
+        toggleSidebarCollapsed,
+        initShellTheme,
+      } from '$lib/shellLayout';
       let { children }: { children: Snippet } = $props();
 
       /** Full-bleed main when IDE is embedded (no page padding/scroll chrome). */
@@ -37,6 +40,7 @@
       }
 
       onMount(() => {
+        initShellTheme();
         restoreSession();
         // Open agent panel by default
         agentPanelOpen.set(true);

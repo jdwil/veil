@@ -485,7 +485,8 @@
 	.message-area {
 		flex: 1;
 		min-height: 0;
-		overflow-y: auto;
+		/* MessageList owns scrolling — avoid nested overflow fighting auto-scroll */
+		overflow: hidden;
 		display: flex;
 		flex-direction: column;
 	}
@@ -500,6 +501,15 @@
 	.msg-list :global(> *) {
 		flex: 1;
 		min-height: 0;
+	}
+
+	/* Breathing room between stacked tool-use cards */
+	.msg-list :global(.tool-call-card) {
+		margin-top: 0.2rem;
+		margin-bottom: 0.35rem;
+	}
+	.msg-list :global(.tool-call-card + .tool-call-card) {
+		margin-top: 0.45rem;
 	}
 
 	.empty-state {

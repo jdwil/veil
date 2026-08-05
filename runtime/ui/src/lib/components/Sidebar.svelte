@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { sidebarCollapsed, toggleSidebarCollapsed } from '$lib/shellLayout';
+	import {
+		sidebarCollapsed,
+		toggleSidebarCollapsed,
+		shellTheme,
+		toggleShellTheme,
+	} from '$lib/shellLayout';
 
 	let open_cr_count: number = $state(0);
 
@@ -87,6 +92,21 @@
 			</a>
 		{/each}
 	</nav>
+
+	<div class="sidebar__footer">
+		<button
+			type="button"
+			class="theme-btn"
+			onclick={() => toggleShellTheme()}
+			title={$shellTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+			aria-label="Toggle color theme"
+		>
+			<span class="theme-btn__icon" aria-hidden="true">{$shellTheme === 'dark' ? '☀' : '☾'}</span>
+			{#if !$sidebarCollapsed}
+				<span class="theme-btn__label">{$shellTheme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+			{/if}
+		</button>
+	</div>
 </aside>
 
 <style>
@@ -100,10 +120,56 @@
 		border-right: 1px solid var(--dk-border-soft, var(--border));
 		display: flex;
 		flex-direction: column;
-		padding: 12px 0 20px;
+		padding: 12px 0 12px;
 		overflow-x: hidden;
 		overflow-y: auto;
 		transition: width 200ms var(--dk-ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+	}
+
+	.sidebar nav {
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+
+	.sidebar__footer {
+		flex-shrink: 0;
+		padding: 10px 10px 4px;
+		border-top: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
+		margin-top: 8px;
+	}
+
+	.theme-btn {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.45rem 0.6rem;
+		border: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
+		border-radius: 8px;
+		background: transparent;
+		color: var(--dk-text-muted, #a3a3a3);
+		font-size: 0.8rem;
+		cursor: pointer;
+		transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+	}
+	.theme-btn:hover {
+		background: var(--dk-surface-2, #242424);
+		color: var(--dk-text, #e5e5e5);
+		border-color: var(--dk-brand, #737373);
+	}
+	.theme-btn__icon {
+		flex-shrink: 0;
+		width: 1.25rem;
+		text-align: center;
+	}
+	.theme-btn__label {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.sidebar--collapsed .theme-btn {
+		justify-content: center;
+		padding: 0.45rem;
 	}
 
 	.sidebar--collapsed {

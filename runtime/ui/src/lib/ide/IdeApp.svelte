@@ -171,6 +171,8 @@
   let activeLenses = $state<Set<string>>(new Set());
   /** Lens picker popover visibility. */
   let lensPickerOpen = $state(false);
+  /** Narrow top-bar overflow menu (agent pane wide → secondary controls collapse). */
+  let topBarMoreOpen = $state(false);
   /** Active projection result for native layout renderers (tree/flat). */
   let currentProjected = $state<ProjectResult | null>(null);
   /** Resolved layout for the current view — drives renderer dispatch. */
@@ -1446,89 +1448,134 @@
           </button>
         {/each}
       </div>
-      {#if shell.showOutline}
-        <OutlinePanel />
-      {/if}
-      {#if shell.showDiff}
-        <DiffPanel />
-      {/if}
-      {#if shell.showInfraToggle}
-        <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
-          <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
-          <span>Show infrastructure</span>
-        </label>
-      {/if}
-      {#if shell.showCriticalToggle}
-        {@const allLenses = collectAllLenses(get(presentationModel))}
-        {#if allLenses.length > 0}
-          <div class="lens-picker-wrapper" onpointerdown={(e) => e.stopPropagation()}>
-            <button
-              class="lens-picker-btn"
-              class:active={activeLenses.size > 0}
-              onclick={() => { lensPickerOpen = !lensPickerOpen; }}
-              title="Filter by review lens (LAY-009)"
-            >
-              🔍 Lenses
-              {#if activeLenses.size > 0}
-                <span class="lens-active-count">{activeLenses.size}</span>
-              {/if}
-            </button>
-            {#if lensPickerOpen}
-              <div class="lens-picker-popover" role="menu">
-                {#each allLenses as lens}
-                  {@const active = activeLenses.has(lens)}
-                  {@const count = countByLenses(get(irGraph) ?? { nodes: [], edges: [], next_id: 0 }, get(presentationModel), get(diagnostics), new Set([lens]))}
-                  <label class="lens-picker-item" role="menuitemcheckbox" aria-checked={active}>
-                    <input
-                      type="checkbox"
-                      checked={active}
-                      onchange={() => {
-                        const next = new Set(activeLenses);
-                        if (active) next.delete(lens);
-                        else next.add(lens);
-                        activeLenses = next;
-                        // Sync legacy showCriticalOnly for backward compat
-                        showCriticalOnly = next.has('critical');
-                        const g = get(irGraph); const p = get(currentParent);
-                        if (g) computeView(g, p, get(paletteConfig));
-                      }}
-                    />
-                    <span class="lens-name">{lens}</span>
-                    <span class="lens-count">{count}</span>
-                  </label>
-                {/each}
-                {#if activeLenses.size > 0}
-                  <button
-                    class="lens-clear-btn"
-                    onclick={() => {
-                      activeLenses = new Set();
-                      showCriticalOnly = false;
-                      lensPickerOpen = false;
-                      const g = get(irGraph); const p = get(currentParent);
-                      if (g) computeView(g, p, get(paletteConfig));
-                    }}
-                  >
-                    Clear all
-                  </button>
+      <div class="top-bar-actions">
+        <!-- Wide layout: secondary controls inline -->
+        <div class="top-bar-secondary">
+          {#if shell.showOutline}
+            <OutlinePanel />
+          {/if}
+          {#if shell.showDiff}
+            <DiffPanel />
+          {/if}
+          {#if shell.showInfraToggle}
+            <label class="layer-toggle" title="Layer-provided constructs (default: hidden). When shown, dimmed and labeled infra.">
+              <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); }} />
+              <span>Show infrastructure</span>
+            </label>
+          {/if}
+          {#if shell.showCriticalToggle}
+            {@const allLenses = collectAllLenses(get(presentationModel))}
+            {#if allLenses.length > 0}
+              <div class="lens-picker-wrapper" onpointerdown={(e) => e.stopPropagation()}>
+                <button
+                  class="lens-picker-btn"
+                  class:active={activeLenses.size > 0}
+                  onclick={() => { lensPickerOpen = !lensPickerOpen; }}
+                  title="Filter by review lens (LAY-009)"
+                >
+                  Lenses
+                  {#if activeLenses.size > 0}
+                    <span class="lens-active-count">{activeLenses.size}</span>
+                  {/if}
+                </button>
+                {#if lensPickerOpen}
+                  <div class="lens-picker-popover" role="menu">
+                    {#each allLenses as lens}
+                      {@const active = activeLenses.has(lens)}
+                      {@const count = countByLenses(get(irGraph) ?? { nodes: [], edges: [], next_id: 0 }, get(presentationModel), get(diagnostics), new Set([lens]))}
+                      <label class="lens-picker-item" role="menuitemcheckbox" aria-checked={active}>
+                        <input
+                          type="checkbox"
+                          checked={active}
+                          onchange={() => {
+                            const next = new Set(activeLenses);
+                            if (active) next.delete(lens);
+                            else next.add(lens);
+                            activeLenses = next;
+                            showCriticalOnly = next.has('critical');
+                            const g = get(irGraph); const p = get(currentParent);
+                            if (g) computeView(g, p, get(paletteConfig));
+                          }}
+                        />
+                        <span class="lens-name">{lens}</span>
+                        <span class="lens-count">{count}</span>
+                      </label>
+                    {/each}
+                    {#if activeLenses.size > 0}
+                      <button
+                        class="lens-clear-btn"
+                        onclick={() => {
+                          activeLenses = new Set();
+                          showCriticalOnly = false;
+                          lensPickerOpen = false;
+                          const g = get(irGraph); const p = get(currentParent);
+                          if (g) computeView(g, p, get(paletteConfig));
+                        }}
+                      >
+                        Clear all
+                      </button>
+                    {/if}
+                  </div>
                 {/if}
               </div>
+            {:else}
+              <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
+                <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
+                <span>Critical only</span>
+                <span class="critical-count">{criticalCountLabel()}</span>
+              </label>
             {/if}
-          </div>
-        {:else}
-          <!-- Fallback: simple critical toggle when no lenses declared -->
-          <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
-            <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
-            <span>Critical only</span>
-            <span class="critical-count">{criticalCountLabel()}</span>
-          </label>
-        {/if}
-      {/if}
-      <SessionStatus />
-      {#if shell.showThemeToggle}
-        <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
-          {theme === 'dark' ? '☀️' : '🌙'}
-        </button>
-      {/if}
+          {/if}
+          <SessionStatus />
+          {#if shell.showThemeToggle}
+            <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
+              {theme === 'dark' ? '☀' : '☾'}
+            </button>
+          {/if}
+        </div>
+        <!-- Narrow layout: collapse secondary into ⋯ menu (agent pane wide) -->
+        <div class="top-bar-more-wrap">
+          <SessionStatus compact />
+          <button
+            type="button"
+            class="top-bar-more-btn"
+            class:open={topBarMoreOpen}
+            title="More view options"
+            aria-expanded={topBarMoreOpen}
+            aria-haspopup="menu"
+            onclick={() => { topBarMoreOpen = !topBarMoreOpen; }}
+          >
+            ⋯
+          </button>
+          {#if topBarMoreOpen}
+            <div class="top-bar-more-menu" role="menu">
+              {#if shell.showOutline}
+                <div class="top-bar-more-item" role="none"><OutlinePanel /></div>
+              {/if}
+              {#if shell.showDiff}
+                <div class="top-bar-more-item" role="none"><DiffPanel /></div>
+              {/if}
+              {#if shell.showInfraToggle}
+                <label class="layer-toggle top-bar-more-item" role="menuitemcheckbox">
+                  <input type="checkbox" bind:checked={showLayerProvided} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p); topBarMoreOpen = false; }} />
+                  <span>Show infrastructure</span>
+                </label>
+              {/if}
+              {#if shell.showCriticalToggle}
+                <label class="layer-toggle top-bar-more-item" role="menuitemcheckbox">
+                  <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); topBarMoreOpen = false; }} />
+                  <span>Critical only</span>
+                </label>
+              {/if}
+              {#if shell.showThemeToggle}
+                <button type="button" class="top-bar-more-item top-bar-more-action" role="menuitem" onclick={() => { toggleTheme(); topBarMoreOpen = false; }}>
+                  {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -2023,11 +2070,95 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 20px;
-    background: var(--veil-surface-alt);
-    border-bottom: 1px solid var(--veil-border);
+    gap: 0.5rem;
+    padding: 10px 16px;
+    background: var(--veil-surface-alt, #1a1a1a);
+    border-bottom: 1px solid var(--veil-border, #2e2e2e);
     backdrop-filter: blur(12px);
     z-index: 10;
+    min-width: 0;
+    container-type: inline-size;
+    container-name: ide-top;
+  }
+
+  .top-bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+
+  .top-bar-secondary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: nowrap;
+  }
+
+  .top-bar-more-wrap {
+    display: none;
+    position: relative;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .top-bar-more-btn {
+    background: var(--dk-surface-2, #242424);
+    border: 1px solid var(--dk-border, #2e2e2e);
+    color: var(--dk-text, #e5e5e5);
+    border-radius: 6px;
+    width: 2rem;
+    height: 1.75rem;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .top-bar-more-btn:hover,
+  .top-bar-more-btn.open {
+    border-color: var(--dk-brand, #737373);
+  }
+
+  .top-bar-more-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 12rem;
+    max-width: min(18rem, 80vw);
+    padding: 0.4rem;
+    background: var(--dk-surface, #1a1a1a);
+    border: 1px solid var(--dk-border, #2e2e2e);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    z-index: 40;
+  }
+  .top-bar-more-item {
+    padding: 0.35rem 0.5rem;
+    border-radius: 6px;
+  }
+  .top-bar-more-action {
+    background: transparent;
+    border: none;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .top-bar-more-action:hover {
+    background: var(--dk-surface-2, #242424);
+  }
+
+  /* When agent pane steals width, collapse secondary controls into ⋯ */
+  @container ide-top (max-width: 920px) {
+    .top-bar-secondary {
+      display: none;
+    }
+    .top-bar-more-wrap {
+      display: flex;
+    }
   }
 
   .layer-toggle {
