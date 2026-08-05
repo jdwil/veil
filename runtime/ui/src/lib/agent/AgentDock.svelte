@@ -210,6 +210,62 @@
 	function handleSend(content: string, attachments?: File[]) {
 		agentSend(content, attachments);
 	}
+
+	/** Auto-scroll chat unless the user has scrolled up intentionally. */
+	let messageAreaEl: HTMLDivElement | null = $state(null);
+	let userPausedAutoScroll = $state(false);
+	let showJumpLatest = $state(false);
+
+	function onMessageAreaScroll() {
+		const el = messageAreaEl;
+		if (!el) return;
+		// Prefer the MessageList scroller if present
+		const scroller =
+			(el.querySelector('[role="log"]') as HTMLElement | null) ?? el;
+		const dist = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+		userPausedAutoScroll = dist > 40;
+		showJumpLatest = dist > 120;
+	}
+
+	function scrollChatToBottom() {
+		const el = messageAreaEl;
+		if (!el) return;
+		const scroller =
+			(el.querySelector('[role="log"]') as HTMLElement | null) ?? el;
+		scroller.scrollTop = scroller.scrollHeight;
+	}
+
+	function resumeChatAutoScroll() {
+		userPausedAutoScroll = false;
+		showJumpLatest = false;
+		requestAnimationFrame(() => scrollChatToBottom());
+	}
+
+	// Follow stream/tool updates unless paused
+	$effect(() => {
+		const msgs = $agentMessages;
+		const streaming = $agentIsStreaming;
+		const thinking = $agentIsThinking;
+		// Depend on nested content length for deltas
+		let fp = `${msgs.length}:${streaming}:${thinking}`;
+		for (const m of msgs) {
+			fp += `|${m.id}:${m.content?.length ?? 0}`;
+			for (const b of m.content ?? []) {
+				if (b.type === 'text' && 'text' in b) fp += (b as { text: string }).text.length;
+				if (b.type === 'tool_call' && 'toolCall' in b) {
+					const tc = (b as { toolCall: { arguments?: string; status?: string } }).toolCall;
+					fp += `${tc?.status ?? ''}:${(tc?.arguments ?? '').length}`;
+				}
+			}
+		}
+		void fp;
+		if (userPausedAutoScroll) return;
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				if (!userPausedAutoScroll) scrollChatToBottom();
+			});
+		});
+	});
 </script>
 
 {#if $agentPanelOpen}
