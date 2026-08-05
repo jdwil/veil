@@ -877,14 +877,12 @@ async function loadActiveFile(
       headers: { ...(init?.headers as Record<string, string> | undefined), ...modeHeaders },
     };
   };
-  const [irRes, srcRes, palRes, presRes, stubRes, filesRes, projRes] = await Promise.all([
+  // Critical path first: IR + source + files (paint IDE ASAP).
+  // Defer palette/presentation/stubs/project to a second wave.
+  const [irRes, srcRes, filesRes] = await Promise.all([
     fetchWithTimeout(API_URL(), withMode()),
     fetchWithTimeout(SOURCE_URL(), withMode()),
-    fetchWithTimeout(PALETTE_URL(), withMode()),
-    fetchWithTimeout(PRESENTATION_URL(), withMode()).catch(() => null),
-    fetchWithTimeout(STUBS_URL(), withMode()).catch(() => null),
     fetchWithTimeout(FILES_URL(), withMode()).catch(() => null),
-    fetchWithTimeout(PROJECT_URL(), withMode()).catch(() => null),
   ]);
   if (gen !== loadGeneration) return false;
 
@@ -897,6 +895,14 @@ async function loadActiveFile(
   }
   const data: IrGraph = await irRes.json();
   if (gen !== loadGeneration) return false;
+
+  // Fire secondary fetches without blocking first paint
+  const secondary = Promise.all([
+    fetchWithTimeout(PALETTE_URL(), withMode()).catch(() => null),
+    fetchWithTimeout(PRESENTATION_URL(), withMode()).catch(() => null),
+    fetchWithTimeout(STUBS_URL(), withMode()).catch(() => null),
+    fetchWithTimeout(PROJECT_URL(), withMode()).catch(() => null),
+  ]);
 
   // Detect changed nodes for flash animation (only on preserveNav / agent edits).
   if (preserveNav) {
@@ -916,10 +922,6 @@ async function loadActiveFile(
     selectedNodeId.set(null);
   }
 
-  if (stubRes && stubRes.ok) {
-    stubs.set(await stubRes.json());
-  }
-
   // Check: await when preserving nav (agent edit — need live error badge);
   // otherwise fire-and-forget so first paint isn't blocked on large packages.
   const checkPromise = fetchCheck();
@@ -929,23 +931,6 @@ async function loadActiveFile(
 
   if (srcRes.ok) {
     veilSource.set(await srcRes.text());
-  }
-
-  if (palRes.ok) {
-    let palette: PaletteEntry[] = await palRes.json();
-    // Embed shell: only constructs from configured layers (reaction → ['reaction']).
-    const shell = embedShellConfig();
-    if (shell.paletteLayers.length) {
-      palette = filterPaletteByLayers(palette, shell.paletteLayers);
-    }
-    paletteConfig.set(palette);
-    setPaletteStyles(palette);
-  }
-
-  if (presRes && presRes.ok) {
-    presentationModel.set(await presRes.json());
-  } else {
-    presentationModel.set(null);
   }
 
   if (filesRes && filesRes.ok) {
@@ -958,9 +943,44 @@ async function loadActiveFile(
     }
   }
 
-  if (projRes && projRes.ok) {
-    activeProject.set(await projRes.json());
-  }
+  // Secondary wave — does not block tree/canvas first paint
+  void secondary.then(async ([palRes, presRes, stubRes, projRes]) => {
+    if (gen !== loadGeneration) return;
+    if (stubRes && stubRes.ok) {
+      try {
+        stubs.set(await stubRes.json());
+      } catch {
+        /* ignore */
+      }
+    }
+    if (palRes && palRes.ok) {
+      try {
+        let palette: PaletteEntry[] = await palRes.json();
+        const shell = embedShellConfig();
+        if (shell.paletteLayers.length) {
+          palette = filterPaletteByLayers(palette, shell.paletteLayers);
+        }
+        paletteConfig.set(palette);
+        setPaletteStyles(palette);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (presRes && presRes.ok) {
+      try {
+        presentationModel.set(await presRes.json());
+      } catch {
+        presentationModel.set(null);
+      }
+    }
+    if (projRes && projRes.ok) {
+      try {
+        activeProject.set(await projRes.json());
+      } catch {
+        /* ignore */
+      }
+    }
+  });
 
   // Generated code is optional (can be slow); don't block UI
   void fetchWithTimeout(`${ideApiBase()}/generated`)
@@ -1029,11 +1049,17 @@ export async function fetchIr() {
   loading.set(true);
   error.set(null);
   try {
-    const hub = await fetchHubSnapshot();
-    // RTU-009: multi host without ?project= → leave loading false, page shows picker
-    if (hub.multi && !currentProjectParam()) {
-      loading.set(false);
-      return;
+    // Native shell always has a project slug — don't block paint on /api/projects.
+    const hasProject = !!currentProjectParam();
+    if (!hasProject) {
+      const hub = await fetchHubSnapshot();
+      // RTU-009: multi host without project → leave loading false, page shows picker
+      if (hub.multi && !currentProjectParam()) {
+        loading.set(false);
+        return;
+      }
+    } else {
+      void fetchHubSnapshot();
     }
     await loadActiveFile(gen);
   } catch (e) {
@@ -1041,7 +1067,7 @@ export async function fetchIr() {
       const msg =
         e instanceof Error
           ? e.name === 'AbortError'
-            ? `Timed out talking to API at ${ideApiBase()} — start veil-runtime (:8080) or veil serve --multi (:3001)?`
+            ? `Timed out talking to API at ${ideApiBase()} — is ProductHost running?`
             : e.message
           : 'Failed to fetch IR';
       error.set(msg);

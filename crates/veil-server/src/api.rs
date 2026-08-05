@@ -236,7 +236,21 @@ async fn project_scope_middleware(
         .map(|s| s.to_string());
 
     // Prefer durable session workspace when sessions are enabled.
+    // Fast path: hub already has a bound provider for this project — skip attach/S3.
     if crate::session::sessions_enabled() {
+        if multi.hub().has_open(&project) {
+            if let Some(ref sid) = session_hdr {
+                if let Some(h) = crate::session::SessionManager::global().get(sid) {
+                    h.touch_local();
+                    return crate::session::CURRENT_SESSION
+                        .scope(sid.clone(), CURRENT_PROJECT.scope(project, next.run(req)))
+                        .await;
+                }
+            }
+            // Session header missing/stale but project already open — serve warm cache
+            return CURRENT_PROJECT.scope(project, next.run(req)).await;
+        }
+
         let mgr = crate::session::SessionManager::global();
         let handle = if let Some(ref sid) = session_hdr {
             mgr.attach(sid)

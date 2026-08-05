@@ -218,6 +218,11 @@ impl ProjectsHub {
             .unwrap()
             .insert(name.to_string(), provider);
     }
+
+    /// True if a session is already cached for this project (hot path).
+    pub fn has_open(&self, name: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(name)
+    }
 }
 
 /// SourceProvider that routes to the session named in [`CURRENT_PROJECT`].

@@ -145,7 +145,8 @@ impl SessionManager {
         {
             let map = self.handles.lock().unwrap();
             if let Some(h) = map.get(session_id) {
-                let _ = touch_session(session_id);
+                // In-memory only — never shell out to AWS on the hot path
+                h.touch_local();
                 return Ok(h.clone());
             }
         }
@@ -213,7 +214,7 @@ impl SessionManager {
                 (m.draft_mode, std::cmp::Reverse(parse_ts(&m.updated_at)))
             });
             if let Some(h) = candidates.into_iter().next() {
-                let _ = touch_session(&h.session_id());
+                h.touch_local();
                 return Ok(h);
             }
         }
@@ -496,6 +497,19 @@ impl SessionHandle {
         self.meta.lock().unwrap().revision
     }
 
+    /// Cheap activity bump (no AWS). Durable flush is debounced separately.
+    pub fn touch_local(&self) {
+        let mut m = self.meta.lock().unwrap();
+        m.last_activity_at = chrono_now();
+        // Do not put_session_meta here — that is multi-second AWS CLI on every /ir hit.
+    }
+
+    /// Persist META to DDB (slow). Call sparingly (create, bump_revision, idle flush).
+    pub fn flush_meta(&self) {
+        let snap = self.meta.lock().unwrap().clone();
+        let _ = put_session_meta(&snap);
+    }
+
     pub fn bump_revision(&self, path: &str, etag: Option<String>) -> u64 {
         let mut m = self.meta.lock().unwrap();
         m.revision = m.revision.saturating_add(1);
@@ -508,7 +522,8 @@ impl SessionHandle {
         let rev = m.revision;
         let snap = m.clone();
         drop(m);
-        let _ = put_session_meta(&snap);
+        // Debounced durable flush (not every keystroke / tool write)
+        schedule_meta_flush(snap);
         rev
     }
 
@@ -521,7 +536,7 @@ impl SessionHandle {
         m.last_activity_at = chrono_now();
         let snap = m.clone();
         drop(m);
-        let _ = put_session_meta(&snap);
+        schedule_meta_flush(snap);
     }
 
     pub fn etag_for(&self, path: &str) -> Option<String> {
@@ -590,6 +605,59 @@ pub fn open_s3_project_at(
 /// Request-scoped coding session id (HTTP header `X-Veil-Session-Id`).
 tokio::task_local! {
     pub static CURRENT_SESSION: String;
+}
+
+/// Debounce DDB META puts — AWS CLI + SSO is multi-second and was on every IDE request.
+fn schedule_meta_flush(meta: SessionMeta) {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    struct Slot {
+        pending: Option<SessionMeta>,
+        last_flush: Instant,
+        thread_started: bool,
+    }
+    static SLOT: std::sync::OnceLock<Mutex<Slot>> = std::sync::OnceLock::new();
+    let slot = SLOT.get_or_init(|| {
+        Mutex::new(Slot {
+            pending: None,
+            last_flush: Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .unwrap_or_else(Instant::now),
+            thread_started: false,
+        })
+    });
+    let mut g = match slot.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    g.pending = Some(meta);
+    if !g.thread_started {
+        g.thread_started = true;
+        drop(g);
+        let _ = std::thread::Builder::new()
+            .name("veil-session-meta-flush".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let to_write = {
+                    let mut g = match slot.lock() {
+                        Ok(g) => g,
+                        Err(_) => continue,
+                    };
+                    // Flush at most every 15s unless process is idle-ish
+                    if g.last_flush.elapsed() < Duration::from_secs(15) {
+                        continue;
+                    }
+                    g.pending.take()
+                };
+                if let Some(m) = to_write {
+                    if put_session_meta(&m).is_ok() {
+                        if let Ok(mut g) = slot.lock() {
+                            g.last_flush = Instant::now();
+                        }
+                    }
+                }
+            });
+    }
 }
 
 pub fn current_session_id() -> Option<String> {
