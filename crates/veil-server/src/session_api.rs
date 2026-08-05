@@ -68,17 +68,22 @@ async fn create_session(Json(body): Json<CreateBody>) -> axum::response::Respons
         );
     }
     let mgr = SessionManager::global();
-    match mgr.create_with_opts(
-        body.slug.trim(),
-        body.branch.as_deref(),
-        body.draft.unwrap_or(false),
-    ) {
+    let slug = body.slug.trim();
+    let draft = body.draft.unwrap_or(false);
+    // Non-draft: sticky get-or-create (warm workdir, no duplicate S3 syncs)
+    let result = if !draft && body.branch.is_none() {
+        mgr.get_or_create_default(slug)
+    } else {
+        mgr.create_with_opts(slug, body.branch.as_deref(), draft)
+    };
+    match result {
         Ok(h) => {
             let meta = h.snapshot_meta();
             json_ok(json!({
                 "ok": true,
                 "session": meta,
                 "work_dir": h.work_dir.to_string_lossy(),
+                "reused": !draft,
             }))
         }
         Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),

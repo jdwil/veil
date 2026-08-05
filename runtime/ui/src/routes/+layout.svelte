@@ -108,33 +108,41 @@
     <style>
       .shell {
         display: flex;
+        flex-direction: row;
+        align-items: stretch;
         height: 100vh;
         width: 100%;
         overflow: hidden;
         background: transparent;
       }
+      /* Main column: grows/shrinks as AgentDock width changes */
       .content {
-        flex: 1 1 auto;
+        flex: 1 1 0%;
         min-width: 0;
-        width: 0; /* force flex item to respect sibling agent dock width */
+        max-width: 100%;
         display: flex;
         flex-direction: column;
         overflow: hidden;
       }
       main.shell-main {
-        flex: 1;
+        flex: 1 1 auto;
         overflow-y: auto;
         max-width: none;
         margin: 0;
         padding: 1.75rem 1.75rem 2rem;
         animation: none;
         min-height: 0;
+        min-width: 0;
       }
       main.shell-main--ide {
         overflow: hidden;
         padding: 0;
         display: flex;
         flex-direction: column;
-        position: relative; /* native IdeApp fills this box */
+        flex: 1 1 auto;
+        min-height: 0;
+        min-width: 0;
+        /* flex child IdeApp fills — avoid absolute overlay that ignores sibling dock */
+        position: relative;
       }
     </style>

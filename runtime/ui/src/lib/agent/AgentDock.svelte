@@ -335,17 +335,21 @@
 
 <style>
 	.agent-dock {
+		/* Flex sibling of .content — must NOT overlay the IDE */
 		position: relative;
-		height: 100vh;
+		height: 100%;
+		max-height: 100vh;
 		display: flex;
 		flex-direction: column;
 		flex: 0 0 auto;
+		flex-shrink: 0;
 		min-width: 0;
+		/* width set inline; grow/shrink only via resize handle */
 		background: var(--dk-surface, #1a1a1a);
 		border-left: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
-		z-index: 100;
-		box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
-		animation: slide-in 200ms var(--dk-ease-out, cubic-bezier(0.16, 1, 0.3, 1)) both;
+		z-index: 2; /* above content chrome only, not a full-screen overlay */
+		/* no heavy shadow — reads as a panel, not a modal over the IDE */
+		box-shadow: none;
 	}
 
 	.agent-dock.resizing {
@@ -365,16 +369,7 @@
 		cursor: col-resize !important;
 	}
 
-	@keyframes slide-in {
-		from {
-			transform: translateX(100%);
-			opacity: 0;
-		}
-		to {
-			transform: translateX(0);
-			opacity: 1;
-		}
-	}
+	/* No slide-in translate — that painted over the IDE and felt like a cover */
 
 	.resize-handle {
 		position: absolute;

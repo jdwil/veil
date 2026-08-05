@@ -75,6 +75,12 @@ fn workspace_root(slug: &str) -> PathBuf {
     base.join(slug)
 }
 
+fn repo_id_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 /// Resolve repo UUID for a project slug.
 pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
     // Explicit map: relay=cfb3…,foo=…
@@ -86,6 +92,12 @@ pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
                     return Ok(v.trim().to_string());
                 }
             }
+        }
+    }
+    // Process-local cache (DDB scan is expensive on every IDE open)
+    if let Ok(guard) = repo_id_cache().lock() {
+        if let Some(id) = guard.get(slug) {
+            return Ok(id.clone());
         }
     }
     // DDB scan META rows for slug in JSON data
@@ -144,7 +156,11 @@ pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
                 .unwrap_or("");
             if s == slug {
                 if let Some(id) = pk.strip_prefix("REPO#") {
-                    return Ok(id.to_string());
+                    let id = id.to_string();
+                    if let Ok(mut guard) = repo_id_cache().lock() {
+                        guard.insert(slug.to_string(), id.clone());
+                    }
+                    return Ok(id);
                 }
             }
         }
@@ -386,7 +402,12 @@ fn put_file_s3(
 pub fn open_s3_project(slug: &str, show_core_layers: bool) -> Result<Arc<S3WorkspaceProvider>, String> {
     let repo_id = resolve_repo_id(slug)?;
     let work = workspace_root(slug);
-    materialize_repo(&repo_id, &work)?;
+    // Prefer incremental sync on open (fast path when workdir already warm)
+    if work.join("veil.toml").is_file() || walkdir_has_veil(&work) {
+        let _ = materialize_repo_incremental(&repo_id, &work);
+    } else {
+        materialize_repo_incremental(&repo_id, &work)?;
+    }
 
     let paths = collect_project_files(&work, show_core_layers).map_err(|e| {
         format!("S3 workspace {slug} has no packages after materialize: {e}")

@@ -99,14 +99,14 @@
   function statusColor(status: string): string {
     switch (status) {
       case 'running':
-        return '#10b981';
+        return '#a3a3a3'; /* running — light gray */
       case 'starting':
       case 'generating':
-        return '#f59e0b';
+        return '#737373'; /* mid gray */
       case 'error':
-        return '#ef4444';
+        return '#525252'; /* dark gray (still distinct via title) */
       default:
-        return '#6b7280';
+        return '#404040';
     }
   }
 
@@ -233,14 +233,16 @@
 {/if}
 
 <style>
+  /* Grayscale designkit tokens — match shell / AgentDock (no blue-gray) */
   .dev-toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 4px 12px;
-    background: var(--veil-surface, #1e1e2e);
-    border-bottom: 1px solid var(--veil-border, #333);
+    background: var(--dk-surface, #1a1a1a);
+    border-bottom: 1px solid var(--dk-border, #2e2e2e);
     font-size: 12px;
+    color: var(--dk-text, #e5e5e5);
   }
 
   .dev-controls {
@@ -251,9 +253,9 @@
   }
 
   .dev-target-select {
-    background: var(--veil-input-bg, #2a2a3e);
-    color: var(--veil-text, #e2e8f0);
-    border: 1px solid var(--veil-border, #444);
+    background: var(--dk-surface-2, #242424);
+    color: var(--dk-text, #e5e5e5);
+    border: 1px solid var(--dk-border, #2e2e2e);
     border-radius: 4px;
     padding: 2px 6px;
     font-size: 11px;
@@ -268,9 +270,9 @@
   }
 
   .dev-btn {
-    background: var(--veil-input-bg, #2a2a3e);
-    color: var(--veil-text, #e2e8f0);
-    border: 1px solid var(--veil-border, #444);
+    background: var(--dk-surface-2, #242424);
+    color: var(--dk-text, #e5e5e5);
+    border: 1px solid var(--dk-border, #2e2e2e);
     border-radius: 4px;
     padding: 2px 8px;
     font-size: 12px;
@@ -279,41 +281,45 @@
   }
 
   .dev-btn:hover {
-    background: var(--veil-accent-hover, #3a3a5e);
+    background: var(--dk-surface-3, #2e2e2e);
+    border-color: var(--dk-brand, #737373);
   }
 
   .dev-play {
-    color: #10b981;
+    color: #a3a3a3;
   }
 
   .dev-stop {
-    color: #ef4444;
+    color: #a3a3a3;
   }
 
   .dev-logs-btn.active {
-    background: var(--veil-accent-hover, #3a3a5e);
-    border-color: var(--veil-accent, #60a5fa);
+    background: var(--dk-surface-3, #2e2e2e);
+    border-color: var(--dk-brand, #737373);
+    color: var(--dk-text, #e5e5e5);
   }
 
   .dev-port-link {
     font-size: 10px;
-    color: #60a5fa;
+    color: var(--dk-brand-light, #a3a3a3);
     text-decoration: none;
     font-family: monospace;
   }
 
   .dev-port-link:hover {
     text-decoration: underline;
+    color: var(--dk-text, #e5e5e5);
   }
 
   .dev-attached-badge {
     font-size: 9px;
     margin-right: 2px;
+    color: var(--dk-text-muted, #737373);
   }
 
   .dev-error {
     font-size: 10px;
-    color: #f87171;
+    color: #d4d4d4;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -321,16 +327,16 @@
   }
 
   .dev-logs-panel {
-    position: fixed;
+    position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
     height: 200px;
-    background: var(--veil-surface, #1a1a2e);
-    border-top: 1px solid var(--veil-border, #333);
+    background: var(--dk-surface, #1a1a1a);
+    border-top: 1px solid var(--dk-border, #2e2e2e);
     display: flex;
     flex-direction: column;
-    z-index: 100;
+    z-index: 20;
   }
 
   .dev-logs-header {
@@ -338,10 +344,10 @@
     align-items: center;
     gap: 8px;
     padding: 4px 12px;
-    background: var(--veil-input-bg, #2a2a3e);
-    border-bottom: 1px solid var(--veil-border, #333);
+    background: var(--dk-surface-2, #242424);
+    border-bottom: 1px solid var(--dk-border, #2e2e2e);
     font-size: 11px;
-    color: var(--veil-text-dim, #94a3b8);
+    color: var(--dk-text-muted, #a3a3a3);
   }
 
   .dev-logs-body {
@@ -354,13 +360,13 @@
   }
 
   .dev-log-line {
-    color: var(--veil-text-secondary, #cbd5e1);
+    color: var(--dk-text, #e5e5e5);
     white-space: pre-wrap;
     word-break: break-all;
   }
 
   .dev-log-line.dim {
-    color: var(--veil-text-faint, #64748b);
+    color: var(--dk-text-muted, #737373);
     font-style: italic;
   }
 </style>

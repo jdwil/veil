@@ -106,8 +106,8 @@ impl SessionManager {
             format!("repos/{repo_id}/{branch}/")
         };
 
-        // Materialize once from branch tree (drafts start as a copy of branch)
-        materialize_repo_to(&repo_id, &work_dir, MaterializePolicy::SyncDelete)?;
+        // Materialize once from branch tree (incremental — full --delete only on explicit reset)
+        materialize_repo_to(&repo_id, &work_dir, MaterializePolicy::SyncIncremental)?;
 
         let now = chrono_now();
         let meta = SessionMeta {
@@ -161,6 +161,7 @@ impl SessionManager {
             );
         }
         let work_dir = session_work_dir(&meta.user_id, &meta.session_id, &meta.slug);
+        // Warm workdir: skip S3 entirely when already materialized (huge load win)
         if !work_dir.join("veil.toml").is_file() && !has_veil_file(&work_dir) {
             materialize_repo_to(&meta.repo_id, &work_dir, MaterializePolicy::SyncIncremental)?;
         }

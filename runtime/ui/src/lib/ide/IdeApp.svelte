@@ -519,11 +519,13 @@
       void computeView(graph, parent, get(paletteConfig));
     });
 
-    void fetchIr();
+    // Session first (sets X-Veil-Session-Id), then IR — avoids a cold full materialize on /ir
     const stopSse = startRevisionWatch();
-    // Durable coding session (S3/DDB) for this project
-    const proj = currentProjectParam();
-    if (proj) void ensureCodingSession(proj);
+    const proj = currentProjectParam() || (project || '').trim();
+    void (async () => {
+      if (proj) await ensureCodingSession(proj);
+      await fetchIr();
+    })();
 
     return () => {
       unsubParent();
@@ -1872,11 +1874,15 @@
 
 <style>
   .viewer-container {
-    width: 100vw;
-    height: 100vh;
+    /* Fill parent flex region only — never 100vw (that covered AgentDock) */
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
-    background: var(--veil-bg);
+    background: var(--veil-bg, #0f0f0f);
+    overflow: hidden;
   }
 
   /* Flow composer: fill viewport — palette | canvas | agent only */

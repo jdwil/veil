@@ -416,64 +416,67 @@ function applySessionPayload(data: {
 }
 
 /** Ensure a durable session for the current project (POST /api/sessions). */
+/** In-flight ensure — coalesce concurrent IDE + agent opens. */
+let ensureInflight: Promise<string | null> | null = null;
+
 export async function ensureCodingSession(slug?: string | null): Promise<string | null> {
   const project = slug || currentProjectParam();
   if (!project) return getCodingSessionId();
-  sessionSaveState.set('ensuring');
+
+  // Fast path: already bound for this slug
   const existing = getCodingSessionId();
-  if (existing) {
+  const meta = get(codingSessionMeta);
+  if (existing && meta?.slug === project && meta.session_id === existing) {
+    sessionSaveState.set('ready');
+    return existing;
+  }
+
+  if (ensureInflight) return ensureInflight;
+
+  ensureInflight = (async () => {
+    sessionSaveState.set('ensuring');
     try {
-      const res = await fetch(`${hubApiBase()}/sessions/${encodeURIComponent(existing)}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.session?.slug === project) {
-          applySessionPayload(data);
-          return existing;
+      if (existing) {
+        try {
+          const res = await fetch(
+            `${hubApiBase()}/sessions/${encodeURIComponent(existing)}/attach`,
+            { method: 'POST' },
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.session?.slug === project) {
+              applySessionPayload(data);
+              return existing;
+            }
+          }
+        } catch {
+          /* create below */
         }
       }
-    } catch {
-      /* recreate */
-    }
-  }
-  try {
-    // Prefer attach of sticky server default via open project path:
-    // first try list then create
-    const listRes = await fetch(`${hubApiBase()}/sessions`);
-    if (listRes.ok) {
-      const list = await listRes.json();
-      const match = (list?.sessions || []).find(
-        (s: { slug?: string; draft_mode?: boolean }) => s.slug === project && !s.draft_mode,
-      );
-      if (match?.session_id) {
-        const att = await fetch(
-          `${hubApiBase()}/sessions/${encodeURIComponent(match.session_id)}/attach`,
-          { method: 'POST' },
-        );
-        if (att.ok) {
-          const data = await att.json();
-          applySessionPayload(data);
-          return match.session_id as string;
-        }
+      // Create (server sticky may still re-use) — avoid listing full DDB when possible
+      const res = await fetch(`${hubApiBase()}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: project }),
+      });
+      if (!res.ok) {
+        sessionSaveState.set('error');
+        sessionSaveDetail.set(`session create failed (${res.status})`);
+        return getCodingSessionId();
       }
-    }
-    const res = await fetch(`${hubApiBase()}/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug: project }),
-    });
-    if (!res.ok) {
+      const data = await res.json();
+      applySessionPayload(data);
+      return (data?.session?.session_id as string) || null;
+    } catch (e) {
       sessionSaveState.set('error');
-      sessionSaveDetail.set(`session create failed (${res.status})`);
+      sessionSaveDetail.set(e instanceof Error ? e.message : 'session error');
       return getCodingSessionId();
+    } finally {
+      ensureInflight = null;
     }
-    const data = await res.json();
-    applySessionPayload(data);
-    return (data?.session?.session_id as string) || null;
-  } catch (e) {
-    sessionSaveState.set('error');
-    sessionSaveDetail.set(e instanceof Error ? e.message : 'session error');
-    return getCodingSessionId();
-  }
+  })();
+
+  return ensureInflight;
 }
 
 /** Headers for IDE API calls (mode + layer scope for palette / write locks). */
