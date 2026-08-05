@@ -334,6 +334,106 @@ fn mcp_tools() -> Vec<Value> {
                 "required": ["name"]
             }
         }),
+        // Durable session workspace tools (path-jailed, S3 write-through)
+        json!({
+            "name": "ws_list",
+            "description": "List files under the durable session workspace (full tree, not only serve-set packages). Paths relative to project root.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative directory (default '')" },
+                    "max": { "type": "integer", "description": "Max entries (default 500)" },
+                    "session_id": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "ws_read",
+            "description": "Read a file from the session workspace (local hot checkout; no S3 GET).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "max_bytes": { "type": "integer" },
+                    "session_id": { "type": "string" }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "ws_write",
+            "description": "Write a file in the session workspace and durable write-through to S3. Prefer ws_str_replace for small edits.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "content": { "type": "string" },
+                    "if_match": { "type": "string", "description": "Optional etag for CAS" },
+                    "session_id": { "type": "string" }
+                },
+                "required": ["path", "content"]
+            }
+        }),
+        json!({
+            "name": "ws_str_replace",
+            "description": "Replace a unique string in a workspace file (agent-friendly sed). Fails if not unique. Write-through to S3.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "old": { "type": "string" },
+                    "new": { "type": "string" },
+                    "if_match": { "type": "string" },
+                    "session_id": { "type": "string" }
+                },
+                "required": ["path", "old", "new"]
+            }
+        }),
+        json!({
+            "name": "ws_grep",
+            "description": "Regex search across the session workspace (local only; efficient).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "path": { "type": "string", "description": "Optional path glob filter" },
+                    "max_matches": { "type": "integer" },
+                    "session_id": { "type": "string" }
+                },
+                "required": ["pattern"]
+            }
+        }),
+        json!({
+            "name": "ws_rm",
+            "description": "Remove a file from the session workspace and S3.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "session_id": { "type": "string" }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "ws_pull",
+            "description": "Incremental pull from S3 into the session workspace (no --delete).",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "session_id": { "type": "string" } },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "ws_reset",
+            "description": "Hard reset session workspace from S3 (sync --delete). Discards local-only files.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "session_id": { "type": "string" } },
+                "required": []
+            }
+        }),
         // Runtime observability (AGT-020–028)
         json!({
             "name": "dev_status",
@@ -736,6 +836,11 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
     tool_name: &str,
     arguments: &Value,
 ) -> Result<String, String> {
+    // Workspace tools (durable session)
+    if tool_name.starts_with("ws_") {
+        return dispatch_ws_tool(tool_name, arguments).await;
+    }
+
     // Runtime observability tools need project_root only (no active source).
     let proj = crate::provider::hub::CURRENT_PROJECT
         .try_with(|n| n.clone())
@@ -1031,6 +1136,133 @@ async fn dispatch_wiki_tool(tool_name: &str, arguments: &Value) -> Result<String
 }
 
 /// Axum handler for `POST /api/mcp` — MCP Streamable HTTP transport.
+async fn resolve_session_for_ws(
+    arguments: &Value,
+) -> Result<std::sync::Arc<crate::session::SessionHandle>, String> {
+    use crate::session::SessionManager;
+    if let Some(sid) = arguments
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return SessionManager::global().attach(sid);
+    }
+    if let Ok(sid) = crate::session::CURRENT_SESSION.try_with(|s| s.clone()) {
+        return SessionManager::global().attach(&sid);
+    }
+    let slug = crate::provider::hub::CURRENT_PROJECT
+        .try_with(|n| n.clone())
+        .map_err(|_| {
+            "ws_* tools need session_id, X-Veil-Session-Id, or project scope".to_string()
+        })?;
+    SessionManager::global().get_or_create_default(&slug)
+}
+
+async fn dispatch_ws_tool(tool_name: &str, arguments: &Value) -> Result<String, String> {
+    use crate::session::WorkspaceFs;
+    let h = resolve_session_for_ws(arguments).await?;
+    match tool_name {
+        "ws_list" => {
+            let path = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let max = arguments
+                .get("max")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500) as usize;
+            let files = h.fs.list(path, max)?;
+            Ok(serde_json::to_string_pretty(&serde_json::json!({ "files": files }))
+                .unwrap_or_default())
+        }
+        "ws_read" => {
+            let path = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_read requires path".to_string())?;
+            let max = arguments
+                .get("max_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200_000) as usize;
+            let content = h.fs.read(path, max)?;
+            Ok(content)
+        }
+        "ws_write" => {
+            let path = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_write requires path".to_string())?;
+            let content = arguments
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_write requires content".to_string())?;
+            let if_match = arguments.get("if_match").and_then(|v| v.as_str());
+            let r = h.fs.write(path, content, if_match)?;
+            let rev = h.bump_revision(path, r.etag.clone());
+            crate::revision::bus().publish(r.bytes, path, "ws_write");
+            Ok(format!(
+                "wrote {} ({} bytes) revision={rev} etag={}",
+                r.path,
+                r.bytes,
+                r.etag.unwrap_or_default()
+            ))
+        }
+        "ws_str_replace" => {
+            let path = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_str_replace requires path".to_string())?;
+            let old = arguments
+                .get("old")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_str_replace requires old".to_string())?;
+            let new = arguments
+                .get("new")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_str_replace requires new".to_string())?;
+            let if_match = arguments.get("if_match").and_then(|v| v.as_str());
+            let r = h.fs.str_replace(path, old, new, if_match)?;
+            let rev = h.bump_revision(path, r.etag.clone());
+            crate::revision::bus().publish(r.bytes, path, "ws_str_replace");
+            Ok(format!(
+                "replaced in {} ({} bytes) revision={rev}",
+                r.path, r.bytes
+            ))
+        }
+        "ws_grep" => {
+            let pattern = arguments
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_grep requires pattern".to_string())?;
+            let path = arguments.get("path").and_then(|v| v.as_str());
+            let max = arguments
+                .get("max_matches")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50) as usize;
+            let hits = h.fs.grep(pattern, path, max)?;
+            Ok(serde_json::to_string_pretty(&hits).unwrap_or_default())
+        }
+        "ws_rm" => {
+            let path = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "ws_rm requires path".to_string())?;
+            h.fs.rm(path)?;
+            h.bump_revision(path, None);
+            Ok(format!("removed {path}"))
+        }
+        "ws_pull" => {
+            h.pull_remote()?;
+            Ok("pull_remote ok".into())
+        }
+        "ws_reset" => {
+            h.reset_to_remote()?;
+            Ok("reset_to_remote ok".into())
+        }
+        other => Err(format!("unknown workspace tool: {other}")),
+    }
+}
+
 ///
 /// Accepts JSON-RPC 2.0 requests (single or batch) and returns JSON responses.
 pub async fn post_mcp<P: SourceProvider>(

@@ -23,6 +23,8 @@ reqwest.workspace = true
 futures-util = "0.3"
 toml.workspace = true
 notify.workspace = true
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
 
 # Mind Palace (optional wiki tools) — https://github.com/jdwil/mind-palace
 mind-palace = { git = "https://github.com/jdwil/mind-palace" }

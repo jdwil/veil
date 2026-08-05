@@ -3,6 +3,7 @@
 pub mod filesystem;
 pub mod hub;
 pub mod remote;
+pub mod s3_workspace;
 
 use async_trait::async_trait;
 use veil_ir::LayerRegistry;

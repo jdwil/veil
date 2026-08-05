@@ -41,6 +41,9 @@ struct ChatRequest {
     /// Runtime UI sends this when on `/projects/{id}` or IDE embed.
     #[serde(default)]
     project: Option<String>,
+    /// Durable coding/agent session id (DDB SESSION#…). JSON: `sessionId`.
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +123,47 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
     // Scope dual-loop IDE tools (list_files, read_source, …) to the UI project.
     // Prefer explicit ChatRequest.project; fall back to system-prompt context lines.
     let project_scope = resolve_chat_project(&req);
+    let coding_session = req.session_id.clone().filter(|s| !s.is_empty());
+
+    // Ensure durable session when project known
+    let coding_session = if coding_session.is_none() {
+        if let Some(ref slug) = project_scope {
+            if crate::session::sessions_enabled() {
+                crate::session::SessionManager::global()
+                    .get_or_create_default(slug)
+                    .ok()
+                    .map(|h| h.session_id())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        coding_session
+    };
+
+    // Persist user turn
+    if let Some(ref sid) = coding_session {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .to_string();
+        let _ = crate::session::append_turn(
+            sid,
+            &crate::session::SessionTurn {
+                turn_id: format!("u_{}", short_id()),
+                role: "user".into(),
+                content: extract_prompt(&req),
+                tool_calls: vec![],
+                project: project_scope.clone(),
+                active_file: None,
+                ts,
+                backend: None,
+            },
+        );
+    }
 
     let message_id = format!("msg_{}", short_id());
     let model = req.model.unwrap_or_else(|| "veil-agent".into());
@@ -135,6 +179,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
             "model": model,
             "provider": provider_name,
             "project": project_scope,
+            "sessionId": coding_session,
         }),
     )
     .await
@@ -425,6 +470,28 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
                 .and_then(|r| r.error.clone()),
         };
         crate::chat_log::log_turn(&entry).await;
+
+        // Durable conversation turn (DDB) for resume across crashes/restarts.
+        if let Some(ref sid) = coding_session {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                .to_string();
+            let _ = crate::session::append_turn(
+                sid,
+                &crate::session::SessionTurn {
+                    turn_id: message_id.clone(),
+                    role: "assistant".into(),
+                    content: full_text.clone(),
+                    tool_calls: tools.clone(),
+                    project: project_scope.clone(),
+                    active_file: entry.active_file.clone(),
+                    ts,
+                    backend: Some(backend.clone()),
+                },
+            );
+        }
     }
 
     let _ = send_event(

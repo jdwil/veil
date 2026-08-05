@@ -38,6 +38,8 @@ pub mod project_layout;
 pub mod config;
 pub mod product_host;
 pub mod chat_log;
+pub mod session;
+pub mod session_api;
 
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;

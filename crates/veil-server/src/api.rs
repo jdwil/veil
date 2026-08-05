@@ -176,8 +176,13 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
         .layer(axum::Extension(dev_loops));
 
     let mut router = hub_routes::<Arc<MultiProjectProvider>>()
+        .merge(crate::session_api::session_routes())
         .nest("/api", hub_agent)
         .nest("/api/p/{project}", ide)
+        .route(
+            "/api/p/{project}/autosave",
+            post(crate::session_api::post_autosave),
+        )
         .layer(CorsLayer::permissive())
         .with_state(multi);
 
@@ -202,6 +207,7 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
 }
 
 /// Validate project exists, then set [`CURRENT_PROJECT`] (RTU-006).
+/// Also binds durable coding session from `X-Veil-Session-Id` when present.
 async fn project_scope_middleware(
     State(multi): State<Arc<MultiProjectProvider>>,
     Path(project): Path<String>,
@@ -222,8 +228,59 @@ async fn project_scope_middleware(
         )
             .into_response();
     }
+    let session_hdr = req
+        .headers()
+        .get("x-veil-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Prefer durable session workspace when sessions are enabled.
+    if crate::session::sessions_enabled() {
+        let mgr = crate::session::SessionManager::global();
+        let handle = if let Some(ref sid) = session_hdr {
+            mgr.attach(sid)
+        } else {
+            mgr.get_or_create_default(&project)
+        };
+        match handle {
+            Ok(h) => {
+                if h.slug() != project {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        serde_json::json!({
+                            "error": "session slug mismatch",
+                            "session_slug": h.slug(),
+                            "project": project,
+                        })
+                        .to_string(),
+                    )
+                        .into_response();
+                }
+                // Pin session into hub cache under project name for MultiProjectProvider.
+                multi.hub().bind_session_provider(&project, h.provider.clone());
+                let sid = h.session_id();
+                return crate::session::CURRENT_SESSION
+                    .scope(sid, CURRENT_PROJECT.scope(project, next.run(req)))
+                    .await;
+            }
+            Err(msg) => {
+                // Fall through to classic hub open if session path fails in prefer mode
+                tracing::warn!(%msg, "session attach failed; trying classic hub open");
+            }
+        }
+    }
+
     match multi.hub().open(&project) {
-        Ok(_) => CURRENT_PROJECT.scope(project, next.run(req)).await,
+        Ok(_) => {
+            if let Some(sid) = session_hdr {
+                crate::session::CURRENT_SESSION
+                    .scope(sid, CURRENT_PROJECT.scope(project, next.run(req)))
+                    .await
+            } else {
+                CURRENT_PROJECT.scope(project, next.run(req)).await
+            }
+        }
         Err(msg) => {
             let (status, code) = match ProjectsHub::open_error_kind(&msg) {
                 OpenErrorKind::BadRequest => (StatusCode::BAD_REQUEST, "bad_request"),
@@ -238,7 +295,7 @@ async fn project_scope_middleware(
                     "error": msg,
                     "code": code,
                     "name": project,
-                    "hint": "veil projects list  |  veil init --in-hub --name <name>",
+                    "hint": "veil projects list  |  veil init --in-hub --name <name> | POST /api/sessions",
                 })
                 .to_string(),
             )
@@ -1239,16 +1296,55 @@ async fn get_active_project<P: SourceProvider>(
     }
 }
 
-/// List products under configured projects dir (hub; same kernel for runtime).
+/// List products for the IDE hub.
+///
+/// When `VEIL_SOURCE_MODE=s3|prefer_s3`, lists DDB META / S3 repos (production-like).
+/// Disk hub is used only for `disk` mode (and as prefer_s3 merge for missing remote).
 async fn get_projects() -> axum::response::Response {
+    use crate::provider::s3_workspace::{ide_source_mode, list_s3_projects, IdeSourceMode};
+
     let dir = crate::config::resolve_projects_dir();
-    let projects = match crate::project_layout::list_projects(&dir) {
-        Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    let mode = ide_source_mode();
+    let projects = match mode {
+        IdeSourceMode::S3 => match list_s3_projects() {
+            Ok(p) => p,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        },
+        IdeSourceMode::PreferS3 => {
+            // Same merge policy as ProjectsHub::list
+            let mut by_name = std::collections::HashMap::new();
+            if let Ok(disk) = crate::project_layout::list_projects(&dir) {
+                for p in disk {
+                    by_name.insert(p.name.clone(), p);
+                }
+            }
+            match list_s3_projects() {
+                Ok(remote) => {
+                    for p in remote {
+                        by_name.insert(p.name.clone(), p);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "GET /api/projects prefer_s3: remote list failed");
+                }
+            }
+            let mut out: Vec<_> = by_name.into_values().collect();
+            out.sort_by(|a, b| a.name.cmp(&b.name));
+            out
+        }
+        IdeSourceMode::Disk => match crate::project_layout::list_projects(&dir) {
+            Ok(p) => p,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        },
     };
     match serde_json::to_string(&serde_json::json!({
         "projects_dir": dir.to_string_lossy(),
         "config_path": crate::config::config_path().to_string_lossy(),
+        "source_mode": match mode {
+            IdeSourceMode::S3 => "s3",
+            IdeSourceMode::PreferS3 => "prefer_s3",
+            IdeSourceMode::Disk => "disk",
+        },
         "projects": projects,
     })) {
         Ok(json) => json_response(json).into_response(),
@@ -1262,7 +1358,22 @@ struct CreateProjectRequest {
 }
 
 /// Create a product repo under the configured projects directory (same as `veil init --in-hub`).
+///
+/// Strict `VEIL_SOURCE_MODE=s3` rejects disk create — seed DDB+S3 instead.
 async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::response::Response {
+    use crate::provider::s3_workspace::{ide_source_mode, IdeSourceMode};
+    if matches!(ide_source_mode(), IdeSourceMode::S3) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({
+                "error": "create project disabled while VEIL_SOURCE_MODE=s3 (remote-only)",
+                "hint": "seed with scripts/seed-repo-s3.sh or set VEIL_SOURCE_MODE=prefer_s3|disk",
+            })
+            .to_string(),
+        )
+            .into_response();
+    }
     let dir = match crate::config::ensure_projects_dir_exists() {
         Ok(d) => d,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),

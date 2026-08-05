@@ -2971,6 +2971,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a0e75113e14dc5acb068cd0786884f214f1312650a3d36d269f5c4f3cdee8a2"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4441,6 +4453,7 @@ dependencies = [
  "mind-palace",
  "mind-palace-rig",
  "notify",
+ "regex",
  "reqwest 0.12.28",
  "rig-core",
  "serde",
@@ -4450,6 +4463,7 @@ dependencies = [
  "toml",
  "tower-http",
  "tracing",
+ "uuid",
  "veil-codegen",
  "veil-ir",
  "veil-parser",
