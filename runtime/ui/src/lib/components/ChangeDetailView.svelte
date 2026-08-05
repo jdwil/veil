@@ -33,6 +33,10 @@
       approvals = [];
       ci = {  };
       id = cr_id_from_path();
+      if (id === "") {
+        loading = false;
+        error = "Missing change request id";
+      };
     });
    $effect(() => { // load_detail
   void (async () => {
@@ -41,15 +45,13 @@
             loading = true;
             error = "";
             let detail = await (async () => { const __u = new URL(`/api/change_requests/${id}`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            cr = detail;
+            let unpacked = unpack_cr_detail(detail);
+            cr = unpacked.cr;
+            comments = unpacked.comments;
+            approvals = unpacked.approvals;
+            ci = unpacked.ci;
             let diff_resp = await (async () => { const __u = new URL(`/api/change_requests/${id}/diff`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            diff = diff_resp;
-            let comments_resp = await (async () => { const __u = new URL(`/api/change_requests/${id}/comments`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            comments = comments_resp;
-            let approvals_resp = await (async () => { const __u = new URL(`/api/change_requests/${id}/approvals`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            approvals = approvals_resp;
-            let ci_resp = await (async () => { const __u = new URL(`/api/change_requests/${id}/ci`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            ci = ci_resp;
+            diff = coerce_json_obj(diff_resp);
             loading = false;
             loaded = true;
           };
@@ -103,8 +105,21 @@
   const t = p.endsWith('/') ? p.slice(0, -1) : p;
   const parts = t.split('/').filter(Boolean);
   const i = parts.indexOf('changes');
-  if (i >= 0 && parts[i + 1]) return parts[i + 1];
+  if (i >= 0 && parts[i + 1] && parts[i + 1] !== 'new') return parts[i + 1];
   return '';
+  }
+  // Unpack GET /api/change_requests/{id} shape: { pr, comments, approvals, ci_runs }
+  function unpack_cr_detail(detail: any): any {
+  const d = detail && typeof detail === 'object' ? detail : {};
+  const cr = d.pr != null && typeof d.pr === 'object' ? d.pr : d;
+  const comments = Array.isArray(d.comments) ? d.comments : [];
+  const approvals = Array.isArray(d.approvals) ? d.approvals : [];
+  const runs = Array.isArray(d.ci_runs) ? d.ci_runs : [];
+  const ci = runs.length > 0 ? runs[0] : {};
+  return { cr, comments, approvals, ci };
+  }
+  function coerce_json_obj(v: any): any {
+  return v != null && typeof v === 'object' ? v : {};
   }
   function diff_kind_class(kind: string): string {
   if (kind === 'Added') return 'dk-diff-added';

@@ -4,9 +4,6 @@
   "deps": {
     "approval_repo": {
       "adapter": "DdbApprovalRepo",
-      "env": [
-        "VEIL_DDB_TABLE"
-      ],
       "trait": "ApprovalRepo"
     },
     "auth_service": {
@@ -20,23 +17,14 @@
     },
     "change_request_repo": {
       "adapter": "DdbChangeRequestRepo",
-      "env": [
-        "VEIL_DDB_TABLE"
-      ],
       "trait": "ChangeRequestRepo"
     },
     "ci_run_repo": {
       "adapter": "DdbCiRunRepo",
-      "env": [
-        "VEIL_DDB_TABLE"
-      ],
       "trait": "CiRunRepo"
     },
     "comment_repo": {
       "adapter": "DdbCommentRepo",
-      "env": [
-        "VEIL_DDB_TABLE"
-      ],
       "trait": "CommentRepo"
     },
     "entity_repo": {
@@ -78,11 +66,32 @@
         }
       ]
     },
+    "AddReviewComment": {
+      "function": "add_review_comment",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "author",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "construct_path",
+          "type": "Optional(Named(\"Str\"))"
+        },
+        {
+          "name": "body",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
     "ApproveChange": {
       "function": "approve_change",
       "inputs": [
         {
-          "name": "pr_id",
+          "name": "id",
           "type": "Named(\"Id\")"
         },
         {
@@ -99,7 +108,7 @@
       "function": "commit_to_change",
       "inputs": [
         {
-          "name": "pr_id",
+          "name": "id",
           "type": "Named(\"Id\")"
         },
         {
@@ -149,6 +158,35 @@
       "function": "create_change_request",
       "inputs": [
         {
+          "name": "id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "slug",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "title",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "description",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "jira_ticket",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "author",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
+    "CreateChangeRequestFlat": {
+      "function": "create_change_request_flat",
+      "inputs": [
+        {
           "name": "repo_id",
           "type": "Named(\"Id\")"
         },
@@ -178,7 +216,7 @@
       "function": "get_change_request",
       "inputs": [
         {
-          "name": "pr_id",
+          "name": "id",
           "type": "Named(\"Id\")"
         }
       ]
@@ -187,7 +225,7 @@
       "function": "get_structural_diff",
       "inputs": [
         {
-          "name": "pr_id",
+          "name": "id",
           "type": "Named(\"Id\")"
         },
         {
@@ -196,12 +234,21 @@
         }
       ]
     },
+    "ListAllChangeRequests": {
+      "function": "list_all_change_requests",
+      "inputs": [
+        {
+          "name": "status",
+          "type": "Optional(Named(\"PrStatus\"))"
+        }
+      ]
+    },
     "ListChangeRequests": {
       "function": "list_change_requests",
       "inputs": [
         {
-          "name": "repo_id",
-          "type": "Optional(Named(\"Id\"))"
+          "name": "id",
+          "type": "Named(\"Id\")"
         },
         {
           "name": "status",
@@ -213,7 +260,7 @@
       "function": "merge_change",
       "inputs": [
         {
-          "name": "pr_id",
+          "name": "id",
           "type": "Named(\"Id\")"
         },
         {
@@ -230,7 +277,7 @@
       "function": "request_changes",
       "inputs": [
         {
-          "name": "pr_id",
+          "name": "id",
           "type": "Named(\"Id\")"
         },
         {
@@ -247,8 +294,21 @@
       "function": "submit_for_review",
       "inputs": [
         {
-          "name": "pr_id",
+          "name": "id",
           "type": "Named(\"Id\")"
+        }
+      ]
+    },
+    "UpdateChangeRequestStatus": {
+      "function": "update_change_request_status",
+      "inputs": [
+        {
+          "name": "id",
+          "type": "Named(\"Id\")"
+        },
+        {
+          "name": "status",
+          "type": "Named(\"PrStatus\")"
         }
       ]
     }

@@ -383,7 +383,8 @@ crates/
   veil-cli/              — lex, parse, check, gen, emit, stub-gen, serve
   veil-server/           — Editor/API server
 
-veil-viewer/             — Svelte structural viewer/editor
+runtime/ide-ui/          — IDE dual-loop UI (was veil-viewer; ProductHost /viewer)
+
 runtime/                 — Runtime harness and larger self-hosted examples
 ```
 

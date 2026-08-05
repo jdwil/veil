@@ -13,13 +13,11 @@ use uuid::Uuid;
 // integrations; generated so adapter bodies compile.
 fn attribute_value_s(_arg0: impl std::fmt::Debug) { /* stub — replace with real integration */
 }
-fn client_get_item() { /* stub — replace with real integration */
-}
 fn client_put_item() { /* stub — replace with real integration */
 }
 fn client_query() { /* stub — replace with real integration */
 }
-fn item_get(_arg0: impl std::fmt::Debug) { /* stub — replace with real integration */
+fn client_scan() { /* stub — replace with real integration */
 }
 
 /// Adapter: BusAuthAdapter (implements AuthService)
@@ -56,31 +54,66 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
         let pk = format!("PR#{}", id);
         let resp = self
             .client
-            .get_item()
+            .query()
             .table_name(&self.table)
-            .key(
-                "PK".to_string(),
+            .key_condition_expression("PK = :pk AND SK = :sk".to_string())
+            .expression_attribute_values(
+                ":pk".to_string(),
                 aws_sdk_dynamodb::types::AttributeValue::S(pk),
             )
-            .key(
-                "SK".to_string(),
+            .expression_attribute_values(
+                ":sk".to_string(),
                 aws_sdk_dynamodb::types::AttributeValue::S("META".to_string()),
             )
             .send()
             .await
             .map_err(|e| DomainError::External(format!("{e:?}")))?;
-        match resp.item() {
-            None => return Ok(None),
-            Some(item) => {
-                let data = item
-                    .get("data")
-                    .ok_or_else(|| DomainError::External("missing data".into()))?
-                    .as_s()
-                    .map(|s| s.to_string())
-                    .map_err(|e| DomainError::External(format!("{:?}", e)))?;
-                return Ok(Some(serde_json::from_str::<_>(&data)?));
-            }
+        let items = resp.items();
+        if items.is_empty() {
+            return Ok(None);
+        };
+        return Ok(Some(serde_json::from_str::<_>(
+            &items[(0) as usize]
+                .get("data")
+                .ok_or_else(|| DomainError::External("missing data".into()))?
+                .as_s()
+                .map(|s| s.to_string())
+                .map_err(|e| DomainError::External(format!("{:?}", e)))?,
+        )?));
+    }
+
+    async fn list_all(&self, status: Option<PrStatus>) -> Result<Vec<ChangeRequest>, DomainError> {
+        let resp = self
+            .client
+            .scan()
+            .table_name(&self.table)
+            .filter_expression("begins_with(PK, :prefix) AND SK = :sk".to_string())
+            .expression_attribute_values(
+                ":prefix".to_string(),
+                aws_sdk_dynamodb::types::AttributeValue::S("PR#".to_string()),
+            )
+            .expression_attribute_values(
+                ":sk".to_string(),
+                aws_sdk_dynamodb::types::AttributeValue::S("META".to_string()),
+            )
+            .send()
+            .await
+            .map_err(|e| DomainError::External(format!("{e:?}")))?;
+        let items = resp.items();
+        let mut out = vec![];
+        for item in items {
+            let data = item
+                .get("data")
+                .ok_or_else(|| DomainError::External("missing data".into()))?
+                .as_s()
+                .map(|s| s.to_string())
+                .map_err(|e| DomainError::External(format!("{:?}", e)))?;
+            let cr: ChangeRequest = serde_json::from_str::<_>(&data)?;
+            if status.is_none() || cr.status == status.clone().ok_or(DomainError::NotFound)? {
+                out.push(cr);
+            };
         }
+        return Ok(out);
     }
 
     async fn list_by_repo(
@@ -111,7 +144,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
                 .map(|s| s.to_string())
                 .map_err(|e| DomainError::External(format!("{:?}", e)))?;
             let cr: ChangeRequest = serde_json::from_str::<_>(&data)?;
-            if status.is_none() || cr.status == status.clone().unwrap_or(cr.status.clone()) {
+            if status.is_none() || cr.status == status.clone().ok_or(DomainError::NotFound)? {
                 out.push(cr);
             };
         }
@@ -172,7 +205,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
             )
             .item(
                 "GSI1SK".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(cr.updated_at.to_string()),
+                aws_sdk_dynamodb::types::AttributeValue::S(format!("{}", cr.updated_at)),
             )
             .item(
                 "data".to_string(),
@@ -280,13 +313,14 @@ impl CiRunRepo for DdbCiRunRepo {
         if items.is_empty() {
             return Ok(None);
         };
-        let data = items[(0) as usize]
-            .get("data")
-            .ok_or_else(|| DomainError::External("missing data".into()))?
-            .as_s()
-            .map(|s| s.to_string())
-            .map_err(|e| DomainError::External(format!("{:?}", e)))?;
-        return Ok(Some(serde_json::from_str::<_>(&data)?));
+        return Ok(Some(serde_json::from_str::<_>(
+            &items[(0) as usize]
+                .get("data")
+                .ok_or_else(|| DomainError::External("missing data".into()))?
+                .as_s()
+                .map(|s| s.to_string())
+                .map_err(|e| DomainError::External(format!("{:?}", e)))?,
+        )?));
     }
 
     async fn list_for_pr(&self, pr_id: Uuid) -> Result<Vec<CiRun>, DomainError> {
@@ -322,7 +356,7 @@ impl CiRunRepo for DdbCiRunRepo {
 
     async fn save(&self, run: CiRun) -> Result<(), DomainError> {
         let pk = format!("PR#{}", run.pr_id);
-        let sk = format!("CI#{}#{}", run.started_at.to_string(), run.id);
+        let sk = format!("CI#{}#{}", run.started_at, run.id);
         self.client
             .put_item()
             .table_name(&self.table)
@@ -390,7 +424,7 @@ impl CommentRepo for DdbCommentRepo {
 
     async fn save(&self, comment: ReviewComment) -> Result<(), DomainError> {
         let pk = format!("PR#{}", comment.pr_id);
-        let sk = format!("COMMENT#{}#{}", comment.created_at.to_string(), comment.id);
+        let sk = format!("COMMENT#{}#{}", comment.created_at, comment.id);
         self.client
             .put_item()
             .table_name(&self.table)

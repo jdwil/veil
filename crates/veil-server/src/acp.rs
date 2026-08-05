@@ -478,6 +478,17 @@ fn write_workspace_mcp_json(session_cwd: &str) {
         "list_files",
         "select_file",
         "create_file",
+        // Runtime dashboard UX (agent-driven navigation / SDLC)
+        "navigate_to",
+        "list_changes",
+        "create_change",
+        "list_projects",
+        "open_project",
+        "open_ide",
+        "open_deploy",
+        "open_registry",
+        "open_dashboard",
+        "open_config",
         "wiki_search",
         "wiki_read",
         "wiki_traverse",
@@ -502,10 +513,42 @@ fn write_workspace_mcp_json(session_cwd: &str) {
 /// Active project name for ACP sessions (set before spawn_blocking).
 static ACP_PROJECT: Mutex<Option<String>> = Mutex::new(None);
 
+/// Project baked into the last ACP spawn's workspace `mcp.json` (MCP URL scope).
+/// When this differs from [`ACP_PROJECT`], we must respawn so Kiro picks up
+/// `/api/p/{project}/mcp` instead of hub-only tools.
+static ACP_SPAWN_PROJECT: Mutex<Option<String>> = Mutex::new(None);
+
 /// Set the active project for ACP tool routing. Call before prompting.
 pub fn set_acp_project(name: Option<String>) {
     if let Ok(mut g) = ACP_PROJECT.lock() {
         *g = name;
+    }
+}
+
+/// Current ACP project scope (if any).
+pub fn get_acp_project() -> Option<String> {
+    ACP_PROJECT.lock().ok().and_then(|g| g.clone())
+}
+
+/// Ensure ACP MCP routing matches `name` (project-scoped IDE tools).
+///
+/// Rewrites workspace `mcp.json` and drops a live ACP process when the project
+/// changes so the next prompt reconnects with the correct `/api/p/{proj}/mcp`.
+pub fn ensure_acp_project_scope(name: Option<String>) {
+    let prev_spawn = ACP_SPAWN_PROJECT.lock().ok().and_then(|g| g.clone());
+    set_acp_project(name.clone());
+    if prev_spawn != name {
+        // mcp.json is read at session start — force respawn with new URL/cwd.
+        let cwd = resolve_acp_cwd();
+        write_workspace_mcp_json(&cwd);
+        reset_acp();
+        if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
+            *g = name;
+        }
+        tracing::info!(
+            project = ?ACP_PROJECT.lock().ok().and_then(|g| g.clone()),
+            "ACP project scope changed — mcp.json rewritten, agent will respawn"
+        );
     }
 }
 
@@ -534,6 +577,12 @@ pub fn prompt_acp_streaming(
         .lock()
         .map_err(|e| format!("ACP lock poisoned: {e}"))?;
     if guard.is_none() {
+        // Bake current project into mcp.json + cwd before first spawn.
+        let cwd = resolve_acp_cwd();
+        write_workspace_mcp_json(&cwd);
+        if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
+            *g = ACP_PROJECT.lock().ok().and_then(|p| p.clone());
+        }
         *guard = Some(AcpProcess::spawn()?);
     }
     let proc = guard.as_mut().unwrap();

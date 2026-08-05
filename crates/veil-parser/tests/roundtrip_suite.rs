@@ -40,7 +40,6 @@ fn ensure_layers_env(root: &Path) {
 /// Remove an entry once fixed — the suite will then require idempotence.
 const KNOWN_UNPARSEABLE: &[&str] = &[
     "runtime/src/runtime-ui.veil",
-    "runtime/src/change-management.veil",
 ];
 
 fn collect_veil_files(root: &Path) -> Vec<PathBuf> {

@@ -5,3 +5,5 @@ edition = "2021"
 description = "Thin std::fs facade for VEIL-authored adapters (referenced via .stub)"
 
 [dependencies]
+serde_json = "1"
+toml = "0.8"

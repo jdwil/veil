@@ -147,18 +147,36 @@ pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
 /// Multi-project IDE: hub + `/api/p/{project}/…` (MP-002).
 ///
 /// Same handlers as [`build_router`]; project scope via task-local name.
+///
+/// **ProductHost / pure-runtime:** this is the single IDE kernel surface — no
+/// second `veil serve --multi` process. Shell agent uses hub routes under
+/// `/api/agent/*` and `/api/mcp` (platform UX tools work without a project;
+/// dual-loop tools need `/api/p/{project}/…` or CURRENT_PROJECT).
 pub fn build_multi_router(hub: ProjectsHub) -> Router {
+    crate::chat_log::init_logger();
     let multi = Arc::new(MultiProjectProvider::new(hub));
     let dev_loops: crate::devloop_api::DevLoopState =
         crate::devloop::SharedDevLoops::default();
     crate::devloop::set_global_dev_loops(dev_loops.clone());
     let ide = ide_routes::<MultiProjectProvider>()
-        .layer(axum::Extension(dev_loops))
+        .layer(axum::Extension(dev_loops.clone()))
         .layer(middleware::from_fn_with_state(
             multi.clone(),
             project_scope_middleware,
         ));
+
+    // Hub-level agent + MCP for the runtime shell (same-origin ProductHost).
+    // Platform UX tools (navigate_to, list_changes, …) do not require a project.
+    let hub_agent = Router::new()
+        .route("/agent/chat", get(ws_aether_chat_route::<MultiProjectProvider>))
+        .route("/chat", get(ws_aether_chat_route::<MultiProjectProvider>))
+        .route("/agent/status", get(get_agent_status))
+        .route("/mcp", post(crate::mcp::post_mcp::<MultiProjectProvider>))
+        .route("/agent/tools", get(get_agent_tools))
+        .layer(axum::Extension(dev_loops));
+
     let mut router = hub_routes::<Arc<MultiProjectProvider>>()
+        .nest("/api", hub_agent)
         .nest("/api/p/{project}", ide)
         .layer(CorsLayer::permissive())
         .with_state(multi);
@@ -1610,6 +1628,54 @@ async fn post_agent_turn_stream<P: SourceProvider>(
 /// AGT-003: list models for the configured Rig-backed provider.
 async fn get_models() -> axum::response::Response {
     let body = crate::model::list_provider_info();
+    match serde_json::to_string(&body) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Runtime shell + CLI: GET /api/agent/status (provider + ACP tunnel summary).
+async fn get_agent_status() -> axum::response::Response {
+    let info = crate::model::list_provider_info();
+    let provider = info
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let mode = if info.get("acp").and_then(|v| v.as_bool()).unwrap_or(false) {
+        "acp"
+    } else if info.get("rig").and_then(|v| v.as_bool()).unwrap_or(false) {
+        "rig"
+    } else {
+        "offline"
+    };
+    let model = info
+        .get("model")
+        .or_else(|| info.pointer("/config/model"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    // Local ACP (kiro-cli subprocess) is "connected" when configured; tunnel
+    // agents are a separate future path (veil agent connect).
+    let acp_configured = crate::acp::acp_enabled();
+    let agent_name = std::env::var("VEIL_ACP_AGENT").unwrap_or_else(|_| "default".into());
+    let agents = if acp_configured {
+        vec![serde_json::json!({
+            "agent_name": agent_name,
+            "user_id": "local",
+            "mode": "subprocess",
+        })]
+    } else {
+        vec![]
+    };
+    let body = serde_json::json!({
+        "provider": provider,
+        "provider_mode": { "mode": mode, "model": model },
+        "acp_tunnel": {
+            "connected": acp_configured,
+            "agents": agents,
+        },
+        "info": info,
+    });
     match serde_json::to_string(&body) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),

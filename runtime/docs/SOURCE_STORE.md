@@ -10,13 +10,28 @@ Local dual-loop against the **dev** account should mirror production:
 
 ## Env (local server)
 
+**Required for jd@dashlx.com local development** — always use the **dashlx_dev**
+profile and the dev account table/bucket. Without these, repos/changes look empty
+or fail silently, and provision cannot talk to real AWS.
+
 ```bash
 export AWS_PROFILE=dashlx_dev AWS_REGION=us-west-2
 export VEIL_DDB_TABLE=veil-runtime-dev
-export BUCKET=veil-runtime-dev          # or VEIL_S3_BUCKET
+export BUCKET=veil-runtime-dev          # or VEIL_S3_BUCKET (same bucket)
 export VEIL_SOURCE_MODE=prefer_s3       # or `s3` (strict) | `disk` (legacy hub only)
-export VEIL_DEPLOY_CONFIG=…/runtime/config/deploy.toml
+export VEIL_DEPLOY_CONFIG=runtime/config/deploy.toml
+export VEIL_DEV=1
+export PORT=3000
+
+# From monorepo root after `veil gen runtime/src/runtime.veil -o runtime/generated`:
+cd runtime/generated && cargo build -p veil_bin
+AWS_PROFILE=dashlx_dev AWS_REGION=us-west-2 \
+  VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev VEIL_DEV=1 PORT=3000 \
+  ./target/debug/veil_bin
 ```
+
+UI (Vite) proxies `/api` → `:3000` and `/api/agent` (WS) → IDE agent on `:3001`.
+Confirm identity: `AWS_PROFILE=dashlx_dev aws sts get-caller-identity` → account `086261225885`.
 
 | Mode | Behavior |
 |------|----------|

@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::{AgentTurnRequest, AgentTurnResponse};
 use crate::agent_stream::run_turn_stream;
+use crate::provider::hub::CURRENT_PROJECT;
 use crate::provider::SourceProvider;
 
 /// Aether ChatRequest (subset we need).
@@ -36,6 +37,10 @@ struct ChatRequest {
     provider: Option<String>,
     #[serde(default)]
     system_prompt: Option<String>,
+    /// Active project slug/name for hub agent → scopes dual-loop IDE tools.
+    /// Runtime UI sends this when on `/projects/{id}` or IDE embed.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,7 +98,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         }
     };
 
-    let prompt = extract_prompt(&req);
+    let mut prompt = extract_prompt(&req);
     if prompt.is_empty() {
         let _ = send_event(
             &mut sender,
@@ -103,6 +108,18 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         .await;
         return;
     }
+
+    // Runtime UI injects platform system prompt (tools, current page). Fold it
+    // into the user turn so ACP / Rig see navigation instructions.
+    if let Some(sys) = req.system_prompt.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        prompt = format!(
+            "# Runtime agent instructions\n{sys}\n\n# User request\n{prompt}"
+        );
+    }
+
+    // Scope dual-loop IDE tools (list_files, read_source, …) to the UI project.
+    // Prefer explicit ChatRequest.project; fall back to system-prompt context lines.
+    let project_scope = resolve_chat_project(&req);
 
     let message_id = format!("msg_{}", short_id());
     let model = req.model.unwrap_or_else(|| "veil-agent".into());
@@ -117,6 +134,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
             "role": "assistant",
             "model": model,
             "provider": provider_name,
+            "project": project_scope,
         }),
     )
     .await
@@ -134,8 +152,17 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         plan_only: false,
     };
     let provider_run = provider.clone();
+    // Project scope from request (or middleware) — task-locals do not inherit across spawn.
+    let project_scope_spawn = project_scope
+        .clone()
+        .or_else(|| CURRENT_PROJECT.try_with(|n| n.clone()).ok());
     let turn_handle = tokio::spawn(async move {
-        run_turn_stream(provider_run, turn_req, tx).await;
+        let fut = run_turn_stream(provider_run, turn_req, tx);
+        if let Some(name) = project_scope_spawn {
+            CURRENT_PROJECT.scope(name, fut).await;
+        } else {
+            fut.await;
+        }
     });
 
     // Abort listener (best-effort)
@@ -231,6 +258,10 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
                         }),
                     )
                     .await;
+                    // Omnipresent agent: UX tools must drive SPA navigation for the user.
+                    if let Some(nav) = navigation_for_platform_tool(&name, &detail) {
+                        let _ = send_event(&mut sender, "navigation", nav).await;
+                    }
                     tools.push(json!({ "name": name, "detail": detail }));
                 }
             }
@@ -295,6 +326,46 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
                     .await;
                     full_text = last.content.clone();
                 }
+            }
+        }
+        // Surface hard failures that left no assistant text (e.g. missing project
+        // used to yield empty UI with backend:error only).
+        if full_text.is_empty() {
+            if let Some(err) = resp.error.as_ref().filter(|e| !e.is_empty()) {
+                let _ = send_event(
+                    &mut sender,
+                    "error",
+                    json!({ "message": err, "messageId": message_id }),
+                )
+                .await;
+                let _ = send_event(
+                    &mut sender,
+                    "content_delta",
+                    json!({
+                        "messageId": message_id,
+                        "delta": format!("Agent error: {err}"),
+                    }),
+                )
+                .await;
+                full_text = format!("Agent error: {err}");
+            } else if !resp.ok {
+                let msg = "Agent turn finished with no response (check provider / ACP).";
+                let _ = send_event(
+                    &mut sender,
+                    "error",
+                    json!({ "message": msg, "messageId": message_id }),
+                )
+                .await;
+                let _ = send_event(
+                    &mut sender,
+                    "content_delta",
+                    json!({
+                        "messageId": message_id,
+                        "delta": msg,
+                    }),
+                )
+                .await;
+                full_text = msg.to_string();
             }
         }
     }
@@ -370,6 +441,94 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
     .await;
 }
 
+/// Map platform UX tool names → SPA navigation payloads (runtime-omnipresent-agent-design).
+fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Option<serde_json::Value> {
+    // Prefer structured navigation from tool output JSON (string or object).
+    if let Some(nav) = detail.get("navigation") {
+        return Some(nav.clone());
+    }
+    if let Some(s) = detail.as_str() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+            if let Some(nav) = v.get("navigation") {
+                return Some(nav.clone());
+            }
+        }
+    }
+    // Fall back to well-known tool → path mapping when ACP only reports the name.
+    let path: Option<String> = match name {
+        "list_changes" | "open_changes" => Some("/changes".into()),
+        "create_change" | "open_create_change" => Some("/changes/new".into()),
+        "list_projects" | "open_projects" => Some("/projects".into()),
+        "open_deploy" => Some("/deploy".into()),
+        "open_registry" => Some("/registry".into()),
+        "open_dashboard" => Some("/dashboard".into()),
+        "open_config" => Some("/config".into()),
+        "navigate_to" => detail
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(|p| {
+                if p.starts_with('/') {
+                    p.to_string()
+                } else {
+                    format!("/{p}")
+                }
+            })
+            .or_else(|| {
+                detail
+                    .get("detail")
+                    .and_then(|d| d.get("path"))
+                    .and_then(|p| p.as_str())
+                    .map(|p| p.to_string())
+            }),
+        "open_project" | "open_ide" | "switch_project" => {
+            let project = detail
+                .get("project")
+                .or_else(|| detail.get("slug"))
+                .or_else(|| detail.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if project.is_empty() {
+                Some("/projects".into())
+            } else if name == "open_ide" {
+                // Shell embed route — runtime keeps AgentDock; not bare /viewer.
+                Some(format!("/projects/{project}/ide"))
+            } else {
+                Some(format!("/projects/{project}"))
+            }
+        }
+        _ => None,
+    };
+    path.map(|p| {
+        let action = if name == "open_ide" {
+            "open-ide"
+        } else if name == "switch_project" {
+            "switch-project"
+        } else {
+            "goto"
+        };
+        let mut nav = json!({
+            "action": action,
+            "path": p
+        });
+        if matches!(name, "open_ide" | "open_project" | "switch_project") {
+            if let Some(project) = detail
+                .get("project")
+                .or_else(|| detail.get("slug"))
+                .or_else(|| detail.get("id"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                nav["project"] = json!(project);
+            } else if let Some(proj) = p.strip_prefix("/projects/").and_then(|rest| {
+                rest.split('/').next().filter(|s| !s.is_empty()).map(|s| s.to_string())
+            }) {
+                nav["project"] = json!(proj);
+            }
+        }
+        nav
+    })
+}
+
 fn extract_prompt(req: &ChatRequest) -> String {
     // Prefer last user message; append earlier turns as light context if few.
     let users: Vec<&str> = req
@@ -385,6 +544,61 @@ fn extract_prompt(req: &ChatRequest) -> String {
         .last()
         .map(|m| m.content.clone())
         .unwrap_or_default()
+}
+
+/// Resolve active project for hub agent turns (IDE dual-loop tools need scope).
+fn resolve_chat_project(req: &ChatRequest) -> Option<String> {
+    if let Some(p) = req
+        .project
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && *s != "(none — home/dashboard)" && *s != "(none)")
+    {
+        return sanitize_project_slug(p);
+    }
+    let sys = req.system_prompt.as_deref().unwrap_or("");
+    // `- Project: relay` from runtimeAgentSession buildSystemPrompt
+    for line in sys.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("- Project:") {
+            let p = rest.trim();
+            if !p.is_empty() && !p.starts_with('(') {
+                return sanitize_project_slug(p);
+            }
+        }
+        // `- Page: /projects/relay/ide`
+        if let Some(rest) = t.strip_prefix("- Page:") {
+            if let Some(slug) = project_from_page_path(rest.trim()) {
+                return Some(slug);
+            }
+        }
+    }
+    None
+}
+
+fn project_from_page_path(path: &str) -> Option<String> {
+    // /projects/{slug} or /projects/{slug}/ide
+    let path = path.trim().trim_start_matches('/');
+    let mut parts = path.split('/');
+    if parts.next()? != "projects" {
+        return None;
+    }
+    let slug = parts.next()?;
+    sanitize_project_slug(slug)
+}
+
+fn sanitize_project_slug(raw: &str) -> Option<String> {
+    let s = raw.trim().trim_matches('`').trim_matches('"').trim_matches('\'');
+    if s.is_empty() {
+        return None;
+    }
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        Some(s.to_string())
+    } else {
+        None
+    }
 }
 
 async fn send_event(

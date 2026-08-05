@@ -18,5 +18,11 @@ stub veil_local_fs path:../local_fs
     fn projects_dir() -> Str
     fn read_project_deploy(slug: Str) -> Res!<Str>
     fn read_toml_json(path: Str) -> Res!<Str>
+    # Parse a TOML string and return it as JSON (for S3-sourced veil.toml content).
+    fn parse_toml_str(content: Str) -> Res!<Str>
+    # Query [module.<namespace>] sections from a set of TOML entries.
+    # entries_json: JSON array of {repo_id, repo_name, slug, branch, raw: bytes}.
+    # Returns JSON: {results: [...], count: N}
+    fn query_modules_from_tomls(entries_json: Str, module: Str, filters_json: Str) -> Res!<Str>
     fn project_unit_names(slug: Str) -> Res!<List<Str>>
     fn project_unit_type(slug: Str, name: Str) -> Res!<Str>

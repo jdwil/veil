@@ -283,7 +283,7 @@ impl<'a> IrBuilder<'a> {
                     }
                     // Build steps (typed steps + plain steps) as child nodes.
                     if !f.steps.is_empty() {
-                        self.build_steps(&f.steps, id);
+                        let _ = self.build_steps(&f.steps, id);
                     }
                 }
                 TopLevelItem::TypeAlias { .. } | TopLevelItem::Const { .. } | TopLevelItem::Static { .. } => {}
@@ -629,7 +629,21 @@ impl<'a> IrBuilder<'a> {
                     }
                     self.graph.add_edge(id, inputs_id, EdgeKind::Contains);
                 }
-                self.build_steps(&c.steps, id);
+                let (first_step, last_step) = self.build_steps(&c.steps, id);
+                // Sequence: Inputs → first step (when both present)
+                if let (Some(inputs_id), Some(first)) = (
+                    self.graph
+                        .nodes
+                        .iter()
+                        .find(|n| {
+                            n.metadata.parent == Some(id) && n.kind == NodeKind::Inputs
+                        })
+                        .map(|n| n.id),
+                    first_step,
+                ) {
+                    self.graph
+                        .add_edge(inputs_id, first, EdgeKind::SequenceFlow);
+                }
                 // Emit a Return node showing the return type/expression.
                 // Check construct-level return type, or scan steps for ret exprs.
                 let ret_label = if let Some(rt) = &c.return_type {
@@ -658,7 +672,15 @@ impl<'a> IrBuilder<'a> {
                 } else {
                     "→ void".to_string()
                 };
-                let ret_id = self.graph.add_node(NodeKind::Return, display_label, c.span);
+                // Place Return after last step in span so layout sorts left→right correctly
+                let ret_span = last_step
+                    .and_then(|sid| self.graph.nodes.iter().find(|n| n.id == sid))
+                    .map(|n| Span {
+                        start: n.span.end.saturating_add(1),
+                        end: n.span.end.saturating_add(2),
+                    })
+                    .unwrap_or(c.span);
+                let ret_id = self.graph.add_node(NodeKind::Return, display_label, ret_span);
                 self.set_parent(ret_id, id);
                 if let Some(expr) = &c.return_expr {
                     self.set_property(ret_id, "expr", &expr_to_display(expr));
@@ -666,6 +688,11 @@ impl<'a> IrBuilder<'a> {
                     self.set_property(ret_id, "expr", &scanned_ret_expr);
                 }
                 self.graph.add_edge(id, ret_id, EdgeKind::Contains);
+                // Sequence: last step → Return (marching ants in the flow graph)
+                if let Some(prev) = last_step {
+                    self.graph
+                        .add_edge(prev, ret_id, EdgeKind::SequenceFlow);
+                }
             }
         }
     }
@@ -717,15 +744,46 @@ impl<'a> IrBuilder<'a> {
             self.graph.add_edge(flow_id, eb_id, EdgeKind::Contains);
         }
 
-        self.build_steps(&flow.steps, flow_id);
-        // Emit a Return node for the flow.
-        let ret_id = self.graph.add_node(NodeKind::Return, "Return".to_string(), flow.span);
+        let (first_step, last_step) = self.build_steps(&flow.steps, flow_id);
+        if let (Some(inputs_id), Some(first)) = (
+            self.graph
+                .nodes
+                .iter()
+                .find(|n| n.metadata.parent == Some(flow_id) && n.kind == NodeKind::Inputs)
+                .map(|n| n.id),
+            first_step,
+        ) {
+            self.graph
+                .add_edge(inputs_id, first, EdgeKind::SequenceFlow);
+        }
+        // Emit a Return node for the flow (after last step in sequence + span order).
+        let ret_span = last_step
+            .and_then(|sid| self.graph.nodes.iter().find(|n| n.id == sid))
+            .map(|n| Span {
+                start: n.span.end.saturating_add(1),
+                end: n.span.end.saturating_add(2),
+            })
+            .unwrap_or(flow.span);
+        let ret_id = self
+            .graph
+            .add_node(NodeKind::Return, "Return".to_string(), ret_span);
         self.set_parent(ret_id, flow_id);
         self.set_property(ret_id, "type", "inferred");
         self.graph.add_edge(flow_id, ret_id, EdgeKind::Contains);
+        if let Some(prev) = last_step {
+            self.graph
+                .add_edge(prev, ret_id, EdgeKind::SequenceFlow);
+        }
     }
 
-    fn build_steps(&mut self, steps: &[FlowStep], parent_id: NodeId) {
+    /// Build sequential steps. Returns `(first_step_id, last_step_id)` for
+    /// chaining Inputs → … → Return with SequenceFlow edges.
+    fn build_steps(
+        &mut self,
+        steps: &[FlowStep],
+        parent_id: NodeId,
+    ) -> (Option<NodeId>, Option<NodeId>) {
+        let mut first_step_id: Option<NodeId> = None;
         let mut prev_step_id: Option<NodeId> = None;
         for step in steps {
             match step {
@@ -733,6 +791,9 @@ impl<'a> IrBuilder<'a> {
                     let step_id = self.graph.add_node(NodeKind::Step, s.name.clone(), s.span);
                     self.set_parent(step_id, parent_id);
                     self.graph.add_edge(parent_id, step_id, EdgeKind::Contains);
+                    if first_step_id.is_none() {
+                        first_step_id = Some(step_id);
+                    }
                     if let Some(prev) = prev_step_id {
                         self.graph.add_edge(prev, step_id, EdgeKind::SequenceFlow);
                     }
@@ -792,6 +853,9 @@ impl<'a> IrBuilder<'a> {
                     if let Some(prev) = prev_step_id {
                         self.graph.add_edge(prev, par_id, EdgeKind::SequenceFlow);
                     }
+                    if first_step_id.is_none() {
+                        first_step_id = Some(par_id);
+                    }
                     for s in &par.steps {
                         let sub_id = self.graph.add_node(NodeKind::Step, s.name.clone(), s.span);
                         self.set_parent(sub_id, par_id);
@@ -817,10 +881,14 @@ impl<'a> IrBuilder<'a> {
                         self.graph.add_edge(match_id, arm_id, EdgeKind::Contains);
                         self.build_step_body(&arm.body, arm_id);
                     }
+                    if first_step_id.is_none() {
+                        first_step_id = Some(match_id);
+                    }
                     prev_step_id = Some(match_id);
                 }
             }
         }
+        (first_step_id, prev_step_id)
     }
 
     fn build_step_body(&mut self, body: &[Expr], step_id: NodeId) {

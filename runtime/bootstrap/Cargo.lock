@@ -1073,6 +1073,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "veil-ir",
+ "veil-parser",
  "veil_ext_store",
  "veil_local_fs",
  "veil_shared",
@@ -1396,6 +1398,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "deploy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-apigatewayv2",
+ "aws-sdk-dynamodb",
+ "aws-sdk-lambda",
+ "aws-sdk-s3",
+ "aws-sdk-sns",
+ "aws-sdk-sqs",
+ "axum",
+ "chrono",
+ "gix",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "veil-ir",
+ "veil-parser",
+ "veil_ext_store",
+ "veil_local_fs",
+ "veil_shared",
+ "zip",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1570,6 +1604,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "veil-ir",
+ "veil-parser",
  "veil_ext_store",
  "veil_local_fs",
  "veil_shared",
@@ -4959,6 +4995,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "veil-ir",
+ "veil-parser",
  "veil_ext_store",
  "veil_local_fs",
  "veil_shared",
@@ -5666,11 +5704,16 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-config",
+ "aws-sdk-apigatewayv2",
  "aws-sdk-dynamodb",
+ "aws-sdk-lambda",
  "aws-sdk-s3",
+ "aws-sdk-sns",
+ "aws-sdk-sqs",
  "axum",
  "change_management",
  "chrono",
+ "deploy",
  "extensions",
  "futures",
  "serde",
@@ -5738,6 +5781,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+ "veil-ir",
+ "veil-parser",
 ]
 
 [[package]]

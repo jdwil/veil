@@ -192,6 +192,19 @@
       "function": "list_repos",
       "inputs": []
     },
+    "QueryProjectModules": {
+      "function": "query_project_modules",
+      "inputs": [
+        {
+          "name": "module",
+          "type": "Named(\"Str\")"
+        },
+        {
+          "name": "filters_json",
+          "type": "Named(\"Str\")"
+        }
+      ]
+    },
     "ReadFile": {
       "function": "read_file",
       "inputs": [

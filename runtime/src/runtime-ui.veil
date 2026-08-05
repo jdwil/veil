@@ -531,21 +531,27 @@ pkg VeilRuntimeUI
             if loaded == false
               error = ""
               loading = true
-              mut repo = ApiClient.fetch(f"/api/repos/{id}", {})
-              name = field_str(repo, "name")
-              slug = field_str(repo, "slug")
-              description = field_str(repo, "description")
-              default_branch = field_str(repo, "default_branch")
-              if default_branch == ""
-                default_branch = "main"
-              created_at = field_str(repo, "created_at")
-              updated_at = field_str(repo, "updated_at")
-              mut catalog = ApiClient.fetch("/api/deploy_environments", {})
-              apply_env_catalog(catalog)
-              mut wrap = ApiClient.fetch(f"/api/project_infras/{id}", {environment: environment})
-              await hydrate_from_infra(wrap)
-              loading = false
-              loaded = true
+              mut result = await load_project_detail(id, environment)
+              if result.ok == true
+                name = field_str(result.repo, "name")
+                slug = field_str(result.repo, "slug")
+                description = field_str(result.repo, "description")
+                default_branch = field_str(result.repo, "default_branch")
+                if default_branch == ""
+                  default_branch = "main"
+                created_at = field_str(result.repo, "created_at")
+                updated_at = field_str(result.repo, "updated_at")
+                # Prefer canonical UUID for subsequent API calls
+                if field_str(result.repo, "id") != ""
+                  id = field_str(result.repo, "id")
+                apply_env_catalog(result.catalog)
+                await hydrate_from_infra(result.wrap)
+                loading = false
+                loaded = true
+              else
+                error = result.error
+                loading = false
+                loaded = true
         effect do_delete
           if delete_busy == true
             if id != ""
@@ -590,7 +596,34 @@ pkg VeilRuntimeUI
           }
           function field_str(obj: any, key: string): string {
             const v = obj?.[key];
-            return v == null ? '' : String(v);
+            if (v == null) return '';
+            // RepoId is serialized as { value: "uuid" }
+            if (typeof v === 'object' && v.value != null) return String(v.value);
+            return String(v);
+          }
+          /** Load repo + optional infra without hanging Loading forever. */
+          async function load_project_detail(id: string, environment: string): Promise<any> {
+            try {
+              const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+              const repoRes = await fetch(`${origin}/api/repos/${encodeURIComponent(id)}`);
+              if (!repoRes.ok) throw new Error(await repoRes.text() || `repo ${repoRes.status}`);
+              const repo = await repoRes.json();
+              let catalog: any = { default: 'dev', environments: [] };
+              try {
+                const cRes = await fetch(`${origin}/api/deploy_environments`);
+                if (cRes.ok) catalog = await cRes.json();
+              } catch { /* optional */ }
+              let wrap: any = { infra: {}, environment: environment || 'dev' };
+              try {
+                const u = new URL(`/api/project_infras/${encodeURIComponent(id)}`, origin);
+                if (environment) u.searchParams.set('environment', environment);
+                const iRes = await fetch(u.toString());
+                if (iRes.ok) wrap = await iRes.json();
+              } catch { /* optional — page still shows repo meta */ }
+              return { ok: true, repo, catalog, wrap, error: '' };
+            } catch (e: any) {
+              return { ok: false, repo: {}, catalog: {}, wrap: {}, error: e?.message != null ? String(e.message) : String(e) };
+            }
           }
           function classify_unit_state(state: any): { provisioned: boolean; label: string; kind: string } {
             if (!state) return { provisioned: false, label: 'not provisioned', kind: 'none' };
@@ -1452,15 +1485,19 @@ pkg VeilRuntimeUI
           status: Json
           loading: Bool
           error: Str
-        fn fetchStatus()
-          loading = true
-          error = ""
-          mut resp = ApiClient.query("/api/agent/status")
-          status = resp
-          loading = false
-        on mount
-          fetchStatus()
-          setInterval(fetchStatus, 5000)
+          loaded: Bool
+          refresh_token: Int
+        effect load_status
+          if loaded == false
+            loading = true
+            error = ""
+            mut resp = ApiClient.fetch("/api/agent/status")
+            status = resp
+            loading = false
+            loaded = true
+        effect reload_on_refresh
+          if refresh_token > 0
+            loaded = false
         template """
           <div class="agents">
             <PageHeader title="Agents" description="Runtime agent configuration and connection status." />
@@ -1470,7 +1507,10 @@ pkg VeilRuntimeUI
               <div class="panel card"><p class="dk-error">{error}</p></div>
             {:else if status}
               <section class="panel card">
-                <h3 class="section-title">LLM Provider</h3>
+                <div class="section-head">
+                  <h3 class="section-title">LLM Provider</h3>
+                  <button type="button" class="btn-ghost btn-sm" onclick={() => { refresh_token = refresh_token + 1; }}>Refresh</button>
+                </div>
                 <div class="provider-row">
                   <div class="provider-badge">
                     <span class="provider-dot"></span>
@@ -1481,10 +1521,10 @@ pkg VeilRuntimeUI
                     <span class="provider-model">{status.provider_mode.model}</span>
                   {/if}
                 </div>
-                <p class="hint">Set <code>VEIL_AGENT_PROVIDER</code> to switch: <code>bedrock</code>, <code>openai</code>, <code>anthropic</code>, <code>acp</code>.</p>
+                <p class="hint">Set <code>VEIL_MODEL_PROVIDER</code> to switch: <code>acp</code>, <code>openai</code>, <code>ollama</code>.</p>
               </section>
               <section class="panel card">
-                <h3 class="section-title">ACP Tunnel</h3>
+                <h3 class="section-title">ACP / local agent</h3>
                 <div class="tunnel-status">
                   <div class="status-indicator" class:connected={status.acp_tunnel?.connected} class:disconnected={!status.acp_tunnel?.connected}>
                     <span class="status-dot"></span>
@@ -1500,9 +1540,9 @@ pkg VeilRuntimeUI
                 </div>
                 {#if !status.acp_tunnel?.connected}
                   <div class="connect-box">
-                    <p>Connect your local ACP agent:</p>
-                    <code class="cmd-block">veil agent connect</code>
-                    <p class="hint">Connects Kiro CLI (or any ACP-compatible agent) as the reasoning backend.</p>
+                    <p>Local ACP (Kiro) is the default for ProductHost:</p>
+                    <code class="cmd-block">VEIL_MODEL_PROVIDER=acp  VEIL_ACP_COMMAND=kiro-cli</code>
+                    <p class="hint">Shell agent chat uses <code>/api/agent/chat</code> on the same host. Dashboard agent dock is always available (Cmd+K).</p>
                   </div>
                 {/if}
               </section>
@@ -1512,16 +1552,18 @@ pkg VeilRuntimeUI
         style """
           .agents { max-width: 52rem; animation: dk-fade-in var(--dk-dur-slow, 420ms) var(--dk-ease-out, ease) both; }
           .panel { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
-          .section-title { font-size: 0.85rem; font-weight: 700; color: var(--dk-text, #f4f5f7); margin: 0; }
+          .section-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+          .section-title { font-size: 0.85rem; font-weight: 700; color: var(--dk-text, #e5e5e5); margin: 0; }
+          .btn-sm { font-size: 0.75rem; padding: 0.25rem 0.55rem; }
           .loading { color: var(--dk-text-muted, #9ca3af); font-size: 0.85rem; }
           .provider-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
-          .provider-badge { display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.75rem; border-radius: 999px; background: color-mix(in srgb, var(--accent, #148770) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #148770) 35%, transparent); }
-          .provider-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent, #1fa88a); }
-          .provider-name { font-weight: 600; font-size: 0.8rem; color: var(--accent, #1fa88a); }
+          .provider-badge { display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.75rem; border-radius: 999px; background: color-mix(in srgb, var(--accent, #737373) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #737373) 35%, transparent); }
+          .provider-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent, #a3a3a3); }
+          .provider-name { font-weight: 600; font-size: 0.8rem; color: var(--accent, #a3a3a3); }
           .provider-mode { font-size: 0.75rem; color: var(--dk-text-muted, #9ca3af); text-transform: uppercase; letter-spacing: 0.05em; }
           .provider-model { font-size: 0.7rem; color: var(--dk-text-muted, #9ca3af); font-family: monospace; }
           .hint { font-size: 0.75rem; color: var(--dk-text-muted, #9ca3af); margin: 0; }
-          .hint code { background: var(--dk-surface-3, #22222f); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; }
+          .hint code { background: var(--dk-surface-3, #2e2e2e); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; }
           .tunnel-status { display: flex; flex-direction: column; gap: 0.5rem; }
           .status-indicator { display: flex; align-items: center; gap: 0.5rem; }
           .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
@@ -1531,12 +1573,12 @@ pkg VeilRuntimeUI
           .connected .status-text { color: #34d399; }
           .disconnected .status-text { color: var(--dk-text-muted, #9ca3af); }
           .agents-list { display: flex; flex-direction: column; gap: 0.3rem; padding-left: 1.25rem; }
-          .agent-entry { font-size: 0.75rem; color: var(--dk-text, #f4f5f7); }
+          .agent-entry { font-size: 0.75rem; color: var(--dk-text, #e5e5e5); }
           .agent-name { font-weight: 600; }
           .agent-user { color: var(--dk-text-muted, #9ca3af); }
-          .connect-box { margin-top: 0.5rem; padding: 0.75rem; background: var(--dk-surface-2, #1a1a26); border-radius: var(--dk-radius-sm, 0.55rem); border: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55)); }
-          .connect-box p { margin: 0 0 0.4rem; font-size: 0.8rem; color: var(--dk-text, #f4f5f7); }
-          .cmd-block { display: block; padding: 0.5rem 0.75rem; background: var(--dk-surface-3, #22222f); border-radius: 4px; font-size: 0.8rem; color: var(--accent, #1fa88a); margin-bottom: 0.4rem; }
+          .connect-box { margin-top: 0.5rem; padding: 0.75rem; background: var(--dk-surface-2, #242424); border-radius: var(--dk-radius-sm, 0.55rem); border: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65)); }
+          .connect-box p { margin: 0 0 0.4rem; font-size: 0.8rem; color: var(--dk-text, #e5e5e5); }
+          .cmd-block { display: block; padding: 0.5rem 0.75rem; background: var(--dk-surface-3, #2e2e2e); border-radius: 4px; font-size: 0.8rem; color: var(--accent, #a3a3a3); margin-bottom: 0.4rem; }
           @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
         """
 
@@ -1741,21 +1783,23 @@ pkg VeilRuntimeUI
           approvals = []
           ci = {}
           id = cr_id_from_path()
+          if id == ""
+            loading = false
+            error = "Missing change request id"
         effect load_detail
           if id != ""
             if loaded == false
               loading = true
               error = ""
+              # Composite detail: { pr, comments, approvals, ci_runs } — not separate endpoints
               mut detail = ApiClient.fetch(f"/api/change_requests/{id}")
-              cr = detail
+              mut unpacked = unpack_cr_detail(detail)
+              cr = unpacked.cr
+              comments = unpacked.comments
+              approvals = unpacked.approvals
+              ci = unpacked.ci
               mut diff_resp = ApiClient.fetch(f"/api/change_requests/{id}/diff")
-              diff = diff_resp
-              mut comments_resp = ApiClient.fetch(f"/api/change_requests/{id}/comments")
-              comments = comments_resp
-              mut approvals_resp = ApiClient.fetch(f"/api/change_requests/{id}/approvals")
-              approvals = approvals_resp
-              mut ci_resp = ApiClient.fetch(f"/api/change_requests/{id}/ci")
-              ci = ci_resp
+              diff = coerce_json_obj(diff_resp)
               loading = false
               loaded = true
         effect do_action
@@ -1793,8 +1837,21 @@ pkg VeilRuntimeUI
             const t = p.endsWith('/') ? p.slice(0, -1) : p;
             const parts = t.split('/').filter(Boolean);
             const i = parts.indexOf('changes');
-            if (i >= 0 && parts[i + 1]) return parts[i + 1];
+            if (i >= 0 && parts[i + 1] && parts[i + 1] !== 'new') return parts[i + 1];
             return '';
+          }
+          // Unpack GET /api/change_requests/{id} shape: { pr, comments, approvals, ci_runs }
+          function unpack_cr_detail(detail: any): any {
+            const d = detail && typeof detail === 'object' ? detail : {};
+            const cr = d.pr != null && typeof d.pr === 'object' ? d.pr : d;
+            const comments = Array.isArray(d.comments) ? d.comments : [];
+            const approvals = Array.isArray(d.approvals) ? d.approvals : [];
+            const runs = Array.isArray(d.ci_runs) ? d.ci_runs : [];
+            const ci = runs.length > 0 ? runs[0] : {};
+            return { cr, comments, approvals, ci };
+          }
+          function coerce_json_obj(v: any): any {
+            return v != null && typeof v === 'object' ? v : {};
           }
           function diff_kind_class(kind: string): string {
             if (kind === 'Added') return 'dk-diff-added';

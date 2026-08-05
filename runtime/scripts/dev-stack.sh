@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Manage the single ProductHost backend + runtime UI Vite for local dashlx_dev.
+#
+# Usage:
+#   runtime/scripts/dev-stack.sh start|stop|restart|status|smoke
+#
+# Backend:  http://127.0.0.1:8080  (ProductHost — IDE + agent + platform APIs)
+# Frontend: http://127.0.0.1:5180  (Vite → proxies /api to :8080)
+#
+# Env overrides: VEIL_PORT, VEIL_RUNTIME_PROXY, VEIL_DDB_TABLE, BUCKET, AWS_PROFILE
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+BACKEND_BIN="${BACKEND_BIN:-$ROOT/runtime/bootstrap/target/release/veil-runtime}"
+BACKEND_PORT="${VEIL_PORT:-8080}"
+UI_PORT="${UI_PORT:-5180}"
+BACKEND_LOG="${BACKEND_LOG:-/tmp/veil-product-host.log}"
+UI_LOG="${UI_LOG:-/tmp/veil-ui.log}"
+
+export AWS_PROFILE="${AWS_PROFILE:-dashlx_dev}"
+export AWS_REGION="${AWS_REGION:-us-west-2}"
+export VEIL_DDB_TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
+export BUCKET="${BUCKET:-veil-runtime-dev}"
+export VEIL_S3_BUCKET="${VEIL_S3_BUCKET:-$BUCKET}"
+export VEIL_SOURCE_MODE="${VEIL_SOURCE_MODE:-prefer_s3}"
+export VEIL_DEV="${VEIL_DEV:-1}"
+export VEIL_PORT="$BACKEND_PORT"
+export VEIL_NONINTERACTIVE=1
+export CI="${CI:-1}"
+export VEIL_PROJECTS_DIR="${VEIL_PROJECTS_DIR:-$HOME/dev/veil-projects}"
+export VEIL_VIEWER_STATIC="${VEIL_VIEWER_STATIC:-$ROOT/runtime/bootstrap/static/viewer}"
+export VEIL_MODEL_PROVIDER="${VEIL_MODEL_PROVIDER:-acp}"
+export VEIL_ACP_COMMAND="${VEIL_ACP_COMMAND:-kiro-cli}"
+export VEIL_ACP_ARGS="${VEIL_ACP_ARGS:-acp --trust-all-tools}"
+export VEIL_ACP_AGENT="${VEIL_ACP_AGENT:-hive}"
+export VEIL_ACP_CWD="${VEIL_ACP_CWD:-$ROOT}"
+export VEIL_RUNTIME_PROXY="${VEIL_RUNTIME_PROXY:-http://127.0.0.1:$BACKEND_PORT}"
+
+kill_port() {
+  local port="$1"
+  fuser -k "${port}/tcp" 2>/dev/null || true
+}
+
+stop_stack() {
+  echo "==> stop backend :$BACKEND_PORT and UI :$UI_PORT"
+  kill_port "$BACKEND_PORT"
+  kill_port "$UI_PORT"
+  # Stale alternate ports from older dual-process setups
+  kill_port 3000 2>/dev/null || true
+  kill_port 3001 2>/dev/null || true
+  kill_port 3210 2>/dev/null || true
+  sleep 1
+}
+
+start_backend() {
+  if [[ ! -x "$BACKEND_BIN" ]]; then
+    echo "==> building veil-runtime (release)…"
+    cargo build --release --manifest-path "$ROOT/runtime/bootstrap/Cargo.toml"
+  fi
+  echo "==> start ProductHost :$BACKEND_PORT  (log $BACKEND_LOG)"
+  nohup "$BACKEND_BIN" >"$BACKEND_LOG" 2>&1 &
+  echo "    pid $!"
+  # wait for listen
+  for _ in $(seq 1 30); do
+    if ss -tln 2>/dev/null | grep -qE ":${BACKEND_PORT}\\b"; then
+      break
+    fi
+    sleep 0.2
+  done
+}
+
+start_ui() {
+  echo "==> start Vite UI :$UI_PORT → $VEIL_RUNTIME_PROXY  (log $UI_LOG)"
+  cd "$ROOT/runtime/ui"
+  nohup env VEIL_RUNTIME_PROXY="$VEIL_RUNTIME_PROXY" npx vite dev --port "$UI_PORT" --host 127.0.0.1 \
+    >"$UI_LOG" 2>&1 &
+  echo "    pid $!"
+  for _ in $(seq 1 40); do
+    if ss -tln 2>/dev/null | grep -qE ":${UI_PORT}\\b"; then
+      break
+    fi
+    sleep 0.25
+  done
+}
+
+smoke() {
+  echo "==> smoke"
+  local ok=1
+  for path in /health /api/projects /api/repos /api/change_requests /api/deploy_environments; do
+    code=$(curl -sf -o /tmp/veil-smoke.json -w "%{http_code}" --max-time 8 \
+      "http://127.0.0.1:${BACKEND_PORT}${path}" || echo err)
+    echo "  backend $code  $path"
+    [[ "$code" == "200" ]] || ok=0
+  done
+  code=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 8 \
+    "http://127.0.0.1:${UI_PORT}/api/change_requests" || echo err)
+  echo "  ui-proxy $code  /api/change_requests"
+  [[ "$code" == "200" ]] || ok=0
+  if [[ "$ok" -eq 1 ]]; then
+    echo "✓ stack OK  UI http://127.0.0.1:${UI_PORT}/  API http://127.0.0.1:${BACKEND_PORT}/"
+  else
+    echo "✗ smoke failed — see $BACKEND_LOG $UI_LOG" >&2
+    return 1
+  fi
+}
+
+status() {
+  echo "ports:"
+  ss -tlnp 2>/dev/null | grep -E ":(${BACKEND_PORT}|${UI_PORT}|3000|3001|3210)\\b" || echo "  (none matching)"
+  echo "env: AWS_PROFILE=$AWS_PROFILE TABLE=$VEIL_DDB_TABLE BUCKET=$BUCKET PROXY=$VEIL_RUNTIME_PROXY"
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+  stop) stop_stack ;;
+  start)
+    stop_stack
+    start_backend
+    start_ui
+    smoke
+    ;;
+  restart)
+    stop_stack
+    start_backend
+    start_ui
+    smoke
+    ;;
+  status) status ;;
+  smoke) smoke ;;
+  backend)
+    kill_port "$BACKEND_PORT"
+    sleep 1
+    start_backend
+    smoke
+    ;;
+  ui)
+    kill_port "$UI_PORT"
+    sleep 1
+    start_ui
+    smoke
+    ;;
+  *)
+    echo "usage: $0 start|stop|restart|status|smoke|backend|ui" >&2
+    exit 2
+    ;;
+esac

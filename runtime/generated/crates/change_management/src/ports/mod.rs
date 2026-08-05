@@ -19,6 +19,7 @@ pub trait ChangeRequestRepo: Send + Sync {
         status: Option<PrStatus>,
     ) -> Result<Vec<ChangeRequest>, DomainError>;
     async fn list_open(&self, repo_id: Uuid) -> Result<Vec<ChangeRequest>, DomainError>;
+    async fn list_all(&self, status: Option<PrStatus>) -> Result<Vec<ChangeRequest>, DomainError>;
     async fn save(&self, cr: ChangeRequest) -> Result<(), DomainError>;
 }
 

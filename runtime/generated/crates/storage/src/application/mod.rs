@@ -105,6 +105,32 @@ pub async fn get_project_infra(
     );
 }
 
+/// DomainService: QueryProjectModules
+#[tracing::instrument(skip_all)]
+pub async fn query_project_modules(
+    deps: &Deps,
+    module: String,
+    filters_json: String,
+) -> Result<serde_json::Value, DomainError> {
+    // step: scan
+    let repos = deps.metadata_store.list_repos().await?;
+    let mut toml_entries: Vec<serde_json::Value> = vec![];
+    for repo in repos {
+        let s3_key = format!("repos/{}/{}/veil.toml", repo.id.value, repo.default_branch);
+        if deps.object_storage.exists(s3_key.clone()).await? {
+            let raw_bytes = deps.object_storage.get(s3_key.clone()).await?;
+            toml_entries.push(serde_json::json!({ "repo_id": serde_json::json!(serde_json::json!(repo.clone())["id"].clone())["value"].clone(), "repo_name": serde_json::json!(repo.clone())["name"].clone(), "slug": serde_json::json!(repo.clone())["slug"].clone(), "branch": serde_json::json!(repo.clone())["default_branch"].clone(), "raw": raw_bytes.clone() }));
+        };
+    }
+    let result_str = veil_local_fs::LocalFs::query_modules_from_tomls(
+        serde_json::to_string(&toml_entries)?,
+        module.clone(),
+        filters_json.clone(),
+    )
+    .map_err(|e| DomainError::External(e.to_string()))?;
+    return Ok(serde_json::from_str::<_>(&result_str)?);
+}
+
 /// DomainService: SyncRepoToObjectStore
 #[tracing::instrument(skip_all)]
 pub async fn sync_repo_to_object_store(

@@ -5,7 +5,11 @@
 
 - **LAY-002:** layer loader + **`GET /api/presentation`**
 - **LAY-003:** viewer fetches presentation IR, view switcher, `projectView()`
-  in `veil-viewer/src/lib/presentation.ts` (tabs / tree / flat / flow)
+  in `runtime/ide-ui/src/lib/presentation.ts` (tabs / tree / flat / flow)
+- **Layout policy (2026-08):** SvelteFlow **only** for hosts with control-flow
+  bodies (`isLogicFlowHost`: Steps / SequenceFlow / Flow+Actions). Package root,
+  modules/BCs, groups, and domain model use **native Tree** (`TreeLayout` +
+  `DetailPanel`). Tab views keep the tab strip but render each tab as tree.
 - **LAY-006:** MVP layouts locked + tested (`veil-ir/src/project.rs` + viewer
   `resolveLayout` fallback)
 - **LAY-007:** Nest when predicates, orphan policies, cycle/ambiguity rules;
@@ -156,11 +160,6 @@ construct Context
   mt mod
   ...
   present
-    view groups
-      label "Layers"
-      layout tabs
-      members by_source_group
-      default
     view model
       label "Domain model"
       layout tree
@@ -171,6 +170,12 @@ construct Context
       nest Entity under Aggregate when declared_in_parent
       nest ValueObject under Aggregate when declared_in_parent
       orphan_policy list
+      default
+    view groups
+      label "Layers"
+      layout tabs
+      members by_source_group
+      # tab strip only; each tab body uses native Tree (not SvelteFlow)
 ```
 
 **Container / leaf roles:**
@@ -205,11 +210,14 @@ for projection. Loaders may warn if they disagree.
 
 | Id | Behavior | Status |
 |----|----------|--------|
-| `flat` | All projected candidates as siblings (type-column placement) | **Implemented** |
-| `tabs` | Partition by source group / `tabs` list; one tab active | **Implemented** |
-| `tree` | Roots + nest rules; nested nodes omitted at host level (drill into containers) | **Implemented** |
-| `flow` | Sibling candidates + ELK layered sequence (`LR` by default) | **Implemented** |
+| `flat` | All projected candidates as siblings; **native FlatLayout** + DetailPanel | **Implemented** |
+| `tabs` | Partition by source group / `tabs` list; tab body = **native Tree** | **Implemented** |
+| `tree` | Roots + nest rules; **native TreeLayout** + DetailPanel | **Implemented** |
+| `flow` | Sibling candidates + ELK sequence on **SvelteFlow** — only when host has control-flow body (`isLogicFlowHost`) | **Implemented** |
 | `bipartite` | Two columns + edge kind | Deferred; load accepted, **runtime falls back to `flat`** |
+
+**Viewer policy:** package root, modules/BCs, aggregates, and empty free-fns use
+tree/flat. SvelteFlow is not the default canvas for structural browsing.
 
 **Load time (strict):** unknown layout id → **layer load error** (`validate_presentations`).
 

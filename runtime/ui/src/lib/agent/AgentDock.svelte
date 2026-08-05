@@ -21,10 +21,53 @@
 		agentInsertToken
 	} from '$lib/agent/runtimeAgentSession';
 
-	let panelWidth = $state(420);
-	let isResizing = $state(false);
+	// Chips only seed the agent — navigation must come from agent tools (list_changes, navigate_to, …).
+
+	const WIDTH_KEY = 'veil.agent.dockWidth';
 	const MIN_WIDTH = 320;
-	const MAX_WIDTH = 700;
+	const DEFAULT_WIDTH = 420;
+
+	/** Allow the agent to claim most of the viewport so the IDE can shrink. */
+	function maxWidth(): number {
+		if (typeof window === 'undefined') return 900;
+		return Math.max(MIN_WIDTH, Math.min(1100, Math.floor(window.innerWidth * 0.72)));
+	}
+
+	function clampWidth(n: number): number {
+		return Math.min(maxWidth(), Math.max(MIN_WIDTH, Math.round(n)));
+	}
+
+	function loadWidth(): number {
+		if (typeof localStorage === 'undefined') return DEFAULT_WIDTH;
+		const n = Number(localStorage.getItem(WIDTH_KEY));
+		if (!Number.isFinite(n) || n <= 0) return DEFAULT_WIDTH;
+		return clampWidth(n);
+	}
+
+	function saveWidth(px: number) {
+		try {
+			localStorage.setItem(WIDTH_KEY, String(clampWidth(px)));
+		} catch {
+			/* ignore quota / private mode */
+		}
+	}
+
+	// Restore saved width immediately on the client (avoid 420 flash then snap).
+	let panelWidth = $state(
+		typeof window !== 'undefined' ? loadWidth() : DEFAULT_WIDTH
+	);
+	let isResizing = $state(false);
+
+	$effect(() => {
+		// Re-clamp if the window shrinks below the saved width.
+		const onResize = () => {
+			panelWidth = clampWidth(panelWidth);
+		};
+		window.addEventListener('resize', onResize);
+		// Ensure localStorage is applied after SSR/hydration.
+		panelWidth = loadWidth();
+		return () => window.removeEventListener('resize', onResize);
+	});
 
 	// Provider status polling
 	interface ProviderStatus {
@@ -60,23 +103,49 @@
 		return providerStatus?.acp_tunnel?.connected ?? false;
 	}
 
-	function startResize(e: MouseEvent) {
+	function startResize(e: PointerEvent) {
+		// Pointer capture + body class so the IDE iframe cannot steal moves mid-drag.
 		e.preventDefault();
+		e.stopPropagation();
+		const handle = e.currentTarget as HTMLElement;
+		const pointerId = e.pointerId;
+		try {
+			handle.setPointerCapture(pointerId);
+		} catch {
+			/* ignore */
+		}
 		isResizing = true;
+		document.body.classList.add('agent-dock-resizing');
 		const startX = e.clientX;
 		const startWidth = panelWidth;
+		const cap = maxWidth();
+		let latest = startWidth;
 
-		function onMove(ev: MouseEvent) {
-			const delta = startX - ev.clientX;
-			panelWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth + delta));
+		function onMove(ev: PointerEvent) {
+			if (ev.pointerId !== pointerId) return;
+			const delta = startX - ev.clientX; // drag left → wider dock
+			latest = Math.max(MIN_WIDTH, Math.min(cap, startWidth + delta));
+			panelWidth = latest;
 		}
-		function onUp() {
+		function onUp(ev: PointerEvent) {
+			if (ev.pointerId !== pointerId) return;
 			isResizing = false;
-			document.removeEventListener('mousemove', onMove);
-			document.removeEventListener('mouseup', onUp);
+			document.body.classList.remove('agent-dock-resizing');
+			try {
+				handle.releasePointerCapture(pointerId);
+			} catch {
+				/* ignore */
+			}
+			handle.removeEventListener('pointermove', onMove);
+			handle.removeEventListener('pointerup', onUp);
+			handle.removeEventListener('pointercancel', onUp);
+			// Persist the final drag width (use local latest — avoids stale $state in closure).
+			panelWidth = latest;
+			saveWidth(latest);
 		}
-		document.addEventListener('mousemove', onMove);
-		document.addEventListener('mouseup', onUp);
+		handle.addEventListener('pointermove', onMove);
+		handle.addEventListener('pointerup', onUp);
+		handle.addEventListener('pointercancel', onUp);
 	}
 
 	function togglePanel() {
@@ -100,12 +169,15 @@
 		role="complementary"
 		aria-label="AI Agent"
 	>
-		<!-- Resize handle -->
+		<!-- Resize handle (pointer events — survives drag over IDE iframe) -->
 		<div
 			class="resize-handle"
 			role="separator"
 			aria-orientation="vertical"
-			onmousedown={startResize}
+			aria-valuenow={panelWidth}
+			aria-valuemin={MIN_WIDTH}
+			title="Drag to resize agent panel"
+			onpointerdown={startResize}
 		></div>
 
 		<!-- Header -->
@@ -116,7 +188,7 @@
 				<span class="agent-hint">{providerLabel()}</span>
 			</div>
 			<div class="header-actions">
-				{#if $agentStatusLine && $agentStatusLine !== 'WebSocket connection error'}
+				{#if $agentStatusLine}
 					<span class="status-line" title={$agentStatusLine}>{$agentStatusLine}</span>
 				{/if}
 				<button
@@ -139,7 +211,7 @@
 		</header>
 
 		<!-- Error bar -->
-		{#if $agentError && $agentError !== 'WebSocket connection error'}
+		{#if $agentError}
 			<div class="error-bar" role="alert">{$agentError}</div>
 		{/if}
 
@@ -152,9 +224,9 @@
 						Ask me to edit code, manage changes, deploy projects, or navigate — I can control the entire veil platform. <kbd>Cmd+K</kbd> to toggle.
 					</p>
 					<div class="empty-examples">
-						<button class="example-chip" onclick={() => agentSend('Open the relay project in the IDE')}>Open relay in IDE</button>
-						<button class="example-chip" onclick={() => agentSend('Show me open change requests')}>Open changes</button>
-						<button class="example-chip" onclick={() => agentSend('Deploy wear-test to staging')}>Deploy to staging</button>
+						<button class="example-chip" onclick={() => agentSend('Open the relay project in the IDE — use open_ide or open_project')}>Open relay in IDE</button>
+						<button class="example-chip" onclick={() => agentSend('Show me open change requests — use the list_changes tool so the UI navigates to /changes')}>Open changes</button>
+						<button class="example-chip" onclick={() => agentSend('Open the deploy page and summarize status — use open_deploy')}>Deploy to staging</button>
 					</div>
 				</div>
 			{:else}
@@ -185,12 +257,14 @@
 
 <style>
 	.agent-dock {
+		position: relative;
 		height: 100vh;
 		display: flex;
 		flex-direction: column;
-		flex-shrink: 0;
-		background: var(--dk-surface, #12121a);
-		border-left: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+		flex: 0 0 auto;
+		min-width: 0;
+		background: var(--dk-surface, #1a1a1a);
+		border-left: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
 		z-index: 100;
 		box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
 		animation: slide-in 200ms var(--dk-ease-out, cubic-bezier(0.16, 1, 0.3, 1)) both;
@@ -199,6 +273,18 @@
 	.agent-dock.resizing {
 		user-select: none;
 		transition: none;
+	}
+
+	/* While resizing, kill iframe hit-testing so the IDE cannot eat pointermoves. */
+	:global(body.agent-dock-resizing) {
+		cursor: col-resize !important;
+		user-select: none !important;
+	}
+	:global(body.agent-dock-resizing iframe) {
+		pointer-events: none !important;
+	}
+	:global(body.agent-dock-resizing *) {
+		cursor: col-resize !important;
 	}
 
 	@keyframes slide-in {
@@ -214,17 +300,18 @@
 
 	.resize-handle {
 		position: absolute;
-		left: -3px;
+		left: -5px;
 		top: 0;
 		bottom: 0;
-		width: 6px;
+		width: 10px;
 		cursor: col-resize;
-		z-index: 10;
+		z-index: 20;
+		touch-action: none;
 		transition: background 140ms ease;
 	}
 	.resize-handle:hover,
 	.agent-dock.resizing .resize-handle {
-		background: var(--dk-brand, #148770);
+		background: color-mix(in srgb, var(--dk-brand, #737373) 55%, transparent);
 	}
 
 	.dock-header {
@@ -232,9 +319,9 @@
 		align-items: center;
 		justify-content: space-between;
 		padding: 0.6rem 0.85rem;
-		border-bottom: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+		border-bottom: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
 		flex-shrink: 0;
-		background: var(--dk-glass, rgba(18, 18, 26, 0.72));
+		background: var(--dk-glass, rgba(26, 26, 26, 0.78));
 		backdrop-filter: blur(12px);
 	}
 
@@ -245,7 +332,7 @@
 	}
 
 	.agent-icon {
-		color: var(--dk-brand-light, #1fa88a);
+		color: var(--dk-brand-light, #a3a3a3);
 		font-size: 0.9rem;
 	}
 
@@ -261,7 +348,7 @@
 	.agent-title {
 		font-weight: 700;
 		font-size: 0.8rem;
-		color: var(--dk-text, #f4f5f7);
+		color: var(--dk-text, #e5e5e5);
 	}
 
 	.agent-hint {
@@ -295,7 +382,7 @@
 		transition: color 140ms ease, background 140ms ease;
 	}
 	.btn-icon:hover {
-		color: var(--dk-text, #f4f5f7);
+		color: var(--dk-text, #e5e5e5);
 		background: rgba(255, 255, 255, 0.06);
 	}
 
@@ -338,7 +425,7 @@
 	.empty-title {
 		font-weight: 700;
 		font-size: 0.95rem;
-		color: var(--dk-text, #f4f5f7);
+		color: var(--dk-text, #e5e5e5);
 		margin: 0;
 	}
 
@@ -350,7 +437,7 @@
 	}
 
 	.empty-hint kbd {
-		background: var(--dk-surface-3, #22222f);
+		background: var(--dk-surface-3, #2e2e2e);
 		border: 1px solid var(--dk-border, #2a2a38);
 		padding: 0.1rem 0.35rem;
 		border-radius: 4px;
@@ -366,8 +453,8 @@
 	}
 
 	.example-chip {
-		background: var(--dk-surface-2, #1a1a26);
-		border: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+		background: var(--dk-surface-2, #242424);
+		border: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
 		color: var(--dk-text-muted, #9ca3af);
 		font-size: 0.7rem;
 		padding: 0.3rem 0.6rem;
@@ -377,16 +464,16 @@
 		font-family: inherit;
 	}
 	.example-chip:hover {
-		color: var(--dk-brand-light, #1fa88a);
-		border-color: var(--dk-brand, #148770);
-		background: rgba(20, 135, 112, 0.08);
+		color: var(--dk-brand-light, #a3a3a3);
+		border-color: var(--dk-brand, #737373);
+		background: rgba(115, 115, 115, 0.08);
 	}
 
 	.input-area {
 		flex-shrink: 0;
-		border-top: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+		border-top: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
 		padding: 0.5rem;
-		background: var(--dk-glass, rgba(18, 18, 26, 0.72));
+		background: var(--dk-glass, rgba(26, 26, 26, 0.78));
 	}
 
 	/* Fix ChatInput from @aether-ui/core which uses Tailwind classes we don't have */
@@ -400,10 +487,10 @@
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		border: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+		border: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
 		border-radius: 8px;
 		padding: 0.5rem 0.75rem;
-		background: var(--dk-surface-2, #1a1a26);
+		background: var(--dk-surface-2, #242424);
 	}
 
 	.input-area :global(textarea) {
@@ -411,7 +498,7 @@
 		resize: none;
 		border: none;
 		background: transparent;
-		color: var(--dk-text, #f4f5f7);
+		color: var(--dk-text, #e5e5e5);
 		font-size: 0.85rem;
 		line-height: 1.4;
 		outline: none;
@@ -427,7 +514,7 @@
 	.input-area :global(button[aria-label="Send message"]),
 	.input-area :global(button[aria-label="Stop generating"]),
 	.input-area :global(button[aria-label="Interject message"]) {
-		background: var(--dk-brand, #148770);
+		background: var(--dk-brand, #737373);
 		color: #fff;
 		border: none;
 		border-radius: 6px;
@@ -440,7 +527,7 @@
 	}
 
 	.input-area :global(button[aria-label="Send message"]:hover) {
-		background: var(--dk-brand-light, #1fa88a);
+		background: var(--dk-brand-light, #a3a3a3);
 	}
 
 	.input-area :global(button[aria-label="Send message"]:disabled) {
@@ -467,7 +554,7 @@
 	}
 
 	.input-area :global(label:hover) {
-		color: var(--dk-text, #f4f5f7);
+		color: var(--dk-text, #e5e5e5);
 	}
 
 	.input-area :global(.sr-only) {

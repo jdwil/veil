@@ -102,22 +102,29 @@
           if (loaded === false) {
             error = "";
             loading = true;
-            let repo = await (async () => { const __u = new URL(`/api/repos/${id}`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {  } as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            name = field_str(repo, "name");
-            slug = field_str(repo, "slug");
-            description = field_str(repo, "description");
-            default_branch = field_str(repo, "default_branch");
-            if (default_branch === "") {
-              default_branch = "main";
+            let result = await load_project_detail(id, environment);
+            if (result.ok === true) {
+              name = field_str(result.repo, "name");
+              slug = field_str(result.repo, "slug");
+              description = field_str(result.repo, "description");
+              default_branch = field_str(result.repo, "default_branch");
+              if (default_branch === "") {
+                default_branch = "main";
+              };
+              created_at = field_str(result.repo, "created_at");
+              updated_at = field_str(result.repo, "updated_at");
+              if (field_str(result.repo, "id") !== "") {
+                id = field_str(result.repo, "id");
+              };
+              apply_env_catalog(result.catalog);
+              await hydrate_from_infra(result.wrap);
+              loading = false;
+              loaded = true;
+            } else {
+              error = result.error;
+              loading = false;
+              loaded = true;
             };
-            created_at = field_str(repo, "created_at");
-            updated_at = field_str(repo, "updated_at");
-            let catalog = await (async () => { const __u = new URL("/api/deploy_environments", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {  } as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            apply_env_catalog(catalog);
-            let wrap = await (async () => { const __u = new URL(`/api/project_infras/${id}`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = { environment } as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            await hydrate_from_infra(wrap);
-            loading = false;
-            loaded = true;
           };
         };
   })();
@@ -178,7 +185,34 @@
   }
   function field_str(obj: any, key: string): string {
   const v = obj?.[key];
-  return v == null ? '' : String(v);
+  if (v == null) return '';
+  // RepoId is serialized as { value: "uuid" }
+  if (typeof v === 'object' && v.value != null) return String(v.value);
+  return String(v);
+  }
+  /** Load repo + optional infra without hanging Loading forever. */
+  async function load_project_detail(id: string, environment: string): Promise<any> {
+  try {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+  const repoRes = await fetch(`${origin}/api/repos/${encodeURIComponent(id)}`);
+  if (!repoRes.ok) throw new Error(await repoRes.text() || `repo ${repoRes.status}`);
+  const repo = await repoRes.json();
+  let catalog: any = { default: 'dev', environments: [] };
+  try {
+  const cRes = await fetch(`${origin}/api/deploy_environments`);
+  if (cRes.ok) catalog = await cRes.json();
+  } catch { /* optional */ }
+  let wrap: any = { infra: {}, environment: environment || 'dev' };
+  try {
+  const u = new URL(`/api/project_infras/${encodeURIComponent(id)}`, origin);
+  if (environment) u.searchParams.set('environment', environment);
+  const iRes = await fetch(u.toString());
+  if (iRes.ok) wrap = await iRes.json();
+  } catch { /* optional — page still shows repo meta */ }
+  return { ok: true, repo, catalog, wrap, error: '' };
+  } catch (e: any) {
+  return { ok: false, repo: {}, catalog: {}, wrap: {}, error: e?.message != null ? String(e.message) : String(e) };
+  }
   }
   function classify_unit_state(state: any): { provisioned: boolean; label: string; kind: string } {
   if (!state) return { provisioned: false, label: 'not provisioned', kind: 'none' };
@@ -406,6 +440,15 @@
   agent={{ intent: 'view-project', entity: 'Repo', entityLabel: 'Project', itemId: id }}
 >
   {#snippet header_actions()}
+    {#if id || slug}
+      <a
+        class="btn-outline"
+        href={`/projects/${encodeURIComponent(slug || id)}/ide`}
+        title="Open dual-loop IDE inside the runtime (agent panel stays here)"
+      >
+        Open in IDE
+      </a>
+    {/if}
     {#if has_deploy}
       <label class="env-select-wrap">
         <span class="env-select-label">Environment</span>

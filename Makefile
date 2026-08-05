@@ -21,7 +21,8 @@ RUNTIME_SRC := runtime/src/runtime.veil
 RUNTIME_OUT := runtime/generated
 STUB_DIR    := runtime/src/stubs
 EXAMPLES    := examples
-VIEWER_DIR  := veil-viewer
+# IDE UI lives under runtime (single ProductHost — no separate multi veil serve).
+VIEWER_DIR  := runtime/ide-ui
 # Backend API (viewer hardcodes localhost:3001 — change both if you override)
 PORT        ?= 3001
 # Vite / SvelteKit dev server
@@ -265,18 +266,18 @@ pure-runtime-build: veil
 		|| cp -f runtime/bootstrap/static/app/src/spa.js runtime/bootstrap/static/dist/spa.js
 	@test -f runtime/bootstrap/static/dist/spa.js || \
 		(echo "error: SPA spa.js missing after gen" >&2; exit 1)
-	@echo "==> build veil-viewer → static/viewer (same-origin IDE embed)"
-	@if [ -d veil-viewer/node_modules ]; then \
-		(cd veil-viewer && VEIL_VIEWER_BASE=/viewer npm run build) || \
-			echo "  ⚠ viewer build failed — IDE embed needs: cd veil-viewer && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
+	@echo "==> build runtime/ide-ui → static/viewer (same-origin IDE, ProductHost)"
+	@if [ -d $(VIEWER_DIR)/node_modules ]; then \
+		(cd $(VIEWER_DIR) && VEIL_VIEWER_BASE=/viewer npm run build) || \
+			echo "  ⚠ IDE UI build failed — run: cd $(VIEWER_DIR) && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
 		rm -rf runtime/bootstrap/static/viewer; \
-		if [ -d veil-viewer/build ]; then \
+		if [ -d $(VIEWER_DIR)/build ]; then \
 			mkdir -p runtime/bootstrap/static/viewer; \
-			cp -a veil-viewer/build/. runtime/bootstrap/static/viewer/; \
-			echo "  ✓ viewer → runtime/bootstrap/static/viewer"; \
+			cp -a $(VIEWER_DIR)/build/. runtime/bootstrap/static/viewer/; \
+			echo "  ✓ ide-ui → runtime/bootstrap/static/viewer"; \
 		fi; \
 	else \
-		echo "  ⚠ veil-viewer/node_modules missing — run: cd veil-viewer && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
+		echo "  ⚠ $(VIEWER_DIR)/node_modules missing — run: cd $(VIEWER_DIR) && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
 	fi
 	@echo "==> gen host.veil (CAP-002/006 product host bin)"
 	@$(VEIL_BIN) gen runtime/src/host.veil -o runtime/generated-host -t rust || true

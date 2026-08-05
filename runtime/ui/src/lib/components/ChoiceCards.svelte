@@ -136,7 +136,7 @@
   background:
     linear-gradient(160deg, rgba(255, 255, 255, 0.035) 0%, transparent 50%),
     rgba(18, 18, 26, 0.78);
-  color: var(--dk-text, #f4f5f7);
+  color: var(--dk-text, #e5e5e5);
   cursor: pointer;
   font-family: inherit;
   overflow: hidden;
@@ -155,17 +155,17 @@
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
 }
 .dk-choice-card:focus-visible {
-  outline: 2px solid rgba(20, 135, 112, 0.55);
+  outline: 2px solid rgba(115, 115, 115, 0.55);
   outline-offset: 2px;
 }
 .dk-choice-card--on {
-  border-color: rgba(20, 135, 112, 0.65);
+  border-color: rgba(115, 115, 115, 0.65);
   background:
-    linear-gradient(145deg, rgba(20, 135, 112, 0.2) 0%, rgba(20, 135, 112, 0.06) 55%, transparent 100%),
+    linear-gradient(145deg, rgba(115, 115, 115, 0.2) 0%, rgba(115, 115, 115, 0.06) 55%, transparent 100%),
     rgba(14, 22, 20, 0.9);
   box-shadow:
-    0 0 0 1px rgba(20, 135, 112, 0.28),
-    0 12px 30px rgba(20, 135, 112, 0.12);
+    0 0 0 1px rgba(115, 115, 115, 0.28),
+    0 12px 30px rgba(115, 115, 115, 0.12);
 }
 .dk-choice-card--tile {
   flex-direction: column;
@@ -197,12 +197,12 @@
 .dk-choice-card--on .dk-choice-card__icon {
   background:
     radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.18), transparent 55%),
-    linear-gradient(145deg, rgba(31, 168, 138, 0.35), rgba(20, 135, 112, 0.18));
-  border-color: rgba(20, 135, 112, 0.45);
+    linear-gradient(145deg, rgba(163, 163, 163, 0.35), rgba(115, 115, 115, 0.18));
+  border-color: rgba(115, 115, 115, 0.45);
   color: #5eead4;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 6px 16px rgba(20, 135, 112, 0.18);
+    0 6px 16px rgba(115, 115, 115, 0.18);
 }
 .dk-choice-card__text {
   display: flex;
@@ -237,7 +237,7 @@
   width: 1.35rem;
   height: 1.35rem;
   border-radius: 999px;
-  background: var(--dk-brand, #148770);
+  background: var(--dk-brand, #737373);
   color: #fff;
   opacity: 0;
   transform: scale(0.7);

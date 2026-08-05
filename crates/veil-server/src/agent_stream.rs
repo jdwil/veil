@@ -64,9 +64,13 @@ pub async fn run_turn_stream<P: SourceProvider>(
 
     let cfg = ModelConfig::from_env();
 
-    // Host-side structured commands (create package, list files, …) must not
-    // go through ACP streaming — `run_turn` handles them immediately.
-    if crate::agent::is_structured_agent_command(&req.prompt) {
+    // Host-side structured commands (create package, list files, platform UX …)
+    // must not go through ACP streaming — `run_turn` handles them immediately.
+    // Platform UX (list_changes / open_deploy / …) is included so AgentDock chips
+    // always emit navigation tool events without waiting on ACP MCP discovery.
+    if crate::agent::is_structured_agent_command(&req.prompt)
+        || crate::agent::parse_platform_ux_intent(&req.prompt).is_some()
+    {
         emit(
             &tx,
             "status",
@@ -146,6 +150,14 @@ async fn stream_acp_turn<P: SourceProvider>(
         }
         c
     };
+
+    // Route MCP URL to project-scoped IDE tools when we have a project.
+    // Respawn ACP if the project changed so Kiro loads /api/p/{project}/mcp
+    // (hub /api/mcp alone cannot see dual-loop list_files / read_source / …).
+    let project_name = crate::provider::hub::CURRENT_PROJECT
+        .try_with(|n| n.clone())
+        .ok();
+    crate::acp::ensure_acp_project_scope(project_name.clone());
 
     emit(
         tx,

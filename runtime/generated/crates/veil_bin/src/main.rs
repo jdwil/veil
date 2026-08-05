@@ -11,7 +11,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::{Next, from_fn},
     response::Response,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use change_management::application::{
     self as change_management_app, Deps as change_management_Deps,
@@ -95,6 +95,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/project_infras/{id}",
             get(storage_get_project_infra_handler),
+        )
+        .route(
+            "/api/query-project-modules",
+            post(storage_query_project_modules_handler),
         )
         .route("/api/read-file", post(storage_read_file_handler))
         .route(
@@ -528,22 +532,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dyn change_management::ports::ChangeRequestRepo + Send + Sync,
     > = Arc::new(change_management::adapters::DdbChangeRequestRepo {
         client: _stub_ddb_client.clone(),
-        table: std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "default".into()),
+        table: std::env::var("VEIL_DDB_TABLE")
+            .or_else(|_| std::env::var("TABLE"))
+            .unwrap_or_else(|_| "veil".into()),
     });
     let ddb_approval_repo_inst: Arc<dyn change_management::ports::ApprovalRepo + Send + Sync> =
         Arc::new(change_management::adapters::DdbApprovalRepo {
             client: _stub_ddb_client.clone(),
-            table: std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "default".into()),
+            table: std::env::var("VEIL_DDB_TABLE")
+                .or_else(|_| std::env::var("TABLE"))
+                .unwrap_or_else(|_| "veil".into()),
         });
     let ddb_ci_run_repo_inst: Arc<dyn change_management::ports::CiRunRepo + Send + Sync> =
         Arc::new(change_management::adapters::DdbCiRunRepo {
             client: _stub_ddb_client.clone(),
-            table: std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "default".into()),
+            table: std::env::var("VEIL_DDB_TABLE")
+                .or_else(|_| std::env::var("TABLE"))
+                .unwrap_or_else(|_| "veil".into()),
         });
     let ddb_comment_repo_inst: Arc<dyn change_management::ports::CommentRepo + Send + Sync> =
         Arc::new(change_management::adapters::DdbCommentRepo {
             client: _stub_ddb_client.clone(),
-            table: std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "default".into()),
+            table: std::env::var("VEIL_DDB_TABLE")
+                .or_else(|_| std::env::var("TABLE"))
+                .unwrap_or_else(|_| "veil".into()),
         });
     let s3_git_service_adapter_inst: Arc<dyn change_management::ports::GitService + Send + Sync> =
         Arc::new(change_management::adapters::S3GitServiceAdapter {
@@ -560,45 +572,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let change_management_router = Router::new()
         .route(
-            "/api/add-comment",
-            post(change_management_add_comment_handler),
+            "/api/change_requests",
+            post(change_management_create_change_request_flat_handler)
+                .get(change_management_list_all_change_requests_handler),
         )
         .route(
-            "/api/approve-change",
-            post(change_management_approve_change_handler),
-        )
-        .route(
-            "/api/change_management/change_requests",
+            "/api/change_requests/{id}",
             get(change_management_get_change_request_handler),
         )
         .route(
-            "/api/change_requests",
-            post(change_management_create_change_request_handler)
-                .get(change_management_list_change_requests_handler),
+            "/api/change_requests/{id}/approve",
+            post(change_management_approve_change_handler),
         )
         .route(
-            "/api/commit-to-change",
+            "/api/change_requests/{id}/comments",
+            post(change_management_add_review_comment_handler),
+        )
+        .route(
+            "/api/change_requests/{id}/commit",
             post(change_management_commit_to_change_handler),
         )
         .route(
-            "/api/compute-structural-diff-from-source",
-            post(change_management_compute_structural_diff_from_source_handler),
-        )
-        .route(
-            "/api/merge-change",
-            post(change_management_merge_change_handler),
-        )
-        .route(
-            "/api/request-changes",
-            post(change_management_request_changes_handler),
-        )
-        .route(
-            "/api/structural_diffs",
+            "/api/change_requests/{id}/diff",
             get(change_management_get_structural_diff_handler),
         )
         .route(
-            "/api/submit-for-review",
+            "/api/change_requests/{id}/merge",
+            post(change_management_merge_change_handler),
+        )
+        .route(
+            "/api/change_requests/{id}/request-changes",
+            post(change_management_request_changes_handler),
+        )
+        .route(
+            "/api/change_requests/{id}/status",
+            put(change_management_update_change_request_status_handler),
+        )
+        .route(
+            "/api/change_requests/{id}/submit",
             post(change_management_submit_for_review_handler),
+        )
+        .route(
+            "/api/repos/{id}/changes",
+            post(change_management_create_change_request_handler)
+                .get(change_management_list_change_requests_handler),
         )
         .layer(from_fn(veil_api_key_middleware))
         .layer(veil_cors_layer())
@@ -725,6 +742,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
+                )
+                .await?;
+                Ok(serde_json::to_value(__result)
+                    .map_err(|e| DomainError::External(e.to_string()))?)
+            }
+        });
+    }
+    {
+        let __deps = storage_deps.clone();
+        bus.register("QueryProjectModules", move |cmd| {
+            let __deps = __deps.clone();
+            async move {
+                let __result = storage_app::query_project_modules(
+                    &__deps,
+                    cmd.get("module")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    cmd.get("filters_json")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 )
                 .await?;
                 Ok(serde_json::to_value(__result)
@@ -2572,6 +2611,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::create_change_request(
                     &__deps,
                     serde_json::from_value(
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                    )
+                    .map_err(|e| DomainError::External(e.to_string()))?,
+                    cmd.get("slug")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    cmd.get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    cmd.get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    cmd.get("jira_ticket")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    cmd.get("author")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+                .await?;
+                Ok(serde_json::to_value(__result)
+                    .map_err(|e| DomainError::External(e.to_string()))?)
+            }
+        });
+    }
+    {
+        let __deps = change_management_deps.clone();
+        bus.register("CreateChangeRequestFlat", move |cmd| {
+            let __deps = __deps.clone();
+            async move {
+                let __result = change_management_app::create_change_request_flat(
+                    &__deps,
+                    serde_json::from_value(
                         cmd.get("repo_id")
                             .cloned()
                             .unwrap_or(serde_json::Value::Null),
@@ -2612,7 +2689,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::commit_to_change(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("pr_id").cloned().unwrap_or(serde_json::Value::Null),
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
                     cmd.get("slug")
@@ -2650,7 +2727,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::submit_for_review(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("pr_id").cloned().unwrap_or(serde_json::Value::Null),
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
                 )
@@ -2668,7 +2745,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::approve_change(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("pr_id").cloned().unwrap_or(serde_json::Value::Null),
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
                     cmd.get("reviewer")
@@ -2696,7 +2773,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::request_changes(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("pr_id").cloned().unwrap_or(serde_json::Value::Null),
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
                     cmd.get("reviewer")
@@ -2722,7 +2799,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::merge_change(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("pr_id").cloned().unwrap_or(serde_json::Value::Null),
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
                     cmd.get("merger")
@@ -2748,7 +2825,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::get_structural_diff(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("pr_id").cloned().unwrap_or(serde_json::Value::Null),
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
                     cmd.get("slug")
@@ -2784,6 +2861,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
             Ok(serde_json::to_value(__result).map_err(|e| DomainError::External(e.to_string()))?)
+        });
+    }
+    {
+        let __deps = change_management_deps.clone();
+        bus.register("AddReviewComment", move |cmd| {
+            let __deps = __deps.clone();
+            async move {
+                let __result = change_management_app::add_review_comment(
+                    &__deps,
+                    serde_json::from_value(
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                    )
+                    .map_err(|e| DomainError::External(e.to_string()))?,
+                    cmd.get("author")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    serde_json::from_value(
+                        cmd.get("construct_path")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    )
+                    .map_err(|e| DomainError::External(e.to_string()))?,
+                    cmd.get("body")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+                .await?;
+                Ok(serde_json::to_value(__result)
+                    .map_err(|e| DomainError::External(e.to_string()))?)
+            }
         });
     }
     {
@@ -2826,11 +2935,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::list_change_requests(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("repo_id")
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                    )
+                    .map_err(|e| DomainError::External(e.to_string()))?,
+                    serde_json::from_value(
+                        cmd.get("status")
                             .cloned()
                             .unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
+                )
+                .await?;
+                Ok(serde_json::to_value(__result)
+                    .map_err(|e| DomainError::External(e.to_string()))?)
+            }
+        });
+    }
+    {
+        let __deps = change_management_deps.clone();
+        bus.register("ListAllChangeRequests", move |cmd| {
+            let __deps = __deps.clone();
+            async move {
+                let __result = change_management_app::list_all_change_requests(
+                    &__deps,
                     serde_json::from_value(
                         cmd.get("status")
                             .cloned()
@@ -2852,7 +2979,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let __result = change_management_app::get_change_request(
                     &__deps,
                     serde_json::from_value(
-                        cmd.get("pr_id").cloned().unwrap_or(serde_json::Value::Null),
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                    )
+                    .map_err(|e| DomainError::External(e.to_string()))?,
+                )
+                .await?;
+                Ok(serde_json::to_value(__result)
+                    .map_err(|e| DomainError::External(e.to_string()))?)
+            }
+        });
+    }
+    {
+        let __deps = change_management_deps.clone();
+        bus.register("UpdateChangeRequestStatus", move |cmd| {
+            let __deps = __deps.clone();
+            async move {
+                let __result = change_management_app::update_change_request_status(
+                    &__deps,
+                    serde_json::from_value(
+                        cmd.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                    )
+                    .map_err(|e| DomainError::External(e.to_string()))?,
+                    serde_json::from_value(
+                        cmd.get("status")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
                     )
                     .map_err(|e| DomainError::External(e.to_string()))?,
                 )
@@ -3068,6 +3219,26 @@ async fn storage_get_project_infra_handler(
 ) -> Result<Json<Value>, StatusCode> {
     let environment = q.get("environment").filter(|s| !s.is_empty()).cloned();
     match storage_app::get_project_infra(&deps, id, environment).await {
+        Ok(result) => Ok(Json(veil_json_public(&result))),
+        Err(e) => Err(veil_domain_error_status(e)),
+    }
+}
+
+async fn storage_query_project_modules_handler(
+    State(deps): State<Arc<storage_Deps>>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let module = body
+        .get("module")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let filters_json = body
+        .get("filters_json")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    match storage_app::query_project_modules(&deps, module, filters_json).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
@@ -4790,6 +4961,53 @@ async fn deploy_scale_tool_handler(
 
 async fn change_management_create_change_request_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let slug = body
+        .get("slug")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let description = body
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let jira_ticket = body
+        .get("jira_ticket")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let author = body
+        .get("author")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    match change_management_app::create_change_request(
+        &deps,
+        id,
+        slug,
+        title,
+        description,
+        jira_ticket,
+        author,
+    )
+    .await
+    {
+        Ok(result) => Ok(Json(veil_json_public(&result))),
+        Err(e) => Err(veil_domain_error_status(e)),
+    }
+}
+
+async fn change_management_create_change_request_flat_handler(
+    State(deps): State<Arc<change_management_Deps>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
     let repo_id = body
@@ -4822,7 +5040,7 @@ async fn change_management_create_change_request_handler(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    match change_management_app::create_change_request(
+    match change_management_app::create_change_request_flat(
         &deps,
         repo_id,
         slug,
@@ -4840,13 +5058,10 @@ async fn change_management_create_change_request_handler(
 
 async fn change_management_commit_to_change_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let pr_id = body
-        .get("pr_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
     let slug = body
         .get("slug")
         .and_then(|v| v.as_str())
@@ -4872,10 +5087,8 @@ async fn change_management_commit_to_change_handler(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    match change_management_app::commit_to_change(
-        &deps, pr_id, slug, path, content, message, author,
-    )
-    .await
+    match change_management_app::commit_to_change(&deps, id, slug, path, content, message, author)
+        .await
     {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
@@ -4884,14 +5097,11 @@ async fn change_management_commit_to_change_handler(
 
 async fn change_management_submit_for_review_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let pr_id = body
-        .get("pr_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    match change_management_app::submit_for_review(&deps, pr_id).await {
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
+    match change_management_app::submit_for_review(&deps, id).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
@@ -4899,13 +5109,10 @@ async fn change_management_submit_for_review_handler(
 
 async fn change_management_approve_change_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let pr_id = body
-        .get("pr_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
     let reviewer = body
         .get("reviewer")
         .and_then(|v| v.as_str())
@@ -4920,7 +5127,7 @@ async fn change_management_approve_change_handler(
         };
         serde_json::from_value(__v).map_err(|_| StatusCode::BAD_REQUEST)?
     };
-    match change_management_app::approve_change(&deps, pr_id, reviewer, comment).await {
+    match change_management_app::approve_change(&deps, id, reviewer, comment).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
@@ -4928,13 +5135,10 @@ async fn change_management_approve_change_handler(
 
 async fn change_management_request_changes_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let pr_id = body
-        .get("pr_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
     let reviewer = body
         .get("reviewer")
         .and_then(|v| v.as_str())
@@ -4945,7 +5149,7 @@ async fn change_management_request_changes_handler(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    match change_management_app::request_changes(&deps, pr_id, reviewer, comment).await {
+    match change_management_app::request_changes(&deps, id, reviewer, comment).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
@@ -4953,13 +5157,10 @@ async fn change_management_request_changes_handler(
 
 async fn change_management_merge_change_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let pr_id = body
-        .get("pr_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
     let merger = body
         .get("merger")
         .and_then(|v| v.as_str())
@@ -4970,7 +5171,7 @@ async fn change_management_merge_change_handler(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    match change_management_app::merge_change(&deps, pr_id, merger, slug).await {
+    match change_management_app::merge_change(&deps, id, merger, slug).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
@@ -4978,65 +5179,23 @@ async fn change_management_merge_change_handler(
 
 async fn change_management_get_structural_diff_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>, StatusCode> {
-    let pr_id = q
-        .get("pr_id")
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
     let slug = q.get("slug").cloned().unwrap_or_default();
-    match change_management_app::get_structural_diff(&deps, pr_id, slug).await {
+    match change_management_app::get_structural_diff(&deps, id, slug).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-async fn change_management_compute_structural_diff_from_source_handler(
+async fn change_management_add_review_comment_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
-    let base_content = body
-        .get("base_content")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let branch_content = body
-        .get("branch_content")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let base_label = body
-        .get("base_label")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let head_label = body
-        .get("head_label")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    match change_management_app::compute_structural_diff_from_source(
-        base_content,
-        branch_content,
-        base_label,
-        head_label,
-    )
-    .await
-    {
-        Ok(result) => Ok(Json(veil_json_public(&result))),
-        Err(e) => Err(veil_domain_error_status(e)),
-    }
-}
-
-async fn change_management_add_comment_handler(
-    State(deps): State<Arc<change_management_Deps>>,
-    Json(body): Json<Value>,
-) -> Result<Json<Value>, StatusCode> {
-    let pr_id = body
-        .get("pr_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
     let author = body
         .get("author")
         .and_then(|v| v.as_str())
@@ -5056,7 +5215,7 @@ async fn change_management_add_comment_handler(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    match change_management_app::add_comment(&deps, pr_id, author, construct_path, body).await {
+    match change_management_app::add_review_comment(&deps, id, author, construct_path, body).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
@@ -5064,17 +5223,29 @@ async fn change_management_add_comment_handler(
 
 async fn change_management_list_change_requests_handler(
     State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>, StatusCode> {
-    let repo_id = q
-        .get("repo_id")
-        .filter(|s| !s.is_empty())
-        .and_then(|s| serde_json::from_str(s).ok());
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
     let status = q
         .get("status")
         .filter(|s| !s.is_empty())
         .and_then(|s| serde_json::from_str(s).ok());
-    match change_management_app::list_change_requests(&deps, repo_id, status).await {
+    match change_management_app::list_change_requests(&deps, id, status).await {
+        Ok(result) => Ok(Json(veil_json_public(&result))),
+        Err(e) => Err(veil_domain_error_status(e)),
+    }
+}
+
+async fn change_management_list_all_change_requests_handler(
+    State(deps): State<Arc<change_management_Deps>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, StatusCode> {
+    let status = q
+        .get("status")
+        .filter(|s| !s.is_empty())
+        .and_then(|s| serde_json::from_str(s).ok());
+    match change_management_app::list_all_change_requests(&deps, status).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }
@@ -5082,13 +5253,24 @@ async fn change_management_list_change_requests_handler(
 
 async fn change_management_get_change_request_handler(
     State(deps): State<Arc<change_management_Deps>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let pr_id = q
-        .get("pr_id")
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    match change_management_app::get_change_request(&deps, pr_id).await {
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
+    match change_management_app::get_change_request(&deps, id).await {
+        Ok(result) => Ok(Json(veil_json_public(&result))),
+        Err(e) => Err(veil_domain_error_status(e)),
+    }
+}
+
+async fn change_management_update_change_request_status_handler(
+    State(deps): State<Arc<change_management_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let status = serde_json::from_value(body.get("status").cloned().unwrap_or(Value::Null))
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    match change_management_app::update_change_request_status(&deps, id, status).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
         Err(e) => Err(veil_domain_error_status(e)),
     }

@@ -80,6 +80,154 @@ async fn dispatch_runtime_tool(
     }
 }
 
+/// Runtime shell UX tools — agent drives the dashboard (navigate, SDLC list, etc.).
+/// Return JSON always includes `navigation` so the SPA can `goto` without hard-coded chips.
+fn dispatch_platform_ux_tool(tool_name: &str, arguments: &Value) -> Result<String, String> {
+    // Prefer same-origin ProductHost (VEIL_PORT / PORT); legacy veil_bin used 3000.
+    let runtime_base = std::env::var("VEIL_RUNTIME_API")
+        .or_else(|_| {
+            let port = std::env::var("VEIL_PORT")
+                .or_else(|_| std::env::var("PORT"))
+                .unwrap_or_else(|_| "8080".into());
+            Ok(format!("http://127.0.0.1:{port}"))
+        })
+        .unwrap_or_else(|_: std::env::VarError| "http://127.0.0.1:8080".into())
+        .trim_end_matches('/')
+        .to_string();
+
+    match tool_name {
+        "navigate_to" => {
+            let path = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("/dashboard");
+            let path = if path.starts_with('/') {
+                path.to_string()
+            } else {
+                format!("/{path}")
+            };
+            Ok(json!({
+                "ok": true,
+                "summary": format!("Navigate to {path}"),
+                "navigation": { "action": "goto", "path": path }
+            })
+            .to_string())
+        }
+        "list_changes" | "open_changes" => Ok(json!({
+            "ok": true,
+            "summary": "Open change requests (SDLC)",
+            "api": format!("{runtime_base}/api/change_requests"),
+            "navigation": { "action": "goto", "path": "/changes" }
+        })
+        .to_string()),
+        "create_change" | "open_create_change" => Ok(json!({
+            "ok": true,
+            "summary": "Open create change request form",
+            "navigation": { "action": "goto", "path": "/changes/new" }
+        })
+        .to_string()),
+        "list_projects" | "open_projects" => Ok(json!({
+            "ok": true,
+            "summary": "Open projects list",
+            "api": format!("{runtime_base}/api/repos"),
+            "navigation": { "action": "goto", "path": "/projects" }
+        })
+        .to_string()),
+        "open_project" | "open_ide" | "switch_project" => {
+            let project = arguments
+                .get("project")
+                .or_else(|| arguments.get("slug"))
+                .or_else(|| arguments.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if project.is_empty() {
+                return Ok(json!({
+                    "ok": true,
+                    "summary": "Open projects (no project specified)",
+                    "navigation": { "action": "goto", "path": "/projects" }
+                })
+                .to_string());
+            }
+            // open_ide → shell embed (`/projects/{id}/ide`); open_project → detail page.
+            let path = if tool_name == "open_ide" {
+                format!("/projects/{project}/ide")
+            } else {
+                format!("/projects/{project}")
+            };
+            let action = if tool_name == "open_ide" {
+                "open-ide"
+            } else if tool_name == "switch_project" {
+                "switch-project"
+            } else {
+                "goto"
+            };
+            let summary = if tool_name == "open_ide" {
+                format!("Open {project} in IDE (in-shell embed)")
+            } else {
+                format!("Open project {project}")
+            };
+            Ok(json!({
+                "ok": true,
+                "summary": summary,
+                "navigation": { "action": action, "path": path, "project": project }
+            })
+            .to_string())
+        }
+        "open_deploy" => Ok(json!({
+            "ok": true,
+            "summary": "Open deploy view",
+            "navigation": { "action": "goto", "path": "/deploy" }
+        })
+        .to_string()),
+        "open_registry" => Ok(json!({
+            "ok": true,
+            "summary": "Open registry",
+            "navigation": { "action": "goto", "path": "/registry" }
+        })
+        .to_string()),
+        "open_dashboard" => Ok(json!({
+            "ok": true,
+            "summary": "Open dashboard",
+            "navigation": { "action": "goto", "path": "/dashboard" }
+        })
+        .to_string()),
+        "open_config" => Ok(json!({
+            "ok": true,
+            "summary": "Open runtime config",
+            "navigation": { "action": "goto", "path": "/config" }
+        })
+        .to_string()),
+        "get_current_context" => Ok(json!({
+            "ok": true,
+            "summary": "Context is injected by the runtime UI each turn (page, project, surfaces). Use navigate_to to change pages.",
+            "hint": "Call navigate_to / list_changes / open_project to control the UX."
+        })
+        .to_string()),
+        other => Err(format!("unknown platform tool: {other}")),
+    }
+}
+
+fn is_platform_ux_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "navigate_to"
+            | "list_changes"
+            | "open_changes"
+            | "create_change"
+            | "open_create_change"
+            | "list_projects"
+            | "open_projects"
+            | "open_project"
+            | "open_ide"
+            | "switch_project"
+            | "open_deploy"
+            | "open_registry"
+            | "open_dashboard"
+            | "open_config"
+            | "get_current_context"
+    )
+}
+
 /// MCP protocol version we implement.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -269,6 +417,80 @@ fn mcp_tools() -> Vec<Value> {
         json!({
             "name": "smoke_status",
             "description": "Last check/smoke log excerpt and VEIL_AGENT_SMOKE flag. Use after writes.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        // Runtime shell UX control (omnipresent agent — navigate dashboard, SDLC, deploy)
+        json!({
+            "name": "navigate_to",
+            "description": "Navigate the VEIL runtime dashboard SPA to a path so the user sees the right page. Use for any UI destination: /dashboard, /projects, /projects/{id}, /changes, /changes/new, /deploy, /registry, /config, /agents. ALWAYS call this when the user asks to open/show a page or surface.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "SPA path starting with / (e.g. /changes, /projects/relay)"
+                    }
+                },
+                "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "list_changes",
+            "description": "Show open change requests (SDLC). Navigates the UI to /changes. Use when the user asks to open changes, review PRs, or list change requests.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "create_change",
+            "description": "Open the create-change-request form (/changes/new). Use when the user wants a new PR/change request.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "list_projects",
+            "description": "Open the projects list in the runtime dashboard (/projects).",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "open_project",
+            "description": "Open a project detail page in the runtime UI (and IDE entry). Pass project id or slug.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or slug (e.g. relay)" },
+                    "slug": { "type": "string", "description": "Alias for project" },
+                    "id": { "type": "string", "description": "Alias for project" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "open_ide",
+            "description": "Open the dual-loop IDE for a project inside the runtime shell (agent panel stays in the dashboard; path /projects/{id}/ide).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or slug" }
+                },
+                "required": ["project"]
+            }
+        }),
+        json!({
+            "name": "open_deploy",
+            "description": "Open the deploy surface in the runtime dashboard.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "open_registry",
+            "description": "Open the layer/stub registry page.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "open_dashboard",
+            "description": "Open the runtime home dashboard.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "open_config",
+            "description": "Open runtime configuration page.",
             "inputSchema": { "type": "object", "properties": {}, "required": [] }
         }),
         // Mind Palace wiki tools (when MIND_PALACE=1 + AWS configured)
@@ -475,6 +697,41 @@ async fn handle_mcp_request<P: SourceProvider>(
 
 /// Dispatch a tool call to the underlying VEIL tool implementation.
 async fn dispatch_tool<P: SourceProvider>(
+    provider: &Arc<P>,
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<String, String> {
+    // Platform UX tools (no project required) — agent controls the runtime dashboard.
+    if is_platform_ux_tool(tool_name) {
+        return dispatch_platform_ux_tool(tool_name, arguments);
+    }
+
+    // Hub `/api/mcp` may run without middleware project scope. Prefer task-local,
+    // then ACP turn project, then optional `project` / `project_id` tool arg.
+    let scoped = crate::provider::hub::CURRENT_PROJECT
+        .try_with(|n| n.clone())
+        .ok();
+    if scoped.is_none() {
+        let fallback = crate::acp::get_acp_project()
+            .or_else(|| {
+                arguments
+                    .get("project")
+                    .or_else(|| arguments.get("project_id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            });
+        if let Some(name) = fallback {
+            return crate::provider::hub::CURRENT_PROJECT
+                .scope(name, dispatch_tool_scoped(provider, tool_name, arguments))
+                .await;
+        }
+    }
+
+    dispatch_tool_scoped(provider, tool_name, arguments).await
+}
+
+async fn dispatch_tool_scoped<P: SourceProvider>(
     provider: &Arc<P>,
     tool_name: &str,
     arguments: &Value,

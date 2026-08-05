@@ -1,3 +1,19 @@
+# runtime/ide-ui — VEIL dual-loop IDE UI
+
+Formerly monorepo-root `veil-viewer/`. Owned by **veil-runtime** and served
+same-origin by `ProductHost` at `/viewer` (see `runtime/docs/ADR_SINGLE_PRODUCT_HOST.md`).
+
+```bash
+cd runtime/ide-ui && npm i
+VEIL_VIEWER_BASE=/viewer npm run build
+# output → build/; pure-runtime-build copies to runtime/bootstrap/static/viewer
+```
+
+Dev (optional standalone Vite): `npm run dev` with `VEIL_API_PORT` pointing at
+**ProductHost** (not a separate multi `veil serve`).
+
+---
+
 # sv
 
 Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).

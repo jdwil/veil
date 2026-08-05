@@ -20,12 +20,6 @@ pkg ddd v1
       label "Bounded Context"
     in top
     present
-      view groups
-        label "Layers"
-        layout tabs
-        members by_source_group
-        tabs domain, application, infrastructure, presentation
-        default
       view model
         label "Domain model"
         layout tree
@@ -39,6 +33,12 @@ pkg ddd v1
         nest ValueObject under Aggregate when references
         nest Aggregate under Aggregate when references
         orphan_policy list
+        default
+      view groups
+        label "Layers"
+        layout tabs
+        members by_source_group
+        tabs domain, application, infrastructure, presentation
 
   construct Orchestrator
     kw orchestrator

@@ -522,6 +522,183 @@ function projectTree(
   };
 }
 
+// ─── Layout policy: SvelteFlow only for real control-flow hosts ─────────────
+
+/** IR node kinds that participate in executable control / data flow graphs. */
+const FLOW_LOGIC_KINDS = new Set([
+  'Step',
+  'ParallelGateway',
+  'MatchDecision',
+  'MatchArm',
+  'ErrorBoundary',
+]);
+
+/**
+ * True when the host should render with the SvelteFlow graph (layout `flow`).
+ *
+ * Only functions/flows that have an actual control-flow body (steps, match/par
+ * gateways, or SequenceFlow among children). Structural hosts (package,
+ * module/BC, groups, types, empty free-fns) use native tree/flat instead.
+ */
+export function isLogicFlowHost(
+  graph: IrGraph,
+  host: IrNode | null | undefined
+): boolean {
+  if (!host) return false;
+  // Package / BC / types are structural — never SvelteFlow at these levels.
+  if (
+    host.kind === 'Solution' ||
+    host.kind === 'Module' ||
+    host.kind === 'Group' ||
+    host.kind === 'TypeDef' ||
+    host.kind === 'Interface' ||
+    host.kind === 'Implementation'
+  ) {
+    return false;
+  }
+  const kids = irChildren(graph, host.id);
+  if (kids.length === 0) return false;
+
+  if (kids.some((k) => FLOW_LOGIC_KINDS.has(k.kind))) return true;
+
+  const kidIds = new Set(kids.map((k) => k.id));
+  if (
+    graph.edges.some(
+      (e) =>
+        e.kind === 'SequenceFlow' &&
+        kidIds.has(e.from) &&
+        kidIds.has(e.to)
+    )
+  ) {
+    return true;
+  }
+
+  // Free Flow / fn whose body lowered only to Action nodes (statement IR)
+  if (
+    host.kind === 'Flow' &&
+    kids.every((k) => k.kind === 'Action' || FLOW_LOGIC_KINDS.has(k.kind)) &&
+    kids.some((k) => k.kind === 'Action')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isStructuralConstruct(n: IrNode): boolean {
+  return (
+    n.kind !== 'Field' &&
+    n.kind !== 'Action' &&
+    n.kind !== 'InterfaceMethod' &&
+    n.kind !== 'Inputs' &&
+    n.kind !== 'Return' &&
+    n.kind !== 'Step' &&
+    n.kind !== 'MatchArm' &&
+    n.kind !== 'MatchDecision' &&
+    n.kind !== 'ParallelGateway' &&
+    n.kind !== 'ErrorBoundary'
+  );
+}
+
+/**
+ * AST-parent tree projection for structural browsing (no layer nest rules).
+ * Groups are flattened at the top so package/BC contents surface as constructs.
+ */
+export function structuralTreeProjection(
+  graph: IrGraph,
+  hostId: number | null,
+  options?: { hideLayerProvided?: boolean; roots?: IrNode[] }
+): ProjectResult {
+  const hideLayer = options?.hideLayerProvided !== false;
+
+  let roots: IrNode[];
+  if (options?.roots) {
+    roots = [...options.roots];
+  } else if (hostId == null) {
+    roots = graph.nodes.filter((n) => n.metadata.parent == null && n.kind !== 'Solution');
+  } else {
+    roots = flattenGroups(graph, irChildren(graph, hostId));
+  }
+
+  if (hideLayer) {
+    roots = roots.filter((n) => !n.metadata.annotations.includes('layer-provided'));
+  }
+  roots = roots.filter(isStructuralConstruct);
+
+  // Include construct descendants so the outline can expand (like layout tree).
+  const seen = new Set<number>();
+  const candidates: IrNode[] = [];
+  const queue = [...roots];
+  for (const r of roots) {
+    seen.add(r.id);
+    candidates.push(r);
+  }
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const d of irChildren(graph, cur.id)) {
+      if (seen.has(d.id)) continue;
+      if (hideLayer && d.metadata.annotations.includes('layer-provided')) continue;
+      if (!isStructuralConstruct(d)) continue;
+      // Skip Groups as list items — flatten into their children
+      if (d.kind === 'Group') {
+        for (const gc of irChildren(graph, d.id)) {
+          if (seen.has(gc.id)) continue;
+          if (hideLayer && gc.metadata.annotations.includes('layer-provided')) continue;
+          if (!isStructuralConstruct(gc)) continue;
+          if (gc.kind === 'Group') {
+            queue.push(gc);
+            continue;
+          }
+          seen.add(gc.id);
+          candidates.push(gc);
+          queue.push(gc);
+        }
+        continue;
+      }
+      seen.add(d.id);
+      candidates.push(d);
+      queue.push(d);
+    }
+  }
+
+  const candidateIds = new Set(candidates.map((c) => c.id));
+  const nestEdges: { child: number; parent: number }[] = [];
+  for (const n of candidates) {
+    let p = n.metadata.parent;
+    // Walk up through Groups until a candidate parent or host
+    while (p != null && !candidateIds.has(p) && p !== hostId) {
+      const pn = graph.nodes.find((x) => x.id === p);
+      if (!pn || pn.kind !== 'Group') break;
+      p = pn.metadata.parent;
+    }
+    if (p != null && candidateIds.has(p) && p !== n.id) {
+      nestEdges.push({ child: n.id, parent: p });
+    }
+  }
+
+  // Roots for the outline: not nested under another candidate
+  const nested = new Set(nestEdges.map((e) => e.child));
+  const topNodes = candidates.filter((n) => !nested.has(n.id)).sort(sortBySpan);
+
+  return {
+    nodes: topNodes,
+    tabs: [],
+    tabGroupNodes: new Map(),
+    layout: 'tree',
+    layoutFallback: false,
+    flowDirection: null,
+    nestEdges: nestEdges.sort((a, b) => a.child - b.child || a.parent - b.parent),
+    orphanIds: [],
+    orphanBucketLabel: null,
+    view: {
+      id: 'structural',
+      label: 'Structure',
+      layout: 'tree',
+      members: 'by_host_children',
+    },
+  };
+}
+
 /** Host views for a construct name (subkind), or empty. */
 export function viewsForHost(
   model: PresentationModel | null,

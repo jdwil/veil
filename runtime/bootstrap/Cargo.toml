@@ -16,6 +16,8 @@ storage = { path = "../generated/crates/storage" }
 extensions = { path = "../generated/crates/extensions" }
 # SDLC: change management domain services + DDB/S3 adapters
 change_management = { path = "../generated/crates/change_management" }
+# Deploy control plane
+deploy = { path = "../generated/crates/deploy" }
 veil_shared = { path = "../generated/crates/veil_shared" }
 
 tokio = { version = "1", features = ["full"] }
@@ -31,6 +33,10 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 aws-sdk-s3 = "1"
 aws-sdk-dynamodb = "1"
+aws-sdk-lambda = "1"
+aws-sdk-sqs = "1"
+aws-sdk-sns = "1"
+aws-sdk-apigatewayv2 = "1"
 aws-config = "1"
 
 [dev-dependencies]

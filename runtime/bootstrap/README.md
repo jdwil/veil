@@ -34,7 +34,7 @@ scripts/run_local_example.sh
 | `src/local_ports.rs` | CAP-004 local MetadataStore/ObjectStorage for generated storage |
 | `../generated/crates/storage` | Generated domain services (PVR-011) |
 | `static/dist/` | **Primary** generated SPA (`make pure-runtime-build`) |
-| `static/viewer/` | Dual-loop IDE (built `veil-viewer`, `/viewer`) |
+| `static/viewer/` | Dual-loop IDE UI (built from `runtime/ide-ui`, served at `/viewer`) |
 | `static/legacy/` | Quarantined hand HTML only (not served as primary shell) |
 
 Do not grow product UI or domain logic here — author `.veil` under `runtime/src/`.

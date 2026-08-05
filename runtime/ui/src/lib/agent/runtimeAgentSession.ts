@@ -79,6 +79,81 @@ function emitNavigation(nav: NavigationAction) {
 	}
 }
 
+/** Well-known MCP / agent tool names → SPA navigation (agent owns UX, not Svelte chips). */
+const TOOL_NAV: Record<string, NavigationAction> = {
+	list_changes: { action: 'goto', path: '/changes' },
+	open_changes: { action: 'goto', path: '/changes' },
+	create_change: { action: 'goto', path: '/changes/new' },
+	open_create_change: { action: 'goto', path: '/changes/new' },
+	list_projects: { action: 'goto', path: '/projects' },
+	open_projects: { action: 'goto', path: '/projects' },
+	open_deploy: { action: 'goto', path: '/deploy' },
+	open_registry: { action: 'goto', path: '/registry' },
+	open_dashboard: { action: 'goto', path: '/dashboard' },
+	open_config: { action: 'goto', path: '/config' }
+};
+
+function navigationFromTool(name: string, output?: unknown, argsJson?: string): NavigationAction | null {
+	// Structured navigation in tool output (preferred)
+	if (output && typeof output === 'object') {
+		const o = output as Record<string, unknown>;
+		if (o.navigation && typeof o.navigation === 'object') {
+			return o.navigation as NavigationAction;
+		}
+		// Output may be a JSON string nested under detail
+		if (typeof o.detail === 'string') {
+			try {
+				const parsed = JSON.parse(o.detail) as Record<string, unknown>;
+				if (parsed.navigation && typeof parsed.navigation === 'object') {
+					return parsed.navigation as NavigationAction;
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+	if (typeof output === 'string') {
+		try {
+			const parsed = JSON.parse(output) as Record<string, unknown>;
+			if (parsed.navigation && typeof parsed.navigation === 'object') {
+				return parsed.navigation as NavigationAction;
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+	// navigate_to / open_project need args
+	let args: Record<string, unknown> = {};
+	if (argsJson) {
+		try {
+			const raw = JSON.parse(argsJson) as Record<string, unknown>;
+			args = (raw.detail as Record<string, unknown>) || raw;
+		} catch {
+			/* ignore */
+		}
+	}
+	if (name === 'navigate_to') {
+		const path = String(args.path || args.detail || '');
+		if (path) {
+			return { action: 'goto', path: path.startsWith('/') ? path : `/${path}` };
+		}
+	}
+	if (name === 'open_project' || name === 'open_ide' || name === 'switch_project') {
+		const project = String(args.project || args.slug || args.id || '');
+		if (project) {
+			const isIde = name === 'open_ide';
+			return {
+				action: isIde ? 'open-ide' : name === 'switch_project' ? 'switch-project' : 'goto',
+				// IDE stays inside the shell at /projects/{id}/ide (iframe embed, no full redirect).
+				path: isIde ? `/projects/${project}/ide` : `/projects/${project}`,
+				project
+			};
+		}
+		return { action: 'goto', path: '/projects' };
+	}
+	return TOOL_NAV[name] ?? null;
+}
+
 // ─── Stream Service ─────────────────────────────────────────────────────────
 
 const stream = new StreamService();
@@ -142,6 +217,7 @@ function handleEvent(event: StreamEvent) {
 		}
 		case 'tool_call_start': {
 			const id = event.data.messageId;
+			const toolName = event.data.name as string;
 			setMessages((prev) =>
 				prev.map((m) => {
 					if (m.id !== id) return m;
@@ -150,7 +226,7 @@ function handleEvent(event: StreamEvent) {
 						type: 'tool_call',
 						toolCall: {
 							id: event.data.callId,
-							name: event.data.name,
+							name: toolName,
 							arguments: '',
 							status: 'executing' as const
 						}
@@ -158,10 +234,27 @@ function handleEvent(event: StreamEvent) {
 					return { ...m, content: blocks };
 				})
 			);
+			// Agent-driven UX: navigate as soon as a known platform tool starts
+			const navStart = navigationFromTool(toolName);
+			if (navStart) emitNavigation(navStart);
+			break;
+		}
+		case 'tool_call_stop': {
+			// Arguments often arrive here (path for navigate_to, project for open_ide)
+			const data = event.data as {
+				name?: string;
+				arguments?: string;
+				messageId?: string;
+			};
+			const toolName = data.name || '';
+			const nav = navigationFromTool(toolName, undefined, data.arguments);
+			if (nav) emitNavigation(nav);
 			break;
 		}
 		case 'tool_result': {
 			const id = event.data.messageId;
+			const toolName = event.data.name as string;
+			const output = event.data.output;
 			setMessages((prev) =>
 				prev.map((m) => {
 					if (m.id !== id) return m;
@@ -170,14 +263,16 @@ function handleEvent(event: StreamEvent) {
 						type: 'tool_result',
 						toolResult: {
 							callId: event.data.callId,
-							name: event.data.name,
-							output: event.data.output,
+							name: toolName,
+							output,
 							isError: event.data.isError
 						}
 					});
 					return { ...m, content: blocks };
 				})
 			);
+			const nav = navigationFromTool(toolName, output);
+			if (nav) emitNavigation(nav);
 			break;
 		}
 		case 'error': {
@@ -259,10 +354,13 @@ export async function agentSend(content: string, attachments?: File[]) {
 		ctx.surfaces = (window as any).__veilAgentSurface.surfaces || [];
 	}
 
-	const request: ChatRequest = {
+	// `project` is a VEIL hub extension (not in aether ChatRequest type) so the
+	// backend can scope dual-loop MCP tools to the open product.
+	const request = {
 		messages: history,
-		systemPrompt: buildSystemPrompt(ctx)
-	};
+		systemPrompt: buildSystemPrompt(ctx),
+		project: ctx.project || undefined
+	} as ChatRequest;
 
 	try {
 		await stream.connect(
@@ -324,23 +422,36 @@ export function agentApproveToolCall(callId: string, approved: boolean) {
 
 function buildSystemPrompt(ctx: AgentContext): string {
 	const parts = [
-		'You are the VEIL Runtime agent. You have full control over the veil platform:',
-		'- Edit code in any project via the IDE',
-		'- Manage the SDLC: create/review/merge changes',
-		'- Deploy projects to environments',
-		'- Navigate the UI to show the user what you\'re doing',
-		'- Inspect the bus, registry, and configuration',
-		'- Remember knowledge in the wiki',
+		'You are the VEIL Runtime agent. You control the entire veil platform UX via tools.',
+		'The user must SEE you work: always call navigation tools so the dashboard changes pages.',
 		'',
-		'When the user asks you to do something:',
-		'1. If it requires navigating to a different page, do so (they see the transition)',
-		'2. If it requires editing code, open the IDE for that project and make changes',
-		'3. If it spans multiple projects, switch between them seamlessly',
-		'4. Show your work — use navigation so the user sees what\'s happening',
+		'Platform UX tools (use these — do not only describe navigation):',
+		'- navigate_to({path}) — any SPA path (/changes, /projects/{id}, /deploy, …)',
+		'- list_changes / create_change — SDLC change requests',
+		'- list_projects / open_project / open_ide — projects; open_ide embeds IDE in-shell (agent stays here)',
+		'- open_deploy / open_registry / open_dashboard / open_config',
+		'',
+		'IDE dual-loop tools (when a project is open — they ARE connected via MCP):',
+		'- list_files — packages/layers in the project',
+		'- select_file({ name | index }) — switch active file',
+		'- veil_outline — IR construct topology (prefer this for "show me construct X")',
+		'- read_source — active .veil text (after select_file if needed)',
+		'- veil_check / write_source / rename_construct — edit + validate',
+		'- Also: wiki_*, http_request, dev_* for dual-loop / Mind Palace',
+		'',
+		'When the user asks about a construct/node (e.g. decrypt_integration_secrets):',
+		'1. list_files (if needed) → select_file the package that owns it',
+		'2. veil_outline to locate the construct',
+		'3. read_source for full details — do NOT claim IDE tools are unavailable',
+		'',
+		'When the user asks to open/show/list something in the UI:',
+		'1. Call the matching tool FIRST (e.g. list_changes for "open changes")',
+		'2. Then explain briefly what they are looking at',
+		'3. For code edits: open_ide then write_source / structured edit tools',
 		'',
 		`Current context:`,
 		`- Page: ${ctx.page}`,
-		`- Project: ${ctx.project || '(none — home/dashboard)'}`,
+		`- Project: ${ctx.project || '(none — home/dashboard)'}`
 	];
 	if (ctx.surfaces.length > 0) {
 		parts.push(`- Available surfaces: ${JSON.stringify(ctx.surfaces.slice(0, 5))}`);

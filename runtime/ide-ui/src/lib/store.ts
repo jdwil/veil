@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { setPaletteStyles, type IrGraph, type IrNode, type PaletteEntry } from './types';
 import type { PresentationModel } from './presentation';
 
@@ -900,17 +900,113 @@ export function stopRevisionWatch(): void {
   lastSseRevision = null;
 }
 
-export function drillDown(node: IrNode) {
-  currentParent.set(node.id);
-  breadcrumbs.update(bc => [...bc, { id: node.id, name: node.name }]);
+/**
+ * Build breadcrumb chain from IR parents: Solution → Module → … → node.
+ * Skips pure Group buckets so "Back" lands on a useful host (module/service).
+ */
+export function breadcrumbChainFor(graph: IrGraph, node: IrNode): { id: number; name: string }[] {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const chain: { id: number; name: string }[] = [];
+  let cur: IrNode | undefined = node;
+  const seen = new Set<number>();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    // Keep Groups in the chain so navigateTo can restore exact parent; labels stay useful.
+    chain.unshift({ id: cur.id, name: cur.name });
+    const pid = cur.metadata.parent;
+    cur = pid != null ? byId.get(pid) : undefined;
+  }
+  return chain;
 }
 
+/** Drill into a node (e.g. DomainService → flow graph). Rebuilds full ancestor crumbs. */
+export function drillDown(node: IrNode) {
+  const graph = get(irGraph);
+  if (graph) {
+    breadcrumbs.set(breadcrumbChainFor(graph, node));
+  } else {
+    breadcrumbs.update((bc) => [...bc, { id: node.id, name: node.name }]);
+  }
+  currentParent.set(node.id);
+  selectedNodeId.set(null);
+}
+
+/** Navigate to an ancestor (breadcrumb click). */
 export function navigateTo(id: number | null) {
+  const graph = get(irGraph);
+  if (id == null) {
+    const sol = graph?.nodes.find((n) => n.kind === 'Solution');
+    if (sol) {
+      currentParent.set(sol.id);
+      breadcrumbs.set([{ id: sol.id, name: sol.name }]);
+    }
+    return;
+  }
   currentParent.set(id);
-  breadcrumbs.update(bc => {
-    const idx = bc.findIndex(b => b.id === id);
+  if (graph) {
+    const node = graph.nodes.find((n) => n.id === id);
+    if (node) {
+      breadcrumbs.set(breadcrumbChainFor(graph, node));
+      return;
+    }
+  }
+  breadcrumbs.update((bc) => {
+    const idx = bc.findIndex((b) => b.id === id);
     return idx >= 0 ? bc.slice(0, idx + 1) : bc;
   });
+}
+
+/** One level up from the current host (simple parent). */
+export function navigateUp(): boolean {
+  const bc = get(breadcrumbs);
+  if (bc.length >= 2) {
+    const parent = bc[bc.length - 2];
+    navigateTo(parent.id);
+    return true;
+  }
+  const graph = get(irGraph);
+  const curId = get(currentParent);
+  if (graph && curId != null) {
+    const cur = graph.nodes.find((n) => n.id === curId);
+    const pid = cur?.metadata.parent;
+    if (pid != null) {
+      navigateTo(pid);
+      return true;
+    }
+    const sol = graph.nodes.find((n) => n.kind === 'Solution');
+    if (sol) {
+      navigateTo(sol.id);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Leave a flow graph for the nearest useful tree host.
+ *
+ * Skips `Group` buckets (domain/application/…) so Back from a DomainService
+ * returns to the Module (full domain model outline), not a service-only group.
+ */
+export function navigateUpFromFlow(): boolean {
+  const graph = get(irGraph);
+  const curId = get(currentParent);
+  if (!graph || curId == null) return navigateUp();
+
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  let pid = byId.get(curId)?.metadata.parent ?? null;
+  while (pid != null) {
+    const p = byId.get(pid);
+    if (!p) break;
+    if (p.kind === 'Group') {
+      pid = p.metadata.parent;
+      continue;
+    }
+    // Module / Solution / other structural hosts get a full outline again
+    navigateTo(p.id);
+    return true;
+  }
+  return navigateUp();
 }
 
 /** Switch to a different loaded file by index. Re-fetches IR + all panels (UX-011). */
@@ -1076,7 +1172,13 @@ export function focusDiagnostic(diag: Diagnostic) {
 /** Get children of a given parent node */
 export function getChildren(graph: IrGraph, parentId: number | null): IrNode[] {
   if (parentId === null) {
-    return graph.nodes.filter(n => n.metadata.parent === null);
+    // Package root: children of the Solution node (not the Solution itself).
+    const sol = graph.nodes.find((n) => n.kind === 'Solution' && n.metadata.parent == null)
+      ?? graph.nodes.find((n) => n.kind === 'Solution');
+    if (sol) {
+      return graph.nodes.filter((n) => n.metadata.parent === sol.id);
+    }
+    return graph.nodes.filter((n) => n.metadata.parent === null && n.kind !== 'Solution');
   }
   return graph.nodes.filter(n => n.metadata.parent === parentId);
 }

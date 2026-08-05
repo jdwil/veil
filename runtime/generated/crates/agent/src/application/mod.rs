@@ -179,7 +179,7 @@ pub async fn execute_tool(
     // step: execute
     match name.as_str() {
         "navigate_to" => {
-            let path = args
+            let mut path = args
                 .get("path")
                 .cloned()
                 .ok_or(DomainError::NotFound)?
@@ -226,13 +226,141 @@ pub async fn execute_tool(
                 )),
             });
         }
+        "list_changes" => {
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": "Opening change requests".to_string(), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": "/changes".to_string() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": "/changes".to_string() })
+                )),
+            });
+        }
+        "create_change" => {
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": "Opening new change request form".to_string(), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": "/changes/new".to_string() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": "/changes/new".to_string() })
+                )),
+            });
+        }
         "list_projects" => {
             return Ok(ToolExecutionResult {
                 output: serde_json::json!(
-                    serde_json::json!({ "projects": serde_json::Value::Array(vec![]) })
+                    serde_json::json!({ "summary": "Opening projects".to_string(), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": "/projects".to_string() }) })
                 ),
                 is_error: false,
-                navigation: None,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": "/projects".to_string() })
+                )),
+            });
+        }
+        "navigate_to" => {
+            let mut path = args
+                .get("path")
+                .cloned()
+                .ok_or(DomainError::NotFound)?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or("/dashboard".to_string());
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": format!("Navigate to {}", path), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": path.clone() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": path.clone() })
+                )),
+            });
+        }
+        "open_project" => {
+            let mut project = args
+                .get("project")
+                .cloned()
+                .ok_or(DomainError::NotFound)?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or(
+                    args.get("slug")
+                        .cloned()
+                        .ok_or(DomainError::NotFound)?
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or("".to_string()),
+                );
+            let mut path = if project == "".to_string() {
+                "/projects".to_string()
+            } else {
+                format!("/projects/{}", project)
+            };
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": format!("Open project {}", project), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": path.clone(), "project": project.clone() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": path.clone(), "project": project.clone() })
+                )),
+            });
+        }
+        "open_ide" => {
+            let mut project = args
+                .get("project")
+                .cloned()
+                .ok_or(DomainError::NotFound)?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or("".to_string());
+            let mut path = if project == "".to_string() {
+                "/projects".to_string()
+            } else {
+                format!("/projects/{}", project)
+            };
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": format!("Open IDE for {}", project), "navigation": serde_json::json!({ "action": "open-ide".to_string(), "path": path.clone(), "project": project.clone() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "open-ide".to_string(), "path": path.clone(), "project": project.clone() })
+                )),
+            });
+        }
+        "open_deploy" => {
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": "Open deploy".to_string(), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": "/deploy".to_string() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": "/deploy".to_string() })
+                )),
+            });
+        }
+        "open_registry" => {
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": "Open registry".to_string(), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": "/registry".to_string() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": "/registry".to_string() })
+                )),
+            });
+        }
+        "open_dashboard" => {
+            return Ok(ToolExecutionResult {
+                output: serde_json::json!(
+                    serde_json::json!({ "summary": "Open dashboard".to_string(), "navigation": serde_json::json!({ "action": "goto".to_string(), "path": "/dashboard".to_string() }) })
+                ),
+                is_error: false,
+                navigation: Some(serde_json::json!(
+                    serde_json::json!({ "action": "goto".to_string(), "path": "/dashboard".to_string() })
+                )),
             });
         }
         "get_current_context" => {

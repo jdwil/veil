@@ -9,7 +9,7 @@
   import VeilSourcePanel from './VeilSourcePanel.svelte';
   import AetherAgentPanel from './AetherAgentPanel.svelte';
   import AgentPlacementControl from './AgentPlacementControl.svelte';
-  import { selectedNodeId, irGraph, refreshAfterEdit } from '$lib/store';
+  import { selectedNodeId, irGraph, refreshAfterEdit, embedShellConfig } from '$lib/store';
   import {
     agentPlacement,
     agentPopoutRef,
@@ -19,6 +19,10 @@
   } from '$lib/agentLayout';
 
   type DockTab = 'source' | 'agent' | 'split';
+
+  /** When embed/runtime shell hides agent rail, never show agent pane in this dock. */
+  const shell = embedShellConfig();
+  const allowAgentChrome = shell.showAgentRail;
 
   const HEIGHT_KEY = 'veil.reviewDock.height';
   const MODE_KEY = 'veil.reviewDock.mode';
@@ -183,7 +187,7 @@
   }
 
   /** Agent is shown in this bottom dock only when placement is bottom. */
-  let agentInDock = $derived($agentPlacement === 'bottom');
+  let agentInDock = $derived(allowAgentChrome && $agentPlacement === 'bottom');
 
   /** Effective tab when agent is not in the dock: force source-only UI. */
   let effectiveTab = $derived.by(() => {
@@ -281,7 +285,7 @@
         >
           Split
         </button>
-      {:else if $agentPlacement === 'window'}
+      {:else if allowAgentChrome && $agentPlacement === 'window'}
         <button
           type="button"
           class="dock-tab"
@@ -293,7 +297,9 @@
       {/if}
     </div>
     <div class="dock-actions">
-      <AgentPlacementControl variant="compact" />
+      {#if allowAgentChrome}
+        <AgentPlacementControl variant="compact" />
+      {/if}
       {#if selectionLabel && agentInDock}
         <button
           type="button"

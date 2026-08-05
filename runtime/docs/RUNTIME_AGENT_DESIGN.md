@@ -129,28 +129,15 @@ The runtime agent has a **superset** of tools compared to the IDE agent:
 The agent can **navigate the UI** programmatically. When the user asks "open the
 relay project and add an authorize step", the agent:
 
-1. Calls `navigate_to({ path: '/projects/relay' })`
-2. Calls `open_ide({ project: 'relay' })` — triggers the embedded IDE viewer
-3. Calls `edit_file(...)` via the relay veil-server — the IDE shows the change live
+1. Calls `navigate_to({ path: '/projects/relay' })` for project detail, or
+2. Calls `open_ide({ project: 'relay' })` → SPA route `/projects/relay/ide`
+   (iframe to `/viewer/?project=relay&showAgentRail=0`; **AgentDock stays in shell**)
+3. Calls `edit_file(...)` via the project API — the IDE graph refreshes live (SSE)
 
-**Implementation**: Navigation tools execute on the frontend via a message bus
-between the agent panel and the root layout:
-
-```typescript
-// Agent panel emits
-window.dispatchEvent(new CustomEvent('veil:agent-navigate', {
-  detail: { path: '/projects/relay', action: 'open-ide' }
-}));
-
-// Root layout listens and calls goto()
-import { goto } from '$app/navigation';
-window.addEventListener('veil:agent-navigate', (e) => {
-  goto(e.detail.path);
-  if (e.detail.action === 'open-ide') {
-    // trigger project detail to open IDE panel
-  }
-});
-```
+**Implementation**: Navigation tools emit SPA navigation handled by root layout
+(`onAgentNavigation` in `runtime/ui`). `open_ide` never full-page redirects to
+`/viewer` (that would drop the runtime agent). Standalone IDE (own agent chrome)
+remains at `/viewer/?project=…` or `/ide/{name}`.
 
 For **cross-project operations**, the runtime backend maintains connections (or
 spawns on-demand) to per-project veil-server instances:
@@ -165,11 +152,12 @@ Runtime Backend (port 3003)
 
 ### 6. IDE Embed — Bidirectional Communication
 
-The IDE viewer (already embedded as iframe at `/viewer/?project={name}`) gains
-bidirectional communication with the runtime agent:
+The IDE is embedded at `/projects/{name}/ide` as an iframe to
+`/viewer/?project={name}&showAgentRail=0` and talks to the runtime agent via
+postMessage (`registerIdeFrame` / IDE bridge):
 
 ```
-Runtime Agent Panel ←→ postMessage ←→ IDE iframe (veil-viewer)
+Runtime AgentDock ←→ postMessage ←→ IDE iframe (runtime/ide-ui, agent rail off)
 ```
 
 | Direction | Message | Purpose |

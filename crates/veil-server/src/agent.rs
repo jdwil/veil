@@ -113,6 +113,51 @@ pub async fn run_turn<P: SourceProvider>(
         content: prompt.to_string(),
     }];
 
+    // Platform UX tools (navigate dashboard) — host path, no project/source required.
+    // Chips like "Open changes" must drive SPA navigation even when ACP MCP
+    // discovery is incomplete. Runs before read_source so hub agent always works.
+    if let Some(ux) = parse_platform_ux_intent(prompt) {
+        let mut nav = serde_json::json!({
+            "action": ux.action,
+            "path": ux.path,
+        });
+        if let Some(ref p) = ux.project {
+            nav["project"] = serde_json::json!(p);
+        }
+        let detail = serde_json::json!({
+            "ok": true,
+            "summary": ux.summary,
+            "navigation": nav,
+            "project": ux.project,
+        })
+        .to_string();
+        messages.push(AgentMessage {
+            role: "assistant".into(),
+            content: format!(
+                "{}\n\nNavigating to `{}` via `{}`.",
+                ux.summary, ux.path, ux.tool
+            ),
+        });
+        return AgentTurnResponse {
+            turn_id,
+            messages,
+            tool_calls: vec![AgentToolCall {
+                name: ux.tool,
+                detail,
+            }],
+            source_changed: false,
+            ok: true,
+            error: None,
+            backend: "host-platform".into(),
+            plan: None,
+            context_truncated: false,
+            context_warning: None,
+            context_tokens: 0,
+            context_budget_tokens: 0,
+            context_layers: vec![],
+        };
+    }
+
     let loaded = provider.as_ref().list_files().await;
     let allowlist = crate::safety::allowlist_from_env(&loaded);
 
@@ -1091,6 +1136,195 @@ fn parse_rename(prompt: &str) -> Option<(String, String)> {
 /// - `create file Foo.veil`
 /// - `new package Bar`
 /// - `make a new file called Widget`
+/// Host-resolved platform UX navigation (runtime shell agent).
+#[derive(Debug, Clone)]
+pub struct PlatformUxIntent {
+    pub tool: String,
+    pub path: String,
+    pub summary: String,
+    /// SPA action: `goto` | `open-ide` | `switch-project`
+    pub action: String,
+    /// Project slug when action is open-ide / open_project
+    pub project: Option<String>,
+}
+
+/// Map dashboard / chip prompts → platform UX tool + SPA path.
+///
+/// Prefer explicit tool names (`list_changes`, `navigate_to`, …) and common
+/// natural phrases used by AgentDock chips.
+///
+/// When aether_chat folds a system prompt under `# User request`, only the
+/// user section is considered so tool docs in the system preamble do not
+/// false-trigger navigation.
+pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
+    let user_part = prompt
+        .rsplit_once("# User request\n")
+        .map(|(_, u)| u)
+        .unwrap_or(prompt);
+    let lower = user_part.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    // Explicit tool / phrase → path
+    let pairs: &[(&[&str], &str, &str, &str)] = &[
+        (
+            &[
+                "list_changes",
+                "open_changes",
+                "open changes",
+                "show me open change",
+                "show open change",
+                "change requests",
+                "navigate to /changes",
+                "go to /changes",
+                "go to changes",
+            ],
+            "list_changes",
+            "/changes",
+            "Opening change requests",
+        ),
+        (
+            &[
+                "create_change",
+                "open_create_change",
+                "create change request",
+                "new change request",
+                "navigate to /changes/new",
+            ],
+            "create_change",
+            "/changes/new",
+            "Opening create change request",
+        ),
+        (
+            &[
+                "list_projects",
+                "open_projects",
+                "open projects",
+                "show projects",
+                "navigate to /projects",
+                "go to projects",
+            ],
+            "list_projects",
+            "/projects",
+            "Opening projects",
+        ),
+        (
+            &["open_deploy", "open deploy", "deploy to staging", "go to deploy", "navigate to /deploy"],
+            "open_deploy",
+            "/deploy",
+            "Opening deploy",
+        ),
+        (
+            &["open_registry", "open registry", "go to registry", "navigate to /registry"],
+            "open_registry",
+            "/registry",
+            "Opening registry",
+        ),
+        (
+            &["open_dashboard", "open dashboard", "go to dashboard", "navigate to /dashboard"],
+            "open_dashboard",
+            "/dashboard",
+            "Opening dashboard",
+        ),
+        (
+            &["open_config", "open config", "go to config", "navigate to /config"],
+            "open_config",
+            "/config",
+            "Opening config",
+        ),
+    ];
+    for (needles, tool, path, summary) in pairs {
+        if needles.iter().any(|n| lower.contains(n)) {
+            return Some(PlatformUxIntent {
+                tool: (*tool).into(),
+                path: (*path).into(),
+                summary: (*summary).into(),
+                action: "goto".into(),
+                project: None,
+            });
+        }
+    }
+    // open_ide / open_project with a named project: "open the relay project"
+    if lower.contains("open_ide")
+        || (lower.contains("open the ") && lower.contains(" project"))
+        || lower.contains("open project")
+        || lower.contains("open_project")
+        || (lower.contains(" in the ide") && lower.contains("open"))
+    {
+        // Extract a simple project slug token after "project" or "the … project"
+        let project = extract_project_slug_from_prompt(&lower).unwrap_or_default();
+        if !project.is_empty() {
+            let is_ide = lower.contains("open_ide")
+                || lower.contains(" in the ide")
+                || lower.contains(" in ide");
+            let tool = if is_ide { "open_ide" } else { "open_project" };
+            // IDE → shell embed route (runtime keeps AgentDock); project page for open_project.
+            let path = if is_ide {
+                format!("/projects/{project}/ide")
+            } else {
+                format!("/projects/{project}")
+            };
+            let action = if is_ide {
+                "open-ide".to_string()
+            } else {
+                "goto".to_string()
+            };
+            return Some(PlatformUxIntent {
+                tool: tool.into(),
+                path,
+                summary: if is_ide {
+                    format!("Opening {project} in the IDE")
+                } else {
+                    format!("Opening project {project}")
+                },
+                action,
+                project: Some(project),
+            });
+        }
+        return Some(PlatformUxIntent {
+            tool: "list_projects".into(),
+            path: "/projects".into(),
+            summary: "Opening projects (no project specified)".into(),
+            action: "goto".into(),
+            project: None,
+        });
+    }
+    None
+}
+
+fn extract_project_slug_from_prompt(lower: &str) -> Option<String> {
+    // "open the relay project" / "open relay in the ide"
+    for part in lower.split_whitespace() {
+        let t = part.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+        if t.is_empty()
+            || matches!(
+                t,
+                "open"
+                    | "the"
+                    | "a"
+                    | "an"
+                    | "project"
+                    | "projects"
+                    | "in"
+                    | "ide"
+                    | "use"
+                    | "open_ide"
+                    | "open_project"
+                    | "or"
+                    | "and"
+                    | "to"
+            )
+        {
+            continue;
+        }
+        // Prefer tokens that look like project slugs (relay, flow, …)
+        if t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && t.len() >= 2 {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
 /// True when the prompt is a host-side command (no LLM/ACP required).
 pub fn is_structured_agent_command(prompt: &str) -> bool {
     let lower = prompt.trim().to_lowercase();
@@ -1100,6 +1334,10 @@ pub fn is_structured_agent_command(prompt: &str) -> bool {
     // Seed wiki is NOT structured — it needs the LLM + wiki_* tools.
     if is_seed_wiki_command(prompt) {
         return false;
+    }
+    // Platform navigation must short-circuit before ACP so SPA tools fire.
+    if parse_platform_ux_intent(prompt).is_some() {
+        return true;
     }
     if lower == "check"
         || lower.starts_with("check ")

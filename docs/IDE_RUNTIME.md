@@ -18,8 +18,10 @@ Related: [`PROJECT_LAYOUT.md`](PROJECT_LAYOUT.md), [`SERVER.md`](SERVER.md),
 | First launch | Interactive prompt (CLI/runtime); non-interactive → defaults |
 | HTTP API | **One implementation**: `veil-server` (`build_router` + providers) |
 | Runtime | **VEIL-authored** platform that **embeds / links** `veil-server` — does not reimplement IR/edit/agent |
-| Multi-project | **Single process**, request-scoped project id — **not** N× `veil serve` |
-| CLI `veil serve <path>` | Thin **single-project** mode of the same kernel (dev convenience) |
+| Multi-project | **Single process** (`ProductHost`), request-scoped project id — **not** a second `veil serve --multi` for the dashboard |
+| IDE UI | **`runtime/ide-ui`** (was `veil-viewer`), served at `/viewer` same-origin |
+| CLI `veil serve <path>` | Thin **single-project** mode of the same kernel (package authors only) |
+| Product UX | See [`runtime/docs/ADR_SINGLE_PRODUCT_HOST.md`](../runtime/docs/ADR_SINGLE_PRODUCT_HOST.md) |
 
 ---
 

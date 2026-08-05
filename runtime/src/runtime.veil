@@ -256,6 +256,25 @@ pkg VeilRuntime
             env_name = environment.unwrap()
           ret {repo: repo, infra: snap, environment: env_name, environments: env_catalog, source: source, s3_key: s3_key}
 
+      # Query all projects for [module.<namespace>] declarations in their veil.toml.
+      # Scans repos, reads veil.toml from S3, parses [module.*] sections, filters by
+      # namespace + optional key-value pairs. Returns matching modules with deploy state.
+      svc QueryProjectModules
+        -> Json
+        input
+          module: Str
+          filters_json: Str
+        step scan
+          repos = MetadataStore.list_repos!()
+          mut toml_entries: List<Json> = []
+          for repo in repos
+            s3_key = f"repos/{repo.id.value}/{repo.default_branch}/veil.toml"
+            if ObjectStorage.exists!(s3_key)
+              raw_bytes = ObjectStorage.get!(s3_key)
+              toml_entries.push({repo_id: repo.id.value, repo_name: repo.name, slug: repo.slug, branch: repo.default_branch, raw: raw_bytes})
+          result_str = LocalFs.query_modules_from_tomls!(Json.stringify(toml_entries), module, filters_json)
+          ret Json.parse(result_str)
+
       # Dev helper: push local projects hub tree into S3 ObjectStorage (seed live-like source).
       svc SyncRepoToObjectStore
         -> Json
@@ -3350,6 +3369,7 @@ pkg VeilRuntime
         find!(id: Id) -> Opt<ChangeRequest>
         list_by_repo!(repo_id: Id, status: Opt<PrStatus>) -> List<ChangeRequest>
         list_open!(repo_id: Id) -> List<ChangeRequest>
+        list_all!(status: Opt<PrStatus>) -> List<ChangeRequest>
         save!(cr: ChangeRequest)
 
       repo ApprovalRepo
@@ -3384,36 +3404,32 @@ pkg VeilRuntime
         diff_files!(slug: Str, base_ref: Str, head_ref: Str) -> Json
         can_merge!(slug: Str, source: Str, target: Str) -> Json
 
-      # DDB adapter for ChangeRequest aggregate
+      # DDB adapter for ChangeRequest aggregate (same pattern as DdbDeploymentStore)
       adapter DdbChangeRequestRepo for ChangeRequestRepo
-        @field(client: DdbClient)
-        @env(VEIL_DDB_TABLE)
+        @field(client: DdbClient, table)
 
         impl find(id)
           pk = f"PR#{id}"
-          resp = client.get_item().table_name(table).key("PK", AttributeValue.S(pk)).key("SK", AttributeValue.S("META")).send!()
-          match resp.item()
-            None ->
-              ret null
-            Some(item) ->
-              data = item.get("data").unwrap().as_s().unwrap()
-              ret Json.parse(data)
+          resp = client.query().table_name(table).key_condition_expression("PK = :pk AND SK = :sk").expression_attribute_values(":pk", AttributeValue.S(pk)).expression_attribute_values(":sk", AttributeValue.S("META")).send!()
+          items = resp.items()
+          if items.is_empty() then ret null
+          ret Json.parse(items[0].get("data").unwrap().as_s().unwrap())
 
         impl list_by_repo(repo_id, status)
           resp = client.query().table_name(table).index_name("GSI1").key_condition_expression("GSI1PK = :pk").expression_attribute_values(":pk", AttributeValue.S(f"REPO_PRS#{repo_id}")).send!()
           items = resp.items()
-          out = []
+          mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
             cr: ChangeRequest = Json.parse(data)
-            if status.is_none() || cr.status == status.clone().unwrap_or(cr.status.clone())
+            if status.is_none() || cr.status == status.unwrap()
               out = out + [cr]
           ret out
 
         impl list_open(repo_id)
           resp = client.query().table_name(table).index_name("GSI1").key_condition_expression("GSI1PK = :pk").expression_attribute_values(":pk", AttributeValue.S(f"REPO_PRS#{repo_id}")).send!()
           items = resp.items()
-          out = []
+          mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
             cr: ChangeRequest = Json.parse(data)
@@ -3421,20 +3437,30 @@ pkg VeilRuntime
               out = out + [cr]
           ret out
 
+        impl list_all(status)
+          resp = client.scan().table_name(table).filter_expression("begins_with(PK, :prefix) AND SK = :sk").expression_attribute_values(":prefix", AttributeValue.S("PR#")).expression_attribute_values(":sk", AttributeValue.S("META")).send!()
+          items = resp.items()
+          mut out = []
+          for item in items
+            data = item.get("data").unwrap().as_s().unwrap()
+            cr: ChangeRequest = Json.parse(data)
+            if status.is_none() || cr.status == status.unwrap()
+              out = out + [cr]
+          ret out
+
         impl save(cr)
           pk = f"PR#{cr.id}"
           gsi1pk = f"REPO_PRS#{cr.repo_id}"
-          client.put_item().table_name(table).item("PK", AttributeValue.S(pk)).item("SK", AttributeValue.S("META")).item("GSI1PK", AttributeValue.S(gsi1pk)).item("GSI1SK", AttributeValue.S(cr.updated_at.to_string())).item("data", AttributeValue.S(Json.stringify(cr))).send!()
+          client.put_item().table_name(table).item("PK", AttributeValue.S(pk)).item("SK", AttributeValue.S("META")).item("GSI1PK", AttributeValue.S(gsi1pk)).item("GSI1SK", AttributeValue.S(f"{cr.updated_at}")).item("data", AttributeValue.S(Json.stringify(cr))).send!()
 
-      # DDB adapter for Approval
+      # DDB adapter for Approval (same pattern as DdbDeploymentStore)
       adapter DdbApprovalRepo for ApprovalRepo
-        @field(client: DdbClient)
-        @env(VEIL_DDB_TABLE)
+        @field(client: DdbClient, table)
 
         impl find_for_pr(pr_id)
           resp = client.query().table_name(table).key_condition_expression("PK = :pk AND begins_with(SK, :prefix)").expression_attribute_values(":pk", AttributeValue.S(f"PR#{pr_id}")).expression_attribute_values(":prefix", AttributeValue.S("APPROVAL#")).send!()
           items = resp.items()
-          out = []
+          mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
             out = out + [Json.parse(data)]
@@ -3447,21 +3473,18 @@ pkg VeilRuntime
 
       # DDB adapter for CiRun
       adapter DdbCiRunRepo for CiRunRepo
-        @field(client: DdbClient)
-        @env(VEIL_DDB_TABLE)
+        @field(client: DdbClient, table)
 
         impl latest_for_pr(pr_id)
           resp = client.query().table_name(table).key_condition_expression("PK = :pk AND begins_with(SK, :prefix)").expression_attribute_values(":pk", AttributeValue.S(f"PR#{pr_id}")).expression_attribute_values(":prefix", AttributeValue.S("CI#")).scan_index_forward(false).limit(1).send!()
           items = resp.items()
-          if items.is_empty()
-            ret null
-          data = items[0].get("data").unwrap().as_s().unwrap()
-          ret Json.parse(data)
+          if items.is_empty() then ret null
+          ret Json.parse(items[0].get("data").unwrap().as_s().unwrap())
 
         impl list_for_pr(pr_id)
           resp = client.query().table_name(table).key_condition_expression("PK = :pk AND begins_with(SK, :prefix)").expression_attribute_values(":pk", AttributeValue.S(f"PR#{pr_id}")).expression_attribute_values(":prefix", AttributeValue.S("CI#")).send!()
           items = resp.items()
-          out = []
+          mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
             out = out + [Json.parse(data)]
@@ -3469,18 +3492,17 @@ pkg VeilRuntime
 
         impl save(run)
           pk = f"PR#{run.pr_id}"
-          sk = f"CI#{run.started_at.to_string()}#{run.id}"
+          sk = f"CI#{run.started_at}#{run.id}"
           client.put_item().table_name(table).item("PK", AttributeValue.S(pk)).item("SK", AttributeValue.S(sk)).item("data", AttributeValue.S(Json.stringify(run))).send!()
 
       # DDB adapter for ReviewComment
       adapter DdbCommentRepo for CommentRepo
-        @field(client: DdbClient)
-        @env(VEIL_DDB_TABLE)
+        @field(client: DdbClient, table)
 
         impl list_for_pr(pr_id)
           resp = client.query().table_name(table).key_condition_expression("PK = :pk AND begins_with(SK, :prefix)").expression_attribute_values(":pk", AttributeValue.S(f"PR#{pr_id}")).expression_attribute_values(":prefix", AttributeValue.S("COMMENT#")).send!()
           items = resp.items()
-          out = []
+          mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
             out = out + [Json.parse(data)]
@@ -3488,7 +3510,7 @@ pkg VeilRuntime
 
         impl save(comment)
           pk = f"PR#{comment.pr_id}"
-          sk = f"COMMENT#{comment.created_at.to_string()}#{comment.id}"
+          sk = f"COMMENT#{comment.created_at}#{comment.id}"
           client.put_item().table_name(table).item("PK", AttributeValue.S(pk)).item("SK", AttributeValue.S(sk)).item("data", AttributeValue.S(Json.stringify(comment))).send!()
 
         impl resolve(id)
@@ -3636,7 +3658,35 @@ pkg VeilRuntime
     group application
 
       # Create a new change request (branch + PR record)
+      # Nested under repo: POST /api/repos/{id}/changes
+      @route("POST /api/repos/{id}/changes")
       svc CreateChangeRequest
+        -> ChangeRequest
+        @dep(git: GitService)
+        @dep(cr_repo: ChangeRequestRepo)
+        input
+          id: Id
+          slug: Str
+          title: Str
+          description: Str
+          jira_ticket: Str
+          author: Str
+        step validate
+          guard jira_ticket.len() > 0, "Jira ticket required"
+          guard title.len() > 0, "Title required"
+        step create_branch
+          branch_name = f"cr/{jira_ticket}/{title.to_lowercase().replace(' ', '-')}"
+          git.create_branch!(slug, branch_name, "main")
+        step persist
+          now = Dt.now()
+          cr_id = Id.new()
+          cr = ChangeRequest{id: cr_id, repo_id: id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
+          cr_repo.save!(cr)
+          ret cr
+
+      # Flat create for dashboard form (no repo path segment)
+      @route("POST /api/change_requests")
+      svc CreateChangeRequestFlat
         -> ChangeRequest
         @dep(git: GitService)
         @dep(cr_repo: ChangeRequestRepo)
@@ -3655,25 +3705,26 @@ pkg VeilRuntime
           git.create_branch!(slug, branch_name, "main")
         step persist
           now = Dt.now()
-          id = Id.new()
-          cr = ChangeRequest{id, repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
+          cr_id = Id.new()
+          cr = ChangeRequest{id: cr_id, repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
           cr_repo.save!(cr)
           ret cr
 
       # Commit a file to a PR's branch
+      @route("POST /api/change_requests/{id}/commit")
       svc CommitToChange
         -> Json
         @dep(git: GitService)
         @dep(cr_repo: ChangeRequestRepo)
         input
-          pr_id: Id
+          id: Id
           slug: Str
           path: Str
           content: Str
           message: Str
           author: Str
         step resolve
-          cr = cr_repo.find!(pr_id)
+          cr = cr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status != PrStatus.Merged, "Cannot commit to merged PR"
@@ -3683,12 +3734,13 @@ pkg VeilRuntime
           ret {hash: hash, branch: pr.source_branch}
 
       # Submit PR for review
+      @route("POST /api/change_requests/{id}/submit")
       svc SubmitForReview
         @dep(cr_repo: ChangeRequestRepo)
         input
-          pr_id: Id
+          id: Id
         step transition
-          cr = cr_repo.find!(pr_id)
+          cr = cr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.Draft || pr.status == PrStatus.ChangesRequested, "PR not in submittable state"
@@ -3697,48 +3749,51 @@ pkg VeilRuntime
           cr_repo.save!(pr)
 
       # Approve a change
+      @route("POST /api/change_requests/{id}/approve")
       svc ApproveChange
         @dep(cr_repo: ChangeRequestRepo)
         @dep(approval_repo: ApprovalRepo)
         input
-          pr_id: Id
+          id: Id
           reviewer: Str
           comment: Opt<Str>
         step validate
-          cr = cr_repo.find!(pr_id)
+          cr = cr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
           guard reviewer != pr.author, "Author cannot approve their own change"
         step record
-          approval = Approval{pr_id, reviewer, approved_at: Dt.now(), comment}
+          approval = Approval{pr_id: id, reviewer, approved_at: Dt.now(), comment}
           approval_repo.save!(approval)
           pr.status = PrStatus.Approved
           pr.updated_at = Dt.now()
           cr_repo.save!(pr)
 
       # Request changes
+      @route("POST /api/change_requests/{id}/request-changes")
       svc RequestChanges
         @dep(cr_repo: ChangeRequestRepo)
         @dep(comment_repo: CommentRepo)
         input
-          pr_id: Id
+          id: Id
           reviewer: Str
           comment: Str
         step validate
-          cr = cr_repo.find!(pr_id)
+          cr = cr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
           guard reviewer != pr.author, "Author cannot review their own change"
         step record
-          review_comment = ReviewComment{id: Id.new(), pr_id, author: reviewer, construct_path: null, body: comment, created_at: Dt.now(), resolved: false}
+          review_comment = ReviewComment{id: Id.new(), pr_id: id, author: reviewer, construct_path: null, body: comment, created_at: Dt.now(), resolved: false}
           comment_repo.save!(review_comment)
           pr.status = PrStatus.ChangesRequested
           pr.updated_at = Dt.now()
           cr_repo.save!(pr)
 
       # Merge a PR (all gates must pass)
+      @route("POST /api/change_requests/{id}/merge")
       svc MergeChange
         -> Json
         @dep(git: GitService)
@@ -3746,20 +3801,20 @@ pkg VeilRuntime
         @dep(ci_repo: CiRunRepo)
         @dep(approval_repo: ApprovalRepo)
         input
-          pr_id: Id
+          id: Id
           merger: Str
           slug: Str
         step validate_gates
-          cr = cr_repo.find!(pr_id)
+          cr = cr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.Approved, "PR must be approved before merge"
           # Gate: CI must pass
-          ci = ci_repo.latest_for_pr!(pr_id)
+          ci = ci_repo.latest_for_pr!(id)
           guard ci.is_some(), "No CI run — build must pass before merge"
           guard ci.unwrap().status == CiStatus.Passed, "CI must pass before merge"
           # Gate: has approval from non-author
-          approvals = approval_repo.find_for_pr!(pr_id)
+          approvals = approval_repo.find_for_pr!(id)
           guard !approvals.is_empty(), "At least one approval required"
         step merge
           pr.status = PrStatus.Merging
@@ -3775,16 +3830,17 @@ pkg VeilRuntime
           cr_repo.save!(pr)
           ret {merge_commit: merge_hash, branch: pr.source_branch, target: pr.target_branch}
 
-      # Get structural diff for visual review (reads source from both branches, parses, computes AST diff)
+      # Get structural diff for visual review
+      @route("GET /api/change_requests/{id}/diff")
       svc GetStructuralDiff
         -> Json
         @dep(git: GitService)
         @dep(cr_repo: ChangeRequestRepo)
         input
-          pr_id: Id
+          id: Id
           slug: Str
         step resolve
-          cr = cr_repo.find!(pr_id)
+          cr = cr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
         step compute_diff
@@ -3805,7 +3861,23 @@ pkg VeilRuntime
           # TODO: wire veil_parser + veil_ir for full structural diff
           ret Json.object()
 
-      # Add a review comment
+      # Add a review comment (dashboard + nested under change request)
+      @route("POST /api/change_requests/{id}/comments")
+      svc AddReviewComment
+        -> ReviewComment
+        @dep(comment_repo: CommentRepo)
+        input
+          id: Id
+          author: Str
+          construct_path: Opt<Str>
+          body: Str
+        step persist
+          guard body.len() > 0, "Comment body required"
+          comment = ReviewComment{id: Id.new(), pr_id: id, author, construct_path, body, created_at: Dt.now(), resolved: false}
+          comment_repo.save!(comment)
+          ret comment
+
+      # Alias for bus/trampoline callers that still use pr_id naming
       svc AddComment
         -> ReviewComment
         @dep(comment_repo: CommentRepo)
@@ -3815,25 +3887,39 @@ pkg VeilRuntime
           construct_path: Opt<Str>
           body: Str
         step persist
+          guard body.len() > 0, "Comment body required"
           comment = ReviewComment{id: Id.new(), pr_id, author, construct_path, body, created_at: Dt.now(), resolved: false}
           comment_repo.save!(comment)
           ret comment
 
-      # List PRs for a repo
+      # List PRs for a repo: GET /api/repos/{id}/changes
+      @route("GET /api/repos/{id}/changes")
       svc ListChangeRequests
         -> List<ChangeRequest>
         @dep(cr_repo: ChangeRequestRepo)
         input
-          repo_id: Opt<Id>
+          id: Id
           status: Opt<PrStatus>
         step query
-          if repo_id.is_none()
-            ret []
-          filter = status.clone()
-          items = cr_repo.list_by_repo!(repo_id.unwrap(), filter)
+          # Local copy avoids codegen auto-unwrap of Opt at the call site.
+          filter = status
+          items = cr_repo.list_by_repo!(id, filter)
+          ret items
+
+      # Global list for dashboard Changes page
+      @route("GET /api/change_requests")
+      svc ListAllChangeRequests
+        -> List<ChangeRequest>
+        @dep(cr_repo: ChangeRequestRepo)
+        input
+          status: Opt<PrStatus>
+        step query
+          filter = status
+          items = cr_repo.list_all!(filter)
           ret items
 
       # Get PR detail
+      @route("GET /api/change_requests/{id}")
       svc GetChangeRequest
         -> Json
         @dep(cr_repo: ChangeRequestRepo)
@@ -3841,15 +3927,32 @@ pkg VeilRuntime
         @dep(comment_repo: CommentRepo)
         @dep(ci_repo: CiRunRepo)
         input
-          pr_id: Id
+          id: Id
         step load
-          cr = cr_repo.find!(pr_id)
+          cr = cr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
-          approvals = approval_repo.find_for_pr!(pr_id)
-          comments = comment_repo.list_for_pr!(pr_id)
-          ci_runs = ci_repo.list_for_pr!(pr_id)
+          approvals = approval_repo.find_for_pr!(id)
+          comments = comment_repo.list_for_pr!(id)
+          ci_runs = ci_repo.list_for_pr!(id)
           ret {pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs}
+
+      # Transition PR status (draft → review, close, reject, …)
+      @route("PUT /api/change_requests/{id}/status")
+      svc UpdateChangeRequestStatus
+        -> ChangeRequest
+        @dep(cr_repo: ChangeRequestRepo)
+        input
+          id: Id
+          status: PrStatus
+        step update
+          cr = cr_repo.find!(id)
+          guard cr.is_some(), "PR not found"
+          pr = cr.unwrap()
+          pr.status = status
+          pr.updated_at = Dt.now()
+          cr_repo.save!(pr)
+          ret pr
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Agent — Unified runtime agent with ACP tunnel for LLM provider switching
@@ -4054,8 +4157,29 @@ pkg VeilRuntime
             "switch_project" =>
               project = args["project"].as_str().unwrap_or("unknown")
               ret ToolExecutionResult{output: {switched_to: project}, is_error: false, navigation: {action: "switch-project", project}}
+            "list_changes" =>
+              ret ToolExecutionResult{output: {summary: "Opening change requests", navigation: {action: "goto", path: "/changes"}}, is_error: false, navigation: {action: "goto", path: "/changes"}}
+            "create_change" =>
+              ret ToolExecutionResult{output: {summary: "Opening new change request form", navigation: {action: "goto", path: "/changes/new"}}, is_error: false, navigation: {action: "goto", path: "/changes/new"}}
             "list_projects" =>
-              ret ToolExecutionResult{output: {projects: []}, is_error: false, navigation: null}
+              ret ToolExecutionResult{output: {summary: "Opening projects", navigation: {action: "goto", path: "/projects"}}, is_error: false, navigation: {action: "goto", path: "/projects"}}
+            "navigate_to" =>
+              path = args["path"].as_str().unwrap_or("/dashboard")
+              ret ToolExecutionResult{output: {summary: f"Navigate to {path}", navigation: {action: "goto", path}}, is_error: false, navigation: {action: "goto", path}}
+            "open_project" =>
+              project = args["project"].as_str().unwrap_or(args["slug"].as_str().unwrap_or(""))
+              path = if project == "" then "/projects" else f"/projects/{project}"
+              ret ToolExecutionResult{output: {summary: f"Open project {project}", navigation: {action: "goto", path, project}}, is_error: false, navigation: {action: "goto", path, project}}
+            "open_ide" =>
+              project = args["project"].as_str().unwrap_or("")
+              path = if project == "" then "/projects" else f"/projects/{project}"
+              ret ToolExecutionResult{output: {summary: f"Open IDE for {project}", navigation: {action: "open-ide", path, project}}, is_error: false, navigation: {action: "open-ide", path, project}}
+            "open_deploy" =>
+              ret ToolExecutionResult{output: {summary: "Open deploy", navigation: {action: "goto", path: "/deploy"}}, is_error: false, navigation: {action: "goto", path: "/deploy"}}
+            "open_registry" =>
+              ret ToolExecutionResult{output: {summary: "Open registry", navigation: {action: "goto", path: "/registry"}}, is_error: false, navigation: {action: "goto", path: "/registry"}}
+            "open_dashboard" =>
+              ret ToolExecutionResult{output: {summary: "Open dashboard", navigation: {action: "goto", path: "/dashboard"}}, is_error: false, navigation: {action: "goto", path: "/dashboard"}}
             "get_current_context" =>
               page = ctx.and_then(|c| c.page).unwrap_or("/")
               project = ctx.and_then(|c| c.project)

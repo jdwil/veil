@@ -26,12 +26,8 @@ pkg ddd v1
     in top
     # IDE views (docs/PRESENTATION.md) — construct names, not keywords
     present
-      view groups
-        label "Layers"
-        layout tabs
-        members by_source_group
-        tabs domain, application, infrastructure, presentation
-        default
+      # Default: domain model tree (native outline). Layers tabs still available;
+      # tab bodies also render as tree (SvelteFlow is reserved for real control-flow).
       view model
         label "Domain model"
         layout tree
@@ -46,6 +42,12 @@ pkg ddd v1
         nest ValueObject under Aggregate when references
         nest Aggregate under Aggregate when references
         orphan_policy list
+        default
+      view groups
+        label "Layers"
+        layout tabs
+        members by_source_group
+        tabs domain, application, infrastructure, presentation
 
   construct Orchestrator
     kw orchestrator

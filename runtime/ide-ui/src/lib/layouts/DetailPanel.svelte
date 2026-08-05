@@ -14,7 +14,7 @@
   import { formatType } from '$lib/typeDisplay';
   import { isCriticalNode } from '$lib/lenses';
   import { BlockEditor } from '$lib/editors';
-  import { irChildrenToExprs } from '$lib/editors/ir-convert';
+  import { irGraphBodyToExprs } from '$lib/editors/ir-convert';
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
   import type { PresentationModel } from '$lib/presentation';
@@ -186,18 +186,65 @@
   // Doc (from layer)
   let doc = $derived(selectedIrNode?.metadata.doc ?? null);
 
-  // Body editor: for Step / Flow / InterfaceMethod nodes
-  let showBodyEditor = $derived(
-    kind === 'Step' || kind === 'Flow' || kind === 'InterfaceMethod'
+  // Steps under a Flow / DomainService (svc with step query / load / …)
+  let steps = $derived.by((): IrNode[] => {
+    return children.filter((c) => c.kind === 'Step');
+  });
+
+  /** Returns attached at Flow level (codegen often places `ret` as Flow sibling of steps). */
+  let flowReturns = $derived.by((): IrNode[] => {
+    return children.filter((c) => c.kind === 'Return');
+  });
+
+  /** Parent construct when viewing a Step (for ← back control). */
+  let parentHost = $derived.by((): IrNode | null => {
+    if (!selectedIrNode || kind !== 'Step') return null;
+    const pid = selectedIrNode.metadata.parent;
+    if (pid == null) return null;
+    return graph.nodes.find((n) => n.id === pid) ?? null;
+  });
+
+  // Multi-step Flow/svc: structured step sections (not a fake flattened body).
+  let isStructuredService = $derived(
+    kind === 'Flow' && steps.length > 0
+  );
+
+  // Simple body (Step host, free fn, method) — Actions directly under node.
+  let showSimpleBody = $derived(
+    !layerProvided &&
+      (kind === 'Step' ||
+        kind === 'InterfaceMethod' ||
+        (kind === 'Flow' && steps.length === 0))
   );
 
   let bodyExprs = $derived.by((): Expr[] => {
-    if (!selectedIrNode || !showBodyEditor) return [];
-    const bodyChildren = children.filter(c =>
-      c.kind === 'Step' || c.kind === 'Action' || c.kind === 'MatchDecision'
-    );
-    return irChildrenToExprs(bodyChildren);
+    if (!selectedIrNode || !showSimpleBody) return [];
+    return irGraphBodyToExprs(graph.nodes, selectedIrNode.id);
   });
+
+  function stepBodyExprs(stepId: number): Expr[] {
+    return irGraphBodyToExprs(graph.nodes, stepId);
+  }
+
+  function returnExprs(): Expr[] {
+    return flowReturns.map((r) => {
+      const v = r.metadata.properties.find(([k]) => k === 'expr')?.[1];
+      if (v) {
+        // Prefer full expression text from IR
+        return { kind: 'return' as const, value: { kind: 'ident' as const, name: v } };
+      }
+      return { kind: 'return' as const };
+    });
+  }
+
+  function goToParent() {
+    if (parentHost) selectedNodeId.set(String(parentHost.id));
+  }
+
+  function handleStepBodyEdit(step: IrNode, newExprs: Expr[]) {
+    const veilSource = newExprs.map((e) => exprToVeil(e));
+    persist({ op: 'set_body', span_start: step.span.start, body: veilSource });
+  }
 
   // Properties (non-standard ones to display read-only)
   let properties = $derived.by(() => {
@@ -284,6 +331,17 @@
       {/if}
     </header>
 
+    <!-- Parent trail when focused on a Step inside a service -->
+    {#if parentHost}
+      <div class="detail-parent-trail">
+        <button type="button" class="detail-back" onclick={goToParent}>
+          ← {parentHost.name}
+        </button>
+        <span class="detail-trail-sep">/</span>
+        <span class="detail-trail-here">{selectedIrNode.name}</span>
+      </div>
+    {/if}
+
     <!-- Name -->
     <section class="detail-section">
       <label class="detail-label" for="detail-name">Name</label>
@@ -368,15 +426,71 @@
       </section>
     {/if}
 
-    <!-- Body Editor -->
-    {#if showBodyEditor && !layerProvided}
+    <!--
+      Structured service (DomainService / multi-step Flow):
+      one section per step with its body — mirrors .veil `step name` blocks.
+      Do not also show a flattened body (that dual view was confusing).
+    -->
+    {#if isStructuredService && !layerProvided}
+      <section class="detail-section">
+        <h3 class="detail-section-title">
+          Implementation
+          <span class="section-hint">{steps.length} step{steps.length === 1 ? '' : 's'}</span>
+        </h3>
+        <div class="detail-step-blocks">
+          {#each steps as step}
+            {@const stepExprs = stepBodyExprs(step.id)}
+            <div class="detail-step-block">
+              <header class="detail-step-head">
+                <span class="step-kw">step</span>
+                <span class="step-name">{step.name}</span>
+              </header>
+              <div class="detail-body-editor">
+                {#if stepExprs.length > 0}
+                  <BlockEditor
+                    exprs={stepExprs}
+                    onChange={(exprs) => handleStepBodyEdit(step, exprs)}
+                  />
+                {:else}
+                  <p class="detail-body-empty">Empty step body</p>
+                {/if}
+              </div>
+            </div>
+          {/each}
+          {#if flowReturns.length > 0}
+            <div class="detail-step-block detail-step-block--return">
+              <header class="detail-step-head">
+                <span class="step-kw">ret</span>
+                <span class="step-name">result</span>
+              </header>
+              <div class="detail-body-editor">
+                <BlockEditor
+                  exprs={returnExprs()}
+                  onChange={handleBodyEdit}
+                />
+              </div>
+            </div>
+          {/if}
+        </div>
+        <p class="detail-service-hint">
+          Double-click the service in the outline to open the flow graph (steps as nodes).
+        </p>
+      </section>
+    {/if}
+
+    <!-- Simple body: single step host, free fn, or method -->
+    {#if showSimpleBody}
       <section class="detail-section">
         <h3 class="detail-section-title">Body</h3>
         <div class="detail-body-editor">
-          <BlockEditor
-            exprs={bodyExprs}
-            onChange={handleBodyEdit}
-          />
+          {#if bodyExprs.length > 0}
+            <BlockEditor
+              exprs={bodyExprs}
+              onChange={handleBodyEdit}
+            />
+          {:else}
+            <p class="detail-body-empty">No body expressions.</p>
+          {/if}
         </div>
       </section>
     {/if}
@@ -649,6 +763,109 @@
 
   .field-type {
     color: var(--veil-text-dim);
+  }
+
+  /* Parent trail (Step → service) */
+  .detail-parent-trail {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 1rem;
+    border-bottom: 1px solid var(--veil-border, #2e2e2e);
+    background: color-mix(in srgb, var(--veil-text-dim, #a3a3a3) 6%, transparent);
+    font-size: 0.78rem;
+  }
+  .detail-back {
+    border: none;
+    background: none;
+    color: var(--veil-text-secondary, #a3a3a3);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0.15rem 0.25rem;
+    border-radius: 4px;
+  }
+  .detail-back:hover {
+    color: var(--veil-text, #e5e5e5);
+    background: color-mix(in srgb, var(--veil-text-dim, #a3a3a3) 12%, transparent);
+  }
+  .detail-trail-sep {
+    color: var(--veil-text-faint, #737373);
+  }
+  .detail-trail-here {
+    color: var(--veil-text, #e5e5e5);
+    font-weight: 600;
+    font-family: var(--font-mono, monospace);
+  }
+
+  /* Structured service: step blocks */
+  .detail-step-blocks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .detail-step-block {
+    border: 1px solid var(--veil-border, #2e2e2e);
+    border-radius: 8px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--veil-surface, #1a1a1a) 80%, #000);
+  }
+
+  .detail-step-block--return {
+    border-style: dashed;
+  }
+
+  .detail-step-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.4rem 0.65rem;
+    border-bottom: 1px solid var(--veil-border, #2e2e2e);
+    background: color-mix(in srgb, var(--veil-text-dim, #a3a3a3) 8%, transparent);
+  }
+
+  .step-kw {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--veil-text-faint, #737373);
+  }
+
+  .step-name {
+    font-weight: 650;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.82rem;
+    color: var(--veil-text, #e5e5e5);
+  }
+
+  .detail-step-block .detail-body-editor {
+    padding: 0.5rem 0.35rem 0.65rem;
+  }
+
+  .detail-service-hint {
+    margin: 0.65rem 0 0;
+    font-size: 0.7rem;
+    color: var(--veil-text-faint, #737373);
+    line-height: 1.4;
+  }
+
+  .section-hint {
+    font-weight: 500;
+    font-size: 0.65rem;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--veil-text-faint, #737373);
+    margin-left: 0.35rem;
+  }
+
+  .detail-body-empty {
+    margin: 0;
+    padding: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--veil-text-dim, #a3a3a3);
+    font-style: italic;
   }
 
   /* Methods */

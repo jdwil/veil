@@ -6,6 +6,12 @@
     type Diagnostic,
   } from '$lib/store';
 
+  /** CSS px from top of graph container (raise when flow-nav bar is present). */
+  interface Props {
+    offsetTop?: number;
+  }
+  let { offsetTop = 12 }: Props = $props();
+
   let expanded = $state(false);
   const items = $derived($diagnostics);
   const meta = $derived($checkMeta);
@@ -37,7 +43,12 @@
 </script>
 
 {#if count > 0}
-  <div class="diagnostics-badge" class:expanded class:has-errors={errorCount > 0}>
+  <div
+    class="diagnostics-badge"
+    class:expanded
+    class:has-errors={errorCount > 0}
+    style:top="{offsetTop}px"
+  >
     <button class="badge-btn" onclick={() => (expanded = !expanded)}>
       {errorCount > 0 ? '⛔' : '⚠️'}
       {badgeText()}
@@ -82,13 +93,14 @@
 <style>
   .diagnostics-badge {
     position: absolute;
+    /* top set via style (clears flow-nav); sit on the right so Back stays free */
     top: 12px;
-    left: 12px;
-    right: auto;
+    right: 12px;
+    left: auto;
     bottom: auto;
-    z-index: 30;
+    z-index: 20;
     font-family: var(--veil-font, system-ui);
-    max-width: min(420px, calc(100% - 80px));
+    max-width: min(380px, calc(100% - 24px));
   }
 
   .badge-btn {

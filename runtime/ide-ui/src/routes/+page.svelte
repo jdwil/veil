@@ -15,6 +15,7 @@
 
   import VeilNode from '$lib/VeilNode.svelte';
   import Palette from '$lib/Palette.svelte';
+  import CreateConstructMenu, { type CreateItem } from '$lib/CreateConstructMenu.svelte';
   import PropertyEditor from '$lib/PropertyEditor.svelte';
   import DiagnosticsPanel from '$lib/DiagnosticsPanel.svelte';
   import CodePreview from '$lib/CodePreview.svelte';
@@ -35,6 +36,8 @@
     startRevisionWatch,
     drillDown,
     navigateTo,
+    navigateUp,
+    navigateUpFromFlow,
     getChildren,
     selectedNodeId,
     paletteConfig,
@@ -64,6 +67,8 @@
     pickDefaultView,
     viewsForHost,
     irChildren,
+    isLogicFlowHost,
+    structuralTreeProjection,
     type ViewSpec,
   } from '$lib/presentation';
   import {
@@ -191,26 +196,18 @@
   }
 
   /**
-   * LAY-008 / UX-012: palette drop → create_construct with presentation-aware parent.
+   * LAY-008 / UX-012: create_construct from palette drop or tree Add menu.
    */
-  async function handleDrop(event: DragEvent) {
-    event.preventDefault();
-    if (!event.dataTransfer) return;
-
-    const data = event.dataTransfer.getData('application/veil-node');
-    if (!data) return;
-
-    const item = JSON.parse(data) as {
-      kind: NodeKind;
-      label: string;
-      icon: string;
-      name?: string;
-      keyword?: string;
-      group?: string;
-      dg?: string;
-      is_step?: boolean;
-    };
-
+  async function createFromPaletteItem(item: {
+    kind?: NodeKind | string;
+    label: string;
+    icon?: string;
+    name?: string;
+    keyword?: string;
+    group?: string;
+    dg?: string;
+    is_step?: boolean;
+  }) {
     const graph = get(irGraph);
     const hostId = get(currentParent);
     if (!graph || hostId == null) {
@@ -316,6 +313,18 @@
     const fresh = get(irGraph);
     if (fresh) await computeView(fresh, get(currentParent), get(paletteConfig));
     flowKey += 1;
+  }
+
+  /** Palette drop → same create path as tree Add menu. */
+  async function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    if (!event.dataTransfer) return;
+
+    const data = event.dataTransfer.getData('application/veil-node');
+    if (!data) return;
+
+    const item = JSON.parse(data) as CreateItem;
+    await createFromPaletteItem(item);
   }
 
   function handleDragOver(event: DragEvent) {
@@ -603,6 +612,110 @@
       }));
   }
 
+  /** Apply native tree/flat projection (no SvelteFlow). */
+  function applyNativeProjection(projected: ProjectResult) {
+    currentProjected = projected;
+    currentLayout = projected.layout === 'flat' ? 'flat' : 'tree';
+    nodes = [];
+    edges = [];
+  }
+
+  /** Order flow-graph peers: Inputs → steps/gateways → Return last. */
+  function flowSequenceOrder(n: IrNode): number {
+    switch (n.kind) {
+      case 'Inputs':
+        return 0;
+      case 'Step':
+      case 'ParallelGateway':
+      case 'MatchDecision':
+      case 'ErrorBoundary':
+        return 1;
+      case 'Return':
+        return 9;
+      default:
+        return 5;
+    }
+  }
+
+  function sortFlowSequence(kids: IrNode[]): IrNode[] {
+    return [...kids].sort(
+      (a, b) =>
+        flowSequenceOrder(a) - flowSequenceOrder(b) ||
+        a.span.start - b.span.start ||
+        a.name.localeCompare(b.name)
+    );
+  }
+
+  /** SvelteFlow graph for a logic-flow host (steps / sequence). */
+  async function applyLogicFlowGraph(graph: IrGraph, hostId: number) {
+    let kids = irChildren(graph, hostId);
+    if (!showLayerProvided) {
+      kids = kids.filter((c) => !c.metadata.annotations.includes('layer-provided'));
+    }
+    // Only sequence-relevant peers on the canvas (not nested Actions)
+    kids = kids.filter((c) =>
+      ['Inputs', 'Step', 'ParallelGateway', 'MatchDecision', 'ErrorBoundary', 'Return'].includes(
+        c.kind
+      )
+    );
+    kids = sortFlowSequence(kids);
+
+    currentProjected = null;
+    currentLayout = 'flow';
+    tabs = [];
+    activeTab = null;
+    hostViews = [];
+    const itemIds = new Set(kids.map((c) => c.id));
+    let flowNodes = toFlowNodes(graph, kids, itemIds);
+    let flowEdges = edgesAmong(graph, itemIds);
+
+    // Synthesize SequenceFlow chain when IR lacks edges (older graphs / missing last→Return)
+    for (let i = 0; i < kids.length - 1; i++) {
+      const a = kids[i];
+      const b = kids[i + 1];
+      const exists = flowEdges.some(
+        (e) => e.source === String(a.id) && e.target === String(b.id)
+      );
+      if (!exists) {
+        flowEdges.push({
+          id: `seq-synth-${a.id}-${b.id}`,
+          source: String(a.id),
+          target: String(b.id),
+          animated: true,
+          style: getEdgeStyle('SequenceFlow'),
+          label: '',
+          labelStyle: 'font-size: 10px; fill: var(--veil-text-dim);',
+        });
+      }
+    }
+
+    // Resolve on:label routing on Step nodes
+    for (const node of kids) {
+      if (node.kind !== 'Step') continue;
+      for (const [key, value] of node.metadata.properties) {
+        if (!key.startsWith('on:')) continue;
+        const label = key.slice(3);
+        const targetNode = kids.find((n) => n.kind === 'Step' && n.name === value);
+        if (targetNode && itemIds.has(targetNode.id)) {
+          flowEdges = flowEdges.filter(
+            (e) => !(e.source === String(node.id) && e.id?.startsWith('e-'))
+          );
+          flowEdges.push({
+            id: `route-${node.id}-${targetNode.id}-${label}`,
+            source: String(node.id),
+            target: String(targetNode.id),
+            animated: false,
+            style: `stroke: var(--node-color, ${node.metadata.properties.find(([k]) => k === 'color')?.[1] || '#737373'}); stroke-width: 2;`,
+            label,
+            labelStyle: 'font-size: 11px; fill: var(--veil-text); font-weight: 600;',
+          });
+        }
+      }
+    }
+    nodes = await layoutNodes(flowNodes, flowEdges, 'LR', graphContainerEl);
+    edges = flowEdges;
+  }
+
   let computeInProgress = false;
   async function computeView(graph: IrGraph, parentId: number | null, palette: any[] = []) {
     let children = getChildren(graph, parentId);
@@ -616,43 +729,24 @@
     currentContextKind = parentNode?.metadata.subkind ?? parentNode?.kind ?? 'Solution';
     currentContextKindCore = parentNode?.kind ?? 'Solution';
     const isSolutionLevel = !parentNode || parentNode.kind === 'Solution';
-    const modules = children.filter((c) => c.kind === 'Module');
-    const spanning = children.filter((c) =>
-      c.metadata.properties.some(([k]) => k.startsWith('ref:'))
-    );
 
-    // Solution-level modules (unchanged special case)
-    if (isSolutionLevel && modules.length > 0) {
+    // ─── SvelteFlow only for hosts with real control-flow bodies ───────
+    if (parentNode && isLogicFlowHost(graph, parentNode)) {
+      await applyLogicFlowGraph(graph, parentNode.id);
+      return;
+    }
+
+    // ─── Package / solution root: native tree (modules, free fns, …) ───
+    if (isSolutionLevel) {
       hostViews = [];
       activeViewId = null;
-      currentProjected = null;
-      currentLayout = 'flow';
-      const visibleIds = new Set(children.map((c) => c.id));
-      const solNodes = toFlowNodes(graph, children, visibleIds);
-      const solEdges: Edge[] = [];
-      for (const span of spanning) {
-        const ctxRefs = span.metadata.properties.find(([k]) => k.startsWith('ref:'));
-        if (ctxRefs) {
-          for (const ctxName of ctxRefs[1].split(', ')) {
-            const ctxNode = modules.find((c) => c.name === ctxName.trim());
-            if (ctxNode) {
-              solEdges.push({
-                id: `span-${span.id}-${ctxNode.id}`,
-                source: String(span.id),
-                target: String(ctxNode.id),
-                animated: true,
-                style: 'stroke: #dc2626; stroke-width: 2.5; stroke-dasharray: 6 3;',
-                label: 'spans',
-                labelStyle: 'font-size: 9px; fill: #dc2626;',
-              });
-            }
-          }
-        }
-      }
-      nodes = await layoutByType(solNodes, graphContainerEl);
-      edges = solEdges;
       tabs = [];
       activeTab = null;
+      const projected = structuralTreeProjection(graph, parentId, {
+        hideLayerProvided: !showLayerProvided,
+        roots: children,
+      });
+      applyNativeProjection(projected);
       return;
     }
 
@@ -664,17 +758,28 @@
 
     if (views.length > 0 && parentId != null) {
       const hostDto = hostName && pres ? pres.hosts[hostName] : undefined;
+      // Returning from flow graph: prefer default view (domain model tree)
+      // rather than a stale tab/view from before drill-in.
       if (!activeViewId || !views.some((v) => v.id === activeViewId)) {
         activeViewId = pickDefaultView(hostDto, views);
+      }
+      // Module / Context hosts: always land on default tree when coming from flow
+      if (
+        parentNode &&
+        (parentNode.kind === 'Module' || parentNode.kind === 'Solution') &&
+        hostDto
+      ) {
+        const def = pickDefaultView(hostDto, views);
+        if (def) activeViewId = def;
+        activeTab = null;
       }
       const view = views.find((v) => v.id === activeViewId) ?? views[0];
       const projected = projectView(graph, parentId, view, {
         hideLayerProvided: !showLayerProvided,
       });
 
+      // Tabs = layer filters; body is always native tree (not SvelteFlow columns)
       if (projected.layout === 'tabs') {
-        currentProjected = null;
-        currentLayout = 'tabs';
         tabs = projected.tabs;
         let currentTab = activeTab;
         if (!currentTab || !tabs.includes(currentTab)) {
@@ -684,166 +789,59 @@
         const groupNode = currentTab
           ? projected.tabGroupNodes.get(currentTab)
           : null;
-        let allItems: IrNode[] = [];
+        const groupRoots: IrNode[] = [];
         if (groupNode) {
           let gc = irChildren(graph, groupNode.id);
           if (!showLayerProvided) {
             gc = gc.filter((c) => !c.metadata.annotations.includes('layer-provided'));
           }
+          groupRoots.push(...gc);
           const nonGroup = children.filter((c) => c.kind !== 'Group');
-          allItems = [...gc, ...nonGroup];
-        } else if (currentTab) {
-          // Virtual empty tab (expected group not yet in source)
-          allItems = [];
+          groupRoots.push(...nonGroup);
         }
-        const itemIds = new Set(allItems.map((c) => c.id));
-        const tabNodes = toFlowNodes(graph, allItems, itemIds);
-        nodes = await layoutByType(tabNodes, graphContainerEl);
-        // Type columns are readable without cross-type association edges
-        edges = [];
+        const tree = structuralTreeProjection(graph, groupNode?.id ?? parentId, {
+          hideLayerProvided: !showLayerProvided,
+          roots: groupRoots,
+        });
+        applyNativeProjection(tree);
         return;
       }
 
-      // flat | tree | flow — driven only by projected.layout (LAY-006/007)
       tabs = [];
       activeTab = null;
 
-      // Native renderers for tree/flat — skip SvelteFlow node computation
-      if (projected.layout === 'tree' || projected.layout === 'flat') {
-        currentProjected = projected;
-        currentLayout = projected.layout;
-        nodes = [];
-        edges = [];
+      // Explicit flow layout from layer — only if host actually has flow logic
+      if (projected.layout === 'flow') {
+        if (parentNode && isLogicFlowHost(graph, parentNode)) {
+          await applyLogicFlowGraph(graph, parentId);
+        } else {
+          applyNativeProjection(
+            structuralTreeProjection(graph, parentId, {
+              hideLayerProvided: !showLayerProvided,
+            })
+          );
+        }
         return;
       }
 
-      // flow layout — uses SvelteFlow canvas
-      currentProjected = null;
-      currentLayout = projected.layout;
-      let displayNodes = [...projected.nodes];
-      // Domain model: show nested ownership children too (segregated by nest edges),
-      // not only roots — user wants the full domain visible without drilling.
-      if (projected.layout === 'tree' && projected.nestEdges?.length) {
-        for (const { child } of projected.nestEdges) {
-          const n = graph.nodes.find((x) => x.id === child);
-          if (n && !displayNodes.some((d) => d.id === n.id)) displayNodes.push(n);
-        }
+      // tree | flat — native renderers
+      if (projected.layout === 'tree' || projected.layout === 'flat') {
+        applyNativeProjection(projected);
+        return;
       }
-      // bucket orphans: synthetic non-editable folder + orphan children (LAY-007)
-      if (
-        projected.layout === 'tree' &&
-        projected.orphanBucketLabel &&
-        projected.orphanIds.length > 0
-      ) {
-        for (const oid of projected.orphanIds) {
-          const n = graph.nodes.find((x) => x.id === oid);
-          if (n && !displayNodes.some((d) => d.id === n.id)) displayNodes.push(n);
-        }
-      }
-      const itemIds = new Set(displayNodes.map((c) => c.id));
-      let flowNodes = toFlowNodes(graph, displayNodes, itemIds);
-      let flowEdges = edgesAmong(graph, itemIds);
-      // Nest edges (hierarchy) for tree view
-      if (projected.layout === 'tree' && projected.nestEdges?.length) {
-        for (const { child, parent } of projected.nestEdges) {
-          if (itemIds.has(child) && itemIds.has(parent)) {
-            flowEdges.push({
-              id: `nest-${parent}-${child}`,
-              source: String(parent),
-              target: String(child),
-              animated: false,
-              style: 'stroke: var(--veil-text-dim); stroke-width: 1.5; stroke-dasharray: 3 3;',
-              label: 'owns',
-              labelStyle: 'font-size: 9px; fill: var(--veil-text-faint);',
-            });
-          }
-        }
-      }
-      if (
-        projected.layout === 'tree' &&
-        projected.orphanBucketLabel &&
-        projected.orphanIds.length > 0
-      ) {
-        const bucketId = 'orphan-bucket';
-        flowNodes = [
-          ...flowNodes,
-          {
-            id: bucketId,
-            type: 'veil',
-            position: { x: 0, y: 0 },
-            data: {
-              label: projected.orphanBucketLabel,
-              kind: 'Group',
-              hasChildren: false,
-              annotations: [],
-              isGhost: true,
-              isBucket: true,
-            },
-          },
-        ];
-        for (const oid of projected.orphanIds) {
-          if (itemIds.has(oid)) {
-            flowEdges.push({
-              id: `bucket-${oid}`,
-              source: bucketId,
-              target: String(oid),
-              animated: false,
-              style: 'stroke: var(--veil-text-faint); stroke-width: 1; stroke-dasharray: 2 2;',
-            });
-          }
-        }
-      }
-      if (projected.layout === 'flow') {
-        // Resolve on:label routing properties into labeled edges.
-        // Step nodes with on:* properties (e.g. on:true → process) get
-        // explicit labeled edges pointing to the named target step.
-        for (const node of displayNodes) {
-          if (node.kind !== 'Step') continue;
-          for (const [key, value] of node.metadata.properties) {
-            if (!key.startsWith('on:')) continue;
-            const label = key.slice(3); // "true", "false", case label
-            const targetNode = displayNodes.find(
-              (n) => n.kind === 'Step' && n.name === value
-            );
-            if (targetNode && itemIds.has(targetNode.id)) {
-              // Remove the automatic SequenceFlow edge from this node if a routing edge replaces it
-              flowEdges = flowEdges.filter(
-                (e) => !(e.source === String(node.id) && e.id?.startsWith('e-'))
-              );
-              flowEdges.push({
-                id: `route-${node.id}-${targetNode.id}-${label}`,
-                source: String(node.id),
-                target: String(targetNode.id),
-                animated: false,
-                style: `stroke: var(--node-color, ${node.metadata.properties.find(([k]) => k === 'color')?.[1] || '#64748b'}); stroke-width: 2;`,
-                label,
-                labelStyle: 'font-size: 11px; fill: var(--veil-text); font-weight: 600;',
-              });
-            }
-          }
-        }
-        const dir = projected.flowDirection ?? 'LR';
-        nodes = await layoutNodes(flowNodes, flowEdges, dir, graphContainerEl);
-        edges = flowEdges;
-      } else if (projected.layout === 'tree' && projected.nestEdges?.length) {
-        // Nest hierarchy only — cleaner than all association edges
-        const nestOnly = flowEdges.filter((e) => String(e.id).startsWith('nest-') || String(e.id).startsWith('bucket-'));
-        nodes = await layoutNodes(flowNodes, nestOnly, 'TB', graphContainerEl);
-        edges = nestOnly;
-      } else {
-        // flat / tree orphans: columns by Aggregate | Entity | ValueObject | …
-        nodes = await layoutByType(flowNodes, graphContainerEl);
-        edges = [];
-      }
+
+      // Unknown layout → structural tree
+      applyNativeProjection(
+        structuralTreeProjection(graph, parentId, {
+          hideLayerProvided: !showLayerProvided,
+        })
+      );
       return;
     }
 
-    // ─── Fallback: no presentation (legacy requires_groups / flat) ─────
+    // ─── Fallback: structural tree (+ optional group tabs) ─────────────
     hostViews = [];
     activeViewId = null;
-    currentProjected = null;
-    currentLayout = 'flow';
-    const visibleIds = new Set(children.map((c) => c.id));
 
     const groupNodes = children.filter((c) => c.kind === 'Group');
     const parentSubkind = parentNode?.metadata.subkind ?? null;
@@ -870,72 +868,28 @@
         activeTab = currentTab;
       }
       const activeGroup = groupNodes.find((g) => g.name === currentTab);
+      const groupRoots: IrNode[] = [];
       if (activeGroup) {
-        const groupChildren = getChildren(graph, activeGroup.id);
-        const nonGroupItems = children.filter((c) => c.kind !== 'Group');
-        const allItems = [...groupChildren, ...nonGroupItems];
-        const itemIds = new Set(allItems.map((c) => c.id));
-        nodes = await layoutByType(toFlowNodes(graph, allItems, itemIds), graphContainerEl);
-        edges = edgesAmong(graph, itemIds);
-        return;
+        groupRoots.push(...getChildren(graph, activeGroup.id));
+        groupRoots.push(...children.filter((c) => c.kind !== 'Group'));
       }
-      nodes = await layoutByType([], graphContainerEl);
-      edges = [];
+      applyNativeProjection(
+        structuralTreeProjection(graph, activeGroup?.id ?? parentId, {
+          hideLayerProvided: !showLayerProvided,
+          roots: groupRoots,
+        })
+      );
       return;
     }
 
     tabs = [];
     activeTab = null;
-
-    const flowNodes = toFlowNodes(graph, children, visibleIds);
-    const flowEdges = edgesAmong(graph, visibleIds);
-    const ghostNodes: Node[] = [];
-    const ghostEdges: Edge[] = [];
-    let ghostIdx = 0;
-    for (const child of children) {
-      const outEdges = graph.edges.filter(
-        (e) => e.from === child.id && !visibleIds.has(e.to) && e.kind !== 'Contains'
-      );
-      for (const e of outEdges) {
-        const targetNode = graph.nodes.find((n) => n.id === e.to);
-        if (!targetNode) continue;
-        const ghostId = `ghost-${ghostIdx++}`;
-        ghostNodes.push({
-          id: ghostId,
-          type: 'veil',
-          position: { x: 0, y: 0 },
-          data: {
-            label: targetNode.name,
-            kind: targetNode.kind,
-            hasChildren: false,
-            annotations: [],
-            isGhost: true,
-          },
-        });
-        ghostEdges.push({
-          id: `ge-${child.id}-${ghostId}`,
-          source: String(child.id),
-          target: ghostId,
-          animated: false,
-          style: getEdgeStyle(e.kind),
-        });
-      }
-    }
-
-    const allNodes = [...flowNodes, ...ghostNodes];
-    const allEdges = [...flowEdges, ...ghostEdges];
-    const isFlowView =
-      parentNode?.kind === 'Flow' ||
-      parentNode?.kind === 'ParallelGateway' ||
-      parentNode?.kind === 'Step' ||
-      parentNode?.kind === 'InterfaceMethod';
-
-    if (isFlowView) {
-      nodes = await layoutNodes(allNodes, allEdges, 'LR', graphContainerEl);
-    } else {
-      nodes = await layoutByType(allNodes, graphContainerEl);
-    }
-    edges = allEdges;
+    applyNativeProjection(
+      structuralTreeProjection(graph, parentId, {
+        hideLayerProvided: !showLayerProvided,
+        roots: children,
+      })
+    );
   }
 
   /** Layout nodes in vertical columns grouped by subkind/kind. */
@@ -1183,6 +1137,13 @@
     // Don't act if user is typing in an input/textarea
     const tag = (event.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    // Esc leaves flow graph → module/package outline (skips group buckets)
+    if (event.key === 'Escape' && currentLayout === 'flow') {
+      event.preventDefault();
+      navigateUpFromFlow();
+      return;
+    }
 
     // Enter to drill into selected node (same as double-click)
     if (event.key === 'Enter' && $selectedNodeId) {
@@ -1550,8 +1511,15 @@
         <span class="agent-activity-text">Agent editing…</span>
       </div>
     {/if}
-    <div class="main-layout" class:main-layout--flow={shell.mode === 'flow'}>
-      <Palette contextKind={currentContextKind} contextKindCore={currentContextKindCore} activeGroup={activeTab} />
+    <div
+      class="main-layout"
+      class:main-layout--flow={shell.mode === 'flow'}
+      class:main-layout--structural={currentLayout === 'tree' || currentLayout === 'flat'}
+    >
+      <!-- Constructs palette only for SvelteFlow (drag onto canvas). Tree/flat use Add menu. -->
+      {#if currentLayout !== 'tree' && currentLayout !== 'flat'}
+        <Palette contextKind={currentContextKind} contextKindCore={currentContextKindCore} activeGroup={activeTab} />
+      {/if}
       {#if shell.showAgentRail && $agentPlacement === 'left'}
         <AgentSideRail side="left" />
       {/if}
@@ -1590,6 +1558,15 @@
           <!-- Native tree renderer -->
           <div class="native-layout-container">
             <div class="native-layout-sidebar">
+              <div class="tree-toolbar">
+                <span class="tree-toolbar-title">Outline</span>
+                <CreateConstructMenu
+                  contextKind={currentContextKind}
+                  contextKindCore={currentContextKindCore}
+                  activeGroup={activeTab}
+                  onCreate={(item) => createFromPaletteItem(item)}
+                />
+              </div>
               <TreeLayout
                 projected={currentProjected}
                 graph={$irGraph}
@@ -1608,6 +1585,15 @@
           <!-- Native flat renderer -->
           <div class="native-layout-container">
             <div class="native-layout-sidebar">
+              <div class="tree-toolbar">
+                <span class="tree-toolbar-title">Constructs</span>
+                <CreateConstructMenu
+                  contextKind={currentContextKind}
+                  contextKindCore={currentContextKindCore}
+                  activeGroup={activeTab}
+                  onCreate={(item) => createFromPaletteItem(item)}
+                />
+              </div>
               <FlatLayout
                 projected={currentProjected}
                 graph={$irGraph}
@@ -1623,7 +1609,43 @@
             </div>
           </div>
         {:else}
-          <!-- Flow/tabs: SvelteFlow canvas -->
+          <!-- Flow graph: always offer an obvious exit back to the parent tree host -->
+          {@const flowHost = $irGraph?.nodes.find((n) => n.id === $currentParent)}
+          {@const flowBackLabel = (() => {
+            // Label the nearest non-Group ancestor (what Back will restore)
+            let pid = flowHost?.metadata.parent ?? null;
+            const nodes = $irGraph?.nodes ?? [];
+            while (pid != null) {
+              const p = nodes.find((n) => n.id === pid);
+              if (!p) break;
+              if (p.kind !== 'Group') return p.name;
+              pid = p.metadata.parent;
+            }
+            return 'Outline';
+          })()}
+          <div class="flow-nav-bar" role="navigation" aria-label="Flow view navigation">
+            <button
+              type="button"
+              class="flow-back-btn"
+              onclick={() => {
+                if (!navigateUpFromFlow()) {
+                  const sol = $irGraph?.nodes.find((n) => n.kind === 'Solution');
+                  if (sol) navigateTo(sol.id);
+                }
+              }}
+              title="Leave flow graph and return to full outline"
+            >
+              ← {flowBackLabel}
+            </button>
+            <span class="flow-nav-sep" aria-hidden="true">/</span>
+            <span class="flow-nav-here" title={flowHost?.metadata.subkind ?? flowHost?.kind ?? ''}>
+              {flowHost?.name ?? 'Flow'}
+            </span>
+            {#if flowHost?.metadata.subkind}
+              <span class="flow-nav-kind">{flowHost.metadata.subkind}</span>
+            {/if}
+            <span class="flow-nav-hint">Flow graph · Esc to leave</span>
+          </div>
         {#if shell.mode === 'flow'}
           {@const parentNode = $irGraph?.nodes.find((n) => n.id === $currentParent)}
           {@const fnParams = parentNode?.metadata.properties.find(([k]) => k === 'params')?.[1] ?? ''}
@@ -1639,7 +1661,8 @@
           </div>
         {/if}
         {#if shell.showDiagnostics}
-          <DiagnosticsPanel />
+          <!-- Offset below flow-nav so the badge never covers ← Back -->
+          <DiagnosticsPanel offsetTop={currentLayout === 'flow' ? 48 : 12} />
         {/if}
         
         {#key flowKey}
@@ -2041,6 +2064,69 @@
     min-height: 0;
     min-width: 0;
     position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .flow-nav-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-shrink: 0;
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--veil-border, #2e2e2e);
+    background: var(--veil-surface-alt, #1a1a1a);
+    z-index: 40;
+    position: relative;
+  }
+
+  .flow-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border: 1px solid var(--veil-border, #2e2e2e);
+    background: transparent;
+    color: var(--veil-text, #e5e5e5);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.28rem 0.55rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease;
+  }
+  .flow-back-btn:hover {
+    border-color: var(--veil-text-dim, #a3a3a3);
+    background: color-mix(in srgb, var(--veil-text-dim, #a3a3a3) 12%, transparent);
+  }
+
+  .flow-nav-sep {
+    color: var(--veil-text-faint, #737373);
+  }
+
+  .flow-nav-here {
+    font-weight: 650;
+    font-size: 0.82rem;
+    font-family: var(--font-mono, monospace);
+    color: var(--veil-text, #e5e5e5);
+  }
+
+  .flow-nav-kind {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--veil-text-faint, #737373);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    border: 1px solid var(--veil-border, #2e2e2e);
+  }
+
+  .flow-nav-hint {
+    margin-left: auto;
+    font-size: 0.68rem;
+    color: var(--veil-text-faint, #737373);
   }
 
   /* Native layout renderers (tree/flat) */
@@ -2050,6 +2136,25 @@
     height: 100%;
   }
 
+  .tree-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.45rem 0.65rem;
+    border-bottom: 1px solid var(--veil-border);
+    background: var(--veil-surface-alt, rgba(26, 26, 26, 0.95));
+    flex-shrink: 0;
+  }
+
+  .tree-toolbar-title {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--veil-text-dim, #a3a3a3);
+  }
+
   .native-layout-sidebar {
     width: 320px;
     min-width: 240px;
@@ -2057,6 +2162,15 @@
     border-right: 1px solid var(--veil-border);
     overflow: hidden;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .native-layout-sidebar :global(.tree-layout),
+  .native-layout-sidebar :global(.flat-layout) {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 
   .native-layout-detail {
@@ -2305,7 +2419,11 @@
   .pulse-ring { width: 40px; height: 40px; border-radius: 50%; border: 3px solid var(--veil-text-faint); animation: pulse 1.5s infinite; }
   @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.5; } 100% { transform: scale(1); opacity: 1; } }
 
-  :global(.svelte-flow) { background: var(--veil-bg) !important; }
+  :global(.svelte-flow) {
+    background: var(--veil-bg) !important;
+    flex: 1;
+    min-height: 0;
+  }
   :global(.svelte-flow__background) { opacity: 0.4; }
   :global(.svelte-flow__minimap) { background: var(--veil-surface-alt) !important; border: 1px solid var(--veil-border) !important; border-radius: 10px !important; }
   :global(.svelte-flow__controls) { background: var(--veil-surface-alt) !important; border: 1px solid var(--veil-border) !important; border-radius: 10px !important; }

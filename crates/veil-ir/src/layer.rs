@@ -1187,6 +1187,27 @@ impl LayerRegistry {
                 }
             }
         }
+        // R21: product's primary layer from veil.toml `[package].layer` (or
+        // layers/main.layer default). Without this, packages only get layers
+        // named in `use` lines — product vocabulary/present never loads and
+        // IDE tree views fall back to bare ddd.Context.
+        if let Some(entry) = crate::deps::load_package_entry(dir) {
+            let is_primary_veil = veil_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| {
+                    entry
+                        .veil
+                        .file_name()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e == n)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if is_primary_veil {
+                let _ = reg.load_layer(&entry.use_name, dir);
+            }
+        }
         // Product veil.toml [codegen] wins over layer policies (INV-001).
         if let Some(o) = crate::deps::load_codegen_overrides_for(veil_path) {
             reg.apply_codegen_overrides(&o);

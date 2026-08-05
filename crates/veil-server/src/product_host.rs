@@ -94,25 +94,26 @@ impl ProductHost {
             viewer_url: self.viewer_url.clone(),
         };
 
-        // Dual-loop viewer static build (pure-runtime single origin). SPA fallback → index.html.
-        let viewer_dir = self.static_dir.join("viewer");
-        let viewer_index = viewer_dir.join("index.html");
-        let viewer_svc = ServeDir::new(&viewer_dir)
-            .append_index_html_on_directories(true)
-            .not_found_service(ServeFile::new(viewer_index));
-
         // SPA shell routes (generated nav). Full page loads must return index.html.
+        // IDE UI (`/viewer`) is nested once by `build_multi_router` — do not double-nest.
+        // `/projects/{name}/ide` is the **in-shell IDE embed** (SPA + iframe to /viewer);
+        // do not redirect away from the shell (keeps AgentDock + chat history).
         let shell = Router::new()
             .route("/", get(shell_index))
             .route("/projects", get(shell_index))
-            .route("/projects/{name}/ide", get(ide_embed))
+            .route("/projects/new", get(shell_index))
+            .route("/projects/{name}/ide", get(shell_index))
+            .route("/projects/{name}", get(shell_index))
+            .route("/changes", get(shell_index))
+            .route("/changes/{*rest}", get(shell_index))
             .route("/deploy", get(shell_index))
             .route("/registry", get(shell_index))
             .route("/bus", get(shell_index))
             .route("/agents", get(shell_index))
             .route("/config", get(shell_index))
-            // Dual-loop IDE app (built veil-viewer)
-            .nest_service("/viewer", viewer_svc)
+            .route("/dashboard", get(shell_index))
+            // Optional deep link: bare dual-loop viewer (standalone agent chrome).
+            .route("/ide/{name}", get(ide_embed))
             // SPA assets under /static/dist/ (index references absolute paths)
             .nest_service("/static", ServeDir::new(&self.static_dir))
             .nest_service("/assets", ServeDir::new(self.static_dir.join("assets")))
@@ -200,7 +201,10 @@ fn serve_spa_html(st: &ShellState) -> axum::response::Response {
     .into_response()
 }
 
-/// Open dual-loop IDE for a project — **redirect, not iframe**.
+/// Standalone dual-loop IDE (`/ide/{name}` → `/viewer/?project=…`).
+///
+/// The **product path** is shell embed: SPA route `/projects/{name}/ide` (iframe +
+/// AgentDock). Use this only for standalone / external deep links with IDE agent chrome.
 ///
 /// Same-origin pure-runtime: `/viewer/?project=…` (viewer uses `location.origin` for API).
 /// Absolute `VEIL_VIEWER_URL` (e.g. Vite :5173): redirect there with `?api=` public URL.

@@ -8,7 +8,7 @@
   // docs/ADR-viewer-editors.md. Do not re-expand click-to-build of all expr kinds
   // until review surfaces (UX-020–023) stay primary.
   import { BlockEditor } from '$lib/editors';
-  import { irChildrenToExprs } from '$lib/editors/ir-convert';
+  import { irGraphBodyToExprs } from '$lib/editors/ir-convert';
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
 
@@ -91,6 +91,14 @@
     const _id = node.id; // track node.id
     refreshChildren();
   });
+
+  /** Flow/svc body for BlockEditor (walks Step → Action, not only direct Actions). */
+  function bodyExprsForSelected(): Expr[] {
+    const g = get(irGraph);
+    const nodeId = Number(node.id);
+    if (!g || Number.isNaN(nodeId)) return [];
+    return irGraphBodyToExprs(g.nodes, nodeId);
+  }
 
   // Determine what kind of editor to show — driven by the core shape
   // (node kind), never by layer-specific subkind names.
@@ -412,17 +420,9 @@
           {/each}
         {/if}
         <div class="expr-editor-container">
-          {#if children.filter((c) => c.kind === 'Action').length > 0}
-            {@const bodyExprs = irChildrenToExprs(children.filter((c) => c.kind === 'Action'))}
+          {#if bodyExprsForSelected().length > 0}
             <BlockEditor
-              exprs={bodyExprs}
-              onChange={(newExprs) => handleBodyEdit(newExprs)}
-              depth={0}
-            />
-          {:else if children.length > 0}
-            {@const bodyExprs = irChildrenToExprs(children)}
-            <BlockEditor
-              exprs={bodyExprs}
+              exprs={bodyExprsForSelected()}
               onChange={(newExprs) => handleBodyEdit(newExprs)}
               depth={0}
             />

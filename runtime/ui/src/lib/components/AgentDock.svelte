@@ -65,8 +65,8 @@
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--dk-surface, #12121a);
-  border-left: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+  background: var(--dk-surface, #1a1a1a);
+  border-left: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
   z-index: 1000;
   box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
   animation: slide-in 200ms var(--dk-ease-out, cubic-bezier(0.16, 1, 0.3, 1)) both;
@@ -80,18 +80,18 @@
   position: absolute; left: -3px; top: 0; bottom: 0; width: 6px;
   cursor: col-resize; z-index: 10; transition: background 140ms ease;
 }
-.resize-handle:hover, .agent-dock.resizing .resize-handle { background: var(--dk-brand, #148770); }
+.resize-handle:hover, .agent-dock.resizing .resize-handle { background: var(--dk-brand, #737373); }
 .dock-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0.6rem 0.85rem;
-  border-bottom: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+  border-bottom: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
   flex-shrink: 0;
-  background: var(--dk-glass, rgba(18, 18, 26, 0.72));
+  background: var(--dk-glass, rgba(26, 26, 26, 0.78));
   backdrop-filter: blur(12px);
 }
 .header-left { display: flex; align-items: center; gap: 0.5rem; }
-.agent-icon { color: var(--dk-brand-light, #1fa88a); font-size: 0.9rem; }
-.agent-title { font-weight: 700; font-size: 0.8rem; color: var(--dk-text, #f4f5f7); }
+.agent-icon { color: var(--dk-brand-light, #a3a3a3); font-size: 0.9rem; }
+.agent-title { font-weight: 700; font-size: 0.8rem; color: var(--dk-text, #e5e5e5); }
 .agent-hint { color: var(--dk-text-muted, #9ca3af); font-size: 0.65rem; }
 .header-actions { display: flex; align-items: center; gap: 0.4rem; }
 .btn-icon {
@@ -99,35 +99,35 @@
   cursor: pointer; padding: 0.25rem 0.4rem; border-radius: 4px; font-size: 0.8rem;
   transition: color 140ms ease, background 140ms ease;
 }
-.btn-icon:hover { color: var(--dk-text, #f4f5f7); background: rgba(255, 255, 255, 0.06); }
+.btn-icon:hover { color: var(--dk-text, #e5e5e5); background: rgba(255, 255, 255, 0.06); }
 .message-area { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .msg-list { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .empty-state { padding: 1.5rem 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
-.empty-title { font-weight: 700; font-size: 0.95rem; color: var(--dk-text, #f4f5f7); margin: 0; }
+.empty-title { font-weight: 700; font-size: 0.95rem; color: var(--dk-text, #e5e5e5); margin: 0; }
 .empty-hint { color: var(--dk-text-muted, #9ca3af); font-size: 0.8rem; line-height: 1.5; margin: 0; }
 .empty-hint kbd {
-  background: var(--dk-surface-3, #22222f); border: 1px solid var(--dk-border, #2a2a38);
+  background: var(--dk-surface-3, #2e2e2e); border: 1px solid var(--dk-border, #2a2a38);
   padding: 0.1rem 0.35rem; border-radius: 4px; font-family: var(--dk-font, inherit); font-size: 0.7rem;
 }
 .empty-examples { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.25rem; }
 .example-chip {
-  background: var(--dk-surface-2, #1a1a26);
-  border: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+  background: var(--dk-surface-2, #242424);
+  border: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
   color: var(--dk-text-muted, #9ca3af); font-size: 0.7rem;
   padding: 0.3rem 0.6rem; border-radius: 999px; cursor: pointer;
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
   font-family: inherit;
 }
 .example-chip:hover {
-  color: var(--dk-brand-light, #1fa88a);
-  border-color: var(--dk-brand, #148770);
-  background: rgba(20, 135, 112, 0.08);
+  color: var(--dk-brand-light, #a3a3a3);
+  border-color: var(--dk-brand, #737373);
+  background: rgba(115, 115, 115, 0.08);
 }
 .input-area {
   flex-shrink: 0;
-  border-top: 1px solid var(--dk-border-soft, rgba(42, 42, 56, 0.55));
+  border-top: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
   padding: 0.5rem;
-  background: var(--dk-glass, rgba(18, 18, 26, 0.72));
+  background: var(--dk-glass, rgba(26, 26, 26, 0.78));
 }
 
 </style>

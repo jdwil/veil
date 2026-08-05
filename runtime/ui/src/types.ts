@@ -369,10 +369,11 @@ export interface BusView {
 }
 
 export interface AgentsView {
-  messages: Record<string, unknown>[];
-  userInput: string;
-  sending: boolean;
+  status: Record<string, unknown>;
+  loading: boolean;
   error: string;
+  loaded: boolean;
+  refreshToken: number;
 }
 
 export interface ConfigView {

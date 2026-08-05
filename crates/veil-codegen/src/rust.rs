@@ -5655,7 +5655,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             ctx.local_types.insert(input.name.clone(), type_to_rust(&input.type_expr));
         }
         // For DomainService flows: register step-level dep call targets as Trait
-        // and copy method_returns so Option<T> unwrapping works.
+        // and copy method_returns / method_params so Option<T> pass-through works.
         for (trait_name, field_name) in &dep_field_names {
             if !ctx.name_to_shape.contains_key(field_name) {
                 ctx.name_to_shape.insert(field_name.clone(), Shape::Trait);
@@ -5673,6 +5673,21 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             }
             for (k, v) in extra {
                 ctx.method_returns.entry(k).or_insert(v);
+            }
+            // Copy method_params so call-site Option args are not auto-unwrapped
+            // when the port expects Option (e.g. list_by_repo status: Opt<…>).
+            let mut extra_params: Vec<((String, String), Vec<String>)> = Vec::new();
+            for ((tn, mn), params) in &ctx.method_params {
+                if tn == trait_name {
+                    extra_params.push(((field_name.clone(), mn.clone()), params.clone()));
+                    let clean = mn.trim_end_matches('!').to_string();
+                    if clean != *mn {
+                        extra_params.push(((field_name.clone(), clean), params.clone()));
+                    }
+                }
+            }
+            for (k, v) in extra_params {
+                ctx.method_params.entry(k).or_insert(v);
             }
         }
 
