@@ -169,19 +169,9 @@ function collectCandidates(
   }
   const top = flattenGroups(graph, direct);
   // Tree: include full subtrees under flattened tops so nest rules see
-  // children of roots (e.g. Event under Aggregate under group domain).
-  // Exclude leaf IR noise (fields, actions) — domain model is about constructs.
-  const isConstructNode = (n: IrNode) =>
-    n.kind !== 'Field' &&
-    n.kind !== 'Action' &&
-    n.kind !== 'InterfaceMethod' &&
-    n.kind !== 'Inputs' &&
-    n.kind !== 'Return' &&
-    n.kind !== 'Step' &&
-    n.kind !== 'MatchArm' &&
-    n.kind !== 'MatchDecision' &&
-    n.kind !== 'ParallelGateway' &&
-    n.kind !== 'ErrorBoundary';
+  // children of roots. Exclude leaf IR (fields, actions, steps) — keep
+  // InterfaceMethod so type/adapter methods remain outline-selectable.
+  const isConstructNode = (n: IrNode) => isStructuralConstruct(n);
 
   if (layout === 'tree') {
     const seen = new Set<number>();
@@ -573,11 +563,18 @@ export function isLogicFlowHost(
     return true;
   }
 
-  // Free Flow / fn whose body lowered only to Action nodes (statement IR)
+  // Free Flow / method body lowered only to Action nodes (statement IR).
+  // InterfaceMethod is the core shape for class/port/adapter methods — not DDD-specific.
   if (
-    host.kind === 'Flow' &&
-    kids.every((k) => k.kind === 'Action' || FLOW_LOGIC_KINDS.has(k.kind)) &&
-    kids.some((k) => k.kind === 'Action')
+    (host.kind === 'Flow' || host.kind === 'InterfaceMethod') &&
+    kids.every(
+      (k) =>
+        k.kind === 'Action' ||
+        k.kind === 'Inputs' ||
+        k.kind === 'Return' ||
+        FLOW_LOGIC_KINDS.has(k.kind)
+    ) &&
+    kids.some((k) => k.kind === 'Action' || FLOW_LOGIC_KINDS.has(k.kind))
   ) {
     return true;
   }
@@ -585,11 +582,17 @@ export function isLogicFlowHost(
   return false;
 }
 
+/**
+ * Outline-visible structural nodes (core kinds only).
+ *
+ * Includes InterfaceMethod so type/interface/adapter methods appear under their
+ * parent construct. Excludes leaf IR (Field, Action, Step, …) that belong in
+ * the detail panel or flow graph, not the structural outline.
+ */
 function isStructuralConstruct(n: IrNode): boolean {
   return (
     n.kind !== 'Field' &&
     n.kind !== 'Action' &&
-    n.kind !== 'InterfaceMethod' &&
     n.kind !== 'Inputs' &&
     n.kind !== 'Return' &&
     n.kind !== 'Step' &&
@@ -602,7 +605,11 @@ function isStructuralConstruct(n: IrNode): boolean {
 
 /**
  * AST-parent tree projection for structural browsing (no layer nest rules).
- * Groups are flattened at the top so package/BC contents surface as constructs.
+ *
+ * **Groups are first-class folders** (domain / application / infrastructure /
+ * presentation, …): they appear in the outline so the user can collapse a
+ * whole architectural layer. Nested Modules expand in place — no second
+ * tree-host drill required.
  */
 export function structuralTreeProjection(
   graph: IrGraph,
@@ -617,15 +624,16 @@ export function structuralTreeProjection(
   } else if (hostId == null) {
     roots = graph.nodes.filter((n) => n.metadata.parent == null && n.kind !== 'Solution');
   } else {
-    roots = flattenGroups(graph, irChildren(graph, hostId));
+    // Keep Group nodes — they become collapsible directories in the outline.
+    roots = irChildren(graph, hostId);
   }
 
   if (hideLayer) {
     roots = roots.filter((n) => !n.metadata.annotations.includes('layer-provided'));
   }
-  roots = roots.filter(isStructuralConstruct);
+  roots = roots.filter((n) => n.kind === 'Group' || isStructuralConstruct(n));
 
-  // Include construct descendants so the outline can expand (like layout tree).
+  // Include construct + Group descendants so the outline can expand in place.
   const seen = new Set<number>();
   const candidates: IrNode[] = [];
   const queue = [...roots];
@@ -638,23 +646,7 @@ export function structuralTreeProjection(
     for (const d of irChildren(graph, cur.id)) {
       if (seen.has(d.id)) continue;
       if (hideLayer && d.metadata.annotations.includes('layer-provided')) continue;
-      if (!isStructuralConstruct(d)) continue;
-      // Skip Groups as list items — flatten into their children
-      if (d.kind === 'Group') {
-        for (const gc of irChildren(graph, d.id)) {
-          if (seen.has(gc.id)) continue;
-          if (hideLayer && gc.metadata.annotations.includes('layer-provided')) continue;
-          if (!isStructuralConstruct(gc)) continue;
-          if (gc.kind === 'Group') {
-            queue.push(gc);
-            continue;
-          }
-          seen.add(gc.id);
-          candidates.push(gc);
-          queue.push(gc);
-        }
-        continue;
-      }
+      if (d.kind !== 'Group' && !isStructuralConstruct(d)) continue;
       seen.add(d.id);
       candidates.push(d);
       queue.push(d);
@@ -665,10 +657,10 @@ export function structuralTreeProjection(
   const nestEdges: { child: number; parent: number }[] = [];
   for (const n of candidates) {
     let p = n.metadata.parent;
-    // Walk up through Groups until a candidate parent or host
+    // Walk up until a candidate parent (Group or construct) or the host.
     while (p != null && !candidateIds.has(p) && p !== hostId) {
       const pn = graph.nodes.find((x) => x.id === p);
-      if (!pn || pn.kind !== 'Group') break;
+      if (!pn) break;
       p = pn.metadata.parent;
     }
     if (p != null && candidateIds.has(p) && p !== n.id) {
@@ -697,6 +689,15 @@ export function structuralTreeProjection(
       members: 'by_host_children',
     },
   };
+}
+
+/**
+ * Drill only into hosts that need a different canvas (control-flow graph).
+ * Structural containers (Module/Context, Group, types, empty shells) stay in
+ * the single top-level outline — expand/collapse instead of tree→tree drill.
+ */
+export function canDrillInto(graph: IrGraph, node: IrNode | null | undefined): boolean {
+  return isLogicFlowHost(graph, node);
 }
 
 /** Host views for a construct name (subkind), or empty. */

@@ -1,10 +1,21 @@
 <script lang="ts">
   import { getNodeStyle, type IrGraph, type IrNode } from '$lib/types';
-  import { selectedNodeId, irGraph, diagnostics, changedNodeIds } from '$lib/store';
+  import { onMount } from 'svelte';
+  import {
+    selectedNodeId,
+    diagnostics,
+    changedNodeIds,
+    focusDiagnostic,
+    type Diagnostic,
+  } from '$lib/store';
   import { isCriticalNode } from '$lib/lenses';
-  import type { ProjectResult } from '$lib/presentation';
-  import type { PresentationModel } from '$lib/presentation';
-  import { get } from 'svelte/store';
+  import type { ProjectResult, PresentationModel } from '$lib/presentation';
+  import { canDrillInto, irChildren } from '$lib/presentation';
+  import {
+    outlineCollapseScope,
+    loadCollapsedKeys,
+    saveCollapsedKeys,
+  } from '$lib/outlineLayout';
 
   let { projected, graph, presentationModel, onDrillDown }: {
     projected: ProjectResult;
@@ -13,99 +24,340 @@
     onDrillDown?: (node: IrNode) => void;
   } = $props();
 
-  // Build the tree structure from nestEdges
-  interface TreeNode {
-    node: IrNode;
-    children: TreeNode[];
-    depth: number;
+  /**
+   * Outline rows: real IR nodes, or synthetic kind folders (visual only —
+   * not in IR). Kind folders cut clutter under Groups / multi-kind parents.
+   *
+   * `collapseKey` is a stable path string for localStorage (survives IR id churn).
+   */
+  type TreeNode =
+    | {
+        type: 'ir';
+        node: IrNode;
+        collapseKey: string;
+        children: TreeNode[];
+        depth: number;
+      }
+    | {
+        type: 'kind';
+        collapseKey: string;
+        key: string;
+        label: string;
+        icon: string;
+        children: TreeNode[];
+        depth: number;
+      };
+
+  /**
+   * Soft preference order for kind folders. Keys are construct type labels
+   * from IR (`subkind ?? kind`) — unknown keys still appear (alpha). This is
+   * not DDD logic: core kinds like InterfaceMethod / Flow / TypeDef work for
+   * any layer; palette subkinds just sort nicer when present.
+   */
+  const KIND_ORDER = [
+    'Module',
+    'Group',
+    'TypeDef',
+    'Interface',
+    'Implementation',
+    'Flow',
+    'InterfaceMethod',
+    // Common layer subkinds (order only; not required for outline correctness)
+    'Aggregate',
+    'Entity',
+    'ValueObject',
+    'enum',
+    'Event',
+    'Command',
+    'Query',
+    'DomainService',
+    'ApplicationService',
+    'Repository',
+    'Port',
+    'Adapter',
+    'Handler',
+    'Service',
+    'Orchestrator',
+    'Saga',
+  ];
+
+  /** Collapsed row keys (path-based). Empty = everything expanded. */
+  let collapseScope = $state(
+    typeof window !== 'undefined' ? outlineCollapseScope() : 'veil.outline.collapsed:default'
+  );
+  let collapsed = $state<Set<string>>(
+    typeof window !== 'undefined'
+      ? loadCollapsedKeys(outlineCollapseScope())
+      : new Set()
+  );
+
+  // Re-read if the SPA navigates to another project without full remount.
+  onMount(() => {
+    const scope = outlineCollapseScope();
+    collapseScope = scope;
+    collapsed = loadCollapsedKeys(scope);
+  });
+
+  function kindKey(n: IrNode): string {
+    return n.metadata.subkind ?? n.kind;
   }
 
-  // Track which nodes are expanded (all expanded by default)
-  let collapsed = $state<Set<number>>(new Set());
+  function pluralLabel(label: string): string {
+    const t = label.trim();
+    if (!t) return 'Items';
+    if (/s$/i.test(t) && !/ss$/i.test(t)) return t;
+    if (/[^aeiou]y$/i.test(t)) return t.slice(0, -1) + 'ies';
+    return t + 's';
+  }
+
+  /** Stable path segment for a node (name + construct type, not IR id). */
+  function nodeSegment(n: IrNode): string {
+    if (n.kind === 'Group') return `g:${n.name}`;
+    if (n.kind === 'Solution') return `sol:${n.name}`;
+    const sk = n.metadata.subkind ?? n.kind;
+    return `${sk}:${n.name}`;
+  }
+
+  function nodePathKey(node: IrNode, byId: Map<number, IrNode>): string {
+    const parts: string[] = [];
+    let cur: IrNode | undefined = node;
+    const seen = new Set<number>();
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      if (cur.kind !== 'Solution') {
+        parts.unshift(nodeSegment(cur));
+      }
+      const pid = cur.metadata.parent;
+      cur = pid != null ? byId.get(pid) : undefined;
+    }
+    return parts.join('/') || nodeSegment(node);
+  }
+
+  function sortKindKeys(keys: string[]): string[] {
+    return [...keys].sort((a, b) => {
+      const ai = KIND_ORDER.indexOf(a);
+      const bi = KIND_ORDER.indexOf(b);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi) || a.localeCompare(b);
+    });
+  }
+
+  function sortIr(a: IrNode, b: IrNode): number {
+    return a.span.start - b.span.start || a.name.localeCompare(b.name);
+  }
+
+  /**
+   * Insert kind folders when:
+   * - parent is an architectural Group, or
+   * - parent is a type/interface/impl host with methods, or
+   * - siblings span 2+ distinct construct kinds
+   * Groups as children stay flat (they are already layer folders).
+   */
+  function shouldKindFolder(parent: IrNode | null, kids: IrNode[]): boolean {
+    if (kids.length === 0) return false;
+    if (kids.every((k) => k.kind === 'Group')) return false;
+    if (parent?.kind === 'Group') return true;
+    // Core hosts that commonly own methods — always bucket so Methods is visible
+    if (
+      parent &&
+      (parent.kind === 'TypeDef' ||
+        parent.kind === 'Interface' ||
+        parent.kind === 'Implementation') &&
+      kids.some((k) => k.kind === 'InterfaceMethod')
+    ) {
+      return true;
+    }
+    return new Set(kids.map(kindKey)).size >= 2;
+  }
 
   let tree = $derived.by(() => {
-    const childToParent = new Map<number, number>();
-    for (const { child, parent } of projected.nestEdges) {
-      childToParent.set(child, parent);
-    }
-
     const nodeById = new Map<number, IrNode>();
-    for (const n of graph.nodes) {
-      nodeById.set(n.id, n);
-    }
+    for (const n of graph.nodes) nodeById.set(n.id, n);
 
-    // Find roots: nodes in projected.nodes that are NOT children in nestEdges
-    const nestedIds = new Set(projected.nestEdges.map(e => e.child));
-    const roots = projected.nodes.filter(n => !nestedIds.has(n.id));
+    const nestedIds = new Set(projected.nestEdges.map((e) => e.child));
+    const roots = projected.nodes.filter((n) => !nestedIds.has(n.id));
 
-    // Build children map
     const childrenOf = new Map<number, number[]>();
     for (const { child, parent } of projected.nestEdges) {
       if (!childrenOf.has(parent)) childrenOf.set(parent, []);
       childrenOf.get(parent)!.push(child);
     }
 
-    function buildTree(node: IrNode, depth: number): TreeNode {
-      const childIds = childrenOf.get(node.id) ?? [];
-      const children = childIds
-        .map(id => nodeById.get(id))
-        .filter((n): n is IrNode => n != null)
-        .sort((a, b) => a.span.start - b.span.start || a.name.localeCompare(b.name))
-        .map(child => buildTree(child, depth + 1));
-      return { node, children, depth };
+    /**
+     * Children for outline expansion: prefer nestEdges from projection, but
+     * always union direct InterfaceMethod IR children so methods never vanish
+     * if a projection path omits them.
+     */
+    function childNodesOf(parentId: number): IrNode[] {
+      const fromNest = (childrenOf.get(parentId) ?? [])
+        .map((id) => nodeById.get(id))
+        .filter((n): n is IrNode => n != null);
+      const seen = new Set(fromNest.map((n) => n.id));
+      // Core-kind safety net: class/port/adapter methods on the type host
+      for (const d of irChildren(graph, parentId)) {
+        if (d.kind !== 'InterfaceMethod') continue;
+        if (seen.has(d.id)) continue;
+        seen.add(d.id);
+        fromNest.push(d);
+      }
+      return fromNest.sort(sortIr);
     }
 
-    return roots
-      .sort((a, b) => a.span.start - b.span.start || a.name.localeCompare(b.name))
-      .map(r => buildTree(r, 0));
+    function buildIr(node: IrNode, depth: number): TreeNode {
+      const kids = childNodesOf(node.id);
+      const collapseKey = nodePathKey(node, nodeById);
+      const children = wrapByKind(node, collapseKey, kids, depth + 1);
+      return { type: 'ir', node, collapseKey, children, depth };
+    }
+
+    function wrapByKind(
+      parent: IrNode | null,
+      parentPath: string,
+      kids: IrNode[],
+      depth: number
+    ): TreeNode[] {
+      if (!shouldKindFolder(parent, kids)) {
+        return kids.map((k) => buildIr(k, depth));
+      }
+
+      const buckets = new Map<string, IrNode[]>();
+      for (const k of kids) {
+        // Bucket methods by core kind so the folder is "Methods", not a blank subkind
+        const key =
+          k.kind === 'InterfaceMethod' ? 'InterfaceMethod' : kindKey(k);
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key)!.push(k);
+      }
+
+      const base = parentPath || '@root';
+      return sortKindKeys([...buckets.keys()]).map((key) => {
+        const members = buckets.get(key)!;
+        const sample = members[0];
+        const style =
+          key === 'InterfaceMethod'
+            ? getNodeStyle('InterfaceMethod', null)
+            : getNodeStyle(sample.kind, sample.metadata.subkind);
+        const collapseKey = `${base}/@kind:${key}`;
+        return {
+          type: 'kind' as const,
+          collapseKey,
+          key,
+          label: pluralLabel(style.label),
+          icon: style.icon,
+          children: members.map((m) => buildIr(m, depth + 1)),
+          depth,
+        };
+      });
+    }
+
+    return wrapByKind(null, '@root', roots.sort(sortIr), 0);
   });
 
-  // Orphans section
   let orphans = $derived.by(() => {
     if (!projected.orphanBucketLabel) return [];
     const orphanSet = new Set(projected.orphanIds);
-    return graph.nodes
-      .filter(n => orphanSet.has(n.id))
-      .sort((a, b) => a.span.start - b.span.start);
+    return graph.nodes.filter((n) => orphanSet.has(n.id)).sort(sortIr);
   });
 
-  function toggleCollapse(id: number) {
+  function toggleCollapse(key: string) {
     const next = new Set(collapsed);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
     collapsed = next;
+    // Persist immediately so refresh restores (scope = project only).
+    saveCollapsedKeys(collapseScope || outlineCollapseScope(), next);
   }
 
   function selectNode(node: IrNode) {
     selectedNodeId.set(String(node.id));
   }
 
-  function handleDoubleClick(node: IrNode) {
-    if (onDrillDown) onDrillDown(node);
+  function handleDoubleClick(node: IrNode, collapseKey: string) {
+    if (canDrillInto(graph, node)) {
+      onDrillDown?.(node);
+      return;
+    }
+    const hasKids = projected.nestEdges.some((e) => e.parent === node.id);
+    if (hasKids) toggleCollapse(collapseKey);
+  }
+
+  function isGroupFolder(node: IrNode): boolean {
+    return node.kind === 'Group';
+  }
+
+  function rowTitle(node: IrNode): string {
+    if (canDrillInto(graph, node)) return 'Double-click to open flow graph';
+    if (projected.nestEdges.some((e) => e.parent === node.id)) {
+      return isGroupFolder(node)
+        ? 'Architectural layer — collapse/expand'
+        : 'Expand/collapse in outline';
+    }
+    return '';
   }
 
   function isSelected(nodeId: number): boolean {
     return $selectedNodeId === String(nodeId);
   }
 
-  function getNodeDiagnostics(nodeId: number) {
-    return $diagnostics.filter(d => d.node_id === nodeId);
+  function diagMatchesNode(d: Diagnostic, node: IrNode): boolean {
+    if (d.node_id != null && d.node_id === node.id) return true;
+    if (d.node_name != null && d.node_name === node.name) return true;
+    return false;
   }
 
-  function hasError(nodeId: number): boolean {
-    return getNodeDiagnostics(nodeId).some(d => d.severity === 'error');
+  function getNodeDiagnostics(node: IrNode): Diagnostic[] {
+    return $diagnostics.filter((d) => diagMatchesNode(d, node));
   }
 
-  function hasWarning(nodeId: number): boolean {
-    return getNodeDiagnostics(nodeId).some(d => d.severity === 'warning');
+  function sev(d: Diagnostic): string {
+    return (d.severity ?? '').toLowerCase();
+  }
+
+  function hasError(node: IrNode): boolean {
+    return getNodeDiagnostics(node).some((d) => sev(d) === 'error');
+  }
+
+  function hasWarning(node: IrNode): boolean {
+    return getNodeDiagnostics(node).some(
+      (d) => sev(d) === 'warning' || sev(d) === 'guidance'
+    );
+  }
+
+  function diagnosticTitle(node: IrNode): string {
+    const diags = getNodeDiagnostics(node);
+    if (diags.length === 0) {
+      if (isCriticalNode(node, presentationModel, $diagnostics)) {
+        return 'Marked critical (layer lens) — open diagnostics for project issues';
+      }
+      return '';
+    }
+    return diags
+      .map((d) => {
+        const code = d.code ? `[${d.code}] ` : '';
+        const hint = d.hint ? `\n  ↳ ${d.hint}` : '';
+        return `${d.severity}: ${code}${d.message}${hint}`;
+      })
+      .join('\n');
+  }
+
+  function onBadgeClick(e: MouseEvent, node: IrNode) {
+    e.stopPropagation();
+    selectNode(node);
+    const diags = getNodeDiagnostics(node);
+    if (diags[0]) {
+      focusDiagnostic(diags[0]);
+    } else {
+      // Lens-only critical: still open the project diagnostics panel
+      focusDiagnostic({
+        severity: 'Warning',
+        message: `${node.name} is marked critical`,
+        node_id: node.id,
+        node_name: node.name,
+      });
+    }
   }
 
   function isChanged(nodeId: number): boolean {
     return $changedNodeIds.has(nodeId);
-  }
-
-  function getAnnotationPreview(node: IrNode): string[] {
-    return node.metadata.annotations.filter(a => !a.startsWith('layer-provided')).slice(0, 3);
   }
 
   function getFieldCount(node: IrNode): number {
@@ -115,14 +367,23 @@
   }
 
   function getMethodCount(node: IrNode): number {
+    // Prefer live IR children (class/port methods) over summary property strings
+    const fromIr = graph.nodes.filter(
+      (n) => n.metadata.parent === node.id && n.kind === 'InterfaceMethod'
+    ).length;
+    if (fromIr > 0) return fromIr;
     const methods = node.metadata.properties.find(([k]) => k === 'methods')?.[1] ?? '';
     if (!methods) return 0;
     return methods.split(';').filter(Boolean).length;
   }
+
+  function rowKey(item: TreeNode): string {
+    return item.collapseKey;
+  }
 </script>
 
 <div class="tree-layout" role="tree" aria-label="Domain model tree">
-  {#each tree as treeNode (treeNode.node.id)}
+  {#each tree as treeNode (rowKey(treeNode))}
     {@render treeItem(treeNode)}
   {/each}
 
@@ -141,77 +402,171 @@
 </div>
 
 {#snippet treeItem(item: TreeNode)}
-  {@const style = getNodeStyle(item.node.kind, item.node.metadata.subkind)}
-  {@const hasChildren = item.children.length > 0}
-  {@const isCollapsed = collapsed.has(item.node.id)}
-  {@const selected = isSelected(item.node.id)}
-  {@const changed = isChanged(item.node.id)}
-  {@const errored = hasError(item.node.id)}
-  {@const warned = hasWarning(item.node.id)}
-  {@const critical = isCriticalNode(item.node, presentationModel, $diagnostics)}
-
-  <div class="tree-item-group" role="treeitem" aria-expanded={hasChildren ? !isCollapsed : undefined} aria-selected={selected}>
+  {#if item.type === 'kind'}
+    {@const isCollapsed = collapsed.has(item.collapseKey)}
     <div
-      class="tree-row"
-      class:selected
-      class:changed
-      class:errored
-      class:warned
-      class:critical
-      style:padding-left="{12 + item.depth * 20}px"
-      onclick={() => selectNode(item.node)}
-      ondblclick={() => handleDoubleClick(item.node)}
-      role="button"
-      tabindex="0"
+      class="tree-item-group"
+      role="treeitem"
+      aria-expanded={!isCollapsed}
+      aria-selected={false}
     >
-      {#if hasChildren}
+      <div
+        class="tree-row kind-folder"
+        style:padding-left="{12 + item.depth * 20}px"
+        onclick={() => toggleCollapse(item.collapseKey)}
+        ondblclick={() => toggleCollapse(item.collapseKey)}
+        title="Construct kind — collapse/expand"
+        role="button"
+        tabindex="0"
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleCollapse(item.collapseKey);
+          }
+        }}
+      >
         <button
           class="tree-chevron"
           class:collapsed={isCollapsed}
-          onclick={(e) => { e.stopPropagation(); toggleCollapse(item.node.id); }}
+          onclick={(e) => {
+            e.stopPropagation();
+            toggleCollapse(item.collapseKey);
+          }}
           aria-label={isCollapsed ? 'Expand' : 'Collapse'}
         >
           <svg width="12" height="12" viewBox="0 0 12 12">
-            <path d="M4 2 L8 6 L4 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path
+              d="M4 2 L8 6 L4 10"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
           </svg>
         </button>
-      {:else}
-        <span class="tree-spacer"></span>
-      {/if}
-
-      <span class="tree-icon" title={style.label}>{style.icon}</span>
-      <span class="tree-name">{item.node.name}</span>
-      <span class="tree-kind">{item.node.metadata.subkind ?? item.node.kind}</span>
-
-      {#if critical}
-        <span class="tree-badge badge-critical" title="Critical">!</span>
-      {/if}
-      {#if errored}
-        <span class="tree-badge badge-error" title="Has errors">⬤</span>
-      {/if}
-      {#if warned}
-        <span class="tree-badge badge-warning" title="Has warnings">⬤</span>
-      {/if}
-      {#if changed}
-        <span class="tree-badge badge-changed" title="Recently changed">●</span>
-      {/if}
-
-      {#if getFieldCount(item.node) > 0}
-        <span class="tree-meta" title="Fields">{getFieldCount(item.node)}f</span>
-      {/if}
-      {#if getMethodCount(item.node) > 0}
-        <span class="tree-meta" title="Methods">{getMethodCount(item.node)}m</span>
+        <span class="tree-icon" title={item.label}>{item.icon}</span>
+        <span class="tree-name kind-name">{item.label}</span>
+        <span class="tree-kind">kind</span>
+        <span class="tree-meta" title="Count">{item.children.length}</span>
+      </div>
+      {#if !isCollapsed}
+        <div class="tree-children" role="group">
+          {#each item.children as child (rowKey(child))}
+            {@render treeItem(child)}
+          {/each}
+        </div>
       {/if}
     </div>
+  {:else}
+    {@const node = item.node}
+    {@const style = getNodeStyle(node.kind, node.metadata.subkind)}
+    {@const hasChildren = item.children.length > 0}
+    {@const isCollapsed = collapsed.has(item.collapseKey)}
+    {@const selected = isSelected(node.id)}
+    {@const changed = isChanged(node.id)}
+    {@const nodeDiags = getNodeDiagnostics(node)}
+    {@const errored = hasError(node)}
+    {@const warned = hasWarning(node)}
+    {@const critical = isCriticalNode(node, presentationModel, $diagnostics)}
+    {@const diagTitle = diagnosticTitle(node)}
 
-    {#if hasChildren && !isCollapsed}
-      <div class="tree-children" role="group">
-        {#each item.children as child (child.node.id)}
-          {@render treeItem(child)}
-        {/each}
+    <div
+      class="tree-item-group"
+      role="treeitem"
+      aria-expanded={hasChildren ? !isCollapsed : undefined}
+      aria-selected={selected}
+    >
+      <div
+        class="tree-row"
+        class:selected
+        class:changed
+        class:errored
+        class:warned
+        class:critical
+        class:group-folder={isGroupFolder(node)}
+        class:drillable={canDrillInto(graph, node)}
+        style:padding-left="{12 + item.depth * 20}px"
+        onclick={() => selectNode(node)}
+        ondblclick={() => handleDoubleClick(node, item.collapseKey)}
+        title={diagTitle || rowTitle(node)}
+        role="button"
+        tabindex="0"
+      >
+        {#if hasChildren}
+          <button
+            class="tree-chevron"
+            class:collapsed={isCollapsed}
+            onclick={(e) => {
+              e.stopPropagation();
+              toggleCollapse(item.collapseKey);
+            }}
+            aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12">
+              <path
+                d="M4 2 L8 6 L4 10"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+        {:else}
+          <span class="tree-spacer"></span>
+        {/if}
+
+        <span class="tree-icon" title={style.label}
+          >{isGroupFolder(node) ? (isCollapsed ? '📁' : '📂') : style.icon}</span
+        >
+        <span class="tree-name" class:group-name={isGroupFolder(node)}>{node.name}</span>
+        {#if !isGroupFolder(node)}
+          <span class="tree-kind">{node.metadata.subkind ?? node.kind}</span>
+        {:else}
+          <span class="tree-kind">layer</span>
+        {/if}
+        {#if canDrillInto(graph, node)}
+          <span class="tree-drill-hint" title="Open flow graph">⤵</span>
+        {/if}
+
+        {#if critical || errored || warned}
+          <button
+            type="button"
+            class="tree-badge"
+            class:badge-critical={critical && !errored}
+            class:badge-error={errored}
+            class:badge-warning={warned && !errored && !critical}
+            title={diagTitle || 'Diagnostics'}
+            aria-label={diagTitle || 'Show diagnostics'}
+            onclick={(e) => onBadgeClick(e, node)}
+          >
+            {errored ? '⬤' : critical ? '!' : '⬤'}
+            {#if nodeDiags.length > 1}
+              <span class="badge-count">{nodeDiags.length}</span>
+            {/if}
+          </button>
+        {/if}
+        {#if changed}
+          <span class="tree-badge badge-changed" title="Recently changed">●</span>
+        {/if}
+
+        {#if getFieldCount(node) > 0}
+          <span class="tree-meta" title="Fields">{getFieldCount(node)}f</span>
+        {/if}
+        {#if getMethodCount(node) > 0}
+          <span class="tree-meta" title="Methods">{getMethodCount(node)}m</span>
+        {/if}
       </div>
-    {/if}
-  </div>
+
+      {#if hasChildren && !isCollapsed}
+        <div class="tree-children" role="group">
+          {#each item.children as child (rowKey(child))}
+            {@render treeItem(child)}
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
 {/snippet}
 
 {#snippet leafItem(node: IrNode, depth: number)}
@@ -225,7 +580,7 @@
     class:changed
     style:padding-left="{12 + depth * 20}px"
     onclick={() => selectNode(node)}
-    ondblclick={() => handleDoubleClick(node)}
+    ondblclick={() => handleDoubleClick(node, nodeSegment(node))}
     role="treeitem"
     aria-selected={selected}
   >
@@ -334,6 +689,46 @@
     font-weight: 500;
   }
 
+  .tree-name.group-name {
+    font-weight: 600;
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+    color: var(--veil-text-secondary, var(--veil-text-dim));
+  }
+
+  .tree-name.kind-name {
+    font-weight: 600;
+    color: var(--veil-text-secondary, var(--veil-text-dim));
+  }
+
+  .tree-row.group-folder {
+    opacity: 0.95;
+  }
+
+  .tree-row.group-folder .tree-kind,
+  .tree-row.kind-folder .tree-kind {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .tree-row.kind-folder {
+    height: 26px;
+    opacity: 0.92;
+  }
+
+  .tree-drill-hint {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--veil-text-dim);
+    opacity: 0.7;
+  }
+
+  .tree-row.drillable:hover .tree-drill-hint {
+    opacity: 1;
+    color: var(--veil-accent, var(--veil-text));
+  }
+
   .tree-kind {
     color: var(--veil-text-faint);
     font-size: 11px;
@@ -343,12 +738,22 @@
   .tree-badge {
     flex-shrink: 0;
     font-size: 10px;
-    width: 14px;
-    height: 14px;
-    display: flex;
+    min-width: 14px;
+    height: 16px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: 50%;
+    gap: 1px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    padding: 0 3px;
+    cursor: pointer;
+    color: inherit;
+  }
+
+  .tree-badge:hover {
+    background: var(--veil-accent-hover, rgba(115, 115, 115, 0.25));
   }
 
   .badge-critical {
@@ -371,6 +776,12 @@
     font-size: 8px;
   }
 
+  .badge-count {
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
   .tree-meta {
     color: var(--veil-text-faint);
     font-size: 10px;
@@ -385,9 +796,9 @@
   }
 
   .tree-orphan-section {
-    margin-top: 12px;
+    margin-top: 8px;
     border-top: 1px solid var(--veil-border);
-    padding-top: 8px;
+    padding-top: 4px;
   }
 
   .tree-orphan-header {
@@ -396,24 +807,7 @@
     gap: 6px;
     padding: 4px 12px;
     color: var(--veil-text-dim);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .tree-orphan-icon {
     font-size: 12px;
-  }
-
-  .tree-orphan-label {
-    flex: 1;
-  }
-
-  .tree-orphan-count {
-    padding: 1px 5px;
-    border-radius: 8px;
-    background: var(--veil-accent-subtle);
-    font-size: 10px;
+    font-weight: 600;
   }
 </style>

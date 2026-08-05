@@ -20,6 +20,7 @@
   import DiagnosticsPanel from '$lib/DiagnosticsPanel.svelte';
   import CodePreview from '$lib/CodePreview.svelte';
   import ReviewDock from '$lib/ReviewDock.svelte';
+  // CodePreview is embedded in ReviewDock; kept as floating fallback when dock is off.
   import AgentSideRail from '$lib/AgentSideRail.svelte';
   import OutlinePanel from '$lib/OutlinePanel.svelte';
   import DiffPanel from '$lib/DiffPanel.svelte';
@@ -68,6 +69,7 @@
     viewsForHost,
     irChildren,
     isLogicFlowHost,
+    canDrillInto,
     structuralTreeProjection,
     type ViewSpec,
   } from '$lib/presentation';
@@ -78,6 +80,13 @@
   import { isCriticalNode, countCritical, collectAllLenses, countByLenses, nodeMatchesLenses } from '$lib/lenses';
   import { TreeLayout, FlatLayout, DetailPanel } from '$lib/layouts';
   import type { ProjectResult } from '$lib/presentation';
+  import {
+    loadOutlineWidth,
+    saveOutlineWidth,
+    clampOutlineWidth,
+    OUTLINE_MIN,
+    OUTLINE_MAX,
+  } from '$lib/outlineLayout';
 
   const nodeTypes: NodeTypes = {
     veil: VeilNode as any,
@@ -86,6 +95,53 @@
   let nodes = $state.raw<Node[]>([]);
   let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
+  /** Outline sidebar width (tree/flat); persisted in localStorage. */
+  let outlineWidth = $state(
+    typeof window !== 'undefined' ? loadOutlineWidth() : 320
+  );
+  let outlineResizing = $state(false);
+
+  function startOutlineResize(e: PointerEvent) {
+    // Mirror AgentDock: pointer capture + window listeners so drag isn't lost.
+    e.preventDefault();
+    e.stopPropagation();
+    const handle = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      handle.setPointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    outlineResizing = true;
+    document.body.classList.add('outline-resizing');
+    const startX = e.clientX;
+    const startW = outlineWidth;
+    let latest = startW;
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      latest = clampOutlineWidth(startW + (ev.clientX - startX));
+      outlineWidth = latest;
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      outlineResizing = false;
+      document.body.classList.remove('outline-resizing');
+      try {
+        handle.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      outlineWidth = latest;
+      saveOutlineWidth(latest);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }
   let flowKey = $state(0);
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
@@ -620,12 +676,13 @@
     edges = [];
   }
 
-  /** Order flow-graph peers: Inputs → steps/gateways → Return last. */
+  /** Order flow-graph peers: Inputs → body (steps/actions) → Return last. */
   function flowSequenceOrder(n: IrNode): number {
     switch (n.kind) {
       case 'Inputs':
         return 0;
       case 'Step':
+      case 'Action':
       case 'ParallelGateway':
       case 'MatchDecision':
       case 'ErrorBoundary':
@@ -637,13 +694,25 @@
     }
   }
 
+  function flowSeqProp(n: IrNode): number | null {
+    const raw = n.metadata.properties.find(([k]) => k === 'seq')?.[1];
+    if (raw == null) return null;
+    const v = Number(raw);
+    return Number.isFinite(v) ? v : null;
+  }
+
   function sortFlowSequence(kids: IrNode[]): IrNode[] {
-    return [...kids].sort(
-      (a, b) =>
-        flowSequenceOrder(a) - flowSequenceOrder(b) ||
-        a.span.start - b.span.start ||
-        a.name.localeCompare(b.name)
-    );
+    return [...kids].sort((a, b) => {
+      const tier = flowSequenceOrder(a) - flowSequenceOrder(b);
+      if (tier !== 0) return tier;
+      // Method/step body Actions: honor emission order (seq), not alphabetical names
+      const sa = flowSeqProp(a);
+      const sb = flowSeqProp(b);
+      if (sa != null && sb != null && sa !== sb) return sa - sb;
+      if (sa != null && sb == null) return -1;
+      if (sa == null && sb != null) return 1;
+      return a.span.start - b.span.start || a.id - b.id || a.name.localeCompare(b.name);
+    });
   }
 
   /** SvelteFlow graph for a logic-flow host (steps / sequence). */
@@ -652,11 +721,17 @@
     if (!showLayerProvided) {
       kids = kids.filter((c) => !c.metadata.annotations.includes('layer-provided'));
     }
-    // Only sequence-relevant peers on the canvas (not nested Actions)
+    // Sequence peers: steps/gateways/returns + Action bodies (method/fn statements)
     kids = kids.filter((c) =>
-      ['Inputs', 'Step', 'ParallelGateway', 'MatchDecision', 'ErrorBoundary', 'Return'].includes(
-        c.kind
-      )
+      [
+        'Inputs',
+        'Step',
+        'Action',
+        'ParallelGateway',
+        'MatchDecision',
+        'ErrorBoundary',
+        'Return',
+      ].includes(c.kind)
     );
     kids = sortFlowSequence(kids);
 
@@ -778,7 +853,7 @@
         hideLayerProvided: !showLayerProvided,
       });
 
-      // Tabs = layer filters; body is always native tree (not SvelteFlow columns)
+      // Tabs = optional layer filters; body is group-aware structural tree
       if (projected.layout === 'tabs') {
         tabs = projected.tabs;
         let currentTab = activeTab;
@@ -801,7 +876,7 @@
         }
         const tree = structuralTreeProjection(graph, groupNode?.id ?? parentId, {
           hideLayerProvided: !showLayerProvided,
-          roots: groupRoots,
+          roots: groupRoots.length > 0 ? groupRoots : undefined,
         });
         applyNativeProjection(tree);
         return;
@@ -824,13 +899,9 @@
         return;
       }
 
-      // tree | flat — native renderers
-      if (projected.layout === 'tree' || projected.layout === 'flat') {
-        applyNativeProjection(projected);
-        return;
-      }
-
-      // Unknown layout → structural tree
+      // tree | flat | unknown — single structural outline with Group folders.
+      // Nest-rule model views flattened groups and encouraged tree→tree drill;
+      // expand/collapse in place is the default for structural hosts.
       applyNativeProjection(
         structuralTreeProjection(graph, parentId, {
           hideLayerProvided: !showLayerProvided,
@@ -935,15 +1006,23 @@
     // Show reference edges for the selected node, hide others
     updateReferenceEdges(graph, node.id);
 
-    // Double-click drill-down disabled in flow composer (flat graph only)
+    // Double-click: only open control-flow graphs (not tree→tree for Module/Group)
     if (!shell.allowDrillDown) return;
     if (irNode && event instanceof MouseEvent && event.detail === 2) {
-      const children = getChildren(graph, irNode.id);
-      if (children.length > 0) {
+      if (canDrillInto(graph, irNode)) {
         drillDown(irNode);
         selectedNodeId.set(null);
       }
     }
+  }
+
+  /** Outline drill: only logic-flow hosts (fn/method with steps). */
+  function handleOutlineDrill(node: IrNode) {
+    const graph = get(irGraph);
+    if (!graph || !shell.allowDrillDown) return;
+    if (!canDrillInto(graph, node)) return;
+    drillDown(node);
+    selectedNodeId.set(null);
   }
 
   function handleConnectStart({ nodeId }: { nodeId: string | null }) {
@@ -1145,18 +1224,12 @@
       return;
     }
 
-    // Enter to drill into selected node (same as double-click)
+    // Enter: open control-flow graph only (same as double-click)
     if (event.key === 'Enter' && $selectedNodeId) {
       const graph = get(irGraph);
       if (!graph) return;
       const irNode = graph.nodes.find(n => n.id === Number($selectedNodeId));
-      if (irNode) {
-        const children = getChildren(graph, irNode.id);
-        if (children.length > 0) {
-          drillDown(irNode);
-          selectedNodeId.set(null);
-        }
-      }
+      if (irNode) handleOutlineDrill(irNode);
     }
 
     if ((event.key === 'Delete' || event.key === 'Backspace') && $selectedNodeId) {
@@ -1556,8 +1629,11 @@
         <div class="graph-container" bind:this={graphContainerEl} ondrop={handleDrop} ondragover={handleDragOver} role="application" onkeydown={handleKeyDown} tabindex="-1">
         {#if currentLayout === 'tree' && currentProjected && $irGraph}
           <!-- Native tree renderer -->
-          <div class="native-layout-container">
-            <div class="native-layout-sidebar">
+          <div class="native-layout-container" class:resizing={outlineResizing}>
+            <div
+              class="native-layout-sidebar"
+              style="width: {outlineWidth}px; flex: 0 0 {outlineWidth}px; min-width: {OUTLINE_MIN}px; max-width: {OUTLINE_MAX}px;"
+            >
               <div class="tree-toolbar">
                 <span class="tree-toolbar-title">Outline</span>
                 <CreateConstructMenu
@@ -1571,9 +1647,20 @@
                 projected={currentProjected}
                 graph={$irGraph}
                 presentationModel={$presentationModel}
-                onDrillDown={(node) => drillDown(node)}
+                onDrillDown={handleOutlineDrill}
               />
             </div>
+            <div
+              class="outline-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize outline pane"
+              aria-valuenow={outlineWidth}
+              aria-valuemin={OUTLINE_MIN}
+              aria-valuemax={OUTLINE_MAX}
+              title="Drag to resize outline"
+              onpointerdown={startOutlineResize}
+            ></div>
             <div class="native-layout-detail">
               <DetailPanel
                 graph={$irGraph}
@@ -1583,8 +1670,11 @@
           </div>
         {:else if currentLayout === 'flat' && currentProjected && $irGraph}
           <!-- Native flat renderer -->
-          <div class="native-layout-container">
-            <div class="native-layout-sidebar">
+          <div class="native-layout-container" class:resizing={outlineResizing}>
+            <div
+              class="native-layout-sidebar"
+              style="width: {outlineWidth}px; flex: 0 0 {outlineWidth}px; min-width: {OUTLINE_MIN}px; max-width: {OUTLINE_MAX}px;"
+            >
               <div class="tree-toolbar">
                 <span class="tree-toolbar-title">Constructs</span>
                 <CreateConstructMenu
@@ -1598,9 +1688,20 @@
                 projected={currentProjected}
                 graph={$irGraph}
                 presentationModel={$presentationModel}
-                onDrillDown={(node) => drillDown(node)}
+                onDrillDown={handleOutlineDrill}
               />
             </div>
+            <div
+              class="outline-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize outline pane"
+              aria-valuenow={outlineWidth}
+              aria-valuemin={OUTLINE_MIN}
+              aria-valuemax={OUTLINE_MAX}
+              title="Drag to resize outline"
+              onpointerdown={startOutlineResize}
+            ></div>
             <div class="native-layout-detail">
               <DetailPanel
                 graph={$irGraph}
@@ -1706,9 +1807,10 @@
     </div>
   {/if}
   {#if shell.showReviewDock}
+    <!-- VEIL source + Source preview (generated) live in the bottom dock -->
     <ReviewDock />
-  {/if}
-  {#if shell.showCodePreview}
+  {:else if shell.showCodePreview}
+    <!-- Fallback floating preview when review dock is off (e.g. flow-only shell) -->
     <CodePreview />
   {/if}
 
@@ -2136,6 +2238,11 @@
     height: 100%;
   }
 
+  .native-layout-container.resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+
   .tree-toolbar {
     display: flex;
     align-items: center;
@@ -2156,14 +2263,43 @@
   }
 
   .native-layout-sidebar {
-    width: 320px;
-    min-width: 240px;
-    max-width: 400px;
-    border-right: 1px solid var(--veil-border);
     overflow: hidden;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
+    border-right: none;
+  }
+
+  .outline-resize-handle {
+    width: 6px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    touch-action: none;
+    background: var(--veil-border);
+    position: relative;
+    z-index: 5;
+    transition: background 0.12s ease;
+  }
+
+  .outline-resize-handle:hover,
+  .native-layout-container.resizing .outline-resize-handle {
+    background: var(--veil-accent, #a3a3a3);
+  }
+
+  /* Wider hit target without eating layout */
+  .outline-resize-handle::after {
+    content: '';
+    position: absolute;
+    inset: 0 -5px;
+  }
+
+  :global(body.outline-resizing) {
+    cursor: col-resize !important;
+    user-select: none !important;
+  }
+
+  :global(body.outline-resizing iframe) {
+    pointer-events: none !important;
   }
 
   .native-layout-sidebar :global(.tree-layout),

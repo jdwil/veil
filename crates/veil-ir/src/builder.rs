@@ -891,90 +891,398 @@ impl<'a> IrBuilder<'a> {
         (first_step_id, prev_step_id)
     }
 
-    fn build_step_body(&mut self, body: &[Expr], step_id: NodeId) {
+    /// Lower a statement list into sequential Action nodes under `parent_id`.
+    ///
+    /// Handles control flow (`for` / `if` / `ret` / …) that previously fell
+    /// through the `_` arm — those left method bodies empty in the IDE even
+    /// when `has_body` was true (e.g. aggregate `fn` with for/if/ret).
+    ///
+    /// Each Action gets monotonic `seq` + nesting `depth` so the IDE can order
+    /// bodies and re-indent view mode (flat sibling Actions still carry depth).
+    fn build_step_body(&mut self, body: &[Expr], parent_id: NodeId) {
         let mut prev_action: Option<NodeId> = None;
+        let mut seq: u32 = 0;
+        self.emit_body_exprs(body, parent_id, 0, &mut prev_action, &mut seq);
+    }
+
+    fn emit_body_exprs(
+        &mut self,
+        body: &[Expr],
+        parent_id: NodeId,
+        depth: u32,
+        prev_action: &mut Option<NodeId>,
+        seq: &mut u32,
+    ) {
         for expr in body {
-            let action_id = match expr {
-                Expr::Call(call) => {
-                    let label = if call.method.is_empty() {
-                        format!("call {}", call.target)
-                    } else {
-                        format!("call {}.{}", call.target, call.method)
-                    };
-                    let id = self.graph.add_node(NodeKind::Action, label, call.span);
-                    self.set_parent(id, step_id);
-                    self.set_subkind(id, "call");
-                    self.graph.add_edge(step_id, id, EdgeKind::Contains);
-                    // Store full expression for display in the property panel.
-                    self.set_property(id, "expr", &expr_to_display(expr));
-                    let args_str = call.args.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
-                    if !args_str.is_empty() {
-                        self.set_property(id, "args", &args_str);
-                    }
-                    self.annotate_impl_binding(id, &call.target);
-                    Some(id)
+            self.emit_body_expr(expr, parent_id, depth, prev_action, seq);
+        }
+    }
+
+    fn link_seq(&mut self, prev: &mut Option<NodeId>, curr: NodeId) {
+        if let Some(p) = *prev {
+            self.graph.add_edge(p, curr, EdgeKind::SequenceFlow);
+        }
+        *prev = Some(curr);
+    }
+
+    fn push_action(
+        &mut self,
+        parent_id: NodeId,
+        label: String,
+        subkind: &str,
+        prefer_span: Span,
+        expr_prop: Option<&str>,
+        depth: u32,
+        seq: &mut u32,
+    ) -> NodeId {
+        // Prefer real source span when present; otherwise sequential synthetic spans
+        // so sort-by-span matches emission order (not name alphabetization).
+        let span = if prefer_span.start != 0 || prefer_span.end != 0 {
+            prefer_span
+        } else {
+            let s = (*seq as usize + 1) * 10;
+            Span::new(s, s + 1)
+        };
+        let id = self.graph.add_node(NodeKind::Action, label.clone(), span);
+        self.set_parent(id, parent_id);
+        self.set_subkind(id, subkind);
+        self.graph.add_edge(parent_id, id, EdgeKind::Contains);
+        self.set_property(id, "seq", &seq.to_string());
+        self.set_property(id, "depth", &depth.to_string());
+        *seq += 1;
+        if let Some(e) = expr_prop {
+            self.set_property(id, "expr", e);
+        } else {
+            self.set_property(id, "expr", &label);
+        }
+        id
+    }
+
+    fn emit_body_expr(
+        &mut self,
+        expr: &Expr,
+        parent_id: NodeId,
+        depth: u32,
+        prev_action: &mut Option<NodeId>,
+        seq: &mut u32,
+    ) {
+        match expr {
+            Expr::Call(call) => {
+                let label = if call.method.is_empty() {
+                    format!("call {}", call.target)
+                } else {
+                    format!("call {}.{}", call.target, call.method)
+                };
+                let id = self.push_action(
+                    parent_id,
+                    label,
+                    "call",
+                    call.span,
+                    Some(&expr_to_display(expr)),
+                    depth,
+                    seq,
+                );
+                let args_str = call
+                    .args
+                    .iter()
+                    .map(expr_to_display)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !args_str.is_empty() {
+                    self.set_property(id, "args", &args_str);
                 }
-                Expr::Action(a) => {
-                    let label = action_to_display(a);
-                    let id = self.graph.add_node(NodeKind::Action, label, a.span);
-                    self.set_parent(id, step_id);
-                    self.set_subkind(id, &a.keyword);
-                    self.graph.add_edge(step_id, id, EdgeKind::Contains);
-                    if !a.named_args.is_empty() {
-                        let fields_str = a
-                            .named_args
-                            .iter()
-                            .map(|(k, v)| {
-                                let vs = expr_to_display(v);
-                                if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        self.set_property(id, "fields", &format!("{{{}}}", fields_str));
-                    }
-                    if !a.args.is_empty() {
-                        let args_str = a.args.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
+                self.annotate_impl_binding(id, &call.target);
+                self.link_seq(prev_action, id);
+            }
+            Expr::Action(a) => {
+                let label = action_to_display(a);
+                let id =
+                    self.push_action(parent_id, label, &a.keyword, a.span, None, depth, seq);
+                if !a.named_args.is_empty() {
+                    let fields_str = a
+                        .named_args
+                        .iter()
+                        .map(|(k, v)| {
+                            let vs = expr_to_display(v);
+                            if k == &vs {
+                                k.clone()
+                            } else {
+                                format!("{}: {}", k, vs)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.set_property(id, "fields", &format!("{{{}}}", fields_str));
+                }
+                if !a.args.is_empty() {
+                    let args_str = a
+                        .args
+                        .iter()
+                        .map(expr_to_display)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.set_property(id, "args", &format!("({})", args_str));
+                }
+                if let Some(msg) = &a.message {
+                    self.set_property(id, "message", msg);
+                }
+                if !a.target.is_empty() {
+                    self.annotate_impl_binding(id, &a.target);
+                }
+                self.link_seq(prev_action, id);
+            }
+            Expr::Assign(name, rhs, _ty) | Expr::MutAssign(name, rhs, _ty) => {
+                let rhs_display = expr_to_display(rhs);
+                let mut_kw = matches!(expr, Expr::MutAssign(_, _, _));
+                let core = if mut_kw {
+                    format!("mut {} = {}", name, rhs_display)
+                } else {
+                    format!("{} = {}", name, rhs_display)
+                };
+                let id = self.push_action(
+                    parent_id,
+                    core.clone(),
+                    if mut_kw { "mut_assign" } else { "assign" },
+                    Span::new(0, 0),
+                    Some(&core),
+                    depth,
+                    seq,
+                );
+                if let Expr::Call(call) = rhs.as_ref() {
+                    let args_str = call
+                        .args
+                        .iter()
+                        .map(expr_to_display)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if !args_str.is_empty() {
                         self.set_property(id, "args", &format!("({})", args_str));
                     }
-                    if let Some(msg) = &a.message {
-                        self.set_property(id, "message", msg);
+                    self.annotate_impl_binding(id, &call.target);
+                    if let Some(port_node) = self
+                        .graph
+                        .nodes
+                        .iter()
+                        .find(|n| n.kind == NodeKind::Interface && n.name == call.target)
+                    {
+                        let port_id = port_node.id;
+                        self.graph.add_edge(id, port_id, EdgeKind::Calls);
                     }
-                    if !a.target.is_empty() {
-                        self.annotate_impl_binding(id, &a.target);
-                    }
-                    Some(id)
                 }
-                Expr::Assign(name, rhs, _ty) => {
-                    let rhs_display = expr_to_display(rhs);
-                    let label = format!("{} = {}", name, rhs_display);
-                    let id = self.graph.add_node(NodeKind::Action, label.clone(), Span::new(0, 0));
-                    self.set_parent(id, step_id);
-                    self.set_subkind(id, "assign");
-                    self.set_property(id, "expr", &label);
-                    self.graph.add_edge(step_id, id, EdgeKind::Contains);
-
-                    if let Expr::Call(call) = rhs.as_ref() {
-                        let args_str = call.args.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
-                        if !args_str.is_empty() {
-                            self.set_property(id, "args", &format!("({})", args_str));
-                        }
-                        self.annotate_impl_binding(id, &call.target);
-                        if let Some(port_node) = self.graph.nodes.iter().find(|n| {
-                            n.kind == NodeKind::Interface && n.name == call.target
-                        }) {
-                            let port_id = port_node.id;
-                            self.graph.add_edge(id, port_id, EdgeKind::Calls);
-                        }
-                    }
-                    Some(id)
-                }
-                _ => None,
-            };
-            if let (Some(prev), Some(curr)) = (prev_action, action_id) {
-                self.graph.add_edge(prev, curr, EdgeKind::SequenceFlow);
+                self.link_seq(prev_action, id);
             }
-            if action_id.is_some() {
-                prev_action = action_id;
+            Expr::Return(inner) => {
+                // Label is the return *value* only — subkind is "return" so the
+                // editor can map to Expr::return without "return ret …" doubling.
+                let value = expr_to_display(inner);
+                let expr_full = format!("ret {}", value);
+                let id = self.push_action(
+                    parent_id,
+                    value.clone(),
+                    "return",
+                    Span::new(0, 0),
+                    Some(&expr_full),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+            }
+            Expr::ForLoop {
+                binding,
+                index,
+                iterable,
+                body,
+            } => {
+                let core = if let Some(idx) = index {
+                    format!(
+                        "for {}, {} in {}",
+                        binding,
+                        idx,
+                        expr_to_display(iterable)
+                    )
+                } else {
+                    format!("for {} in {}", binding, expr_to_display(iterable))
+                };
+                let id = self.push_action(
+                    parent_id,
+                    core.clone(),
+                    "for",
+                    Span::new(0, 0),
+                    Some(&core),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+                self.emit_body_exprs(body, parent_id, depth + 1, prev_action, seq);
+            }
+            Expr::WhileLoop { condition, body } => {
+                let core = format!("while {}", expr_to_display(condition));
+                let id = self.push_action(
+                    parent_id,
+                    core.clone(),
+                    "while",
+                    Span::new(0, 0),
+                    Some(&core),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+                self.emit_body_exprs(body, parent_id, depth + 1, prev_action, seq);
+            }
+            Expr::Loop(body) => {
+                let id = self.push_action(
+                    parent_id,
+                    "loop".into(),
+                    "loop",
+                    Span::new(0, 0),
+                    Some("loop"),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+                self.emit_body_exprs(body, parent_id, depth + 1, prev_action, seq);
+            }
+            Expr::IfExpr(ie) => {
+                // Name = condition only (subkind "if") — avoids "if if cond" in UI
+                let cond = expr_to_display(&ie.condition);
+                let expr_full = format!("if {}", cond);
+                let id = self.push_action(
+                    parent_id,
+                    cond,
+                    "if",
+                    Span::new(0, 0),
+                    Some(&expr_full),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+                self.emit_body_exprs(&ie.then_body, parent_id, depth + 1, prev_action, seq);
+                if let Some(else_body) = &ie.else_body {
+                    let else_id = self.push_action(
+                        parent_id,
+                        "else".into(),
+                        "else",
+                        Span::new(0, 0),
+                        Some("else"),
+                        depth,
+                        seq,
+                    );
+                    self.link_seq(prev_action, else_id);
+                    self.emit_body_exprs(else_body, parent_id, depth + 1, prev_action, seq);
+                }
+            }
+            Expr::IfLet {
+                pattern,
+                expr: scrut,
+                then_body,
+                else_body,
+            } => {
+                let core = format!("if let {} = {}", pattern, expr_to_display(scrut));
+                let id = self.push_action(
+                    parent_id,
+                    core.clone(),
+                    "if_let",
+                    Span::new(0, 0),
+                    Some(&core),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+                self.emit_body_exprs(then_body, parent_id, depth + 1, prev_action, seq);
+                if let Some(else_body) = else_body {
+                    let else_id = self.push_action(
+                        parent_id,
+                        "else".into(),
+                        "else",
+                        Span::new(0, 0),
+                        Some("else"),
+                        depth,
+                        seq,
+                    );
+                    self.link_seq(prev_action, else_id);
+                    self.emit_body_exprs(else_body, parent_id, depth + 1, prev_action, seq);
+                }
+            }
+            Expr::Match(scrutinee, arms) => {
+                let core = format!("match {}", expr_to_display(scrutinee));
+                let id = self.push_action(
+                    parent_id,
+                    core.clone(),
+                    "match",
+                    Span::new(0, 0),
+                    Some(&core),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+                for arm in arms {
+                    let arm_label = format!("→ {}", arm.pattern);
+                    let arm_id = self.push_action(
+                        parent_id,
+                        arm_label,
+                        "match_arm",
+                        Span::new(0, 0),
+                        Some(&format!("{} -> …", arm.pattern)),
+                        depth + 1,
+                        seq,
+                    );
+                    self.link_seq(prev_action, arm_id);
+                    self.emit_body_exprs(&arm.body, parent_id, depth + 2, prev_action, seq);
+                }
+            }
+            Expr::DoBlock(stmts) => {
+                let id = self.push_action(
+                    parent_id,
+                    "do".into(),
+                    "do",
+                    Span::new(0, 0),
+                    Some("do { … }"),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+                self.emit_body_exprs(stmts, parent_id, depth + 1, prev_action, seq);
+            }
+            Expr::Break => {
+                let id = self.push_action(
+                    parent_id,
+                    "break".into(),
+                    "break",
+                    Span::new(0, 0),
+                    Some("break"),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+            }
+            Expr::Continue => {
+                let id = self.push_action(
+                    parent_id,
+                    "continue".into(),
+                    "continue",
+                    Span::new(0, 0),
+                    Some("continue"),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
+            }
+            // Expressions that are valid statements in a body but not Call/Action/Assign
+            other => {
+                let core = expr_to_display(other);
+                if core.is_empty() || core == "…" {
+                    return;
+                }
+                let id = self.push_action(
+                    parent_id,
+                    core.clone(),
+                    "expr",
+                    Span::new(0, 0),
+                    Some(&core),
+                    depth,
+                    seq,
+                );
+                self.link_seq(prev_action, id);
             }
         }
     }
@@ -1290,6 +1598,126 @@ items: vec![TopLevelItem::Construct(member)],
         };
         let graph = build_ir_with_registry(&sol, Some(&reg));
         assert!(!graph.edges.iter().any(|e| e.kind == EdgeKind::References));
+    }
+
+    /// Aggregate/struct methods with for/if/ret must lower to Action children
+    /// so the IDE flow graph is not empty (has_body alone is not enough).
+    #[test]
+    fn method_body_for_if_ret_emits_actions() {
+        use crate::ast::{
+            BinOp, BinaryOpExpr, CallExpr, Expr, FnDef, IfExprData, Param, TypeExpr,
+        };
+        let mut c = Construct::new(
+            "struct",
+            "Struct",
+            Shape::Struct,
+            "ApiProvider".into(),
+            Span::new(0, 1),
+        );
+        c.fields.push(field("api_endpoints", "List<ApiEndpoint>"));
+        let f = FnDef {
+            name: "get_endpoint".into(),
+            span: Span::new(0, 1),
+            params: vec![Param {
+                name: "endpoint_id".into(),
+                type_expr: TypeExpr::Named("Id".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
+                "ApiEndpoint".into(),
+            )))),
+            annotations: vec![],
+            body: vec![
+                Expr::ForLoop {
+                    binding: "ep".into(),
+                    index: None,
+                    iterable: Box::new(Expr::FieldAccess(
+                        Box::new(Expr::Ident("self".into())),
+                        "api_endpoints".into(),
+                    )),
+                    body: vec![Expr::IfExpr(IfExprData {
+                        condition: Box::new(Expr::BinaryOp(BinaryOpExpr {
+                            left: Box::new(Expr::FieldAccess(
+                                Box::new(Expr::Ident("ep".into())),
+                                "id".into(),
+                            )),
+                            op: BinOp::Eq,
+                            right: Box::new(Expr::Ident("endpoint_id".into())),
+                        })),
+                        then_body: vec![Expr::Return(Box::new(Expr::Call(CallExpr {
+                            target: "Opt".into(),
+                            method: "some".into(),
+                            args: vec![Expr::Ident("ep".into())],
+                            receiver: None,
+                            sugar: None,
+                            span: Span::new(0, 1),
+                        })))],
+                        else_body: None,
+                    })],
+                },
+                Expr::Return(Box::new(Expr::Call(CallExpr {
+                    target: "Opt".into(),
+                    method: "none".into(),
+                    args: vec![],
+                    receiver: None,
+                    sugar: None,
+                    span: Span::new(0, 1),
+                }))),
+            ],
+            steps: vec![],
+            layer_provided: false,
+        };
+        c.fns.push(f);
+        let sol = Solution {
+            name: "T".into(),
+            span: Span::new(0, 1),
+            uses: vec![],
+            links: vec![],
+            items: vec![TopLevelItem::Construct(c)],
+            expose: None,
+            guidance: Vec::new(),
+        };
+        let graph = build_ir(&sol);
+        let method = graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::InterfaceMethod && n.name == "get_endpoint")
+            .expect("method node");
+        let kids: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|n| n.metadata.parent == Some(method.id))
+            .collect();
+        let actions: Vec<_> = kids
+            .iter()
+            .filter(|n| n.kind == NodeKind::Action)
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(
+            actions.iter().any(|a| a.contains("for ")),
+            "expected for-loop action, got {:?}",
+            actions
+        );
+        assert!(
+            actions.iter().any(|a| a.contains("Opt.some") || a.contains("Opt.none")),
+            "expected return-value actions, got {:?}",
+            actions
+        );
+        assert!(
+            actions.len() >= 3,
+            "for + if + rets should emit multiple actions, got {:?}",
+            actions
+        );
+        // Source order: for → if → ret some → ret none (not alphabetical)
+        let for_i = actions.iter().position(|a| a.contains("for ")).unwrap();
+        let if_i = actions.iter().position(|a| a.contains("ep.id")).unwrap();
+        let some_i = actions.iter().position(|a| a.contains("Opt.some")).unwrap();
+        let none_i = actions.iter().position(|a| a.contains("Opt.none")).unwrap();
+        assert!(
+            for_i < if_i && if_i < some_i && some_i < none_i,
+            "wrong body order: {:?}",
+            actions
+        );
     }
 }
 

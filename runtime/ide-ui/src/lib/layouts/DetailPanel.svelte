@@ -10,10 +10,23 @@
    * Zero domain knowledge — all presentation is layer-driven.
    */
   import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/types';
-  import { irGraph, saveEdits, saving, saveError, paletteConfig, selectedNodeId, diagnostics, type EditOp } from '$lib/store';
+  import {
+    irGraph,
+    saveEdits,
+    saving,
+    saveError,
+    paletteConfig,
+    selectedNodeId,
+    diagnostics,
+    focusDiagnostic,
+    currentProjectParam,
+    type EditOp,
+    type Diagnostic,
+  } from '$lib/store';
+  import { askAgent, formatIssuePrompt } from '$lib/agentPrompt';
   import { formatType } from '$lib/typeDisplay';
   import { isCriticalNode } from '$lib/lenses';
-  import { BlockEditor } from '$lib/editors';
+  import { BodySourceBlock } from '$lib/editors';
   import { irGraphBodyToExprs } from '$lib/editors/ir-convert';
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
@@ -178,10 +191,43 @@
     return result;
   }
 
-  // Diagnostics for this node
-  let nodeDiagnostics = $derived(
-    $diagnostics.filter(d => d.node_id === selectedIrNode?.id)
-  );
+  // Diagnostics for this construct (API often has node_id null — match by name too)
+  let nodeDiagnostics = $derived.by((): Diagnostic[] => {
+    if (!selectedIrNode) return [];
+    return $diagnostics.filter(
+      (d) =>
+        (d.node_id != null && d.node_id === selectedIrNode!.id) ||
+        (d.node_name != null && d.node_name === selectedIrNode!.name)
+    );
+  });
+
+  /** Issues section collapsed state (default open when there are issues). */
+  let issuesOpen = $state(true);
+  // Re-open when selection changes to a construct that has issues
+  $effect(() => {
+    const n = selectedIrNode?.id;
+    const count = nodeDiagnostics.length;
+    if (n != null && count > 0) issuesOpen = true;
+  });
+
+  function sendAllIssuesToAgent() {
+    if (!selectedIrNode || nodeDiagnostics.length === 0) return;
+    const prompt = formatIssuePrompt(nodeDiagnostics, {
+      construct: selectedIrNode.name,
+      project: currentProjectParam(),
+      all: true,
+    });
+    askAgent(prompt, { autoSend: true });
+  }
+
+  function sendOneIssueToAgent(diag: Diagnostic) {
+    const prompt = formatIssuePrompt([diag], {
+      construct: selectedIrNode?.name ?? diag.node_name ?? undefined,
+      project: currentProjectParam(),
+      all: false,
+    });
+    askAgent(prompt, { autoSend: true });
+  }
 
   // Doc (from layer)
   let doc = $derived(selectedIrNode?.metadata.doc ?? null);
@@ -366,19 +412,70 @@
       </section>
     {/if}
 
-    <!-- Diagnostics -->
+    <!-- Diagnostics / issues for this construct -->
     {#if nodeDiagnostics.length > 0}
-      <section class="detail-section detail-diagnostics">
-        <h3 class="detail-section-title">Diagnostics</h3>
-        {#each nodeDiagnostics as diag}
-          <div class="detail-diag" class:diag-error={diag.severity === 'error'} class:diag-warning={diag.severity === 'warning'}>
-            <span class="diag-severity">{diag.severity === 'error' ? '✗' : '⚠'}</span>
-            <span class="diag-message">{diag.message}</span>
-            {#if diag.hint}
-              <span class="diag-hint">{diag.hint}</span>
-            {/if}
-          </div>
-        {/each}
+      <section class="detail-section detail-issues">
+        <div class="issues-header">
+          <button
+            type="button"
+            class="issues-toggle"
+            aria-expanded={issuesOpen}
+            onclick={() => (issuesOpen = !issuesOpen)}
+          >
+            <span class="issues-chevron" class:collapsed={!issuesOpen}>▸</span>
+            <h3 class="detail-section-title issues-title">
+              Issues <span class="section-count">{nodeDiagnostics.length}</span>
+            </h3>
+          </button>
+          <button
+            type="button"
+            class="issues-send-all"
+            title="Send all issues on this construct to the agent"
+            onclick={sendAllIssuesToAgent}
+          >
+            Agent: fix all
+          </button>
+        </div>
+        {#if issuesOpen}
+          <ul class="detail-diags">
+            {#each nodeDiagnostics as diag}
+              <li>
+                <div
+                  class="detail-diag"
+                  class:error={diag.severity === 'Error' || diag.severity === 'error'}
+                >
+                  <button
+                    type="button"
+                    class="detail-diag-main"
+                    onclick={() => focusDiagnostic(diag)}
+                    title={diag.hint ?? diag.message}
+                  >
+                    <span class="detail-diag-sev"
+                      >{diag.severity === 'Error' || diag.severity === 'error'
+                        ? '⛔'
+                        : '⚠️'}</span
+                    >
+                    <span class="detail-diag-msg">
+                      {#if diag.code}<code class="detail-diag-code">[{diag.code}]</code>{/if}
+                      {diag.message}
+                    </span>
+                    {#if diag.hint}
+                      <span class="detail-diag-hint">{diag.hint}</span>
+                    {/if}
+                  </button>
+                  <button
+                    type="button"
+                    class="detail-diag-send"
+                    title="Ask agent to investigate and fix this issue"
+                    onclick={() => sendOneIssueToAgent(diag)}
+                  >
+                    Agent
+                  </button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </section>
     {/if}
 
@@ -446,14 +543,11 @@
                 <span class="step-name">{step.name}</span>
               </header>
               <div class="detail-body-editor">
-                {#if stepExprs.length > 0}
-                  <BlockEditor
-                    exprs={stepExprs}
-                    onChange={(exprs) => handleStepBodyEdit(step, exprs)}
-                  />
-                {:else}
-                  <p class="detail-body-empty">Empty step body</p>
-                {/if}
+                <BodySourceBlock
+                  exprs={stepExprs}
+                  onChange={(exprs) => handleStepBodyEdit(step, exprs)}
+                  emptyLabel="Empty step body"
+                />
               </div>
             </div>
           {/each}
@@ -464,16 +558,17 @@
                 <span class="step-name">result</span>
               </header>
               <div class="detail-body-editor">
-                <BlockEditor
+                <BodySourceBlock
                   exprs={returnExprs()}
                   onChange={handleBodyEdit}
+                  emptyLabel="No return expression"
                 />
               </div>
             </div>
           {/if}
         </div>
         <p class="detail-service-hint">
-          Double-click the service in the outline to open the flow graph (steps as nodes).
+          Expand the service in the outline and double-click a method/fn to open its flow graph.
         </p>
       </section>
     {/if}
@@ -483,14 +578,11 @@
       <section class="detail-section">
         <h3 class="detail-section-title">Body</h3>
         <div class="detail-body-editor">
-          {#if bodyExprs.length > 0}
-            <BlockEditor
-              exprs={bodyExprs}
-              onChange={handleBodyEdit}
-            />
-          {:else}
-            <p class="detail-body-empty">No body expressions.</p>
-          {/if}
+          <BodySourceBlock
+            exprs={bodyExprs}
+            onChange={handleBodyEdit}
+            emptyLabel="No body expressions."
+          />
         </div>
       </section>
     {/if}
@@ -840,10 +932,6 @@
     color: var(--veil-text, #e5e5e5);
   }
 
-  .detail-step-block .detail-body-editor {
-    padding: 0.5rem 0.35rem 0.65rem;
-  }
-
   .detail-service-hint {
     margin: 0.65rem 0 0;
     font-size: 0.7rem;
@@ -860,12 +948,143 @@
     margin-left: 0.35rem;
   }
 
-  .detail-body-empty {
+  .issues-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .issues-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    padding: 0;
+    min-width: 0;
+  }
+
+  .issues-title {
     margin: 0;
-    padding: 0.75rem;
-    font-size: 0.8rem;
+  }
+
+  .issues-chevron {
+    display: inline-block;
+    font-size: 0.7rem;
     color: var(--veil-text-dim, #a3a3a3);
-    font-style: italic;
+    transition: transform 0.12s ease;
+    transform: rotate(90deg);
+  }
+
+  .issues-chevron.collapsed {
+    transform: rotate(0deg);
+  }
+
+  .issues-send-all {
+    flex-shrink: 0;
+    border: 1px solid color-mix(in srgb, #f59e0b 45%, var(--veil-border, #2e2e2e));
+    background: color-mix(in srgb, #f59e0b 12%, transparent);
+    color: var(--veil-text, #e5e5e5);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 650;
+    padding: 0.28rem 0.55rem;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .issues-send-all:hover {
+    background: color-mix(in srgb, #f59e0b 22%, transparent);
+  }
+
+  .detail-diags {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .detail-diag {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    width: 100%;
+    border: 1px solid var(--veil-border, #2e2e2e);
+    border-radius: 6px;
+    background: var(--veil-surface-alt, rgba(26, 26, 26, 0.6));
+    overflow: hidden;
+  }
+
+  .detail-diag.error {
+    border-color: color-mix(in srgb, #ef4444 45%, var(--veil-border, #2e2e2e));
+  }
+
+  .detail-diag-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    text-align: left;
+    border: none;
+    background: transparent;
+    padding: 0.45rem 0.6rem;
+    color: var(--veil-text, #e5e5e5);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .detail-diag-main:hover {
+    background: var(--veil-accent-hover, rgba(115, 115, 115, 0.15));
+  }
+
+  .detail-diag-send {
+    flex-shrink: 0;
+    border: none;
+    border-left: 1px solid var(--veil-border, #2e2e2e);
+    background: transparent;
+    color: var(--veil-text-dim, #a3a3a3);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 650;
+    padding: 0 0.65rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .detail-diag-send:hover {
+    color: var(--veil-text, #e5e5e5);
+    background: color-mix(in srgb, #f59e0b 14%, transparent);
+  }
+
+  .detail-diag-sev {
+    font-size: 0.75rem;
+  }
+
+  .detail-diag-msg {
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+
+  .detail-diag-code {
+    font-size: 0.7rem;
+    color: var(--veil-text-dim, #a3a3a3);
+    margin-right: 0.25rem;
+  }
+
+  .detail-diag-hint {
+    font-size: 0.7rem;
+    color: var(--veil-text-faint, #737373);
+    line-height: 1.3;
   }
 
   /* Methods */
@@ -919,13 +1138,13 @@
     color: #f59e0b;
   }
 
-  /* Body editor */
+  /* Body editor — chrome lives on BodySourceBlock (view/edit modes) */
   .detail-body-editor {
-    border: 1px solid var(--veil-border);
-    border-radius: 6px;
-    padding: 8px;
-    background: var(--veil-code-bg);
-    min-height: 100px;
+    min-height: 0;
+  }
+
+  .detail-step-block .detail-body-editor {
+    padding: 0.35rem 0.5rem 0.65rem;
   }
 
   /* Annotations */

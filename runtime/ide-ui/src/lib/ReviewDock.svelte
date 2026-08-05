@@ -7,6 +7,7 @@
    */
   import { onMount } from 'svelte';
   import VeilSourcePanel from './VeilSourcePanel.svelte';
+  import CodePreview from './CodePreview.svelte';
   import AetherAgentPanel from './AetherAgentPanel.svelte';
   import AgentPlacementControl from './AgentPlacementControl.svelte';
   import { selectedNodeId, irGraph, refreshAfterEdit, embedShellConfig } from '$lib/store';
@@ -18,7 +19,8 @@
     setAgentPlacement
   } from '$lib/agentLayout';
 
-  type DockTab = 'source' | 'agent' | 'split';
+  /** Bottom dock tabs: VEIL package source, generated target source, agent. */
+  type DockTab = 'source' | 'generated' | 'agent' | 'split';
 
   /** When embed/runtime shell hides agent rail, never show agent pane in this dock. */
   const shell = embedShellConfig();
@@ -27,6 +29,7 @@
   const HEIGHT_KEY = 'veil.reviewDock.height';
   const MODE_KEY = 'veil.reviewDock.mode';
   const SPLIT_KEY = 'veil.reviewDock.splitRatio';
+  const EXPANDED_KEY = 'veil.reviewDock.expanded';
   const MIN_H = 140;
   const MAX_H_RATIO = 0.75;
   const DEFAULT_H = 280;
@@ -43,12 +46,29 @@
   function loadMode(): DockTab {
     if (typeof localStorage === 'undefined') return 'source';
     const m = localStorage.getItem(MODE_KEY);
-    if (m === 'source' || m === 'agent' || m === 'split') return m;
+    // Legacy modes: migrate old agent/split into source tabs; agent still available when rail allows
+    if (m === 'source' || m === 'agent' || m === 'split' || m === 'generated') return m as DockTab;
     return 'source';
   }
 
+  function loadExpanded(): boolean {
+    if (typeof localStorage === 'undefined') return true;
+    const v = localStorage.getItem(EXPANDED_KEY);
+    // Default expanded when never set; explicit "0" stays collapsed across refresh
+    if (v === null) return true;
+    return v === '1' || v === 'true';
+  }
+
+  function saveExpanded(next: boolean) {
+    try {
+      localStorage.setItem(EXPANDED_KEY, next ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
   let tab = $state<DockTab>(loadMode());
-  let expanded = $state(true);
+  let expanded = $state(loadExpanded());
   let agentInsert = $state('');
   let heightPx = $state(loadNum(HEIGHT_KEY, DEFAULT_H, MIN_H, 900));
   /** Source pane share in split mode (0.2–0.8). */
@@ -71,10 +91,11 @@
 
   function setTab(next: DockTab) {
     expanded = true;
+    saveExpanded(true);
     tab = next;
     // Refresh source when switching to a tab that shows it — ensures
     // edits made during an agent turn are visible immediately.
-    if (next === 'source' || next === 'split') {
+    if (next === 'source' || next === 'generated' || next === 'split') {
       void refreshAfterEdit();
     }
     try {
@@ -82,6 +103,11 @@
     } catch {
       /* ignore */
     }
+  }
+
+  function toggleExpanded() {
+    expanded = !expanded;
+    saveExpanded(expanded);
   }
 
   function insertSelection() {
@@ -100,6 +126,7 @@
   function onResizePointerDown(e: PointerEvent) {
     if (!expanded) {
       expanded = true;
+      saveExpanded(true);
     }
     e.preventDefault();
     resizing = true;
@@ -189,9 +216,9 @@
   /** Agent is shown in this bottom dock only when placement is bottom. */
   let agentInDock = $derived(allowAgentChrome && $agentPlacement === 'bottom');
 
-  /** Effective tab when agent is not in the dock: force source-only UI. */
+  /** Effective tab when agent is not in the dock: drop agent/split modes. */
   let effectiveTab = $derived.by(() => {
-    if (!agentInDock) return 'source' as DockTab;
+    if (!agentInDock && (tab === 'agent' || tab === 'split')) return 'source' as DockTab;
     return tab;
   });
 
@@ -263,6 +290,17 @@
       >
         VEIL source
       </button>
+      <button
+        type="button"
+        role="tab"
+        class="dock-tab"
+        class:active={effectiveTab === 'generated'}
+        aria-selected={effectiveTab === 'generated'}
+        title="Generated target source (codegen output)"
+        onclick={() => setTab('generated')}
+      >
+        Source preview
+      </button>
       {#if agentInDock}
         <button
           type="button"
@@ -280,7 +318,7 @@
           class="dock-tab"
           class:active={tab === 'split'}
           aria-selected={tab === 'split'}
-          title="Source and agent side by side"
+          title="VEIL source and agent side by side"
           onclick={() => setTab('split')}
         >
           Split
@@ -315,7 +353,7 @@
         type="button"
         class="collapse-btn"
         title={expanded ? 'Collapse dock' : 'Expand dock'}
-        onclick={() => (expanded = !expanded)}
+        onclick={toggleExpanded}
       >
         {expanded ? '▾' : '▴'}
       </button>
@@ -323,25 +361,33 @@
   </div>
   {#if expanded}
     <!--
-      Keep a single Source + Agent instance mounted for all tabs.
-      {#if tab} branches remounted panels and wiped agent conversation mid-stream.
+      Keep panels mounted where needed so agent conversation is not wiped mid-stream.
     -->
     <div
       class="dock-body"
       class:split={agentInDock && tab === 'split'}
-      class:source-only={!agentInDock || tab === 'source'}
+      class:source-only={!agentInDock || tab === 'source' || tab === 'generated'}
       class:agent-only={agentInDock && tab === 'agent'}
     >
       <div
         class="split-pane source-pane"
-        class:pane-hidden={agentInDock && tab === 'agent'}
-        aria-hidden={agentInDock && tab === 'agent'}
+        class:pane-hidden={
+          (agentInDock && tab === 'agent') || effectiveTab === 'generated'
+        }
+        aria-hidden={(agentInDock && tab === 'agent') || effectiveTab === 'generated'}
         style:flex={agentInDock && tab === 'split' ? `0 0 ${splitRatio * 100}%` : undefined}
       >
         {#if agentInDock && tab === 'split'}
-          <div class="pane-label">Source</div>
+          <div class="pane-label">VEIL source</div>
         {/if}
         <VeilSourcePanel embedded />
+      </div>
+      <div
+        class="split-pane generated-pane"
+        class:pane-hidden={effectiveTab !== 'generated'}
+        aria-hidden={effectiveTab !== 'generated'}
+      >
+        <CodePreview embedded />
       </div>
       {#if agentInDock && tab === 'split'}
         <div
@@ -357,9 +403,9 @@
       {#if agentInDock}
         <div
           class="split-pane agent-pane"
-          class:pane-hidden={tab === 'source'}
-          hidden={tab === 'source'}
-          aria-hidden={tab === 'source'}
+          class:pane-hidden={tab === 'source' || tab === 'generated'}
+          hidden={tab === 'source' || tab === 'generated'}
+          aria-hidden={tab === 'source' || tab === 'generated'}
         >
           {#if tab === 'split'}
             <div class="pane-label">Agent</div>
@@ -500,10 +546,14 @@
     flex-direction: row;
   }
   .dock-body.source-only .source-pane,
+  .dock-body.source-only .generated-pane,
   .dock-body.agent-only .agent-pane {
     flex: 1 1 auto;
     width: 100%;
     height: 100%;
+  }
+  .generated-pane {
+    flex: 1 1 auto;
   }
   .split-pane {
     min-width: 0;

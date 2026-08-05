@@ -2,6 +2,7 @@
   import {
     diagnostics,
     checkMeta,
+    diagnosticsPanelOpen,
     focusDiagnostic,
     type Diagnostic,
   } from '$lib/store';
@@ -20,6 +21,15 @@
     items.filter((d) => d.severity === 'Error' || d.severity === 'error').length
   );
   const warningCount = $derived(count - errorCount);
+
+  // Open when store requests (tree badge / focusDiagnostic)
+  $effect(() => {
+    if ($diagnosticsPanelOpen) expanded = true;
+  });
+
+  $effect(() => {
+    if (!expanded) diagnosticsPanelOpen.set(false);
+  });
 
   function label(diag: Diagnostic): string {
     const code = diag.code ? `[${diag.code}] ` : '';

@@ -7,7 +7,7 @@
   // AnnotationEditor / EnumEditor / ConstructEditor are quarantined — see
   // docs/ADR-viewer-editors.md. Do not re-expand click-to-build of all expr kinds
   // until review surfaces (UX-020–023) stay primary.
-  import { BlockEditor } from '$lib/editors';
+  import { BodySourceBlock } from '$lib/editors';
   import { irGraphBodyToExprs } from '$lib/editors/ir-convert';
   import { exprToVeil } from '$lib/editors/expr-serialize';
   import type { Expr } from '$lib/editors/expr-types';
@@ -420,15 +420,12 @@
           {/each}
         {/if}
         <div class="expr-editor-container">
-          {#if bodyExprsForSelected().length > 0}
-            <BlockEditor
-              exprs={bodyExprsForSelected()}
-              onChange={(newExprs) => handleBodyEdit(newExprs)}
-              depth={0}
-            />
-          {:else}
-            <p class="pe-empty">No body expressions.</p>
-          {/if}
+          <BodySourceBlock
+            exprs={bodyExprsForSelected()}
+            onChange={(newExprs) => handleBodyEdit(newExprs)}
+            depth={0}
+            emptyLabel="No body expressions."
+          />
         </div>
       </div>
     {/if}
