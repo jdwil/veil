@@ -18,10 +18,36 @@
 		agentSend,
 		agentAbort,
 		agentClear,
-		agentInsertToken
+		agentInsertToken,
+		ideDiagnosticsSummary,
+		getAgentContext
 	} from '$lib/agent/runtimeAgentSession';
 
-	// Chips only seed the agent — navigation must come from agent tools (list_changes, navigate_to, …).
+	// Chips seed the agent; navigation must come from agent tools, not hard-coded Svelte routes.
+
+	function investigateAllIssuesPrompt(): string {
+		const sum = $ideDiagnosticsSummary;
+		const project = sum.project || getAgentContext().project || 'the open project';
+		const lines = (sum.sample ?? []).map((d, i) => {
+			const code = d.code ? ` [${d.code}]` : '';
+			const where = d.node_name ? ` @ ${d.node_name}` : '';
+			const hint = d.hint ? `\n   Hint: ${d.hint}` : '';
+			return `${i + 1}. ${d.severity ?? 'Issue'}${code}${where}: ${d.message ?? ''}${hint}`;
+		});
+		const more =
+			sum.count > lines.length
+				? `\n…and ${sum.count - lines.length} more (use project diagnostics / IDE tools to list all).`
+				: '';
+		return [
+			`Investigate and fix all open issues in project \`${project}\`.`,
+			'',
+			'Use IDE/project tools: read source, apply minimal correct edits, re-run checks.',
+			'',
+			'## Sample issues',
+			lines.join('\n') || '(open the IDE diagnostics panel for the full list)',
+			more
+		].join('\n');
+	}
 
 	const WIDTH_KEY = 'veil.agent.dockWidth';
 	const MIN_WIDTH = 320;
@@ -224,9 +250,33 @@
 						Ask me to edit code, manage changes, deploy projects, or navigate — I can control the entire veil platform. <kbd>Cmd+K</kbd> to toggle.
 					</p>
 					<div class="empty-examples">
-						<button class="example-chip" onclick={() => agentSend('Open the relay project in the IDE — use open_ide or open_project')}>Open relay in IDE</button>
-						<button class="example-chip" onclick={() => agentSend('Show me open change requests — use the list_changes tool so the UI navigates to /changes')}>Open changes</button>
-						<button class="example-chip" onclick={() => agentSend('Open the deploy page and summarize status — use open_deploy')}>Deploy to staging</button>
+						{#if $ideDiagnosticsSummary.count > 0}
+							<button
+								class="example-chip example-chip--issues"
+								onclick={() => agentSend(investigateAllIssuesPrompt())}
+							>
+								Investigate & fix all issues ({$ideDiagnosticsSummary.count})
+							</button>
+						{:else}
+							<button
+								class="example-chip"
+								onclick={() =>
+									agentSend(
+										'Summarize the current project and any open diagnostics or TODOs. Use project/IDE tools as needed.'
+									)}
+							>
+								Review current project
+							</button>
+							<button
+								class="example-chip"
+								onclick={() =>
+									agentSend(
+										'Show open change requests — use list_changes so the UI navigates to /changes'
+									)}
+							>
+								Open change requests
+							</button>
+						{/if}
 					</div>
 				</div>
 			{:else}
@@ -463,6 +513,11 @@
 		transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
 		font-family: inherit;
 	}
+	.example-chip--issues {
+		border-color: color-mix(in srgb, #f59e0b 50%, var(--veil-border, #404040));
+		background: color-mix(in srgb, #f59e0b 12%, transparent);
+	}
+
 	.example-chip:hover {
 		color: var(--dk-brand-light, #a3a3a3);
 		border-color: var(--dk-brand, #737373);

@@ -182,6 +182,8 @@ function handleEvent(event: StreamEvent) {
 	switch (event.event) {
 		case 'message_start': {
 			currentMessageId = event.data.messageId;
+			const sid = (event.data as { sessionId?: string }).sessionId;
+			if (sid) setCodingSessionId(sid);
 			const msg: Message = {
 				id: event.data.messageId,
 				role: 'assistant',
@@ -354,12 +356,19 @@ export async function agentSend(content: string, attachments?: File[]) {
 		ctx.surfaces = (window as any).__veilAgentSurface.surfaces || [];
 	}
 
+	// Ensure durable coding session when project is known
+	if (ctx.project) {
+		await ensureCodingSession(ctx.project);
+	}
+
 	// `project` is a VEIL hub extension (not in aether ChatRequest type) so the
 	// backend can scope dual-loop MCP tools to the open product.
 	const request = {
 		messages: history,
 		systemPrompt: buildSystemPrompt(ctx),
-		project: ctx.project || undefined
+		project: ctx.project || undefined,
+		sessionId: getCodingSessionId() || undefined,
+		session_id: getCodingSessionId() || undefined
 	} as ChatRequest;
 
 	try {
@@ -459,9 +468,88 @@ function buildSystemPrompt(ctx: AgentContext): string {
 	return parts.join('\n');
 }
 
-// ─── Session Persistence (sessionStorage) ───────────────────────────────────
+// ─── Session Persistence (sessionStorage + durable coding session_id) ───────
 
 const SESSION_KEY = 'veil.agent.session';
+const CODING_SESSION_KEY = 'veil.coding.sessionId';
+
+export function getCodingSessionId(): string | null {
+	if (typeof localStorage === 'undefined') return null;
+	try {
+		return localStorage.getItem(CODING_SESSION_KEY);
+	} catch {
+		return null;
+	}
+}
+
+export function setCodingSessionId(id: string | null) {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		if (id) localStorage.setItem(CODING_SESSION_KEY, id);
+		else localStorage.removeItem(CODING_SESSION_KEY);
+	} catch {
+		/* ignore */
+	}
+}
+
+/** Create or attach durable coding session for a project slug. */
+export async function ensureCodingSession(slug: string | null): Promise<string | null> {
+	if (!slug || typeof window === 'undefined') return getCodingSessionId();
+	const existing = getCodingSessionId();
+	if (existing) {
+		try {
+			const res = await fetch(`/api/sessions/${encodeURIComponent(existing)}`);
+			if (res.ok) {
+				const data = await res.json();
+				if (data?.session?.slug === slug) return existing;
+			}
+		} catch {
+			/* recreate */
+		}
+	}
+	try {
+		const res = await fetch('/api/sessions', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ slug })
+		});
+		if (!res.ok) return getCodingSessionId();
+		const data = await res.json();
+		const id = data?.session?.session_id as string | undefined;
+		if (id) setCodingSessionId(id);
+		return id ?? null;
+	} catch {
+		return getCodingSessionId();
+	}
+}
+
+/** Hydrate agent transcript from durable session turns (server). */
+export async function hydrateFromServer(sessionId?: string | null): Promise<void> {
+	const sid = sessionId || getCodingSessionId();
+	if (!sid) return;
+	try {
+		const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/turns`);
+		if (!res.ok) return;
+		const data = await res.json();
+		const turns = (data?.turns || []) as Array<{
+			turn_id: string;
+			role: string;
+			content: string;
+			ts?: string;
+		}>;
+		if (!turns.length) return;
+		const msgs: Message[] = turns.map((t) => ({
+			id: t.turn_id,
+			role: t.role === 'user' ? 'user' : 'assistant',
+			content: [{ type: 'text', text: t.content }],
+			status: 'complete' as const,
+			createdAt: t.ts ? new Date(Number(t.ts) * 1000).toISOString() : new Date().toISOString()
+		}));
+		agentMessages.set(msgs);
+	} catch {
+		/* ignore */
+	}
+}
 
 function persistSession() {
 	if (typeof sessionStorage === 'undefined') return;
@@ -470,9 +558,12 @@ function persistSession() {
 			messages: get(agentMessages),
 			status: get(agentStatusLine),
 			error: get(agentError),
+			codingSessionId: getCodingSessionId(),
 			at: Date.now()
 		};
 		sessionStorage.setItem(SESSION_KEY, JSON.stringify(data));
+		// Also mirror session id to localStorage for tab-close survival
+		if (data.codingSessionId) setCodingSessionId(data.codingSessionId);
 	} catch { /* quota exceeded — ignore */ }
 }
 
@@ -485,20 +576,29 @@ export function restoreSession() {
 	if (typeof sessionStorage === 'undefined') return;
 	try {
 		const raw = sessionStorage.getItem(SESSION_KEY);
-		if (!raw) return;
+		if (!raw) {
+			// Fall back to durable server turns if we only have coding session id
+			void hydrateFromServer();
+			return;
+		}
 		const data = JSON.parse(raw) as {
 			messages?: Message[];
 			status?: string;
 			error?: string | null;
+			codingSessionId?: string;
 			at?: number;
 		};
-		// Ignore stale sessions (> 2 hours)
+		// Ignore stale sessions (> 2 hours) for browser cache; still try server hydrate
 		if (data.at && Date.now() - data.at > 7_200_000) {
 			clearPersistedSession();
+			void hydrateFromServer(data.codingSessionId || getCodingSessionId());
 			return;
 		}
+		if (data.codingSessionId) setCodingSessionId(data.codingSessionId);
 		if (Array.isArray(data.messages) && data.messages.length) {
 			agentMessages.set(data.messages);
+		} else {
+			void hydrateFromServer(data.codingSessionId || getCodingSessionId());
 		}
 		if (data.status) agentStatusLine.set(data.status);
 		if (data.error) agentError.set(data.error);
@@ -517,9 +617,24 @@ export interface IdeBridgeMessage {
 		| 'ide:selection'
 		| 'ide:error'
 		| 'ide:ready'
+		| 'ide:agent-prompt'
+		| 'ide:diagnostics-summary'
 		| 'agent:session-state';
 	payload?: unknown;
 }
+
+/** Latest IDE diagnostics summary (for agent empty-state chips). */
+export const ideDiagnosticsSummary = writable<{
+	count: number;
+	project: string | null;
+	sample: Array<{
+		severity?: string;
+		message?: string;
+		node_name?: string | null;
+		code?: string;
+		hint?: string | null;
+	}>;
+}>({ count: 0, project: null, sample: [] });
 
 let ideFrame: HTMLIFrameElement | null = null;
 
@@ -578,6 +693,39 @@ function handleIdeMessage(event: MessageEvent) {
 			sendToIde({
 				type: 'agent:session-state',
 				payload: { messages: get(agentMessages), isStreaming: get(agentIsStreaming) }
+			});
+			break;
+		}
+		case 'ide:agent-prompt': {
+			// User sent issues / a task from the IDE detail panel
+			const p = msg.payload as { text?: string; autoSend?: boolean } | undefined;
+			const text = p?.text?.trim();
+			if (!text) break;
+			agentPanelOpen.set(true);
+			agentUnreadCount.set(0);
+			if (p?.autoSend !== false) {
+				void agentSend(text);
+			} else {
+				agentInsertToken(text);
+			}
+			break;
+		}
+		case 'ide:diagnostics-summary': {
+			const p = msg.payload as {
+				count?: number;
+				project?: string | null;
+				sample?: Array<{
+					severity?: string;
+					message?: string;
+					node_name?: string | null;
+					code?: string;
+					hint?: string | null;
+				}>;
+			} | undefined;
+			ideDiagnosticsSummary.set({
+				count: typeof p?.count === 'number' ? p.count : 0,
+				project: p?.project ?? null,
+				sample: Array.isArray(p?.sample) ? p.sample : []
 			});
 			break;
 		}

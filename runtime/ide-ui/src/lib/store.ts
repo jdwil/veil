@@ -62,6 +62,8 @@ export interface CheckResponse {
 }
 
 export const diagnostics = writable<Diagnostic[]>([]);
+/** Open the floating diagnostics list (tree badge / focusDiagnostic). */
+export const diagnosticsPanelOpen = writable(false);
 /** Last full check response metadata (counts, target, escape summary). */
 export const checkMeta = writable<Omit<CheckResponse, 'diagnostics'> | null>(null);
 /** Active codegen target for check (rust | typescript). */
@@ -343,6 +345,60 @@ export function applyIdeConstraints(
   return applyQueryOverrides(out);
 }
 
+/** Durable coding session id (X-Veil-Session-Id) — shared with runtime agent. */
+const CODING_SESSION_KEY = 'veil.coding.sessionId';
+
+export function getCodingSessionId(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    return localStorage.getItem(CODING_SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setCodingSessionId(id: string | null) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (id) localStorage.setItem(CODING_SESSION_KEY, id);
+    else localStorage.removeItem(CODING_SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Ensure a durable session for the current project (POST /api/sessions). */
+export async function ensureCodingSession(slug?: string | null): Promise<string | null> {
+  const project = slug || currentProjectParam();
+  if (!project) return getCodingSessionId();
+  const existing = getCodingSessionId();
+  if (existing) {
+    try {
+      const res = await fetch(`${hubApiBase()}/sessions/${encodeURIComponent(existing)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.session?.slug === project) return existing;
+      }
+    } catch {
+      /* recreate */
+    }
+  }
+  try {
+    const res = await fetch(`${hubApiBase()}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: project }),
+    });
+    if (!res.ok) return getCodingSessionId();
+    const data = await res.json();
+    const id = data?.session?.session_id as string | undefined;
+    if (id) setCodingSessionId(id);
+    return id || null;
+  } catch {
+    return getCodingSessionId();
+  }
+}
+
 /** Headers for IDE API calls (mode + layer scope for palette / write locks). */
 export function ideRequestHeaders(extra?: Record<string, string>): Record<string, string> {
   const h: Record<string, string> = { ...(extra || {}) };
@@ -351,7 +407,33 @@ export function ideRequestHeaders(extra?: Record<string, string>): Record<string
   else if (isFlowComposerMode()) h['X-Veil-Mode'] = 'flow';
   const layer = flowLayerParam();
   if (layer) h['X-Veil-Layer'] = layer;
+  const sid = getCodingSessionId();
+  if (sid) h['X-Veil-Session-Id'] = sid;
   return h;
+}
+
+/** Debounced durable autosave for free-text editors (session workspace). */
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+export function scheduleAutosave(file: string, content: string, delayMs = 1500) {
+  if (autosaveTimer) clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    void postAutosave(file, content);
+  }, delayMs);
+}
+
+export async function postAutosave(file: string, content: string): Promise<boolean> {
+  const sid = getCodingSessionId();
+  if (!sid) return false;
+  try {
+    const res = await fetch(`${ideApiBase()}/autosave`, {
+      method: 'POST',
+      headers: ideRequestHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ file, content }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /** Keep only palette entries from allowed layers (reaction mode: ['reaction']). */
@@ -525,6 +607,14 @@ export const saving = writable(false);
 /** Last edit error message, if any. */
 export const saveError = writable<string | null>(null);
 
+function publishDiagsToHost(diags: Diagnostic[]) {
+  // Lazy import path avoided — keep bridge tiny via dynamic import in browser only
+  if (typeof window === 'undefined') return;
+  void import('./agentPrompt').then(({ publishDiagnosticsSummary }) => {
+    publishDiagnosticsSummary(diags.length, diags);
+  });
+}
+
 /** Fetch full check pipeline results into diagnostics store. */
 export async function fetchCheck(target?: string): Promise<CheckResponse | null> {
   let t = target;
@@ -541,7 +631,9 @@ export async function fetchCheck(target?: string): Promise<CheckResponse | null>
     );
     if (!res.ok && res.status !== 422) return null;
     const data: CheckResponse = await res.json();
-    diagnostics.set(data.diagnostics ?? []);
+    const diags = data.diagnostics ?? [];
+    diagnostics.set(diags);
+    publishDiagsToHost(diags);
     const { diagnostics: _d, ...meta } = data;
     checkMeta.set(meta);
     return data;
@@ -1119,15 +1211,14 @@ export async function createFile(opts: {
 }
 
 /**
- * Select a graph node (and drill its parent chain) from a diagnostic.
+ * Select a graph node from a diagnostic and open the diagnostics panel.
  * Prefers `node_id`; falls back to matching `node_name`.
+ * Does not change outline host (package tree stays put).
  */
 export function focusDiagnostic(diag: Diagnostic) {
-  let graph: IrGraph | null = null;
-  const unsub = irGraph.subscribe((g) => {
-    graph = g;
-  });
-  unsub();
+  diagnosticsPanelOpen.set(true);
+
+  const graph = get(irGraph);
   if (!graph) return;
 
   let node: IrNode | undefined;
@@ -1138,34 +1229,6 @@ export function focusDiagnostic(diag: Diagnostic) {
     node = graph.nodes.find((n) => n.name === diag.node_name);
   }
   if (!node) return;
-
-  // Build breadcrumb path from root → parent of node
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  const chain: { id: number | null; name: string }[] = [];
-  let walk: IrNode | undefined = node;
-  const seen = new Set<number>();
-  while (walk && !seen.has(walk.id)) {
-    seen.add(walk.id);
-    chain.push({ id: walk.id, name: walk.name });
-    const parentId = walk.metadata.parent;
-    walk = parentId != null ? byId.get(parentId) : undefined;
-  }
-  chain.reverse();
-
-  // Navigate to the node's parent scope so the node is visible as a child
-  const parentId = node.metadata.parent ?? null;
-  if (parentId != null) {
-    const parentChain = chain.filter((c) => c.id !== node!.id);
-    breadcrumbs.set(
-      parentChain.length > 0
-        ? parentChain
-        : [{ id: parentId, name: byId.get(parentId)?.name ?? '…' }]
-    );
-    currentParent.set(parentId);
-  } else {
-    breadcrumbs.set(chain.length ? [chain[0]] : []);
-    currentParent.set(node.id);
-  }
   selectedNodeId.set(String(node.id));
 }
 
@@ -1271,6 +1334,7 @@ export async function saveEdits(
     generatedCode.set(data.generated);
     if (data.diagnostics) {
       diagnostics.set(data.diagnostics);
+      publishDiagsToHost(data.diagnostics);
     } else {
       await fetchCheck();
     }

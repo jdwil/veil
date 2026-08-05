@@ -16,6 +16,7 @@ export {
 	agentApproveToolCall,
 	setAgentContext,
 	getAgentContext,
+	ideDiagnosticsSummary,
 	onAgentNavigation,
 	restoreSession,
 	initIdeBridge,

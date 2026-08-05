@@ -19,13 +19,19 @@
 	let loadError = $state<string | null>(null);
 	let loaded = $state(false);
 
-	/** Same-origin /viewer via ProductHost (or Vite proxy). Agent rail off — parent owns chat. */
+	/**
+	 * Same-origin /viewer via ProductHost (or Vite proxy). Agent rail off — parent owns chat.
+	 * `v` busts stale iframe caches when the embedded IDE SPA is rebuilt (hashed assets
+	 * only update if index.html is re-fetched).
+	 */
 	const viewerSrc = $derived.by(() => {
 		const p = project.trim();
 		if (!p) return '';
 		const q = new URLSearchParams({
 			project: p,
 			showAgentRail: '0',
+			// bump when outline/layout behavior changes and embed must reload
+			v: 'issues-agent-1',
 		});
 		return `/viewer/?${q.toString()}`;
 	});
