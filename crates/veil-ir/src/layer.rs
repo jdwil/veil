@@ -3540,13 +3540,14 @@ pkg demo v1
         assert!(ids.contains(&"model"), "missing model view: {ids:?}");
         let groups = ctx.presentation.views.iter().find(|v| v.id == "groups").unwrap();
         assert_eq!(groups.layout, "tabs");
-        assert!(groups.is_default);
         assert_eq!(
             groups.tabs,
             vec!["domain", "application", "infrastructure", "presentation"]
         );
         let model = ctx.presentation.views.iter().find(|v| v.id == "model").unwrap();
         assert_eq!(model.layout, "tree");
+        // Domain model tree is the default Context outline (SvelteFlow reserved for control-flow).
+        assert!(model.is_default);
         assert_eq!(model.roots, vec!["Aggregate"]);
         assert!(
             model
@@ -3558,7 +3559,7 @@ pkg demo v1
         );
         let api = presentation_from_registry(&reg);
         let host = api.hosts.get("Context").expect("Context in presentation API");
-        assert_eq!(host.default_view.as_deref(), Some("groups"));
+        assert_eq!(host.default_view.as_deref(), Some("model"));
         assert_eq!(host.views.len(), 2);
         let agg = reg.construct_by_name("Aggregate").unwrap();
         assert_eq!(agg.presentation.role.as_deref(), Some("container"));
