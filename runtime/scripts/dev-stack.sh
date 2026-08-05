@@ -23,11 +23,21 @@ export AWS_REGION="${AWS_REGION:-us-west-2}"
 export VEIL_DDB_TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
 export BUCKET="${BUCKET:-veil-runtime-dev}"
 export VEIL_S3_BUCKET="${VEIL_S3_BUCKET:-$BUCKET}"
-export VEIL_SOURCE_MODE="${VEIL_SOURCE_MODE:-prefer_s3}"
+# Production-like: IDE source R/W via DDB META + S3 only (no veil-projects disk).
+# Override with VEIL_SOURCE_MODE=prefer_s3|disk only when intentionally testing hybrid/local.
+export VEIL_SOURCE_MODE="${VEIL_SOURCE_MODE:-s3}"
+export VEIL_SOURCE_BRANCH="${VEIL_SOURCE_BRANCH:-main}"
+# Durable coding sessions (session workdirs + DDB META + agent turns).
+export VEIL_SESSIONS="${VEIL_SESSIONS:-1}"
+export VEIL_WS_ROOT="${VEIL_WS_ROOT:-${TMPDIR:-/tmp}/veil-ws}"
+export VEIL_DEV_USER="${VEIL_DEV_USER:-${USER:-local-dev}}"
+# Optional slug→repo_id map (DDB scan is primary). Known dev seeds:
+export VEIL_REPO_MAP="${VEIL_REPO_MAP:-relay=cfb3bc05-0436-47b8-9fd1-9b54b75f6d44,agentic-workflows=b603a7dc-2d3d-4f0a-a405-fc61d81fa440,dlx-auth=a4184638-ccb3-47f9-a06c-af17ed778300,wear-test=7b4a20ee-b559-4706-9d57-ac9142d65289}"
 export VEIL_DEV="${VEIL_DEV:-1}"
 export VEIL_PORT="$BACKEND_PORT"
 export VEIL_NONINTERACTIVE=1
 export CI="${CI:-1}"
+# Disk hub path kept for prefer_s3 fallback / tooling; ignored when VEIL_SOURCE_MODE=s3.
 export VEIL_PROJECTS_DIR="${VEIL_PROJECTS_DIR:-$HOME/dev/veil-projects}"
 export VEIL_VIEWER_STATIC="${VEIL_VIEWER_STATIC:-$ROOT/runtime/bootstrap/static/viewer}"
 export VEIL_MODEL_PROVIDER="${VEIL_MODEL_PROVIDER:-acp}"
@@ -108,7 +118,7 @@ smoke() {
 status() {
   echo "ports:"
   ss -tlnp 2>/dev/null | grep -E ":(${BACKEND_PORT}|${UI_PORT}|3000|3001|3210)\\b" || echo "  (none matching)"
-  echo "env: AWS_PROFILE=$AWS_PROFILE TABLE=$VEIL_DDB_TABLE BUCKET=$BUCKET PROXY=$VEIL_RUNTIME_PROXY"
+  echo "env: AWS_PROFILE=$AWS_PROFILE TABLE=$VEIL_DDB_TABLE BUCKET=$BUCKET SOURCE_MODE=$VEIL_SOURCE_MODE BRANCH=${VEIL_SOURCE_BRANCH:-main} SESSIONS=${VEIL_SESSIONS:-} WS_ROOT=${VEIL_WS_ROOT:-} PROXY=$VEIL_RUNTIME_PROXY"
 }
 
 cmd="${1:-status}"

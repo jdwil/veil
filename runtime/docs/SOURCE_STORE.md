@@ -18,7 +18,7 @@ or fail silently, and provision cannot talk to real AWS.
 export AWS_PROFILE=dashlx_dev AWS_REGION=us-west-2
 export VEIL_DDB_TABLE=veil-runtime-dev
 export BUCKET=veil-runtime-dev          # or VEIL_S3_BUCKET (same bucket)
-export VEIL_SOURCE_MODE=prefer_s3       # or `s3` (strict) | `disk` (legacy hub only)
+export VEIL_SOURCE_MODE=s3              # strict remote (default for dev-stack) | `prefer_s3` | `disk`
 export VEIL_DEPLOY_CONFIG=runtime/config/deploy.toml
 export VEIL_DEV=1
 export PORT=3000
@@ -35,9 +35,25 @@ Confirm identity: `AWS_PROFILE=dashlx_dev aws sts get-caller-identity` → accou
 
 | Mode | Behavior |
 |------|----------|
-| `prefer_s3` (default) | Use S3 if `veil.toml` exists for the repo; else projects hub disk |
-| `s3` | S3 only — fail if not seeded (closest to live) |
-| `disk` | Always `{projects_dir}/{slug}/veil.toml` |
+| `s3` (dev-stack default) | **IDE + deploy compile**: DDB META + S3 only. Materialize to `$TMP/veil-s3-ws/{slug}/`, write-through on edit. No `VEIL_PROJECTS_DIR`. Closest to ECS. |
+| `prefer_s3` | Try S3 open first; fall back to disk hub on miss |
+| `disk` | Always `{projects_dir}/{slug}` (legacy local-only hub) |
+
+### IDE kernel (ProductHost / `veil-server`)
+
+- `ProjectsHub` honors `VEIL_SOURCE_MODE` via `provider/s3_workspace.rs`.
+- `GET /api/projects` returns remote slugs when mode is `s3` / `prefer_s3`.
+- Writes: `write_source` → local materialization **and** `aws s3 cp` to `repos/{id}/{branch}/{path}` (**fail closed** — no success without durable put).
+- Optional `VEIL_REPO_MAP=slug=uuid,…` skips DDB for id resolve; DDB META scan is primary.
+
+### Durable sessions
+
+See [`DURABLE_SESSIONS.md`](./DURABLE_SESSIONS.md).
+
+- Session workdirs: `{VEIL_WS_ROOT}/{user}/{session_id}/{slug}/` (not a shared slug-global tmp).
+- DDB `SESSION#{id}/META` + `TURN#…` for resume after browser/host crash.
+- Workspace tools: MCP `ws_*` (grep/read/write/str_replace) on the session workdir only.
+- Header `X-Veil-Session-Id`; auto default session when omitted.
 
 ## Seed hub → S3 (dev convenience)
 
