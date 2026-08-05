@@ -106,6 +106,8 @@ pub struct GenCtx {
     /// name. Used to detect Map/HashMap fields that require interior mutability
     /// (`tokio::sync::RwLock`) and reference-passing for key arguments.
     pub self_field_types: HashMap<String, String>,
+    /// Layer statement specs by keyword — used for `lowers_to` template emission.
+    pub statement_specs: HashMap<String, veil_ir::layer::StatementSpec>,
 }
 
 impl GenCtx {
@@ -140,6 +142,7 @@ impl GenCtx {
             bus_returns: HashMap::new(),
             local_domain_types: HashSet::new(),
             self_field_types: HashMap::new(),
+            statement_specs: HashMap::new(),
         }
     }
 
@@ -547,6 +550,11 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     // identify message-routing ports without hardcoding trait names.
     ctx.routing_traits = registry.routing_traits().into_iter().collect();
     ctx.routing_ref = ctx.default_routing_ref_as_dep();
+
+    // Layer statement specs for custom `lowers_to` template emission.
+    for stmt in &registry.statements {
+        ctx.statement_specs.insert(stmt.keyword.clone(), stmt.clone());
+    }
 
     // Track layer-declared free functions as async — they generate as
     // `pub async fn` and calls to them need `.await?`. Product free fns are
@@ -3541,8 +3549,151 @@ fn guard_error_variant(msg: &str) -> &'static str {
     }
 }
 
+/// Interpolate a statement `lowers_to` template for the given target.
+///
+/// Variables: `{args}`, `{argN}`, `{dep}`, `{self}`, `{named.key}`, `{body}`.
+pub fn interpolate_action_template(
+    template: &str,
+    a: &ActionExpr,
+    ctx: &GenCtx,
+    translate_expr: &dyn Fn(&Expr, &GenCtx) -> String,
+) -> String {
+    let mut result = template.to_string();
+
+    let args_str = if !a.named_args.is_empty() {
+        // Prefer a single struct-like arg when named fields were used as payload.
+        let fields = a
+            .named_args
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k, translate_expr(v, ctx)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if a.target.is_empty() {
+            format!("{{ {} }}", fields)
+        } else {
+            format!("{} {{ {} }}", a.target, fields)
+        }
+    } else if !a.args.is_empty() {
+        a.args
+            .iter()
+            .map(|e| translate_expr(e, ctx))
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else if !a.target.is_empty() {
+        a.target.clone()
+    } else {
+        String::new()
+    };
+    result = result.replace("{args}", &args_str);
+
+    for (i, arg) in a.args.iter().enumerate() {
+        let rendered = translate_expr(arg, ctx);
+        result = result.replace(&format!("{{arg{i}}}"), &rendered);
+    }
+    // Also expose named-args as arg indices after positionals.
+    for (i, (_k, v)) in a.named_args.iter().enumerate() {
+        let idx = a.args.len() + i;
+        let rendered = translate_expr(v, ctx);
+        result = result.replace(&format!("{{arg{idx}}}"), &rendered);
+    }
+
+    if let Some(spec) = ctx.statement_specs.get(&a.keyword) {
+        if let Some(dep_type) = &spec.requires_dep {
+            let dep_field = ctx.deps_field_for(dep_type);
+            result = result.replace("{dep}", &dep_field);
+        } else if let Some(port) = &spec.port_target {
+            let dep_field = ctx.deps_field_for(port);
+            result = result.replace("{dep}", &dep_field);
+        }
+    }
+    // Bare `{dep}` left unresolved → snake of keyword (last resort).
+    if result.contains("{dep}") {
+        result = result.replace("{dep}", &to_snake(&a.keyword));
+    }
+
+    result = result.replace("{self}", "self");
+
+    for (key, val) in &a.named_args {
+        let rendered = translate_expr(val, ctx);
+        result = result.replace(&format!("{{named.{key}}}"), &rendered);
+    }
+
+    if result.contains("{body}") {
+        let body_str = a
+            .body
+            .iter()
+            .map(|e| translate_expr(e, ctx))
+            .collect::<Vec<_>>()
+            .join("; ");
+        result = result.replace("{body}", &body_str);
+    }
+
+    // Condition/message helpers for If-shaped statements with templates.
+    if let Some(cond) = a.condition.as_deref() {
+        result = result.replace("{condition}", &translate_expr(cond, ctx));
+    }
+    if let Some(msg) = &a.message {
+        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        result = result.replace("{message}", &format!("\"{escaped}\""));
+    }
+
+    if let Some(binding) = &a.result_binding {
+        format!("let {binding} = {result}")
+    } else {
+        result
+    }
+}
+
 /// Translate a layer-defined Action that was NOT desugared (e.g. emit, guard).
 fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
+    // Prefer explicit per-target lowering templates from the layer.
+    if let Some(spec) = ctx.statement_specs.get(&a.keyword) {
+        if let Some(template) = spec.lowers_to.get("rust") {
+            return interpolate_action_template(template, a, ctx, &expr_to_rust);
+        }
+        // Port.method fallback when Action was kept (e.g. has lowers_to for other
+        // targets only) — emit a deps call mirroring the desugared path.
+        if let (Some(port), Some(method)) = (&spec.port_target, &spec.port_method) {
+            let dep = ctx.deps_field_for(port);
+            let rref = if ctx.routing_traits.contains(port) {
+                if ctx.routing_ref.is_empty() {
+                    format!("deps.{}", dep)
+                } else {
+                    ctx.routing_ref.clone()
+                }
+            } else if ctx.in_method {
+                format!("self.{}", dep)
+            } else {
+                format!("deps.{}", dep)
+            };
+            let args_str = if !a.named_args.is_empty() {
+                let fields = a
+                    .named_args
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{} {{ {} }}", a.target, fields)
+            } else if !a.args.is_empty() {
+                a.args
+                    .iter()
+                    .map(|e| expr_to_rust(e, ctx))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else if !a.target.is_empty() {
+                a.target.clone()
+            } else {
+                String::new()
+            };
+            let call = format!("{rref}.{}({args_str}).await?", to_snake(method));
+            return if let Some(binding) = &a.result_binding {
+                format!("let {binding} = {call}")
+            } else {
+                call
+            };
+        }
+    }
+
     match a.shape {
         StmtShape::If => {
             // guard: the condition must hold for the flow to continue.
@@ -3626,7 +3777,7 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                 None => format!("/* guard: {} (no condition) */", msg_escaped),
             }
         }
-        StmtShape::Call => {
+        StmtShape::Call | StmtShape::Assign | StmtShape::Infix | StmtShape::Block => {
             // Remaining actions (emit) — handle based on keyword-like semantics.
             // For now, emit as a comment + placeholder.
             let args_str = if !a.named_args.is_empty() {
@@ -3639,8 +3790,12 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
             } else {
                 a.target.clone()
             };
-            // `emit` keyword → events.push(...)
-            format!("/* {} {} */", a.keyword, args_str)
+            let core = format!("/* {} {} */", a.keyword, args_str);
+            if let Some(binding) = &a.result_binding {
+                format!("let {binding} = {core}")
+            } else {
+                core
+            }
         }
     }
 }
@@ -3663,6 +3818,14 @@ pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
                 }
             }
             format!("    {};", s)
+        }
+        Expr::Action(a) if a.result_binding.is_some() => {
+            let name = a.result_binding.as_ref().unwrap().clone();
+            ctx.locals.insert(name.clone());
+            if let Some(t) = infer_expr_type(expr, ctx) {
+                ctx.local_types.insert(name, t);
+            }
+            format!("    {};", expr_to_rust(expr, ctx))
         }
         _ => format!("    {};", expr_to_rust(expr, ctx)),
     }
@@ -3785,6 +3948,7 @@ impl GenCtx {
             bus_returns: self.bus_returns.clone(),
             local_domain_types: self.local_domain_types.clone(),
             self_field_types: self.self_field_types.clone(),
+            statement_specs: self.statement_specs.clone(),
         }
     }
 }
@@ -4471,6 +4635,23 @@ fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<String>)
         Expr::Action(a) => {
             for arg in &a.args {
                 collect_deps_from_expr(arg, ctx, deps);
+            }
+            for (_, v) in &a.named_args {
+                collect_deps_from_expr(v, ctx, deps);
+            }
+            if let Some(c) = &a.condition {
+                collect_deps_from_expr(c, ctx, deps);
+            }
+            for e in &a.body {
+                collect_deps_from_expr(e, ctx, deps);
+            }
+            // requires_dep / port targets count as deps
+            if let Some(spec) = ctx.statement_specs.get(&a.keyword) {
+                if let Some(dep) = &spec.requires_dep {
+                    deps.insert(dep.clone());
+                } else if let Some(port) = &spec.port_target {
+                    deps.insert(port.clone());
+                }
             }
         }
         Expr::StructLit(_, fields) => {

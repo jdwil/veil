@@ -4778,6 +4778,11 @@ fn monomorphize_expr_with(
             if let Some(c) = a.condition.take() {
                 a.condition = Some(Box::new(monomorphize_expr_with(renames, &c)));
             }
+            a.body = a
+                .body
+                .iter()
+                .map(|x| monomorphize_expr_with(renames, x))
+                .collect();
             Action(a)
         }
         ForLoop {

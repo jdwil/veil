@@ -845,6 +845,8 @@ impl EnumVariant {
 ///
 /// - `Call` shape: `kw Target(.method)? (args)` or `kw Target{name: expr, ...}`
 /// - `If` shape: `kw <condition> (, "message")?`
+/// - `Assign` usage: `result = kw …` sets [`result_binding`]
+/// - `Block` shape: `kw …` with an indented body in [`body`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionExpr {
     /// The statement keyword from the layer (e.g. "dispatch").
@@ -858,6 +860,12 @@ pub struct ActionExpr {
     // If shape
     pub condition: Option<Box<Expr>>,
     pub message: Option<String>,
+    /// When the statement was written as `name = keyword …`, the bound local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_binding: Option<String>,
+    /// Body expressions for `Block` shape (`kw …` + indented block).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<Expr>,
     pub span: Span,
 }
 

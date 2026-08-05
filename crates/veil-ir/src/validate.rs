@@ -543,9 +543,236 @@ fn validate_construct(
         }
     }
 
+    // requires_dep on layer statements used in this construct's bodies.
+    validate_statement_deps(c, registry, errors);
+
     // Recurse (through groups too).
     for child in &c.children {
         validate_construct(child, &c.name, registry, by_name, errors);
+    }
+}
+
+/// Collect port/trait type names available as `@dep` on this construct
+/// (inputs + fields). Routing traits from the registry are always available
+/// (auto-wired by bus statement sugar).
+fn available_dep_types(c: &Construct, registry: &LayerRegistry) -> std::collections::HashSet<String> {
+    let mut deps = std::collections::HashSet::new();
+    for f in c.inputs.iter().chain(c.fields.iter()) {
+        if registry.field_is_dependency(f) {
+            if let Some(tn) = type_name_of(&f.type_expr) {
+                deps.insert(tn);
+            }
+        }
+    }
+    for t in registry.routing_traits() {
+        deps.insert(t);
+    }
+    deps
+}
+
+fn type_name_of(ty: &TypeExpr) -> Option<String> {
+    match ty {
+        TypeExpr::Named(n) => Some(n.clone()),
+        TypeExpr::Dyn(inner) | TypeExpr::Ref(inner, _) | TypeExpr::Optional(inner) => {
+            type_name_of(inner)
+        }
+        TypeExpr::Generic(n, _) => Some(n.clone()),
+        _ => None,
+    }
+}
+
+fn validate_statement_deps(
+    c: &Construct,
+    registry: &LayerRegistry,
+    errors: &mut Vec<ValidationError>,
+) {
+    let available = available_dep_types(c, registry);
+    let mut actions = Vec::new();
+    collect_actions_from_construct(c, &mut actions);
+    for (keyword, location) in actions {
+        if let Some(spec) = registry.statement(&keyword) {
+            if let Some(dep_ty) = &spec.requires_dep {
+                if !available.contains(dep_ty) {
+                    errors.push(ValidationError::new(
+                        "missing_dep",
+                        format!(
+                            "statement '{}' requires @dep of type {}",
+                            keyword, dep_ty
+                        ),
+                        c.name.clone(),
+                        location,
+                        Some(format!(
+                            "add `@dep <name>: {}` on the enclosing service/handler/adapter",
+                            dep_ty
+                        )),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn collect_actions_from_construct(c: &Construct, out: &mut Vec<(String, String)>) {
+    for step in &c.steps {
+        collect_actions_from_step(step, &c.name, out);
+    }
+    for f in &c.fns {
+        for e in &f.body {
+            collect_actions_from_expr(e, &f.name, out);
+        }
+    }
+    for imp in &c.impls {
+        for e in &imp.body {
+            collect_actions_from_expr(e, &c.name, out);
+        }
+    }
+    if let Some(ret) = &c.return_expr {
+        collect_actions_from_expr(ret, &c.name, out);
+    }
+}
+
+fn collect_actions_from_step(step: &FlowStep, location: &str, out: &mut Vec<(String, String)>) {
+    match step {
+        FlowStep::Step(sd) => {
+            for e in &sd.body {
+                collect_actions_from_expr(e, location, out);
+            }
+            for sb in &sd.sub_blocks {
+                for e in &sb.body {
+                    collect_actions_from_expr(e, location, out);
+                }
+            }
+        }
+        FlowStep::Parallel(par) => {
+            for s in &par.steps {
+                collect_actions_from_step(&FlowStep::Step(s.clone()), location, out);
+            }
+        }
+        FlowStep::Match(m) => {
+            collect_actions_from_expr(&m.expr, location, out);
+            for arm in &m.arms {
+                if let Some(g) = &arm.guard {
+                    collect_actions_from_expr(g, location, out);
+                }
+                for e in &arm.body {
+                    collect_actions_from_expr(e, location, out);
+                }
+            }
+        }
+    }
+}
+
+fn collect_actions_from_expr(expr: &Expr, location: &str, out: &mut Vec<(String, String)>) {
+    match expr {
+        Expr::Action(a) => {
+            out.push((a.keyword.clone(), location.to_string()));
+            for e in &a.args {
+                collect_actions_from_expr(e, location, out);
+            }
+            for (_, e) in &a.named_args {
+                collect_actions_from_expr(e, location, out);
+            }
+            if let Some(c) = &a.condition {
+                collect_actions_from_expr(c, location, out);
+            }
+            for e in &a.body {
+                collect_actions_from_expr(e, location, out);
+            }
+        }
+        // Desugared port statements become Call with sugar set.
+        Expr::Call(call) => {
+            if let Some(sugar) = &call.sugar {
+                out.push((sugar.clone(), location.to_string()));
+            }
+            for a in &call.args {
+                collect_actions_from_expr(a, location, out);
+            }
+            if let Some(r) = &call.receiver {
+                collect_actions_from_expr(r, location, out);
+            }
+        }
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs)
+        | Expr::Await(rhs) | Expr::Try(rhs) | Expr::FieldAccess(rhs, _) => {
+            collect_actions_from_expr(rhs, location, out);
+        }
+        Expr::BinaryOp(op) => {
+            collect_actions_from_expr(&op.left, location, out);
+            collect_actions_from_expr(&op.right, location, out);
+        }
+        Expr::UnaryOp(op) => collect_actions_from_expr(&op.expr, location, out),
+        Expr::IfExpr(ie) => {
+            collect_actions_from_expr(&ie.condition, location, out);
+            for e in &ie.then_body {
+                collect_actions_from_expr(e, location, out);
+            }
+            if let Some(eb) = &ie.else_body {
+                for e in eb {
+                    collect_actions_from_expr(e, location, out);
+                }
+            }
+        }
+        Expr::ForLoop { iterable, body, .. } => {
+            collect_actions_from_expr(iterable, location, out);
+            for e in body {
+                collect_actions_from_expr(e, location, out);
+            }
+        }
+        Expr::WhileLoop { condition, body } | Expr::WhileLet { expr: condition, body, .. } => {
+            collect_actions_from_expr(condition, location, out);
+            for e in body {
+                collect_actions_from_expr(e, location, out);
+            }
+        }
+        Expr::Loop(body) | Expr::DoBlock(body) | Expr::Closure { body, .. } => {
+            for e in body {
+                collect_actions_from_expr(e, location, out);
+            }
+        }
+        Expr::Match(scrutinee, arms) => {
+            collect_actions_from_expr(scrutinee, location, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_actions_from_expr(g, location, out);
+                }
+                for e in &arm.body {
+                    collect_actions_from_expr(e, location, out);
+                }
+            }
+        }
+        Expr::ArrayLit(xs) | Expr::Tuple(xs) => {
+            for e in xs {
+                collect_actions_from_expr(e, location, out);
+            }
+        }
+        Expr::StructLit(_, fields) | Expr::StructUpdate { fields, .. } => {
+            for (_, e) in fields {
+                collect_actions_from_expr(e, location, out);
+            }
+        }
+        Expr::IfLet {
+            expr: scrutinee,
+            then_body,
+            else_body,
+            ..
+        } => {
+            collect_actions_from_expr(scrutinee, location, out);
+            for e in then_body {
+                collect_actions_from_expr(e, location, out);
+            }
+            if let Some(eb) = else_body {
+                for e in eb {
+                    collect_actions_from_expr(e, location, out);
+                }
+            }
+        }
+        Expr::LetPattern(_, e, _) | Expr::Cast(e, _) => {
+            collect_actions_from_expr(e, location, out);
+        }
+        Expr::Index(base, idx) => {
+            collect_actions_from_expr(base, location, out);
+            collect_actions_from_expr(idx, location, out);
+        }
+        _ => {}
     }
 }
 

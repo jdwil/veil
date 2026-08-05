@@ -190,14 +190,25 @@ pub fn expr_to_display(expr: &Expr) -> String {
 
 /// Render a layer statement as display text: `dispatch Evt{...}`, `guard cond, "msg"`.
 pub fn action_to_display(a: &ActionExpr) -> String {
+    let bound = |s: String| -> String {
+        if let Some(b) = &a.result_binding {
+            format!("{} = {}", b, s)
+        } else {
+            s
+        }
+    };
     match a.shape {
-        crate::layer::StmtShape::Call => {
-            let head = if a.method.is_empty() {
+        crate::layer::StmtShape::Call
+        | crate::layer::StmtShape::Assign
+        | crate::layer::StmtShape::Infix => {
+            let head = if a.target.is_empty() {
+                a.keyword.clone()
+            } else if a.method.is_empty() {
                 format!("{} {}", a.keyword, a.target)
             } else {
                 format!("{} {}.{}", a.keyword, a.target, a.method)
             };
-            if !a.named_args.is_empty() {
+            let core = if !a.named_args.is_empty() {
                 let fields = a
                     .named_args
                     .iter()
@@ -210,10 +221,15 @@ pub fn action_to_display(a: &ActionExpr) -> String {
                 format!("{}{{{}}}", head, fields)
             } else if !a.args.is_empty() {
                 let args = a.args.iter().map(expr_to_display).collect::<Vec<_>>().join(", ");
-                format!("{}({})", head, args)
+                if a.target.is_empty() {
+                    format!("{} {}", a.keyword, args)
+                } else {
+                    format!("{}({})", head, args)
+                }
             } else {
                 head
-            }
+            };
+            bound(core)
         }
         crate::layer::StmtShape::If => {
             let cond = a
@@ -221,11 +237,28 @@ pub fn action_to_display(a: &ActionExpr) -> String {
                 .as_ref()
                 .map(|c| expr_to_display(c))
                 .unwrap_or_default();
-            if let Some(msg) = &a.message {
+            let core = if let Some(msg) = &a.message {
                 format!("{} {}, \"{}\"", a.keyword, cond, msg)
             } else {
                 format!("{} {}", a.keyword, cond)
-            }
+            };
+            bound(core)
+        }
+        crate::layer::StmtShape::Block => {
+            let head = if a.target.is_empty() {
+                a.keyword.clone()
+            } else {
+                format!("{} {}", a.keyword, a.target)
+            };
+            let args = if a.args.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " {}",
+                    a.args.iter().map(expr_to_display).collect::<Vec<_>>().join(", ")
+                )
+            };
+            bound(format!("{}{} …", head, args))
         }
     }
 }

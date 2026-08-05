@@ -42,6 +42,170 @@ fn generate_with_layer(layer_name: &str, layer_src: &str, app_src: &str) -> Stri
 }
 
 #[test]
+fn test_action_template_interpolation() {
+    use std::collections::HashMap;
+    use veil_codegen::expr::{interpolate_action_template, GenCtx};
+    use veil_ir::ast::*;
+    use veil_ir::layer::{StatementSpec, StmtShape, Visual};
+    use veil_ir::Span;
+
+    let mut lowers = HashMap::new();
+    lowers.insert(
+        "rust".into(),
+        "deps.{dep}.invoke({arg0}, {arg1}).await?".into(),
+    );
+    let mut specs = HashMap::new();
+    specs.insert(
+        "call_agent".into(),
+        StatementSpec {
+            keyword: "call_agent".into(),
+            maps_to: "call".into(),
+            shape: StmtShape::Call,
+            port_target: None,
+            port_method: None,
+            is_infix: false,
+            requires_dep: Some("LlmPort".into()),
+            lowers_to: lowers,
+            layer: "wf".into(),
+            desc: String::new(),
+            semantics: String::new(),
+            visual: Visual::default(),
+        },
+    );
+    let mut dep_fields = HashMap::new();
+    dep_fields.insert("LlmPort".into(), "llm".into());
+    let mut ctx = GenCtx::new(HashMap::new());
+    ctx.statement_specs = specs;
+    ctx.dep_fields = dep_fields;
+
+    let action = ActionExpr {
+        keyword: "call_agent".into(),
+        shape: StmtShape::Call,
+        target: String::new(),
+        method: String::new(),
+        args: vec![
+            Expr::StringLit("hi".into()),
+            Expr::Ident("doc".into()),
+        ],
+        named_args: vec![],
+        condition: None,
+        message: None,
+        result_binding: Some("summary".into()),
+        body: vec![],
+        span: Span::default(),
+    };
+    let template = ctx.statement_specs["call_agent"].lowers_to["rust"].clone();
+    let out = interpolate_action_template(&template, &action, &ctx, &|e, c| {
+        // Minimal expr lower for the test
+        match e {
+            Expr::StringLit(s) => format!("\"{s}\""),
+            Expr::Ident(n) => n.clone(),
+            _ => "?".into(),
+        }
+    });
+    assert_eq!(out, "let summary = deps.llm.invoke(\"hi\", doc).await?");
+}
+
+#[test]
+fn test_action_fallback_no_template() {
+    // dispatch without lowers_to still desugars to Bus call path
+    let out = generate_example(
+        r#"
+sol App
+  use ddd
+  ctx C
+    group application
+      svc Notify
+        step go
+          dispatch UserCreated{id}
+"#,
+    );
+    // Envelope / bus routing path
+    assert!(
+        out.contains("dispatch") || out.contains("Bus") || out.contains("bus"),
+        "fallback Port.method path missing:\n{}",
+        out
+    );
+}
+
+#[test]
+fn test_action_assign_binding() {
+    use std::collections::HashMap;
+    use veil_codegen::expr::{interpolate_action_template, GenCtx};
+    use veil_ir::ast::*;
+    use veil_ir::layer::{StatementSpec, StmtShape, Visual};
+    use veil_ir::Span;
+
+    let mut lowers = HashMap::new();
+    lowers.insert("rust".into(), "deps.{dep}.get({args}).await?".into());
+    let mut specs = HashMap::new();
+    specs.insert(
+        "fetch".into(),
+        StatementSpec {
+            keyword: "fetch".into(),
+            maps_to: "call".into(),
+            shape: StmtShape::Call,
+            port_target: None,
+            port_method: None,
+            is_infix: false,
+            requires_dep: Some("Repo".into()),
+            lowers_to: lowers,
+            layer: "wf".into(),
+            desc: String::new(),
+            semantics: String::new(),
+            visual: Visual::default(),
+        },
+    );
+    let mut dep_fields = HashMap::new();
+    dep_fields.insert("Repo".into(), "repo".into());
+    let mut ctx = GenCtx::new(HashMap::new());
+    ctx.statement_specs = specs;
+    ctx.dep_fields = dep_fields;
+
+    let action = ActionExpr {
+        keyword: "fetch".into(),
+        shape: StmtShape::Call,
+        target: String::new(),
+        method: String::new(),
+        args: vec![Expr::Ident("id".into())],
+        named_args: vec![],
+        condition: None,
+        message: None,
+        result_binding: Some("x".into()),
+        body: vec![],
+        span: Span::default(),
+    };
+    let template = "deps.{dep}.get({args}).await?";
+    let out = interpolate_action_template(template, &action, &ctx, &|e, _| match e {
+        Expr::Ident(n) => n.clone(),
+        _ => "?".into(),
+    });
+    assert_eq!(out, "let x = deps.repo.get(id).await?");
+}
+
+#[test]
+fn test_action_typescript_target() {
+    let layer = r#"
+pkg wf v1
+  statement ping
+    mt call
+    requires_dep Api
+    lowers_to
+      typescript: "await this.{dep}.ping({args})"
+      rust: "deps.{dep}.ping({args}).await?"
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("wf", layer).expect("layer");
+    let spec = reg.statement("ping").expect("ping stmt");
+    assert!(spec.lowers_to.contains_key("typescript"));
+    assert_eq!(
+        spec.lowers_to["typescript"],
+        "await this.{dep}.ping({args})"
+    );
+    assert_eq!(spec.requires_dep.as_deref(), Some("Api"));
+}
+
+#[test]
 fn list_of_trait_lowers_to_boxed_trait_objects() {
     // The foundation for saga steps: a declared coordinator taking a
     // List<Trait> and calling methods on loop elements must lower to

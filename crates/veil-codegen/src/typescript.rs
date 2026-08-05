@@ -3,8 +3,29 @@
 //! Fully shape-driven, parallel to `rust.rs`: constructs are generated
 //! according to their core shape. No domain-specific knowledge.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use veil_ir::ast::*;
-use veil_ir::layer::{Shape, LayerRegistry};
+use veil_ir::layer::{Shape, LayerRegistry, StatementSpec};
+
+thread_local! {
+    /// Statement specs active during a `generate_ts` pass (for `lowers_to` templates).
+    static TS_STATEMENT_SPECS: RefCell<HashMap<String, StatementSpec>> = RefCell::new(HashMap::new());
+}
+
+fn with_ts_statement_specs<R>(registry: &LayerRegistry, f: impl FnOnce() -> R) -> R {
+    TS_STATEMENT_SPECS.with(|cell| {
+        let mut map = HashMap::new();
+        for s in &registry.statements {
+            map.insert(s.keyword.clone(), s.clone());
+        }
+        *cell.borrow_mut() = map;
+    });
+    let out = f();
+    TS_STATEMENT_SPECS.with(|cell| cell.borrow_mut().clear());
+    out
+}
 
 /// Generated TypeScript project output.
 pub struct TsProject {
@@ -117,6 +138,140 @@ fn field_type_ts(field: &Field) -> String {
 }
 
 // ─── Expression Translation ──────────────────────────────────────────────────
+
+/// Translate a layer ActionExpr to TypeScript (templates + fallback).
+fn translate_action_ts(a: &ActionExpr, indent: usize) -> String {
+    let core = TS_STATEMENT_SPECS.with(|cell| {
+        let specs = cell.borrow();
+        if let Some(spec) = specs.get(&a.keyword) {
+            if let Some(template) = spec.lowers_to.get("typescript") {
+                return interpolate_ts_action_template(template, a, indent, spec);
+            }
+            // Port.method fallback
+            if let (Some(port), Some(method)) = (&spec.port_target, &spec.port_method) {
+                let dep = to_camel(port);
+                let args = action_args_ts(a, indent);
+                return format!("await this.{}.{}({})", dep, to_camel(method), args);
+            }
+        }
+        translate_action_ts_default(a, indent)
+    });
+    if let Some(binding) = &a.result_binding {
+        format!("const {} = {}", to_camel(binding), core)
+    } else {
+        core
+    }
+}
+
+fn action_args_ts(a: &ActionExpr, indent: usize) -> String {
+    if !a.named_args.is_empty() {
+        let fields = a
+            .named_args
+            .iter()
+            .map(|(k, v)| {
+                let val = expr_to_ts(v, indent);
+                let key = to_camel(k);
+                if key == val {
+                    key
+                } else {
+                    format!("{}: {}", key, val)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        if a.target.is_empty() {
+            format!("{{ {} }}", fields)
+        } else {
+            format!("{{ type: \"{}\", {} }}", a.target, fields)
+        }
+    } else if !a.args.is_empty() {
+        a.args
+            .iter()
+            .map(|e| expr_to_ts(e, indent))
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else if !a.target.is_empty() {
+        a.target.clone()
+    } else {
+        String::new()
+    }
+}
+
+fn interpolate_ts_action_template(
+    template: &str,
+    a: &ActionExpr,
+    indent: usize,
+    spec: &StatementSpec,
+) -> String {
+    let mut result = template.to_string();
+    let args_str = action_args_ts(a, indent);
+    result = result.replace("{args}", &args_str);
+    for (i, arg) in a.args.iter().enumerate() {
+        result = result.replace(&format!("{{arg{i}}}"), &expr_to_ts(arg, indent));
+    }
+    if let Some(dep_type) = &spec.requires_dep {
+        result = result.replace("{dep}", &to_camel(dep_type));
+    } else if let Some(port) = &spec.port_target {
+        result = result.replace("{dep}", &to_camel(port));
+    }
+    result = result.replace("{self}", "this");
+    for (key, val) in &a.named_args {
+        result = result.replace(&format!("{{named.{key}}}"), &expr_to_ts(val, indent));
+    }
+    if result.contains("{body}") {
+        let body = a
+            .body
+            .iter()
+            .map(|e| expr_to_ts(e, indent))
+            .collect::<Vec<_>>()
+            .join("; ");
+        result = result.replace("{body}", &body);
+    }
+    result
+}
+
+fn translate_action_ts_default(a: &ActionExpr, indent: usize) -> String {
+    let target = if a.target.is_empty() {
+        String::new()
+    } else {
+        format!("{}.", to_camel(&a.target))
+    };
+    let method = to_camel(&a.method);
+    if !a.named_args.is_empty() {
+        let fields = a
+            .named_args
+            .iter()
+            .map(|(k, v)| {
+                let val = expr_to_ts(v, indent);
+                let key = to_camel(k);
+                if key == val {
+                    key
+                } else {
+                    format!("{}: {}", key, val)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "await {}{}{}",
+            target,
+            method,
+            if method.is_empty() {
+                format!("({{ {} }})", fields)
+            } else {
+                format!("({{ {} }})", fields)
+            }
+        )
+    } else {
+        let args = a
+            .args
+            .iter()
+            .map(|e| expr_to_ts(e, indent))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("await {}{}({})", target, method, args)
+    }
+}
 
 /// Translate a VEIL expression to TypeScript source.
 pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
@@ -324,24 +479,7 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
             format!("/* range */[{}, {}]", s, e)
         }
 
-        Expr::Action(a) => {
-            // Layer statement — translate like a call
-            let target = if a.target.is_empty() { String::new() } else { format!("{}.", to_camel(&a.target)) };
-            let method = to_camel(&a.method);
-            if !a.named_args.is_empty() {
-                let fields = a.named_args.iter()
-                    .map(|(k, v)| {
-                        let val = expr_to_ts(v, indent);
-                        let key = to_camel(k);
-                        if key == val { key } else { format!("{}: {}", key, val) }
-                    })
-                    .collect::<Vec<_>>().join(", ");
-                format!("await {}{}{}", target, method, if method.is_empty() { format!("({{ {} }})", fields) } else { format!("({{ {} }})", fields) })
-            } else {
-                let args = a.args.iter().map(|e| expr_to_ts(e, indent)).collect::<Vec<_>>().join(", ");
-                format!("await {}{}({})", target, method, args)
-            }
-        }
+        Expr::Action(a) => translate_action_ts(a, indent),
 
         Expr::IfLet { pattern, expr: scrutinee, then_body, else_body } => {
             let val = expr_to_ts(scrutinee, indent);
@@ -674,6 +812,16 @@ pub fn generate_ts(solution: &Solution, registry: &LayerRegistry) -> TsProject {
 }
 
 pub fn generate_ts_with_packages(
+    solution: &Solution,
+    registry: &LayerRegistry,
+    used_packages: &[(String, ExposeBlock)],
+) -> TsProject {
+    with_ts_statement_specs(registry, || {
+        generate_ts_with_packages_inner(solution, registry, used_packages)
+    })
+}
+
+fn generate_ts_with_packages_inner(
     solution: &Solution,
     registry: &LayerRegistry,
     used_packages: &[(String, ExposeBlock)],

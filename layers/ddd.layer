@@ -297,6 +297,7 @@ pkg ddd v1
     mt call
     desc "Emit a domain event from within an aggregate"
     sem domain_event_emit
+    # No lowers_to: emit is shape-specialized in rust codegen (events buffer).
     visual
       icon "⚡"
       color "#f59e0b"
@@ -306,6 +307,8 @@ pkg ddd v1
     mt Bus.dispatch
     desc "Fire event through event bus (fire-and-forget, multiple handlers)"
     sem event_bus_fire_and_forget
+    requires_dep Bus
+    # lowers_to omitted: Bus uses envelope routing in rust codegen (fallback).
     visual
       icon "📡"
       color "#f59e0b"
@@ -315,6 +318,7 @@ pkg ddd v1
     mt Bus.invoke
     desc "Execute command through command bus (single handler)"
     sem command_bus_handler
+    requires_dep Bus
     visual
       icon "⚙️"
       color "#3b82f6"
@@ -324,6 +328,7 @@ pkg ddd v1
     mt Bus.request
     desc "Query data from another context (inter-context communication)"
     sem inter_context_query
+    requires_dep Bus
     visual
       icon "🔌"
       color "#10b981"

@@ -1245,44 +1245,82 @@ fn expr_to_veil(expr: &Expr) -> String {
                 format!("{}.{}({})", call.target, call.method, args)
             }
         }
-        Expr::Action(a) => match a.shape {
-            StmtShape::Call => {
-                let head = if a.method.is_empty() {
-                    format!("{} {}", a.keyword, a.target)
+        Expr::Action(a) => {
+            let with_binding = |s: String| -> String {
+                if let Some(b) = &a.result_binding {
+                    format!("{} = {}", b, s)
                 } else {
-                    format!("{} {}.{}", a.keyword, a.target, a.method)
-                };
-                if !a.named_args.is_empty() {
-                    let fields = a
-                        .named_args
-                        .iter()
-                        .map(|(k, v)| {
-                            let vs = expr_to_veil(v);
-                            if k == &vs { k.clone() } else { format!("{}: {}", k, vs) }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{}{{{}}}", head, fields)
-                } else if !a.args.is_empty() {
-                    let args = a.args.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
-                    format!("{}({})", head, args)
-                } else {
-                    head
+                    s
+                }
+            };
+            match a.shape {
+                StmtShape::Call | StmtShape::Assign | StmtShape::Infix => {
+                    let head = if a.target.is_empty() {
+                        a.keyword.clone()
+                    } else if a.method.is_empty() {
+                        format!("{} {}", a.keyword, a.target)
+                    } else {
+                        format!("{} {}.{}", a.keyword, a.target, a.method)
+                    };
+                    let core = if !a.named_args.is_empty() {
+                        let fields = a
+                            .named_args
+                            .iter()
+                            .map(|(k, v)| {
+                                let vs = expr_to_veil(v);
+                                if k == &vs {
+                                    k.clone()
+                                } else {
+                                    format!("{}: {}", k, vs)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{}{{{}}}", head, fields)
+                    } else if !a.args.is_empty() {
+                        let args =
+                            a.args.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
+                        if a.target.is_empty() {
+                            format!("{} {}", a.keyword, args)
+                        } else {
+                            format!("{}({})", head, args)
+                        }
+                    } else {
+                        head
+                    };
+                    with_binding(core)
+                }
+                StmtShape::If => {
+                    let cond = a
+                        .condition
+                        .as_ref()
+                        .map(|c| expr_to_veil(c))
+                        .unwrap_or_default();
+                    let core = if let Some(msg) = &a.message {
+                        format!("{} {}, \"{}\"", a.keyword, cond, msg)
+                    } else {
+                        format!("{} {}", a.keyword, cond)
+                    };
+                    with_binding(core)
+                }
+                StmtShape::Block => {
+                    let head = if a.target.is_empty() {
+                        a.keyword.clone()
+                    } else {
+                        format!("{} {}", a.keyword, a.target)
+                    };
+                    let args = if a.args.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " {}",
+                            a.args.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ")
+                        )
+                    };
+                    with_binding(format!("{}{}", head, args))
                 }
             }
-            StmtShape::If => {
-                let cond = a
-                    .condition
-                    .as_ref()
-                    .map(|c| expr_to_veil(c))
-                    .unwrap_or_default();
-                if let Some(msg) = &a.message {
-                    format!("{} {}, \"{}\"", a.keyword, cond, msg)
-                } else {
-                    format!("{} {}", a.keyword, cond)
-                }
-            }
-        },
+        }
         Expr::Assign(name, rhs, ty) => {
             if let Some(t) = ty {
                 format!("{}: {} = {}", name, type_to_veil(t), expr_to_veil(rhs))

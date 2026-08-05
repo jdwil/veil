@@ -69,6 +69,12 @@ pub enum StmtShape {
     Call,
     /// `kw <condition expr> (, "message")?` — a conditional check.
     If,
+    /// `result = kw args` — invocation whose return value is bound (usage-level).
+    Assign,
+    /// `kw args do ... end` / indented body — statement with a body block.
+    Block,
+    /// Infix operator form (`expr |> expr`); also flagged via `is_infix`.
+    Infix,
 }
 
 impl StmtShape {
@@ -76,7 +82,20 @@ impl StmtShape {
         match s {
             "call" => Some(StmtShape::Call),
             "if" => Some(StmtShape::If),
+            "assign" => Some(StmtShape::Assign),
+            "block" => Some(StmtShape::Block),
+            "infix" => Some(StmtShape::Infix),
             _ => None,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            StmtShape::Call => "call",
+            StmtShape::If => "if",
+            StmtShape::Assign => "assign",
+            StmtShape::Block => "block",
+            StmtShape::Infix => "infix",
         }
     }
 }
@@ -293,6 +312,15 @@ pub struct StatementSpec {
     /// Whether this is an infix operator keyword (like |>).
     /// Infix operators appear BETWEEN expressions: `expr |> expr`
     pub is_infix: bool,
+    /// Port/trait type the enclosing construct must provide via `@dep`
+    /// (or that is auto-available as a routing trait). Empty = no check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_dep: Option<String>,
+    /// Per-target lowering templates (e.g. `"rust"` / `"typescript"` → template).
+    /// Variables: `{args}`, `{arg0}`…, `{dep}`, `{self}`, `{named.key}`, `{body}`.
+    /// When empty for a target, codegen falls back to Port.method / shape defaults.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub lowers_to: HashMap<String, String>,
     pub layer: String,
     pub desc: String,
     pub semantics: String,
@@ -1943,6 +1971,8 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         Runtime,
         Present,
         FieldHints,
+        /// Per-target lowering templates under a statement (`lowers_to`).
+        LowersTo,
     }
 
     enum Item {
@@ -2204,6 +2234,8 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 port_method: None,
                 // Auto-detect infix operators: keywords containing non-alphanumeric chars
                 is_infix: keyword.chars().any(|c| !c.is_alphanumeric() && c != '_'),
+                requires_dep: None,
+                lowers_to: HashMap::new(),
                 layer: layer_name.to_string(),
                 desc: String::new(),
                 semantics: String::new(),
@@ -2268,6 +2300,11 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 "field_hints" => {
                     flush_present_view(&mut current, &mut present_view);
                     section = Section::FieldHints;
+                    continue;
+                }
+                "lowers_to" => {
+                    flush_present_view(&mut current, &mut present_view);
+                    section = Section::LowersTo;
                     continue;
                 }
                 _ => {
@@ -2374,6 +2411,18 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     }
                 }
             }
+            Section::LowersTo => {
+                // Lines: `rust: "template…"` or `typescript: "…"`
+                if let Item::Statement(s) = item {
+                    if let Some((target, rest)) = trimmed.split_once(':') {
+                        let target = target.trim().to_string();
+                        let template = unquote(rest.trim());
+                        if !target.is_empty() && !template.is_empty() {
+                            s.lowers_to.insert(target, template);
+                        }
+                    }
+                }
+            }
             Section::Visual => {
                 let visual = match item {
                     Item::Construct(c) => &mut c.visual,
@@ -2462,6 +2511,14 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                         s.desc = unquote(v);
                     } else if let Some(v) = trimmed.strip_prefix("sem ").or_else(|| trimmed.strip_prefix("semantics ")) {
                         s.semantics = v.trim().to_string();
+                    } else if let Some(v) = trimmed
+                        .strip_prefix("requires_dep ")
+                        .or_else(|| trimmed.strip_prefix("requires "))
+                    {
+                        let dep = v.trim().to_string();
+                        if !dep.is_empty() {
+                            s.requires_dep = Some(dep);
+                        }
                     }
                 }
             },
@@ -2790,10 +2847,7 @@ pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
             name: s.keyword.clone(),
             keyword: s.keyword.clone(),
             kind: "Action".to_string(),
-            shape: match s.shape {
-                StmtShape::Call => "call".to_string(),
-                StmtShape::If => "if".to_string(),
-            },
+            shape: s.shape.name().to_string(),
             icon: s.visual.icon.clone(),
             color: s.visual.color.clone(),
             label: s.visual.label.clone(),
@@ -3228,6 +3282,54 @@ mod tests {
         );
         assert!(!reg.is_dependency_annotation("invariant"));
         assert!(!reg.is_dependency_annotation("nope"));
+    }
+
+    #[test]
+    fn statement_lowers_to_and_requires_dep_parse() {
+        let src = r#"
+pkg wf v1
+  statement call_agent
+    mt call
+    desc "Invoke LLM"
+    requires_dep LlmPort
+    lowers_to
+      rust: "self.{dep}.invoke({args}).await?"
+      typescript: "await this.{dep}.invoke({args})"
+    visual
+      icon "🤖"
+      label "Call Agent"
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("wf", src).expect("layer should load");
+        let stmt = reg.statement("call_agent").expect("call_agent");
+        assert_eq!(stmt.requires_dep.as_deref(), Some("LlmPort"));
+        assert_eq!(
+            stmt.lowers_to.get("rust").map(|s| s.as_str()),
+            Some("self.{dep}.invoke({args}).await?")
+        );
+        assert_eq!(
+            stmt.lowers_to.get("typescript").map(|s| s.as_str()),
+            Some("await this.{dep}.invoke({args})")
+        );
+        assert_eq!(stmt.visual.icon, "🤖");
+        assert_eq!(stmt.shape, StmtShape::Call);
+    }
+
+    #[test]
+    fn ddd_statements_require_bus_dep() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        for kw in ["dispatch", "invoke", "request"] {
+            let s = reg.statement(kw).unwrap_or_else(|| panic!("{kw}"));
+            assert_eq!(
+                s.requires_dep.as_deref(),
+                Some("Bus"),
+                "{kw} should require Bus"
+            );
+            // Empty lowers_to keeps envelope routing fallback
+            assert!(s.lowers_to.is_empty(), "{kw} should not force lowers_to");
+        }
     }
 
     #[test]

@@ -461,6 +461,12 @@ fn check_expr(
             if let Some(cond) = &action.condition {
                 check_expr(cond, location, scope, index, self_type, diagnostics);
             }
+            for e in &action.body {
+                check_expr(e, location, scope, index, self_type, diagnostics);
+            }
+            if let Some(b) = &action.result_binding {
+                scope.bind(b, None);
+            }
         }
         Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
             check_expr(rhs, location, scope, index, self_type, diagnostics);
@@ -810,7 +816,7 @@ fn check_action(
 ) {
     use crate::layer::StmtShape;
     match action.shape {
-        StmtShape::Call => {
+        StmtShape::Call | StmtShape::Assign | StmtShape::Infix | StmtShape::Block => {
             // Desugared or bare: treat like CallExpr
             let call = CallExpr {
                 target: action.target.clone(),

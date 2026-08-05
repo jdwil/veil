@@ -881,8 +881,14 @@ fn rewrite_name_in_expr(e: &mut Expr, old: &str, new: &str) {
             for x in &mut a.args {
                 rewrite_name_in_expr(x, old, new);
             }
+            for (_, x) in &mut a.named_args {
+                rewrite_name_in_expr(x, old, new);
+            }
             if let Some(c) = &mut a.condition {
                 rewrite_name_in_expr(c, old, new);
+            }
+            for x in &mut a.body {
+                rewrite_name_in_expr(x, old, new);
             }
         }
         Expr::Stock

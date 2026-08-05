@@ -3178,7 +3178,21 @@ impl<'a> Parser<'a> {
                 if self.at(&TokenKind::Eq) {
                     self.advance();
                     let rhs = self.parse_expr()?;
-                    return Ok(Expr::Assign(name, Box::new(rhs), Some(type_ann)));
+                    // Prefer folding Action result_binding; type ann stays on Assign.
+                    match rhs {
+                        Expr::Action(mut a) => {
+                            a.result_binding = Some(name.clone());
+                            // Keep type via Assign when annotated — codegen can use either.
+                            return Ok(Expr::Assign(
+                                name,
+                                Box::new(Expr::Action(a)),
+                                Some(type_ann),
+                            ));
+                        }
+                        other => {
+                            return Ok(Expr::Assign(name, Box::new(other), Some(type_ann)));
+                        }
+                    }
                 }
                 return Err(self.error(format!(
                     "expected '=' after typed binding '{}: ...'",
@@ -3193,8 +3207,30 @@ impl<'a> Parser<'a> {
             if let Expr::Ident(name) = &lhs {
                 let name = name.clone();
                 self.advance();
+                // `result = dispatch Evt{}` — bind return of a layer statement.
+                if self.at(&TokenKind::Ident) {
+                    let word = self.current().text.clone();
+                    if let Some(stmt) = self.registry.statement(&word).cloned() {
+                        let next_kind = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+                        let is_statement_context = !matches!(
+                            next_kind,
+                            Some(TokenKind::Eq)
+                                | Some(TokenKind::Colon)
+                                | Some(TokenKind::Comma)
+                                | Some(TokenKind::RParen)
+                                | Some(TokenKind::RBracket)
+                                | Some(TokenKind::Newline)
+                                | Some(TokenKind::Eof)
+                                | Some(TokenKind::Dedent)
+                        );
+                        if is_statement_context {
+                            let rhs = self.parse_action(&word, &stmt)?;
+                            return Ok(Self::bind_action_result(name, rhs));
+                        }
+                    }
+                }
                 let rhs = self.parse_expr()?;
-                return Ok(Expr::Assign(name, Box::new(rhs), None));
+                return Ok(Self::bind_action_result(name, rhs));
             }
             // Field assignment: a.b = expr / a.b.c = expr → Assign("a.b", …)
             if let Some(path) = flatten_assign_lhs(&lhs) {
@@ -3220,6 +3256,18 @@ impl<'a> Parser<'a> {
         self.parse_binary_rhs(lhs, 0)
     }
 
+    /// Fold `name = Action(…)` into `Action { result_binding: name }`.
+    /// Desugared Calls (port sugar) stay as `Assign`.
+    fn bind_action_result(name: String, rhs: Expr) -> Expr {
+        match rhs {
+            Expr::Action(mut a) => {
+                a.result_binding = Some(name);
+                Expr::Action(a)
+            }
+            other => Expr::Assign(name, Box::new(other), None),
+        }
+    }
+
     /// Parse a layer statement according to its core shape.
     fn parse_action(&mut self, keyword: &str, stmt_spec: &StatementSpec) -> Result<Expr, ParseError> {
         let start_span = self.current().span;
@@ -3235,21 +3283,14 @@ impl<'a> Parser<'a> {
             named_args: Vec::new(),
             condition: None,
             message: None,
+            result_binding: None,
+            body: Vec::new(),
             span: start_span,
         };
 
         match shape {
-            StmtShape::Call => {
-                action.target = self.expect_ident()?;
-                if self.at(&TokenKind::Dot) {
-                    self.advance();
-                    action.method = self.expect_ident()?;
-                }
-                if self.at(&TokenKind::LParen) {
-                    action.args = self.parse_paren_args();
-                } else if self.at(&TokenKind::LBrace) {
-                    action.named_args = self.parse_brace_args()?;
-                }
+            StmtShape::Call | StmtShape::Assign | StmtShape::Infix => {
+                self.parse_action_call_args(&mut action)?;
             }
             StmtShape::If => {
                 let condition = self.parse_condition_expr()?;
@@ -3262,35 +3303,108 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            StmtShape::Block => {
+                // Optional free-form args, then indented body (like `do`).
+                if !self.at(&TokenKind::Newline)
+                    && !self.at(&TokenKind::Eof)
+                    && !self.at(&TokenKind::Dedent)
+                    && !self.at(&TokenKind::Indent)
+                {
+                    self.parse_action_call_args(&mut action)?;
+                }
+                if self.at_block_start() {
+                    let _ = self.enter_block();
+                    loop {
+                        self.skip_newlines();
+                        if self.at_block_end() {
+                            break;
+                        }
+                        action.body.push(self.parse_expr()?);
+                    }
+                    self.exit_block();
+                }
+            }
         }
 
         action.span = start_span.merge(self.current().span);
 
-        // Desugar port-targeted statements into Expr::Call
-        if let (Some(port_target), Some(port_method)) = (&stmt_spec.port_target, &stmt_spec.port_method) {
-            // Build the argument: if named_args present, it's a StructLit; else positional
-            let call_arg = if !action.named_args.is_empty() {
-                // dispatch Evt{field: val} → Bus.dispatch(Evt{field: val})
-                let fields: Vec<(String, Expr)> = action.named_args;
-                vec![Expr::StructLit(action.target.clone(), fields)]
-            } else if !action.args.is_empty() {
-                // dispatch Target.method(args) → Bus.dispatch(args) — rare case
-                action.args
-            } else {
-                // dispatch Evt → Bus.dispatch(Evt)  (bare identifier as arg)
-                vec![Expr::Ident(action.target.clone())]
-            };
-            return Ok(Expr::Call(CallExpr {
-                target: port_target.clone(),
-                method: port_method.clone(),
-                args: call_arg,
-                receiver: None,
-                sugar: Some(keyword.to_string()),
-                span: action.span,
-            }));
+        // Custom lowers_to templates need ActionExpr to survive to codegen.
+        // Only desugar Port.method when no target-specific template is declared.
+        let has_custom_lower = !stmt_spec.lowers_to.is_empty();
+
+        // Desugar port-targeted statements into Expr::Call (backward-compatible path)
+        if !has_custom_lower {
+            if let (Some(port_target), Some(port_method)) =
+                (&stmt_spec.port_target, &stmt_spec.port_method)
+            {
+                // Build the argument: if named_args present, it's a StructLit; else positional
+                let call_arg = if !action.named_args.is_empty() {
+                    // dispatch Evt{field: val} → Bus.dispatch(Evt{field: val})
+                    let fields: Vec<(String, Expr)> = action.named_args;
+                    vec![Expr::StructLit(action.target.clone(), fields)]
+                } else if !action.args.is_empty() {
+                    // dispatch Target.method(args) → Bus.dispatch(args) — rare case
+                    action.args
+                } else if !action.target.is_empty() {
+                    // dispatch Evt → Bus.dispatch(Evt)  (bare identifier as arg)
+                    vec![Expr::Ident(action.target.clone())]
+                } else {
+                    Vec::new()
+                };
+                return Ok(Expr::Call(CallExpr {
+                    target: port_target.clone(),
+                    method: port_method.clone(),
+                    args: call_arg,
+                    receiver: None,
+                    sugar: Some(keyword.to_string()),
+                    span: action.span,
+                }));
+            }
         }
 
         Ok(Expr::Action(action))
+    }
+
+    /// Parse Call/Assign/Infix argument forms after the keyword:
+    /// - `Target.method(args)` / `Target{fields}` / `Target`
+    /// - `(args)` free paren list
+    /// - free comma-separated expressions (`kw "a", b, 1`)
+    fn parse_action_call_args(&mut self, action: &mut ActionExpr) -> Result<(), ParseError> {
+        if self.at(&TokenKind::LParen) {
+            action.args = self.parse_paren_args();
+            return Ok(());
+        }
+        if self.at(&TokenKind::Ident) {
+            action.target = self.expect_ident()?;
+            if self.at(&TokenKind::Dot) {
+                self.advance();
+                action.method = self.expect_ident()?;
+            }
+            if self.at(&TokenKind::LParen) {
+                action.args = self.parse_paren_args();
+            } else if self.at(&TokenKind::LBrace) {
+                action.named_args = self.parse_brace_args()?;
+            }
+            return Ok(());
+        }
+        // Free-form positional args until newline / block end.
+        if !self.at(&TokenKind::Newline)
+            && !self.at(&TokenKind::Eof)
+            && !self.at(&TokenKind::Dedent)
+            && !self.at(&TokenKind::Indent)
+            && !self.at(&TokenKind::RBrace)
+            && !self.at(&TokenKind::RParen)
+        {
+            loop {
+                action.args.push(self.parse_primary()?);
+                if self.at(&TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Parse a condition expression (no assignment, stops before comma).
@@ -3304,7 +3418,10 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::Ident) {
             let word = self.current().text.clone();
             if let Some(stmt) = self.registry.statement(&word).cloned() {
-                if stmt.shape == StmtShape::Call {
+                if matches!(
+                    stmt.shape,
+                    StmtShape::Call | StmtShape::Assign | StmtShape::Infix | StmtShape::Block
+                ) {
                     let inner = self.parse_action(&word, &stmt)?;
                     return self.parse_binary_rhs(inner, 0);
                 }
