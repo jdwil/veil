@@ -50,7 +50,10 @@ another backend, and made “Open changes / control the UX” brittle.
 ## Consequences
 
 - Dev: one backend port for `runtime/ui` Vite proxy (all `/api` + `/api/agent`).
-- Build: `make pure-runtime-build` builds `runtime/ide-ui` into `static/viewer`.
+- **Product IDE is native** at `/projects/{slug}/ide` inside `runtime/ui` (no iframe,
+  no second SPA navigation). Dual-loop UI lives under `runtime/ui/src/lib/ide/`.
+- Optional legacy static `/viewer` build from `runtime/ide-ui` may remain for
+  standalone dual-loop debugging — **not** the product path.
 - Ops: stop running `veil serve --multi` just to feed the dashboard agent.
 - Platform domain HTTP (repos, change_requests, deploy, registry) is mounted on
   ProductHost via `runtime/bootstrap/src/platform_http.rs` (generated crates +

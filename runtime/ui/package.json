@@ -21,6 +21,10 @@
       },
       "dependencies": {
             "@aether-ui/core": "file:../../vendor/aether-ui/packages/aether-ui",
-            "aether-ui-monorepo": "file:../../vendor/aether-ui"
+            "aether-ui-monorepo": "file:../../vendor/aether-ui",
+            "@xyflow/svelte": "^1.6.1",
+            "dompurify": "^3.2.0",
+            "elkjs": "^0.11.1",
+            "marked": "^15.0.0"
       }
 }

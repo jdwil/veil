@@ -10,8 +10,6 @@
         AgentDock,
         agentPanelOpen,
         onAgentNavigation,
-        initIdeBridge,
-        destroyIdeBridge,
         restoreSession,
       } from '$lib/agent';
       import StatusBar from '$lib/components/StatusBar.svelte';
@@ -40,7 +38,6 @@
 
       onMount(() => {
         restoreSession();
-        initIdeBridge();
         // Open agent panel by default
         agentPanelOpen.set(true);
         // Agent tools (navigate_to / open-ide) → SPA routes (stay in shell)
@@ -90,7 +87,6 @@
         return () => {
           window.removeEventListener('keydown', handler);
           unsubNav();
-          destroyIdeBridge();
         };
       });
     </script>
@@ -139,5 +135,6 @@
         padding: 0;
         display: flex;
         flex-direction: column;
+        position: relative; /* native IdeApp fills this box */
       }
     </style>

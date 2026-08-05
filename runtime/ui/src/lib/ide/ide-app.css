@@ -1,0 +1,34 @@
+/**
+ * IDE canvas tokens when mounted natively in the runtime shell.
+ * Tailwind / Aether tokens already load from runtime/ui app.css.
+ */
+
+:root,
+[data-theme='dark'] {
+  --veil-bg: #0f0f0f;
+  --veil-panel: #1a1a1a;
+  --veil-panel-2: #242424;
+  --veil-border: #2e2e2e;
+  --veil-text: #e5e5e5;
+  --veil-text-dim: #a3a3a3;
+  --veil-accent: #737373;
+  --veil-danger: #ef4444;
+  --veil-ok: #22c55e;
+}
+
+.viewer-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--veil-bg, #0f0f0f);
+  color: var(--veil-text, #e5e5e5);
+  font-family: Inter, system-ui, sans-serif;
+}
+
+/* xyflow needs a sized parent */
+.viewer-container .svelte-flow {
+  width: 100%;
+  height: 100%;
+}
