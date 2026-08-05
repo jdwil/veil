@@ -20,7 +20,9 @@
 		agentClear,
 		agentInsertToken,
 		ideDiagnosticsSummary,
-		getAgentContext
+		getAgentContext,
+		getCodingSessionId,
+		ensureCodingSession
 	} from '$lib/agent/runtimeAgentSession';
 
 	// Chips seed the agent; navigation must come from agent tools, not hard-coded Svelte routes.
@@ -99,6 +101,11 @@
 	interface ProviderStatus {
 		provider: string;
 		acp_tunnel: { connected: boolean; agents: Array<{ agent_name: string }> };
+		sessions?: {
+			enabled?: boolean;
+			open?: Array<{ session_id: string; slug: string; revision: number }>;
+			user_id?: string;
+		};
 	}
 	let providerStatus: ProviderStatus | null = $state(null);
 
@@ -117,6 +124,13 @@
 		return () => clearInterval(interval);
 	});
 
+	// Keep coding session warm when panel opens with a project context
+	$effect(() => {
+		if (!$agentPanelOpen) return;
+		const proj = getAgentContext().project;
+		if (proj) void ensureCodingSession(proj);
+	});
+
 	function providerLabel(): string {
 		if (!providerStatus) return 'Aether · Runtime';
 		if (providerStatus.acp_tunnel.connected && providerStatus.acp_tunnel.agents.length > 0) {
@@ -127,6 +141,17 @@
 
 	function isAcpConnected(): boolean {
 		return providerStatus?.acp_tunnel?.connected ?? false;
+	}
+
+	function sessionHint(): string {
+		const sid = getCodingSessionId();
+		if (!sid) {
+			return providerStatus?.sessions?.enabled ? 'No session' : '';
+		}
+		const open = providerStatus?.sessions?.open || [];
+		const match = open.find((s) => s.session_id === sid);
+		if (match) return `${match.slug} · r${match.revision}`;
+		return `sess ${sid.slice(0, 8)}…`;
 	}
 
 	function startResize(e: PointerEvent) {
@@ -212,6 +237,9 @@
 				<span class="agent-icon" class:connected={isAcpConnected()}>◆</span>
 				<span class="agent-title">Agent</span>
 				<span class="agent-hint">{providerLabel()}</span>
+				{#if sessionHint()}
+					<span class="session-hint" title="Durable coding session">{sessionHint()}</span>
+				{/if}
 			</div>
 			<div class="header-actions">
 				{#if $agentStatusLine}
@@ -399,6 +427,20 @@
 		font-weight: 700;
 		font-size: 0.8rem;
 		color: var(--dk-text, #e5e5e5);
+	}
+
+	.session-hint {
+		font-size: 0.65rem;
+		color: var(--dk-text-muted, #737373);
+		background: color-mix(in srgb, var(--dk-brand, #525252) 20%, transparent);
+		border: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
+		border-radius: 999px;
+		padding: 0.1rem 0.4rem;
+		max-width: 9rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.agent-hint {

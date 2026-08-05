@@ -154,6 +154,7 @@ pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
 /// dual-loop tools need `/api/p/{project}/…` or CURRENT_PROJECT).
 pub fn build_multi_router(hub: ProjectsHub) -> Router {
     crate::chat_log::init_logger();
+    crate::session::spawn_session_reaper();
     let multi = Arc::new(MultiProjectProvider::new(hub));
     let dev_loops: crate::devloop_api::DevLoopState =
         crate::devloop::SharedDevLoops::default();
@@ -525,8 +526,26 @@ async fn post_source<P: SourceProvider>(
         }
     }
     match state.write_source("", &body).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Ok(()) => {
+            let mut res = StatusCode::NO_CONTENT.into_response();
+            if let Some(sid) = crate::session::current_session_id() {
+                let rev = crate::session::SessionManager::global()
+                    .get(&sid)
+                    .map(|h| h.revision());
+                for (k, v) in crate::session::durable_headers(Some(&sid), rev, None) {
+                    res.headers_mut().insert(k, v);
+                }
+            }
+            res
+        }
+        Err(e) => {
+            let status = if e.contains("etag conflict") {
+                StatusCode::PRECONDITION_FAILED
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, e).into_response()
+        }
     }
 }
 
@@ -1778,12 +1797,25 @@ async fn get_agent_status() -> axum::response::Response {
     } else {
         vec![]
     };
+    let sessions_on = crate::session::sessions_enabled();
+    let open_sessions = if sessions_on {
+        crate::session::SessionManager::global().open_handles_summary()
+    } else {
+        vec![]
+    };
     let body = serde_json::json!({
         "provider": provider,
         "provider_mode": { "mode": mode, "model": model },
         "acp_tunnel": {
             "connected": acp_configured,
             "agents": agents,
+        },
+        "sessions": {
+            "enabled": sessions_on,
+            "source_mode": format!("{:?}", crate::provider::s3_workspace::ide_source_mode()),
+            "open": open_sessions,
+            "user_id": crate::session::current_user_id(),
+            "ws_root": crate::session::ws_root().to_string_lossy(),
         },
         "info": info,
     });

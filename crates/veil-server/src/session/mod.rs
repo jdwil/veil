@@ -131,6 +131,7 @@ impl SessionManager {
         put_session_meta(&meta)?;
         write_session_marker(&work_dir, &meta)?;
 
+        write_sticky_session(&user_id, slug, &session_id);
         let handle = Arc::new(SessionHandle::open(meta, work_dir)?);
         self.handles
             .lock()
@@ -164,6 +165,7 @@ impl SessionManager {
             materialize_repo_to(&meta.repo_id, &work_dir, MaterializePolicy::SyncIncremental)?;
         }
         write_session_marker(&work_dir, &meta)?;
+        write_sticky_session(&meta.user_id, &meta.slug, session_id);
         let handle = Arc::new(SessionHandle::open(meta, work_dir)?);
         self.handles
             .lock()
@@ -173,26 +175,69 @@ impl SessionManager {
         Ok(handle)
     }
 
+    /// Snapshot of open in-memory sessions (for status / health).
+    pub fn open_handles_summary(&self) -> Vec<serde_json::Value> {
+        let map = self.handles.lock().unwrap();
+        map.values()
+            .map(|h| {
+                let m = h.meta.lock().unwrap();
+                serde_json::json!({
+                    "session_id": m.session_id,
+                    "slug": m.slug,
+                    "revision": m.revision,
+                    "draft_mode": m.draft_mode,
+                    "work_dir": h.work_dir.to_string_lossy(),
+                })
+            })
+            .collect()
+    }
+
     /// Get or create a default sticky session for user+slug (compat when no header).
+    /// Prefers: process handle → local sticky file → most recent non-draft DDB → create.
     pub fn get_or_create_default(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
         let user = current_user_id();
-        // Prefer most recent open handle for slug
+        // Prefer most recent open handle for slug (non-draft preferred)
         {
             let map = self.handles.lock().unwrap();
-            if let Some(h) = map.values().find(|h| {
+            let mut candidates: Vec<_> = map
+                .values()
+                .filter(|h| {
+                    let m = h.meta.lock().unwrap();
+                    m.slug == slug && m.user_id == user
+                })
+                .cloned()
+                .collect();
+            candidates.sort_by_key(|h| {
                 let m = h.meta.lock().unwrap();
-                m.slug == slug && m.user_id == user
-            }) {
-                return Ok(h.clone());
+                (m.draft_mode, std::cmp::Reverse(parse_ts(&m.updated_at)))
+            });
+            if let Some(h) = candidates.into_iter().next() {
+                let _ = touch_session(&h.session_id());
+                return Ok(h);
             }
         }
-        // Try DDB list for recent session
+        // Local sticky pointer (survives process restart without DDB scan cost)
+        if let Some(sid) = read_sticky_session(&user, slug) {
+            if let Ok(h) = self.attach(&sid) {
+                if h.slug() == slug {
+                    return Ok(h);
+                }
+            }
+        }
+        // Try DDB list for recent non-draft session
         if let Ok(list) = list_sessions_for_user(&user) {
-            if let Some(m) = list.into_iter().find(|m| m.slug == slug) {
-                return self.attach(&m.session_id);
+            if let Some(m) = list
+                .into_iter()
+                .find(|m| m.slug == slug && !m.draft_mode)
+            {
+                let h = self.attach(&m.session_id)?;
+                write_sticky_session(&user, slug, &m.session_id);
+                return Ok(h);
             }
         }
-        self.create(slug, None)
+        let h = self.create(slug, None)?;
+        write_sticky_session(&user, slug, &h.session_id());
+        Ok(h)
     }
 
     pub fn get(&self, session_id: &str) -> Option<Arc<SessionHandle>> {
@@ -243,19 +288,164 @@ fn write_session_marker(work_dir: &Path, meta: &SessionMeta) -> Result<(), Strin
         "slug": meta.slug,
         "revision": meta.revision,
         "user_id": meta.user_id,
+        "draft_mode": meta.draft_mode,
     });
     std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap_or_default())
         .map_err(|e| format!("write session marker: {e}"))
 }
 
-fn chrono_now() -> String {
-    // RFC3339-ish without chrono crate
+fn sticky_path(user_id: &str, slug: &str) -> PathBuf {
+    ws_root()
+        .join(".sticky")
+        .join(user_id)
+        .join(format!("{slug}.session"))
+}
+
+fn write_sticky_session(user_id: &str, slug: &str, session_id: &str) {
+    let p = sticky_path(user_id, slug);
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(p, session_id);
+}
+
+fn read_sticky_session(user_id: &str, slug: &str) -> Option<String> {
+    let p = sticky_path(user_id, slug);
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// RFC3339 UTC timestamp without extra crates.
+pub fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!("{secs}")
+    // Approximate RFC3339 (good enough for sort + display)
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+    // Civil date from days since epoch (algorithm from civil_from_days)
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+/// Parse session timestamp (RFC3339 or unix seconds) → unix secs.
+pub fn parse_ts(s: &str) -> u64 {
+    if let Ok(n) = s.parse::<u64>() {
+        return n;
+    }
+    // Minimal RFC3339: YYYY-MM-DDTHH:MM:SSZ
+    if s.len() >= 19 {
+        // Fallback: use file mtime style — just hash length for sort stability
+        // Prefer numeric prefix if any
+        let digits: String = s.chars().filter(|c| c.is_ascii_digit()).take(14).collect();
+        if let Ok(n) = digits.parse::<u64>() {
+            return n;
+        }
+    }
+    0
+}
+
+pub fn session_ttl_secs() -> u64 {
+    std::env::var("VEIL_SESSION_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(86_400)
+}
+
+/// Drop idle in-memory handles older than TTL (META left for resume).
+pub fn reap_idle_handles(mgr: &SessionManager) -> usize {
+    let ttl = session_ttl_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut drop_ids = Vec::new();
+    {
+        let map = mgr.handles.lock().unwrap();
+        for (id, h) in map.iter() {
+            let last = parse_ts(&h.meta.lock().unwrap().last_activity_at);
+            // If timestamp is RFC3339-ish large number from digits, compare carefully
+            let age = if last > 1_000_000_000_000 {
+                // packed yyyymmddhhmmss — skip precise reap
+                0
+            } else if last > 0 && now > last {
+                now - last
+            } else {
+                0
+            };
+            if age > ttl {
+                drop_ids.push(id.clone());
+            }
+        }
+    }
+    for id in &drop_ids {
+        mgr.drop_handle(id);
+        tracing::info!(%id, "reaped idle session handle");
+    }
+    drop_ids.len()
+}
+
+/// Start background reaper (once).
+pub fn spawn_session_reaper() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        if !sessions_enabled() {
+            return;
+        }
+        std::thread::Builder::new()
+            .name("veil-session-reaper".into())
+            .spawn(|| loop {
+                std::thread::sleep(std::time::Duration::from_secs(300));
+                let n = reap_idle_handles(SessionManager::global());
+                if n > 0 {
+                    tracing::info!(reaped = n, "session reaper tick");
+                }
+            })
+            .ok();
+    });
+}
+
+/// Response headers for durable writes.
+pub fn durable_headers(
+    session_id: Option<&str>,
+    revision: Option<u64>,
+    etag: Option<&str>,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    use axum::http::{HeaderName, HeaderValue};
+    let mut out = Vec::new();
+    if let Some(sid) = session_id {
+        if let Ok(v) = HeaderValue::from_str(sid) {
+            out.push((HeaderName::from_static("x-veil-session-id"), v));
+        }
+    }
+    if let Some(r) = revision {
+        if let Ok(v) = HeaderValue::from_str(&r.to_string()) {
+            out.push((HeaderName::from_static("x-veil-revision"), v));
+        }
+    }
+    if let Some(e) = etag {
+        let clean = e.trim_matches('"');
+        if let Ok(v) = HeaderValue::from_str(clean) {
+            out.push((HeaderName::from_static("x-veil-etag"), v));
+        }
+    }
+    out
 }
 
 /// Live session: provider + workspace FS + mutable META.

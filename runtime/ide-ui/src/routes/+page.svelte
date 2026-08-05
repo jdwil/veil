@@ -61,7 +61,9 @@
     embedShellConfig,
     isFlowComposerMode,
     flowLayerParam,
+    ensureCodingSession,
   } from '$lib/store';
+  import SessionStatus from '$lib/SessionStatus.svelte';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind, type PaletteEntry } from '$lib/types';
   import {
     projectView,
@@ -505,6 +507,9 @@
 
     void fetchIr();
     const stopSse = startRevisionWatch();
+    // Durable coding session (S3/DDB) for this project
+    const proj = currentProjectParam();
+    if (proj) void ensureCodingSession(proj);
 
     return () => {
       unsubParent();
@@ -1502,6 +1507,7 @@
           </label>
         {/if}
       {/if}
+      <SessionStatus />
       {#if shell.showThemeToggle}
         <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
           {theme === 'dark' ? '☀️' : '🌙'}

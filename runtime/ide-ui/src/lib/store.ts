@@ -367,34 +367,87 @@ export function setCodingSessionId(id: string | null) {
   }
 }
 
+function applySessionPayload(data: {
+  session?: {
+    session_id?: string;
+    slug?: string;
+    revision?: number;
+    draft_mode?: boolean;
+  };
+  work_dir?: string;
+}) {
+  const s = data?.session;
+  if (!s?.session_id) return;
+  setCodingSessionId(s.session_id);
+  codingSessionRevision.set(typeof s.revision === 'number' ? s.revision : null);
+  codingSessionMeta.set({
+    session_id: s.session_id,
+    slug: s.slug || '',
+    revision: s.revision ?? 0,
+    draft_mode: s.draft_mode,
+    work_dir: data.work_dir,
+  });
+  sessionSaveState.set('ready');
+  sessionSaveDetail.set(null);
+}
+
 /** Ensure a durable session for the current project (POST /api/sessions). */
 export async function ensureCodingSession(slug?: string | null): Promise<string | null> {
   const project = slug || currentProjectParam();
   if (!project) return getCodingSessionId();
+  sessionSaveState.set('ensuring');
   const existing = getCodingSessionId();
   if (existing) {
     try {
       const res = await fetch(`${hubApiBase()}/sessions/${encodeURIComponent(existing)}`);
       if (res.ok) {
         const data = await res.json();
-        if (data?.session?.slug === project) return existing;
+        if (data?.session?.slug === project) {
+          applySessionPayload(data);
+          return existing;
+        }
       }
     } catch {
       /* recreate */
     }
   }
   try {
+    // Prefer attach of sticky server default via open project path:
+    // first try list then create
+    const listRes = await fetch(`${hubApiBase()}/sessions`);
+    if (listRes.ok) {
+      const list = await listRes.json();
+      const match = (list?.sessions || []).find(
+        (s: { slug?: string; draft_mode?: boolean }) => s.slug === project && !s.draft_mode,
+      );
+      if (match?.session_id) {
+        const att = await fetch(
+          `${hubApiBase()}/sessions/${encodeURIComponent(match.session_id)}/attach`,
+          { method: 'POST' },
+        );
+        if (att.ok) {
+          const data = await att.json();
+          applySessionPayload(data);
+          return match.session_id as string;
+        }
+      }
+    }
     const res = await fetch(`${hubApiBase()}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ slug: project }),
     });
-    if (!res.ok) return getCodingSessionId();
+    if (!res.ok) {
+      sessionSaveState.set('error');
+      sessionSaveDetail.set(`session create failed (${res.status})`);
+      return getCodingSessionId();
+    }
     const data = await res.json();
-    const id = data?.session?.session_id as string | undefined;
-    if (id) setCodingSessionId(id);
-    return id || null;
-  } catch {
+    applySessionPayload(data);
+    return (data?.session?.session_id as string) || null;
+  } catch (e) {
+    sessionSaveState.set('error');
+    sessionSaveDetail.set(e instanceof Error ? e.message : 'session error');
     return getCodingSessionId();
   }
 }
@@ -414,24 +467,62 @@ export function ideRequestHeaders(extra?: Record<string, string>): Record<string
 
 /** Debounced durable autosave for free-text editors (session workspace). */
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let savedClearTimer: ReturnType<typeof setTimeout> | null = null;
+
 export function scheduleAutosave(file: string, content: string, delayMs = 1500) {
   if (autosaveTimer) clearTimeout(autosaveTimer);
+  sessionSaveState.set('saving');
+  sessionSaveDetail.set(file);
   autosaveTimer = setTimeout(() => {
     void postAutosave(file, content);
   }, delayMs);
 }
 
 export async function postAutosave(file: string, content: string): Promise<boolean> {
-  const sid = getCodingSessionId();
-  if (!sid) return false;
+  let sid = getCodingSessionId();
+  if (!sid) {
+    sid = await ensureCodingSession();
+  }
+  if (!sid) {
+    sessionSaveState.set('error');
+    sessionSaveDetail.set('no coding session');
+    return false;
+  }
+  sessionSaveState.set('saving');
   try {
     const res = await fetch(`${ideApiBase()}/autosave`, {
       method: 'POST',
       headers: ideRequestHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ file, content }),
     });
-    return res.ok;
-  } catch {
+    if (res.status === 412) {
+      sessionSaveState.set('conflict');
+      sessionSaveDetail.set('Remote changed — reload file');
+      return false;
+    }
+    if (!res.ok) {
+      sessionSaveState.set('error');
+      sessionSaveDetail.set((await res.text()) || `HTTP ${res.status}`);
+      return false;
+    }
+    try {
+      const data = await res.json();
+      if (typeof data.revision === 'number') codingSessionRevision.set(data.revision);
+    } catch {
+      /* no body */
+    }
+    const revHdr = res.headers.get('x-veil-revision');
+    if (revHdr) codingSessionRevision.set(Number(revHdr));
+    sessionSaveState.set('saved');
+    sessionSaveDetail.set(file);
+    if (savedClearTimer) clearTimeout(savedClearTimer);
+    savedClearTimer = setTimeout(() => {
+      if (get(sessionSaveState) === 'saved') sessionSaveState.set('ready');
+    }, 2500);
+    return true;
+  } catch (e) {
+    sessionSaveState.set('error');
+    sessionSaveDetail.set(e instanceof Error ? e.message : 'autosave failed');
     return false;
   }
 }
@@ -606,6 +697,27 @@ export interface StubCrate {
 export const saving = writable(false);
 /** Last edit error message, if any. */
 export const saveError = writable<string | null>(null);
+
+/** Durable session UX chip state. */
+export type SessionSaveState =
+  | 'idle'
+  | 'ensuring'
+  | 'ready'
+  | 'saving'
+  | 'saved'
+  | 'conflict'
+  | 'error';
+
+export const sessionSaveState = writable<SessionSaveState>('idle');
+export const sessionSaveDetail = writable<string | null>(null);
+export const codingSessionRevision = writable<number | null>(null);
+export const codingSessionMeta = writable<{
+  session_id: string;
+  slug: string;
+  revision: number;
+  draft_mode?: boolean;
+  work_dir?: string;
+} | null>(null);
 
 function publishDiagsToHost(diags: Diagnostic[]) {
   // Lazy import path avoided — keep bridge tiny via dynamic import in browser only
@@ -1305,8 +1417,12 @@ export async function saveEdits(
   annotations?: (EditAnnotation | null)[],
 ): Promise<boolean> {
   if (edits.length === 0) return true;
+  if (!getCodingSessionId()) {
+    await ensureCodingSession();
+  }
   saving.set(true);
   saveError.set(null);
+  sessionSaveState.set('saving');
   try {
     const body: { edits: EditOp[]; annotations?: (EditAnnotation | null)[] } = { edits };
     if (annotations && annotations.some((a) => a != null)) {
@@ -1317,11 +1433,22 @@ export async function saveEdits(
       headers: ideRequestHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
+    if (res.status === 412) {
+      const msg = await res.text();
+      saveError.set(msg || 'Conflict — remote changed');
+      sessionSaveState.set('conflict');
+      sessionSaveDetail.set(msg || 'etag conflict');
+      return false;
+    }
     if (!res.ok) {
       const msg = await res.text();
       saveError.set(msg || `HTTP ${res.status}`);
+      sessionSaveState.set('error');
+      sessionSaveDetail.set(msg || `HTTP ${res.status}`);
       return false;
     }
+    const revHdr = res.headers.get('x-veil-revision');
+    if (revHdr) codingSessionRevision.set(Number(revHdr));
     const data: {
       source: string;
       ir: IrGraph;
@@ -1338,9 +1465,17 @@ export async function saveEdits(
     } else {
       await fetchCheck();
     }
+    sessionSaveState.set('saved');
+    sessionSaveDetail.set(get(activeFileName) || 'saved');
+    if (savedClearTimer) clearTimeout(savedClearTimer);
+    savedClearTimer = setTimeout(() => {
+      if (get(sessionSaveState) === 'saved') sessionSaveState.set('ready');
+    }, 2500);
     return true;
   } catch (e) {
     saveError.set(e instanceof Error ? e.message : 'Save failed');
+    sessionSaveState.set('error');
+    sessionSaveDetail.set(e instanceof Error ? e.message : 'Save failed');
     return false;
   } finally {
     saving.set(false);

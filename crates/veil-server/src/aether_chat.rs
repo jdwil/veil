@@ -145,11 +145,6 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
 
     // Persist user turn
     if let Some(ref sid) = coding_session {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            .to_string();
         let _ = crate::session::append_turn(
             sid,
             &crate::session::SessionTurn {
@@ -159,7 +154,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
                 tool_calls: vec![],
                 project: project_scope.clone(),
                 active_file: None,
-                ts,
+                ts: crate::session::chrono_now(),
                 backend: None,
             },
         );
@@ -473,11 +468,6 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
 
         // Durable conversation turn (DDB) for resume across crashes/restarts.
         if let Some(ref sid) = coding_session {
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
-                .to_string();
             let _ = crate::session::append_turn(
                 sid,
                 &crate::session::SessionTurn {
@@ -487,7 +477,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
                     tool_calls: tools.clone(),
                     project: project_scope.clone(),
                     active_file: entry.active_file.clone(),
-                    ts,
+                    ts: crate::session::chrono_now(),
                     backend: Some(backend.clone()),
                 },
             );

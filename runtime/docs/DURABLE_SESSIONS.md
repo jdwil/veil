@@ -68,6 +68,11 @@ All path-jailed to the session workdir. Prefer structured VEIL tools for package
 - `localStorage['veil.coding.sessionId']`
 - Runtime agent: `ensureCodingSession`, `hydrateFromServer`
 - IDE: `ideRequestHeaders` injects `X-Veil-Session-Id`; `scheduleAutosave` for free-text
+- IDE top bar **SessionStatus** chip: Synced / Saving / Saved / Conflict
+- Agent dock shows session slug · revision when status API reports open handles
+- Sticky default session per user+slug (server `.sticky/` + DDB list) avoids creating a new session every page load
+- Response headers on durable writes: `X-Veil-Session-Id`, `X-Veil-Revision`, `X-Veil-Etag`
+- Idle in-memory handle reaper every 5m (`VEIL_SESSION_TTL_SECS`, default 86400)
 
 ## Failure matrix
 

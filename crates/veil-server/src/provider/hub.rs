@@ -264,7 +264,25 @@ impl SourceProvider for MultiProjectProvider {
     }
 
     async fn write_source(&self, file: &str, content: &str) -> Result<(), String> {
-        self.session()?.write_source(file, content).await
+        self.session()?.write_source(file, content).await?;
+        // Bump durable session revision when a coding session is bound.
+        if let Some(sid) = crate::session::current_session_id() {
+            if let Ok(h) = crate::session::SessionManager::global().attach(&sid) {
+                let path = if file.is_empty() {
+                    self.session()?
+                        .list_files()
+                        .await
+                        .into_iter()
+                        .find(|f| f.active)
+                        .map(|f| f.name)
+                        .unwrap_or_else(|| "active".into())
+                } else {
+                    file.to_string()
+                };
+                h.bump_revision(&path, None);
+            }
+        }
+        Ok(())
     }
 
     fn registry(&self) -> LayerRegistry {

@@ -128,11 +128,7 @@ pub fn get_session_meta(session_id: &str) -> Result<SessionMeta, String> {
 
 pub fn touch_session(session_id: &str) -> Result<(), String> {
     let mut meta = get_session_meta(session_id)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-        .to_string();
+    let now = super::chrono_now();
     meta.last_activity_at = now.clone();
     meta.updated_at = now;
     put_session_meta(&meta)
@@ -210,6 +206,7 @@ pub fn list_sessions_for_user(user_id: &str) -> Result<Vec<SessionMeta>, String>
     Ok(out_list)
 }
 
+/// Prefer calling with RFC3339 `ts` from [`super::chrono_now`].
 pub fn append_turn(session_id: &str, turn: &SessionTurn) -> Result<(), String> {
     let pk = format!("SESSION#{session_id}");
     let sk = format!("TURN#{}", turn.turn_id);

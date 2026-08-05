@@ -189,11 +189,6 @@ struct TurnBody {
 
 async fn post_turn(Path(id): Path<String>, Json(body): Json<TurnBody>) -> axum::response::Response {
     let turn_id = uuid::Uuid::new_v4().to_string();
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-        .to_string();
     let turn = SessionTurn {
         turn_id: turn_id.clone(),
         role: body.role,
@@ -201,7 +196,7 @@ async fn post_turn(Path(id): Path<String>, Json(body): Json<TurnBody>) -> axum::
         tool_calls: body.tool_calls,
         project: body.project,
         active_file: body.active_file,
-        ts,
+        ts: crate::session::chrono_now(),
         backend: body.backend,
     };
     match append_turn(&id, &turn) {

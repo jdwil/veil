@@ -416,15 +416,31 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn jail_blocks_escape() {
-        let tmp = std::env::temp_dir().join("veil-jail-test");
+    fn jail_allows_nested_and_blocks_escape() {
+        let tmp = std::env::temp_dir().join(format!("veil-jail-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).unwrap();
+        fs::create_dir_all(tmp.join("sub")).unwrap();
         fs::write(tmp.join("a.txt"), "x").unwrap();
+        fs::write(tmp.join("sub/b.txt"), "y").unwrap();
         assert!(path_jail(&tmp, "a.txt").is_ok());
-        assert!(path_jail(&tmp, "../etc/passwd").is_err() || {
-            let p = path_jail(&tmp, "../etc/passwd");
-            p.is_err() || !p.unwrap().starts_with(&tmp)
-        });
+        assert!(path_jail(&tmp, "sub/b.txt").is_ok());
+        assert!(path_jail(&tmp, "sub/../a.txt").is_ok());
+        let esc = path_jail(&tmp, "../outside.txt");
+        assert!(
+            esc.is_err()
+                || esc
+                    .as_ref()
+                    .map(|p| !p.starts_with(tmp.canonicalize().unwrap_or(tmp.clone())))
+                    .unwrap_or(true),
+            "escape should fail: {esc:?}"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn simple_glob_basic() {
+        assert!(simple_glob_match("*.veil", "main.veil"));
+        assert!(simple_glob_match("layers/*", "layers/main.layer") || simple_glob_match("layers/", "layers/main.layer"));
+        assert!(!simple_glob_match("*.stub", "main.veil"));
     }
 }
