@@ -43,7 +43,7 @@ thrash on wear_test-scale products.
 
 Agents fail on complex systems because:
 
-1. **Overloaded bang** — `find!` means fallible method *and* try *and* Opt→NotFound; agents invent `.unwrap()` / `.is_some()`.
+1. **Overloaded bang (historical)** — ACS-001 folded Opt→NotFound into `!`; ACS-010 portable keeps Opt separate. Docs must match engine or agents thrash.
 2. **No green multi-package template** — wear_test+dlx is the real goal but too heavy; compose path rots without a minimal CI fixture.
 3. **Observe tools exist but habits don’t** — smoke/logs/routes/HTTP exist; agents still thrash without mandatory SOP / optional auto-restart.
 4. **Path invention** — name-derived REST + missing `@route` on examples.
@@ -79,11 +79,11 @@ Agents fail on complex systems because:
 - [x] Declares:
   - `name!(…)` on **declaration** = fallible method (return wrapped as `Res!` / `Res!<T>`)
   - `Res!` / `Res!<T>` / `Opt<T>` type meanings and target mappings (table)
-  - **Call-site law for current engine** (document truth, not aspiration): bang call unwraps Res via try and, for port `Opt` returns, NotFound unwrap — **or** document the post-ACS-010 rule if that lands first
-  - **Forbidden** after bang: `.unwrap()`, `.is_some()`, `.is_none()` on the bound result when call already forces `T`
+  - **Call-site law (current = ACS-010 portable):** bang call unwraps Res via try only; port `Opt` returns stay `Opt` (no silent NotFound)
+  - **Force-present:** `require` / `.unwrap()` when need `T`; soft `.is_some()` / `.is_none()` valid while still holding `Opt`
 - [x] One golden example: list + find + save (matches ddd handler pattern)
 - [x] Cross-link from HARNESS.md and AGENT.md
-- [x] Note portability: Opt/Res are generic; bang-call Opt→NotFound is product policy
+- [x] Note portability: Opt/Res are generic; Opt→NotFound is force-present policy only (not part of `!`)
 
 **Depends:** current typecheck/codegen bang behavior  
 **Mission impact:** Single source of truth for the scariest sugar  
@@ -100,11 +100,11 @@ Agents fail on complex systems because:
 **Acceptance criteria:**
 
 - [x] `agent_context` TIER0 + TIER0_ACP include:
-  - 6–10 lines from ACS-001 (bang / no unwrap after `find!`)
+  - 6–10 lines from bang contract (portable: `find!` → Opt; force with require/unwrap)
   - Closed loop: after backend HTTP edits → smoke → `dev_logs` on reject → `list_routes` → `dev_restart` → `http_request`
   - Prefer `@route`; do not invent paths
 - [x] On WRITE REJECTED: must call `dev_logs` / `smoke_status` before large rewrite (wording)
-- [x] ddd.layer prompt stays aligned (already partial — reconcile with ACS-001)
+- [x] ddd.layer prompt stays aligned with portable bang (ACS-010)
 - [x] Budget-safe: no huge dump; pointer to LANGUAGE section if truncated
 
 **Depends:** ACS-001, [160](160-agent-runtime-observability.md) tools  
@@ -196,7 +196,7 @@ Agents fail on complex systems because:
 | Level | Fixture | Skills |
 |-------|---------|--------|
 | L0 | hello svc + memory repo | ctx, port, handler, ret |
-| L1 | CRUD + bang find/list/save | Opt/Res bang, guards (no unwrap after !) |
+| L1 | CRUD + bang find/list/save | Opt/Res portable bang, guards, force when need T |
 | L2 | multi-package harness (ACS-003) | `[dev].packages`, gen-harness |
 | L3 | one stub SDK + adapter | stub, @field/@env |
 
@@ -258,7 +258,7 @@ Agents fail on complex systems because:
 **Acceptance criteria:**
 
 - [x] Pages (or equivalent fixtures if palace off in CI):
-  1. Bang / Opt / Res (ACS-001)
+  1. Bang / Opt / Res (ACS-010 portable — current)
   2. Dual-loop + smoke
   3. Multi-package `[dev].packages` (ACS-003)
   4. Stubs / cargo_deps
@@ -273,7 +273,7 @@ Agents fail on complex systems because:
 
 ---
 
-### ACS-010: Bang call semantics — portable split (optional evolution) — Done · P2
+### ACS-010: Bang call semantics — portable split (current default) — Done · P2
 
 **As a** multi-target language designer  
 **I want** bang to stop silently meaning Opt→NotFound  
@@ -289,14 +289,15 @@ Agents fail on complex systems because:
 - [x] Tests for call-site types before/after
 - [x] Tier-0 and ddd.layer updated
 
-**Note:** Engine **default remains transitional** (bang strips Opt). Portable helpers + plan
-landed; flip default is a later phase after package migration.
+**Status update:** Engine **default is portable** (typecheck + codegen + SL-001).
+Tier-0, `ddd.layer`, palace fixtures, and `docs/BANG_CONTRACT.md` teach ACS-010 as
+current law. Transitional Opt→NotFound-on-bang is **obsolete** (helpers remain
+for comparison tests only). Remaining work: universal `require` sugar + migrate
+packages that still assume `find!` → `T`.
 
 **Depends:** ACS-001  
 **Mission impact:** Grammar hygiene; multi-target honesty  
-**Touch:** typecheck, codegen, LANGUAGE, fixtures
-
-**Note:** Do **not** block ACS-001–007 on this. Contract-first; evolve second.
+**Touch:** typecheck, codegen, LANGUAGE, fixtures, Tier-0, palace
 
 ---
 
@@ -357,7 +358,7 @@ landed; flip default is a later phase after package migration.
 
 An agent can, without human log-paste:
 
-1. Follow bang contract (no `.unwrap()` after `find!`).
+1. Follow bang contract (portable: `find!` → Opt; force with require/unwrap when need T).
 2. Clone ACS-003 fixture and extend a handler; CI still green.
 3. After edit: smoke → (restart) → `list_routes` → `http_request` succeeds.
 4. Climb L0→L3 by copying fixtures.

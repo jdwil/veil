@@ -74,7 +74,8 @@ the whole file again.
 - **Smoke** is on by default (`VEIL_AGENT_SMOKE=0` disables — escape hatch only).
 - **Auto-restart** after successful smoke when backend is owned Running:
   default on (`VEIL_AGENT_AUTO_RESTART=0` to disable) — ACS-004.
-- **Bang / Opt / Res:** [BANG_CONTRACT.md](./BANG_CONTRACT.md) — never `.unwrap()` after `find!`.
+- **Bang / Opt / Res:** [BANG_CONTRACT.md](./BANG_CONTRACT.md) — portable bang
+  (`find!` → `Opt<T>`); force with `require` / `.unwrap()` when you need `T`.
 - **Routes:** prefer `@route("GET /api/…")`; name-derived List/Get/Create = fallback only.
   See [HARNESS.md](./HARNESS.md).
 - Stories: [160](../stories/160-agent-runtime-observability.md), [170](../stories/170-agent-complexity-shoreup.md).

@@ -390,19 +390,32 @@ pkg ddd v1
     - Use `ret variable` to return query results from handlers.
     - Cross-context communication uses `dispatch`, `invoke`, or `request` (routed via Bus).
     - Sagas use the `saga` keyword with `step`/`compensate` blocks for distributed transactions.
-    - **Bang / Opt / Res (docs/BANG_CONTRACT.md):** **Current (transitional):** `entity = repo.find!(id)`
-      yields `T` (`.await?` + `.ok_or(NotFound)?`). Never `.unwrap()` / `.is_some()` / `.is_none()`.
-      **Preferred (ACS-010, not default yet):** bang = Res try only; Opt stays Opt; force-present
-      via future `require` / layer policy — not silent NotFound on every `!`.
+    - **Bang / Opt / Res (docs/BANG_CONTRACT.md) — ACS-010 portable (default):**
+      `entity = repo.find!(id)` yields `Opt<T>` (bang unwraps Res / try only).
+      Soft absence after bang is valid (`.is_some()` / `.is_none()`).
+      When the value must exist: `require repo.find!(id)` or `.unwrap()` → `T`
+      (NotFound / layer policy). Never assume bang silently forces Opt→T.
 
     ## Example Handler
     ```
+    # Soft GET — find! yields Opt; ret Opt is valid
     handler HandleGetCohort
       input
         id: Id
         @dep cohort_repo: CohortRepo
       step query
         cohort = cohort_repo.find!(id)
+        ret cohort
+
+    # Hard path — force present before mutate/save
+    handler HandleUpdateCohort
+      input
+        id: Id
+        @dep cohort_repo: CohortRepo
+      step load
+        cohort = require cohort_repo.find!(id)   # or .unwrap()
+        # … mutate …
+        cohort_repo.save!(cohort)
         ret cohort
     ```
 

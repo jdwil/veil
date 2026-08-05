@@ -19,6 +19,10 @@ If a fix reintroduces “emit `true` so it typechecks,” it is a regression.
 
 ## Invariants (pin these)
 
+**Bang law:** ACS-010 portable is the **current engine default** (see
+[BANG_CONTRACT.md](./BANG_CONTRACT.md)). Force-present is `require` / `.unwrap()`
+/ layer policy — not silent NotFound on every `!`.
+
 | ID | Rule | Where enforced |
 |----|------|----------------|
 | **SL-001** | Bang strips `Res!` only; `Opt` stays `Opt` | typecheck + rust codegen |

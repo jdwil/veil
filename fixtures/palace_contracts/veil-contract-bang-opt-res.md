@@ -1,17 +1,19 @@
 # veil-contract-bang-opt-res
 
 **Type:** Concept  
-**Summary:** Bang on decl = fallible; bang on call unwraps Res/Opt to T. Never `.unwrap()` after `find!`.
+**Summary:** Bang on decl = fallible; bang on call unwraps Res only — Opt stays Opt. Force present with `require` / `.unwrap()`.
 
 ## Contract
 
 - `name!(…)` on **declaration** → method is fallible (`Res!` / `Res!<T>`).
 - `Opt<T>` = maybe absent; `Res!` / `Res!<T>` = fallible.
-- **Call site (current engine):** `x = repo.find!(id)` yields **T** (try + NotFound for Opt).
-- **Forbidden after bang:** `.unwrap()`, `.is_some()`, `.is_none()` on the bound result.
-- Opt/Res are portable. **ACS-010 preferred (not default yet):** bang = Res try only;
-  Opt stays Opt; force-present via `require` / layer policy — not silent NotFound on every `!`.
-  **Current engine:** still Opt→NotFound on bang (transitional).
+- **Call site (ACS-010 portable, current engine):** `x = repo.find!(id)` yields **`Opt<T>`**
+  when declared `-> Opt<T>` (try / Res only; no silent NotFound).
+- **Force present:** `require repo.find!(id)` → `T`, or interim `.unwrap()` on `Opt`.
+- **Allowed after bang when still Opt:** `.is_some()`, `.is_none()`, match / if-let.
+- **Forbidden:** assuming `find!` already yields bare `T`, or inventing `find!!`.
+- Opt/Res are portable type formers. Dual-loop NotFound is force-present policy,
+  not part of the `!` glyph.
 
 ## Example
 
@@ -25,8 +27,17 @@ svc GetItem
     id: Id
     @dep item_repo: ItemRepo
   step load
-    item = item_repo.find!(id)   # item: Item — no unwrap
+    item = item_repo.find!(id)   # item: Opt<Item>
+    ret item
+
+svc UpdateItem
+  input
+    id: Id
+    @dep item_repo: ItemRepo
+  step load
+    item = require item_repo.find!(id)   # item: Item
+    item_repo.save!(item)
     ret item
 ```
 
-**Source of truth:** `docs/BANG_CONTRACT.md`
+**Source of truth:** `docs/BANG_CONTRACT.md` · SL-001 in `docs/SEMANTIC_LOWERING.md`

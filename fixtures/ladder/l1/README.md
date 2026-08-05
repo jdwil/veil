@@ -1,17 +1,19 @@
 # L1 — CRUD + bang find/list/save
 
-**Skills:** `Opt` / `Res!` bang, `guard`, no unwrap after `!`.
+**Skills:** `Opt` / `Res!` portable bang, `guard`, force-present when need `T`.
 
 ## DO
 
 - Port methods: `find!` → `Opt<T>`, `list_all!` → `List<T>`, `save!`
-- Call site: `x = repo.find!(id)` then use `x` as `T` (engine unwraps)
+- Call site: `x = repo.find!(id)` binds **`Opt<T>`** (bang unwraps Res only)
+- Soft GET: `ret` the `Opt` (harness / handler policy may map None → 404)
+- Hard path: `require repo.find!(id)` or `.unwrap()` when you need bare `T`
 - `guard expr, "msg"` for validation
 - `@route` on every public handler
 
 ## DON'T
 
-- `.unwrap()`, `.is_some()`, `.is_none()` after a bang call
+- Assume `find!` already yields bare `T` (ACS-001 transitional is obsolete)
 - Invent paths without `@route` / `list_routes`
 - Skip memory adapter for ports the harness wires
 

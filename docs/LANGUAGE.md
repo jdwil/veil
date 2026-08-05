@@ -775,9 +775,11 @@ save!(customer: Customer)
 find!(id: Id) -> Opt<Customer>
 ```
 
-**Full law (decl + call + Opt unwrap policy):** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md).  
-Do not call `.unwrap()` / `.is_some()` on the result of a bang call when dual-loop
-codegen has already forced `Opt` to `T`.
+**Full law (decl + call + force-present):** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md).  
+**Portable bang (ACS-010 / SL-001):** `!` unwraps `Res` only; `Opt` stays `Opt`.  
+`repo.find!(id)` → `Opt<T>`. Force present with `require repo.find!(id)` (or
+`.unwrap()` until `require` is universal). Soft absence after bang is valid
+(`.is_some()` / `.is_none()` on `Opt`).
 
 ### Preferred type names
 | Use | Meaning |

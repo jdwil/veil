@@ -3739,7 +3739,8 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                 Some(cond) => {
                     let cond_str = expr_to_rust(cond, ctx);
                     // Suppress redundant `.is_some()` guards only when we *know*
-                    // the local is already unwrapped (port call + `.ok_or(NotFound)?`).
+                    // the local is not Option (e.g. after explicit force-present / require).
+                    // Portable bang (ACS-010) does NOT auto-ok_or on find! — Opt stays Opt.
                     if let Expr::Call(c) = cond {
                         if c.method == "is_some" && ctx.locals.contains(&c.target) {
                             let var_type = ctx.local_types.get(&c.target);
@@ -3748,7 +3749,7 @@ fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                                 .unwrap_or(true); // unknown → keep guard
                             if !is_option {
                                 return format!(
-                                    "/* guard {:?} — already unwrapped by .ok_or() above */",
+                                    "/* guard {:?} — local is not Option (already forced present) */",
                                     msg_escaped
                                 );
                             }

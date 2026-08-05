@@ -162,7 +162,8 @@ After editing a package that affects the backend:
 4. `dev_restart` (or auto-restart after smoke — ACS-004) — reload `cargo run`.
 5. `http_request(path, target=backend)` — live probe (127.0.0.1 + `dev_port` only).
 
-**Bang / Opt / Res:** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md).  
+**Bang / Opt / Res:** [`BANG_CONTRACT.md`](./BANG_CONTRACT.md) — ACS-010 portable
+(`find!` → `Opt`; force with `require` / `.unwrap()` when need `T`).  
 **Multi-package local harness fixture:** `fixtures/multi_harness/` (ACS-003).  
 **Complexity ladder L0–L3:** `fixtures/ladder/` (ACS-006) — `make fixture-ladder`.  
 **Smoke scope (ACS-012):** after a package edit, dual-loop checks primary context

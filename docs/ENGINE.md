@@ -31,11 +31,17 @@ must update **all** of the following in the **same PR**:
 
 ### Motivating incident
 
-Bang call-site semantics (`find!` unwrap Res/Opt) drifted: parser accepted `!`,
-codegen applied try/NotFound, typecheck still typed the call as `Opt`/`Res`.
-Agents then invented `.unwrap()` / `.is_some()` on forced `T` values. Contract
-and typecheck alignment (ACS-001 / in-tree bang typecheck) closed the gap;
-this rule exists so it does not recur for the next sugar.
+Bang call-site semantics drifted more than once:
+
+1. **ACS-001 era:** codegen forced Opt→NotFound while typecheck still typed
+   `Opt` — agents invented `.unwrap()` / `.is_some()` on values that were already
+   forced to `T` in some paths. Alignment of parser + typecheck + codegen fixed it.
+2. **ACS-010 flip:** typecheck/codegen moved to **portable bang** (Res only; Opt
+   stays Opt) while Tier-0, layer prompts, and palace still taught transitional
+   force — agents thrashed between “never unwrap after `!`” and live
+   `type_mismatch: expected T, found Opt`. Docs must flip with the engine (this rule).
+
+Current law: [BANG_CONTRACT.md](./BANG_CONTRACT.md) (ACS-010 portable / SL-001).
 
 ### PR checklist (copy into review)
 

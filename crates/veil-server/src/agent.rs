@@ -1396,7 +1396,7 @@ that future agents will search before writing VEIL.
 Use body from repo fixtures when available: `fixtures/palace_contracts/<slug>.md`.
 
 1. **veil-contract-bang-opt-res** (Concept)
-   - Decl `name!` = fallible; call `find!` → T; NEVER .unwrap()/.is_some() after bang
+   - Decl `name!` = fallible; call `find!` → Opt<T> (portable bang); force with require / .unwrap() when need T
    - Link: docs/BANG_CONTRACT.md
 
 2. **veil-contract-dual-loop-smoke** (Concept)
