@@ -8,14 +8,18 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# One in-flight run per ref — avoids runner starvation from stacked main pushes
+# One logical queue per ref. Do NOT cancel-in-progress: hosted runners have been
+# failing to acquire (15m then cancel). Cancelling peers only burns more capacity.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pin image — ubuntu-latest has been failing with
+    # "job was not acquired by Runner of type hosted even after multiple attempts"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
