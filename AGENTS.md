@@ -33,6 +33,16 @@ runtime/scripts/dev-stack.sh ui
 Logs: `/tmp/veil-product-host.log`, `/tmp/veil-ui.log`.
 Env: `AWS_PROFILE=dashlx_dev`, `VEIL_DDB_TABLE=veil-runtime-dev`, `BUCKET=veil-runtime-dev`.
 
-## VEIL authorship
+## VEIL authorship (non-negotiable)
 
-Product logic lives in `.veil` / `.layer` / `.stub`. Do not hand-edit `generated/` outputs; fix VEIL or `crates/veil-codegen`. Editing SOP: palace `veil-editing-patterns`.
+Product logic lives in `.veil` / `.layer` / `.stub`. **Never hand-edit generated outputs.**
+
+| Do | Do not |
+|----|--------|
+| Edit `runtime/src/runtime-ui.veil` for shell/product UI | Edit `runtime/ui/src/lib/components/*.svelte` product views |
+| `veil gen … -t typescript` then copy regenerated files | “Quick fix” in Svelte and leave VEIL stale |
+| Fix codegen in `crates/veil-codegen` | Patch `generated/` or `runtime/generated/` |
+
+**Hard rule:** [`.grok/rules/veil-no-hand-edit-generated-ui.md`](.grok/rules/veil-no-hand-edit-generated-ui.md)  
+Palace: `veil-editing-patterns`, `veil-contract-no-hand-edit-generated`.  
+Exceptions: `runtime/ui/src/lib/ide/**`, `runtime/ui/src/lib/agent/**` (not VEIL-generated).

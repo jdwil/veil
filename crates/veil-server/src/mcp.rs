@@ -80,152 +80,8 @@ async fn dispatch_runtime_tool(
     }
 }
 
-/// Runtime shell UX tools — agent drives the dashboard (navigate, SDLC list, etc.).
-/// Return JSON always includes `navigation` so the SPA can `goto` without hard-coded chips.
-fn dispatch_platform_ux_tool(tool_name: &str, arguments: &Value) -> Result<String, String> {
-    // Prefer same-origin ProductHost (VEIL_PORT / PORT); legacy veil_bin used 3000.
-    let runtime_base = std::env::var("VEIL_RUNTIME_API")
-        .or_else(|_| {
-            let port = std::env::var("VEIL_PORT")
-                .or_else(|_| std::env::var("PORT"))
-                .unwrap_or_else(|_| "8080".into());
-            Ok(format!("http://127.0.0.1:{port}"))
-        })
-        .unwrap_or_else(|_: std::env::VarError| "http://127.0.0.1:8080".into())
-        .trim_end_matches('/')
-        .to_string();
-
-    match tool_name {
-        "navigate_to" => {
-            let path = arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("/dashboard");
-            let path = if path.starts_with('/') {
-                path.to_string()
-            } else {
-                format!("/{path}")
-            };
-            Ok(json!({
-                "ok": true,
-                "summary": format!("Navigate to {path}"),
-                "navigation": { "action": "goto", "path": path }
-            })
-            .to_string())
-        }
-        "list_changes" | "open_changes" => Ok(json!({
-            "ok": true,
-            "summary": "Open change requests (SDLC)",
-            "api": format!("{runtime_base}/api/change_requests"),
-            "navigation": { "action": "goto", "path": "/changes" }
-        })
-        .to_string()),
-        "create_change" | "open_create_change" => Ok(json!({
-            "ok": true,
-            "summary": "Open create change request form",
-            "navigation": { "action": "goto", "path": "/changes/new" }
-        })
-        .to_string()),
-        "list_projects" | "open_projects" => Ok(json!({
-            "ok": true,
-            "summary": "Open projects list",
-            "api": format!("{runtime_base}/api/repos"),
-            "navigation": { "action": "goto", "path": "/projects" }
-        })
-        .to_string()),
-        "open_project" | "open_ide" | "switch_project" => {
-            let project = arguments
-                .get("project")
-                .or_else(|| arguments.get("slug"))
-                .or_else(|| arguments.get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if project.is_empty() {
-                return Ok(json!({
-                    "ok": true,
-                    "summary": "Open projects (no project specified)",
-                    "navigation": { "action": "goto", "path": "/projects" }
-                })
-                .to_string());
-            }
-            // open_ide → shell embed (`/projects/{id}/ide`); open_project → detail page.
-            let path = if tool_name == "open_ide" {
-                format!("/projects/{project}/ide")
-            } else {
-                format!("/projects/{project}")
-            };
-            let action = if tool_name == "open_ide" {
-                "open-ide"
-            } else if tool_name == "switch_project" {
-                "switch-project"
-            } else {
-                "goto"
-            };
-            let summary = if tool_name == "open_ide" {
-                format!("Open {project} in IDE (in-shell embed)")
-            } else {
-                format!("Open project {project}")
-            };
-            Ok(json!({
-                "ok": true,
-                "summary": summary,
-                "navigation": { "action": action, "path": path, "project": project }
-            })
-            .to_string())
-        }
-        "open_deploy" => Ok(json!({
-            "ok": true,
-            "summary": "Open deploy view",
-            "navigation": { "action": "goto", "path": "/deploy" }
-        })
-        .to_string()),
-        "open_registry" => Ok(json!({
-            "ok": true,
-            "summary": "Open registry",
-            "navigation": { "action": "goto", "path": "/registry" }
-        })
-        .to_string()),
-        "open_dashboard" => Ok(json!({
-            "ok": true,
-            "summary": "Open dashboard",
-            "navigation": { "action": "goto", "path": "/dashboard" }
-        })
-        .to_string()),
-        "open_config" => Ok(json!({
-            "ok": true,
-            "summary": "Open runtime config",
-            "navigation": { "action": "goto", "path": "/config" }
-        })
-        .to_string()),
-        "get_current_context" => Ok(json!({
-            "ok": true,
-            "summary": "Context is injected by the runtime UI each turn (page, project, surfaces). Use navigate_to to change pages.",
-            "hint": "Call navigate_to / list_changes / open_project to control the UX."
-        })
-        .to_string()),
-        other => Err(format!("unknown platform tool: {other}")),
-    }
-}
-
 fn is_platform_ux_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "navigate_to"
-            | "list_changes"
-            | "open_changes"
-            | "create_change"
-            | "open_create_change"
-            | "list_projects"
-            | "open_projects"
-            | "open_project"
-            | "open_ide"
-            | "switch_project"
-            | "open_deploy"
-            | "open_registry"
-            | "open_dashboard"
-            | "open_config"
-            | "get_current_context"
-    )
+    crate::platform_tools::is_platform_tool(name)
 }
 
 /// MCP protocol version we implement.
@@ -241,7 +97,7 @@ fn server_info() -> Value {
 
 /// MCP tool definitions derived from the VEIL IDE tool set.
 fn mcp_tools() -> Vec<Value> {
-    vec![
+    let mut tools = vec![
         json!({
             "name": "veil_check",
             "description": "Run the VEIL dual-loop check pipeline (parse, validate, types, escape hatches) on the active package or layer. Call after any edit. Returns a one-line summary plus JSON: { ok, error_count, warning_count, diagnostics: [{ code, severity, message, span?, hint?, node_name? }] }. Prefer fixing by code+span (e.g. type_mismatch, parse_error) instead of rewriting whole files.",
@@ -330,6 +186,50 @@ fn mcp_tools() -> Vec<Value> {
                     "name": { "type": "string", "description": "File name or stem (e.g. 'engagement' or 'engagement.layer')" },
                     "kind": { "type": "string", "enum": ["package", "layer"], "description": "File type: 'package' (default) or 'layer'" },
                     "content": { "type": "string", "description": "Optional full file body; default is a minimal scaffold" }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
+            "name": "stub_list",
+            "description": "List project + platform .stub catalog (version, origin, sparse). NEVER hand-write full SDK stubs — use stub_install or stub_gen.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        json!({
+            "name": "stub_get",
+            "description": "Resolve a .stub by crate use-name (project stubs/ first, then platform). Returns metadata + content.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Crate use-name (reqwest, aws_sdk_s3)" }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
+            "name": "stub_gen",
+            "description": "Generate a .stub from crates.io via rustdoc (veil stub-gen). REQUIRED instead of inventing SDK APIs by hand. Writes to project stubs/ by default.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "crate_name": { "type": "string", "description": "Cargo crate name" },
+                    "features": { "type": "array", "items": { "type": "string" } },
+                    "write": { "type": "boolean", "description": "Write to project stubs/ (default true)" }
+                },
+                "required": ["crate_name"]
+            }
+        }),
+        json!({
+            "name": "stub_install",
+            "description": "Copy a platform catalog stub into the project stubs/ directory (pin). Prefer for common SDKs before stub_gen.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Platform stub name" }
                 },
                 "required": ["name"]
             }
@@ -434,6 +334,76 @@ fn mcp_tools() -> Vec<Value> {
                 "required": []
             }
         }),
+        // Git-shaped session workflow (branch / commit / merge)
+        json!({
+            "name": "session_status",
+            "description": "Git-shaped coding session status: branch_name, base_branch, uncommitted, revision, head_commit, draft_mode. Call first before multi-step product work. Prefer this over guessing main vs feature branch.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Optional; defaults to active project session" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "create_branch",
+            "description": "Create an isolated feature branch (draft session) for multi-step work. Use automatically for fix campaigns / multi-file edits — do not thrash main. Returns new session_id; subsequent tools use it as the active work line. Name like fix-relay-opts or feat-auth.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "branch_name": { "type": "string", "description": "Feature branch name (e.g. fix-type-mismatch)" },
+                    "slug": { "type": "string", "description": "Project slug (default: current project)" },
+                    "base_branch": { "type": "string", "description": "Base to fork from (default main)" }
+                },
+                "required": ["branch_name"]
+            }
+        }),
+        json!({
+            "name": "session_commit",
+            "description": "Create a named commit (checkpoint) of the working tree with a message. Call after each successful slice: write_source → veil_check improved → session_commit. Autosave is NOT a commit. Message e.g. 'fix: Opt force-present in HandleExecute'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "Commit message describing the slice" },
+                    "session_id": { "type": "string" }
+                },
+                "required": ["message"]
+            }
+        }),
+        json!({
+            "name": "list_commits",
+            "description": "List named commits on the current coding session branch (newest first).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "merge_branch",
+            "description": "Merge the current feature branch working tree into product base (main). Only when the operator asked to land, or the task is complete with acceptable veil_check. Do not merge after thrash or failed fixes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "switch_main",
+            "description": "Switch active work line back to the sticky mainline session for the project (after merge or to abandon a feature branch). Does not delete the branch session.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "Project slug (default: current project)" }
+                },
+                "required": []
+            }
+        }),
         // Runtime observability (AGT-020–028)
         json!({
             "name": "dev_status",
@@ -519,81 +489,11 @@ fn mcp_tools() -> Vec<Value> {
             "description": "Last check/smoke log excerpt and VEIL_AGENT_SMOKE flag. Use after writes.",
             "inputSchema": { "type": "object", "properties": {}, "required": [] }
         }),
-        // Runtime shell UX control (omnipresent agent — navigate dashboard, SDLC, deploy)
-        json!({
-            "name": "navigate_to",
-            "description": "Navigate the VEIL runtime dashboard SPA to a path so the user sees the right page. Use for any UI destination: /dashboard, /projects, /projects/{id}, /changes, /changes/new, /deploy, /registry, /config, /agents. ALWAYS call this when the user asks to open/show a page or surface.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "SPA path starting with / (e.g. /changes, /projects/relay)"
-                    }
-                },
-                "required": ["path"]
-            }
-        }),
-        json!({
-            "name": "list_changes",
-            "description": "Show open change requests (SDLC). Navigates the UI to /changes. Use when the user asks to open changes, review PRs, or list change requests.",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
-        }),
-        json!({
-            "name": "create_change",
-            "description": "Open the create-change-request form (/changes/new). Use when the user wants a new PR/change request.",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
-        }),
-        json!({
-            "name": "list_projects",
-            "description": "Open the projects list in the runtime dashboard (/projects).",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
-        }),
-        json!({
-            "name": "open_project",
-            "description": "Open a project detail page in the runtime UI (and IDE entry). Pass project id or slug.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project": { "type": "string", "description": "Project id or slug (e.g. relay)" },
-                    "slug": { "type": "string", "description": "Alias for project" },
-                    "id": { "type": "string", "description": "Alias for project" }
-                },
-                "required": []
-            }
-        }),
-        json!({
-            "name": "open_ide",
-            "description": "Open the dual-loop IDE for a project inside the runtime shell (agent panel stays in the dashboard; path /projects/{id}/ide).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project": { "type": "string", "description": "Project id or slug" }
-                },
-                "required": ["project"]
-            }
-        }),
-        json!({
-            "name": "open_deploy",
-            "description": "Open the deploy surface in the runtime dashboard.",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
-        }),
-        json!({
-            "name": "open_registry",
-            "description": "Open the layer/stub registry page.",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
-        }),
-        json!({
-            "name": "open_dashboard",
-            "description": "Open the runtime home dashboard.",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
-        }),
-        json!({
-            "name": "open_config",
-            "description": "Open runtime configuration page.",
-            "inputSchema": { "type": "object", "properties": {}, "required": [] }
-        }),
-        // Mind Palace wiki tools (when MIND_PALACE=1 + AWS configured)
+    ];
+    // Platform UX (create_project, SDLC, deploy, nav) — full product surface
+    tools.extend(crate::platform_tools::tool_definitions());
+    // Mind Palace wiki tools (when MIND_PALACE=1 + AWS configured)
+    tools.extend([
         json!({
             "name": "wiki_search",
             "description": "Semantic search across Mind Palace wiki pages. Call this before answering VEIL platform/language questions.",
@@ -706,7 +606,8 @@ fn mcp_tools() -> Vec<Value> {
                 "required": []
             }
         }),
-    ]
+    ]);
+    tools
 }
 
 /// Handle a single MCP JSON-RPC request and return the response.
@@ -803,7 +704,7 @@ async fn dispatch_tool<P: SourceProvider>(
 ) -> Result<String, String> {
     // Platform UX tools (no project required) — agent controls the runtime dashboard.
     if is_platform_ux_tool(tool_name) {
-        return dispatch_platform_ux_tool(tool_name, arguments);
+        return crate::platform_tools::dispatch(tool_name, arguments).await;
     }
 
     // Hub `/api/mcp` may run without middleware project scope. Prefer task-local,
@@ -841,6 +742,19 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
         return dispatch_ws_tool(tool_name, arguments).await;
     }
 
+    // Git-shaped session tools
+    if matches!(
+        tool_name,
+        "session_status"
+            | "create_branch"
+            | "session_commit"
+            | "list_commits"
+            | "merge_branch"
+            | "switch_main"
+    ) {
+        return dispatch_session_git_tool(provider, tool_name, arguments).await;
+    }
+
     // Runtime observability tools need project_root only (no active source).
     let proj = crate::provider::hub::CURRENT_PROJECT
         .try_with(|n| n.clone())
@@ -858,6 +772,66 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             .project_root()
             .ok_or_else(|| "no project root — open a project first".to_string())?;
         return dispatch_runtime_tool(&root, tool_name, arguments, proj.as_deref()).await;
+    }
+
+    // Stub catalog tools — do not require active package source.
+    match tool_name {
+        "stub_list" => {
+            let root = provider.project_root();
+            return Ok(crate::stub_ops::tool_list_text(root.as_deref()));
+        }
+        "stub_get" => {
+            let name = arguments
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "stub_get requires 'name'".to_string())?;
+            let root = provider.project_root();
+            let r = crate::stub_ops::get_stub(root.as_deref(), name)?;
+            return serde_json::to_string_pretty(&r).map_err(|e| e.to_string());
+        }
+        "stub_gen" => {
+            let crate_name = arguments
+                .get("crate_name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "stub_gen requires 'crate_name'".to_string())?;
+            let features: Vec<String> = arguments
+                .get("features")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let write = arguments
+                .get("write")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let root = provider.project_root();
+            let r = crate::stub_ops::generate_stub(root.as_deref(), crate_name, &features, write)?;
+            return Ok(format!(
+                "Generated {} @ {} → {:?}\n{}",
+                r.entry.name,
+                r.entry.version,
+                r.entry.path,
+                r.entry.notes.join("; ")
+            ));
+        }
+        "stub_install" => {
+            let name = arguments
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "stub_install requires 'name'".to_string())?;
+            let root = provider
+                .project_root()
+                .ok_or_else(|| "no project root — open a project first".to_string())?;
+            let r = crate::stub_ops::install_stub_to_project(&root, name)?;
+            return Ok(format!(
+                "Installed {} @ {} → {:?}",
+                r.entry.name, r.entry.version, r.entry.path
+            ));
+        }
+        _ => {}
     }
 
     // ACS-011: list_routes may need active source for IR mode
@@ -941,14 +915,25 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .write_source("", content)
                 .await
                 .map_err(|e| format!("write failed: {e}"))?;
-            // Backend smoke (gen + cargo check). Restore file if broken.
+            // Backend smoke (gen + cargo check). Can take minutes on cold cargo;
+            // chat WS heartbeats keep the agent dock alive meanwhile.
             if let Some(root) = provider.project_root() {
                 let proj = crate::provider::hub::CURRENT_PROJECT
                     .try_with(|n| n.clone())
                     .ok();
+                tracing::info!(
+                    project = ?proj,
+                    path = %active_path,
+                    "write_source: starting dual-loop smoke (may take a while)"
+                );
+                let smoke_start = std::time::Instant::now();
                 if let Err(smoke_err) =
                     crate::devloop::smoke_agent_write(&root, &active_path, proj.as_deref())
                 {
+                    tracing::warn!(
+                        secs = smoke_start.elapsed().as_secs(),
+                        "write_source: smoke FAILED"
+                    );
                     if let Some(prev) = prev {
                         let _ = provider.write_source("", &prev).await;
                         let _ = crate::devloop::smoke_agent_write(
@@ -964,6 +949,10 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                          After success: list_routes → dev_restart → http_request."
                     ));
                 }
+                tracing::info!(
+                    secs = smoke_start.elapsed().as_secs(),
+                    "write_source: smoke OK"
+                );
             }
             let check = rig_tools::run_check(content, &registry);
             Ok(format!(
@@ -1145,7 +1134,9 @@ async fn resolve_session_for_ws(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
     {
-        return SessionManager::global().attach(sid);
+        let h = SessionManager::global().attach(sid)?;
+        SessionManager::global().set_active_for_project(&h.slug(), &h.session_id());
+        return Ok(h);
     }
     if let Ok(sid) = crate::session::CURRENT_SESSION.try_with(|s| s.clone()) {
         return SessionManager::global().attach(&sid);
@@ -1155,7 +1146,144 @@ async fn resolve_session_for_ws(
         .map_err(|_| {
             "ws_* tools need session_id, X-Veil-Session-Id, or project scope".to_string()
         })?;
-    SessionManager::global().get_or_create_default(&slug)
+    SessionManager::global().resolve_for_project(&slug)
+}
+
+fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Value {
+    let meta = h.snapshot_meta();
+    let uncommitted = h.has_uncommitted();
+    json!({
+        "session_id": meta.session_id,
+        "slug": meta.slug,
+        "branch_name": meta.branch_name.clone().unwrap_or_else(|| {
+            if meta.draft_mode { "work".into() } else { meta.branch.clone() }
+        }),
+        "base_branch": meta.base_branch.clone().unwrap_or_else(|| meta.branch.clone()),
+        "draft_mode": meta.draft_mode,
+        "on_feature_branch": meta.draft_mode,
+        "revision": meta.revision,
+        "committed_revision": meta.committed_revision,
+        "head_commit": meta.head_commit,
+        "uncommitted": uncommitted,
+        "dirty_files": meta.dirty,
+        "work_dir": h.work_dir.to_string_lossy(),
+    })
+}
+
+async fn dispatch_session_git_tool<P: SourceProvider>(
+    provider: &Arc<P>,
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<String, String> {
+    use crate::session::SessionManager;
+    let mgr = SessionManager::global();
+    if !crate::session::sessions_enabled() {
+        return Err(
+            "durable sessions disabled (set VEIL_SESSIONS=1 or VEIL_SOURCE_MODE=s3)".into(),
+        );
+    }
+
+    match tool_name {
+        "session_status" => {
+            let h = resolve_session_for_ws(arguments).await?;
+            Ok(serde_json::to_string_pretty(&session_status_json(&h)).unwrap_or_default())
+        }
+        "create_branch" => {
+            let branch_name = arguments
+                .get("branch_name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "create_branch requires branch_name".to_string())?;
+            let slug = arguments
+                .get("slug")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| crate::provider::hub::CURRENT_PROJECT.try_with(|n| n.clone()).ok())
+                .ok_or_else(|| {
+                    "create_branch needs project scope or slug argument".to_string()
+                })?;
+            let base = arguments.get("base_branch").and_then(|v| v.as_str());
+            let h = mgr.create_branch(&slug, base, true, Some(branch_name))?;
+            mgr.set_active_for_project(&slug, &h.session_id());
+            // Immediate hub rebind so in-process / same-turn tools hit the branch tree.
+            provider.bind_coding_session(&slug, h.provider.clone());
+            let status = session_status_json(&h);
+            Ok(serde_json::to_string_pretty(&json!({
+                "ok": true,
+                "switched": true,
+                "codingSessionId": h.session_id(),
+                "session_id": h.session_id(),
+                "branch_name": branch_name,
+                "message": format!(
+                    "Created branch '{branch_name}'. Active work line is now this session. \
+                     Continue with write_source / veil_check / session_commit on this branch."
+                ),
+                "session": status,
+            }))
+            .unwrap_or_default())
+        }
+        "session_commit" => {
+            let message = arguments
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "session_commit requires message".to_string())?;
+            let h = resolve_session_for_ws(arguments).await?;
+            let c = h.commit(message)?;
+            Ok(serde_json::to_string_pretty(&json!({
+                "ok": true,
+                "commit": {
+                    "commit_id": c.commit_id,
+                    "message": c.message,
+                    "revision": c.revision,
+                    "branch_name": c.branch_name,
+                    "created_at": c.created_at,
+                    "parent": c.parent,
+                },
+                "session": session_status_json(&h),
+            }))
+            .unwrap_or_default())
+        }
+        "list_commits" => {
+            let h = resolve_session_for_ws(arguments).await?;
+            let commits = crate::session::list_session_commits(&h.session_id())?;
+            Ok(serde_json::to_string_pretty(&json!({
+                "session_id": h.session_id(),
+                "commits": commits,
+            }))
+            .unwrap_or_default())
+        }
+        "merge_branch" => {
+            let h = resolve_session_for_ws(arguments).await?;
+            let v = h.merge_to_base()?;
+            Ok(serde_json::to_string_pretty(&v).unwrap_or_default())
+        }
+        "switch_main" => {
+            let slug = arguments
+                .get("slug")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| crate::provider::hub::CURRENT_PROJECT.try_with(|n| n.clone()).ok())
+                .ok_or_else(|| "switch_main needs project scope or slug".to_string())?;
+            // Drop preferred feature branch, then open sticky mainline.
+            mgr.clear_active_for_project(&slug);
+            let h = mgr.open_mainline(&slug)?;
+            mgr.set_active_for_project(&slug, &h.session_id());
+            provider.bind_coding_session(&slug, h.provider.clone());
+            Ok(serde_json::to_string_pretty(&json!({
+                "ok": true,
+                "switched": true,
+                "codingSessionId": h.session_id(),
+                "session_id": h.session_id(),
+                "session": session_status_json(&h),
+                "message": "Switched to mainline session",
+            }))
+            .unwrap_or_default())
+        }
+        other => Err(format!("unknown session git tool: {other}")),
+    }
 }
 
 async fn dispatch_ws_tool(tool_name: &str, arguments: &Value) -> Result<String, String> {

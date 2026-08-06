@@ -131,6 +131,15 @@ pub trait SourceProvider: Send + Sync + 'static {
         Err("register_file not supported".into())
     }
 
+    /// Bind a durable coding-session provider under a project slug (hub).
+    /// Default: no-op. Multi-project hub uses this after `create_branch`.
+    fn bind_coding_session(
+        &self,
+        _slug: &str,
+        _provider: std::sync::Arc<dyn SourceProvider>,
+    ) {
+    }
+
     /// Active IDE project root (single-project session). Default: unknown.
     fn project_root(&self) -> Option<std::path::PathBuf> {
         None

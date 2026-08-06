@@ -33,6 +33,8 @@ pub mod mcp;
 pub mod devloop;
 pub mod devloop_api;
 pub mod agent_runtime_tools;
+pub mod platform_tools;
+pub mod focus;
 pub mod layer_edit;
 pub mod project_layout;
 pub mod config;
@@ -40,6 +42,7 @@ pub mod product_host;
 pub mod chat_log;
 pub mod session;
 pub mod session_api;
+pub mod stub_ops;
 
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;
@@ -49,7 +52,8 @@ pub use provider::hub::{MultiProjectProvider, ProjectsHub};
 pub use project_layout::{
     collect_project_files, create_project, create_project_with_opts, ensure_project_shape,
     ensure_projects_dir, has_package_sources, init_project, is_core_platform_layer, list_projects,
-    project_display_name, ActiveProjectInfo, InitOptions, ProjectInfo,
+    mission_md_template, project_display_name, read_mission_for_agent, ActiveProjectInfo,
+    InitOptions, ProjectInfo, MISSION_MAX_INJECT_CHARS,
 };
 pub use config::{
     complete_first_run, config_path, ensure_config, ensure_config_interactive,

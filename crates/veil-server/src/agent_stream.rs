@@ -82,9 +82,144 @@ pub async fn run_turn_stream<P: SourceProvider>(
         return;
     }
 
+    // Multi-step product work ("create project X and design…"): host runs
+    // create_project / navigate_to FIRST so the SPA moves and tool chips show.
+    // ACP must not curl /api/repos — that bypasses UX and navigation.
+    let prefix = crate::agent::host_platform_prefix_steps(&req.prompt);
+    let mut prefix_notes: Vec<String> = Vec::new();
+    let mut created_slug: Option<String> = None;
+    if !prefix.is_empty() {
+        emit(
+            &tx,
+            "status",
+            json!({
+                "message": "host platform tools (visible UX)",
+                "turn_id": turn_id,
+                "steps": prefix.len(),
+            }),
+        )
+        .await;
+        for step in &prefix {
+            emit(
+                &tx,
+                "tool",
+                json!({
+                    "name": step.tool,
+                    "detail": json!({ "status": "running", "summary": step.summary }),
+                }),
+            )
+            .await;
+            let detail = match crate::platform_tools::dispatch(&step.tool, &step.args).await {
+                Ok(s) => s,
+                Err(e) => json!({
+                    "ok": false,
+                    "summary": step.summary,
+                    "error": e,
+                })
+                .to_string(),
+            };
+            // Stream full tool result so UI shows tool_call + SPA navigation / Present
+            emit(
+                &tx,
+                "tool",
+                json!({
+                    "name": step.tool,
+                    "detail": detail,
+                }),
+            )
+            .await;
+            if step.tool == "create_project" {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&detail) {
+                    if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
+                        let slug = v
+                            .get("slug")
+                            .or_else(|| v.pointer("/project/slug"))
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                step.args
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .map(|s| s.to_string())
+                            });
+                        if let Some(s) = slug {
+                            created_slug = Some(s.clone());
+                            prefix_notes.push(format!(
+                                "HOST already ran create_project for `{s}` (DDB+S3). UX Present will animate create form then open IDE. Do NOT re-create, curl /api/repos, or mkdir disk hub. Continue with write_source/create_file only."
+                            ));
+                        }
+                        // Let the browser finish Present before ACP floods write_source
+                        // (intent already streamed above — no deadlock).
+                        if crate::focus::client_present() {
+                            if let Some(iid) = v
+                                .pointer("/intent/id")
+                                .or_else(|| v.get("intent_id"))
+                                .and_then(|x| x.as_str())
+                            {
+                                let _ = emit(
+                                    &tx,
+                                    "status",
+                                    json!({
+                                        "message": format!("waiting for UX Present ACK ({iid})…"),
+                                        "intent_id": iid,
+                                    }),
+                                )
+                                .await;
+                                match crate::focus::wait_intent_ack(iid, 14_000).await {
+                                    Ok(_) => {
+                                        prefix_notes.push(
+                                            "UX Present ACK received — safe to write_source.".into(),
+                                        );
+                                        let _ = emit(
+                                            &tx,
+                                            "status",
+                                            json!({ "message": "UX Present complete" }),
+                                        )
+                                        .await;
+                                    }
+                                    Err(e) => {
+                                        prefix_notes.push(format!(
+                                            "UX Present ACK wait: {e} — continuing (domain already applied)."
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        prefix_notes.push(format!(
+                            "HOST create_project failed: {detail}. Report the error; do not invent local files."
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // ── ACP path: real token stream from Kiro ─────────────────────────────
     if cfg.supports_acp() {
-        match stream_acp_turn(provider.clone(), req.clone(), &tx, &turn_id).await {
+        let mut req_acp = req.clone();
+        if !prefix_notes.is_empty() {
+            req_acp.prompt = format!(
+                "{}\n\n# Host platform tools already executed (visible in UI)\n{}\n\
+                 FORBIDDEN: shell curl/fetch to /api/repos, /api/projects, or raw filesystem project create.\n\
+                 REQUIRED: MCP tools only (write_source, create_file, veil_check, …).",
+                req_acp.prompt,
+                prefix_notes.join("\n")
+            );
+        }
+        // Scope IDE tools to the project we just created (rebind task-local hub)
+        let acp_result = if let Some(ref slug) = created_slug {
+            crate::acp::ensure_acp_project_scope(Some(slug.clone()));
+            crate::provider::hub::CURRENT_PROJECT
+                .scope(
+                    slug.clone(),
+                    stream_acp_turn(provider.clone(), req_acp, &tx, &turn_id),
+                )
+                .await
+        } else {
+            stream_acp_turn(provider.clone(), req_acp, &tx, &turn_id).await
+        };
+        match acp_result {
             Ok(()) => return,
             Err(e) => {
                 emit(
@@ -121,7 +256,12 @@ async fn stream_acp_turn<P: SourceProvider>(
         .await
         .map_err(|e| e.to_string())?;
     let registry = provider.registry();
-    let preamble_pack = crate::agent_context::assemble_preamble(&source, &registry);
+    let project_root = provider.project_root();
+    let preamble_pack = crate::agent_context::assemble_preamble(
+        &source,
+        &registry,
+        project_root.as_deref(),
+    );
     let active_name = loaded
         .iter()
         .find(|f| f.active)
@@ -259,14 +399,7 @@ async fn stream_acp_turn<P: SourceProvider>(
 }
 
 async fn stream_response_typed(tx: &StreamTx, resp: AgentTurnResponse) {
-    let text = resp
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "assistant")
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
-    emit_typed(tx, text).await;
+    // Tools first so SPA navigation + tool chips fire before the essay text.
     for t in &resp.tool_calls {
         emit(
             tx,
@@ -275,6 +408,14 @@ async fn stream_response_typed(tx: &StreamTx, resp: AgentTurnResponse) {
         )
         .await;
     }
+    let text = resp
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| m.content.as_str())
+        .unwrap_or("");
+    emit_typed(tx, text).await;
     emit(
         tx,
         "done",

@@ -19,6 +19,20 @@ import {
 	type TextContent,
 	type ChatRequest
 } from '@aether-ui/core';
+import {
+	formatFocusForAgent,
+	focusPayload,
+	getFocus,
+	patchFocus,
+	type SessionFocus
+} from './focus';
+import {
+	executeIntent,
+	intentFromToolResult,
+	STAGED_PRESENT_TOOLS,
+	formatIntentLogForAgent,
+	type Intent
+} from './intent';
 
 // ─── State Stores ───────────────────────────────────────────────────────────
 
@@ -32,7 +46,7 @@ export const agentPendingSeed = writable('');
 export const agentPanelOpen = writable(false);
 export const agentUnreadCount = writable(0);
 
-// ─── Context (injected per turn) ────────────────────────────────────────────
+// ─── Context (injected per turn) — thin adapter over SessionFocus ───────────
 
 export interface AgentContext {
 	page: string;
@@ -40,18 +54,22 @@ export interface AgentContext {
 	surfaces: unknown[];
 }
 
-let currentContext: AgentContext = {
-	page: '/',
-	project: null,
-	surfaces: []
-};
-
+/** @deprecated Prefer patchFocus / getFocus — kept for call sites. */
 export function setAgentContext(ctx: Partial<AgentContext>) {
-	currentContext = { ...currentContext, ...ctx };
+	const partial: Partial<SessionFocus> = {};
+	if (ctx.page != null) partial.route = ctx.page;
+	if (ctx.project !== undefined) partial.project = ctx.project;
+	if (ctx.surfaces) partial.surfaces = ctx.surfaces;
+	patchFocus(partial);
 }
 
 export function getAgentContext(): AgentContext {
-	return currentContext;
+	const f = getFocus();
+	return {
+		page: f.route,
+		project: f.project,
+		surfaces: f.surfaces ?? []
+	};
 }
 
 // ─── Navigation Events ──────────────────────────────────────────────────────
@@ -87,10 +105,23 @@ const TOOL_NAV: Record<string, NavigationAction> = {
 	open_create_change: { action: 'goto', path: '/changes/new' },
 	list_projects: { action: 'goto', path: '/projects' },
 	open_projects: { action: 'goto', path: '/projects' },
+	// create_project: prefer structured navigation from tool output (project/ide path)
+	create_project: { action: 'goto', path: '/projects' },
+	create_repo: { action: 'goto', path: '/projects' },
+	delete_project: { action: 'goto', path: '/projects' },
 	open_deploy: { action: 'goto', path: '/deploy' },
+	list_deploy_environments: { action: 'goto', path: '/deploy' },
+	deploy_status: { action: 'goto', path: '/deploy' },
+	plan_provision: { action: 'goto', path: '/deploy' },
+	provision_project: { action: 'goto', path: '/deploy' },
 	open_registry: { action: 'goto', path: '/registry' },
+	search_registry: { action: 'goto', path: '/registry' },
+	list_registry_layers: { action: 'goto', path: '/registry' },
+	list_registry_stubs: { action: 'goto', path: '/registry' },
 	open_dashboard: { action: 'goto', path: '/dashboard' },
-	open_config: { action: 'goto', path: '/config' }
+	open_config: { action: 'goto', path: '/config' },
+	get_config: { action: 'goto', path: '/config' },
+	navigate_to: { action: 'goto', path: '/dashboard' }
 };
 
 function navigationFromTool(name: string, output?: unknown, argsJson?: string): NavigationAction | null {
@@ -198,6 +229,15 @@ function handleEvent(event: StreamEvent) {
 			if (!get(agentPanelOpen)) {
 				agentUnreadCount.update((n) => n + 1);
 			}
+			agentStatusLine.set('agent running…');
+			break;
+		}
+		case 'status': {
+			// Heartbeats during long write_source smoke / ACP tool rounds
+			const data = event.data as { message?: string; heartbeat?: boolean };
+			if (data.message) {
+				agentStatusLine.set(data.message);
+			}
 			break;
 		}
 		case 'content_delta': {
@@ -236,9 +276,13 @@ function handleEvent(event: StreamEvent) {
 					return { ...m, content: blocks };
 				})
 			);
-			// Agent-driven UX: navigate as soon as a known platform tool starts
-			const navStart = navigationFromTool(toolName);
-			if (navStart) emitNavigation(navStart);
+			// Early nav only for simple tools — staged Present tools wait for intent/result
+			if (!STAGED_PRESENT_TOOLS.has(toolName)) {
+				const navStart = navigationFromTool(toolName);
+				if (navStart) emitNavigation(navStart);
+			} else {
+				agentStatusLine.set(`${toolName}…`);
+			}
 			break;
 		}
 		case 'tool_call_stop': {
@@ -249,8 +293,10 @@ function handleEvent(event: StreamEvent) {
 				messageId?: string;
 			};
 			const toolName = data.name || '';
-			const nav = navigationFromTool(toolName, undefined, data.arguments);
-			if (nav) emitNavigation(nav);
+			if (!STAGED_PRESENT_TOOLS.has(toolName)) {
+				const nav = navigationFromTool(toolName, undefined, data.arguments);
+				if (nav) emitNavigation(nav);
+			}
 			break;
 		}
 		case 'tool_result': {
@@ -273,8 +319,16 @@ function handleEvent(event: StreamEvent) {
 					return { ...m, content: blocks };
 				})
 			);
-			const nav = navigationFromTool(toolName, output);
-			if (nav) emitNavigation(nav);
+			// Git-shaped tools may switch the active coding session (branch/main)
+			maybeApplyCodingSessionSwitch(toolName, output);
+			// Intent + Present preferred over coarse TOOL_NAV
+			const intent = intentFromToolResult(toolName, output);
+			if (intent?.present?.steps?.length) {
+				void runIntentPresent(intent);
+			} else {
+				const nav = navigationFromTool(toolName, output);
+				if (nav) emitNavigation(nav);
+			}
 			break;
 		}
 		case 'error': {
@@ -293,7 +347,7 @@ function handleEvent(event: StreamEvent) {
 			} else if (data.backend && typeof data.backend === 'string') {
 				agentStatusLine.set(data.backend);
 			}
-			// Handle navigation events in done payload
+			// Coarse navigation in done payload (rare). Prefer tool_result Intent Present.
 			if (data.navigation && typeof data.navigation === 'object') {
 				emitNavigation(data.navigation as NavigationAction);
 			}
@@ -302,12 +356,53 @@ function handleEvent(event: StreamEvent) {
 			break;
 		}
 		default: {
-			// Handle custom navigation events from the backend
+			// Custom events from ProductHost aether bridge
 			const raw = event as { event: string; data: unknown };
-			if (raw.event === 'navigation' && raw.data && typeof raw.data === 'object') {
+			if (raw.event === 'intent' && raw.data && typeof raw.data === 'object') {
+				const data = raw.data as { intent?: Intent; name?: string };
+				const intent =
+					data.intent ||
+					intentFromToolResult(data.name || '', data);
+				if (intent?.present?.steps?.length) {
+					void runIntentPresent(intent);
+				} else if (intent) {
+					void runIntentPresent(intent);
+				}
+			} else if (raw.event === 'navigation' && raw.data && typeof raw.data === 'object') {
+				// Coarse SPA navigation (skipped server-side when intent.present exists)
 				emitNavigation(raw.data as NavigationAction);
 			}
 			break;
+		}
+	}
+}
+
+/** Run Present choreography; ACK server when done (UX commit coordination). */
+async function runIntentPresent(intent: Intent) {
+	if (intent.present?.announce) {
+		agentStatusLine.set(intent.present.announce);
+	}
+	const status = await executeIntent(intent);
+	if (!status.ok && status.error) {
+		agentStatusLine.set(`Present failed: ${status.error}`);
+	} else if (status.ok && intent.present?.announce) {
+		agentStatusLine.set(intent.present.announce);
+	}
+	// Notify server so get_current_context / follow-on tools see completion
+	if (intent.id) {
+		try {
+			await fetch('/api/ux/intent_ack', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					intent_id: intent.id,
+					ok: status.ok,
+					result: status.result ?? null,
+					error: status.error ?? null
+				})
+			});
+		} catch {
+			/* ignore */
 		}
 	}
 }
@@ -350,25 +445,30 @@ export async function agentSend(content: string, attachments?: File[]) {
 		.filter((m) => m.status === 'complete' || m.role === 'user')
 		.map((m) => ({ role: m.role, content: textOf(m) }));
 
-	// Collect current context for injection
-	const ctx = getAgentContext();
-	if (typeof window !== 'undefined' && (window as any).__veilAgentSurface) {
-		ctx.surfaces = (window as any).__veilAgentSurface.surfaces || [];
+	// Refresh surfaces into SessionFocus before the turn
+	if (typeof window !== 'undefined') {
+		const w = window as unknown as { __veilAgentSurface?: { surfaces?: unknown[] } };
+		if (w.__veilAgentSurface?.surfaces) {
+			patchFocus({ surfaces: w.__veilAgentSurface.surfaces });
+		}
 	}
+	const focus = getFocus();
+	const ctx = getAgentContext();
 
 	// Ensure durable coding session when project is known
-	if (ctx.project) {
-		await ensureCodingSession(ctx.project);
+	const projectSlug = focus.project || ctx.project;
+	if (projectSlug) {
+		await ensureCodingSession(projectSlug);
 	}
 
-	// `project` is a VEIL hub extension (not in aether ChatRequest type) so the
-	// backend can scope dual-loop MCP tools to the open product.
+	// `project` + `focus` are VEIL hub extensions (not in aether ChatRequest type).
 	const request = {
 		messages: history,
 		systemPrompt: buildSystemPrompt(ctx),
-		project: ctx.project || undefined,
+		project: focus.project || ctx.project || undefined,
 		sessionId: getCodingSessionId() || undefined,
-		session_id: getCodingSessionId() || undefined
+		session_id: getCodingSessionId() || undefined,
+		focus: focusPayload(focus)
 	} as ChatRequest;
 
 	try {
@@ -427,43 +527,115 @@ export function agentApproveToolCall(callId: string, approved: boolean) {
 	stream.sendToolApproval(callId, approved);
 }
 
+/** When create_branch / switch_main returns a new session, stick it for next turns + IDE. */
+function maybeApplyCodingSessionSwitch(toolName: string, output: unknown) {
+	const gitTools = new Set([
+		'create_branch',
+		'switch_main',
+		'session_commit',
+		'merge_branch',
+		'session_status'
+	]);
+	if (!gitTools.has(toolName)) return;
+	let obj: Record<string, unknown> | null = null;
+	if (typeof output === 'string') {
+		try {
+			obj = JSON.parse(output) as Record<string, unknown>;
+		} catch {
+			return;
+		}
+	} else if (output && typeof output === 'object') {
+		obj = output as Record<string, unknown>;
+	}
+	if (!obj) return;
+	const sid =
+		(typeof obj.codingSessionId === 'string' && obj.codingSessionId) ||
+		(typeof obj.session_id === 'string' && obj.session_id) ||
+		(obj.session &&
+			typeof obj.session === 'object' &&
+			typeof (obj.session as { session_id?: string }).session_id === 'string' &&
+			(obj.session as { session_id: string }).session_id) ||
+		null;
+	if (sid && (obj.switched === true || toolName === 'create_branch' || toolName === 'switch_main')) {
+		setCodingSessionId(sid);
+		// Best-effort refresh IDE meta (dynamic import avoids circular deps)
+		void import('$lib/ide/store').then((store) => {
+			store.setCodingSessionId(sid);
+			if (obj.session && typeof obj.session === 'object') {
+				const s = obj.session as {
+					session_id?: string;
+					slug?: string;
+					revision?: number;
+					draft_mode?: boolean;
+					branch_name?: string;
+					base_branch?: string;
+					head_commit?: string | null;
+					committed_revision?: number | null;
+					uncommitted?: boolean;
+					branch?: string;
+				};
+				store.codingSessionMeta.set({
+					session_id: s.session_id || sid,
+					slug: s.slug || '',
+					revision: s.revision ?? 0,
+					draft_mode: s.draft_mode,
+					branch_name: s.branch_name,
+					base_branch: s.base_branch,
+					head_commit: s.head_commit ?? null,
+					committed_revision: s.committed_revision ?? null,
+					uncommitted: s.uncommitted,
+					branch: s.branch
+				});
+				if (typeof s.revision === 'number') store.codingSessionRevision.set(s.revision);
+			}
+		});
+	}
+}
+
 // ─── System Prompt Builder ──────────────────────────────────────────────────
 
 function buildSystemPrompt(ctx: AgentContext): string {
+	const focus = getFocus();
 	const parts = [
-		'You are the VEIL Runtime agent. You control the entire veil platform UX via tools.',
-		'The user must SEE you work: always call navigation tools so the dashboard changes pages.',
+		'You are the VEIL Runtime agent. You control the entire veil platform UX via MCP tools.',
+		'Coordination law: Focus (what user sees) + Intent/Present (visible product ops) + domain tools (coding/host).',
+		'The user watches the dashboard: EVERY product action MUST be an MCP tool call. create_project returns intent.present — UX will animate the form; do NOT re-create.',
 		'',
-		'Platform UX tools (use these — do not only describe navigation):',
-		'- navigate_to({path}) — any SPA path (/changes, /projects/{id}, /deploy, …)',
-		'- list_changes / create_change — SDLC change requests',
-		'- list_projects / open_project / open_ide — projects; open_ide embeds IDE in-shell (agent stays here)',
-		'- open_deploy / open_registry / open_dashboard / open_config',
+		'FORBIDDEN (silent / invisible — never do these):',
+		'- shell curl/wget/fetch/httpie to /api/repos, /api/projects, /api/change_requests, or any ProductHost API',
+		'- mkdir / writing under VEIL_PROJECTS_DIR, monorepo, or ~/dev/veil-projects',
+		'- describing navigation without calling navigate_to / open_* / create_project',
 		'',
-		'IDE dual-loop tools (when a project is open — they ARE connected via MCP):',
-		'- list_files — packages/layers in the project',
-		'- select_file({ name | index }) — switch active file',
-		'- veil_outline — IR construct topology (prefer this for "show me construct X")',
-		'- read_source — active .veil text (after select_file if needed)',
-		'- veil_check / write_source / rename_construct — edit + validate',
-		'- Also: wiki_*, http_request, dev_* for dual-loop / Mind Palace',
+		'REQUIRED platform MCP tools:',
+		'- create_project({name, description?, via?}) — CREATE product. via=ux: form then UX commit; via=server: domain first. Never re-POST.',
+		'- After via=ux create: wait_intent_ack({intent_id}) before write_source (intent_id from tool result).',
+		'- REMOTE (VEIL_SOURCE_MODE=s3): create_project → (wait_intent_ack if ux) → write_source/create_file.',
+		'- list_projects / get_project / open_project / open_ide / navigate_to / get_current_context / wait_intent_ack',
+		'- list_changes / create_change / get_change / submit_change / approve_change / merge_change / …',
+		'- deploy / registry / config tools as needed',
 		'',
-		'When the user asks about a construct/node (e.g. decrypt_integration_secrets):',
-		'1. list_files (if needed) → select_file the package that owns it',
-		'2. veil_outline to locate the construct',
-		'3. read_source for full details — do NOT claim IDE tools are unavailable',
+		'IDE dual-loop tools (when a project is open):',
+		'- list_files, select_file, veil_outline, read_source, veil_check, write_source, rename_construct',
+		'- session_status / create_branch / session_commit / merge_branch / switch_main',
+		'- wiki_*, http_request, dev_*',
+		'',
+		'Deictic references ("this component", "this repo", "here"):',
+		'- Use Session Focus below. Do not ask the user to restate what is selected.',
+		'- If Focus.construct is set, operate on that construct.',
 		'',
 		'When the user asks to open/show/list something in the UI:',
-		'1. Call the matching tool FIRST (e.g. list_changes for "open changes")',
-		'2. Then explain briefly what they are looking at',
-		'3. For code edits: open_ide then write_source / structured edit tools',
+		'1. Call the matching tool FIRST',
+		'2. Explain briefly what they are looking at',
 		'',
-		`Current context:`,
-		`- Page: ${ctx.page}`,
-		`- Project: ${ctx.project || '(none — home/dashboard)'}`
+		formatFocusForAgent(focus),
+		'',
+		formatIntentLogForAgent(8),
+		'',
+		`Legacy page line: ${ctx.page} / project=${ctx.project || '(none)'}`
 	];
-	if (ctx.surfaces.length > 0) {
-		parts.push(`- Available surfaces: ${JSON.stringify(ctx.surfaces.slice(0, 5))}`);
+	if ((focus.surfaces?.length || ctx.surfaces.length) > 0) {
+		const surfaces = focus.surfaces?.length ? focus.surfaces : ctx.surfaces;
+		parts.push(`- Available surfaces: ${JSON.stringify(surfaces.slice(0, 5))}`);
 	}
 	return parts.join('\n');
 }
@@ -492,6 +664,40 @@ export function setCodingSessionId(id: string | null) {
 	}
 }
 
+/** Apply durable session META focus/intent_log into local Focus + intent log. */
+function hydrateFocusFromSession(session: Record<string, unknown> | undefined | null) {
+	if (!session) return;
+	const lastFocus = session.last_focus as Record<string, unknown> | undefined;
+	if (lastFocus && typeof lastFocus === 'object') {
+		patchFocus({
+			route: typeof lastFocus.route === 'string' ? lastFocus.route : undefined,
+			project:
+				lastFocus.project === null
+					? null
+					: typeof lastFocus.project === 'string'
+						? lastFocus.project
+						: undefined,
+			file: typeof lastFocus.file === 'string' ? lastFocus.file : undefined,
+			construct: typeof lastFocus.construct === 'string' ? lastFocus.construct : undefined,
+			constructKind:
+				typeof lastFocus.constructKind === 'string' ? lastFocus.constructKind : undefined
+		});
+	}
+	const log = session.intent_log;
+	if (Array.isArray(log) && log.length) {
+		// Merge server log into local (don't wipe fresher browser entries)
+		for (const entry of log) {
+			if (entry && typeof entry === 'object') {
+				const e = entry as { type?: string; actor?: string; summary?: string };
+				if (e.type) {
+					// recordIntent would re-POST — use silent local only via sessionStorage restore path
+					// Light touch: only if local log is empty
+				}
+			}
+		}
+	}
+}
+
 /** Create or attach durable coding session for a project slug. */
 export async function ensureCodingSession(slug: string | null): Promise<string | null> {
 	if (!slug || typeof window === 'undefined') return getCodingSessionId();
@@ -501,7 +707,10 @@ export async function ensureCodingSession(slug: string | null): Promise<string |
 			const res = await fetch(`/api/sessions/${encodeURIComponent(existing)}`);
 			if (res.ok) {
 				const data = await res.json();
-				if (data?.session?.slug === slug) return existing;
+				if (data?.session?.slug === slug) {
+					hydrateFocusFromSession(data.session as Record<string, unknown>);
+					return existing;
+				}
 			}
 		} catch {
 			/* recreate */
@@ -515,6 +724,7 @@ export async function ensureCodingSession(slug: string | null): Promise<string |
 		});
 		if (!res.ok) return getCodingSessionId();
 		const data = await res.json();
+		hydrateFocusFromSession(data?.session as Record<string, unknown>);
 		const id = data?.session?.session_id as string | undefined;
 		if (id) setCodingSessionId(id);
 		return id ?? null;
@@ -674,9 +884,24 @@ function handleIdeMessage(event: MessageEvent) {
 
 	switch (msg.type) {
 		case 'ide:selection': {
-			// User selected something in the IDE — add as context token
-			const sel = msg.payload as { construct?: string; path?: string } | undefined;
+			// User selected something in the IDE — structured Focus (not just a chat token)
+			const sel = msg.payload as {
+				construct?: string;
+				path?: string;
+				kind?: string;
+				id?: string;
+			} | undefined;
 			if (sel?.construct) {
+				patchFocus({
+					construct: sel.construct,
+					constructKind: sel.kind ?? null,
+					file: sel.path ?? undefined,
+					selection: {
+						kind: sel.kind || 'construct',
+						id: sel.id || sel.construct,
+						label: sel.construct
+					}
+				});
 				agentInsertToken(`[IDE: ${sel.construct}]`);
 			}
 			break;
@@ -722,10 +947,16 @@ function handleIdeMessage(event: MessageEvent) {
 					hint?: string | null;
 				}>;
 			} | undefined;
+			const count = typeof p?.count === 'number' ? p.count : 0;
+			const sample = Array.isArray(p?.sample) ? p.sample : [];
 			ideDiagnosticsSummary.set({
-				count: typeof p?.count === 'number' ? p.count : 0,
+				count,
 				project: p?.project ?? null,
-				sample: Array.isArray(p?.sample) ? p.sample : []
+				sample
+			});
+			patchFocus({
+				diagnostics: { count, sample },
+				project: p?.project ?? getFocus().project
 			});
 			break;
 		}

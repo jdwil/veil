@@ -9,8 +9,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::session::{
-    append_turn, current_user_id, delete_session_meta, list_sessions_for_user, list_turns,
-    sessions_enabled, SessionManager, SessionTurn, WorkspaceFs,
+    append_turn, current_user_id, delete_session_meta, list_session_commits, list_sessions_for_user,
+    list_turns, sessions_enabled, SessionManager, SessionTurn, WorkspaceFs,
 };
 use crate::provider::hub::MultiProjectProvider;
 use std::sync::Arc;
@@ -24,6 +24,12 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/sessions/{id}/reset", post(reset_session))
         .route("/api/sessions/{id}/flush", post(flush_session))
         .route("/api/sessions/{id}/turns", get(get_turns).post(post_turn))
+        // Git-shaped workflow
+        .route(
+            "/api/sessions/{id}/commits",
+            get(list_commits).post(create_commit),
+        )
+        .route("/api/sessions/{id}/merge", post(merge_session))
         // Workspace tools (also exposed via MCP)
         .route("/api/sessions/{id}/ws/list", post(ws_list))
         .route("/api/sessions/{id}/ws/read", post(ws_read))
@@ -31,6 +37,12 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/sessions/{id}/ws/str_replace", post(ws_str_replace))
         .route("/api/sessions/{id}/ws/grep", post(ws_grep))
         .route("/api/sessions/{id}/ws/rm", post(ws_rm))
+        // Intent Present commit targets (Agent → UX → Server product path)
+        .route("/api/ux/create_project", post(ux_create_project))
+        .route("/api/ux/create_change", post(ux_create_change))
+        .route("/api/ux/intent_log", post(ux_intent_log).get(ux_intent_log_list))
+        .route("/api/ux/intent_ack", post(ux_intent_ack))
+        .route("/api/ux/intent_ack/{id}", get(ux_intent_ack_get))
 }
 
 fn json_ok(v: serde_json::Value) -> axum::response::Response {
@@ -54,10 +66,15 @@ fn err_resp(status: StatusCode, msg: impl Into<String>) -> axum::response::Respo
 #[derive(Deserialize)]
 struct CreateBody {
     slug: String,
+    /// Product base branch to materialize from (default main).
     #[serde(default)]
     branch: Option<String>,
+    /// Legacy: draft isolation. Prefer `branch_name` for git-shaped branches.
     #[serde(default)]
     draft: Option<bool>,
+    /// Git-shaped feature branch name (e.g. `fix-relay-opts`). Implies isolation.
+    #[serde(default)]
+    branch_name: Option<String>,
 }
 
 async fn create_session(Json(body): Json<CreateBody>) -> axum::response::Response {
@@ -70,23 +87,104 @@ async fn create_session(Json(body): Json<CreateBody>) -> axum::response::Respons
     let mgr = SessionManager::global();
     let slug = body.slug.trim();
     let draft = body.draft.unwrap_or(false);
-    // Non-draft: sticky get-or-create (warm workdir, no duplicate S3 syncs)
-    let result = if !draft && body.branch.is_none() {
+    let branch_name = body
+        .branch_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    // Mainline sticky: no draft, no branch_name
+    let result = if !draft && branch_name.is_none() && body.branch.is_none() {
         mgr.get_or_create_default(slug)
     } else {
-        mgr.create_with_opts(slug, body.branch.as_deref(), draft)
+        mgr.create_branch(slug, body.branch.as_deref(), draft, branch_name)
     };
     match result {
         Ok(h) => {
             let meta = h.snapshot_meta();
+            let reused = !meta.draft_mode && branch_name.is_none();
             json_ok(json!({
                 "ok": true,
-                "session": meta,
+                "session": session_json(&h),
                 "work_dir": h.work_dir.to_string_lossy(),
-                "reused": !draft,
+                "reused": reused,
             }))
         }
         Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+fn session_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> serde_json::Value {
+    let meta = h.snapshot_meta();
+    let uncommitted = h.has_uncommitted();
+    json!({
+        "session_id": meta.session_id,
+        "user_id": meta.user_id,
+        "slug": meta.slug,
+        "repo_id": meta.repo_id,
+        "branch": meta.branch,
+        "branch_name": meta.branch_name.clone().unwrap_or_else(|| {
+            if meta.draft_mode { "work".into() } else { meta.branch.clone() }
+        }),
+        "base_branch": meta.base_branch.clone().unwrap_or_else(|| meta.branch.clone()),
+        "work_prefix": meta.work_prefix,
+        "revision": meta.revision,
+        "committed_revision": meta.committed_revision,
+        "head_commit": meta.head_commit,
+        "uncommitted": uncommitted,
+        "draft_mode": meta.draft_mode,
+        "active_file": meta.active_file,
+        "open_files": meta.open_files,
+        "dirty": meta.dirty,
+        "created_at": meta.created_at,
+        "updated_at": meta.updated_at,
+        "last_focus": meta.last_focus,
+        "intent_log": meta.intent_log,
+        "last_activity_at": meta.last_activity_at,
+    })
+}
+
+#[derive(Deserialize)]
+struct CommitBody {
+    message: String,
+}
+
+async fn create_commit(
+    Path(id): Path<String>,
+    Json(body): Json<CommitBody>,
+) -> axum::response::Response {
+    let h = match SessionManager::global().attach(&id) {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
+    };
+    match h.commit(&body.message) {
+        Ok(c) => json_ok(json!({
+            "ok": true,
+            "commit": c,
+            "session": session_json(&h),
+        })),
+        Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn list_commits(Path(id): Path<String>) -> axum::response::Response {
+    // Ensure session exists / attach for auth side-effects
+    if let Err(e) = SessionManager::global().attach(&id) {
+        return err_resp(StatusCode::NOT_FOUND, e);
+    }
+    match list_session_commits(&id) {
+        Ok(commits) => json_ok(json!({ "session_id": id, "commits": commits })),
+        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn merge_session(Path(id): Path<String>) -> axum::response::Response {
+    let h = match SessionManager::global().attach(&id) {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
+    };
+    match h.merge_to_base() {
+        Ok(v) => json_ok(v),
+        Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
     }
 }
 
@@ -100,13 +198,10 @@ async fn list_sessions() -> axum::response::Response {
 
 async fn get_session(Path(id): Path<String>) -> axum::response::Response {
     match SessionManager::global().attach(&id) {
-        Ok(h) => {
-            let meta = h.snapshot_meta();
-            json_ok(json!({
-                "session": meta,
-                "work_dir": h.work_dir.to_string_lossy(),
-            }))
-        }
+        Ok(h) => json_ok(json!({
+            "session": session_json(&h),
+            "work_dir": h.work_dir.to_string_lossy(),
+        })),
         Err(e) => err_resp(StatusCode::NOT_FOUND, e),
     }
 }
@@ -406,4 +501,184 @@ pub async fn post_autosave(
         StatusCode::BAD_REQUEST,
         "autosave requires X-Veil-Session-Id and an attached session",
     )
+}
+
+// ─── UX Present commit targets (Agent → Present → UX → Server) ───────────────
+
+#[derive(Deserialize)]
+struct UxCreateProjectBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    open: Option<bool>,
+    #[serde(default)]
+    open_ide: Option<bool>,
+}
+
+/// Domain create after Present choreography — same as agent create_project domain.
+async fn ux_create_project(Json(body): Json<UxCreateProjectBody>) -> axum::response::Response {
+    match crate::platform_tools::create_project_domain(&body.name, body.description.as_deref())
+        .await
+    {
+        Ok(mut v) => {
+            let ok = v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
+            let slug = v
+                .get("slug")
+                .and_then(|s| s.as_str())
+                .unwrap_or(&body.name)
+                .to_string();
+            let open_ide = body.open_ide.unwrap_or(true);
+            let open = body.open.unwrap_or(true);
+            let path = if open_ide {
+                format!("/projects/{slug}/ide")
+            } else if open {
+                format!("/projects/{slug}")
+            } else {
+                "/projects".into()
+            };
+            v["path"] = json!(path);
+            v["id"] = json!(slug);
+            crate::focus::push_intent_log(json!({
+                "type": "CreateProject",
+                "actor": "ux",
+                "summary": slug,
+                "domain": "server",
+                "ts": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0),
+            }));
+            if ok {
+                json_ok(v)
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    v.to_string(),
+                )
+                    .into_response()
+            }
+        }
+        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct UxCreateChangeBody {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    repo_id: Option<String>,
+}
+
+async fn ux_create_change(Json(body): Json<UxCreateChangeBody>) -> axum::response::Response {
+    let args = json!({
+        "title": body.title,
+        "description": body.description,
+        "slug": body.slug.or(body.project.clone()),
+        "project": body.project,
+        "repo_id": body.repo_id,
+        "via": "server",
+    });
+    match crate::platform_tools::dispatch("create_change", &args).await {
+        Ok(s) => {
+            let v: serde_json::Value = serde_json::from_str(&s).unwrap_or(json!({ "raw": s }));
+            let ok = v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
+            // Normalize id for resultPathTemplate
+            let mut out = v.clone();
+            if let Some(id) = v
+                .pointer("/change_request/id")
+                .or_else(|| v.pointer("/change_request/change_request/id"))
+                .or_else(|| v.get("id"))
+                .cloned()
+            {
+                out["id"] = id;
+            }
+            if let Some(path) = v.pointer("/navigation/path").cloned() {
+                out["path"] = path;
+            }
+            if ok {
+                json_ok(out)
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    out.to_string(),
+                )
+                    .into_response()
+            }
+        }
+        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct IntentLogBody {
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+}
+
+async fn ux_intent_log(Json(body): Json<IntentLogBody>) -> axum::response::Response {
+    crate::focus::push_intent_log(json!({
+        "type": body.r#type.unwrap_or_else(|| "Unknown".into()),
+        "actor": body.actor.unwrap_or_else(|| "human".into()),
+        "summary": body.summary.unwrap_or_default(),
+        "payload": body.payload,
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+    }));
+    json_ok(json!({ "ok": true }))
+}
+
+async fn ux_intent_log_list() -> axum::response::Response {
+    json_ok(json!({
+        "ok": true,
+        "intents": crate::focus::recent_intents(20),
+        "acks": crate::focus::recent_acks(12),
+    }))
+}
+
+#[derive(Deserialize)]
+struct IntentAckBody {
+    intent_id: String,
+    #[serde(default)]
+    ok: Option<bool>,
+    #[serde(default)]
+    result: Option<serde_json::Value>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Browser finished Present (and optional UX domain commit).
+async fn ux_intent_ack(Json(body): Json<IntentAckBody>) -> axum::response::Response {
+    let ok = body.ok.unwrap_or(true);
+    let result = json!({
+        "ok": ok,
+        "intent_id": body.intent_id,
+        "result": body.result,
+        "error": body.error,
+    });
+    crate::focus::ack_intent(&body.intent_id, result.clone());
+    json_ok(json!({ "ok": true, "acked": body.intent_id, "detail": result }))
+}
+
+async fn ux_intent_ack_get(Path(id): Path<String>) -> axum::response::Response {
+    match crate::focus::get_intent_ack(&id) {
+        Some(v) => json_ok(json!({ "ok": true, "ack": v })),
+        None => json_ok(json!({ "ok": false, "pending": true, "intent_id": id })),
+    }
 }

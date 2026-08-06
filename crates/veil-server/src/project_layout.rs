@@ -164,10 +164,92 @@ output/
 Thumbs.db
 ";
 
+/// Default product intent brief for new projects (`MISSION.md`).
+///
+/// Short, normative, non-goal-heavy — not a backlog or architecture essay.
+/// Agents receive a capped inject when the file exists (see `agent_context`).
+pub fn mission_md_template(name: &str) -> String {
+    format!(
+        r#"# {name}
+
+## Purpose
+One short paragraph: what this product is for.
+
+## In scope
+- …
+
+## Out of scope
+- …
+
+## Primary users & success
+- Who:
+- Success:
+
+## Hard constraints
+- …
+
+<!-- Keep this brief (~1–2 min read). Product intent lives here; behavior lives in .veil. -->
+"#
+    )
+}
+
+/// Max chars injected into the agent preamble from `MISSION.md` (token budget).
+pub const MISSION_MAX_INJECT_CHARS: usize = 2_000;
+
+/// Read project-root `MISSION.md` when present, capped for agent inject.
+pub fn read_mission_for_agent(root: &Path) -> Option<String> {
+    let path = root.join("MISSION.md");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().count() <= MISSION_MAX_INJECT_CHARS {
+        return Some(trimmed.to_string());
+    }
+    let mut out: String = trimmed.chars().take(MISSION_MAX_INJECT_CHARS).collect();
+    out.push_str("\n\n…[MISSION.md truncated for agent budget — keep the file short]…\n");
+    Some(out)
+}
+
+/// In-memory scaffold files for a new product (disk or S3).
+///
+/// Paths are relative (`veil.toml`, `main.veil`, …). Used by [`init_project`]
+/// and remote create (`s3_workspace::seed_new_repo_scaffold`).
+pub fn scaffold_file_contents(name: &str) -> Result<Vec<(String, String)>, String> {
+    validate_project_name(name)?;
+    let pkg_name = pascal_case(name);
+    let veil_toml = format!(
+        r#"name = "{name}"
+
+[package]
+name = "{name}"
+veil = "main.veil"
+layer = "layers/main.layer"
+"#
+    );
+    let pkg_src = format!(
+        "pkg {pkg_name}\n  use ddd\n\n  # Scaffold — edit via IDE / write_source (source of truth is remote when VEIL_SOURCE_MODE=s3)\n"
+    );
+    let layer_src = format!("pkg {name} v1\n  desc \"{name} product language\"\n  use ddd\n");
+    Ok(vec![
+        ("veil.toml".into(), veil_toml),
+        ("main.veil".into(), pkg_src),
+        ("layers/main.layer".into(), layer_src),
+        ("MISSION.md".into(), mission_md_template(name)),
+        (".gitignore".into(), PROJECT_GITIGNORE.to_string()),
+        // Keep empty dirs visible in S3 listings / materialize
+        ("stubs/.gitkeep".into(), String::new()),
+    ])
+}
+
 /// Scaffold a product project at `root` (INIT-001).
 ///
 /// Creates `veil.toml` (`[package]` entry), `main.veil`, `layers/main.layer`,
-/// `stubs/`, `.gitignore`, and optionally `git init` (R21).
+/// `MISSION.md`, `stubs/`, `.gitignore`, and optionally `git init` (R21).
+///
+/// **Disk hub only** — when `VEIL_SOURCE_MODE=s3`, use
+/// [`crate::provider::s3_workspace::seed_new_repo_scaffold`] instead.
 pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, String> {
     validate_project_name(&opts.name)?;
 
@@ -191,7 +273,11 @@ pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, Stri
                     let only_ok = entries.iter().all(|e| {
                         let n = e.file_name();
                         let s = n.to_string_lossy();
-                        s == "layers" || s == "stubs" || s == ".git" || s == ".gitignore"
+                        s == "layers"
+                            || s == "stubs"
+                            || s == ".git"
+                            || s == ".gitignore"
+                            || s == "MISSION.md"
                     });
                     if !only_ok {
                         return Err(format!(
@@ -212,39 +298,16 @@ pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, Stri
     std::fs::create_dir_all(root.join("stubs"))
         .map_err(|e| format!("cannot create stubs/: {e}"))?;
 
-    let pkg_name = pascal_case(&opts.name);
-    // R21: primary entry is main.veil / layers/main.layer; package.name = use name
-    let veil_toml = format!(
-        r#"name = "{name}"
-
-[package]
-name = "{name}"
-veil = "main.veil"
-layer = "layers/main.layer"
-"#,
-        name = opts.name
-    );
-    std::fs::write(root.join("veil.toml"), veil_toml)
-        .map_err(|e| format!("cannot write veil.toml: {e}"))?;
-
-    let pkg_src = format!(
-        "pkg {pkg_name}\n  use ddd\n\n  # Scaffold — open in IDE: veil serve {}\n",
-        root.display()
-    );
-    let pkg_file = root.join("main.veil");
-    std::fs::write(&pkg_file, pkg_src).map_err(|e| format!("cannot write package: {e}"))?;
-
-    let layer_src = format!(
-        "pkg {name} v1\n  desc \"{name} product language\"\n  use ddd\n",
-        name = opts.name
-    );
-    std::fs::write(root.join("layers/main.layer"), layer_src)
-        .map_err(|e| format!("cannot write layers/main.layer: {e}"))?;
-
-    let gi = root.join(".gitignore");
-    if !gi.exists() || opts.force {
-        std::fs::write(&gi, PROJECT_GITIGNORE)
-            .map_err(|e| format!("cannot write .gitignore: {e}"))?;
+    for (rel, content) in scaffold_file_contents(&opts.name)? {
+        let path = root.join(&rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        if path.exists() && !opts.force && (rel == "MISSION.md" || rel == ".gitignore") {
+            continue;
+        }
+        std::fs::write(&path, content).map_err(|e| format!("cannot write {rel}: {e}"))?;
     }
 
     if opts.git && !root.join(".git").exists() {
@@ -273,6 +336,9 @@ layer = "layers/main.layer"
 }
 
 /// Create a new product under `projects_dir` (INIT-002 = hub entry to init).
+///
+/// Refuses when `VEIL_SOURCE_MODE=s3` — use remote create (`create_project` agent
+/// tool / `seed_new_repo_scaffold`) instead of writing the disk hub.
 pub fn create_project(projects_dir: &Path, name: &str) -> Result<ProjectInfo, String> {
     create_project_with_opts(projects_dir, name, true)
 }
@@ -283,6 +349,12 @@ pub fn create_project_with_opts(
     name: &str,
     git: bool,
 ) -> Result<ProjectInfo, String> {
+    if !crate::provider::s3_workspace::allow_disk_project_create() {
+        return Err(
+            "create_project disk hub forbidden while VEIL_SOURCE_MODE=s3 — use remote create (POST /api/repos + S3 scaffold via agent create_project)"
+                .into(),
+        );
+    }
     validate_project_name(name)?;
     ensure_projects_dir(projects_dir)?;
     let root = projects_dir.join(name);
@@ -519,12 +591,18 @@ mod tests {
         assert!(root.join("veil.toml").is_file());
         assert!(root.join("main.veil").is_file());
         assert!(root.join("layers/main.layer").is_file());
+        assert!(root.join("MISSION.md").is_file());
         assert!(root.join("layers").is_dir());
         assert!(root.join("stubs").is_dir());
         assert!(root.join(".gitignore").is_file());
         let toml = std::fs::read_to_string(root.join("veil.toml")).unwrap();
         assert!(toml.contains("[package]"), "{toml}");
         assert!(toml.contains("main.veil"), "{toml}");
+        let mission = std::fs::read_to_string(root.join("MISSION.md")).unwrap();
+        assert!(mission.contains("# hello-app"), "{mission}");
+        assert!(mission.contains("## Out of scope"), "{mission}");
+        let injected = read_mission_for_agent(&root).expect("mission inject");
+        assert!(injected.contains("Purpose"));
         let gi = std::fs::read_to_string(root.join(".gitignore")).unwrap();
         assert!(gi.contains("generated/"));
         let listed = list_projects(&hub).unwrap();

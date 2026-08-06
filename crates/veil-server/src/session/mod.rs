@@ -10,8 +10,9 @@ mod ddb;
 mod workspace;
 
 pub use ddb::{
-    append_turn, delete_session_meta, get_session_meta, list_sessions_for_user, list_turns,
-    put_session_meta, touch_session, SessionMeta, SessionTurn,
+    append_turn, delete_session_meta, get_session_commit, get_session_meta, list_session_commits,
+    list_sessions_for_user, list_turns, merge_session_focus_intents, put_session_commit,
+    put_session_meta, touch_session, SessionCommit, SessionMeta, SessionTurn,
 };
 pub use workspace::{
     materialize_policy, path_jail, resolve_under_root, MaterializePolicy, WorkspaceFs,
@@ -64,6 +65,10 @@ pub fn session_work_dir(user_id: &str, session_id: &str, slug: &str) -> PathBuf 
 /// Process-local open session handles.
 pub struct SessionManager {
     handles: Mutex<HashMap<String, Arc<SessionHandle>>>,
+    /// Agent/operator preferred work line per project slug (feature branch or main).
+    /// When set, MCP tools and middleware without `X-Veil-Session-Id` resolve here
+    /// instead of the sticky mainline session — so `create_branch` sticks for the turn.
+    active_by_project: Mutex<HashMap<String, String>>,
 }
 
 impl Default for SessionManager {
@@ -76,6 +81,7 @@ impl SessionManager {
     pub fn new() -> Self {
         Self {
             handles: Mutex::new(HashMap::new()),
+            active_by_project: Mutex::new(HashMap::new()),
         }
     }
 
@@ -95,18 +101,42 @@ impl SessionManager {
         branch: Option<&str>,
         draft_mode: bool,
     ) -> Result<Arc<SessionHandle>, String> {
+        self.create_branch(slug, branch, draft_mode, None)
+    }
+
+    /// Create a session. When `branch_name` is set (or draft_mode), this is a
+    /// git-shaped **feature branch**: isolated S3 draft prefix + named work line.
+    pub fn create_branch(
+        &self,
+        slug: &str,
+        base_branch: Option<&str>,
+        draft_mode: bool,
+        branch_name: Option<&str>,
+    ) -> Result<Arc<SessionHandle>, String> {
         let user_id = current_user_id();
         let session_id = Uuid::new_v4().to_string();
-        let branch = branch.unwrap_or(&default_branch()).to_string();
+        let base = base_branch.unwrap_or(&default_branch()).to_string();
+        let is_branch = draft_mode || branch_name.is_some();
+        let draft_mode = is_branch; // feature branches always isolate writes
+        let branch_name = branch_name
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if draft_mode {
+                    format!("work/{}", &session_id[..8.min(session_id.len())])
+                } else {
+                    base.clone()
+                }
+            });
         let repo_id = resolve_repo_id(slug)?;
         let work_dir = session_work_dir(&user_id, &session_id, slug);
         let work_prefix = if draft_mode {
             format!("repos/{repo_id}/drafts/{session_id}/")
         } else {
-            format!("repos/{repo_id}/{branch}/")
+            format!("repos/{repo_id}/{base}/")
         };
 
-        // Materialize once from branch tree (incremental — full --delete only on explicit reset)
+        // Materialize from **base** product tree (main), then work in isolation
         materialize_repo_to(&repo_id, &work_dir, MaterializePolicy::SyncIncremental)?;
 
         let now = chrono_now();
@@ -115,7 +145,7 @@ impl SessionManager {
             user_id: user_id.clone(),
             slug: slug.to_string(),
             repo_id: repo_id.clone(),
-            branch: branch.clone(),
+            branch: base.clone(),
             work_prefix: work_prefix.clone(),
             revision: 0,
             active_file: None,
@@ -123,21 +153,98 @@ impl SessionManager {
             etags: HashMap::new(),
             dirty: vec![],
             draft_mode,
+            branch_name: Some(branch_name),
+            base_branch: Some(base),
+            head_commit: None,
+            committed_revision: Some(0),
             created_at: now.clone(),
             updated_at: now.clone(),
             last_activity_at: now,
             agent_thread_id: None,
+            last_focus: None,
+            intent_log: vec![],
         };
         put_session_meta(&meta)?;
         write_session_marker(&work_dir, &meta)?;
 
-        write_sticky_session(&user_id, slug, &session_id);
+        // Sticky only for mainline sessions — feature branches are explicit
+        if !draft_mode {
+            write_sticky_session(&user_id, slug, &session_id);
+        }
         let handle = Arc::new(SessionHandle::open(meta, work_dir)?);
         self.handles
             .lock()
             .unwrap()
-            .insert(session_id, handle.clone());
+            .insert(session_id.clone(), handle.clone());
+        // Feature branches become the active work line for this project immediately
+        if draft_mode {
+            self.set_active_for_project(slug, &session_id);
+        }
         Ok(handle)
+    }
+
+    /// Remember which session the agent/operator is working on for `slug`.
+    pub fn set_active_for_project(&self, slug: &str, session_id: &str) {
+        self.active_by_project
+            .lock()
+            .unwrap()
+            .insert(slug.to_string(), session_id.to_string());
+    }
+
+    /// Preferred session for a project (feature branch or explicit switch), if any.
+    pub fn active_for_project(&self, slug: &str) -> Option<String> {
+        self.active_by_project
+            .lock()
+            .unwrap()
+            .get(slug)
+            .cloned()
+    }
+
+    /// Clear preferred session (e.g. after switch back to main sticky).
+    pub fn clear_active_for_project(&self, slug: &str) {
+        self.active_by_project.lock().unwrap().remove(slug);
+    }
+
+    /// Resolve the coding session for a project when no header was provided:
+    /// active_by_project → sticky mainline default.
+    pub fn resolve_for_project(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
+        if let Some(sid) = self.active_for_project(slug) {
+            if let Ok(h) = self.attach(&sid) {
+                if h.slug() == slug {
+                    return Ok(h);
+                }
+            }
+        }
+        self.get_or_create_default(slug)
+    }
+
+    /// Open (or create) the **mainline** sticky session for a slug — ignores
+    /// feature-branch active preference and open draft handles.
+    pub fn open_mainline(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
+        let user = current_user_id();
+        self.clear_active_for_project(slug);
+        // Local sticky pointer
+        if let Some(sid) = read_sticky_session(&user, slug) {
+            if let Ok(h) = self.attach(&sid) {
+                if h.slug() == slug && !h.snapshot_meta().draft_mode {
+                    self.set_active_for_project(slug, &h.session_id());
+                    return Ok(h);
+                }
+            }
+        }
+        // DDB recent non-draft
+        if let Ok(list) = list_sessions_for_user(&user) {
+            if let Some(m) = list.into_iter().find(|m| m.slug == slug && !m.draft_mode) {
+                let h = self.attach(&m.session_id)?;
+                write_sticky_session(&user, slug, &m.session_id);
+                self.set_active_for_project(slug, &h.session_id());
+                return Ok(h);
+            }
+        }
+        let h = self.create(slug, None)?;
+        write_sticky_session(&user, slug, &h.session_id());
+        self.set_active_for_project(slug, &h.session_id());
+        Ok(h)
     }
 
     /// Attach existing session: load DDB META, ensure workdir (rematerialize if missing).
@@ -195,9 +302,18 @@ impl SessionManager {
     }
 
     /// Get or create a default sticky session for user+slug (compat when no header).
-    /// Prefers: process handle → local sticky file → most recent non-draft DDB → create.
+    /// Prefers: active_by_project → process handle → local sticky file → DDB → create.
     pub fn get_or_create_default(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
         let user = current_user_id();
+        // Agent-selected work line (feature branch) wins over sticky main
+        if let Some(sid) = self.active_for_project(slug) {
+            if let Ok(h) = self.attach(&sid) {
+                if h.slug() == slug {
+                    h.touch_local();
+                    return Ok(h);
+                }
+            }
+        }
         // Prefer most recent open handle for slug (non-draft preferred)
         {
             let map = self.handles.lock().unwrap();
@@ -291,6 +407,10 @@ fn write_session_marker(work_dir: &Path, meta: &SessionMeta) -> Result<(), Strin
         "revision": meta.revision,
         "user_id": meta.user_id,
         "draft_mode": meta.draft_mode,
+        "branch_name": meta.branch_name,
+        "base_branch": meta.base_branch,
+        "head_commit": meta.head_commit,
+        "committed_revision": meta.committed_revision,
     });
     std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap_or_default())
         .map_err(|e| format!("write session marker: {e}"))
@@ -558,6 +678,177 @@ impl SessionHandle {
         let m = self.meta.lock().unwrap().clone();
         materialize_repo_to(&m.repo_id, &self.work_dir, MaterializePolicy::SyncDelete)
     }
+
+    /// Git-shaped **commit**: snapshot working tree + named message.
+    /// Autosaves continue; this is an explicit checkpoint.
+    pub fn commit(&self, message: &str) -> Result<SessionCommit, String> {
+        let message = message.trim();
+        if message.is_empty() {
+            return Err("commit message required".into());
+        }
+        let m = self.meta.lock().unwrap().clone();
+        let commit_id = Uuid::new_v4().to_string();
+        let short = &commit_id[..8.min(commit_id.len())];
+        let snapshot_prefix = format!("repos/{}/commits/{}/{}/", m.repo_id, m.session_id, short);
+        let bucket = std::env::var("BUCKET")
+            .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
+            .unwrap_or_else(|_| "veil-runtime-dev".into());
+        let dest = format!("s3://{bucket}/{snapshot_prefix}");
+
+        // Snapshot workdir → S3 (exclude session marker noise)
+        let mut cmd = std::process::Command::new("aws");
+        if let Ok(p) = std::env::var("AWS_PROFILE") {
+            cmd.env("AWS_PROFILE", p);
+        }
+        let out = cmd
+            .args([
+                "s3",
+                "sync",
+                &self.work_dir.to_string_lossy(),
+                &dest,
+                "--exclude",
+                ".veil-session.json",
+                "--exclude",
+                ".git/*",
+                "--exclude",
+                "target/*",
+                "--exclude",
+                "generated/*",
+            ])
+            .output()
+            .map_err(|e| format!("aws s3 sync commit: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "commit snapshot failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+
+        let files = list_work_files(&self.work_dir);
+        let now = chrono_now();
+        let commit = SessionCommit {
+            commit_id: commit_id.clone(),
+            session_id: m.session_id.clone(),
+            message: message.to_string(),
+            parent: m.head_commit.clone(),
+            snapshot_prefix: snapshot_prefix.clone(),
+            revision: m.revision,
+            files,
+            branch_name: m.branch_name.clone(),
+            created_at: now.clone(),
+            author: Some(m.user_id.clone()),
+        };
+        put_session_commit(&commit)?;
+
+        {
+            let mut meta = self.meta.lock().unwrap();
+            meta.head_commit = Some(commit_id);
+            meta.committed_revision = Some(meta.revision);
+            meta.dirty.clear();
+            meta.updated_at = now;
+            let snap = meta.clone();
+            drop(meta);
+            let _ = put_session_meta(&snap);
+            let _ = write_session_marker(&self.work_dir, &snap);
+        }
+        Ok(commit)
+    }
+
+    /// Promote this branch's working tree onto the product **base** branch in S3
+    /// (git-shaped merge). Only for draft/feature branch sessions.
+    pub fn merge_to_base(&self) -> Result<serde_json::Value, String> {
+        let m = self.meta.lock().unwrap().clone();
+        if !m.draft_mode {
+            return Err("already on base (mainline) session — nothing to merge".into());
+        }
+        let base = m
+            .base_branch
+            .clone()
+            .unwrap_or_else(default_branch);
+        let bucket = std::env::var("BUCKET")
+            .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
+            .unwrap_or_else(|_| "veil-runtime-dev".into());
+        let dest_prefix = format!("repos/{}/{}/", m.repo_id, base);
+        let dest = format!("s3://{bucket}/{dest_prefix}");
+
+        let mut cmd = std::process::Command::new("aws");
+        if let Ok(p) = std::env::var("AWS_PROFILE") {
+            cmd.env("AWS_PROFILE", p);
+        }
+        let out = cmd
+            .args([
+                "s3",
+                "sync",
+                &self.work_dir.to_string_lossy(),
+                &dest,
+                "--exclude",
+                ".veil-session.json",
+                "--exclude",
+                ".git/*",
+                "--exclude",
+                "target/*",
+                "--exclude",
+                "generated/*",
+            ])
+            .output()
+            .map_err(|e| format!("aws s3 sync merge: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "merge to {base} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(serde_json::json!({
+            "ok": true,
+            "merged_to": base,
+            "dest_prefix": dest_prefix,
+            "from_branch": m.branch_name,
+            "session_id": m.session_id,
+            "head_commit": m.head_commit,
+        }))
+    }
+
+    pub fn has_uncommitted(&self) -> bool {
+        let m = self.meta.lock().unwrap();
+        let committed = m.committed_revision.unwrap_or(0);
+        m.revision > committed || !m.dirty.is_empty()
+    }
+}
+
+fn list_work_files(work: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if name == ".git"
+                || name == "target"
+                || name == "generated"
+                || name == "node_modules"
+                || name == ".veil-session.json"
+            {
+                continue;
+            }
+            if p.is_dir() {
+                walk(&p, root, out);
+            } else if let Ok(rel) = p.strip_prefix(root) {
+                let s = rel.to_string_lossy().replace('\\', "/");
+                if s.ends_with(".veil")
+                    || s.ends_with(".layer")
+                    || s == "veil.toml"
+                    || s == "MISSION.md"
+                {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    walk(work, work, &mut out);
+    out.sort();
+    out
 }
 
 /// Open S3 provider against an explicit work directory (session-scoped).

@@ -86,6 +86,9 @@ impl ProductHost {
 
     /// Build the full product router: shell + multi IDE + config + optional bus.
     pub fn build_router(self) -> Router {
+        // Warm platform stub cache (monorepo dir or S3+DDB META → $TMP/veil-platform-stubs).
+        crate::stub_ops::ensure_platform_stub_cache();
+
         let hub = ProjectsHub::new(self.projects_dir.clone(), self.show_core_layers);
         let ide = build_multi_router(hub);
 

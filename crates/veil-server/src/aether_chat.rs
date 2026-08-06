@@ -44,6 +44,10 @@ struct ChatRequest {
     /// Durable coding/agent session id (DDB SESSION#…). JSON: `sessionId`.
     #[serde(default)]
     session_id: Option<String>,
+    /// Continuous SessionFocus from the shell/IDE (route, construct, form, …).
+    /// See `runtime/docs/ADR_FOCUS_INTENT_PRESENT.md` and `crate::focus`.
+    #[serde(default)]
+    focus: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +129,18 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
     let project_scope = resolve_chat_project(&req);
     let coding_session = req.session_id.clone().filter(|s| !s.is_empty());
 
+    // Persist SessionFocus (authoritative deictic context for this turn).
+    let client_present = req.focus.is_some();
+    if let Some(ref focus) = req.focus {
+        crate::focus::set_focus(coding_session.as_deref(), focus.clone());
+        let block = crate::focus::format_focus_block(focus);
+        prompt = format!("{block}\n\n{prompt}");
+    }
+    let intent_block = crate::focus::format_intent_log_block(8);
+    if !intent_block.is_empty() {
+        prompt = format!("{intent_block}\n\n{prompt}");
+    }
+
     // Ensure durable session when project known
     let coding_session = if coding_session.is_none() {
         if let Some(ref slug) = project_scope {
@@ -196,12 +212,26 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
     let project_scope_spawn = project_scope
         .clone()
         .or_else(|| CURRENT_PROJECT.try_with(|n| n.clone()).ok());
+    let coding_session_spawn = coding_session.clone();
     let turn_handle = tokio::spawn(async move {
         let fut = run_turn_stream(provider_run, turn_req, tx);
-        if let Some(name) = project_scope_spawn {
-            CURRENT_PROJECT.scope(name, fut).await;
-        } else {
-            fut.await;
+        // Bind CLIENT_PRESENT (browser Focus this turn) + project + coding session.
+        let fut = crate::focus::CLIENT_PRESENT.scope(client_present, fut);
+        match (project_scope_spawn, coding_session_spawn) {
+            (Some(name), Some(sid)) => {
+                crate::session::CURRENT_SESSION
+                    .scope(sid, CURRENT_PROJECT.scope(name, fut))
+                    .await;
+            }
+            (Some(name), None) => {
+                CURRENT_PROJECT.scope(name, fut).await;
+            }
+            (None, Some(sid)) => {
+                crate::session::CURRENT_SESSION.scope(sid, fut).await;
+            }
+            (None, None) => {
+                fut.await;
+            }
         }
     });
 
@@ -224,107 +254,199 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
     let mut full_text = String::new();
     let mut tools: Vec<serde_json::Value> = Vec::new();
     let mut done_payload: Option<AgentTurnResponse> = None;
+    // write_source smoke / ACP tool rounds can take minutes with zero tokens.
+    // Proxies and browsers kill idle WebSockets (client shows code 1006). Heartbeat.
+    let heartbeat_secs: u64 = std::env::var("VEIL_AGENT_WS_HEARTBEAT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12);
+    let mut heartbeat_n: u32 = 0;
+    let turn_started = std::time::Instant::now();
 
-    while let Some((event, data_str)) = rx.recv().await {
+    loop {
         if abort.load(std::sync::atomic::Ordering::SeqCst) {
             break;
         }
-        match event.as_str() {
-            "status" => {
-                // Optional: surface as thinking or ignore
-            }
-            "chunk" => {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_str) {
-                    if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
-                        full_text.push_str(text);
-                        if send_event(
-                            &mut sender,
-                            "content_delta",
-                            json!({
-                                "messageId": message_id,
-                                "delta": text,
-                            }),
-                        )
-                        .await
-                        .is_err()
-                        {
-                            break;
+        tokio::select! {
+            item = rx.recv() => {
+                let Some((event, data_str)) = item else {
+                    // turn task finished and closed the channel
+                    break;
+                };
+                match event.as_str() {
+                    "status" => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_str) {
+                            let mut data = v;
+                            if data.get("messageId").is_none() {
+                                data["messageId"] = json!(message_id);
+                            }
+                            let _ = send_event(&mut sender, "status", data).await;
                         }
                     }
-                }
-            }
-            "tool" => {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_str) {
-                    let call_id = format!("call_{}", short_id());
-                    let name = v
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("tool")
-                        .to_string();
-                    let detail = v
-                        .get("detail")
-                        .cloned()
-                        .unwrap_or(json!({}));
-                    let _ = send_event(
-                        &mut sender,
-                        "tool_call_start",
-                        json!({
-                            "messageId": message_id,
-                            "callId": call_id,
-                            "name": name,
-                        }),
-                    )
-                    .await;
-                    let args = json!({ "detail": detail }).to_string();
-                    let _ = send_event(
-                        &mut sender,
-                        "tool_call_stop",
-                        json!({
-                            "messageId": message_id,
-                            "callId": call_id,
-                            "arguments": args,
-                        }),
-                    )
-                    .await;
-                    let _ = send_event(
-                        &mut sender,
-                        "tool_result",
-                        json!({
-                            "messageId": message_id,
-                            "callId": call_id,
-                            "name": name,
-                            "output": detail,
-                            "isError": false,
-                        }),
-                    )
-                    .await;
-                    // Omnipresent agent: UX tools must drive SPA navigation for the user.
-                    if let Some(nav) = navigation_for_platform_tool(&name, &detail) {
-                        let _ = send_event(&mut sender, "navigation", nav).await;
+                    "chunk" => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_str) {
+                            if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                                full_text.push_str(text);
+                                if send_event(
+                                    &mut sender,
+                                    "content_delta",
+                                    json!({
+                                        "messageId": message_id,
+                                        "delta": text,
+                                    }),
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    tools.push(json!({ "name": name, "detail": detail }));
+                    "tool" => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_str) {
+                            let call_id = format!("call_{}", short_id());
+                            let name = v
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("tool")
+                                .to_string();
+                            // Host often emits detail as a JSON string from platform_tools.
+                            let detail = match v.get("detail").cloned().unwrap_or(json!({})) {
+                                serde_json::Value::String(s) => serde_json::from_str(&s)
+                                    .unwrap_or_else(|_| json!({ "raw": s })),
+                                other => other,
+                            };
+                            let _ = send_event(
+                                &mut sender,
+                                "tool_call_start",
+                                json!({
+                                    "messageId": message_id,
+                                    "callId": call_id,
+                                    "name": name,
+                                }),
+                            )
+                            .await;
+                            let args = json!({ "detail": detail }).to_string();
+                            let _ = send_event(
+                                &mut sender,
+                                "tool_call_stop",
+                                json!({
+                                    "messageId": message_id,
+                                    "callId": call_id,
+                                    "arguments": args,
+                                }),
+                            )
+                            .await;
+                            let _ = send_event(
+                                &mut sender,
+                                "tool_result",
+                                json!({
+                                    "messageId": message_id,
+                                    "callId": call_id,
+                                    "name": name,
+                                    "output": detail,
+                                    "isError": false,
+                                }),
+                            )
+                            .await;
+                            // Intent + Present (preferred over coarse navigation alone).
+                            let intent_val = detail
+                                .get("intent")
+                                .cloned()
+                                .or_else(|| {
+                                    // detail may be a JSON string
+                                    detail.as_str().and_then(|s| {
+                                        serde_json::from_str::<serde_json::Value>(s)
+                                            .ok()
+                                            .and_then(|v| v.get("intent").cloned())
+                                    })
+                                });
+                            if let Some(intent) = intent_val {
+                                let _ = send_event(
+                                    &mut sender,
+                                    "intent",
+                                    json!({
+                                        "messageId": message_id,
+                                        "callId": call_id,
+                                        "name": name,
+                                        "intent": intent,
+                                    }),
+                                )
+                                .await;
+                                // Staged present (e.g. create_project) owns UX — skip coarse nav.
+                                let has_present = intent
+                                    .get("present")
+                                    .and_then(|p| p.get("steps"))
+                                    .and_then(|s| s.as_array())
+                                    .map(|a| !a.is_empty())
+                                    .unwrap_or(false);
+                                if !has_present {
+                                    if let Some(nav) =
+                                        navigation_for_platform_tool(&name, &detail)
+                                    {
+                                        let _ =
+                                            send_event(&mut sender, "navigation", nav).await;
+                                    }
+                                }
+                            } else if let Some(nav) =
+                                navigation_for_platform_tool(&name, &detail)
+                            {
+                                // Omnipresent agent: UX tools must drive SPA navigation.
+                                let _ = send_event(&mut sender, "navigation", nav).await;
+                            }
+                            tools.push(json!({ "name": name, "detail": detail }));
+                        }
+                    }
+                    "done" => {
+                        if let Ok(resp) = serde_json::from_str::<AgentTurnResponse>(&data_str) {
+                            done_payload = Some(resp);
+                        }
+                        // Keep draining until channel closes (or break — done is terminal)
+                        break;
+                    }
+                    "error" => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_str) {
+                            let msg = v
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("agent error");
+                            let _ = send_event(
+                                &mut sender,
+                                "error",
+                                json!({ "message": msg, "messageId": message_id }),
+                            )
+                            .await;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            "done" => {
-                if let Ok(resp) = serde_json::from_str::<AgentTurnResponse>(&data_str) {
-                    done_payload = Some(resp);
+            _ = tokio::time::sleep(std::time::Duration::from_secs(heartbeat_secs)) => {
+                heartbeat_n += 1;
+                let elapsed = turn_started.elapsed().as_secs();
+                // Application-level heartbeat (proxies often ignore WS Ping alone).
+                if send_event(
+                    &mut sender,
+                    "status",
+                    json!({
+                        "messageId": message_id,
+                        "message": format!(
+                            "still working… {elapsed}s (write_source smoke / model / tools)"
+                        ),
+                        "heartbeat": true,
+                        "n": heartbeat_n,
+                        "elapsed_secs": elapsed,
+                    }),
+                )
+                .await
+                .is_err()
+                {
+                    break;
                 }
+                // Protocol ping (best-effort).
+                let _ = sender.send(Message::Ping(vec![].into())).await;
             }
-            "error" => {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_str) {
-                    let msg = v
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("agent error");
-                    let _ = send_event(
-                        &mut sender,
-                        "error",
-                        json!({ "message": msg, "messageId": message_id }),
-                    )
-                    .await;
-                }
-            }
-            _ => {}
         }
     }
 
@@ -515,11 +637,31 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
     let path: Option<String> = match name {
         "list_changes" | "open_changes" => Some("/changes".into()),
         "create_change" | "open_create_change" => Some("/changes/new".into()),
-        "list_projects" | "open_projects" => Some("/projects".into()),
-        "open_deploy" => Some("/deploy".into()),
-        "open_registry" => Some("/registry".into()),
+        "list_projects" | "open_projects" | "delete_project" => Some("/projects".into()),
+        "create_project" | "create_repo" => {
+            let project = detail
+                .get("slug")
+                .or_else(|| detail.get("project"))
+                .or_else(|| detail.get("name"))
+                .or_else(|| detail.pointer("/project/slug"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if project.is_empty() {
+                Some("/projects".into())
+            } else {
+                Some(format!("/projects/{project}/ide"))
+            }
+        }
+        "open_deploy"
+        | "list_deploy_environments"
+        | "deploy_status"
+        | "plan_provision"
+        | "provision_project" => Some("/deploy".into()),
+        "open_registry" | "search_registry" | "list_registry_layers" | "list_registry_stubs" => {
+            Some("/registry".into())
+        }
         "open_dashboard" => Some("/dashboard".into()),
-        "open_config" => Some("/config".into()),
+        "open_config" | "get_config" => Some("/config".into()),
         "navigate_to" => detail
             .get("path")
             .and_then(|p| p.as_str())
@@ -537,7 +679,7 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
                     .and_then(|p| p.as_str())
                     .map(|p| p.to_string())
             }),
-        "open_project" | "open_ide" | "switch_project" => {
+        "open_project" | "open_ide" | "switch_project" | "get_project" => {
             let project = detail
                 .get("project")
                 .or_else(|| detail.get("slug"))
@@ -612,6 +754,21 @@ fn resolve_chat_project(req: &ChatRequest) -> Option<String> {
         .filter(|s| !s.is_empty() && *s != "(none — home/dashboard)" && *s != "(none)")
     {
         return sanitize_project_slug(p);
+    }
+    if let Some(focus) = req.focus.as_ref() {
+        if let Some(p) = focus
+            .get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            return sanitize_project_slug(p);
+        }
+        if let Some(route) = focus.get("route").and_then(|v| v.as_str()) {
+            if let Some(slug) = project_from_page_path(route) {
+                return Some(slug);
+            }
+        }
     }
     let sys = req.system_prompt.as_deref().unwrap_or("");
     // `- Project: relay` from runtimeAgentSession buildSystemPrompt

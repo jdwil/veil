@@ -326,7 +326,11 @@
 		{/if}
 
 		<!-- Messages -->
-		<div class="message-area">
+		<div
+			class="message-area"
+			bind:this={messageAreaEl}
+			onscroll={onMessageAreaScroll}
+		>
 			{#if $agentMessages.length === 0}
 				<div class="empty-state">
 					<p class="empty-title">VEIL Runtime Agent</p>
@@ -364,13 +368,18 @@
 					</div>
 				</div>
 			{:else}
-				<div class="msg-list">
+				<div class="msg-list" onscroll={onMessageAreaScroll}>
 					<MessageList
 						messages={$agentMessages}
 						isStreaming={$agentIsStreaming}
 						isThinking={$agentIsThinking}
 					/>
 				</div>
+				{#if showJumpLatest}
+					<button type="button" class="jump-latest" onclick={resumeChatAutoScroll}>
+						↓ Latest
+					</button>
+				{/if}
 			{/if}
 		</div>
 
@@ -545,6 +554,27 @@
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
+		position: relative;
+	}
+
+	.jump-latest {
+		position: absolute;
+		bottom: 0.65rem;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 5;
+		padding: 0.3rem 0.75rem;
+		border-radius: 999px;
+		border: 1px solid var(--dk-border, #2e2e2e);
+		background: var(--dk-surface-2, #242424);
+		color: var(--dk-text, #e5e5e5);
+		font-size: 0.7rem;
+		font-weight: 600;
+		cursor: pointer;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+	}
+	.jump-latest:hover {
+		border-color: var(--dk-brand, #737373);
 	}
 
 	.msg-list {

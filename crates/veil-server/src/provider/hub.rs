@@ -251,6 +251,10 @@ impl MultiProjectProvider {
 
 #[async_trait]
 impl SourceProvider for MultiProjectProvider {
+    fn bind_coding_session(&self, slug: &str, provider: Arc<dyn SourceProvider>) {
+        self.hub.bind_session_provider(slug, provider);
+    }
+
     async fn list_files(&self) -> Vec<FileInfo> {
         match self.session() {
             Ok(p) => p.list_files().await,

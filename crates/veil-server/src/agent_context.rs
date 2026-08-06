@@ -3,9 +3,16 @@
 //! Not vector RAG: always inject teaching material for the **active file's**
 //! loaded layers. Truncation is a first-class failure signal — a truncated
 //! curriculum makes small models nearly useless.
+//!
+//! Optional product intent: when the project root has `MISSION.md`, a capped
+//! slice is injected after Tier 0 (see [`crate::project_layout::read_mission_for_agent`]).
+
+use std::path::Path;
 
 use veil_ir::layer::{palette_from_registry, LayerRegistry};
 use veil_ir::{build_ir_with_registry, check_solution, build_context_pack, ContextQuery};
+
+use crate::project_layout::read_mission_for_agent;
 
 /// Result of assembling the agent system preamble.
 #[derive(Debug, Clone)]
@@ -47,6 +54,11 @@ You are the VEIL IDE built-in agent (Rig tools).
 - Do NOT fix issues by switching to raw Rust/TS in .veil unless the package already uses escape hatches.
 - If you cannot fix something with available tools, say so and list exact diagnostics.
 
+## Product intent (MISSION.md)
+- When a project has `MISSION.md` at the root, a capped copy is injected below (Purpose / In scope / Out of scope).
+- Prefer that brief over inventing requirements. Honor **Out of scope** and hard constraints.
+- Do not expand MISSION into a PRD or rewrite product intent unless the user asks. Behavior stays in `.veil`.
+
 ## Local HTTP harness (dual-loop backend) — ACS-002 mandatory
 - Packages with context modules get crates/veil_bin REST harness even without @main.
 - Prefer @route("GET /api/…") on svc/handlers. Name-derived List/Get/Create paths are fallback only — never invent paths; call list_routes.
@@ -55,6 +67,14 @@ You are the VEIL IDE built-in agent (Rig tools).
 - **Closed loop after HTTP/backend edits:** smoke → list_routes (or read_generated what=routes) → dev_restart (or auto-restart) → http_request target=backend path=/health then the real route. Do not claim success without http_request.
 - Frontend: relative /api + Vite @proxy. Bus is server-side only.
 - **Bang / Opt / Res (BANG_CONTRACT, ACS-010 portable):** `wt = repo.find!(id)` → Opt<T> (bang = Res try only). Soft absence after bang is valid (.is_some/.is_none). Need T? `require repo.find!(id)` or .unwrap() (NotFound). Never assume bang forces Opt→T.
+- **Git-shaped sessions (mandatory for multi-step fixes):** Decide branch/commit/merge yourself — the operator should not micromanage git.
+  1. `session_status` — see branch / uncommitted / head_commit
+  2. Multi-step or fix campaign? `create_branch` with a short name (e.g. `fix-type-mismatch`) — do **not** thrash main
+  3. `veil_check` → note error_count / warning_count
+  4. Fix ONE diagnostic class → write_source → veil_check (report before→after counts)
+  5. `session_commit` with a descriptive message after each successful slice
+  6. `merge_branch` only when task complete with acceptable checks, or operator asked to land
+  Autosave ≠ commit. Change list size ≠ errors fixed. Palace: veil-contract-git-shaped-sessions, veil-agent-git-shaped-coding.
 
 ## Tools
 - veil_check — dual-loop diagnostics (structured JSON: code + span)
@@ -62,14 +82,55 @@ You are the VEIL IDE built-in agent (Rig tools).
 - read_source — active .veil text (truncated)
 - rename_construct — structured rename
 - write_source — full-file write (smoke-gated)
+- **session_status / create_branch / session_commit / list_commits / merge_branch / switch_main** — git-shaped work line
 - dev_status / dev_logs / smoke_status — dual-loop state and gen/check logs
 - read_generated / list_routes — inspect generated harness routes
 - http_request — probe 127.0.0.1:dev_port only
 - dev_restart — reload cargo run after successful smoke
+- stub_list / stub_get / stub_gen / stub_install — external crate .stub catalog
 - wiki_* — Mind Palace (when MIND_PALACE=1)
 
+## Platform UX (full product surface — use these, do not wiki-only workaround)
+- **create_project({name, description?})** — create a product project (same as UI /projects/new). ALWAYS use when user asks to create a project.
+- list_projects / get_project / delete_project / open_project / open_ide / navigate_to
+- list_changes / create_change({title,...}) / get_change / submit_change / approve_change / request_changes / merge_change / add_comment / get_change_diff
+- list_deploy_environments / deploy_status / plan_provision / provision_project / get_provision_job
+- search_registry / list_registry_layers / list_registry_stubs / get_config / get_mission / update_mission
+
+## Remote source (VEIL_SOURCE_MODE=s3) — MANDATORY
+- Source of truth is **DDB META + S3** (`repos/{id}/{branch}/…`). Not `VEIL_PROJECTS_DIR`, not monorepo paths, not `~/dev/veil-projects`.
+- **create_project** → DDB + S3 scaffold only. Then **open_ide** / **write_source** / **create_file** / session **ws_***.
+- **NEVER** `mkdir` / shell-write / raw filesystem under projects hub when remote. Materialize is `$TMP/veil-s3-ws` (or session workdir) with S3 write-through — host-managed.
+- If create_project fails, report the error; do not "fix" by writing local disk trees.
+
+## Visible UX — MANDATORY (operator is watching)
+- Product actions MUST be **MCP tool calls** (`create_project`, `navigate_to`, `open_ide`, `list_changes`, …).
+- **FORBIDDEN:** shell `curl`/`fetch`/`wget` to `/api/repos`, `/api/projects`, or any ProductHost HTTP API for product ops.
+- **FORBIDDEN:** inventing filesystem trees instead of tools.
+- The host may pre-run `create_project` / `navigate_to` so the SPA moves first — do not re-create; continue with write_source.
+
+## Session Focus + Intent (coordination law)
+- **Focus** is injected every turn (route, project, construct, file, form). "this component" / "this repo" means Focus — do not ask the user to restate it.
+- Call `get_current_context` if you need the structured focus snapshot (includes recent intents).
+- Tool results may include an **`intent`** with **`present`** steps (goto → fill → pulse → commit).
+  - `via=ux` / `execution.domain=ux`: UX commits after Present (`POST /api/ux/create_project`) — do not re-create. Pattern: create_project(via=ux) → **wait_intent_ack({intent_id})** → write_source.
+  - `via=server` / `execution.domain=server`: domain already applied; Present is illustrative (goto + pulse). Prefer for multi-step campaigns.
+- Change lifecycle (`submit_change` / `approve_change` / `merge_change`) and deploy (`provision_project`) return Present so the operator sees the page update.
+- `wait_intent_ack` blocks until browser Present ACK — never call it before the create tool result has streamed.
+- Recent human intents + UX acks appear in the preamble / get_current_context — if the operator just created a project in the UI, do not create it again.
+- Product-visible ops: operator watches Present. Domain coding tools (write_source, veil_check) hit the server and refresh the IDE.
+
+## Stubs (external crates) — mandatory
+- **NEVER invent or hand-write full SDK `.stub` files.** Use tools:
+  - `stub_list` — project + platform catalog
+  - `stub_get` — resolve content (project stubs/ first, then platform)
+  - `stub_install` — pin a platform stub into the project
+  - `stub_gen` — rustdoc-based generation (`veil stub-gen`) when missing/sparse
+- Stubs are versioned (`stub name 0.12.0`) with provenance (`@generated`, surface, fingerprint).
+- Curated tiny surfaces only when marked `surface curated` and version-pinned.
+
 ## Mind Palace contracts (when MIND_PALACE=1)
-- wiki_search these slugs before platform answers: veil-contract-bang-opt-res, veil-contract-dual-loop-smoke, veil-contract-multi-package, veil-contract-stubs, veil-contract-routes
+- wiki_search these slugs before platform answers: veil-contract-bang-opt-res, veil-contract-git-shaped-sessions, veil-agent-git-shaped-coding, veil-contract-dual-loop-smoke, veil-contract-multi-package, veil-contract-stubs, veil-contract-routes
 - Offline copies: fixtures/palace_contracts/
 "#;
 
@@ -89,6 +150,11 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - Do NOT fix issues by switching to raw Rust/TS in .veil unless the package already uses escape hatches.
 - If you cannot fix something with available tools, say so and list exact diagnostics.
 
+## Product intent (MISSION.md)
+- When a project has `MISSION.md` at the root, a capped copy is injected below (Purpose / In scope / Out of scope).
+- Prefer that brief over inventing requirements. Honor **Out of scope** and hard constraints.
+- Do not expand MISSION into a PRD or rewrite product intent unless the user asks. Behavior stays in `.veil`.
+
 ## Local HTTP harness (dual-loop backend) — ACS-002 mandatory
 - Context modules → veil_bin REST harness; @main optional for local HTTP.
 - Prefer @route("GET /api/…"). Name-derived paths are fallback only. Never invent paths — list_routes first.
@@ -97,12 +163,14 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - **Closed loop:** smoke → list_routes → dev_restart → http_request (/health then real route). No success claim without http_request.
 - Frontend: relative /api + Vite proxy. Bus is not browser transport.
 - **Bang contract (ACS-010 portable):** find! → Opt<T> (Res try only). Soft .is_some after ! OK. Need T: require find! or .unwrap(). docs/BANG_CONTRACT.md
+- **Git-shaped sessions (agent decides):** `session_status` → multi-step? `create_branch` → check → one class → write → check (report counts) → `session_commit` → repeat → `merge_branch` only when landing. Autosave≠commit. Do not ask the operator for every branch/commit. Palace: veil-contract-git-shaped-sessions, veil-agent-git-shaped-coding.
 
 ## Available MCP Tools
 - veil_check — dual-loop check pipeline
 - veil_outline — IR topology
 - read_source / write_source — active file (write is smoke-gated; on failure file restored + compile errors returned)
 - rename_construct / list_files / select_file / create_file
+- session_status / create_branch / session_commit / list_commits / merge_branch / switch_main — git-shaped workflow
 - dev_status — dual-loop targets, ports, last_error
 - dev_logs — gen/check/smoke lines (use after WRITE REJECTED or 404)
 - smoke_status — recent check/smoke excerpt
@@ -110,14 +178,30 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - list_routes — JSON routes from veil_bin
 - http_request(path, target=backend) — local 127.0.0.1:dev_port only
 - dev_restart(name?) — reload cargo run after good smoke
+- stub_list / stub_get / stub_gen / stub_install — external crate stubs (never hand-write)
 - wiki_* — Mind Palace (when MIND_PALACE=1)
+- **Platform UX (required for product ops — never say these are missing):**
+  - create_project({name}) — create product project (UI /projects/new). Do NOT only use wiki.
+  - list_projects / open_project / open_ide / navigate_to
+  - list_changes / create_change / get_change / approve_change / merge_change / add_comment
+  - provision_project / deploy_status / search_registry / get_config / get_mission
+- **Remote (VEIL_SOURCE_MODE=s3):** create_project = DDB+S3 only. Edits via write_source/create_file/ws_* only. NEVER mkdir/write under VEIL_PROJECTS_DIR or invent local hub paths.
+- **VISIBLE UX:** Never curl ProductHost APIs. Only MCP tools. Host may pre-run create_project — continue with write_source, do not re-curl create.
+- **Focus:** Session focus (route/project/construct) is authoritative for "this component". `get_current_context` returns it. Tool `intent.present` drives visible UX choreography — do not re-create after Present.
 
 ## Mind Palace (when wiki tools work)
 - Before answering VEIL language/platform questions, wiki_search first.
-- Prefer durable contracts: veil-contract-bang-opt-res, veil-contract-dual-loop-smoke, veil-contract-multi-package, veil-contract-stubs, veil-contract-routes (ACS-009).
+- Prefer durable contracts: veil-contract-bang-opt-res, veil-contract-git-shaped-sessions, veil-agent-git-shaped-coding, veil-contract-dual-loop-smoke, veil-contract-multi-package, veil-contract-stubs, veil-contract-routes (ACS-009).
 - After durable learning (patterns, decisions, SOPs), wiki_create or wiki_update.
 - Prefer progressive disclosure: summary → section → full.
 - Prefer updating existing pages over duplicates.
+
+## Stubs (external crates) — mandatory
+- **NEVER invent or hand-write full SDK `.stub` files.** Use MCP tools:
+  - `stub_list` / `stub_get` — catalog + resolve (project → platform)
+  - `stub_install` — pin platform stub into project `stubs/`
+  - `stub_gen` — generate from rustdoc when missing or sparse
+- Version + provenance required; prefer platform catalog for common SDKs (aws_*, sqlx, reqwest, axum).
 
 ## Important
 - write_source replaces the ENTIRE file. Always include the full content.
@@ -130,13 +214,25 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 ///
 /// Budget: `VEIL_AGENT_PREAMBLE_MAX_TOKENS` (default **12000** tokens ≈ 48k chars).
 /// Set to `0` for unlimited (only if the model context can hold it).
-pub fn assemble_preamble(source: &str, registry: &LayerRegistry) -> AgentPreamble {
+///
+/// When `project_root` is set and contains `MISSION.md`, a capped product-intent
+/// section is included after Tier 0 (non-critical under tight budget).
+pub fn assemble_preamble(
+    source: &str,
+    registry: &LayerRegistry,
+    project_root: Option<&Path>,
+) -> AgentPreamble {
     let is_acp = crate::acp::acp_enabled();
     let tier0_text = if is_acp { TIER0_ACP } else { TIER0 };
-    assemble_preamble_inner(source, registry, tier0_text)
+    assemble_preamble_inner(source, registry, tier0_text, project_root)
 }
 
-fn assemble_preamble_inner(source: &str, registry: &LayerRegistry, tier0_text: &str) -> AgentPreamble {
+fn assemble_preamble_inner(
+    source: &str,
+    registry: &LayerRegistry,
+    tier0_text: &str,
+    project_root: Option<&Path>,
+) -> AgentPreamble {
     let max_tokens = std::env::var("VEIL_AGENT_PREAMBLE_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -183,6 +279,18 @@ fn assemble_preamble_inner(source: &str, registry: &LayerRegistry, tier0_text: &
     // (name, body, critical) — critical sections refuse silent drop
 
     sections_raw.push(("tier0", tier0_text.to_string(), true));
+
+    // Product intent (optional — short MISSION.md; droppable under tight budget)
+    if let Some(root) = project_root {
+        if let Some(mission) = read_mission_for_agent(root) {
+            let body = format!(
+                "# Product intent — MISSION.md (project root)\n\
+                 Prefer this brief over inventing requirements. Honor Out of scope.\n\n\
+                 {mission}\n"
+            );
+            sections_raw.push(("mission", body, false));
+        }
+    }
 
     // Layer prompts (Tier 1 — curriculum)
     let mut lp = String::from("# Tier 1 — layer prompts (loaded for this package)\n");
@@ -415,11 +523,34 @@ mod tests {
     fn assembles_without_panic() {
         let reg = LayerRegistry::builtin();
         let src = "pkg T\n  struct Point\n    x: Int\n";
-        let p = assemble_preamble(src, &reg);
+        let p = assemble_preamble(src, &reg, None);
         assert!(p.text.contains("Tier 0"));
+        assert!(p.text.contains("MISSION.md"));
         assert!(p.tokens_used > 0);
         // Builtin-only package: no layer prompts is OK and not truncation
         assert!(!p.truncated || p.warning.is_some());
+    }
+
+    #[test]
+    fn assembles_with_mission_when_present() {
+        let dir = std::env::temp_dir().join(format!(
+            "veil_mission_preamble_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("MISSION.md"),
+            "# demo\n\n## Purpose\nShip widgets.\n\n## Out of scope\n- Billing\n",
+        )
+        .unwrap();
+        let reg = LayerRegistry::builtin();
+        let src = "pkg T\n  struct Point\n    x: Int\n";
+        let p = assemble_preamble(src, &reg, Some(&dir));
+        assert!(p.text.contains("Product intent"), "{}", p.text);
+        assert!(p.text.contains("Ship widgets"), "{}", p.text);
+        assert!(p.text.contains("Billing"), "{}", p.text);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

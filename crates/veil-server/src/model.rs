@@ -252,10 +252,16 @@ pub async fn prompt_with_tools(
     user_prompt: &str,
     ws: crate::rig_tools::Workspace,
 ) -> Result<String, String> {
+    use crate::platform_tools::{
+        ApproveChangeTool, CreateChangeTool, CreateProjectTool, DeployStatusTool, GetConfigTool,
+        ListChangesTool, ListProjectsTool, MergeChangeTool, NavigateToTool, OpenIdeTool,
+        OpenProjectTool, ProvisionProjectTool,
+    };
     use crate::rig_tools::{
         CheckTool, CreateFileTool, DevLogsTool, DevRestartTool, DevStatusTool, HttpRequestTool,
         ListFilesTool, ListRoutesTool, OutlineTool, ReadGeneratedTool, ReadSourceTool, RenameTool,
-        SelectFileTool, SmokeStatusTool, WriteSourceTool,
+        SelectFileTool, SmokeStatusTool, StubGenTool, StubGetTool, StubInstallTool, StubListTool,
+        WriteSourceTool,
     };
 
     let mut preamble = preamble.to_string();
@@ -296,7 +302,24 @@ pub async fn prompt_with_tools(
                 .tool(ListRoutesTool { ws: ws.clone() })
                 .tool(HttpRequestTool { ws: ws.clone() })
                 .tool(DevRestartTool { ws: ws.clone() })
-                .tool(SmokeStatusTool { ws: ws.clone() });
+                .tool(SmokeStatusTool { ws: ws.clone() })
+                .tool(StubListTool { ws: ws.clone() })
+                .tool(StubGetTool { ws: ws.clone() })
+                .tool(StubGenTool { ws: ws.clone() })
+                .tool(StubInstallTool { ws: ws.clone() })
+                // Platform UX (create_project, SDLC, deploy, nav)
+                .tool(ListProjectsTool)
+                .tool(CreateProjectTool)
+                .tool(OpenProjectTool)
+                .tool(OpenIdeTool)
+                .tool(NavigateToTool)
+                .tool(ListChangesTool)
+                .tool(CreateChangeTool)
+                .tool(ApproveChangeTool)
+                .tool(MergeChangeTool)
+                .tool(ProvisionProjectTool)
+                .tool(DeployStatusTool)
+                .tool(GetConfigTool);
             if let Some(ref p) = palace {
                 let (search, read, traverse, create, update, list) =
                     crate::mind_palace_tools::tools_for_agent(p);
@@ -330,7 +353,23 @@ pub async fn prompt_with_tools(
                 .tool(ListRoutesTool { ws: ws.clone() })
                 .tool(HttpRequestTool { ws: ws.clone() })
                 .tool(DevRestartTool { ws: ws.clone() })
-                .tool(SmokeStatusTool { ws: ws.clone() });
+                .tool(SmokeStatusTool { ws: ws.clone() })
+                .tool(StubListTool { ws: ws.clone() })
+                .tool(StubGetTool { ws: ws.clone() })
+                .tool(StubGenTool { ws: ws.clone() })
+                .tool(StubInstallTool { ws: ws.clone() })
+                .tool(ListProjectsTool)
+                .tool(CreateProjectTool)
+                .tool(OpenProjectTool)
+                .tool(OpenIdeTool)
+                .tool(NavigateToTool)
+                .tool(ListChangesTool)
+                .tool(CreateChangeTool)
+                .tool(ApproveChangeTool)
+                .tool(MergeChangeTool)
+                .tool(ProvisionProjectTool)
+                .tool(DeployStatusTool)
+                .tool(GetConfigTool);
             if let Some(ref p) = palace {
                 let (search, read, traverse, create, update, list) =
                     crate::mind_palace_tools::tools_for_agent(p);

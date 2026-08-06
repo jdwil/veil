@@ -113,29 +113,75 @@ pub async fn run_turn<P: SourceProvider>(
         content: prompt.to_string(),
     }];
 
-    // Platform UX tools (navigate dashboard) — host path, no project/source required.
-    // Chips like "Open changes" must drive SPA navigation even when ACP MCP
-    // discovery is incomplete. Runs before read_source so hub agent always works.
+    // Platform UX tools (navigate + real product ops) — host path, no project required.
+    // Chips / "create project X" / list_changes must work even when ACP MCP is incomplete.
     if let Some(ux) = parse_platform_ux_intent(prompt) {
-        let mut nav = serde_json::json!({
-            "action": ux.action,
-            "path": ux.path,
-        });
-        if let Some(ref p) = ux.project {
-            nav["project"] = serde_json::json!(p);
+        let mut args = ux.args.clone().unwrap_or_else(|| serde_json::json!({}));
+        // Pure create on a browser turn → via=ux (Agent→Present→UX→Server). Multi-step
+        // prefix forces via=server so follow-on write_source sees the project.
+        if (ux.tool == "create_project" || ux.tool == "create_repo")
+            && args.get("via").is_none()
+            && crate::focus::client_present()
+        {
+            args["via"] = serde_json::json!("ux");
+            if args.get("open_ide").is_none() {
+                args["open_ide"] = serde_json::json!(true);
+            }
         }
-        let detail = serde_json::json!({
-            "ok": true,
-            "summary": ux.summary,
-            "navigation": nav,
-            "project": ux.project,
-        })
-        .to_string();
+        if (ux.tool == "create_change" || ux.tool == "open_create_change")
+            && args.get("via").is_none()
+            && crate::focus::client_present()
+            && args.get("title").is_some()
+        {
+            args["via"] = serde_json::json!("ux");
+        }
+        let detail = match crate::platform_tools::dispatch(&ux.tool, &args).await {
+            Ok(s) => s,
+            Err(e) => {
+                // Fallback: pure navigation JSON when dispatch fails
+                let mut nav = serde_json::json!({
+                    "action": ux.action,
+                    "path": ux.path,
+                });
+                if let Some(ref p) = ux.project {
+                    nav["project"] = serde_json::json!(p);
+                }
+                serde_json::json!({
+                    "ok": false,
+                    "summary": ux.summary,
+                    "error": e,
+                    "navigation": nav,
+                    "project": ux.project,
+                })
+                .to_string()
+            }
+        };
+        let ok = serde_json::from_str::<serde_json::Value>(&detail)
+            .ok()
+            .and_then(|v| v.get("ok").and_then(|o| o.as_bool()))
+            .unwrap_or(true);
+        let summary = serde_json::from_str::<serde_json::Value>(&detail)
+            .ok()
+            .and_then(|v| {
+                v.get("summary")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| ux.summary.clone());
+        let path_shown = serde_json::from_str::<serde_json::Value>(&detail)
+            .ok()
+            .and_then(|v| {
+                v.pointer("/navigation/path")
+                    .and_then(|p| p.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| ux.path.clone());
         messages.push(AgentMessage {
             role: "assistant".into(),
             content: format!(
-                "{}\n\nNavigating to `{}` via `{}`.",
-                ux.summary, ux.path, ux.tool
+                "{summary}\n\nTool `{tool}` → `{path}`.",
+                tool = ux.tool,
+                path = path_shown
             ),
         });
         return AgentTurnResponse {
@@ -146,7 +192,7 @@ pub async fn run_turn<P: SourceProvider>(
                 detail,
             }],
             source_changed: false,
-            ok: true,
+            ok,
             error: None,
             backend: "host-platform".into(),
             plan: None,
@@ -191,7 +237,13 @@ pub async fn run_turn<P: SourceProvider>(
             .unwrap_or(false);
 
     // Tier 0+1 teaching pack for active file layers (deterministic, not vector RAG).
-    let preamble_pack = crate::agent_context::assemble_preamble(&source, &registry);
+    // Optional MISSION.md inject when project root is known.
+    let project_root = provider.as_ref().project_root();
+    let preamble_pack = crate::agent_context::assemble_preamble(
+        &source,
+        &registry,
+        project_root.as_deref(),
+    );
 
     let cfg = crate::model::ModelConfig::from_env();
 
@@ -1146,6 +1198,8 @@ pub struct PlatformUxIntent {
     pub action: String,
     /// Project slug when action is open-ide / open_project
     pub project: Option<String>,
+    /// Arguments for [`crate::platform_tools::dispatch`] (e.g. create_project name).
+    pub args: Option<serde_json::Value>,
 }
 
 /// Map dashboard / chip prompts → platform UX tool + SPA path.
@@ -1165,6 +1219,65 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
     if lower.is_empty() {
         return None;
     }
+
+    // create_project — real product create (not wiki-only).
+    // Only short-circuit *simple* create prompts; multi-step ("create X and design…")
+    // stays with the LLM/MCP tool loop so create_project can run mid-turn.
+    let looks_like_create_project = lower.contains("create_project")
+        || lower.contains("create_repo")
+        || lower.contains("create a project")
+        || lower.contains("create project")
+        || lower.contains("new project")
+        || lower.contains("make a project")
+        || lower.contains("scaffold a project")
+        || lower.contains("scaffold project");
+    let multi_step = lower.contains(" and ")
+        || lower.contains(" then ")
+        || lower.contains(" with ")
+        || lower.contains(" that ")
+        || lower.len() > 120;
+    if looks_like_create_project && !multi_step {
+        let name = extract_create_project_name(user_part).or_else(|| {
+            // "create_project foo" / tool-style
+            extract_project_slug_from_prompt(&lower).filter(|s| {
+                !matches!(
+                    s.as_str(),
+                    "create"
+                        | "project"
+                        | "projects"
+                        | "new"
+                        | "a"
+                        | "the"
+                        | "named"
+                        | "called"
+                        | "repo"
+                        | "scaffold"
+                        | "make"
+                )
+            })
+        });
+        if let Some(name) = name {
+            return Some(PlatformUxIntent {
+                tool: "create_project".into(),
+                path: format!("/projects/{name}"),
+                summary: format!("Creating project `{name}`"),
+                action: "goto".into(),
+                project: Some(name.clone()),
+                args: Some(serde_json::json!({ "name": name, "open": true })),
+            });
+        }
+        // No name yet — open create form so the user can finish in UI
+        return Some(PlatformUxIntent {
+            tool: "navigate_to".into(),
+            path: "/projects/new".into(),
+            summary: "Open create project form (no name given — pass name: create project <slug>)"
+                .into(),
+            action: "goto".into(),
+            project: None,
+            args: Some(serde_json::json!({ "path": "/projects/new" })),
+        });
+    }
+
     // Explicit tool / phrase → path
     let pairs: &[(&[&str], &str, &str, &str)] = &[
         (
@@ -1241,6 +1354,7 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
                 summary: (*summary).into(),
                 action: "goto".into(),
                 project: None,
+                args: None,
             });
         }
     }
@@ -1278,7 +1392,8 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
                     format!("Opening project {project}")
                 },
                 action,
-                project: Some(project),
+                project: Some(project.clone()),
+                args: Some(serde_json::json!({ "project": project })),
             });
         }
         return Some(PlatformUxIntent {
@@ -1287,7 +1402,67 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
             summary: "Opening projects (no project specified)".into(),
             action: "goto".into(),
             project: None,
+            args: None,
         });
+    }
+    None
+}
+
+/// Pull project name from "create project foo", "create a project named bar", etc.
+fn extract_create_project_name(prompt: &str) -> Option<String> {
+    let s = prompt.trim();
+    // named/called X
+    for marker in [" named ", " called ", " name "] {
+        if let Some(idx) = s.to_lowercase().find(marker) {
+            let rest = s[idx + marker.len()..].trim();
+            if let Some(tok) = rest.split_whitespace().next() {
+                let t = tok
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+                if t.len() >= 2 {
+                    return Some(t.to_string());
+                }
+            }
+        }
+    }
+    // "create project <slug>" / "create a project <slug>" / "new project <slug>"
+    let lower = s.to_lowercase();
+    for prefix in [
+        "create_project ",
+        "create_repo ",
+        "create a project ",
+        "create project ",
+        "new project ",
+        "scaffold a project ",
+        "scaffold project ",
+        "make a project ",
+    ] {
+        if let Some(rest) = lower.strip_prefix(prefix).or_else(|| {
+            // also match mid-sentence after punctuation
+            lower.split_once(prefix).map(|(_, r)| r)
+        }) {
+            let tok = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+            if tok.len() >= 2
+                && !matches!(
+                    tok,
+                    "named" | "called" | "please" | "for" | "with" | "and" | "the"
+                )
+            {
+                // Preserve original casing from s if possible
+                if let Some(orig) = s
+                    .split_whitespace()
+                    .find(|w| w.to_lowercase().trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_') == tok)
+                {
+                    let t = orig
+                        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+                    return Some(t.to_string());
+                }
+                return Some(tok.to_string());
+            }
+        }
     }
     None
 }
@@ -1323,6 +1498,124 @@ fn extract_project_slug_from_prompt(lower: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Host-executed platform step before ACP (so the SPA navigates visibly).
+#[derive(Debug, Clone)]
+pub struct HostPlatformStep {
+    pub tool: String,
+    pub args: serde_json::Value,
+    pub summary: String,
+}
+
+/// Product ops the **host** must run via `platform_tools` (with SPA `navigation`)
+/// even when the rest of the turn goes to ACP.
+///
+/// Without this, multi-step prompts ("create project X and build domain…") skip
+/// host short-circuit and ACP often curls `/api/repos` — no tool UI, no UX.
+pub fn host_platform_prefix_steps(prompt: &str) -> Vec<HostPlatformStep> {
+    let user_part = prompt
+        .rsplit_once("# User request\n")
+        .map(|(_, u)| u)
+        .unwrap_or(prompt);
+    let lower = user_part.trim().to_lowercase();
+    if lower.is_empty() {
+        return Vec::new();
+    }
+
+    let mut steps = Vec::new();
+
+    let looks_like_create = lower.contains("create_project")
+        || lower.contains("create_repo")
+        || lower.contains("create a project")
+        || lower.contains("create project")
+        || lower.contains("new project")
+        || lower.contains("make a project")
+        || lower.contains("scaffold a project")
+        || lower.contains("scaffold project")
+        || lower.contains("bootstrap") && lower.contains("project");
+
+    if looks_like_create {
+        if let Some(name) = extract_create_project_name(user_part)
+            .or_else(|| extract_bootstrap_project_name(user_part))
+        {
+            // 1) Show projects list so the operator sees the dashboard move
+            steps.push(HostPlatformStep {
+                tool: "navigate_to".into(),
+                args: serde_json::json!({ "path": "/projects" }),
+                summary: "Navigate to projects (visible UX)".into(),
+            });
+            // 2) Real create via platform tool (DDB+S3) — not curl, not disk.
+            // Force via=server: multi-step turns need the project before write_source.
+            steps.push(HostPlatformStep {
+                tool: "create_project".into(),
+                args: serde_json::json!({
+                    "name": name,
+                    "open": true,
+                    "open_ide": true,
+                    "via": "server",
+                }),
+                summary: format!("create_project `{name}` (host — domain first, Present illustrate)"),
+            });
+        }
+    }
+
+    steps
+}
+
+/// "bootstrap the Agent Registry project" / "create the agent-registry project"
+fn extract_bootstrap_project_name(prompt: &str) -> Option<String> {
+    let lower = prompt.to_lowercase();
+    // "… the X Y project" or "… project X"
+    if let Some(idx) = lower.find(" project") {
+        // tokens before " project" that look like a name
+        let before = prompt[..idx.min(prompt.len())].trim_end();
+        let words: Vec<&str> = before.split_whitespace().collect();
+        // take last 1–3 content words after stop-words
+        let mut name_parts: Vec<String> = Vec::new();
+        for w in words.iter().rev() {
+            let t = w
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                .to_lowercase();
+            if t.is_empty()
+                || matches!(
+                    t.as_str(),
+                    "the"
+                        | "a"
+                        | "an"
+                        | "create"
+                        | "new"
+                        | "bootstrap"
+                        | "scaffold"
+                        | "make"
+                        | "build"
+                        | "open"
+                        | "for"
+                        | "and"
+                        | "with"
+                        | "full"
+                        | "named"
+                        | "called"
+                        | "go"
+                        | "ahead"
+                )
+            {
+                if !name_parts.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            name_parts.push(t);
+            if name_parts.len() >= 3 {
+                break;
+            }
+        }
+        name_parts.reverse();
+        if !name_parts.is_empty() {
+            return Some(name_parts.join("-"));
+        }
+    }
+    extract_create_project_name(prompt)
 }
 
 /// True when the prompt is a host-side command (no LLM/ACP required).
@@ -1398,6 +1691,11 @@ Use body from repo fixtures when available: `fixtures/palace_contracts/<slug>.md
 1. **veil-contract-bang-opt-res** (Concept)
    - Decl `name!` = fallible; call `find!` → Opt<T> (portable bang); force with require / .unwrap() when need T
    - Link: docs/BANG_CONTRACT.md
+
+1b. **veil-contract-git-shaped-sessions** (Concept) + **veil-agent-git-shaped-coding** (Sop)
+   - Tools: session_status → create_branch → veil_check → one class → write → check → session_commit → merge_branch when landing
+   - Agent decides branch/commit/merge; autosave ≠ commit; change list ≠ error count
+   - Fixture: fixtures/palace_contracts/veil-contract-git-shaped-sessions.md
 
 2. **veil-contract-dual-loop-smoke** (Concept)
    - write → smoke → list_routes → restart → http_request; on reject: dev_logs first
@@ -1523,4 +1821,73 @@ fn extract_name_token(original: &str, lower_token: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod platform_ux_tests {
+    use super::*;
+
+    #[test]
+    fn create_project_intent_extracts_name() {
+        let ux = parse_platform_ux_intent("create project agentic-workflows").unwrap();
+        assert_eq!(ux.tool, "create_project");
+        assert_eq!(ux.project.as_deref(), Some("agentic-workflows"));
+        let name = ux.args.as_ref().unwrap().get("name").unwrap().as_str().unwrap();
+        assert_eq!(name, "agentic-workflows");
+    }
+
+    #[test]
+    fn create_project_named_phrase() {
+        let ux = parse_platform_ux_intent("create a project named foo-bar").unwrap();
+        assert_eq!(ux.tool, "create_project");
+        assert_eq!(ux.project.as_deref(), Some("foo-bar"));
+    }
+
+    #[test]
+    fn multi_step_create_does_not_short_circuit() {
+        assert!(parse_platform_ux_intent(
+            "create project foo and then design the full domain model with entities"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn list_changes_still_maps() {
+        let ux = parse_platform_ux_intent("open changes").unwrap();
+        assert_eq!(ux.tool, "list_changes");
+    }
+
+    #[test]
+    fn multi_step_create_gets_host_prefix_tools() {
+        let steps = host_platform_prefix_steps(
+            "create project agent-registry and then design the full domain model with entities",
+        );
+        assert!(
+            steps.iter().any(|s| s.tool == "create_project"),
+            "expected create_project step: {steps:?}"
+        );
+        assert!(
+            steps.iter().any(|s| s.tool == "navigate_to"),
+            "expected navigate_to first: {steps:?}"
+        );
+        let create = steps.iter().find(|s| s.tool == "create_project").unwrap();
+        assert_eq!(create.args["name"], "agent-registry");
+    }
+
+    #[test]
+    fn bootstrap_agent_registry_name() {
+        let steps = host_platform_prefix_steps(
+            "Go ahead and bootstrap the Agent Registry project. Pull in dashbot.",
+        );
+        assert!(
+            steps.iter().any(|s| s.tool == "create_project"),
+            "{steps:?}"
+        );
+        let create = steps.iter().find(|s| s.tool == "create_project").unwrap();
+        let name = create.args["name"].as_str().unwrap();
+        assert!(
+            name.contains("agent") && name.contains("registry"),
+            "got name={name}"
+        );
+    }
 }

@@ -4,11 +4,16 @@
 //! - `VEIL_MODEL_PROVIDER=acp`
 //! - `VEIL_ACP_COMMAND` (default `kiro-cli`)
 //! - `VEIL_ACP_ARGS` (default `acp --trust-all-tools`)
-//! - `VEIL_ACP_CWD` (default: process cwd)
-//! - `VEIL_ACP_AGENT` / `VEIL_MODEL_NAME` optional agent/model for first session
+//! - `VEIL_ACP_CWD` (optional fallback cwd)
+//! - `VEIL_ACP_AGENT` — Kiro agent name (default: `veil` when
+//!   `~/.kiro/agents/veil.json` exists; see `runtime/config/kiro-agent-veil.json`)
 //! - `VEIL_ACP_TIMEOUT_SECS` (default 300)
+//!
+//! VEIL does **not** rewrite `~/.kiro/agents/hive.json`. Use a dedicated
+//! `veil` agent that includes mind-palace/jira **and** `veil-ide-tools`.
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,11 +59,14 @@ impl AcpProcess {
             args.push("acp".into());
             args.push("--trust-all-tools".into());
         }
-        if let Ok(agent) = std::env::var("VEIL_ACP_AGENT") {
-            if !agent.is_empty() && !args.iter().any(|a| a == "--agent") {
-                args.push("--agent".into());
-                args.push(agent);
-            }
+        // Workspace mcp.json only (never rewrite ~/.kiro/agents/*.json).
+        let cwd_pre = resolve_acp_cwd();
+        write_workspace_mcp_json(&cwd_pre);
+
+        let agent = resolve_acp_agent_name();
+        if !agent.is_empty() && !args.iter().any(|a| a == "--agent") {
+            args.push("--agent".into());
+            args.push(agent);
         }
         // Only pass --model when explicitly set to a real Kiro model id.
         // Placeholders like "kiro" / "acp" / ollama defaults are NOT valid Kiro
@@ -71,11 +79,8 @@ impl AcpProcess {
             }
         }
 
-        let cwd = std::env::var("VEIL_ACP_CWD").unwrap_or_else(|_| {
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".into())
-        });
+        // Prefer project materialize / hub path so session cwd matches open product.
+        let cwd = resolve_acp_cwd();
 
         let mut child = Command::new(&cmd)
             .args(&args)
@@ -282,10 +287,9 @@ impl AcpProcess {
         if let Some(ref s) = self.session_id {
             return Ok(s.clone());
         }
-        // Use project directory as session cwd so Kiro loads .kiro/settings/mcp.json.
-        // IMPORTANT: Do NOT pass a non-empty mcpServers array in session/new —
-        // Kiro 2.12 exits (stdout closed) on that shape. Workspace mcp.json
-        // with `{ "mcpServers": { "name": { "url": "http://..." } } }` works.
+        // Agent mcpServers (hive + veil-ide-tools merge) are the primary tool source.
+        // session/new must pass mcpServers: [] — non-empty array crashes Kiro 2.12.
+        // Workspace mcp.json is still written for agents with empty mcpServers.
         let session_cwd = resolve_acp_cwd();
         write_workspace_mcp_json(&session_cwd);
         let result = self.request(
@@ -424,52 +428,52 @@ fn extract_text(v: &Value) -> Option<String> {
     None
 }
 
-/// Resolve the cwd for ACP sessions — use the active project directory.
-///
-/// Kiro loads MCP server config from `.kiro/settings/mcp.json` relative to cwd,
-/// so pointing at the project root ensures it finds the VEIL tools config.
-fn resolve_acp_cwd() -> String {
-    // If we have a project name, resolve its path from projects_dir.
-    if let Some(project) = ACP_PROJECT.lock().ok().and_then(|g| g.clone()) {
-        let projects_dir = crate::config::resolve_projects_dir();
-        let project_path = projects_dir.join(&project);
-        if project_path.is_dir() {
-            return project_path.to_string_lossy().to_string();
+/// Active ACP agent name (default `veil` when installed, else `hive`).
+fn resolve_acp_agent_name() -> String {
+    if let Ok(a) = std::env::var("VEIL_ACP_AGENT") {
+        let t = a.trim();
+        if !t.is_empty() {
+            return t.to_string();
         }
     }
-    // Fallback to env or process cwd.
-    std::env::var("VEIL_ACP_CWD").unwrap_or_else(|_| {
-        std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".into())
-    })
+    // Prefer dedicated agent if installed; never invent/mutate hive.json.
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let agents = PathBuf::from(home).join(".kiro/agents");
+    if agents.join("veil.json").is_file() {
+        "veil".into()
+    } else if agents.join("veil-runtime.json").is_file() {
+        // legacy name from earlier setup
+        "veil-runtime".into()
+    } else {
+        "hive".into()
+    }
 }
 
-/// Write `.kiro/settings/mcp.json` so Kiro discovers VEIL MCP (incl. wiki_*).
-///
-/// Proven working shape (Kiro 2.12): map of name → `{ "url": "http://host/api/mcp" }`.
-/// Do not put non-empty mcpServers in session/new — that crashes the agent.
-fn write_workspace_mcp_json(session_cwd: &str) {
-    let dir = std::path::Path::new(session_cwd).join(".kiro/settings");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let port = std::env::var("VEIL_PORT")
+fn product_host_port() -> u16 {
+    std::env::var("VEIL_PORT")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok())
+        .and_then(|s| s.parse().ok())
         .or_else(|| {
             std::env::var("PORT")
                 .ok()
-                .and_then(|s| s.parse::<u16>().ok())
+                .and_then(|s| s.parse().ok())
         })
-        .unwrap_or(3001);
-    let project = ACP_PROJECT.lock().ok().and_then(|g| g.clone());
-    let mcp_url = if let Some(ref proj) = project {
+        .unwrap_or(8080)
+}
+
+/// MCP HTTP URL for the current project scope (hub or `/api/p/{slug}/mcp`).
+fn veil_ide_mcp_url() -> String {
+    let port = product_host_port();
+    if let Some(ref proj) = ACP_PROJECT.lock().ok().and_then(|g| g.clone()) {
         format!("http://127.0.0.1:{port}/api/p/{proj}/mcp")
     } else {
         format!("http://127.0.0.1:{port}/api/mcp")
-    };
-    let tool_names = [
+    }
+}
+
+/// Full autoApprove list for VEIL IDE + platform tools.
+fn veil_ide_tool_names() -> Vec<&'static str> {
+    vec![
         "veil_check",
         "veil_outline",
         "read_source",
@@ -478,33 +482,153 @@ fn write_workspace_mcp_json(session_cwd: &str) {
         "list_files",
         "select_file",
         "create_file",
-        // Runtime dashboard UX (agent-driven navigation / SDLC)
+        "stub_list",
+        "stub_get",
+        "stub_gen",
+        "stub_install",
+        "dev_status",
+        "dev_logs",
+        "dev_restart",
+        "smoke_status",
+        "read_generated",
+        "list_routes",
+        "http_request",
+        "session_status",
+        "create_branch",
+        "session_commit",
+        "list_commits",
+        "merge_branch",
+        "switch_main",
+        "ws_list",
+        "ws_read",
+        "ws_write",
+        "ws_str_replace",
+        "ws_grep",
+        "ws_rm",
+        "ws_pull",
+        "ws_reset",
         "navigate_to",
-        "list_changes",
-        "create_change",
         "list_projects",
+        "create_project",
+        "create_repo",
+        "get_project",
+        "delete_project",
         "open_project",
         "open_ide",
+        "switch_project",
+        "list_changes",
+        "create_change",
+        "get_change",
+        "submit_change",
+        "approve_change",
+        "request_changes",
+        "merge_change",
+        "add_comment",
+        "get_change_diff",
         "open_deploy",
+        "list_deploy_environments",
+        "deploy_status",
+        "plan_provision",
+        "provision_project",
+        "get_provision_job",
         "open_registry",
+        "list_registry_layers",
+        "list_registry_stubs",
+        "search_registry",
         "open_dashboard",
         "open_config",
+        "get_config",
+        "get_mission",
+        "update_mission",
+        "get_current_context",
+        "wait_intent_ack",
         "wiki_search",
         "wiki_read",
         "wiki_traverse",
         "wiki_create",
         "wiki_update",
         "wiki_list",
-    ];
-    let doc = json!({
-        "mcpServers": {
-            "veil-ide-tools": {
-                "url": mcp_url,
-                "autoApprove": tool_names
+    ]
+}
+
+fn veil_ide_mcp_server_entry(mcp_url: &str) -> Value {
+    json!({
+        "url": mcp_url,
+        "disabled": false,
+        "autoApprove": veil_ide_tool_names(),
+    })
+}
+
+/// Resolve the cwd for ACP sessions — active product project root.
+///
+/// Prefer S3 materialize (`$TMP/veil-s3-ws/{slug}`) when remote; disk hub when
+/// present; else `VEIL_ACP_CWD` / process cwd.
+fn resolve_acp_cwd() -> String {
+    if let Some(project) = ACP_PROJECT.lock().ok().and_then(|g| g.clone()) {
+        // Remote materialize (VEIL_SOURCE_MODE=s3)
+        let s3_ws = crate::provider::s3_workspace::workspace_root(&project);
+        if s3_ws.is_dir()
+            && (s3_ws.join("veil.toml").is_file()
+                || s3_ws.join("main.veil").is_file()
+                || crate::project_layout::has_package_sources(&s3_ws))
+        {
+            return s3_ws.to_string_lossy().to_string();
+        }
+        // Try open/materialize from S3 so cwd exists for the session
+        if !matches!(
+            crate::provider::s3_workspace::ide_source_mode(),
+            crate::provider::s3_workspace::IdeSourceMode::Disk
+        ) {
+            if crate::provider::s3_workspace::open_s3_project(&project, false).is_ok() {
+                let p = crate::provider::s3_workspace::workspace_root(&project);
+                if p.is_dir() {
+                    return p.to_string_lossy().to_string();
+                }
             }
         }
-    });
+        // Disk hub
+        let projects_dir = crate::config::resolve_projects_dir();
+        let project_path = projects_dir.join(&project);
+        if project_path.is_dir() {
+            return project_path.to_string_lossy().to_string();
+        }
+    }
+    std::env::var("VEIL_ACP_CWD").unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".into())
+    })
+}
+
+/// Workspace `.kiro/settings/mcp.json` — used when agent has empty mcpServers
+/// (e.g. personal). Still written always so IDE and ACP stay aligned.
+fn write_workspace_mcp_json(session_cwd: &str) {
+    let dir = Path::new(session_cwd).join(".kiro/settings");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let mcp_url = veil_ide_mcp_url();
+    // Merge with existing workspace servers if any (don't wipe other workspace MCPs)
     let path = dir.join("mcp.json");
+    let mut doc: Value = if path.is_file() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| json!({ "mcpServers": {} }))
+    } else {
+        json!({ "mcpServers": {} })
+    };
+    if let Some(obj) = doc.as_object_mut() {
+        let servers = obj
+            .entry("mcpServers".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(map) = servers.as_object_mut() {
+            map.insert(
+                "veil-ide-tools".into(),
+                veil_ide_mcp_server_entry(&mcp_url),
+            );
+        }
+    }
     if let Ok(s) = serde_json::to_string_pretty(&doc) {
         let _ = std::fs::write(path, s);
     }
@@ -532,22 +656,22 @@ pub fn get_acp_project() -> Option<String> {
 
 /// Ensure ACP MCP routing matches `name` (project-scoped IDE tools).
 ///
-/// Rewrites workspace `mcp.json` and drops a live ACP process when the project
-/// changes so the next prompt reconnects with the correct `/api/p/{proj}/mcp`.
+/// Rewrites workspace `mcp.json` only (does not touch `~/.kiro/agents/*`).
+/// Drops a live ACP process when the project changes so the next prompt
+/// reconnects with `/api/p/{proj}/mcp`.
 pub fn ensure_acp_project_scope(name: Option<String>) {
     let prev_spawn = ACP_SPAWN_PROJECT.lock().ok().and_then(|g| g.clone());
     set_acp_project(name.clone());
+    let cwd = resolve_acp_cwd();
+    write_workspace_mcp_json(&cwd);
     if prev_spawn != name {
-        // mcp.json is read at session start — force respawn with new URL/cwd.
-        let cwd = resolve_acp_cwd();
-        write_workspace_mcp_json(&cwd);
         reset_acp();
         if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
             *g = name;
         }
         tracing::info!(
             project = ?ACP_PROJECT.lock().ok().and_then(|g| g.clone()),
-            "ACP project scope changed — mcp.json rewritten, agent will respawn"
+            "ACP project scope changed — workspace mcp rewritten, will respawn"
         );
     }
 }
@@ -577,7 +701,6 @@ pub fn prompt_acp_streaming(
         .lock()
         .map_err(|e| format!("ACP lock poisoned: {e}"))?;
     if guard.is_none() {
-        // Bake current project into mcp.json + cwd before first spawn.
         let cwd = resolve_acp_cwd();
         write_workspace_mcp_json(&cwd);
         if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {

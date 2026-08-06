@@ -2,15 +2,32 @@
 
 Production-like ProductHost keeps **efficient local checkouts** and **never loses accepted work**.
 
+## Git-shaped workflow (operator model)
+
+Think **branch → commit → merge**, even though the store is S3 + DDB (not a local git forge):
+
+| Familiar | Runtime meaning |
+|----------|-----------------|
+| **Branch** | Isolated session (`draft` prefix). Create with `POST /api/sessions` `{ slug, branch_name }` |
+| **Working tree** | Session workdir under `VEIL_WS_ROOT` |
+| **Autosave / push of dirty files** | Every successful write → S3 (fail-closed). Chip: Synced / Saved |
+| **Commit** | Named checkpoint: `POST /api/sessions/{id}/commits` `{ message }` → S3 snapshot + DDB `COMMIT#` |
+| **Commit log** | `GET /api/sessions/{id}/commits` |
+| **Merge to main** | `POST /api/sessions/{id}/merge` → sync workdir to product base branch prefix |
+| **IDE Changes** | **Uncommitted** (working tree) + **History** (named commits) — not structural IR "vs baseline" |
+
+Mainline sticky session (`POST /api/sessions` with only `slug`) still exists for quick open on **main**.
+
 ## Invariant
 
 | Layer | Store | Disposable? |
 |-------|--------|-------------|
 | Browser / tab | view + typing buffer | yes |
 | Session workdir | `{VEIL_WS_ROOT}/{user}/{session_id}/{slug}/` | yes (rebuildable) |
-| **DDB `SESSION#…/META`** | session metadata, revision, etags | **no** |
-| **S3 objects** | file bytes | **no** |
+| **DDB `SESSION#…/META`** | session metadata, revision, etags, head_commit | **no** |
+| **S3 objects** | file bytes (branch / drafts / commit snapshots) | **no** |
 | **DDB `SESSION#…/TURN#…`** | agent transcript | **no** |
+| **DDB `SESSION#…/COMMIT#…`** | named commits | **no** |
 
 Success responses (IDE write, MCP `write_source` / `ws_*`, autosave) are returned **only after** durable S3 put succeeds.
 
@@ -27,13 +44,16 @@ Success responses (IDE write, MCP `write_source` / `ws_*`, autosave) are returne
 ## API
 
 ```
-POST   /api/sessions              { slug, branch?, draft? }
+POST   /api/sessions              { slug, branch?, draft?, branch_name? }
 GET    /api/sessions
 GET    /api/sessions/{id}
 POST   /api/sessions/{id}/attach
 POST   /api/sessions/{id}/pull
 POST   /api/sessions/{id}/reset
 POST   /api/sessions/{id}/flush
+POST   /api/sessions/{id}/commits { message }     # git-shaped commit
+GET    /api/sessions/{id}/commits
+POST   /api/sessions/{id}/merge                   # promote branch → base (main)
 GET    /api/sessions/{id}/turns
 POST   /api/sessions/{id}/turns
 POST   /api/sessions/{id}/ws/{list,read,write,str_replace,grep,rm}
@@ -48,6 +68,20 @@ IDE routes also accept `X-Veil-Session-Id`. If omitted, the hub **auto-creates**
 
 All path-jailed to the session workdir. Prefer structured VEIL tools for packages; use `ws_*` for full-tree edits.
 
+## MCP git-shaped session tools
+
+| Tool | Role |
+|------|------|
+| `session_status` | Branch, uncommitted, revision, head_commit |
+| `create_branch` | Isolated feature branch (`branch_name`); becomes active work line |
+| `session_commit` | Named checkpoint with message |
+| `list_commits` | Commit log for the session |
+| `merge_branch` | Promote working tree to product base (main) |
+| `switch_main` | Return active work line to sticky mainline |
+
+Agent loop: status → branch (if multi-step) → check → edit → check → commit → … → merge when ready.
+The process remembers the **active work line** per project so subsequent MCP calls without a session header still hit the feature branch.
+
 ## Env
 
 | Var | Meaning |
@@ -58,10 +92,13 @@ All path-jailed to the session workdir. Prefer structured VEIL tools for package
 | `VEIL_SOURCE_MODE` | `s3` / `prefer_s3` / `disk` |
 | `VEIL_DDB_TABLE` / `BUCKET` | Durable store |
 
-## Draft isolation
+## Draft / branch isolation
 
-`POST /api/sessions` with `"draft": true` writes under  
-`repos/{repo_id}/drafts/{session_id}/` instead of the shared branch tree.
+`POST /api/sessions` with `"draft": true` **or** `"branch_name": "fix-foo"` writes under  
+`repos/{repo_id}/drafts/{session_id}/` instead of the shared product branch tree.
+
+Commits snapshot to `repos/{repo_id}/commits/{session_id}/{short_id}/`.  
+Merge syncs the workdir to `repos/{repo_id}/{base_branch}/` (default `main`).
 
 ## Client
 

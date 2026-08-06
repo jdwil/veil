@@ -9,7 +9,9 @@
 	import {
 		setAgentContext,
 		ensureCodingSession,
+		patchFocus,
 	} from '$lib/agent';
+	import { startIdeFocusBridge, stopIdeFocusBridge } from '$lib/ide/focusBridge';
 	import '$lib/ide/ide-app.css';
 
 	const projectId = $derived(($page.params.id ?? '').trim());
@@ -21,11 +23,21 @@
 			page: `/projects/${p}/ide`,
 			project: p,
 		});
+		patchFocus({
+			route: `/projects/${p}/ide`,
+			project: p,
+		});
 	});
 
 	onMount(() => {
 		const p = projectId;
-		if (p) void ensureCodingSession(p);
+		if (!p) return;
+		void ensureCodingSession(p);
+		const stop = startIdeFocusBridge(p);
+		return () => {
+			stop();
+			stopIdeFocusBridge();
+		};
 	});
 </script>
 

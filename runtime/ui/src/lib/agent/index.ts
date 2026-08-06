@@ -33,4 +33,30 @@ export {
 	type IdeBridgeMessage,
 } from './runtimeAgentSession';
 
+export {
+	sessionFocus,
+	patchFocus,
+	getFocus,
+	publishRouteFocus,
+	formatFocusForAgent,
+	focusPayload,
+	onFocusChange,
+	type SessionFocus,
+} from './focus';
+
+export {
+	executeIntent,
+	intentFromToolResult,
+	STAGED_PRESENT_TOOLS,
+	recordIntent,
+	recentIntents,
+	formatIntentLogForAgent,
+	installHumanIntentCapture,
+	restoreIntentLog,
+	type Intent,
+	type Present,
+	type PresentStep,
+	type IntentLogEntry,
+} from './intent';
+
 export { default as AgentDock } from './AgentDock.svelte';

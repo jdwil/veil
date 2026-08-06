@@ -68,7 +68,8 @@ fn aws_base() -> Command {
     c
 }
 
-fn workspace_root(slug: &str) -> PathBuf {
+/// Materialized workspace root for a remote (S3) project slug (`$TMP/veil-s3-ws/{slug}`).
+pub fn workspace_root(slug: &str) -> PathBuf {
     let base = std::env::var("VEIL_S3_WORKSPACE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir().join("veil-s3-ws"));
@@ -182,6 +183,75 @@ pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
     Err(format!(
         "no S3/DDB repo for slug '{slug}' — seed with scripts/seed-repo-s3.sh or set VEIL_REPO_MAP"
     ))
+}
+
+/// Strict remote mode: never write product source under `VEIL_PROJECTS_DIR`.
+pub fn allow_disk_project_create() -> bool {
+    !matches!(ide_source_mode(), IdeSourceMode::S3)
+}
+
+/// Put a text object at `repos/{repo_id}/{branch}/{rel_path}` (stdin → `aws s3 cp -`).
+///
+/// Does **not** touch the projects hub directory — durable store only.
+pub fn put_repo_text(repo_id: &str, rel_path: &str, content: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let rel = rel_path.trim_start_matches('/').replace('\\', "/");
+    if rel.is_empty() || rel.contains("..") {
+        return Err(format!("invalid relative path: {rel_path}"));
+    }
+    let key = format!("repos/{}/{}/{}", repo_id, branch(), rel);
+    let dest = format!("s3://{}/{}", bucket(), key);
+    let mut child = aws_base()
+        .args(["s3", "cp", "-", &dest])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("aws s3 cp spawn: {e}"))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "aws s3 cp: no stdin".to_string())?;
+        stdin
+            .write_all(content.as_bytes())
+            .map_err(|e| format!("aws s3 cp write stdin: {e}"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("aws s3 cp wait: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "aws s3 cp - → {dest} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    tracing::info!(%key, bytes = content.len(), "s3 put scaffold ok");
+    Ok(())
+}
+
+/// Seed INIT scaffold into S3 for a new repo (DDB META must already exist).
+///
+/// Writes only to object storage (+ process-local id cache). Never creates
+/// `{VEIL_PROJECTS_DIR}/{name}` — materialize uses `$TMP/veil-s3-ws` on open.
+pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, String> {
+    if repo_id.trim().is_empty() {
+        return Err("seed_new_repo_scaffold: empty repo_id".into());
+    }
+    let files = crate::project_layout::scaffold_file_contents(name)?;
+    let mut written = Vec::new();
+    for (rel, content) in files {
+        put_repo_text(repo_id, &rel, &content)?;
+        written.push(rel);
+    }
+    let slug = name.to_lowercase().replace(' ', "-").replace('_', "-");
+    if let Ok(mut guard) = repo_id_cache().lock() {
+        guard.insert(name.to_string(), repo_id.to_string());
+        guard.insert(slug, repo_id.to_string());
+    }
+    Ok(written)
 }
 
 /// Build [`crate::project_layout::ProjectInfo`] rows from DDB META (no materialize).

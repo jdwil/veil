@@ -153,7 +153,7 @@ fn parse_source(source: &str, registry: &LayerRegistry) -> Result<veil_ir::Solut
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub struct ToolErr(String);
+pub struct ToolErr(pub String);
 
 #[derive(Deserialize, Serialize, Default)]
 pub struct EmptyArgs {}
@@ -933,6 +933,172 @@ impl Tool for SmokeStatusTool {
         let (root, proj) = host_project(&self.ws)?;
         self.ws.log("smoke_status", "query");
         crate::agent_runtime_tools::tool_smoke_status(&root, proj.as_deref()).map_err(ToolErr)
+    }
+}
+
+// ─── stubs (catalog / gen / install) ───────────────────────────────────────
+
+#[derive(Clone)]
+pub struct StubListTool {
+    pub ws: Workspace,
+}
+
+impl Tool for StubListTool {
+    const NAME: &'static str = "stub_list";
+    type Error = ToolErr;
+    type Args = EmptyArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "List project + platform .stub catalog (name, version, origin, sparse). Prefer stub_install or stub_gen over hand-writing stubs.".into(),
+            parameters: serde_json::json!({ "type": "object", "properties": {} }),
+        }
+    }
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.ws.log("stub_list", "catalog");
+        let root = self.ws.host.as_ref().and_then(|h| h.project_root());
+        Ok(crate::stub_ops::tool_list_text(root.as_deref()))
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct StubNameArgs {
+    /// Crate / stub use-name (e.g. reqwest, aws_sdk_s3).
+    pub name: String,
+}
+
+#[derive(Clone)]
+pub struct StubGetTool {
+    pub ws: Workspace,
+}
+
+impl Tool for StubGetTool {
+    const NAME: &'static str = "stub_get";
+    type Error = ToolErr;
+    type Args = StubNameArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Resolve a .stub by name (project stubs/ first, then platform catalog). Returns metadata + content.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Crate use-name" }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.ws.log("stub_get", &args.name);
+        let root = self.ws.host.as_ref().and_then(|h| h.project_root());
+        let r = crate::stub_ops::get_stub(root.as_deref(), &args.name).map_err(ToolErr)?;
+        serde_json::to_string_pretty(&r).map_err(|e| ToolErr(e.to_string()))
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct StubGenArgs {
+    pub crate_name: String,
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Write into project stubs/ (default true).
+    #[serde(default = "stub_gen_write_default")]
+    pub write: bool,
+}
+
+fn stub_gen_write_default() -> bool {
+    true
+}
+
+#[derive(Clone)]
+pub struct StubGenTool {
+    pub ws: Workspace,
+}
+
+impl Tool for StubGenTool {
+    const NAME: &'static str = "stub_gen";
+    type Error = ToolErr;
+    type Args = StubGenArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Generate a .stub from crates.io via rustdoc (veil stub-gen). REQUIRED instead of hand-writing SDK stubs. Writes to project stubs/ by default.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "crate_name": { "type": "string", "description": "Cargo crate name (reqwest, aws-sdk-s3)" },
+                    "features": { "type": "array", "items": { "type": "string" } },
+                    "write": { "type": "boolean", "description": "Write to project stubs/ (default true)" }
+                },
+                "required": ["crate_name"]
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.ws.log("stub_gen", &args.crate_name);
+        let root = self.ws.host.as_ref().and_then(|h| h.project_root());
+        let r = crate::stub_ops::generate_stub(
+            root.as_deref(),
+            &args.crate_name,
+            &args.features,
+            args.write,
+        )
+        .map_err(ToolErr)?;
+        Ok(format!(
+            "Generated stub {} @ {} → {:?}\nnotes: {}\n\n{}",
+            r.entry.name,
+            r.entry.version,
+            r.entry.path,
+            r.entry.notes.join("; "),
+            if r.content.len() > 4000 {
+                format!("{}…\n[truncated {} chars]", &r.content[..4000], r.content.len())
+            } else {
+                r.content
+            }
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub struct StubInstallTool {
+    pub ws: Workspace,
+}
+
+impl Tool for StubInstallTool {
+    const NAME: &'static str = "stub_install";
+    type Error = ToolErr;
+    type Args = StubNameArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Copy a platform catalog stub into the project stubs/ directory (pin/override). Prefer this before stub_gen for common SDKs.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Platform stub name" }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.ws.log("stub_install", &args.name);
+        let root = self
+            .ws
+            .host
+            .as_ref()
+            .and_then(|h| h.project_root())
+            .ok_or_else(|| ToolErr("no project root".into()))?;
+        let r = crate::stub_ops::install_stub_to_project(&root, &args.name).map_err(ToolErr)?;
+        Ok(format!(
+            "Installed {} @ {} → {:?}",
+            r.entry.name, r.entry.version, r.entry.path
+        ))
     }
 }
 

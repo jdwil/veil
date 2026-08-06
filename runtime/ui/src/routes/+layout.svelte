@@ -11,6 +11,9 @@
         agentPanelOpen,
         onAgentNavigation,
         restoreSession,
+        publishRouteFocus,
+        installHumanIntentCapture,
+        restoreIntentLog,
       } from '$lib/agent';
       import StatusBar from '$lib/components/StatusBar.svelte';
       import {
@@ -21,6 +24,11 @@
 
       /** Full-bleed main when IDE is embedded (no page padding/scroll chrome). */
       const ideEmbedMode = $derived(/\/projects\/[^/]+\/ide\/?$/.test($page.url.pathname));
+
+      /** Keep SessionFocus.route in sync with SPA navigation. */
+      $effect(() => {
+        publishRouteFocus($page.url.pathname);
+      });
 
       /** Resolve open_ide / legacy /viewer paths → shell embed route. */
       function ideEmbedPath(project: string): string {
@@ -42,9 +50,13 @@
       onMount(() => {
         initShellTheme();
         restoreSession();
+        restoreIntentLog();
+        publishRouteFocus($page.url.pathname);
+        const unsubHuman = installHumanIntentCapture();
         // Open agent panel by default
         agentPanelOpen.set(true);
         // Agent tools (navigate_to / open-ide) → SPA routes (stay in shell)
+        // IntentExecutor also calls goto() for Present steps; this handles coarse navigation events.
         const unsubNav = onAgentNavigation((nav) => {
           if (nav.action === 'open-ide') {
             const project = nav.project || projectFromViewerPath(nav.path || '') || '';
@@ -91,6 +103,7 @@
         return () => {
           window.removeEventListener('keydown', handler);
           unsubNav();
+          unsubHuman();
         };
       });
     </script>

@@ -54,6 +54,10 @@ pub fn ide_routes<P: SourceProvider + 'static>() -> Router<Arc<P>> {
         .route("/presentation", get(get_presentation::<P>))
         .route("/context", get(get_context::<P>))
         .route("/stubs", get(get_stubs::<P>))
+        .route("/stubs/catalog", get(get_stubs_catalog::<P>))
+        .route("/stubs/generate", post(post_stubs_generate::<P>))
+        .route("/stubs/install", post(post_stubs_install::<P>))
+        .route("/stubs/{name}", get(get_stub_by_name::<P>))
         .route("/callables", get(get_callables::<P>))
         .route("/diagnostics", get(get_diagnostics::<P>))
         .route("/check", get(get_check::<P>).post(post_check::<P>))
@@ -236,26 +240,18 @@ async fn project_scope_middleware(
         .map(|s| s.to_string());
 
     // Prefer durable session workspace when sessions are enabled.
-    // Fast path: hub already has a bound provider for this project — skip attach/S3.
+    // Always resolve the git-shaped work line (explicit header → active feature
+    // branch → sticky main) and rebind the hub so write_source hits the right tree.
     if crate::session::sessions_enabled() {
-        if multi.hub().has_open(&project) {
-            if let Some(ref sid) = session_hdr {
-                if let Some(h) = crate::session::SessionManager::global().get(sid) {
-                    h.touch_local();
-                    return crate::session::CURRENT_SESSION
-                        .scope(sid.clone(), CURRENT_PROJECT.scope(project, next.run(req)))
-                        .await;
-                }
-            }
-            // Session header missing/stale but project already open — serve warm cache
-            return CURRENT_PROJECT.scope(project, next.run(req)).await;
-        }
-
         let mgr = crate::session::SessionManager::global();
         let handle = if let Some(ref sid) = session_hdr {
-            mgr.attach(sid)
+            let r = mgr.attach(sid);
+            if let Ok(ref h) = r {
+                mgr.set_active_for_project(&project, &h.session_id());
+            }
+            r
         } else {
-            mgr.get_or_create_default(&project)
+            mgr.resolve_for_project(&project)
         };
         match handle {
             Ok(h) => {
@@ -272,7 +268,7 @@ async fn project_scope_middleware(
                     )
                         .into_response();
                 }
-                // Pin session into hub cache under project name for MultiProjectProvider.
+                // Pin session workdir into hub cache for MultiProjectProvider.
                 multi.hub().bind_session_provider(&project, h.provider.clone());
                 let sid = h.session_id();
                 return crate::session::CURRENT_SESSION
@@ -780,9 +776,103 @@ async fn get_context<P: SourceProvider>(
 }
 
 async fn get_stubs<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
-    match serde_json::to_string(&state.registry().stubs) {
+    // Loaded registry stubs (active package) + catalog summary for tooling.
+    crate::stub_ops::ensure_platform_stub_cache();
+    let root = state.project_root();
+    let catalog = crate::stub_ops::catalog_json(root.as_deref());
+    let body = serde_json::json!({
+        "loaded": state.registry().stubs,
+        "catalog": catalog,
+    });
+    match serde_json::to_string(&body) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_stubs_catalog<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
+    crate::stub_ops::ensure_platform_stub_cache();
+    let root = state.project_root();
+    let catalog = crate::stub_ops::catalog_json(root.as_deref());
+    match serde_json::to_string(&catalog) {
+        Ok(json) => json_response(json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_stub_by_name<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Path(name): Path<String>,
+) -> axum::response::Response {
+    let root = state.project_root();
+    match crate::stub_ops::get_stub(root.as_deref(), &name) {
+        Ok(r) => match serde_json::to_string(&r) {
+            Ok(json) => json_response(json).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StubGenerateBody {
+    /// crates.io / Cargo crate name (e.g. `reqwest`, `aws-sdk-s3`)
+    crate_name: String,
+    #[serde(default)]
+    features: Vec<String>,
+    /// Write into project `stubs/` (default true when project open).
+    #[serde(default = "default_true")]
+    write: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+async fn post_stubs_generate<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Json(body): Json<StubGenerateBody>,
+) -> axum::response::Response {
+    let root = state.project_root();
+    match crate::stub_ops::generate_stub(
+        root.as_deref(),
+        &body.crate_name,
+        &body.features,
+        body.write,
+    ) {
+        Ok(r) => match serde_json::to_string(&r) {
+            Ok(json) => json_response(json).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StubInstallBody {
+    /// Stub / crate use-name to copy from platform catalog into the project.
+    name: String,
+}
+
+async fn post_stubs_install<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Json(body): Json<StubInstallBody>,
+) -> axum::response::Response {
+    let Some(root) = state.project_root() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "no project root — open a project first".to_string(),
+        )
+            .into_response();
+    };
+    match crate::stub_ops::install_stub_to_project(&root, &body.name) {
+        Ok(r) => match serde_json::to_string(&r) {
+            Ok(json) => json_response(json).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
 }
 
@@ -1390,23 +1480,27 @@ struct CreateProjectRequest {
     name: String,
 }
 
-/// Create a product repo under the configured projects directory (same as `veil init --in-hub`).
+/// Create a product project.
 ///
-/// Strict `VEIL_SOURCE_MODE=s3` rejects disk create — seed DDB+S3 instead.
+/// - `VEIL_SOURCE_MODE=s3`: **remote only** — reject disk hub; clients must
+///   `POST /api/repos` then S3 scaffold (agent `create_project` does both).
+/// - `prefer_s3` / `disk`: scaffold under projects hub (legacy).
 async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::response::Response {
-    use crate::provider::s3_workspace::{ide_source_mode, IdeSourceMode};
-    if matches!(ide_source_mode(), IdeSourceMode::S3) {
+    use crate::provider::s3_workspace::{allow_disk_project_create, ide_source_mode, IdeSourceMode};
+    if !allow_disk_project_create() {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             [(header::CONTENT_TYPE, "application/json")],
             serde_json::json!({
-                "error": "create project disabled while VEIL_SOURCE_MODE=s3 (remote-only)",
-                "hint": "seed with scripts/seed-repo-s3.sh or set VEIL_SOURCE_MODE=prefer_s3|disk",
+                "error": "disk hub create disabled while VEIL_SOURCE_MODE=s3 (remote-only)",
+                "hint": "Use agent tool create_project or POST /api/repos (DDB) — scaffold lands in S3, not VEIL_PROJECTS_DIR",
+                "source_mode": "s3",
             })
             .to_string(),
         )
             .into_response();
     }
+    let _ = ide_source_mode(); // document mode in traces
     let dir = match crate::config::ensure_projects_dir_exists() {
         Ok(d) => d,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1916,6 +2010,42 @@ async fn get_agent_tools() -> axum::response::Response {
                     "confirmed": { "type": "boolean" }
                 },
                 "required": ["content"]
+            }
+        },
+        {
+            "name": "stub_list",
+            "description": "List project + platform .stub catalog (version, origin). Prefer stub_install/stub_gen over hand-writing stubs.",
+            "parameters": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "stub_get",
+            "description": "Resolve a .stub by name (project stubs/ then platform S3 catalog).",
+            "parameters": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "stub_gen",
+            "description": "Generate .stub via rustdoc (veil stub-gen). Required instead of inventing SDK APIs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "crate_name": { "type": "string" },
+                    "features": { "type": "array", "items": { "type": "string" } },
+                    "write": { "type": "boolean" }
+                },
+                "required": ["crate_name"]
+            }
+        },
+        {
+            "name": "stub_install",
+            "description": "Copy a platform catalog stub into project stubs/ (pin).",
+            "parameters": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
             }
         },
         {

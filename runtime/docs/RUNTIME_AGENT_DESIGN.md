@@ -87,25 +87,25 @@ interface RuntimeAgentState {
 }
 ```
 
-### 3. Context Protocol — Page-Aware Agent
+### 3. Context Protocol — Session Focus + Intent + Present
 
-Each page contributes context via the existing `data-veil-agent` attribute
-pattern (already implemented in `AgentSurface.svelte`). The agent reads
-`window.__veilAgentSurface` before each message to understand:
+**Law (2026-08):** See [ADR_FOCUS_INTENT_PRESENT.md](./ADR_FOCUS_INTENT_PRESENT.md).
 
-- What page the user is on
-- What entities are visible/selected (project, change request, deployment)
-- What actions are available from the current surface
+| Primitive | Role |
+|-----------|------|
+| **SessionFocus** | Continuous: route, project, construct, file, form, diagnostics. UX publishes; every turn injects `ChatRequest.focus`. |
+| **Intent** | Discrete command (`CreateProject`, `Navigate`, …) with actor + optional Present. |
+| **Present** | UX choreography (goto → fill → pulse) so the operator *sees* agent product ops. |
 
-This becomes part of the system prompt preamble per turn:
+Each page still contributes `data-veil-agent` / AgentSurface contracts. Focus is
+authoritative for deictic language ("this component"). `get_current_context`
+returns the structured snapshot.
 
 ```
-You are the VEIL Runtime agent. You can control all aspects of the veil
-platform. Current context:
-- Page: /projects/relay
-- Focused project: relay
-- Available actions: [edit IDE, run gen, deploy, open change, switch project]
-- Agent surfaces: [IDE viewer (embedded iframe), project detail view]
+## Session focus
+- Route: /projects/relay/ide
+- Project: relay
+- Construct: RelayAuth (aggregate)
 ```
 
 ### 4. Tool Registry — Superset
@@ -114,15 +114,17 @@ The runtime agent has a **superset** of tools compared to the IDE agent:
 
 | Category | Tools | Notes |
 |----------|-------|-------|
-| **IDE/Editing** | `edit_file`, `read_file`, `gen_package`, `dev_start/stop` | Delegates to per-project veil-server via internal HTTP |
-| **SDLC** | `create_change`, `list_changes`, `approve_change`, `merge_change`, `add_comment` | Runtime's own change-management services |
-| **Deploy** | `deploy_project`, `deploy_status`, `rollback` | `LocalDeployExec` services |
-| **Navigation** | `navigate_to`, `open_project`, `switch_project`, `open_ide` | Client-side actions via `postMessage` or direct `goto()` |
-| **Registry** | `search_registry`, `install_layer`, `publish_package` | Layer/package management |
-| **Bus** | `inspect_bus`, `replay_event`, `list_handlers` | Runtime bus inspection |
-| **Wiki/Memory** | `wiki_search`, `wiki_read`, `wiki_create`, `wiki_update` | Mind-palace (same as IDE) |
-| **Config** | `get_config`, `update_config` | Runtime settings |
-| **Meta** | `get_current_context`, `list_projects`, `get_project_status` | Situational awareness |
+| **IDE/Editing** | `write_source`, `read_source`, `create_file`, `list_files`, `veil_check`, dual-loop `dev_*` | Active project via MCP / Rig |
+| **Projects** | `create_project`, `list_projects`, `get_project`, `delete_project`, `open_project`, `open_ide` | `POST/GET /api/repos` + disk scaffold; **not** wiki-only |
+| **SDLC** | `create_change`, `list_changes`, `get_change`, `submit_change`, `approve_change`, `request_changes`, `merge_change`, `add_comment`, `get_change_diff` | Real CM APIs + SPA navigation |
+| **Deploy** | `provision_project`, `plan_provision`, `deploy_status`, `list_deploy_environments`, `get_provision_job` | ProductHost deploy routes |
+| **Navigation** | `navigate_to`, `switch_project`, `open_*` | SPA `navigation` in tool result |
+| **Registry** | `search_registry`, `list_registry_layers`, `list_registry_stubs` | Lightweight listing |
+| **Wiki/Memory** | `wiki_search`, `wiki_read`, `wiki_create`, `wiki_update` | Mind-palace (when enabled) |
+| **Config** | `get_config`, `get_mission`, `update_mission` | Runtime settings + product intent |
+| **Meta** | `get_current_context` | Situational awareness |
+
+Implementation: `crates/veil-server/src/platform_tools.rs` (MCP + Rig + host short-circuit).
 
 ### 5. Navigation & Cross-Project Control
 

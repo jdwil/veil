@@ -26,6 +26,7 @@ pub struct SessionMeta {
     pub user_id: String,
     pub slug: String,
     pub repo_id: String,
+    /// Product store branch prefix for non-draft (usually `main`).
     pub branch: String,
     pub work_prefix: String,
     pub revision: u64,
@@ -39,11 +40,49 @@ pub struct SessionMeta {
     pub dirty: Vec<String>,
     #[serde(default)]
     pub draft_mode: bool,
+    /// Git-shaped display name for this work line (`main`, `fix-relay-opts`, …).
+    #[serde(default)]
+    pub branch_name: Option<String>,
+    /// Branch this work line forked from (merge target), default `main`.
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    /// Latest named commit id on this session (not every autosave).
+    #[serde(default)]
+    pub head_commit: Option<String>,
+    /// Working-tree revision at last commit (uncommitted work when revision > this).
+    #[serde(default)]
+    pub committed_revision: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
     pub last_activity_at: String,
     #[serde(default)]
     pub agent_thread_id: Option<String>,
+    /// Last SessionFocus snapshot from the browser (Focus + Intent coordination).
+    #[serde(default)]
+    pub last_focus: Option<serde_json::Value>,
+    /// Recent product intents (agent + human + ux), newest last. Capped.
+    #[serde(default)]
+    pub intent_log: Vec<serde_json::Value>,
+}
+
+/// Named commit on a coding session (git-shaped checkpoint).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionCommit {
+    pub commit_id: String,
+    pub session_id: String,
+    pub message: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// S3 prefix for the snapshot tree.
+    pub snapshot_prefix: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub branch_name: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +170,29 @@ pub fn touch_session(session_id: &str) -> Result<(), String> {
     let now = super::chrono_now();
     meta.last_activity_at = now.clone();
     meta.updated_at = now;
+    put_session_meta(&meta)
+}
+
+/// Persist focus + append intent log entries on session META (best-effort).
+pub fn merge_session_focus_intents(
+    session_id: &str,
+    focus: Option<serde_json::Value>,
+    intent: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let mut meta = get_session_meta(session_id)?;
+    let now = super::chrono_now();
+    meta.last_activity_at = now.clone();
+    meta.updated_at = now;
+    if let Some(f) = focus {
+        meta.last_focus = Some(f);
+    }
+    if let Some(it) = intent {
+        meta.intent_log.push(it);
+        if meta.intent_log.len() > 40 {
+            let drain = meta.intent_log.len() - 30;
+            meta.intent_log.drain(0..drain);
+        }
+    }
     put_session_meta(&meta)
 }
 
@@ -279,4 +341,110 @@ pub fn list_turns(session_id: &str) -> Result<Vec<SessionTurn>, String> {
     }
     turns.sort_by(|a, b| a.turn_id.cmp(&b.turn_id));
     Ok(turns)
+}
+
+pub fn put_session_commit(commit: &SessionCommit) -> Result<(), String> {
+    let pk = format!("SESSION#{}", commit.session_id);
+    let sk = format!("COMMIT#{}", commit.commit_id);
+    let data = serde_json::to_string(commit).map_err(|e| e.to_string())?;
+    let item = serde_json::json!({
+        "PK": { "S": pk },
+        "SK": { "S": sk },
+        "data": { "S": data },
+    });
+    let tmp = std::env::temp_dir().join(format!("veil-commit-{}.json", commit.commit_id));
+    std::fs::write(&tmp, item.to_string()).map_err(|e| format!("write: {e}"))?;
+    let out = aws_base()
+        .args([
+            "dynamodb",
+            "put-item",
+            "--table-name",
+            &table(),
+            "--item",
+            &format!("file://{}", tmp.display()),
+        ])
+        .output()
+        .map_err(|e| format!("aws put commit: {e}"))?;
+    let _ = std::fs::remove_file(&tmp);
+    if !out.status.success() {
+        return Err(format!(
+            "ddb put commit: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+pub fn list_session_commits(session_id: &str) -> Result<Vec<SessionCommit>, String> {
+    let pk = format!("SESSION#{session_id}");
+    let out = aws_base()
+        .args([
+            "dynamodb",
+            "query",
+            "--table-name",
+            &table(),
+            "--key-condition-expression",
+            "PK = :pk AND begins_with(SK, :sk)",
+            "--expression-attribute-values",
+            &format!(r#"{{":pk":{{"S":"{pk}"}},":sk":{{"S":"COMMIT#"}}}}"#),
+            "--output",
+            "json",
+        ])
+        .output()
+        .map_err(|e| format!("aws query commits: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "ddb query commits: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("json: {e}"))?;
+    let mut commits = Vec::new();
+    for item in v
+        .get("Items")
+        .and_then(|i| i.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
+        if let Some(data) = item.pointer("/data/S").and_then(|s| s.as_str()) {
+            if let Ok(c) = serde_json::from_str::<SessionCommit>(data) {
+                commits.push(c);
+            }
+        }
+    }
+    // Newest first
+    commits.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(commits)
+}
+
+pub fn get_session_commit(session_id: &str, commit_id: &str) -> Result<SessionCommit, String> {
+    let pk = format!("SESSION#{session_id}");
+    let sk = format!("COMMIT#{commit_id}");
+    let out = aws_base()
+        .args([
+            "dynamodb",
+            "get-item",
+            "--table-name",
+            &table(),
+            "--key",
+            &format!(r#"{{"PK":{{"S":"{pk}"}},"SK":{{"S":"{sk}"}}}}"#),
+            "--output",
+            "json",
+        ])
+        .output()
+        .map_err(|e| format!("aws get commit: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "ddb get commit: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("json: {e}"))?;
+    let data = v
+        .pointer("/Item/data/S")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| format!("commit not found: {commit_id}"))?;
+    serde_json::from_str(data).map_err(|e| format!("commit parse: {e}"))
 }
