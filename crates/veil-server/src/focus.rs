@@ -539,14 +539,14 @@ pub async fn wait_intent_ack(intent_id: &str, timeout_ms: u64) -> Result<Value, 
 /// Present for change lifecycle actions (submit / approve / merge / …).
 pub fn change_action_intent(action: &str, change_id: &str, summary: &str) -> Value {
     let path = format!("/changes/{change_id}");
-    // Button labels in ChangeDetailView (generated): Submit for Review / Approve / Merge / Post Comment
-    let btn_text = match action {
-        "submit" => "Submit for Review",
-        "approve" => "Approve",
-        "merge" => "Merge",
-        "request_changes" => "Request Changes",
-        "comment" => "Post Comment",
-        _ => "btn-primary",
+    // Prefer stable data-veil-action; fall back to button text labels.
+    let (action_attr, btn_text) = match action {
+        "submit" => ("submit-change", "Submit for Review"),
+        "approve" => ("approve-change", "Approve"),
+        "merge" => ("merge-change", "Merge"),
+        "request_changes" => ("request-changes", "Request Changes"),
+        "comment" => ("add-comment", "Post Comment"),
+        _ => ("primary", "btn-primary"),
     };
     json!({
         "type": "ChangeAction",
@@ -560,7 +560,12 @@ pub fn change_action_intent(action: &str, change_id: &str, summary: &str) -> Val
             "steps": [
                 { "kind": "goto", "path": path, "ms": 320 },
                 { "kind": "wait", "ms": 220 },
-                { "kind": "pulse", "target": format!("text:{btn_text}"), "ms": 550 },
+                {
+                    "kind": "pulse",
+                    "selector": format!("[data-veil-action='{action_attr}']"),
+                    "target": format!("text:{btn_text}"),
+                    "ms": 550
+                },
                 { "kind": "announce", "message": summary }
             ]
         }
@@ -581,7 +586,12 @@ pub fn deploy_action_intent(action: &str, summary: &str, project: Option<&str>) 
             "steps": [
                 { "kind": "goto", "path": "/deploy", "ms": 300, "project": project },
                 { "kind": "wait", "ms": 220 },
-                { "kind": "pulse", "target": "text:Provision", "ms": 500 },
+                {
+                    "kind": "pulse",
+                    "selector": "[data-veil-action='provision-project'], [data-veil-action='provision-confirm']",
+                    "target": "text:Provision",
+                    "ms": 500
+                },
                 { "kind": "announce", "message": summary }
             ]
         }

@@ -52,6 +52,14 @@
   let any_provisioned: boolean = $state(false);
   let infra_status: string = $state('');
   let infra_status_variant: string = $state('');
+  let mission_text: string = $state('');
+  let mission_baseline: string = $state('');
+  let mission_exists: boolean = $state(false);
+  let mission_loading: boolean = $state(false);
+  let mission_editing: boolean = $state(false);
+  let mission_saving: boolean = $state(false);
+  let mission_msg: string = $state('');
+  let mission_error: string = $state('');
 
     $effect(() => { // init
       error = "";
@@ -94,6 +102,14 @@
       infra_status_variant = "warning";
       units = [];
       infra = {  };
+      mission_text = "";
+      mission_baseline = "";
+      mission_exists = false;
+      mission_loading = false;
+      mission_editing = false;
+      mission_saving = false;
+      mission_msg = "";
+      mission_error = "";
       id = project_id_from_path();
     });
    $effect(() => { // load_existing
@@ -120,6 +136,7 @@
               await hydrate_from_infra(result.wrap);
               loading = false;
               loaded = true;
+              await load_mission();
             } else {
               error = result.error;
               loading = false;
@@ -172,6 +189,22 @@
     apply_plan(plan);
     plan_loading = false;
   }
+  function start_edit_mission() {
+    mission_msg = "";
+    mission_error = "";
+    if (mission_exists === false) {
+      if (mission_text === "") {
+        mission_text = mission_template(name);
+      };
+    };
+    mission_editing = true;
+  }
+  function cancel_mission() {
+    mission_text = mission_baseline;
+    mission_editing = false;
+    mission_msg = "";
+    mission_error = "";
+  }
 
   // raw script block (escape hatch — prefer VEIL fn/effect)
   function project_id_from_path(): string {
@@ -189,6 +222,81 @@
   // RepoId is serialized as { value: "uuid" }
   if (typeof v === 'object' && v.value != null) return String(v.value);
   return String(v);
+  }
+  function mission_template(productName: string): string {
+  const n = productName || 'product';
+  return `# ${n}
+
+  ## Purpose
+  One short paragraph: what this product is for.
+
+  ## In scope
+  - …
+
+  ## Out of scope
+  - …
+
+  ## Primary users & success
+  - Who:
+  - Success:
+
+  ## Hard constraints
+  - …
+
+  <!-- Keep this brief (~1–2 min read). Product intent lives here; behavior lives in .veil. -->
+  `;
+  }
+  async function load_mission() {
+  if (!id) return;
+  mission_loading = true;
+  mission_error = '';
+  mission_msg = '';
+  try {
+  const branch = default_branch || 'main';
+  const r = await fetch(
+  `/api/repos/${encodeURIComponent(id)}/mission?branch=${encodeURIComponent(branch)}`
+  );
+  if (!r.ok) throw new Error(await r.text() || `mission ${r.status}`);
+  const body = await r.json();
+  mission_exists = !!body.exists;
+  const content = body.content != null ? String(body.content) : '';
+  mission_text = mission_exists && content.trim()
+  ? content
+  : mission_template(name || slug || 'product');
+  mission_baseline = mission_text;
+  mission_editing = false;
+  } catch (e: any) {
+  mission_error = e?.message != null ? String(e.message) : String(e);
+  } finally {
+  mission_loading = false;
+  }
+  }
+  async function save_mission() {
+  if (!id) return;
+  mission_saving = true;
+  mission_error = '';
+  mission_msg = '';
+  try {
+  const branch = default_branch || 'main';
+  const r = await fetch(`/api/repos/${encodeURIComponent(id)}/mission`, {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+  content: mission_text,
+  branch,
+  message: 'update MISSION.md',
+  }),
+  });
+  if (!r.ok) throw new Error(await r.text() || `save mission ${r.status}`);
+  mission_exists = true;
+  mission_baseline = mission_text;
+  mission_editing = false;
+  mission_msg = 'MISSION.md saved.';
+  } catch (e: any) {
+  mission_error = e?.message != null ? String(e.message) : String(e);
+  } finally {
+  mission_saving = false;
+  }
   }
   /** Load repo + optional infra without hanging Loading forever. */
   async function load_project_detail(id: string, environment: string): Promise<any> {
@@ -475,6 +583,7 @@
         type="button"
         class="btn-primary"
         class:btn-primary--reconcile={any_provisioned && !provision_busy}
+        data-veil-action="provision-project"
         disabled={provision_busy || plan_loading}
         onclick={() => { if (plan_open) { provision_busy = true; } else { load_provision_plan(); } }}
       >
@@ -636,6 +745,65 @@
     <DetailField label="Description" value={description || '—'} />
   </FormSection>
 
+  <FormSection title="Product intent (MISSION.md)" columns={1}>
+    <div class="mission-block">
+      <p class="hint">
+        Purpose, in-scope, and <strong>out of scope</strong> for the coding agent. Keep short (~1–2 min read).
+        Behavior stays in <code>.veil</code>.
+        {#if !mission_exists && !mission_loading}
+          <span class="chip chip--warn">not created yet</span>
+        {:else if mission_exists}
+          <span class="chip">on {default_branch || 'main'}</span>
+        {/if}
+      </p>
+      {#if mission_loading}
+        <p class="hint" role="status">Loading MISSION.md…</p>
+      {:else if mission_editing}
+        <textarea
+          class="input mission-ta"
+          rows={16}
+          bind:value={mission_text}
+          spellcheck="true"
+          aria-label="MISSION.md content"
+        ></textarea>
+        <div class="mission-actions">
+          <button
+            type="button"
+            class="btn-outline"
+            disabled={mission_saving}
+            onclick={() => { cancel_mission(); }}
+          >Cancel</button>
+          <button
+            type="button"
+            class="btn-primary"
+            disabled={mission_saving || !mission_text.trim()}
+            onclick={() => { save_mission(); }}
+          >{mission_saving ? 'Saving…' : 'Save MISSION.md'}</button>
+        </div>
+      {:else}
+        <pre class="mission-pre">{mission_text || '(empty)'}</pre>
+        <div class="mission-actions">
+          <button
+            type="button"
+            class="btn-outline"
+            disabled={loading}
+            onclick={() => { start_edit_mission(); }}
+          >{mission_exists ? 'Edit' : 'Create MISSION.md'}</button>
+          {#if mission_exists}
+            <button
+              type="button"
+              class="btn-outline"
+              disabled={mission_loading}
+              onclick={() => { load_mission(); }}
+            >Reload</button>
+          {/if}
+        </div>
+      {/if}
+      {#if mission_msg}<p class="ok-msg">{mission_msg}</p>{/if}
+      {#if mission_error}<p class="err-msg">{mission_error}</p>{/if}
+    </div>
+  </FormSection>
+
   {#if has_deploy}
     <FormSection title="Infrastructure (veil.toml [deploy])" columns={2}>
       <DetailField label="Region" value={region || '—'} />
@@ -755,6 +923,48 @@
 }
 .hint { color: var(--dk-text-muted); font-size: 0.9rem; margin: 0; }
 .ok-msg { color: var(--dk-green, #22c55e); font-size: 0.9rem; margin: 0; }
+.err-msg { color: var(--dk-red, #ef4444); font-size: 0.9rem; margin: 0; }
+.chip--warn {
+  color: var(--dk-amber, #b45309);
+  border-color: color-mix(in srgb, var(--dk-amber, #f59e0b) 40%, var(--dk-border-soft));
+  background: color-mix(in srgb, var(--dk-amber, #f59e0b) 12%, transparent);
+}
+.mission-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  width: 100%;
+  grid-column: 1 / -1;
+}
+.mission-pre {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--dk-border-soft);
+  border-radius: 0.55rem;
+  background: var(--dk-surface-2, rgba(0, 0, 0, 0.03));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 28rem;
+  overflow: auto;
+}
+.mission-ta {
+  width: 100%;
+  min-height: 16rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.mission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
 .units-block { margin-top: 0.5rem; }
 .units-title {
   font-size: 0.72rem; font-weight: 650; text-transform: uppercase;

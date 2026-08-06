@@ -168,20 +168,20 @@
 >
   {#snippet header_actions()}
     {#if cr?.status === 'Draft'}
-      <button type="button" class="btn-primary" onclick={() => { submit_for_review(); }}>
+      <button type="button" class="btn-primary" data-veil-action="submit-change" onclick={() => { submit_for_review(); }}>
         Submit for Review
       </button>
     {/if}
     {#if cr?.status === 'ReadyForReview'}
-      <button type="button" class="btn-outline" onclick={() => { request_changes(); }}>
+      <button type="button" class="btn-outline" data-veil-action="request-changes" onclick={() => { request_changes(); }}>
         Request Changes
       </button>
-      <button type="button" class="btn-primary" onclick={() => { approve(); }}>
+      <button type="button" class="btn-primary" data-veil-action="approve-change" onclick={() => { approve(); }}>
         Approve
       </button>
     {/if}
     {#if cr?.status === 'Approved'}
-      <button type="button" class="btn-primary" onclick={() => { merge(); }}>
+      <button type="button" class="btn-primary" data-veil-action="merge-change" onclick={() => { merge(); }}>
         Merge
       </button>
     {/if}
@@ -312,6 +312,7 @@
           <button
             type="button"
             class="btn-primary"
+            data-veil-action="add-comment"
             disabled={comment_submitting || !new_comment}
             onclick={() => { comment_submitting = true; }}
           >
