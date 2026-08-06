@@ -686,16 +686,7 @@ function hydrateFocusFromSession(session: Record<string, unknown> | undefined | 
 	}
 	const log = session.intent_log;
 	if (Array.isArray(log) && log.length) {
-		// Merge server log into local (don't wipe fresher browser entries)
-		for (const entry of log) {
-			if (entry && typeof entry === 'object') {
-				const e = entry as { type?: string; actor?: string; summary?: string };
-				if (e.type) {
-					// recordIntent would re-POST — use silent local only via sessionStorage restore path
-					// Light touch: only if local log is empty
-				}
-			}
-		}
+		mergeIntentLogFromServer(log);
 	}
 }
 
