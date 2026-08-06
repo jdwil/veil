@@ -195,6 +195,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             if navigate {
                 out["navigation"] = json!({ "action": "goto", "path": "/projects" });
+                out["intent"] = crate::focus::page_action_intent(
+                    "list_projects",
+                    "/projects",
+                    "Open projects",
+                );
+                out["execution"] = json!({ "domain": "none", "present": "goto" });
             }
             Ok(out.to_string())
         }
@@ -418,6 +424,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             if navigate {
                 out["navigation"] = json!({ "action": "goto", "path": "/changes" });
+                out["intent"] = crate::focus::page_action_intent(
+                    "list_changes",
+                    "/changes",
+                    "Open change requests",
+                );
+                out["execution"] = json!({ "domain": "none", "present": "goto" });
             }
             // ok even if API empty — navigation still useful
             if status == 0 {
@@ -842,12 +854,18 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         }
 
         // ─── Registry ─────────────────────────────────────────────────────
-        "open_registry" => Ok(json!({
-            "ok": true,
-            "summary": "Open registry",
-            "navigation": { "action": "goto", "path": "/registry" }
-        })
-        .to_string()),
+        "open_registry" => {
+            let intent =
+                crate::focus::page_action_intent("open_registry", "/registry", "Open registry");
+            Ok(json!({
+                "ok": true,
+                "summary": "Open registry",
+                "navigation": { "action": "goto", "path": "/registry" },
+                "intent": intent,
+                "execution": { "domain": "none", "present": "goto" }
+            })
+            .to_string())
+        }
 
         "list_registry_layers" | "search_registry" => {
             let (status, layers) = http_json("GET", "/api/registry/layers", None).await?;
@@ -861,7 +879,13 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "summary": "Registry layers + stubs",
                 "layers": layers,
                 "stubs": if ok_status(s2) { stubs } else { json!([]) },
-                "navigation": { "action": "goto", "path": "/registry" }
+                "navigation": { "action": "goto", "path": "/registry" },
+                "intent": crate::focus::page_action_intent(
+                    "search_registry",
+                    "/registry",
+                    "Open registry",
+                ),
+                "execution": { "domain": "none", "present": "goto" }
             });
             if let Some(q) = query {
                 let ql = q.to_lowercase();
@@ -889,18 +913,30 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": "Registry stubs",
                 "stubs": data,
-                "navigation": { "action": "goto", "path": "/registry" }
+                "navigation": { "action": "goto", "path": "/registry" },
+                "intent": crate::focus::page_action_intent(
+                    "list_registry_stubs",
+                    "/registry",
+                    "Open registry stubs",
+                ),
+                "execution": { "domain": "none", "present": "goto" }
             })
             .to_string())
         }
 
         // ─── Config / meta ────────────────────────────────────────────────
-        "open_dashboard" => Ok(json!({
-            "ok": true,
-            "summary": "Open dashboard",
-            "navigation": { "action": "goto", "path": "/dashboard" }
-        })
-        .to_string()),
+        "open_dashboard" => {
+            let intent =
+                crate::focus::page_action_intent("open_dashboard", "/dashboard", "Open dashboard");
+            Ok(json!({
+                "ok": true,
+                "summary": "Open dashboard",
+                "navigation": { "action": "goto", "path": "/dashboard" },
+                "intent": intent,
+                "execution": { "domain": "none", "present": "goto" }
+            })
+            .to_string())
+        }
 
         "open_config" => {
             let intent =
