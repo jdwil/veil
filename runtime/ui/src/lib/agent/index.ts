@@ -53,6 +53,7 @@ export {
 	formatIntentLogForAgent,
 	installHumanIntentCapture,
 	restoreIntentLog,
+	mergeIntentLogFromServer,
 	type Intent,
 	type Present,
 	type PresentStep,

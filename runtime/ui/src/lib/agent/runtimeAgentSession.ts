@@ -31,6 +31,7 @@ import {
 	intentFromToolResult,
 	STAGED_PRESENT_TOOLS,
 	formatIntentLogForAgent,
+	mergeIntentLogFromServer,
 	type Intent
 } from './intent';
 

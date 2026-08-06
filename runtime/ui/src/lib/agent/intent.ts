@@ -117,6 +117,42 @@ export function restoreIntentLog() {
 	}
 }
 
+/**
+ * Merge durable session META intent_log into the local ring without re-POSTing.
+ * Prefer newer local entries when keys collide (type+summary+ts).
+ */
+export function mergeIntentLogFromServer(entries: unknown[]) {
+	if (!Array.isArray(entries) || !entries.length) return;
+	const key = (e: IntentLogEntry) =>
+		`${e.ts}|${e.actor}|${e.type}|${e.summary ?? ''}`;
+	const seen = new Set(intentLog.map(key));
+	const incoming: IntentLogEntry[] = [];
+	for (const raw of entries) {
+		if (!raw || typeof raw !== 'object') continue;
+		const o = raw as Record<string, unknown>;
+		const type = typeof o.type === 'string' ? o.type : null;
+		if (!type) continue;
+		const entry: IntentLogEntry = {
+			type,
+			actor: (typeof o.actor === 'string' ? o.actor : 'system') as IntentLogEntry['actor'],
+			summary: typeof o.summary === 'string' ? o.summary : undefined,
+			payload:
+				o.payload && typeof o.payload === 'object'
+					? (o.payload as Record<string, unknown>)
+					: undefined,
+			ts: typeof o.ts === 'number' ? o.ts : Number(o.ts) || Date.now()
+		};
+		if (seen.has(key(entry))) continue;
+		seen.add(key(entry));
+		incoming.push(entry);
+	}
+	if (!incoming.length) return;
+	intentLog.push(...incoming);
+	intentLog.sort((a, b) => a.ts - b.ts);
+	if (intentLog.length > MAX_LOG) intentLog.splice(0, intentLog.length - MAX_LOG);
+	persistIntentLogLocal();
+}
+
 export function recordIntent(entry: Omit<IntentLogEntry, 'ts'> & { ts?: number }) {
 	const full: IntentLogEntry = {
 		...entry,
