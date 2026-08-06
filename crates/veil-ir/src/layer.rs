@@ -1245,24 +1245,44 @@ impl LayerRegistry {
 
     /// Locate a system `.stub` by package use-name (`aws_sdk_dynamodb`, `sqlx`, …).
     fn find_system_stub(name: &str) -> Option<std::path::PathBuf> {
-        let file = format!("{name}.stub");
+        // Also try dashed/underscored stems (aws-sdk-s3 vs aws_sdk_s3)
+        let stems: Vec<String> = {
+            let mut v = vec![name.to_string()];
+            let u = name.replace('-', "_");
+            let d = name.replace('_', "-");
+            if u != name {
+                v.push(u);
+            }
+            if d != name && !v.iter().any(|s| s == &d) {
+                v.push(d);
+            }
+            v
+        };
+        let try_dir = |dir: &Path| -> Option<PathBuf> {
+            for stem in &stems {
+                let p = dir.join(format!("{stem}.stub"));
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+            None
+        };
         // VEIL_STUBS_DIR
         if let Ok(dir) = std::env::var("VEIL_STUBS_DIR") {
-            let p = Path::new(&dir).join(&file);
-            if p.exists() {
+            if let Some(p) = try_dir(Path::new(&dir)) {
                 return Some(p);
             }
         }
+        // Host cache from DDB seed (veil-server stub_ops default_cache_dir)
+        if let Some(p) = try_dir(&std::env::temp_dir().join("veil-platform-stubs")) {
+            return Some(p);
+        }
         // Next to system layers: VEIL_LAYERS_DIR/../runtime/src/stubs
         if let Ok(layers) = std::env::var("VEIL_LAYERS_DIR") {
-            let p = Path::new(&layers)
-                .join("../runtime/src/stubs")
-                .join(&file);
-            if p.exists() {
+            if let Some(p) = try_dir(&Path::new(&layers).join("../runtime/src/stubs")) {
                 return Some(p);
             }
-            let p = Path::new(&layers).join("../examples").join(&file);
-            if p.exists() {
+            if let Some(p) = try_dir(&Path::new(&layers).join("../examples")) {
                 return Some(p);
             }
         }
@@ -1270,8 +1290,7 @@ impl LayerRegistry {
         if let Ok(cwd) = std::env::current_dir() {
             for anc in cwd.ancestors() {
                 for rel in ["runtime/src/stubs", "examples"] {
-                    let p = anc.join(rel).join(&file);
-                    if p.exists() {
+                    if let Some(p) = try_dir(&anc.join(rel)) {
                         return Some(p);
                     }
                 }
@@ -1281,8 +1300,7 @@ impl LayerRegistry {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {
                 for rel in ["../runtime/src/stubs", "stubs", "../stubs"] {
-                    let p = exe_dir.join(rel).join(&file);
-                    if p.exists() {
+                    if let Some(p) = try_dir(&exe_dir.join(rel)) {
                         return Some(p);
                     }
                 }
@@ -1464,6 +1482,32 @@ fn resolve_port_binding(
 
 // ─── Stub system (.stub files for third-party crate declarations) ─────────
 
+/// Provenance / freshness metadata for a `.stub` (from header comments or directives).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StubProvenance {
+    /// True when `# @generated …` or equivalent is present.
+    #[serde(default)]
+    pub generated: bool,
+    /// e.g. `veil-stub-gen 1`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator: Option<String>,
+    /// Where the API was taken from: `crates.io`, `path`, `git`, `hand`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `full` | `curated` | `sparse` — full = rustdoc dump; curated = hand/minimal pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    /// Hash of rustdoc (or content) input used at generation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rustdoc_fingerprint: Option<String>,
+    /// ISO-8601 generation timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    /// crates.io / Cargo package name when it differs from the VEIL use-name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_name: Option<String>,
+}
+
 /// A parsed `.stub` file — declares the public API of an external Rust crate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StubCrate {
@@ -1476,6 +1520,9 @@ pub struct StubCrate {
     /// types accessible as `S3Client` → `aws_sdk_s3::Client`).
     #[serde(default)]
     pub alias: Option<String>,
+    /// Generation / versioning metadata (not used by codegen).
+    #[serde(default)]
+    pub provenance: StubProvenance,
     /// Cargo features for workspace.dependencies (GEN-006) — from stub line
     /// `cargo_features a, b, c`. Empty = plain version dep.
     #[serde(default)]
@@ -1548,6 +1595,81 @@ impl StubCrate {
         }
         rust_name
     }
+
+    /// Count of `struct` / `trait` declarations (for sparse detection).
+    pub fn api_type_count(&self) -> usize {
+        self.structs.len()
+    }
+
+    /// True when the surface looks too thin for a real SDK (re-export facade or hand sketch).
+    pub fn is_sparse(&self) -> bool {
+        if self
+            .provenance
+            .surface
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case("sparse"))
+        {
+            return true;
+        }
+        if self
+            .provenance
+            .surface
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case("curated"))
+        {
+            // Curated surfaces are intentionally small.
+            return false;
+        }
+        let method_count: usize = self.structs.iter().map(|s| s.methods.len()).sum::<usize>()
+            + self.impls.iter().map(|i| i.methods.len()).sum::<usize>()
+            + self.free_fns.len();
+        self.api_type_count() < 5 && method_count < 8
+    }
+
+    /// True when version is missing / wildcard (cannot pin Cargo deps reliably).
+    pub fn version_unpinned(&self) -> bool {
+        let v = self.version.trim();
+        v.is_empty() || v == "*" || v == "0" || !v.chars().next().is_some_and(|c| c.is_ascii_digit())
+    }
+
+    /// Human issues for catalog / diagnostics (not hard errors in the typechecker).
+    pub fn freshness_notes(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if self.version_unpinned() {
+            notes.push(format!(
+                "stub `{}` has no pin version (got {:?}) — re-run `veil stub-gen` or set `stub {} <semver>`",
+                self.name, self.version, self.name
+            ));
+        }
+        if self.is_sparse()
+            && !self
+                .provenance
+                .surface
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case("curated"))
+        {
+            notes.push(format!(
+                "stub `{}` looks sparse ({} types) — expand with `veil stub-gen {}` or mark `surface curated`",
+                self.name,
+                self.api_type_count(),
+                self.name
+            ));
+        }
+        if !self.provenance.generated
+            && self
+                .provenance
+                .surface
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case("full"))
+                .unwrap_or(false)
+        {
+            notes.push(format!(
+                "stub `{}` claims full surface but is not @generated — prefer stub-gen",
+                self.name
+            ));
+        }
+        notes
+    }
 }
 
 /// A struct declared in a stub file.
@@ -1586,6 +1708,55 @@ pub struct StubMethod {
     pub return_type: Option<String>,         // VEIL type syntax (e.g. "Res!<Str>")
 }
 
+/// Apply a `# key value` or bare directive provenance line onto a stub.
+fn apply_stub_meta_line(stub: &mut StubCrate, raw: &str) {
+    let t = raw.trim();
+    let body = t.strip_prefix('#').unwrap_or(t).trim();
+    if body.is_empty() {
+        return;
+    }
+    // `# @generated veil-stub-gen 1` or `# @generated`
+    if let Some(rest) = body.strip_prefix("@generated") {
+        stub.provenance.generated = true;
+        let g = rest.trim();
+        if !g.is_empty() {
+            stub.provenance.generator = Some(g.to_string());
+        } else if stub.provenance.generator.is_none() {
+            stub.provenance.generator = Some("veil-stub-gen".into());
+        }
+        return;
+    }
+    // Auto-inferred comment from older generators
+    if body.contains("Auto-inferred codegen policy") || body.contains("re-run veil stub-gen") {
+        stub.provenance.generated = true;
+        if stub.provenance.generator.is_none() {
+            stub.provenance.generator = Some("veil-stub-gen".into());
+        }
+        if stub.provenance.surface.is_none() {
+            stub.provenance.surface = Some("full".into());
+        }
+        return;
+    }
+    // `key value` pairs (comment or directive)
+    let mut parts = body.splitn(2, char::is_whitespace);
+    let key = parts.next().unwrap_or("").to_ascii_lowercase();
+    let val = parts.next().unwrap_or("").trim();
+    match key.as_str() {
+        "source" if !val.is_empty() => stub.provenance.source = Some(val.to_string()),
+        "surface" if !val.is_empty() => stub.provenance.surface = Some(val.to_string()),
+        "rustdoc_fingerprint" | "fingerprint" if !val.is_empty() => {
+            stub.provenance.rustdoc_fingerprint = Some(val.to_string());
+        }
+        "generated_at" if !val.is_empty() => stub.provenance.generated_at = Some(val.to_string()),
+        "cargo_name" if !val.is_empty() => stub.provenance.cargo_name = Some(val.to_string()),
+        "generator" if !val.is_empty() => {
+            stub.provenance.generated = true;
+            stub.provenance.generator = Some(val.to_string());
+        }
+        _ => {}
+    }
+}
+
 /// Parse a `.stub` file into a StubCrate.
 pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
     let mut stub = StubCrate::default();
@@ -1594,6 +1765,7 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
     // Multi-line `harness_field Type """ ... """` capture
     let mut harness_field_name: Option<String> = None;
     let mut harness_field_buf: Option<String> = None;
+    let mut saw_header = false;
 
     for line in content.lines() {
         // Finish multi-line harness_field raw string
@@ -1621,7 +1793,12 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
         }
 
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Meta comments (anywhere near header / before structs)
+        if trimmed.starts_with('#') {
+            apply_stub_meta_line(&mut stub, trimmed);
             continue;
         }
         let indent = line.len() - line.trim_start().len();
@@ -1631,6 +1808,19 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             let parts: Vec<&str> = trimmed.strip_prefix("stub ").unwrap().split_whitespace().collect();
             stub.name = parts.first().unwrap_or(&"").to_string();
             stub.version = parts.get(1).unwrap_or(&"*").to_string();
+            saw_header = true;
+            continue;
+        }
+
+        // Bare provenance directives (not comments): surface curated
+        if saw_header
+            && indent <= 2
+            && matches!(
+                trimmed.split_whitespace().next(),
+                Some("surface" | "source" | "cargo_name" | "generator" | "generated_at" | "rustdoc_fingerprint" | "fingerprint")
+            )
+        {
+            apply_stub_meta_line(&mut stub, trimmed);
             continue;
         }
 

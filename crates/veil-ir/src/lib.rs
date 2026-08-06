@@ -21,6 +21,7 @@ pub mod typecheck;
 pub mod serialize;
 pub mod span;
 pub mod struct_diff;
+pub mod stub_catalog;
 pub mod coverage;
 pub mod test_lint;
 pub mod validate;
@@ -56,7 +57,12 @@ pub use ir::*;
 pub use layer::{
     palette_from_registry, parse_layer_file, parse_stub_file, CodegenRule, CodegenTemplate,
     ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer, ReactivityPolicy, Shape,
-    StatementSpec, StmtShape, StubCrate, StubImpl, StubMethod, StubStruct,
+    StatementSpec, StmtShape, StubCrate, StubImpl, StubMethod, StubProvenance, StubStruct,
+};
+pub use stub_catalog::{
+    content_fingerprint, generated_stub_header, list_catalog, list_platform_stubs,
+    list_project_stubs, platform_stub_dirs, project_stub_write_path, resolve_stub,
+    stub_file_stems, ResolvedStub, StubCatalogEntry, StubOrigin,
 };
 pub use layer_graph::{build_layer_ir, check_layer, layer_prompt};
 pub use presentation::{
