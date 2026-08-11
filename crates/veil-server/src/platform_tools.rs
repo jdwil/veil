@@ -124,6 +124,7 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "update_mission"
             | "wait_intent_ack"
             | "resolve_coding_target"
+            | "run_coding_plan"
     )
 }
 
@@ -430,6 +431,151 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 out["bound"] = json!(true);
             }
             Ok(out.to_string())
+        }
+
+        // ─── Coding orchestrator plans ───────────────────────────────────
+        "run_coding_plan" => {
+            let plan_name = arg_str(arguments, &["plan", "name", "id"]).unwrap_or_else(|| {
+                "coding.fix_diagnostics".into()
+            });
+            let plan_id = crate::coding_orchestrator::PlanId::parse(&plan_name).ok_or_else(|| {
+                format!(
+                    "unknown plan `{plan_name}` — use coding.slice | coding.fix_diagnostics | coding.finish_task"
+                )
+            })?;
+            let request = arg_str(arguments, &["request", "task", "message", "query"])
+                .unwrap_or_else(|| "".into());
+            let project = arg_str(arguments, &["slug", "project"]).or_else(|| {
+                crate::coding_gates::current_project_slug()
+            });
+
+            // Always start with resolve (except finish_task which reuses binding)
+            let resolve_args = json!({
+                "request": request,
+                "project": project,
+            });
+            let resolve_raw = if matches!(
+                plan_id,
+                crate::coding_orchestrator::PlanId::FinishTask
+            ) {
+                // Finish: reuse bound PR; soft resolve only if request set
+                if request.trim().is_empty() {
+                    json!({
+                        "ok": true,
+                        "decision": "bind_or_new",
+                        "summary": "finish_task — using session active PR or create at open step",
+                    })
+                    .to_string()
+                } else {
+                    Box::pin(dispatch("resolve_coding_target", &resolve_args))
+                        .await
+                        .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string())
+                }
+            } else {
+                Box::pin(dispatch("resolve_coding_target", &resolve_args))
+                    .await
+                    .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string())
+            };
+            let resolve_val: Value =
+                serde_json::from_str(&resolve_raw).unwrap_or_else(|_| json!({ "raw": resolve_raw }));
+
+            if resolve_val.get("decision").and_then(|v| v.as_str()) == Some("needs_choice") {
+                return Ok(json!({
+                    "ok": true,
+                    "plan": plan_id.as_str(),
+                    "phase": "await_choice",
+                    "summary": "Coding plan paused — operator must choose pull request",
+                    "resolve": resolve_val,
+                    "plan_spec": crate::coding_orchestrator::plan_json(plan_id),
+                    "playbook": crate::coding_orchestrator::agent_playbook(plan_id, &resolve_val),
+                    "intent": resolve_val.get("intent").cloned(),
+                    "pending_ux": true,
+                    "execution": { "domain": "ux", "present": "choose" },
+                    "next": "wait_intent_ack then resolve_coding_target({choice}) then run_coding_plan again"
+                })
+                .to_string());
+            }
+
+            // finish_task: host-driven open+submit
+            if matches!(plan_id, crate::coding_orchestrator::PlanId::FinishTask) {
+                let title = arg_str(arguments, &["title"]).unwrap_or_else(|| {
+                    if request.trim().is_empty() {
+                        "Agent coding changes".into()
+                    } else {
+                        let t: String = request.chars().take(72).collect();
+                        if request.len() > 72 {
+                            format!("{t}…")
+                        } else {
+                            t
+                        }
+                    }
+                });
+                let mut create_args = json!({
+                    "title": title,
+                    "description": request,
+                });
+                if let Some(ref p) = project {
+                    create_args["slug"] = json!(p);
+                    create_args["project"] = json!(p);
+                }
+                let create_raw = Box::pin(dispatch("create_change", &create_args))
+                    .await
+                    .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string());
+                let create_val: Value = serde_json::from_str(&create_raw)
+                    .unwrap_or_else(|_| json!({ "raw": create_raw }));
+                let pr_id = create_val
+                    .pointer("/change_request/id")
+                    .or_else(|| create_val.pointer("/change_request/change_request/id"))
+                    .or_else(|| create_val.pointer("/pull_request/id"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| create_val.get("change_id").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let mut submit_val = json!(null);
+                if !pr_id.is_empty() {
+                    let mut sub_args = json!({ "id": pr_id });
+                    if let Some(ref p) = project {
+                        sub_args["slug"] = json!(p);
+                    }
+                    let sub_raw = Box::pin(dispatch("submit_change", &sub_args))
+                        .await
+                        .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string());
+                    submit_val = serde_json::from_str(&sub_raw)
+                        .unwrap_or_else(|_| json!({ "raw": sub_raw }));
+                }
+                return Ok(json!({
+                    "ok": create_val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "plan": plan_id.as_str(),
+                    "phase": "done",
+                    "summary": "finish_task: open/reuse PR + submit for PR Wizard (no auto-merge)",
+                    "resolve": resolve_val,
+                    "create_change": create_val,
+                    "submit_change": submit_val,
+                    "plan_spec": crate::coding_orchestrator::plan_json(plan_id),
+                    "host_check": submit_val.get("host_check").cloned()
+                        .or_else(|| create_val.get("host_check").cloned()),
+                    "gate_notes": submit_val.get("gate_notes").cloned()
+                        .or_else(|| create_val.get("gate_notes").cloned()),
+                })
+                .to_string());
+            }
+
+            // slice / fix_diagnostics: host resolved; agent continues playbook
+            Ok(json!({
+                "ok": true,
+                "plan": plan_id.as_str(),
+                "phase": "agent_steps",
+                "summary": format!(
+                    "Started {} — host resolved target; follow playbook (commit per slice; PR only at end)",
+                    plan_id.as_str()
+                ),
+                "resolve": resolve_val,
+                "plan_spec": crate::coding_orchestrator::plan_json(plan_id),
+                "playbook": crate::coding_orchestrator::agent_playbook(plan_id, &resolve_val),
+                "next_agent_tools": plan_id.as_str(),
+                "hint": "Do not open PR mid-loop. When diagnostics task complete, call run_coding_plan({plan:\"coding.finish_task\"})"
+            })
+            .to_string())
         }
 
         // ─── Coding target resolve (open unmerged PRs) ───────────────────
@@ -2128,6 +2274,21 @@ pub fn tool_definitions() -> Vec<Value> {
                     "choice": { "type": "string", "description": "After modal: PR id, or 'new' / '__new__'" }
                 },
                 "required": []
+            }
+        }),
+        json!({
+            "name": "run_coding_plan",
+            "description": "Host coding orchestrator. plan=coding.fix_diagnostics|coding.slice|coding.finish_task. Starts with resolve_coding_target, returns playbook for agent steps (commit per slice). finish_task opens/reuses PR and submit_change (never merges). Prefer over free-form SOP for Fix-all / end-of-task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "plan": { "type": "string", "description": "coding.fix_diagnostics | coding.slice | coding.finish_task" },
+                    "request": { "type": "string", "description": "Operator task / diagnostics summary" },
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" },
+                    "title": { "type": "string", "description": "PR title for finish_task" }
+                },
+                "required": ["plan"]
             }
         }),
         json!({

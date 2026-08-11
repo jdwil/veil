@@ -36,6 +36,7 @@ pub mod agent_runtime_tools;
 pub mod platform_tools;
 pub mod coding_gates;
 pub mod coding_resolve;
+pub mod coding_orchestrator;
 pub mod agent_scope;
 pub mod focus;
 pub mod layer_edit;

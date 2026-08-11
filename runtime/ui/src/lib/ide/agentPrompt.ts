@@ -44,14 +44,13 @@ export function formatIssuePrompt(
 	return [
 		heading,
 		'',
-		'Use IDE / project tools as needed (read source, apply edits, re-check). Prefer minimal correct fixes.',
-		'After every edit: veil_check. Fix any new errors/warnings you introduced on this same turn.',
-		'Git-shaped workflow (you decide branch/commit — do not ask the operator for every step):',
-		'session_status → multi-step? create_branch → veil_check baseline → fix one class → write → veil_check → session_commit.',
-		// Avoid bare tool tokens that false-trigger host platform-UX short-circuit
-		// (parse_platform_ux_intent substring match). Name tools only inside SOP prose.
-		'When the full task is done: open a PR for human review (title + description with per-slice rationales), then submit it. Do not open an empty create-form mid-fix.',
-		'NEVER merge unless the operator explicitly asks to land. Humans review via the PR Wizard.',
+		'Host owns the coding workflow (not prompt-only):',
+		'1. Call run_coding_plan with plan coding.fix_diagnostics and this request text (or resolve_coding_target first).',
+		'2. Host matches open unmerged pull requests by scope — auto-bind, Present modal if ambiguous, or new work line.',
+		'3. Per slice: write → veil_check (trust HOST_CHECK_SEVERITY / host_check, not self-report) → session_commit.',
+		'4. When the full task is done: run_coding_plan with plan coding.finish_task (opens/reuses PR + submit). Never mid-loop empty forms.',
+		'NEVER merge unless the operator explicitly asks. Humans review via the PR Wizard.',
+		'If host_check severity is errors, do not claim a clean working set.',
 		'',
 		'## Issues',
 		list || '(no issue details)',
