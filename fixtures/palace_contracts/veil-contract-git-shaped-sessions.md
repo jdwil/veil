@@ -1,49 +1,52 @@
 # veil-contract-git-shaped-sessions
 
 **Type:** Concept  
-**Summary:** Agent coding uses git-shaped branch → edit → veil_check → commit → **open PR**. Autosave ≠ commit. Humans merge after review (PR Wizard). Scoreboard is err/warn counts. Agent decides branch/commit; never auto-merges.
+**Summary:** Agent coding uses git-shaped branch → edit → veil_check → commit → **open pull request**. Autosave ≠ commit. Humans merge after review (PR Wizard). Host gates + orchestrator enforce cadence. Scoreboard is err/warn counts. Never auto-merges.
 
 ## Contract
 
 - **Branch before multi-step product work.** Prefer an isolated work line (`create_branch` / `branch_name`), not silent rewrites on shared main when doing a fix campaign.
 - **Autosave is durable S3 write-through** — work is saved on every successful `write_source`. That is **not** a commit.
-- **Commit** = named checkpoint with a **message** (`session_commit` or `POST /api/sessions/{id}/commits`). Create after a meaningful slice of progress. Message should name the slice **and why** (rationale for human review).
-- **Scoreboard:** `veil_check` **error_count** / **warning_count** after each meaningful edit. Do not claim "fixed" without a post-edit check and lower counts (or explicit block reason).
+- **Commit** = named checkpoint with a **message** (`session_commit` or `POST /api/sessions/{id}/commits`). Host **rejects empty** commits. Message should name the slice **and why**.
+- **Scoreboard:** host `veil_check` / `host_check` **error_count** / **warning_count**. Trust host severity — do not claim clean if HOST_CHECK_SEVERITY=errors.
 - **Same-turn diagnostics:** If a post-edit check shows **new** errors/warnings the agent introduced, **fix them on the same turn** before claiming done or opening a PR.
 - **One diagnostic class per commit** when fixing large lists.
-- **End of agent task = open a PR, not merge.**
-  - `create_change` with title + description (per-slice `## Construct` rationales for the PR Wizard)
-  - `submit_change` so the operator reviews in the IDE **PR Wizard** (top bar Review / Changes → PR Wizard)
-  - Operator walks each structural DiffItem: approve or feedback (send now / queue). History stored as PR comments.
-  - **FORBIDDEN:** `merge_branch` / `merge_change` unless the operator **explicitly** says merge/land
-- **IDE Changes** = **Uncommitted** (working tree constructs) + **History** (named commits). Not structural IR "vs baseline."
-- **Agent decides** branch / commit; **human decides** merge after visual review. Do not require heavy operator guidance for every branch/commit step.
+- **Start of coding:** `resolve_coding_target` or `run_coding_plan` matches **open unmerged PRs** by scope (never Merged/Closed). Auto-bind, Present modal if ambiguous, or new work line.
+- **End of agent task = open a pull request, not merge.**
+  - `run_coding_plan` `coding.finish_task` **or** `create_change` + `submit_change`
+  - `create_change` reuses session `active_change_id` unless `force_new`
+  - Operator walks PR Wizard DiffItems. **FORBIDDEN:** merge unless operator explicitly says merge/land
+- **Terminology:** product name is **pull request (PR)**. “Change Request” reserved for future ticket systems. API paths may still say `change_requests`.
+- **IDE Changes** = **Uncommitted** + **History**. Agent decides branch/commit; human decides merge.
 - **Bang law (ACS-010):** `find!` → `Opt<T>`; force with `require` / `.unwrap()`. See `veil-contract-bang-opt-res`.
 
 ## Agent loop (mandatory shape)
 
 ```text
-1. session_status — know branch / uncommitted
-2. Multi-step? create_branch (e.g. fix-type-mismatch)
-3. veil_check → note error_count / warning_count (baseline)
-4. Fix ONE class of issues
-5. write_source → smoke
-6. veil_check → report new counts; if you introduced new err/warn → fix same turn
-7. session_commit with message (slice + why)
-8. Repeat 4–7 until task complete or blocked
-9. create_change(title, description with rationales) → submit_change
-10. merge_branch / merge_change ONLY if operator explicitly asked to land
+1. run_coding_plan(coding.fix_diagnostics) or resolve_coding_target
+2. session_status — know branch / uncommitted / host_check
+3. Multi-step? create_branch (e.g. fix-type-mismatch)
+4. veil_check → note host baseline
+5. Fix ONE class of issues
+6. write_source → smoke
+7. veil_check → host_check; if you introduced new err/warn → fix same turn
+8. session_commit with message (slice + why)  # host rejects if clean
+9. Repeat 5–8 until task complete or blocked
+10. run_coding_plan(coding.finish_task)  # or create_change → submit_change
+11. merge ONLY if operator explicitly asked to land
 ```
 
 ## Tools
 
 | Tool | Role |
 |------|------|
-| `session_status` | Branch, uncommitted, head_commit |
+| `resolve_coding_target` | Match open unmerged PRs / Present choose / new |
+| `run_coding_plan` | Host plans: slice, fix_diagnostics, finish_task |
+| `session_status` | Branch, uncommitted, host_check, head_commit |
 | `create_branch` | Isolated feature branch; becomes active work line |
-| `session_commit` | Named checkpoint (+ rationale in message) |
+| `session_commit` | Named checkpoint (empty tree rejected) |
 | `list_commits` | History |
-| `create_change` / `submit_change` | Open PR for human review (default landing) |
+| `create_change` / `submit_change` | Open/submit **pull request** (default landing) |
 | `merge_branch` / `merge_change` | Operator gate only — never auto |
 | `switch_main` | Return to sticky mainline |
 
