@@ -194,6 +194,17 @@ pub fn gate_open_pr_notes(h: Option<&SessionHandle>, commit_count: usize) -> Vec
     notes
 }
 
+/// When `VEIL_STRICT_SUBMIT=1` (or true/yes), submit_change hard-refuses if host has errors.
+pub fn strict_submit_enabled() -> bool {
+    match std::env::var("VEIL_STRICT_SUBMIT") {
+        Ok(v) => {
+            let l = v.trim().to_lowercase();
+            l == "1" || l == "true" || l == "yes" || l == "on"
+        }
+        Err(_) => false,
+    }
+}
+
 /// Soft gate for `submit_change` / submit PR.
 /// Returns notes; always attach `host_check` in the tool JSON.
 pub fn gate_submit_pr_notes(h: Option<&SessionHandle>) -> Vec<String> {
@@ -211,15 +222,25 @@ pub fn gate_submit_pr_notes(h: Option<&SessionHandle>) -> Vec<String> {
         );
     }
     if has_host_errors(&meta) {
-        notes.push(format!(
-            "MUST_ACKNOWLEDGE_ERRORS: host working set still has Errors \
-             (error_count={}). Submit may proceed for human review, but the agent \
-             must not claim 0 errors / clean veil_check.",
-            meta.last_host_check
-                .as_ref()
-                .map(|c| c.error_count)
-                .unwrap_or(0)
-        ));
+        if strict_submit_enabled() {
+            notes.push(format!(
+                "STRICT_SUBMIT: host Errors (error_count={}) — submit will be rejected until fixed.",
+                meta.last_host_check
+                    .as_ref()
+                    .map(|c| c.error_count)
+                    .unwrap_or(0)
+            ));
+        } else {
+            notes.push(format!(
+                "MUST_ACKNOWLEDGE_ERRORS: host working set still has Errors \
+                 (error_count={}). Submit may proceed for human review, but the agent \
+                 must not claim 0 errors / clean veil_check. Set VEIL_STRICT_SUBMIT=1 to hard-block.",
+                meta.last_host_check
+                    .as_ref()
+                    .map(|c| c.error_count)
+                    .unwrap_or(0)
+            ));
+        }
     } else if meta
         .last_host_check
         .as_ref()

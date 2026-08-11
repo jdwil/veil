@@ -88,15 +88,27 @@ pub fn is_platform_tool(name: &str) -> bool {
         "navigate_to"
             | "list_changes"
             | "open_changes"
+            | "list_prs"
+            | "list_pull_requests"
             | "create_change"
             | "open_create_change"
+            | "create_pr"
+            | "open_pr"
+            | "create_pull_request"
             | "get_change"
+            | "get_pr"
+            | "get_pull_request"
             | "submit_change"
+            | "submit_pr"
+            | "submit_pull_request"
             | "approve_change"
+            | "approve_pr"
             | "request_changes"
             | "merge_change"
+            | "merge_pr"
             | "add_comment"
             | "get_change_diff"
+            | "get_pr_diff"
             | "list_projects"
             | "open_projects"
             | "create_project"
@@ -128,8 +140,23 @@ pub fn is_platform_tool(name: &str) -> bool {
     )
 }
 
+/// Canonicalize PR-facing aliases → existing handlers (product language: PR).
+fn canonicalize_tool(name: &str) -> &str {
+    match name {
+        "list_prs" | "list_pull_requests" => "list_changes",
+        "create_pr" | "open_pr" | "create_pull_request" => "create_change",
+        "get_pr" | "get_pull_request" => "get_change",
+        "submit_pr" | "submit_pull_request" => "submit_change",
+        "approve_pr" => "approve_change",
+        "merge_pr" => "merge_change",
+        "get_pr_diff" => "get_change_diff",
+        other => other,
+    }
+}
+
 /// Dispatch a platform tool. Always returns JSON string (or Err).
 pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, String> {
+    let tool_name = canonicalize_tool(tool_name);
     let base = runtime_base();
     match tool_name {
         "navigate_to" => {
@@ -433,7 +460,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             Ok(out.to_string())
         }
 
-        // ─── Coding orchestrator plans ───────────────────────────────────
+        // ─── Coding orchestrator plans (step runner) ─────────────────────
         "run_coding_plan" => {
             let plan_name = arg_str(arguments, &["plan", "name", "id"]).unwrap_or_else(|| {
                 "coding.fix_diagnostics".into()
@@ -443,13 +470,106 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "unknown plan `{plan_name}` — use coding.slice | coding.fix_diagnostics | coding.finish_task"
                 )
             })?;
+            let action = arg_str(arguments, &["action"])
+                .unwrap_or_else(|| "start".into())
+                .to_lowercase();
             let request = arg_str(arguments, &["request", "task", "message", "query"])
                 .unwrap_or_else(|| "".into());
             let project = arg_str(arguments, &["slug", "project"]).or_else(|| {
                 crate::coding_gates::current_project_slug()
             });
 
-            // Always start with resolve (except finish_task which reuses binding)
+            // status — inspect cursor without advancing
+            if action == "status" {
+                return Ok(match crate::coding_orchestrator::get_run(project.as_deref(), plan_id)
+                {
+                    Some(run) => json!({
+                        "ok": true,
+                        "plan": plan_id.as_str(),
+                        "action": "status",
+                        "run": crate::coding_orchestrator::run_status_json(&run),
+                        "next": crate::coding_orchestrator::next_action_json(&run),
+                    })
+                    .to_string(),
+                    None => json!({
+                        "ok": true,
+                        "plan": plan_id.as_str(),
+                        "action": "status",
+                        "run": null,
+                        "summary": "No active run — call action=start",
+                    })
+                    .to_string(),
+                });
+            }
+
+            // next — agent completed current step; advance and return next action
+            if action == "next" || action == "advance" {
+                if crate::coding_orchestrator::get_run(project.as_deref(), plan_id).is_none() {
+                    return Ok(json!({
+                        "ok": false,
+                        "error": "no active plan run — call run_coding_plan with action=start first",
+                        "plan": plan_id.as_str(),
+                    })
+                    .to_string());
+                }
+                // skip=true still advances (e.g. already on feature branch)
+                let Some(run) =
+                    crate::coding_orchestrator::advance_run(project.as_deref(), plan_id)
+                else {
+                    return Ok(json!({
+                        "ok": true,
+                        "plan": plan_id.as_str(),
+                        "phase": "done",
+                        "summary": "Plan complete",
+                    })
+                    .to_string());
+                };
+                // Host-owned finish step: auto-execute finish_task
+                if let Some(step) = crate::coding_orchestrator::current_step(&run) {
+                    if step.owner == "host" && step.id == "finish" {
+                        let mut fin = arguments.clone();
+                        if let Some(obj) = fin.as_object_mut() {
+                            obj.insert("plan".into(), json!("coding.finish_task"));
+                            obj.insert("action".into(), json!("start"));
+                            if !request.is_empty() {
+                                obj.insert("request".into(), json!(request));
+                            } else if !run.request.is_empty() {
+                                obj.insert("request".into(), json!(run.request));
+                            }
+                        }
+                        let fin_raw = Box::pin(dispatch("run_coding_plan", &fin))
+                            .await
+                            .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string());
+                        let fin_val: Value = serde_json::from_str(&fin_raw)
+                            .unwrap_or_else(|_| json!({ "raw": fin_raw }));
+                        crate::coding_orchestrator::clear_run(project.as_deref(), plan_id);
+                        return Ok(json!({
+                            "ok": fin_val.get("ok").and_then(|v| v.as_bool()).unwrap_or(true),
+                            "plan": plan_id.as_str(),
+                            "phase": "done",
+                            "summary": "Advanced to finish — open/submit PR complete",
+                            "finish": fin_val,
+                            "run": crate::coding_orchestrator::run_status_json(&run),
+                        })
+                        .to_string());
+                    }
+                }
+                let next = crate::coding_orchestrator::next_action_json(&run);
+                return Ok(json!({
+                    "ok": true,
+                    "plan": plan_id.as_str(),
+                    "action": "next",
+                    "summary": format!(
+                        "Advanced — next: {}",
+                        next.get("step_id").and_then(|v| v.as_str()).unwrap_or("done")
+                    ),
+                    "next": next,
+                    "run": crate::coding_orchestrator::run_status_json(&run),
+                })
+                .to_string());
+            }
+
+            // start (default)
             let resolve_args = json!({
                 "request": request,
                 "project": project,
@@ -458,7 +578,6 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 plan_id,
                 crate::coding_orchestrator::PlanId::FinishTask
             ) {
-                // Finish: reuse bound PR; soft resolve only if request set
                 if request.trim().is_empty() {
                     json!({
                         "ok": true,
@@ -491,12 +610,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "intent": resolve_val.get("intent").cloned(),
                     "pending_ux": true,
                     "execution": { "domain": "ux", "present": "choose" },
-                    "next": "wait_intent_ack then resolve_coding_target({choice}) then run_coding_plan again"
+                    "next": "wait_intent_ack then resolve_coding_target({choice}) then run_coding_plan action=start"
                 })
                 .to_string());
             }
 
-            // finish_task: host-driven open+submit
+            // finish_task: host-driven open+submit (full plan in one shot)
             if matches!(plan_id, crate::coding_orchestrator::PlanId::FinishTask) {
                 let title = arg_str(arguments, &["title"]).unwrap_or_else(|| {
                     if request.trim().is_empty() {
@@ -543,6 +662,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     submit_val = serde_json::from_str(&sub_raw)
                         .unwrap_or_else(|_| json!({ "raw": sub_raw }));
                 }
+                crate::coding_orchestrator::clear_run(project.as_deref(), plan_id);
                 return Ok(json!({
                     "ok": create_val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
                     "plan": plan_id.as_str(),
@@ -550,7 +670,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "summary": "finish_task: open/reuse PR + submit for PR Wizard (no auto-merge)",
                     "resolve": resolve_val,
                     "create_change": create_val,
+                    "create_pr": create_val,
                     "submit_change": submit_val,
+                    "submit_pr": submit_val,
                     "plan_spec": crate::coding_orchestrator::plan_json(plan_id),
                     "host_check": submit_val.get("host_check").cloned()
                         .or_else(|| create_val.get("host_check").cloned()),
@@ -560,20 +682,31 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 .to_string());
             }
 
-            // slice / fix_diagnostics: host resolved; agent continues playbook
+            // Start run + skip resolve host step already executed
+            let mut run = crate::coding_orchestrator::start_run(
+                plan_id,
+                request.clone(),
+                project.clone(),
+                resolve_val.clone(),
+            );
+            crate::coding_orchestrator::skip_completed_host_prefix(&mut run, &["resolve"]);
+            let next = crate::coding_orchestrator::next_action_json(&run);
             Ok(json!({
                 "ok": true,
                 "plan": plan_id.as_str(),
-                "phase": "agent_steps",
+                "action": "start",
+                "phase": next.get("phase").cloned().unwrap_or(json!("agent_step")),
                 "summary": format!(
-                    "Started {} — host resolved target; follow playbook (commit per slice; PR only at end)",
-                    plan_id.as_str()
+                    "Started {} — next agent step: {}",
+                    plan_id.as_str(),
+                    next.get("step_id").and_then(|v| v.as_str()).unwrap_or("?")
                 ),
                 "resolve": resolve_val,
                 "plan_spec": crate::coding_orchestrator::plan_json(plan_id),
                 "playbook": crate::coding_orchestrator::agent_playbook(plan_id, &resolve_val),
-                "next_agent_tools": plan_id.as_str(),
-                "hint": "Do not open PR mid-loop. When diagnostics task complete, call run_coding_plan({plan:\"coding.finish_task\"})"
+                "next": next,
+                "run": crate::coding_orchestrator::run_status_json(&run),
+                "hint": "Perform next.tool, then run_coding_plan({plan, action:\"next\"}). When fix loop done: action=next through finish or plan coding.finish_task"
             })
             .to_string())
         }
@@ -1181,6 +1314,22 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 .as_ref()
                 .map(|h| crate::coding_gates::host_check_value(&h.snapshot_meta()))
                 .unwrap_or_else(|| json!({ "severity": "unknown", "source": "host" }));
+            // Hard refuse when VEIL_STRICT_SUBMIT=1 and host still has errors
+            if crate::coding_gates::strict_submit_enabled() {
+                if let Some(ref h) = sess {
+                    if crate::coding_gates::has_host_errors(&h.snapshot_meta()) {
+                        return Ok(json!({
+                            "ok": false,
+                            "error": "GATE: VEIL_STRICT_SUBMIT=1 — host_check still has Errors; fix before submit_pr",
+                            "host_check": host_check,
+                            "gate_notes": gate_notes,
+                            "strict_submit": true,
+                            "summary": "Submit blocked: working set has host Errors (strict mode)",
+                        })
+                        .to_string());
+                    }
+                }
+            }
             let (status, data) = http_json(
                 "POST",
                 &format!("/api/change_requests/{}/submit", urlencoding_path(&id)),
@@ -2278,17 +2427,60 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "run_coding_plan",
-            "description": "Host coding orchestrator. plan=coding.fix_diagnostics|coding.slice|coding.finish_task. Starts with resolve_coding_target, returns playbook for agent steps (commit per slice). finish_task opens/reuses PR and submit_change (never merges). Prefer over free-form SOP for Fix-all / end-of-task.",
+            "description": "Host coding step runner. plan=coding.fix_diagnostics|coding.slice|coding.finish_task. action=start|next|status. start resolves open PR + returns next agent step; after each agent tool success call action=next; finish_task opens/submits PR. Aliases create_pr/submit_pr also work for open/submit.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "plan": { "type": "string", "description": "coding.fix_diagnostics | coding.slice | coding.finish_task" },
+                    "action": { "type": "string", "description": "start (default) | next | status" },
                     "request": { "type": "string", "description": "Operator task / diagnostics summary" },
                     "project": { "type": "string" },
                     "slug": { "type": "string" },
-                    "title": { "type": "string", "description": "PR title for finish_task" }
+                    "title": { "type": "string", "description": "PR title for finish_task" },
+                    "skip": { "type": "boolean", "description": "With action=next: skip current agent step (e.g. branch already exists)" }
                 },
                 "required": ["plan"]
+            }
+        }),
+        json!({
+            "name": "create_pr",
+            "description": "Alias for create_change — open a pull request for human review (not a ticket).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" },
+                    "source_branch": { "type": "string" },
+                    "force_new": { "type": "boolean" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "submit_pr",
+            "description": "Alias for submit_change — submit pull request to PR Wizard. Respects VEIL_STRICT_SUBMIT=1 (hard-block on host Errors).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "change_id": { "type": "string" },
+                    "project": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "list_prs",
+            "description": "Alias for list_changes — list pull requests.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string" },
+                    "navigate": { "type": "boolean" }
+                },
+                "required": []
             }
         }),
         json!({
@@ -2771,6 +2963,12 @@ mod tests {
         assert!(is_platform_tool("list_projects"));
         assert!(is_platform_tool("approve_change"));
         assert!(is_platform_tool("provision_project"));
+        assert!(is_platform_tool("create_pr"));
+        assert!(is_platform_tool("submit_pr"));
+        assert!(is_platform_tool("list_prs"));
+        assert!(is_platform_tool("run_coding_plan"));
+        assert_eq!(canonicalize_tool("create_pr"), "create_change");
+        assert_eq!(canonicalize_tool("submit_pr"), "submit_change");
         assert!(!is_platform_tool("veil_check"));
         assert!(!is_platform_tool("write_source"));
     }

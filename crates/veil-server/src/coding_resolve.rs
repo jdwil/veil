@@ -12,8 +12,8 @@ use crate::session::SessionHandle;
 /// Statuses treated as closed — never reuse.
 const CLOSED: &[&str] = &["Merged", "Rejected", "Closed", "merged", "rejected", "closed"];
 
-/// Minimum score for a strong auto-match (token overlap heuristic).
-const STRONG: f64 = 0.28;
+/// Minimum score for a strong auto-match (token + phrase + branch heuristic).
+const STRONG: f64 = 0.32;
 /// Scores within this delta of the best are "close" → prefer modal if >1.
 const CLOSE_DELTA: f64 = 0.08;
 
@@ -26,6 +26,8 @@ pub struct PrCandidate {
     pub source_branch: Option<String>,
     pub project: Option<String>,
     pub score: f64,
+    /// How the score was composed (debug / agent transparency).
+    pub score_parts: Vec<String>,
 }
 
 pub fn is_open_status(status: &str) -> bool {
@@ -37,9 +39,10 @@ pub fn is_open_status(status: &str) -> bool {
 }
 
 /// Tokenize request / PR text for cheap scope scoring.
+/// Splits on non-alphanumeric (including `-`); keeps `_` for diagnostic codes.
 pub fn tokens(s: &str) -> Vec<String> {
     s.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|t| t.len() >= 3)
         .filter(|t| {
             !matches!(
@@ -64,39 +67,150 @@ pub fn tokens(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Score request against PR title/description (and optional branch/project).
+/// Returns (score 0..=1, human-readable parts for gate transparency).
 pub fn score_request_against(request: &str, title: &str, description: &str) -> f64 {
+    score_request_detailed(request, title, description, None, None).0
+}
+
+pub fn score_request_detailed(
+    request: &str,
+    title: &str,
+    description: &str,
+    source_branch: Option<&str>,
+    project: Option<&str>,
+) -> (f64, Vec<String>) {
+    let mut parts = Vec::new();
+    let req_raw = request.trim().to_lowercase();
+    let title_l = title.to_lowercase();
+    let desc_l = description.to_lowercase();
+    let hay_text = format!("{title_l}\n{desc_l}");
+
     let req = tokens(request);
-    if req.is_empty() {
-        return 0.0;
+    if req.is_empty() && req_raw.len() < 4 {
+        return (0.0, parts);
     }
+
+    // 1) Unigram token overlap
     let hay: std::collections::HashSet<String> = tokens(title)
         .into_iter()
         .chain(tokens(description))
         .collect();
-    if hay.is_empty() {
-        return 0.0;
+    let mut unigram = 0.0;
+    if !req.is_empty() && !hay.is_empty() {
+        let hit = req.iter().filter(|t| hay.contains(*t)).count();
+        unigram = hit as f64 / req.len() as f64;
+        parts.push(format!("tokens={unigram:.2}"));
     }
-    let mut hit = 0usize;
-    for t in &req {
-        if hay.contains(t) {
-            hit += 1;
-        }
-    }
-    // Title-only bonus
+
+    // 2) Title token density
     let title_toks: std::collections::HashSet<_> = tokens(title).into_iter().collect();
-    let mut title_hit = 0usize;
-    for t in &req {
-        if title_toks.contains(t) {
-            title_hit += 1;
+    let mut title_boost = 0.0;
+    if !req.is_empty() && !title_toks.is_empty() {
+        let title_hit = req.iter().filter(|t| title_toks.contains(*t)).count();
+        title_boost =
+            0.18 * (title_hit as f64 / title_toks.len().min(req.len()).max(1) as f64);
+        if title_boost > 0.02 {
+            parts.push(format!("title={title_boost:.2}"));
         }
     }
-    let base = hit as f64 / req.len() as f64;
-    let title_boost = if !title_toks.is_empty() {
-        0.15 * (title_hit as f64 / title_toks.len().min(req.len()).max(1) as f64)
-    } else {
-        0.0
-    };
-    (base + title_boost).min(1.0)
+
+    // 3) Bigram phrases (consecutive tokens)
+    let mut bigram = 0.0;
+    if req.len() >= 2 {
+        let mut hits = 0usize;
+        let mut total = 0usize;
+        for w in req.windows(2) {
+            total += 1;
+            let phrase = format!("{} {}", w[0], w[1]);
+            if hay_text.contains(&phrase) {
+                hits += 1;
+            }
+        }
+        if total > 0 {
+            bigram = 0.22 * (hits as f64 / total as f64);
+            if bigram > 0.02 {
+                parts.push(format!("bigrams={bigram:.2}"));
+            }
+        }
+    }
+
+    // 4) Substring / diagnostic-code style tokens (type_mismatch, EntityRepo)
+    let mut substr = 0.0;
+    let special: Vec<&str> = request
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .map(str::trim)
+        .filter(|s| s.len() >= 4)
+        .filter(|s| s.contains('_') || s.contains('-') || s.chars().any(|c| c.is_ascii_uppercase()))
+        .take(12)
+        .collect();
+    if !special.is_empty() {
+        let mut hit = 0usize;
+        for s in &special {
+            let sl = s.to_lowercase();
+            if hay_text.contains(&sl) || title_l.contains(&sl) {
+                hit += 1;
+            }
+        }
+        substr = 0.2 * (hit as f64 / special.len() as f64);
+        if substr > 0.02 {
+            parts.push(format!("codes={substr:.2}"));
+        }
+    }
+
+    // 5) Branch name overlap (fix-reqwest ↔ "fix reqwest")
+    let mut branch_boost = 0.0;
+    if let Some(br) = source_branch {
+        let br = br.trim();
+        if !br.is_empty() && br != "main" && br != "master" {
+            let br_toks = tokens(br);
+            if !br_toks.is_empty() && !req.is_empty() {
+                let hit = br_toks
+                    .iter()
+                    .filter(|t| req.iter().any(|r| r.as_str() == t.as_str()))
+                    .count();
+                if hit > 0 {
+                    branch_boost = 0.2 * (hit as f64 / br_toks.len() as f64);
+                    // Floor so a single meaningful branch token still moves the needle
+                    branch_boost = branch_boost.max(0.12);
+                    parts.push(format!("branch={branch_boost:.2}"));
+                }
+            }
+            // exact branch mentioned in request
+            if req_raw.contains(&br.to_lowercase()) {
+                branch_boost = (branch_boost + 0.25).min(0.45);
+                parts.push("branch_exact".into());
+            }
+        }
+    }
+
+    // 6) Project slug mentioned
+    let mut project_boost = 0.0;
+    if let Some(p) = project {
+        let pl = p.trim().to_lowercase();
+        if !pl.is_empty() && (req_raw.contains(&pl) || hay_text.contains(&pl)) {
+            project_boost = 0.08;
+            parts.push("project".into());
+        }
+    }
+
+    // 7) Full request contained in description (strong continuation)
+    let mut contain = 0.0;
+    if req_raw.len() >= 12 && (desc_l.contains(&req_raw) || title_l.contains(&req_raw)) {
+        contain = 0.35;
+        parts.push("contained".into());
+    }
+
+    let score = (unigram * 0.55
+        + title_boost
+        + bigram
+        + substr
+        + branch_boost
+        + project_boost
+        + contain)
+        .min(1.0);
+    parts.push(format!("total={score:.2}"));
+    (score, parts)
 }
 
 /// Parse list payload from GET /api/change_requests into open candidates.
@@ -165,7 +279,13 @@ pub fn candidates_from_list(data: &Value, project_filter: Option<&str>, request:
                 }
             }
         }
-        let score = score_request_against(request, &title, &description);
+        let (score, score_parts) = score_request_detailed(
+            request,
+            &title,
+            &description,
+            source_branch.as_deref(),
+            project.as_deref().or(project_filter),
+        );
         out.push(PrCandidate {
             id,
             title,
@@ -174,6 +294,7 @@ pub fn candidates_from_list(data: &Value, project_filter: Option<&str>, request:
             source_branch,
             project,
             score,
+            score_parts,
         });
     }
     out.sort_by(|a, b| {
@@ -264,6 +385,7 @@ pub fn candidate_json(c: &PrCandidate) -> Value {
         "source_branch": c.source_branch,
         "project": c.project,
         "score": (c.score * 1000.0).round() / 1000.0,
+        "score_parts": c.score_parts,
         "description_preview": c.description.chars().take(160).collect::<String>(),
     })
 }
@@ -358,6 +480,14 @@ mod tests {
 
     #[test]
     fn decide_strong_single_binds() {
+        let (score, parts) = score_request_detailed(
+            "fix reqwest stubs agent-registry",
+            "Fix reqwest stubs",
+            "agent-registry warnings",
+            Some("fix-stubs"),
+            Some("agent-registry"),
+        );
+        assert!(score >= STRONG, "score={score} parts={parts:?}");
         let c = vec![PrCandidate {
             id: "pr1".into(),
             title: "Fix reqwest stubs".into(),
@@ -365,11 +495,8 @@ mod tests {
             status: "Draft".into(),
             source_branch: Some("fix-stubs".into()),
             project: Some("agent-registry".into()),
-            score: score_request_against(
-                "fix reqwest stubs agent-registry",
-                "Fix reqwest stubs",
-                "agent-registry warnings",
-            ),
+            score,
+            score_parts: parts,
         }];
         match decide(&c, "fix reqwest stubs agent-registry") {
             ResolveDecision::Bind { pr_id } => assert_eq!(pr_id, "pr1"),
@@ -388,6 +515,7 @@ mod tests {
                 source_branch: None,
                 project: None,
                 score: 0.4,
+                score_parts: vec![],
             },
             PrCandidate {
                 id: "b".into(),
@@ -397,11 +525,44 @@ mod tests {
                 source_branch: None,
                 project: None,
                 score: 0.38,
+                score_parts: vec![],
             },
         ];
         assert_eq!(
             decide(&c, "fix authentication"),
             ResolveDecision::NeedsChoice
         );
+    }
+
+    #[test]
+    fn branch_name_boosts_score() {
+        let (with_br, parts) = score_request_detailed(
+            "keep going on reqwest stubs",
+            "Misc work",
+            "ongoing notes",
+            Some("reqwest-stubs-hardening"),
+            None,
+        );
+        let (no_br, _) = score_request_detailed(
+            "keep going on reqwest stubs",
+            "Misc work",
+            "ongoing notes",
+            None,
+            None,
+        );
+        assert!(
+            with_br > no_br,
+            "with={with_br} no={no_br} parts={parts:?}"
+        );
+    }
+
+    #[test]
+    fn bigram_helps_phrase_match() {
+        let s = score_request_against(
+            "entity repository type params",
+            "Entity repository fixes",
+            "type params for constructs",
+        );
+        assert!(s > 0.25, "score={s}");
     }
 }
