@@ -141,19 +141,102 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         prompt = format!("{intent_block}\n\n{prompt}");
     }
 
-    // Ensure durable session when project known
-    let coding_session = if coding_session.is_none() {
-        if let Some(ref slug) = project_scope {
-            if crate::session::sessions_enabled() {
-                crate::session::SessionManager::global()
-                    .get_or_create_default(slug)
-                    .ok()
-                    .map(|h| h.session_id())
-            } else {
-                None
+    // message_start FIRST so the dock shows streaming UI immediately.
+    // prepare_project (S3 rematerialize) can take seconds — do it after start + status.
+    let message_id = format!("msg_{}", short_id());
+    let model = req.model.clone().unwrap_or_else(|| "veil-agent".into());
+    let provider_name = req.provider.clone().unwrap_or_else(|| "veil".into());
+
+    if send_event(
+        &mut sender,
+        "message_start",
+        json!({
+            "messageId": message_id,
+            "role": "assistant",
+            "model": model,
+            "provider": provider_name,
+            "project": project_scope,
+            "sessionId": coding_session,
+        }),
+    )
+    .await
+    .is_err()
+    {
+        return;
+    }
+
+    // Ensure durable session + ACP + hub bind when project known.
+    // Without this, MCP list_files/write_source run unscoped → empty project / scope missing.
+    let coding_session = if let Some(ref slug) = project_scope {
+        let _ = send_event(
+            &mut sender,
+            "status",
+            json!({
+                "messageId": message_id,
+                "message": format!("binding project `{slug}` (session + S3)…"),
+            }),
+        )
+        .await;
+        // prepare_project does sync S3/DDB — offload so WS heartbeats/status still flow.
+        let slug_prep = slug.clone();
+        let provider_prep = provider.clone();
+        let prep = tokio::task::spawn_blocking(move || {
+            crate::agent_scope::prepare_project(&slug_prep, Some(provider_prep.as_ref()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("prepare_project join: {e}")));
+        match prep {
+            Ok(info) => {
+                let sid = info
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| coding_session.clone());
+                let n = info
+                    .get("file_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                tracing::info!(%slug, files = n, session = ?sid, "agent turn: project bound");
+                prompt = format!(
+                    "## Bound project (server — authoritative)\n\
+                     - Slug: `{slug}`\n\
+                     - Files on disk/S3: {n}\n\
+                     - Session: {}\n\
+                     - IDE tools (list_files, read_source, write_source) are SCOPED to this project.\n\
+                     - If list_files is non-empty, the project is NOT empty — read_source before redesigning.\n\
+                     - Prefer open_ide only to show the user; scope is already set for this turn.\n\n{prompt}",
+                    sid.as_deref().unwrap_or("(none)")
+                );
+                let _ = send_event(
+                    &mut sender,
+                    "status",
+                    json!({
+                        "messageId": message_id,
+                        "message": format!("project bound · {n} files"),
+                    }),
+                )
+                .await;
+                sid.or(coding_session)
             }
-        } else {
-            None
+            Err(e) => {
+                tracing::warn!(%slug, error = %e, "agent turn: prepare_project failed");
+                crate::acp::ensure_acp_project_scope(Some(slug.clone()));
+                let _ = send_event(
+                    &mut sender,
+                    "status",
+                    json!({
+                        "messageId": message_id,
+                        "message": format!("project bind warning: {e}"),
+                    }),
+                )
+                .await;
+                coding_session.or_else(|| {
+                    crate::session::SessionManager::global()
+                        .get_or_create_default(slug)
+                        .ok()
+                        .map(|h| h.session_id())
+                })
+            }
         }
     } else {
         coding_session
@@ -176,31 +259,10 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         );
     }
 
-    let message_id = format!("msg_{}", short_id());
-    let model = req.model.unwrap_or_else(|| "veil-agent".into());
-    let provider_name = req.provider.unwrap_or_else(|| "veil".into());
-
-    // message_start
-    if send_event(
-        &mut sender,
-        "message_start",
-        json!({
-            "messageId": message_id,
-            "role": "assistant",
-            "model": model,
-            "provider": provider_name,
-            "project": project_scope,
-            "sessionId": coding_session,
-        }),
-    )
-    .await
-    .is_err()
-    {
-        return;
-    }
-
-    // Bridge: run_turn_stream → mpsc → Aether events
-    let (tx, mut rx) = mpsc::channel::<(String, String)>(64);
+    // Bridge: run_turn_stream → mpsc → Aether events.
+    // Large buffer: live ACP deltas + tool markers must not back-pressure the
+    // blocking ACP reader (char-typewriter used to flood a 64-slot queue).
+    let (tx, mut rx) = mpsc::channel::<(String, String)>(1024);
     let prompt_for_log = prompt.clone();
     let turn_req = AgentTurnRequest {
         prompt,
@@ -532,7 +594,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         }
     }
 
-    let source_changed = done_payload
+    let mut source_changed = done_payload
         .as_ref()
         .map(|r| r.source_changed)
         .unwrap_or(false);
@@ -561,14 +623,24 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
             .iter()
             .filter_map(|t| {
                 let name = t.get("name")?.as_str()?.to_string();
-                let detail = t
-                    .get("detail")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let detail = match t.get("detail") {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(other) => other.to_string(),
+                    None => String::new(),
+                };
+                // Cap huge tool payloads in JSONL
+                let detail = if detail.len() > 4000 {
+                    format!("{}…[truncated {} bytes]", &detail[..4000], detail.len())
+                } else {
+                    detail
+                };
                 Some(crate::chat_log::ToolCallEntry { name, detail })
             })
             .collect();
+        let project = project_scope
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(project);
         let entry = crate::chat_log::ChatLogEntry {
             timestamp: crate::chat_log::now_iso(),
             turn_id: message_id.clone(),
@@ -606,18 +678,58 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         }
     }
 
-    let _ = send_event(
-        &mut sender,
-        "done",
-        json!({
-            "messageId": message_id,
-            "sourceChanged": source_changed,
-            "contextWarning": context_warning,
-            "backend": backend,
-            "tools": tools,
-        }),
-    )
-    .await;
+    // If this turn mutated source (or ran coding tools), land the SPA on the
+    // product IDE — never leave the operator stranded on a research detour
+    // (/registry, wiki-only pages, etc.) after code work.
+    let coding_tool = tools.iter().any(|t| {
+        matches!(
+            t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+            "write_source"
+                | "create_file"
+                | "rename_construct"
+                | "ws_write"
+                | "ws_str_replace"
+                | "session_commit"
+                | "merge_branch"
+                | "create_branch"
+                | "select_file"
+        )
+    });
+    if coding_tool {
+        source_changed = true;
+    }
+    let mut done = json!({
+        "messageId": message_id,
+        "sourceChanged": source_changed,
+        "contextWarning": context_warning,
+        "backend": backend,
+        "tools": tools,
+    });
+    if source_changed {
+        let slug = project_scope
+            .clone()
+            .or_else(|| {
+                tools.iter().rev().find_map(|t| {
+                    let d = t.get("detail")?;
+                    d.get("slug")
+                        .or_else(|| d.get("project"))
+                        .or_else(|| d.pointer("/project/slug"))
+                        .or_else(|| d.pointer("/navigation/project"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+            })
+            .filter(|s| !s.is_empty());
+        if let Some(slug) = slug {
+            done["navigation"] = json!({
+                "action": "open-ide",
+                "path": format!("/projects/{slug}/ide"),
+                "project": slug,
+            });
+            done["project"] = json!(slug);
+        }
+    }
+    let _ = send_event(&mut sender, "done", done).await;
 }
 
 /// Map platform UX tool names → SPA navigation payloads (runtime-omnipresent-agent-design).
@@ -662,6 +774,37 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
         }
         "open_dashboard" => Some("/dashboard".into()),
         "open_config" | "get_config" => Some("/config".into()),
+        // IDE dual-loop tools: operator should watch the product IDE, not a detour page.
+        "write_source"
+        | "create_file"
+        | "select_file"
+        | "rename_construct"
+        | "ws_write"
+        | "ws_str_replace"
+        | "create_branch"
+        | "session_commit"
+        | "merge_branch"
+        | "veil_check"
+        | "veil_outline"
+        | "read_source"
+        | "list_files" => {
+            let project = detail
+                .get("project")
+                .or_else(|| detail.get("slug"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    crate::provider::hub::CURRENT_PROJECT
+                        .try_with(|n| n.clone())
+                        .ok()
+                })
+                .unwrap_or_default();
+            if project.is_empty() {
+                None
+            } else {
+                Some(format!("/projects/{project}/ide"))
+            }
+        }
         "navigate_to" => detail
             .get("path")
             .and_then(|p| p.as_str())
@@ -698,7 +841,29 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
         _ => None,
     };
     path.map(|p| {
-        let action = if name == "open_ide" {
+        let is_ide_path = p.contains("/ide");
+        let coding_or_create = matches!(
+            name,
+            "write_source"
+                | "create_file"
+                | "select_file"
+                | "rename_construct"
+                | "ws_write"
+                | "ws_str_replace"
+                | "create_branch"
+                | "session_commit"
+                | "merge_branch"
+                | "veil_check"
+                | "veil_outline"
+                | "read_source"
+                | "list_files"
+                | "create_project"
+                | "create_repo"
+        );
+        let action = if name == "open_ide"
+            || is_ide_path
+            || (coding_or_create && p.contains("/projects/"))
+        {
             "open-ide"
         } else if name == "switch_project" {
             "switch-project"
@@ -709,7 +874,28 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
             "action": action,
             "path": p
         });
-        if matches!(name, "open_ide" | "open_project" | "switch_project") {
+        if matches!(
+            name,
+            "open_ide"
+                | "open_project"
+                | "switch_project"
+                | "write_source"
+                | "create_file"
+                | "select_file"
+                | "rename_construct"
+                | "ws_write"
+                | "ws_str_replace"
+                | "create_branch"
+                | "session_commit"
+                | "merge_branch"
+                | "veil_check"
+                | "veil_outline"
+                | "read_source"
+                | "list_files"
+                | "create_project"
+                | "create_repo"
+        ) || is_ide_path
+        {
             if let Some(project) = detail
                 .get("project")
                 .or_else(|| detail.get("slug"))
@@ -722,6 +908,8 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
                 rest.split('/').next().filter(|s| !s.is_empty()).map(|s| s.to_string())
             }) {
                 nav["project"] = json!(proj);
+            } else if let Ok(cur) = crate::provider::hub::CURRENT_PROJECT.try_with(|n| n.clone()) {
+                nav["project"] = json!(cur);
             }
         }
         nav
@@ -802,17 +990,8 @@ fn project_from_page_path(path: &str) -> Option<String> {
 }
 
 fn sanitize_project_slug(raw: &str) -> Option<String> {
-    let s = raw.trim().trim_matches('`').trim_matches('"').trim_matches('\'');
-    if s.is_empty() {
-        return None;
-    }
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        Some(s.to_string())
-    } else {
-        None
-    }
+    // Accept display names ("Agent Registry") → slug (agent-registry)
+    crate::agent_scope::normalize_slug(raw)
 }
 
 async fn send_event(

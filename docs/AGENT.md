@@ -15,6 +15,13 @@ Each turn the FE sends full `messages[]`, but the ACP path uses only the **last
 user** message; multi-turn continuity while serve stays up is mostly Kiro’s
 process-wide ACP session. Details: [IDE_AGENT_PLATFORM.md](./IDE_AGENT_PLATFORM.md).
 
+### Product intent (`MISSION.md`)
+
+When the project root has **`MISSION.md`**, the agent preamble injects a capped
+copy (Purpose / In scope / Out of scope). Prefer that brief over inventing
+requirements; honor non-goals. Scaffolded by `veil init`. See
+[PROJECT_LAYOUT.md](./PROJECT_LAYOUT.md).
+
 ### Mind Palace (optional knowledge tools)
 
 See [MIND_PALACE.md](./MIND_PALACE.md). Set `MIND_PALACE=1` + AWS profile/resources
@@ -177,7 +184,7 @@ make serve VEIL_MODEL_PROVIDER=acp
 export VEIL_ACP_COMMAND=kiro-cli
 export VEIL_ACP_ARGS="acp --trust-all-tools"
 export VEIL_ACP_CWD=$PWD          # workspace root for Kiro
-export VEIL_ACP_AGENT=personal    # optional agent profile
+export VEIL_ACP_AGENT=veil        # ~/.kiro/agents/veil.json (mind-palace + jira + veil-ide-tools)
 export VEIL_ACP_MODEL=…          # if your Kiro plan exposes model ids
 export VEIL_ACP_TIMEOUT_SECS=300
 ```

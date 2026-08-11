@@ -1,0 +1,164 @@
+{
+  "$schema": "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
+  "name": "veil",
+  "description": "VEIL ProductHost agent: mind-palace + jira/bitbucket + veil-ide-tools. Install: ~/.kiro/agents/veil.json. Switch: VEIL_ACP_AGENT=veil",
+  "prompt": "file:///home/jd/.kiro/agents/hive-agent-prompt.md",
+  "tools": [
+    "*"
+  ],
+  "allowedTools": [
+    "*"
+  ],
+  "mcpServers": {
+    "mind-palace": {
+      "command": "mind-palace-mcp",
+      "env": {
+        "MIND_PALACE_S3_BUCKET": "mind-palace-pages-dev-086261225885",
+        "MIND_PALACE_S3_PREFIX": "v1",
+        "MIND_PALACE_DYNAMO_TABLE": "mind-palace-graph-dev",
+        "MIND_PALACE_VECTORS_BUCKET": "mind-palace-vectors-dev-086261225885",
+        "MIND_PALACE_VECTORS_INDEX": "wiki-pages",
+        "MIND_PALACE_BEDROCK_MODEL": "amazon.titan-embed-text-v2:0",
+        "MIND_PALACE_REGION": "us-west-2",
+        "MIND_PALACE_USER_ID": "YOU@example.com",
+        "MIND_PALACE_USER_NAME": "Your Name",
+        "AWS_PROFILE": "dashlx_dev"
+      }
+    },
+    "rustBrowser": {
+      "disabled": false,
+      "command": "/home/jd/dev/utils/rust-browser-mcp",
+      "args": [
+        "--transport",
+        "stdio",
+        "--browser",
+        "chrome"
+      ]
+    },
+    "bitbucket": {
+      "command": "npx",
+      "args": [
+        "--registry",
+        "https://registry.npmjs.org",
+        "-y",
+        "@aashari/mcp-server-atlassian-bitbucket"
+      ],
+      "disabled": false,
+      "env": {
+        "ATLASSIAN_API_TOKEN": "REDACTED_COPY_FROM_HIVE",
+        "ATLASSIAN_USER_EMAIL": "bot@example.com",
+        "BITBUCKET_DEFAULT_WORKSPACE": "your-workspace"
+      }
+    },
+    "atlassian": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network",
+        "host",
+        "-e",
+        "CONFLUENCE_URL",
+        "-e",
+        "CONFLUENCE_USERNAME",
+        "-e",
+        "CONFLUENCE_API_TOKEN",
+        "-e",
+        "JIRA_URL",
+        "-e",
+        "JIRA_USERNAME",
+        "-e",
+        "JIRA_API_TOKEN",
+        "ghcr.io/sooperset/mcp-atlassian:latest"
+      ],
+      "env": {
+        "CONFLUENCE_URL": "https://your.atlassian.net/wiki",
+        "CONFLUENCE_USERNAME": "bot@example.com",
+        "CONFLUENCE_API_TOKEN": "REDACTED_COPY_FROM_HIVE",
+        "JIRA_URL": "https://your.atlassian.net",
+        "JIRA_USERNAME": "bot@example.com",
+        "JIRA_API_TOKEN": "REDACTED_COPY_FROM_HIVE"
+      }
+    },
+    "veil-ide-tools": {
+      "url": "http://127.0.0.1:8080/api/mcp",
+      "disabled": false,
+      "autoApprove": [
+        "veil_check",
+        "veil_outline",
+        "read_source",
+        "write_source",
+        "rename_construct",
+        "list_files",
+        "select_file",
+        "create_file",
+        "stub_list",
+        "stub_get",
+        "stub_gen",
+        "stub_install",
+        "dev_status",
+        "dev_logs",
+        "dev_restart",
+        "smoke_status",
+        "read_generated",
+        "list_routes",
+        "http_request",
+        "session_status",
+        "create_branch",
+        "session_commit",
+        "list_commits",
+        "merge_branch",
+        "switch_main",
+        "ws_list",
+        "ws_read",
+        "ws_write",
+        "ws_str_replace",
+        "ws_grep",
+        "ws_rm",
+        "ws_pull",
+        "ws_reset",
+        "navigate_to",
+        "list_projects",
+        "create_project",
+        "create_repo",
+        "get_project",
+        "delete_project",
+        "open_project",
+        "open_ide",
+        "switch_project",
+        "list_changes",
+        "create_change",
+        "get_change",
+        "submit_change",
+        "approve_change",
+        "request_changes",
+        "merge_change",
+        "add_comment",
+        "get_change_diff",
+        "open_deploy",
+        "list_deploy_environments",
+        "deploy_status",
+        "plan_provision",
+        "provision_project",
+        "get_provision_job",
+        "open_registry",
+        "list_registry_layers",
+        "list_registry_stubs",
+        "search_registry",
+        "open_dashboard",
+        "open_config",
+        "get_config",
+        "get_mission",
+        "update_mission",
+        "get_current_context",
+        "wiki_search",
+        "wiki_read",
+        "wiki_traverse",
+        "wiki_create",
+        "wiki_update",
+        "wiki_list"
+      ]
+    }
+  }
+}

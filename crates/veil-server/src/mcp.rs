@@ -132,13 +132,22 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "write_source",
-            "description": "Replace the entire active file source. Use this for writing or rewriting package/layer content. Always call veil_check afterward.",
+            "description": "Replace the entire active file source. Always call veil_check afterward. Pass rationales: map of construct name → short why (one line each) so the PR Wizard shows agent intent next to each structural change.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "content": {
                         "type": "string",
                         "description": "Full new source text for the active file"
+                    },
+                    "rationales": {
+                        "type": "object",
+                        "description": "Optional map constructName → short intent/why (e.g. {\"Order\": \"Agg holding line items and status\"}). Shown in PR Wizard.",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Optional single package-level why when rationales map is omitted"
                     }
                 },
                 "required": ["content"]
@@ -384,11 +393,15 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "merge_branch",
-            "description": "Merge the current feature branch working tree into product base (main). Only when the operator asked to land, or the task is complete with acceptable veil_check. Do not merge after thrash or failed fixes.",
+            "description": "DISABLED by default. Lands session work on main without PR review. Prefer create_change + submit_change; human uses PR Wizard → Approve → Merge. Only call if operator explicitly said merge AND pass force:true (or host VEIL_ALLOW_SESSION_MERGE=1).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string" }
+                    "session_id": { "type": "string" },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Required true when operator explicitly asked to session-merge (escape hatch)"
+                    }
                 },
                 "required": []
             }
@@ -704,7 +717,35 @@ async fn dispatch_tool<P: SourceProvider>(
 ) -> Result<String, String> {
     // Platform UX tools (no project required) — agent controls the runtime dashboard.
     if is_platform_ux_tool(tool_name) {
-        return crate::platform_tools::dispatch(tool_name, arguments).await;
+        let result = crate::platform_tools::dispatch(tool_name, arguments).await?;
+        // After open/create, bind hub provider so the *next* MCP tool call sees files.
+        if matches!(
+            tool_name,
+            "open_ide"
+                | "open_project"
+                | "switch_project"
+                | "create_project"
+                | "create_repo"
+        ) {
+            if let Some(slug) =
+                crate::agent_scope::slug_from_tool(tool_name, arguments, &result)
+            {
+                match crate::agent_scope::prepare_project(&slug, Some(provider.as_ref())) {
+                    Ok(info) => {
+                        // Merge bind info into tool result for the model
+                        if let Ok(mut v) = serde_json::from_str::<Value>(&result) {
+                            v["bound"] = json!(true);
+                            v["session"] = info;
+                            return Ok(v.to_string());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(%slug, error = %e, "post-{tool_name} prepare_project failed");
+                    }
+                }
+            }
+        }
+        return Ok(result);
     }
 
     // Hub `/api/mcp` may run without middleware project scope. Prefer task-local,
@@ -719,13 +760,32 @@ async fn dispatch_tool<P: SourceProvider>(
                     .get("project")
                     .or_else(|| arguments.get("project_id"))
                     .and_then(|v| v.as_str())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
+                    .and_then(crate::agent_scope::normalize_slug)
             });
         if let Some(name) = fallback {
+            // Ensure hub has a live session provider for this slug (not empty)
+            let _ = crate::agent_scope::prepare_project(&name, Some(provider.as_ref()));
             return crate::provider::hub::CURRENT_PROJECT
                 .scope(name, dispatch_tool_scoped(provider, tool_name, arguments))
                 .await;
+        }
+        // Clear error for coding tools instead of silent empty list_files
+        if matches!(
+            tool_name,
+            "list_files"
+                | "read_source"
+                | "write_source"
+                | "create_file"
+                | "select_file"
+                | "veil_check"
+                | "veil_outline"
+        ) {
+            return Err(
+                "project scope missing — call open_ide({project:\"<slug>\"}) first \
+                 (or ensure ChatRequest.focus.project / open a product IDE). \
+                 list_files empty does NOT mean the product is empty."
+                    .into(),
+            );
         }
     }
 
@@ -878,10 +938,35 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
         }
 
         "write_source" => {
-            let content = arguments
+            let content_raw = arguments
                 .get("content")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "write_source requires 'content' string argument".to_string())?;
+            // Unwrap accidental `ws_read` / platform `read_file` JSON envelopes so we
+            // never persist `{"content":…,"path":…}` as a .veil body (→ Sol/LBrace 500).
+            let content = crate::file_ops::normalize_source_body(content_raw);
+            let content = content.as_str();
+            // Per-construct intents for PR Wizard
+            let mut rats: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            if let Some(obj) = arguments.get("rationales").and_then(|v| v.as_object()) {
+                for (k, v) in obj {
+                    if let Some(s) = v.as_str() {
+                        if !k.is_empty() && !s.trim().is_empty() {
+                            rats.insert(k.clone(), s.trim().to_string());
+                        }
+                    }
+                }
+            }
+            if let Some(one) = arguments.get("rationale").and_then(|v| v.as_str()) {
+                if !one.trim().is_empty() {
+                    rats.entry("*".into())
+                        .or_insert_with(|| one.trim().to_string());
+                }
+            }
+            if !rats.is_empty() {
+                crate::api::record_rationales(rats);
+            }
             // Guardrail: verify the new content parses before persisting.
             // If it has parse errors, reject the write and return the errors.
             let tokens = veil_parser::lex(content);
@@ -955,8 +1040,32 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 );
             }
             let check = rig_tools::run_check(content, &registry);
+            // MultiProjectProvider::write_source records revision/uncommitted.
+            // Surface status so the model is nudged to session_commit (History tab).
+            let rev = crate::provider::hub::CURRENT_PROJECT
+                .try_with(|n| n.clone())
+                .ok()
+                .or_else(crate::acp::get_acp_project)
+                .and_then(|p| {
+                    crate::session::SessionManager::global()
+                        .resolve_for_project(&p)
+                        .ok()
+                        .map(|h| h.revision())
+                })
+                .unwrap_or(0);
+            let lower = check.to_lowercase();
+            let must_fix = lower.contains("\"severity\":\"error\"")
+                || lower.contains("\"severity\": \"error\"")
+                || (lower.contains("error_count")
+                    && !lower.contains("\"error_count\":0")
+                    && !lower.contains("\"error_count\": 0")
+                    && !lower.contains("error_count: 0"));
             Ok(format!(
-                "Wrote {} bytes to active file.\nSmoke: backend gen + cargo check OK.\n\n{check}",
+                "Wrote {} bytes to active file ({active_name}). revision={rev} (uncommitted until session_commit)\n\
+                 Smoke: backend gen + cargo check OK.\n\
+                 Next (same turn): review diagnostics below — if you introduced new errors/warnings, fix them NOW before any other task claim.\n\
+                 Then session_commit with a short message (include why). When the whole task is done: create_change + submit_change — do NOT merge_branch.\n\
+                 MUST_FIX_DIAGNOSTICS={must_fix}\n\n{check}",
                 content.len()
             ))
         }
@@ -1167,6 +1276,7 @@ fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Val
         "uncommitted": uncommitted,
         "dirty_files": meta.dirty,
         "work_dir": h.work_dir.to_string_lossy(),
+        "active_change_id": meta.active_change_id,
     })
 }
 
@@ -1256,8 +1366,18 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
             .unwrap_or_default())
         }
         "merge_branch" => {
+            let force = arguments
+                .get("force")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let h = resolve_session_for_ws(arguments).await?;
-            let v = h.merge_to_base()?;
+            let slug = h.slug();
+            // Default: refuse — human lands via PR Wizard after review.
+            let v = h.merge_to_base_gated(force)?;
+            if let Ok(main) = mgr.open_mainline(&slug) {
+                mgr.set_active_for_project(&slug, &main.session_id());
+                provider.bind_coding_session(&slug, main.provider.clone());
+            }
             Ok(serde_json::to_string_pretty(&v).unwrap_or_default())
         }
         "switch_main" => {
@@ -1267,8 +1387,18 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                 .map(|s| s.to_string())
                 .or_else(|| crate::provider::hub::CURRENT_PROJECT.try_with(|n| n.clone()).ok())
                 .ok_or_else(|| "switch_main needs project scope or slug".to_string())?;
-            // Drop preferred feature branch, then open sticky mainline.
+            // Drop preferred feature branch + any warm mainline handle so cold
+            // attach re-syncs S3 (picks up merges).
             mgr.clear_active_for_project(&slug);
+            if let Ok(list) = crate::session::list_sessions_for_user(&crate::session::current_user_id())
+            {
+                for m in list
+                    .into_iter()
+                    .filter(|m| m.slug == slug && !m.draft_mode)
+                {
+                    mgr.drop_handle(&m.session_id);
+                }
+            }
             let h = mgr.open_mainline(&slug)?;
             mgr.set_active_for_project(&slug, &h.session_id());
             provider.bind_coding_session(&slug, h.provider.clone());
@@ -1278,7 +1408,7 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                 "codingSessionId": h.session_id(),
                 "session_id": h.session_id(),
                 "session": session_status_json(&h),
-                "message": "Switched to mainline session",
+                "message": "Switched to mainline session (synced from S3)",
             }))
             .unwrap_or_default())
         }

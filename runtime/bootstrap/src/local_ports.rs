@@ -206,9 +206,17 @@ impl LocalMetadataStore {
 #[async_trait]
 impl MetadataStore for LocalMetadataStore {
     async fn create_repo(&self, metadata: Repo) -> Result<(), DomainError> {
-        // Product hub: folder name is repo.name
-        let _ = veil_server::create_project(&self.projects_dir, &metadata.name)
-            .map_err(|e| DomainError::External(e))?;
+        // Disk hub scaffold only when not strict remote (VEIL_SOURCE_MODE=s3).
+        // Remote product host uses DdbMetadataStore + S3 seed via create_project tool.
+        if veil_server::provider::s3_workspace::allow_disk_project_create() {
+            let _ = veil_server::create_project(&self.projects_dir, &metadata.name)
+                .map_err(|e| DomainError::External(e))?;
+        } else {
+            tracing::info!(
+                name = %metadata.name,
+                "LocalMetadataStore::create_repo: skip disk hub (VEIL_SOURCE_MODE=s3)"
+            );
+        }
         let mut db = self.inner.lock().unwrap();
         // Index under both UUID id and name for lookups
         db.repos.insert(metadata.id.value.clone(), metadata.clone());

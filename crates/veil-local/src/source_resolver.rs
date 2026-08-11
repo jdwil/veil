@@ -8,6 +8,8 @@
 //!   Content: PK=`LAYER#{name}`, SK=`CONTENT`, data=layer file content
 //! - Repos: PK=`REPO#{id}`, SK=`META`, data=JSON with {id, slug, ...}
 //! - Package source: S3 at `repos/{repo_id}/{branch}/main.veil`
+//! - Platform stubs: PK=`STUB#{name}`, SK=`META` with `{ s3_key, version, … }`;
+//!   body at S3 `stubs/platform/{name}/{version}.stub` (not DDB CONTENT — size limits)
 //!
 //! Fallback: PK=`SOURCE#{slug}`, SK=`MAIN`, data=main.veil content (inline)
 
@@ -143,9 +145,38 @@ impl SourceResolver {
 
     // ─── Stub resolution ───────────────────────────────────────────────────
 
-    /// Resolve a .stub file by crate name.
+    /// Resolve a platform `.stub` by crate use-name.
+    ///
+    /// Prefer DDB META → S3 `s3_key` (or default `stubs/platform/{name}/{ver}.stub`).
+    /// Legacy: STUB# / CONTENT inline for tiny stubs only.
     pub fn resolve_stub(&self, crate_name: &str) -> Option<String> {
-        // Direct content: STUB#{crate_name} SK=CONTENT
+        // META pointer → S3 body
+        if let Ok(meta_raw) = self.get_item_data(&format!("STUB#{crate_name}"), "META") {
+            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_raw) {
+                let key = meta
+                    .get("s3_key")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        let ver = meta
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("latest");
+                        let ver = if ver.is_empty() || ver == "*" {
+                            "latest"
+                        } else {
+                            ver
+                        };
+                        Some(format!("stubs/platform/{crate_name}/{ver}.stub"))
+                    });
+                if let Some(key) = key {
+                    if let Some(text) = self.get_s3_text(&key) {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+        // Legacy inline CONTENT
         if let Ok(content) = self.get_item_data(&format!("STUB#{crate_name}"), "CONTENT") {
             return Some(content);
         }
@@ -164,7 +195,35 @@ impl SourceResolver {
         self.put_item_data(&format!("SOURCE#{slug}"), "MAIN", content)
     }
 
-    /// Store a stub's content directly in DDB.
+    /// Store stub META pointer only (body must already be on S3 at `s3_key`).
+    /// Prefer the host seed script / `veil-server::stub_ops::put_platform_stub` for full publish.
+    pub fn put_stub_meta(
+        &self,
+        crate_name: &str,
+        version: &str,
+        s3_key: &str,
+        extra: Option<serde_json::Value>,
+    ) -> Result<(), StorageError> {
+        let mut meta = serde_json::json!({
+            "name": crate_name,
+            "version": version,
+            "s3_key": s3_key,
+        });
+        if let Some(serde_json::Value::Object(map)) = extra {
+            if let Some(obj) = meta.as_object_mut() {
+                for (k, v) in map {
+                    obj.insert(k, v);
+                }
+            }
+        }
+        self.put_item_data(
+            &format!("STUB#{crate_name}"),
+            "META",
+            &meta.to_string(),
+        )
+    }
+
+    /// @deprecated Prefer S3 body + [`Self::put_stub_meta`]. Inline CONTENT hits DDB size limits.
     pub fn put_stub_content(&self, crate_name: &str, content: &str) -> Result<(), StorageError> {
         self.put_item_data(&format!("STUB#{crate_name}"), "CONTENT", content)
     }

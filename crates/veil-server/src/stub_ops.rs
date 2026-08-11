@@ -539,6 +539,10 @@ pub fn install_stub_to_project(project_root: &Path, name: &str) -> Result<Resolv
     if !src_path.is_empty() {
         notes.push(format!("installed from platform path {src_path}"));
     }
+    notes.push(
+        "Stub is auto-loaded from project stubs/ on next check (no `use` line required). Run veil_check to verify escape_external_call clears."
+            .into(),
+    );
     Ok(ResolvedStub {
         entry: StubCatalogEntry {
             name: parsed

@@ -6,6 +6,7 @@ agent) and as offline fixtures when palace is off in CI.
 | Slug | Topic |
 |------|--------|
 | `veil-contract-bang-opt-res` | Bang / Opt / Res (ACS-010 portable) |
+| `veil-contract-git-shaped-sessions` | Branch → check → commit → merge (agent coding) |
 | `veil-contract-dual-loop-smoke` | Dual-loop + smoke |
 | `veil-contract-multi-package` | Multi-package `[dev].packages` (ACS-003) |
 | `veil-contract-stubs` | Stubs / cargo_deps / harness_field |

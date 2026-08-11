@@ -63,6 +63,9 @@ pub struct SessionMeta {
     /// Recent product intents (agent + human + ux), newest last. Capped.
     #[serde(default)]
     pub intent_log: Vec<serde_json::Value>,
+    /// Open change request id for PR Wizard history writeback (agent replies).
+    #[serde(default)]
+    pub active_change_id: Option<String>,
 }
 
 /// Named commit on a coding session (git-shaped checkpoint).

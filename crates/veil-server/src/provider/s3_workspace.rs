@@ -82,8 +82,191 @@ fn repo_id_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// Resolve repo UUID for a project slug.
+/// Reverse cache: repo_id → product slug.
+fn slug_by_repo_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn cache_identity(slug: &str, repo_id: &str) {
+    if let Ok(mut guard) = repo_id_cache().lock() {
+        guard.insert(slug.to_string(), repo_id.to_string());
+        // Also allow looking up by raw repo id string as if it were a "slug".
+        if slug != repo_id {
+            guard.insert(repo_id.to_string(), repo_id.to_string());
+        }
+    }
+    if let Ok(mut guard) = slug_by_repo_cache().lock() {
+        guard.insert(repo_id.to_string(), slug.to_string());
+    }
+}
+
+/// Canonical product identity: **one** product slug + repo UUID.
+///
+/// Callers often pass either the product slug (`agent-registry`) **or** the repo
+/// UUID from `/projects/{id}/ide`. Without canonicalization those create *two*
+/// sticky mainline sessions / workdirs for the same S3 tree — agent writes land
+/// in one, IDE reads the other, and Changes looks empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectIdentity {
+    /// Product slug from DDB META (preferred for sticky keys + session.slug).
+    pub slug: String,
+    /// Repo UUID (S3 prefix `repos/{repo_id}/…`).
+    pub repo_id: String,
+}
+
+fn looks_like_repo_uuid(s: &str) -> bool {
+    // 8-4-4-4-12 hex UUID
+    let b = s.as_bytes();
+    if b.len() != 36 {
+        return false;
+    }
+    let is_hex = |c: u8| c.is_ascii_hexdigit();
+    for (i, &c) in b.iter().enumerate() {
+        match i {
+            8 | 13 | 18 | 23 => {
+                if c != b'-' {
+                    return false;
+                }
+            }
+            _ => {
+                if !is_hex(c) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Fetch product slug from DDB `REPO#{id}/META` (cheap GetItem, not scan).
+pub fn lookup_slug_for_repo_id(repo_id: &str) -> Result<Option<String>, String> {
+    if let Ok(guard) = slug_by_repo_cache().lock() {
+        if let Some(s) = guard.get(repo_id) {
+            return Ok(Some(s.clone()));
+        }
+    }
+    let table = ddb_table();
+    let key = format!(
+        r##"{{"PK":{{"S":"REPO#{repo_id}"}},"SK":{{"S":"META"}}}}"##
+    );
+    let out = aws_base()
+        .args([
+            "dynamodb",
+            "get-item",
+            "--table-name",
+            &table,
+            "--key",
+            &key,
+            "--projection-expression",
+            "#d",
+            "--expression-attribute-names",
+            r##"{"#d":"data"}"##,
+            "--output",
+            "json",
+        ])
+        .output()
+        .map_err(|e| format!("aws dynamodb get-item: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "aws dynamodb get-item failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("ddb json: {e}"))?;
+    let data = v
+        .pointer("/Item/data/S")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let meta: serde_json::Value =
+        serde_json::from_str(data).map_err(|e| format!("repo meta json: {e}"))?;
+    let slug = meta
+        .get("slug")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(ref s) = slug {
+        cache_identity(s, repo_id);
+    }
+    Ok(slug)
+}
+
+/// Resolve any project key (product slug, display name, or repo UUID) to a
+/// single [`ProjectIdentity`]. Prefer this over raw `resolve_repo_id` when
+/// opening sessions so IDE + agent share one sticky mainline.
+pub fn resolve_project_identity(raw: &str) -> Result<ProjectIdentity, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("empty project identity".into());
+    }
+    let key = crate::project_layout::slugify_name(raw);
+    if key.is_empty() {
+        return Err(format!("invalid project identity: {raw:?}"));
+    }
+
+    // Cached: key is repo_id → product slug
+    if let Ok(guard) = slug_by_repo_cache().lock() {
+        if let Some(slug) = guard.get(&key) {
+            return Ok(ProjectIdentity {
+                slug: slug.clone(),
+                repo_id: key,
+            });
+        }
+    }
+    // Cached: key is product slug → repo_id
+    if let Ok(guard) = repo_id_cache().lock() {
+        if let Some(repo_id) = guard.get(&key) {
+            let slug = slug_by_repo_cache()
+                .lock()
+                .ok()
+                .and_then(|g| g.get(repo_id).cloned())
+                .unwrap_or_else(|| key.clone());
+            return Ok(ProjectIdentity {
+                slug,
+                repo_id: repo_id.clone(),
+            });
+        }
+    }
+
+    // UUID path: GetItem REPO#{id}/META → product slug (avoids dual sticky).
+    if looks_like_repo_uuid(&key) {
+        if let Some(slug) = lookup_slug_for_repo_id(&key)? {
+            cache_identity(&slug, &key);
+            return Ok(ProjectIdentity {
+                slug,
+                repo_id: key,
+            });
+        }
+        // META missing but S3 tree may exist — degrade to id-as-slug.
+        let repo_id = resolve_repo_id_uncached(&key)?;
+        cache_identity(&repo_id, &repo_id);
+        return Ok(ProjectIdentity {
+            slug: repo_id.clone(),
+            repo_id,
+        });
+    }
+
+    // Product slug / name path.
+    let repo_id = resolve_repo_id_uncached(&key)?;
+    // Keep caller's product slug (key) unless META has a better one for this repo.
+    let slug = lookup_slug_for_repo_id(&repo_id)?
+        .filter(|s| !s.is_empty())
+        .unwrap_or(key);
+    cache_identity(&slug, &repo_id);
+    Ok(ProjectIdentity { slug, repo_id })
+}
+
+/// Resolve repo UUID for a project slug **or** repo UUID key.
 pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
+    Ok(resolve_project_identity(slug)?.repo_id)
+}
+
+fn resolve_repo_id_uncached(slug: &str) -> Result<String, String> {
     // Explicit map: relay=cfb3…,foo=…
     if let Ok(map) = std::env::var("VEIL_REPO_MAP") {
         for part in map.split(',') {
@@ -155,12 +338,18 @@ pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
                 .get("slug")
                 .and_then(|x| x.as_str())
                 .unwrap_or("");
-            if s == slug {
+            let id_in_meta = meta
+                .pointer("/id/value")
+                .and_then(|x| x.as_str())
+                .or_else(|| meta.get("id").and_then(|x| x.as_str()))
+                .unwrap_or("");
+            // Match product slug **or** repo UUID key.
+            let pk_id = pk.strip_prefix("REPO#").unwrap_or("");
+            if s == slug || pk_id == slug || id_in_meta == slug {
                 if let Some(id) = pk.strip_prefix("REPO#") {
                     let id = id.to_string();
-                    if let Ok(mut guard) = repo_id_cache().lock() {
-                        guard.insert(slug.to_string(), id.clone());
-                    }
+                    let product_slug = if s.is_empty() { slug.to_string() } else { s.to_string() };
+                    cache_identity(&product_slug, &id);
                     return Ok(id);
                 }
             }
@@ -177,6 +366,7 @@ pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
             .output()
             .map_err(|e| format!("aws s3 ls: {e}"))?;
         if st.status.success() && !st.stdout.is_empty() {
+            cache_identity(slug, slug);
             return Ok(slug.to_string());
         }
     }
@@ -188,6 +378,29 @@ pub fn resolve_repo_id(slug: &str) -> Result<String, String> {
 /// Strict remote mode: never write product source under `VEIL_PROJECTS_DIR`.
 pub fn allow_disk_project_create() -> bool {
     !matches!(ide_source_mode(), IdeSourceMode::S3)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::{looks_like_repo_uuid, ProjectIdentity};
+
+    #[test]
+    fn uuid_shape() {
+        assert!(looks_like_repo_uuid("328d843b-a853-4ff8-a3cf-0a28e4747c18"));
+        assert!(!looks_like_repo_uuid("agent-registry"));
+        assert!(!looks_like_repo_uuid("328d843b-a853-4ff8-a3cf-0a28e4747c1")); // short
+        assert!(!looks_like_repo_uuid("not-a-uuid-at-all-xxxxxxxxxxxxxxx"));
+    }
+
+    #[test]
+    fn identity_eq() {
+        let a = ProjectIdentity {
+            slug: "agent-registry".into(),
+            repo_id: "328d843b-a853-4ff8-a3cf-0a28e4747c18".into(),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
 }
 
 /// Put a text object at `repos/{repo_id}/{branch}/{rel_path}` (stdin → `aws s3 cp -`).
@@ -236,6 +449,8 @@ pub fn put_repo_text(repo_id: &str, rel_path: &str, content: &str) -> Result<(),
 ///
 /// Writes only to object storage (+ process-local id cache). Never creates
 /// `{VEIL_PROJECTS_DIR}/{name}` — materialize uses `$TMP/veil-s3-ws` on open.
+///
+/// `name` may be a display title; scaffold uses slug for package identity.
 pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, String> {
     if repo_id.trim().is_empty() {
         return Err("seed_new_repo_scaffold: empty repo_id".into());
@@ -246,12 +461,30 @@ pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, 
         put_repo_text(repo_id, &rel, &content)?;
         written.push(rel);
     }
-    let slug = name.to_lowercase().replace(' ', "-").replace('_', "-");
+    let slug = crate::project_layout::slugify_name(name);
+    // Prefer the new repo for this slug (overwrite any stale cache entry).
     if let Ok(mut guard) = repo_id_cache().lock() {
         guard.insert(name.to_string(), repo_id.to_string());
-        guard.insert(slug, repo_id.to_string());
+        guard.insert(slug.clone(), repo_id.to_string());
     }
+    tracing::info!(%repo_id, %slug, display = %name, "seed_new_repo_scaffold ok");
     Ok(written)
+}
+
+/// Drop cached slug→repo_id mapping (e.g. before re-create).
+pub fn invalidate_repo_id_cache(slug: &str) {
+    if let Ok(mut guard) = repo_id_cache().lock() {
+        guard.remove(slug);
+        // Also drop display-name keys that slugify to the same id
+        let drop_keys: Vec<String> = guard
+            .keys()
+            .filter(|k| crate::project_layout::slugify_name(k) == slug || k.as_str() == slug)
+            .cloned()
+            .collect();
+        for k in drop_keys {
+            guard.remove(&k);
+        }
+    }
 }
 
 /// Build [`crate::project_layout::ProjectInfo`] rows from DDB META (no materialize).
@@ -472,12 +705,16 @@ fn put_file_s3(
 pub fn open_s3_project(slug: &str, show_core_layers: bool) -> Result<Arc<S3WorkspaceProvider>, String> {
     let repo_id = resolve_repo_id(slug)?;
     let work = workspace_root(slug);
-    // Prefer incremental sync on open (fast path when workdir already warm)
-    if work.join("veil.toml").is_file() || walkdir_has_veil(&work) {
-        let _ = materialize_repo_incremental(&repo_id, &work);
-    } else {
-        materialize_repo_incremental(&repo_id, &work)?;
-    }
+    // Always pull S3 main (with --delete) so merge promotions are visible.
+    // Ignoring sync errors when warm left the IDE on scaffold after merge.
+    materialize_repo(&repo_id, &work).or_else(|e| {
+        if walkdir_has_veil(&work) {
+            tracing::warn!(%slug, error = %e, "S3 sync failed; using existing workdir");
+            Ok(())
+        } else {
+            Err(e)
+        }
+    })?;
 
     let paths = collect_project_files(&work, show_core_layers).map_err(|e| {
         format!("S3 workspace {slug} has no packages after materialize: {e}")

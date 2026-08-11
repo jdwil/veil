@@ -549,6 +549,12 @@ pub struct WriteSourceArgs {
     pub content: String,
     #[serde(default)]
     pub confirmed: bool,
+    /// Construct name → short why (PR Wizard).
+    #[serde(default)]
+    pub rationales: Option<std::collections::HashMap<String, String>>,
+    /// Package-level why when rationales omitted.
+    #[serde(default)]
+    pub rationale: Option<String>,
 }
 
 #[derive(Clone)]
@@ -565,11 +571,17 @@ impl Tool for WriteSourceTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Replace the entire active file source (same as POST /api/source). Prefer structured rename_construct for renames; use this for multi-line package/layer composition.".into(),
+            description: "Replace the entire active file source. Prefer rename_construct for renames. Pass rationales: {ConstructName: short why} for the PR Wizard.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "content": { "type": "string", "description": "Full new source text" },
+                    "rationales": {
+                        "type": "object",
+                        "description": "constructName → short intent/why for PR Wizard",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "rationale": { "type": "string", "description": "Package-level why" },
                     "confirmed": { "type": "boolean" }
                 },
                 "required": ["content"]
@@ -584,6 +596,15 @@ impl Tool for WriteSourceTool {
                 "Write blocked (VEIL_AGENT_CONFIRM_WRITES). Confirm with user, then call write_source again with confirmed=true."
                     .into(),
             );
+        }
+        let mut rats = args.rationales.unwrap_or_default();
+        if let Some(one) = args.rationale {
+            if !one.trim().is_empty() {
+                rats.entry("*".into()).or_insert_with(|| one.trim().to_string());
+            }
+        }
+        if !rats.is_empty() {
+            crate::api::record_rationales(rats);
         }
         let len = args.content.len();
         self.ws.log("write_source", format!("bytes={len}"));

@@ -52,7 +52,15 @@ pub fn smoke_agent_write(
     let name = project_name
         .map(|s| s.to_string())
         .unwrap_or_else(|| crate::project_layout::project_display_name(project_root));
-    get_or_create_dev_loop(loops, &name, project_root)?;
+    // New scaffolds used to ship without [[targets]]; rejecting write_source there
+    // left agents unable to land domain code. Soft-skip until targets exist.
+    if let Err(e) = get_or_create_dev_loop(loops, &name, project_root) {
+        if e.contains("no [[targets]]") {
+            tracing::info!(project = %name, "smoke skipped — no [[targets]] in veil.toml yet");
+            return Ok(());
+        }
+        return Err(e);
+    }
 
     // Rel path of the file that changed (for target matching).
     let rel = {
@@ -500,15 +508,25 @@ impl DevLoop {
             return Ok(());
         }
 
+        // Greenfield: no successful baseline yet. Do not reject the agent write —
+        // there is nothing good to protect, and rolling back to scaffold blocks
+        // domain bootstrap. Advisory only until first green smoke.
+        if self.last_good_sources.is_empty() {
+            tracing::warn!(
+                project = %self.project_root.display(),
+                "greenfield smoke failed — keeping agent write (no baseline)\n{}",
+                errors.join("\n")
+            );
+            return Ok(());
+        }
+
         // Roll back sources to last good snapshot, then re-gen so disk matches.
-        if !self.last_good_sources.is_empty() {
-            if let Err(e) = self.restore_good_sources() {
-                errors.push(format!("source restore: {e}"));
-            } else {
-                for name in &affected {
-                    // Force re-gen from restored sources (gen tree may already be restored).
-                    let _ = self.generate(name);
-                }
+        if let Err(e) = self.restore_good_sources() {
+            errors.push(format!("source restore: {e}"));
+        } else {
+            for name in &affected {
+                // Force re-gen from restored sources (gen tree may already be restored).
+                let _ = self.generate(name);
             }
         }
         Err(errors.join("\n\n"))

@@ -237,7 +237,20 @@ impl SourceProvider for FilesystemProvider {
     async fn read_source(&self, file: &str) -> Result<String, String> {
         let idx = self.entry_index(file)?;
         let files = self.files.lock().unwrap();
-        Ok(files[idx].source.lock().unwrap().clone())
+        let entry = &files[idx];
+        let raw = entry.source.lock().unwrap().clone();
+        // Self-heal accidental tool envelopes left in cache / S3 materializations.
+        if matches!(entry.kind, FileKind::Package | FileKind::Layer) {
+            if let Some(inner) = crate::file_ops::unwrap_tool_content_envelope(&raw) {
+                tracing::warn!(
+                    path = %entry.path.display(),
+                    "read_source: unwrapped accidental tool content envelope"
+                );
+                *entry.source.lock().unwrap() = inner.clone();
+                return Ok(inner);
+            }
+        }
+        Ok(raw)
     }
 
     async fn write_source(&self, file: &str, content: &str) -> Result<(), String> {
@@ -260,14 +273,20 @@ impl SourceProvider for FilesystemProvider {
             )
         };
         let _ = editable;
+        // Never persist `{"content":…,"path":…}` envelopes as .veil / .layer bodies.
+        let content = if matches!(kind, FileKind::Package | FileKind::Layer) {
+            crate::file_ops::normalize_source_body(content)
+        } else {
+            content.to_string()
+        };
 
-        std::fs::write(&path, content).map_err(|e| format!("failed to write: {e}"))?;
+        std::fs::write(&path, &content).map_err(|e| format!("failed to write: {e}"))?;
 
         {
             let files = self.files.lock().unwrap();
             let entry = &files[idx];
-            *entry.source.lock().unwrap() = content.to_string();
-            *entry.registry.lock().unwrap() = registry_for_entry(&path, content);
+            *entry.source.lock().unwrap() = content.clone();
+            *entry.registry.lock().unwrap() = registry_for_entry(&path, &content);
         }
 
         if kind == FileKind::Layer {

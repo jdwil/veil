@@ -27,21 +27,9 @@ pub struct ActiveProjectInfo {
 
 /// Core platform layers shipped with VEIL (language design, not userland DSL).
 /// Hidden from the serve file picker by default; still resolved via `use`.
+/// Delegates to [`veil_ir::is_platform_layer_name`] (single source of truth).
 pub fn is_core_platform_layer(stem: &str) -> bool {
-    matches!(
-        stem,
-        "base"
-            | "ddd"
-            | "di"
-            | "functional"
-            | "rust"
-            | "harness"
-            | "ui"
-            | "svelte5"
-            | "transports"
-            | "rig"
-            | "aws_storage"
-    )
+    veil_ir::is_platform_layer_name(stem)
 }
 
 /// Default projects directory: env → `~/.veil/config.json` → `~/veil-projects`.
@@ -216,31 +204,58 @@ pub fn read_mission_for_agent(root: &Path) -> Option<String> {
 ///
 /// Paths are relative (`veil.toml`, `main.veil`, …). Used by [`init_project`]
 /// and remote create (`s3_workspace::seed_new_repo_scaffold`).
+///
+/// `name` may be a display title (`Agent Registry`) or a slug (`agent-registry`).
+/// Filesystem / package identity uses the slug form; MISSION.md keeps the display title.
 pub fn scaffold_file_contents(name: &str) -> Result<Vec<(String, String)>, String> {
-    validate_project_name(name)?;
-    let pkg_name = pascal_case(name);
+    let display = name.trim();
+    if display.is_empty() {
+        return Err("project name is empty".into());
+    }
+    let slug = slugify_name(display);
+    validate_project_name(&slug)?;
+    let pkg_name = pascal_case(&slug);
+    // Default backend target so dual-loop smoke can attach without the agent
+    // hand-authoring [[targets]] first (missing targets used to reject write_source).
     let veil_toml = format!(
-        r#"name = "{name}"
+        r#"name = "{slug}"
 
 [package]
-name = "{name}"
+name = "{slug}"
 veil = "main.veil"
 layer = "layers/main.layer"
+
+# Dual-loop: gen + cargo check on write_source (agent + IDE).
+[[targets]]
+name = "backend"
+package = "main.veil"
+target = "rust"
+output = "generated/backend"
+dev_command = "VEIL_DEV=1 cargo run -p veil_bin"
 "#
     );
     let pkg_src = format!(
         "pkg {pkg_name}\n  use ddd\n\n  # Scaffold — edit via IDE / write_source (source of truth is remote when VEIL_SOURCE_MODE=s3)\n"
     );
-    let layer_src = format!("pkg {name} v1\n  desc \"{name} product language\"\n  use ddd\n");
+    let layer_src = format!("pkg {slug} v1\n  desc \"{display} product language\"\n  use ddd\n");
     Ok(vec![
         ("veil.toml".into(), veil_toml),
         ("main.veil".into(), pkg_src),
         ("layers/main.layer".into(), layer_src),
-        ("MISSION.md".into(), mission_md_template(name)),
+        ("MISSION.md".into(), mission_md_template(display)),
         (".gitignore".into(), PROJECT_GITIGNORE.to_string()),
         // Keep empty dirs visible in S3 listings / materialize
         ("stubs/.gitkeep".into(), String::new()),
     ])
+}
+
+/// Slug for package / path identity (`Agent Registry` → `agent-registry`).
+pub fn slugify_name(raw: &str) -> String {
+    raw.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Scaffold a product project at `root` (INIT-001).
@@ -251,7 +266,8 @@ layer = "layers/main.layer"
 /// **Disk hub only** — when `VEIL_SOURCE_MODE=s3`, use
 /// [`crate::provider::s3_workspace::seed_new_repo_scaffold`] instead.
 pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, String> {
-    validate_project_name(&opts.name)?;
+    let slug = slugify_name(&opts.name);
+    validate_project_name(&slug)?;
 
     if root.exists() {
         if !root.is_dir() {
@@ -298,6 +314,7 @@ pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, Stri
     std::fs::create_dir_all(root.join("stubs"))
         .map_err(|e| format!("cannot create stubs/: {e}"))?;
 
+    // Prefer original display name for MISSION.md; package paths use slugify inside.
     for (rel, content) in scaffold_file_contents(&opts.name)? {
         let path = root.join(&rel);
         if let Some(parent) = path.parent() {
@@ -328,7 +345,7 @@ pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, Stri
     }
 
     Ok(ProjectInfo {
-        name: opts.name.clone(),
+        name: slug,
         path: root.to_string_lossy().to_string(),
         is_git: root.join(".git").exists(),
         package_count: 1,
@@ -355,15 +372,17 @@ pub fn create_project_with_opts(
                 .into(),
         );
     }
-    validate_project_name(name)?;
+    let slug = slugify_name(name);
+    validate_project_name(&slug)?;
     ensure_projects_dir(projects_dir)?;
-    let root = projects_dir.join(name);
+    let root = projects_dir.join(&slug);
     if root.exists() && has_package_sources(&root) {
         return Err(format!("project already exists: {}", root.display()));
     }
     init_project(
         &root,
         &InitOptions {
+            // Keep display name for MISSION; dir/slug is `slug`
             name: name.to_string(),
             git,
             force: root.exists(),

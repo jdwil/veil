@@ -1,11 +1,16 @@
-//! Streaming agent turns for the IDE (SSE).
+//! Streaming agent turns for the IDE (SSE / WebSocket bridge).
 //!
 //! Events (SSE `event:` name):
 //! - `status` — `{ "message": "…" }`
-//! - `chunk`  — `{ "text": "…" }`  (often single character for typewriter feel)
+//! - `chunk`  — `{ "text": "…" }`  (live model deltas as-is; offline path uses mild pacing)
 //! - `tool`   — `{ "name": "…", "detail": "…" }`
 //! - `done`   — full [`AgentTurnResponse`] JSON
 //! - `error`  — `{ "message": "…" }`
+//!
+//! **Streaming rule:** ACP/Kiro already emits `agent_message_chunk` deltas. Forward
+//! those immediately — do **not** re-typewriter character-by-character. Char pacing
+//! floods the WS (thousands of frames), freezes the Markdown renderer, and looks
+//! like “nothing then dump” to the operator.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,8 +22,10 @@ use crate::agent::{run_turn, AgentMessage, AgentToolCall, AgentTurnRequest, Agen
 use crate::model::ModelConfig;
 use crate::provider::SourceProvider;
 
-/// Delay between typewriter characters (ms). Fast typing, still readable.
-const CHAR_MS: u64 = 8;
+/// Mild pacing between **word** batches for offline/heuristic dumps only (ms).
+const WORD_MS: u64 = 12;
+/// Max chars per offline typewriter batch (keeps UI responsive without char flood).
+const TYPE_BATCH: usize = 48;
 
 /// Push SSE-ready payloads (event name, JSON data string).
 pub type StreamTx = mpsc::Sender<(String, String)>;
@@ -29,19 +36,48 @@ async fn emit(tx: &StreamTx, event: &str, data: serde_json::Value) {
         .await;
 }
 
+/// Live model path: one WS frame per ACP delta (no artificial delay).
+async fn emit_live(tx: &StreamTx, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    emit(tx, "chunk", json!({ "text": text })).await;
+}
+
+/// Offline / post-hoc path: mild word-ish batches so a full reply still “types”
+/// without 8ms×N character storms (which freeze Svelte + marked).
 async fn emit_typed(tx: &StreamTx, text: &str) {
-    for ch in text.chars() {
-        emit(tx, "chunk", json!({ "text": ch.to_string() })).await;
-        tokio::time::sleep(Duration::from_millis(CHAR_MS)).await;
+    if text.is_empty() {
+        return;
+    }
+    let mut start = 0usize;
+    let chars: Vec<char> = text.chars().collect();
+    while start < chars.len() {
+        let end = (start + TYPE_BATCH).min(chars.len());
+        // Prefer breaking on whitespace near the batch end for smoother paint.
+        let mut cut = end;
+        if end < chars.len() {
+            if let Some(rel) = chars[start..end].iter().rposition(|c| c.is_whitespace()) {
+                if rel > 0 {
+                    cut = start + rel + 1;
+                }
+            }
+        }
+        let batch: String = chars[start..cut].iter().collect();
+        emit(tx, "chunk", json!({ "text": batch })).await;
+        start = cut;
+        if start < chars.len() {
+            tokio::time::sleep(Duration::from_millis(WORD_MS)).await;
+        }
     }
 }
 
-/// Emit a chunk as either a tool event or text, depending on marker.
+/// Emit a chunk as either a tool event or **live** text (ACP path).
 async fn emit_chunk_or_tool(tx: &StreamTx, chunk: &str) {
     if let Some(name) = chunk.strip_prefix("\x01TOOL:").and_then(|s| s.strip_suffix('\x01')) {
         emit(tx, "tool", json!({ "name": name, "detail": "running" })).await;
     } else {
-        emit_typed(tx, chunk).await;
+        emit_live(tx, chunk).await;
     }
 }
 
@@ -209,6 +245,8 @@ pub async fn run_turn_stream<P: SourceProvider>(
         }
         // Scope IDE tools to the project we just created (rebind task-local hub)
         let acp_result = if let Some(ref slug) = created_slug {
+            // Rematerialize + bind session so first write_source isn't "empty project"
+            let _ = crate::agent_scope::prepare_project(slug, Some(provider.as_ref()));
             crate::acp::ensure_acp_project_scope(Some(slug.clone()));
             crate::provider::hub::CURRENT_PROJECT
                 .scope(
@@ -220,20 +258,57 @@ pub async fn run_turn_stream<P: SourceProvider>(
             stream_acp_turn(provider.clone(), req_acp, &tx, &turn_id).await
         };
         match acp_result {
+            // stream_acp_turn always emits `done` (success or soft error).
+            // Never re-run the full non-stream turn — that doubles wait and
+            // dumps a second blob after the operator already watched tools.
             Ok(()) => return,
             Err(e) => {
+                // Hard failure before any done (e.g. spawn panic) — one error frame.
                 emit(
                     &tx,
                     "status",
-                    json!({ "message": format!("ACP error — falling back: {e}") }),
+                    json!({ "message": format!("ACP error: {e}") }),
                 )
                 .await;
-                // fall through to non-stream path with typewriter
+                emit(
+                    &tx,
+                    "error",
+                    json!({ "message": format!("ACP agent error: {e}") }),
+                )
+                .await;
+                let resp = AgentTurnResponse {
+                    turn_id: turn_id.clone(),
+                    messages: vec![AgentMessage {
+                        role: "assistant".into(),
+                        content: format!(
+                            "ACP agent error: {e}\n\
+                             Check: `kiro-cli login`, `VEIL_ACP_COMMAND`, `VEIL_ACP_ARGS`."
+                        ),
+                    }],
+                    tool_calls: vec![],
+                    source_changed: false,
+                    ok: false,
+                    error: Some(e),
+                    backend: "acp-error".into(),
+                    plan: None,
+                    context_truncated: false,
+                    context_warning: None,
+                    context_tokens: 0,
+                    context_budget_tokens: 0,
+                    context_layers: vec![],
+                };
+                emit(
+                    &tx,
+                    "done",
+                    serde_json::to_value(&resp).unwrap_or(json!({})),
+                )
+                .await;
+                return;
             }
         }
     }
 
-    // ── Rig / heuristic: run full turn, then typewriter the reply ──────────
+    // ── Rig / heuristic: run full turn, then mild typewriter of the reply ──
     emit(
         &tx,
         "status",
@@ -307,40 +382,108 @@ async fn stream_acp_turn<P: SourceProvider>(
     .await;
 
     let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<String>();
+    // Track live-streamed body so done payload matches what the UI already painted
+    // (and so soft ACP errors still finalize cleanly without a second full turn).
+    let mut streamed_text = String::new();
+    let mut streamed_tools: Vec<String> = Vec::new();
     let mut join = tokio::task::spawn_blocking(move || {
         crate::acp::prompt_acp_streaming(&composed, |s| {
             let _ = chunk_tx.send(s.to_string());
         })
     });
 
-    let turn = loop {
+    let turn_result: Result<crate::acp::AcpTurnResult, String> = loop {
         tokio::select! {
             chunk = chunk_rx.recv() => {
                 match chunk {
-                    Some(t) => emit_chunk_or_tool(tx, &t).await,
+                    Some(t) => {
+                        if let Some(name) =
+                            t.strip_prefix("\x01TOOL:").and_then(|s| s.strip_suffix('\x01'))
+                        {
+                            streamed_tools.push(name.to_string());
+                        } else {
+                            streamed_text.push_str(&t);
+                        }
+                        emit_chunk_or_tool(tx, &t).await;
+                    }
                     None => {
                         // All chunk senders dropped — blocking task finished (or panicked).
-                        break join.await.map_err(|e| e.to_string())??;
+                        break join.await.map_err(|e| e.to_string()).and_then(|r| r);
                     }
                 }
             }
             res = &mut join => {
-                // Drain any remaining chunks still in the queue.
+                // Drain any remaining chunks still in the queue (live, not typewriter).
                 while let Ok(t) = chunk_rx.try_recv() {
+                    if let Some(name) =
+                        t.strip_prefix("\x01TOOL:").and_then(|s| s.strip_suffix('\x01'))
+                    {
+                        streamed_tools.push(name.to_string());
+                    } else {
+                        streamed_text.push_str(&t);
+                    }
                     emit_chunk_or_tool(tx, &t).await;
                 }
-                break res.map_err(|e| e.to_string())??;
+                break res.map_err(|e| e.to_string()).and_then(|r| r);
             }
+        }
+    };
+
+    let (content_base, tool_hints, session_id, acp_ok, acp_err) = match turn_result {
+        Ok(turn) => {
+            // Prefer the authoritative joined text from ACP; fall back to what we streamed.
+            let text = if !turn.text.is_empty() {
+                turn.text
+            } else {
+                streamed_text.clone()
+            };
+            // If ACP only delivered text in the final result (no session/update
+            // chunks), paint it now so the UI is not empty until done backfill.
+            if streamed_text.is_empty() && !text.is_empty() {
+                emit_live(tx, &text).await;
+            } else if text.len() > streamed_text.len() && text.starts_with(&streamed_text) {
+                let rest = &text[streamed_text.len()..];
+                if !rest.is_empty() {
+                    emit_live(tx, rest).await;
+                }
+            }
+            let mut hints = turn.tool_hints;
+            if hints.is_empty() {
+                hints = streamed_tools.clone();
+            }
+            (text, hints, turn.session_id, true, None)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ACP stream turn failed — finalizing with partial stream");
+            emit(
+                tx,
+                "status",
+                json!({ "message": format!("ACP ended with error: {e}") }),
+            )
+            .await;
+            let mut text = streamed_text.clone();
+            if text.is_empty() {
+                text = format!(
+                    "ACP agent error: {e}\n\
+                     Check: `kiro-cli login`, `VEIL_ACP_COMMAND`, `VEIL_ACP_ARGS`."
+                );
+                emit_live(tx, &text).await;
+            } else {
+                let note = format!("\n\n---\nACP ended with error: {e}");
+                emit_live(tx, &note).await;
+                text.push_str(&note);
+            }
+            (text, streamed_tools.clone(), String::new(), false, Some(e))
         }
     };
 
     let reloaded = provider.reload_from_disk().await.unwrap_or(0);
     let source_changed = reloaded > 0;
-    let mut content = turn.text.clone();
-    // If streaming already painted the body, only append reload note as extra chunks
+    let mut content = content_base;
+    // Reload note as a single live chunk (not char typewriter)
     if reloaded > 0 {
         let note = format!("\n\n---\nVEIL reloaded {reloaded} file(s) from disk after ACP turn.");
-        emit_typed(tx, &note).await;
+        emit_live(tx, &note).await;
         content.push_str(&note);
     }
     if let Some(ref w) = preamble_pack.warning {
@@ -348,8 +491,7 @@ async fn stream_acp_turn<P: SourceProvider>(
         let _ = w;
     }
 
-    let mut tool_calls: Vec<AgentToolCall> = turn
-        .tool_hints
+    let mut tool_calls: Vec<AgentToolCall> = tool_hints
         .into_iter()
         .map(|n| AgentToolCall {
             name: n,
@@ -359,7 +501,11 @@ async fn stream_acp_turn<P: SourceProvider>(
     if tool_calls.is_empty() {
         tool_calls.push(AgentToolCall {
             name: "acp_session".into(),
-            detail: turn.session_id.clone(),
+            detail: if session_id.is_empty() {
+                "acp".into()
+            } else {
+                session_id
+            },
         });
     }
     // Tool events already streamed in real-time via \x01TOOL: markers.
@@ -374,14 +520,18 @@ async fn stream_acp_turn<P: SourceProvider>(
             },
             AgentMessage {
                 role: "assistant".into(),
-                content,
+                content: content.clone(),
             },
         ],
-        tool_calls,
+        tool_calls: tool_calls.clone(),
         source_changed,
-        ok: true,
-        error: None,
-        backend: "acp-kiro".into(),
+        ok: acp_ok,
+        error: acp_err,
+        backend: if acp_ok {
+            "acp-kiro".into()
+        } else {
+            "acp-partial".into()
+        },
         plan: None,
         context_truncated: preamble_pack.truncated,
         context_warning: preamble_pack.warning.clone(),
@@ -389,6 +539,18 @@ async fn stream_acp_turn<P: SourceProvider>(
         context_budget_tokens: preamble_pack.max_tokens,
         context_layers: preamble_pack.layers.clone(),
     };
+    // Durable PR history: agent reply under open change request.
+    let tool_names: Vec<String> = tool_calls.iter().map(|t| t.name.clone()).collect();
+    let slug = crate::provider::hub::CURRENT_PROJECT
+        .try_with(|n| n.clone())
+        .ok();
+    crate::pr_writeback::writeback_agent_turn_to_pr(
+        slug.as_deref(),
+        &content,
+        &tool_names,
+        source_changed,
+    )
+    .await;
     emit(
         tx,
         "done",
@@ -416,6 +578,17 @@ async fn stream_response_typed(tx: &StreamTx, resp: AgentTurnResponse) {
         .map(|m| m.content.as_str())
         .unwrap_or("");
     emit_typed(tx, text).await;
+    let tool_names: Vec<String> = resp.tool_calls.iter().map(|t| t.name.clone()).collect();
+    let slug = crate::provider::hub::CURRENT_PROJECT
+        .try_with(|n| n.clone())
+        .ok();
+    crate::pr_writeback::writeback_agent_turn_to_pr(
+        slug.as_deref(),
+        text,
+        &tool_names,
+        resp.source_changed,
+    )
+    .await;
     emit(
         tx,
         "done",

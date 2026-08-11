@@ -1263,10 +1263,15 @@ fn convert_rustdoc_json_to_stub(
         }
     }
 
-    let mut out = format!("stub {} {}\n", crate_name, version);
+    let fingerprint = veil_ir::content_fingerprint(json_str);
+    let mut out = veil_ir::generated_stub_header(
+        crate_name,
+        version,
+        cargo_features,
+        Some(&fingerprint),
+    );
 
     // ── Crate-level codegen policy (inferred; engine applies generically) ──
-    out.push_str("  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)\n");
     if !cargo_features.is_empty() {
         out.push_str(&format!(
             "  cargo_features {}\n",
@@ -2768,7 +2773,8 @@ target = "rust"
                     println!();
                     println!("Next:");
                     println!("  veil serve {} -p 3001", info.path);
-                    println!("  veil check {}/{}.veil", info.path, info.name);
+                    println!("  veil check {}/main.veil", info.path);
+                    println!("  edit {}/MISSION.md  # product intent for the coding agent", info.path);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");

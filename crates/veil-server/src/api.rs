@@ -34,6 +34,70 @@ type AnnotationCacheKey = (String, String);
 static ANNOTATION_CACHE: std::sync::LazyLock<Mutex<HashMap<AnnotationCacheKey, veil_ir::EditAnnotation>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Per-construct short intents from write_source.rationales / edit annotations.
+/// Keyed by construct name (case-sensitive preferred; lookup also tries ignore-case).
+static RATIONALE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Record agent rationales for PR Wizard (write_source or structured edits).
+pub fn record_rationales(map: HashMap<String, String>) {
+    if map.is_empty() {
+        return;
+    }
+    if let Ok(mut cache) = RATIONALE_CACHE.lock() {
+        for (k, v) in map {
+            let name = k.trim().to_string();
+            let intent = v.trim().to_string();
+            if name.is_empty() || intent.is_empty() {
+                continue;
+            }
+            cache.insert(name.clone(), intent.clone());
+            // Also seed annotation cache so /diff item_annotations light up.
+            if let Ok(mut ac) = ANNOTATION_CACHE.lock() {
+                for kind in [
+                    "added",
+                    "removed",
+                    "renamed",
+                    "signature_changed",
+                    "body_changed",
+                    "annotations_changed",
+                ] {
+                    ac.entry((name.clone(), kind.to_string()))
+                        .and_modify(|a| {
+                            if a.intent.is_none() {
+                                a.intent = Some(intent.clone());
+                            }
+                        })
+                        .or_insert_with(|| veil_ir::EditAnnotation {
+                            intent: Some(intent.clone()),
+                            category: None,
+                            criticality: None,
+                        });
+                }
+            }
+        }
+    }
+}
+
+/// Snapshot of all known rationales (for create_change description injection).
+pub fn snapshot_rationales() -> HashMap<String, String> {
+    RATIONALE_CACHE
+        .lock()
+        .map(|c| c.clone())
+        .unwrap_or_default()
+}
+
+fn intent_for_name(name: &str) -> Option<String> {
+    let cache = RATIONALE_CACHE.lock().ok()?;
+    if let Some(v) = cache.get(name) {
+        return Some(v.clone());
+    }
+    cache
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.clone())
+}
+
 async fn ws_aether_chat_route<P: SourceProvider + 'static>(
     ws: WebSocketUpgrade,
     State(provider): State<Arc<P>>,
@@ -255,21 +319,39 @@ async fn project_scope_middleware(
         };
         match handle {
             Ok(h) => {
-                if h.slug() != project {
+                // Accept product slug **or** repo UUID for the same repo. Reject only
+                // when the session is bound to a different product entirely.
+                let same_product = h.slug() == project
+                    || h.snapshot_meta().repo_id == project
+                    || crate::provider::s3_workspace::resolve_project_identity(&project)
+                        .map(|id| {
+                            id.repo_id == h.snapshot_meta().repo_id
+                                || id.slug == h.slug()
+                        })
+                        .unwrap_or(false);
+                if !same_product {
                     return (
                         StatusCode::BAD_REQUEST,
                         [(header::CONTENT_TYPE, "application/json")],
                         serde_json::json!({
                             "error": "session slug mismatch",
                             "session_slug": h.slug(),
+                            "session_repo_id": h.snapshot_meta().repo_id,
                             "project": project,
                         })
                         .to_string(),
                     )
                         .into_response();
                 }
-                // Pin session workdir into hub cache for MultiProjectProvider.
+                // Pin under both route key and canonical slug so hub lookups hit.
                 multi.hub().bind_session_provider(&project, h.provider.clone());
+                if h.slug() != project {
+                    multi
+                        .hub()
+                        .bind_session_provider(&h.slug(), h.provider.clone());
+                }
+                mgr.set_active_for_project(&project, &h.session_id());
+                mgr.set_active_for_project(&h.slug(), &h.session_id());
                 let sid = h.session_id();
                 return crate::session::CURRENT_SESSION
                     .scope(sid, CURRENT_PROJECT.scope(project, next.run(req)))
@@ -617,26 +699,68 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
 
     let mut diff = veil_ir::structural_diff(&base_ir, &head_ir, &base_label, "working tree");
 
-    // Enrich diff items with annotations from the transient cache.
-    if let Ok(cache) = ANNOTATION_CACHE.lock() {
-        if !cache.is_empty() {
-            let mut annotations: Vec<Option<veil_ir::EditAnnotation>> = Vec::with_capacity(diff.items.len());
-            for item in &diff.items {
-                let (name, kind) = match item {
-                    veil_ir::DiffItem::Added { name, .. } => (name.clone(), "added".to_string()),
-                    veil_ir::DiffItem::Removed { name, .. } => (name.clone(), "removed".to_string()),
-                    veil_ir::DiffItem::Renamed { to_name, .. } => (to_name.clone(), "renamed".to_string()),
-                    veil_ir::DiffItem::SignatureChanged { name, .. } => (name.clone(), "signature_changed".to_string()),
-                    veil_ir::DiffItem::BodyChanged { name, .. } => (name.clone(), "body_changed".to_string()),
-                    veil_ir::DiffItem::AnnotationsChanged { name, .. } => (name.clone(), "annotations_changed".to_string()),
-                };
-                annotations.push(cache.get(&(name, kind)).cloned());
+    // Enrich each item with EditAnnotation.intent (edit cache + write_source rationales).
+    {
+        let cache = ANNOTATION_CACHE.lock().ok();
+        let mut annotations: Vec<Option<veil_ir::EditAnnotation>> =
+            Vec::with_capacity(diff.items.len());
+        for item in &diff.items {
+            let (name, kind) = match item {
+                veil_ir::DiffItem::Added { name, .. } => (name.clone(), "added".to_string()),
+                veil_ir::DiffItem::Removed { name, .. } => (name.clone(), "removed".to_string()),
+                veil_ir::DiffItem::Renamed { to_name, .. } => {
+                    (to_name.clone(), "renamed".to_string())
+                }
+                veil_ir::DiffItem::SignatureChanged { name, .. } => {
+                    (name.clone(), "signature_changed".to_string())
+                }
+                veil_ir::DiffItem::BodyChanged { name, .. } => {
+                    (name.clone(), "body_changed".to_string())
+                }
+                veil_ir::DiffItem::AnnotationsChanged { name, .. } => {
+                    (name.clone(), "annotations_changed".to_string())
+                }
+            };
+            let mut ann = cache.as_ref().and_then(|c| c.get(&(name.clone(), kind)).cloned());
+            if ann.is_none() {
+                if let Some(c) = cache.as_ref() {
+                    ann = c
+                        .iter()
+                        .find(|((n, _), _)| n == &name)
+                        .map(|(_, a)| a.clone());
+                }
             }
-            if annotations.iter().any(|a| a.is_some()) {
-                diff.item_annotations = Some(annotations);
+            if ann.as_ref().and_then(|a| a.intent.as_ref()).is_none() {
+                if let Some(intent) = intent_for_name(&name) {
+                    let mut a = ann.unwrap_or_default();
+                    a.intent = Some(intent);
+                    ann = Some(a);
+                }
+            }
+            annotations.push(ann);
+        }
+        if annotations.iter().any(|a| a.is_some()) {
+            diff.item_annotations = Some(annotations);
+        }
+    }
+    if let Ok(rats) = RATIONALE_CACHE.lock() {
+        if !rats.is_empty() {
+            veil_ir::apply_intents_to_peeks(&mut diff, &rats);
+        }
+    }
+    if let (Some(peeks), Some(anns)) = (diff.item_peeks.as_mut(), diff.item_annotations.as_ref()) {
+        for (i, p) in peeks.iter_mut().enumerate() {
+            if let Some(peek) = p {
+                if peek.intent.is_none() {
+                    if let Some(Some(a)) = anns.get(i) {
+                        peek.intent = a.intent.clone();
+                    }
+                }
             }
         }
     }
+    // Re-sort after criticality/intent annotations so review walks high-impact first.
+    veil_ir::sort_diff_for_review(&mut diff);
 
     match serde_json::to_string(&diff) {
         Ok(json) => json_response(json).into_response(),
@@ -1757,7 +1881,10 @@ async fn post_edit<P: SourceProvider>(
                 };
                 if let Some((_span, name, kind)) = node {
                     if !name.is_empty() {
-                        cache.insert((name, kind.to_string()), ann.clone());
+                        cache.insert((name.clone(), kind.to_string()), ann.clone());
+                        if let Some(ref intent) = ann.intent {
+                            record_rationales(HashMap::from([(name, intent.clone())]));
+                        }
                     }
                 }
             }

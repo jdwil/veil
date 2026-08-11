@@ -169,8 +169,9 @@ veil init [PATH] [options]
 ```text
 <project>/
   veil.toml              # name = "…"
-  <name>.veil            # minimal pkg (use ddd optional / documented)
-  layers/                # empty (project layers)
+  main.veil              # minimal pkg (use ddd optional / documented)
+  MISSION.md             # product intent brief (Purpose / In scope / Out of scope)
+  layers/                # project layers (main.layer on scaffold)
   stubs/                 # empty
   .gitignore             # generated/, target/, .veil-dev/, OS junk
 ```

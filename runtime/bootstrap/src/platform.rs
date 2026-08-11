@@ -235,6 +235,14 @@ pub fn list_repos() -> Value {
 }
 
 pub fn create_repo(name: &str, _description: Option<&str>) -> Value {
+    // Strict remote: never scaffold VEIL_PROJECTS_DIR — agent/platform create_project
+    // seeds S3 after POST /api/repos.
+    if !veil_server::provider::s3_workspace::allow_disk_project_create() {
+        return json!({
+            "error": "disk hub create forbidden (VEIL_SOURCE_MODE=s3)",
+            "hint": "use POST /api/repos + S3 scaffold (agent create_project tool)",
+        });
+    }
     let dir = projects_dir();
     match veil_server::create_project(&dir, name) {
         Ok(info) => json!(info),

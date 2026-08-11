@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 veil-server = { path = "../../crates/veil-server" }
+veil-ir = { path = "../../crates/veil-ir" }
+veil-parser = { path = "../../crates/veil-parser" }
 # PVR-011: generated storage domain services + ports
 storage = { path = "../generated/crates/storage" }
 # EXT-02: generated extensions registry + ports

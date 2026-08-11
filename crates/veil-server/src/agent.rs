@@ -1223,14 +1223,7 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
     // create_project — real product create (not wiki-only).
     // Only short-circuit *simple* create prompts; multi-step ("create X and design…")
     // stays with the LLM/MCP tool loop so create_project can run mid-turn.
-    let looks_like_create_project = lower.contains("create_project")
-        || lower.contains("create_repo")
-        || lower.contains("create a project")
-        || lower.contains("create project")
-        || lower.contains("new project")
-        || lower.contains("make a project")
-        || lower.contains("scaffold a project")
-        || lower.contains("scaffold project");
+    let looks_like_create_project = looks_like_create_project_prompt(&lower);
     let multi_step = lower.contains(" and ")
         || lower.contains(" then ")
         || lower.contains(" with ")
@@ -1278,84 +1271,106 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
         });
     }
 
-    // Explicit tool / phrase → path
-    let pairs: &[(&[&str], &str, &str, &str)] = &[
-        (
-            &[
+    // Explicit tool / phrase → path.
+    // IMPORTANT: only short-circuit when the *user intent* is navigation/UX.
+    // Multi-line Fix-button / coding prompts often *mention* tool names
+    // (`create_change`, `session_commit`, …) as SOP — those must reach ACP/LLM,
+    // not open an empty form and stop (regression: Diagnostics "Fix" → create_change).
+    if is_primary_platform_nav_prompt(&lower) {
+        let pairs: &[(&[&str], &str, &str, &str)] = &[
+            (
+                &[
+                    "list_changes",
+                    "open_changes",
+                    "open changes",
+                    "show me open change",
+                    "show open change",
+                    "change requests",
+                    "navigate to /changes",
+                    "go to /changes",
+                    "go to changes",
+                ],
                 "list_changes",
-                "open_changes",
-                "open changes",
-                "show me open change",
-                "show open change",
-                "change requests",
-                "navigate to /changes",
-                "go to /changes",
-                "go to changes",
-            ],
-            "list_changes",
-            "/changes",
-            "Opening change requests",
-        ),
-        (
-            &[
+                "/changes",
+                "Opening change requests",
+            ),
+            (
+                &[
+                    "create_change",
+                    "open_create_change",
+                    "create change request",
+                    "new change request",
+                    "navigate to /changes/new",
+                ],
                 "create_change",
-                "open_create_change",
-                "create change request",
-                "new change request",
-                "navigate to /changes/new",
-            ],
-            "create_change",
-            "/changes/new",
-            "Opening create change request",
-        ),
-        (
-            &[
+                "/changes/new",
+                "Opening create change request",
+            ),
+            (
+                &[
+                    "list_projects",
+                    "open_projects",
+                    "open projects",
+                    "show projects",
+                    "navigate to /projects",
+                    "go to projects",
+                ],
                 "list_projects",
-                "open_projects",
-                "open projects",
-                "show projects",
-                "navigate to /projects",
-                "go to projects",
-            ],
-            "list_projects",
-            "/projects",
-            "Opening projects",
-        ),
-        (
-            &["open_deploy", "open deploy", "deploy to staging", "go to deploy", "navigate to /deploy"],
-            "open_deploy",
-            "/deploy",
-            "Opening deploy",
-        ),
-        (
-            &["open_registry", "open registry", "go to registry", "navigate to /registry"],
-            "open_registry",
-            "/registry",
-            "Opening registry",
-        ),
-        (
-            &["open_dashboard", "open dashboard", "go to dashboard", "navigate to /dashboard"],
-            "open_dashboard",
-            "/dashboard",
-            "Opening dashboard",
-        ),
-        (
-            &["open_config", "open config", "go to config", "navigate to /config"],
-            "open_config",
-            "/config",
-            "Opening config",
-        ),
-    ];
-    for (needles, tool, path, summary) in pairs {
-        if needles.iter().any(|n| lower.contains(n)) {
-            return Some(PlatformUxIntent {
-                tool: (*tool).into(),
-                path: (*path).into(),
-                summary: (*summary).into(),
-                action: "goto".into(),
-                project: None,
-                args: None,
-            });
+                "/projects",
+                "Opening projects",
+            ),
+            (
+                &[
+                    "open_deploy",
+                    "open deploy",
+                    "deploy to staging",
+                    "go to deploy",
+                    "navigate to /deploy",
+                ],
+                "open_deploy",
+                "/deploy",
+                "Opening deploy",
+            ),
+            (
+                &[
+                    "open_registry",
+                    "open registry",
+                    "go to registry",
+                    "navigate to /registry",
+                ],
+                "open_registry",
+                "/registry",
+                "Opening registry",
+            ),
+            (
+                &[
+                    "open_dashboard",
+                    "open dashboard",
+                    "go to dashboard",
+                    "navigate to /dashboard",
+                ],
+                "open_dashboard",
+                "/dashboard",
+                "Opening dashboard",
+            ),
+            (
+                &["open_config", "open config", "go to config", "navigate to /config"],
+                "open_config",
+                "/config",
+                "Opening config",
+            ),
+        ];
+        for (needles, tool, path, summary) in pairs {
+            if needles.iter().any(|n| lower.contains(n)) {
+                return Some(PlatformUxIntent {
+                    tool: (*tool).into(),
+                    path: (*path).into(),
+                    summary: (*summary).into(),
+                    action: "goto".into(),
+                    project: None,
+                    args: None,
+                });
+            }
         }
     }
     // open_ide / open_project with a named project: "open the relay project"
@@ -1411,16 +1426,12 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
 /// Pull project name from "create project foo", "create a project named bar", etc.
 fn extract_create_project_name(prompt: &str) -> Option<String> {
     let s = prompt.trim();
-    // named/called X
+    // named/called X — support quoted multi-word ("Agent Registry" → agent-registry)
     for marker in [" named ", " called ", " name "] {
         if let Some(idx) = s.to_lowercase().find(marker) {
             let rest = s[idx + marker.len()..].trim();
-            if let Some(tok) = rest.split_whitespace().next() {
-                let t = tok
-                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
-                if t.len() >= 2 {
-                    return Some(t.to_string());
-                }
+            if let Some(name) = extract_project_name_phrase(rest) {
+                return Some(name);
             }
         }
     }
@@ -1429,42 +1440,120 @@ fn extract_create_project_name(prompt: &str) -> Option<String> {
     for prefix in [
         "create_project ",
         "create_repo ",
+        "create a new project ",
         "create a project ",
         "create project ",
         "new project ",
         "scaffold a project ",
         "scaffold project ",
         "make a project ",
+        "make a new project ",
     ] {
-        if let Some(rest) = lower.strip_prefix(prefix).or_else(|| {
-            // also match mid-sentence after punctuation
-            lower.split_once(prefix).map(|(_, r)| r)
-        }) {
-            let tok = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
-            if tok.len() >= 2
-                && !matches!(
-                    tok,
+        if let Some((before, after)) = lower.split_once(prefix) {
+            // Prefer mid-sentence matches; map offset back to original string.
+            let off = before.len() + prefix.len();
+            let rest_orig = s.get(off..).unwrap_or(after);
+            if let Some(name) = extract_project_name_phrase(rest_orig) {
+                if !matches!(
+                    name.as_str(),
                     "named" | "called" | "please" | "for" | "with" | "and" | "the"
-                )
-            {
-                // Preserve original casing from s if possible
-                if let Some(orig) = s
-                    .split_whitespace()
-                    .find(|w| w.to_lowercase().trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_') == tok)
-                {
-                    let t = orig
-                        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
-                    return Some(t.to_string());
+                ) {
+                    return Some(name);
                 }
-                return Some(tok.to_string());
             }
         }
     }
     None
+}
+
+/// Parse a project name phrase after "called"/"named" or "create project".
+///
+/// Returns the **display name** (e.g. `"Agent Registry"`), not a forced kebab
+/// slug. `POST /api/repos` derives `slug = name.lower().replace(' ', '-')`.
+fn extract_project_name_phrase(rest: &str) -> Option<String> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    // Quoted multi-word: "Agent Registry" / 'Agent Registry'
+    let bytes = rest.as_bytes();
+    let open = bytes[0] as char;
+    if matches!(open, '"' | '\'' | '“' | '”' | '‘' | '’') {
+        let close = match open {
+            '“' => '”',
+            '‘' => '’',
+            c => c,
+        };
+        if let Some(end) = rest[1..].find(close) {
+            let inner = rest[1..1 + end].trim();
+            if inner.chars().filter(|c| c.is_ascii_alphanumeric()).count() >= 2 {
+                return Some(inner.to_string());
+            }
+        }
+    }
+    // Unquoted: take words until stop-word / sentence boundary.
+    // Preserve original casing so "Agent Registry" stays a display name.
+    let stop = [
+        "and", "then", "with", "that", "which", "for", "please", "it", "this",
+        "the", "a", "an", "to", "in", "on", "from", "into", "of", "will",
+        "should", "must", "can", "need", "needs", "contains", "bring",
+        "called", "named",
+    ];
+    let mut parts: Vec<String> = Vec::new();
+    for w in rest.split_whitespace() {
+        let ends_sentence = w.ends_with('.') || w.ends_with(',') || w.ends_with(';') || w.ends_with('!');
+        let cleaned = w
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+            .to_string();
+        if cleaned.is_empty() {
+            break;
+        }
+        let lower = cleaned.to_lowercase();
+        if stop.contains(&lower.as_str()) {
+            break;
+        }
+        parts.push(cleaned);
+        if ends_sentence {
+            break;
+        }
+        // First token already looks like a finished slug → stop (agent-registry)
+        if parts.len() == 1
+            && (parts[0].contains('-')
+                || parts[0].contains('_')
+                || parts[0]
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'))
+        {
+            break;
+        }
+        // Cap multi-word title names
+        if parts.len() >= 4 {
+            break;
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    // Multi-word Title Case → display name with spaces; single token as-is
+    let name = if parts.len() > 1 {
+        parts.join(" ")
+    } else {
+        parts.into_iter().next().unwrap_or_default()
+    };
+    if name.chars().filter(|c| c.is_ascii_alphanumeric()).count() >= 2 {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+/// URL/path slug from a display name (`Agent Registry` → `agent-registry`).
+pub fn slugify_project_name(raw: &str) -> String {
+    raw.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn extract_project_slug_from_prompt(lower: &str) -> Option<String> {
@@ -1525,15 +1614,7 @@ pub fn host_platform_prefix_steps(prompt: &str) -> Vec<HostPlatformStep> {
 
     let mut steps = Vec::new();
 
-    let looks_like_create = lower.contains("create_project")
-        || lower.contains("create_repo")
-        || lower.contains("create a project")
-        || lower.contains("create project")
-        || lower.contains("new project")
-        || lower.contains("make a project")
-        || lower.contains("scaffold a project")
-        || lower.contains("scaffold project")
-        || lower.contains("bootstrap") && lower.contains("project");
+    let looks_like_create = looks_like_create_project_prompt(&lower);
 
     if looks_like_create {
         if let Some(name) = extract_create_project_name(user_part)
@@ -1628,6 +1709,11 @@ pub fn is_structured_agent_command(prompt: &str) -> bool {
     if is_seed_wiki_command(prompt) {
         return false;
     }
+    // Multi-step create-project must go through host_platform_prefix_steps +
+    // ACP/LLM (not the offline create_file heuristic).
+    if looks_like_create_project_prompt(&lower) && parse_platform_ux_intent(prompt).is_none() {
+        return false;
+    }
     // Platform navigation must short-circuit before ACP so SPA tools fire.
     if parse_platform_ux_intent(prompt).is_some() {
         return true;
@@ -1693,8 +1779,8 @@ Use body from repo fixtures when available: `fixtures/palace_contracts/<slug>.md
    - Link: docs/BANG_CONTRACT.md
 
 1b. **veil-contract-git-shaped-sessions** (Concept) + **veil-agent-git-shaped-coding** (Sop)
-   - Tools: session_status → create_branch → veil_check → one class → write → check → session_commit → merge_branch when landing
-   - Agent decides branch/commit/merge; autosave ≠ commit; change list ≠ error count
+   - Tools: session_status → create_branch → veil_check → one class → write → check (fix new diags same turn) → session_commit → create_change + submit_change
+   - Agent decides branch/commit; human merges after PR review. NEVER auto-merge. Autosave ≠ commit; change list ≠ error count
    - Fixture: fixtures/palace_contracts/veil-contract-git-shaped-sessions.md
 
 2. **veil-contract-dual-loop-smoke** (Concept)
@@ -1749,6 +1835,14 @@ fn parse_create_file(prompt: &str) -> Option<(String, String)> {
     let p = prompt.trim();
     let lower = p.to_lowercase();
 
+    // Never treat product create as create_file. Multi-step prompts like
+    // "create a new project called Agent Registry and …" used to match the
+    // loose "called X" branch, skip host_platform_prefix_steps, and fail with
+    // "project scope missing" on MultiProjectProvider.
+    if looks_like_create_project_prompt(&lower) {
+        return None;
+    }
+
     // Explicit: create/new [package|layer|file] <name>
     for prefix in [
         "create package ",
@@ -1785,8 +1879,14 @@ fn parse_create_file(prompt: &str) -> Option<(String, String)> {
     }
 
     // Looser: "make a new file called X" / "create a package named X"
+    // Require package/layer/file cue so "create … called …" alone is not enough.
     let called_markers = [" called ", " named ", " name "];
-    if lower.contains("create") || lower.contains("new file") || lower.contains("add file") {
+    let file_cue = lower.contains("package")
+        || lower.contains("layer")
+        || lower.contains("file")
+        || lower.contains(".veil")
+        || lower.contains(".layer");
+    if file_cue && (lower.contains("create") || lower.contains("new ") || lower.contains("add ")) {
         for m in called_markers {
             if let Some(idx) = lower.find(m) {
                 let after = &p[idx + m.len()..];
@@ -1811,6 +1911,22 @@ fn parse_create_file(prompt: &str) -> Option<(String, String)> {
     None
 }
 
+/// Product-level create (repo/project), not package/layer file create.
+fn looks_like_create_project_prompt(lower: &str) -> bool {
+    lower.contains("create_project")
+        || lower.contains("create_repo")
+        || lower.contains("create a project")
+        || lower.contains("create project")
+        || lower.contains("create a new project")
+        || lower.contains("create new project")
+        || lower.contains("new project")
+        || lower.contains("make a project")
+        || lower.contains("make a new project")
+        || lower.contains("scaffold a project")
+        || lower.contains("scaffold project")
+        || (lower.contains("bootstrap") && lower.contains("project"))
+}
+
 fn extract_name_token(original: &str, lower_token: &str) -> Option<String> {
     for w in original.split_whitespace() {
         let cleaned = w.trim_matches(|c: char| {
@@ -1821,6 +1937,45 @@ fn extract_name_token(original: &str, lower_token: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// True when the prompt is a short, primary platform-navigation request
+/// (AgentDock chips, "open changes", "create change request") — safe to
+/// short-circuit without the LLM.
+///
+/// False for multi-line coding / Fix-button prompts that merely *document*
+/// tool names in SOP text (must not steal the turn).
+fn is_primary_platform_nav_prompt(lower: &str) -> bool {
+    let lines = lower.lines().filter(|l| !l.trim().is_empty()).count();
+    // Long or multi-section prompts are agent work, not nav chips.
+    if lower.len() > 160 || lines > 3 {
+        return false;
+    }
+    // Diagnostics / git-shaped SOP keywords ⇒ coding turn, not pure nav.
+    const CODING_MARKERS: &[&str] = &[
+        "## issues",
+        "investigate and fix",
+        "fix this issue",
+        "fix these issues",
+        "fix all open issues",
+        "veil_check",
+        "session_commit",
+        "session_status",
+        "write_source",
+        "create_branch",
+        "submit_change",
+        "git-shaped",
+        "per-slice",
+        "rationales",
+        "hint:",
+        "[acs-",
+        "[ddd-",
+        "prefer minimal correct",
+    ];
+    if CODING_MARKERS.iter().any(|m| lower.contains(m)) {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1858,6 +2013,37 @@ mod platform_ux_tests {
     }
 
     #[test]
+    fn create_change_chip_still_maps() {
+        let ux = parse_platform_ux_intent("create change request").unwrap();
+        assert_eq!(ux.tool, "create_change");
+        let ux2 = parse_platform_ux_intent("create_change").unwrap();
+        assert_eq!(ux2.tool, "create_change");
+    }
+
+    /// Regression: Diagnostics "Fix" / formatIssuePrompt embeds `create_change`
+    /// in SOP text. Must NOT short-circuit to open empty /changes/new.
+    #[test]
+    fn fix_issue_prompt_does_not_false_trigger_create_change() {
+        let prompt = r#"Investigate and fix this issue on construct `Agent` in project `agent-registry`.
+
+Use IDE / project tools as needed (read source, apply edits, re-check). Prefer minimal correct fixes.
+After every edit: veil_check. Fix any new errors/warnings you introduced on this same turn.
+Git-shaped workflow (you decide branch/commit — do not ask the operator for every step):
+session_status → multi-step? create_branch → veil_check baseline → fix one class → write → veil_check → session_commit.
+When the task is complete: create_change (title + description with per-slice rationales) → submit_change.
+NEVER merge_branch or merge_change unless the operator explicitly asks to merge. Humans review via the PR Wizard.
+
+## Issues
+1. Warning [ACS-010] @ Agent: optional field should use bang
+   Hint: use field!: Type
+"#;
+        assert!(
+            parse_platform_ux_intent(prompt).is_none(),
+            "Fix-button prompt must reach ACP, not host create_change short-circuit"
+        );
+    }
+
+    #[test]
     fn multi_step_create_gets_host_prefix_tools() {
         let steps = host_platform_prefix_steps(
             "create project agent-registry and then design the full domain model with entities",
@@ -1889,5 +2075,51 @@ mod platform_ux_tests {
             name.contains("agent") && name.contains("registry"),
             "got name={name}"
         );
+    }
+
+    /// Regression: multi-step "create a new project called …" must NOT be
+    /// parsed as create_file (that path hits MultiProjectProvider without
+    /// CURRENT_PROJECT → "project scope missing").
+    #[test]
+    fn agent_registry_prompt_is_create_project_not_create_file() {
+        let prompt = r#"We need to create a new project called "Agent Registry". It will contain most of the domain model and functionality that is currently in "dashbot" crate in the dlx-core repository. Create the project and bring all that code/functionlity in to the veil."#;
+        assert!(
+            parse_create_file(prompt).is_none(),
+            "must not false-positive create_file"
+        );
+        assert!(
+            !is_structured_agent_command(prompt),
+            "must not short-circuit structured host create_file path"
+        );
+        assert!(
+            parse_platform_ux_intent(prompt).is_none(),
+            "multi-step create stays off simple UX short-circuit"
+        );
+        let steps = host_platform_prefix_steps(prompt);
+        let create = steps
+            .iter()
+            .find(|s| s.tool == "create_project")
+            .expect("host prefix must schedule create_project");
+        // Display name preserved; API derives slug agent-registry
+        assert_eq!(create.args["name"], "Agent Registry");
+        assert_eq!(create.args["via"], "server");
+        assert_eq!(slugify_project_name("Agent Registry"), "agent-registry");
+    }
+
+    #[test]
+    fn create_file_still_matches_package_named() {
+        let got = parse_create_file("create a package named Widget").unwrap();
+        assert_eq!(got.0.to_lowercase(), "widget");
+        assert_eq!(got.1, "package");
+    }
+
+    #[test]
+    fn quoted_multi_word_project_name() {
+        let name = extract_create_project_name(
+            r#"create a new project called "Agent Registry" and design domain"#,
+        )
+        .unwrap();
+        assert_eq!(name, "Agent Registry");
+        assert_eq!(slugify_project_name(&name), "agent-registry");
     }
 }

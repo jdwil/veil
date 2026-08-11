@@ -274,21 +274,30 @@ impl SourceProvider for MultiProjectProvider {
 
     async fn write_source(&self, file: &str, content: &str) -> Result<(), String> {
         self.session()?.write_source(file, content).await?;
-        // Bump durable session revision when a coding session is bound.
-        if let Some(sid) = crate::session::current_session_id() {
+        // Always record uncommitted revision — even when CURRENT_SESSION is unset
+        // (ACP MCP tools often only set CURRENT_PROJECT). Without this, IDE Changes
+        // shows empty and session_status.uncommitted stays false after write_source.
+        let path = if file.is_empty() {
+            self.session()?
+                .list_files()
+                .await
+                .into_iter()
+                .find(|f| f.active)
+                .map(|f| f.name)
+                .unwrap_or_else(|| "main.veil".into())
+        } else {
+            file.to_string()
+        };
+        let project = CURRENT_PROJECT.try_with(|n| n.clone()).ok();
+        if let Some(proj) = project {
+            crate::session::SessionManager::global().record_source_write(
+                &proj,
+                &path,
+                crate::session::current_session_id().as_deref(),
+            );
+        } else if let Some(sid) = crate::session::current_session_id() {
             if let Ok(h) = crate::session::SessionManager::global().attach(&sid) {
-                let path = if file.is_empty() {
-                    self.session()?
-                        .list_files()
-                        .await
-                        .into_iter()
-                        .find(|f| f.active)
-                        .map(|f| f.name)
-                        .unwrap_or_else(|| "active".into())
-                } else {
-                    file.to_string()
-                };
-                h.bump_revision(&path, None);
+                h.record_write(&path);
             }
         }
         Ok(())

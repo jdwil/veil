@@ -183,6 +183,21 @@ pub async fn create_file_in_project<P: SourceProvider + ?Sized>(
     let (filename, kind) = sanitize_new_file_name(name, kind_hint)
         .map_err(CreateFileError::BadRequest)?;
 
+    // Platform language packs (ddd, di, …) are read-only — fork under a new name.
+    if kind == FileKind::Layer {
+        let stem = Path::new(&filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if veil_ir::is_platform_layer_name(stem) {
+            return Err(CreateFileError::Forbidden(format!(
+                "refusing to create platform layer '{stem}.layer' in a product project — \
+                 platform packs are read-only (resolve from VEIL_LAYERS_DIR / platform catalog). \
+                 To customize, copy as e.g. 'acme-{stem}.layer' and `use acme-{stem}`."
+            )));
+        }
+    }
+
     let dir = if let Some(root) = state.project_root() {
         root
     } else {
@@ -259,6 +274,73 @@ pub async fn create_file_in_project<P: SourceProvider + ?Sized>(
     })
 }
 
+/// Detect accidental HTTP/tool envelopes written as source file bodies.
+///
+/// `ws_read` / platform `read_file` return JSON like `{"path":"main.veil","content":"pkg …"}`.
+/// Agents sometimes pass that entire JSON to `ws_write` / `write_source`, which produces
+/// `parse error at 0-1: expected Sol, got LBrace` on the next IDE `/ir` load.
+///
+/// Returns the inner `content` when the body is clearly that envelope; otherwise `None`.
+pub fn unwrap_tool_content_envelope(body: &str) -> Option<String> {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let obj = v.as_object()?;
+    // Allow only the keys used by read responses (not arbitrary JSON objects).
+    const ALLOWED: &[&str] = &["content", "path", "ok", "bytes", "repo"];
+    if obj.is_empty() || !obj.keys().all(|k| ALLOWED.contains(&k.as_str())) {
+        return None;
+    }
+    let inner = obj.get("content")?.as_str()?;
+    if inner.is_empty() {
+        return None;
+    }
+    // Nested JSON is not VEIL/layer source we want to unwrap further here.
+    let inner_trim = inner.trim_start();
+    if inner_trim.starts_with('{') {
+        return None;
+    }
+    // Prefer shapes that look like product source (not prose notes mistaken for envelopes).
+    let looks_like_source = inner_trim.starts_with("pkg ")
+        || inner_trim.starts_with('#')
+        || inner_trim.starts_with("name =")
+        || inner_trim.starts_with("use ")
+        || inner_trim.contains("\npkg ")
+        || inner_trim.contains("\n  use ");
+    if !looks_like_source {
+        // Still unwrap when a path field points at a known source extension.
+        let path = obj.get("path").and_then(|p| p.as_str()).unwrap_or("");
+        let lower = path.to_ascii_lowercase();
+        if !(lower.ends_with(".veil") || lower.ends_with(".layer") || lower.ends_with(".toml")) {
+            return None;
+        }
+    }
+    Some(inner.to_string())
+}
+
+/// Normalize a write/read body: unwrap tool envelopes when present.
+pub fn normalize_source_body(body: &str) -> String {
+    match unwrap_tool_content_envelope(body) {
+        Some(inner) => {
+            tracing::warn!(
+                outer_bytes = body.len(),
+                inner_bytes = inner.len(),
+                "unwrapped accidental {{content,path}} tool envelope from source body"
+            );
+            inner
+        }
+        None => body.to_string(),
+    }
+}
+
+/// True when `rel` is a VEIL product source path that should reject/unwrap envelopes.
+pub fn is_veil_source_rel(rel: &str) -> bool {
+    let lower = rel.to_ascii_lowercase();
+    lower.ends_with(".veil") || lower.ends_with(".layer") || lower.ends_with("veil.toml")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +370,26 @@ mod tests {
         let (n, k) = sanitize_new_file_name("x.layer", Some("package")).unwrap();
         assert_eq!(n, "x.layer");
         assert!(matches!(k, FileKind::Layer));
+    }
+
+    #[test]
+    fn unwraps_ws_read_envelope() {
+        let envelope = r#"{"path":"main.veil","content":"pkg AgentRegistry\n  use ddd\n"}"#;
+        let inner = unwrap_tool_content_envelope(envelope).expect("unwrap");
+        assert!(inner.starts_with("pkg AgentRegistry"));
+        assert!(!inner.starts_with('{'));
+    }
+
+    #[test]
+    fn leaves_raw_veil_alone() {
+        let src = "pkg Foo\n  use ddd\n";
+        assert!(unwrap_tool_content_envelope(src).is_none());
+        assert_eq!(normalize_source_body(src), src);
+    }
+
+    #[test]
+    fn ignores_unrelated_json() {
+        let j = r#"{"nodes":[{"id":1}],"edges":[]}"#;
+        assert!(unwrap_tool_content_envelope(j).is_none());
     }
 }

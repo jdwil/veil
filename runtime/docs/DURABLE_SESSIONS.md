@@ -76,10 +76,13 @@ All path-jailed to the session workdir. Prefer structured VEIL tools for package
 | `create_branch` | Isolated feature branch (`branch_name`); becomes active work line |
 | `session_commit` | Named checkpoint with message |
 | `list_commits` | Commit log for the session |
-| `merge_branch` | Promote working tree to product base (main) |
+| `merge_branch` | **Blocked by default** — use PR Wizard. Requires `force:true` + `VEIL_ALLOW_SESSION_MERGE=1` |
 | `switch_main` | Return active work line to sticky mainline |
+| `POST /api/sessions/{id}/publish-branch` | Sync worktree → `repos/{repo}/{branch}/` for CR structural diff |
+| `POST /api/sessions/{id}/active-change` | Bind open PR id for agent reply writeback |
 
-Agent loop: status → branch (if multi-step) → check → edit → check → commit → … → merge when ready.
+Agent loop: status → branch (if multi-step) → check → edit → check (fix new diags same turn) → commit → … → **create_change + submit_change** when done (host publishes session to PR branch).  
+**Never session-merge to main.** Humans review in the IDE **PR Wizard** then Merge. Agent replies append to PR history when `active_change_id` is set.  
 The process remembers the **active work line** per project so subsequent MCP calls without a session header still hit the feature branch.
 
 ## Env
@@ -108,6 +111,7 @@ Merge syncs the workdir to `repos/{repo_id}/{base_branch}/` (default `main`).
 - IDE top bar **SessionStatus** chip: Synced / Saving / Saved / Conflict
 - Agent dock shows session slug · revision when status API reports open handles
 - Sticky default session per user+slug (server `.sticky/` + DDB list) avoids creating a new session every page load
+- **Identity:** product slug and repo UUID are the same project. Sticky is dual-written (`agent-registry.session` + `{uuid}.session` → one session_id) so `/projects/{uuid}/ide` and agent scope on the slug share one workdir. `write_source` bumps `revision` / `dirty` (Uncommitted) and rematerializes peer mainline workdirs for that repo.
 - Response headers on durable writes: `X-Veil-Session-Id`, `X-Veil-Revision`, `X-Veil-Etag`
 - Idle in-memory handle reaper every 5m (`VEIL_SESSION_TTL_SECS`, default 86400)
 

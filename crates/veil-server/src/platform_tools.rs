@@ -224,13 +224,15 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 // Default server for ACP/MCP mid-turn safety (follow-on write_source).
                 crate::focus::DomainMode::Server
             };
+            // Path/id segment is always the slug; display name may contain spaces.
+            let path_slug = crate::project_layout::slugify_name(&name);
 
             // ── UX path: no domain yet — Present commits via /api/ux/create_project ──
             if domain_mode == crate::focus::DomainMode::Ux {
                 let path = if open_ide {
-                    format!("/projects/{name}/ide")
+                    format!("/projects/{path_slug}/ide")
                 } else if open {
-                    format!("/projects/{name}")
+                    format!("/projects/{path_slug}")
                 } else {
                     "/projects".to_string()
                 };
@@ -261,12 +263,13 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 return Ok(json!({
                     "ok": true,
                     "summary": format!(
-                        "Scheduled create_project `{name}` — UX will Present form then commit (Agent→UX→Server). Do not re-create. Wait for Present to finish before write_source."
+                        "Scheduled create_project `{name}` (slug `{path_slug}`) — UX will Present form then commit (Agent→UX→Server). Do not re-create. Wait for Present to finish before write_source."
                     ),
-                    "slug": name,
+                    "name": name,
+                    "slug": path_slug,
                     "pending_ux": true,
                     "intent_id": intent_id,
-                    "navigation": { "action": if open_ide { "open-ide" } else { "goto" }, "path": path, "project": name },
+                    "navigation": { "action": if open_ide { "open-ide" } else { "goto" }, "path": path, "project": path_slug },
                     "intent": intent,
                     "execution": {
                         "domain": "ux",
@@ -376,10 +379,14 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 })
                 .to_string());
             }
+            let slug = crate::project_layout::slugify_name(&project);
+            // Bind ACP + session + S3 rematerialize so follow-on list_files/write_source work.
+            // (MCP layer also re-binds hub provider when available.)
+            let bind = crate::agent_scope::prepare_project(&slug, None);
             let path = if tool_name == "open_ide" {
-                format!("/projects/{project}/ide")
+                format!("/projects/{slug}/ide")
             } else {
-                format!("/projects/{project}")
+                format!("/projects/{slug}")
             };
             let action = if tool_name == "open_ide" {
                 "open-ide"
@@ -388,20 +395,40 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             } else {
                 "goto"
             };
-            let summary = if tool_name == "open_ide" {
-                format!("Open {project} in IDE (in-shell embed)")
-            } else {
-                format!("Open project {project}")
+            let (summary, file_count) = match &bind {
+                Ok(info) => {
+                    let n = info
+                        .get("file_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    (
+                        format!(
+                            "Open {slug} in IDE — bound session, {n} file(s) on disk/S3"
+                        ),
+                        n,
+                    )
+                }
+                Err(e) => (
+                    format!("Open {slug} (nav only; bind failed: {e})"),
+                    0u64,
+                ),
             };
-            let intent = crate::focus::navigate_intent(&path, Some(&project));
-            Ok(json!({
+            let intent = crate::focus::navigate_intent(&path, Some(&slug));
+            let mut out = json!({
                 "ok": true,
                 "summary": summary,
-                "navigation": { "action": action, "path": path, "project": project },
+                "slug": slug,
+                "project": slug,
+                "file_count": file_count,
+                "navigation": { "action": action, "path": path, "project": slug },
                 "intent": intent,
                 "execution": { "domain": "none", "present": "goto" }
-            })
-            .to_string())
+            });
+            if let Ok(info) = bind {
+                out["session"] = info;
+                out["bound"] = json!(true);
+            }
+            Ok(out.to_string())
         }
 
         // ─── SDLC / Change requests ───────────────────────────────────────
@@ -483,14 +510,75 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     .to_string());
                 }
 
+                // Prefer coding-session branch when agent omits source_branch.
+                let source_branch = arg_str(arguments, &["source_branch", "branch"]).or_else(|| {
+                    let slug = project.as_deref().unwrap_or("");
+                    if slug.is_empty() {
+                        return None;
+                    }
+                    crate::session::SessionManager::global()
+                        .resolve_for_project(slug)
+                        .ok()
+                        .and_then(|h| {
+                            let m = h.snapshot_meta();
+                            m.branch_name.clone().or_else(|| {
+                                if m.draft_mode {
+                                    Some("work".into())
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                });
+                let mut desc = description.clone().unwrap_or_default();
+                if let Some(slug) = &project {
+                    if !desc.to_lowercase().contains("project:") {
+                        desc = format!("project: {slug}\n\n{desc}");
+                    }
+                }
+                // Inject agent rationales from edit/write_source cache for PR Wizard.
+                let rats = crate::api::snapshot_rationales();
+                if !rats.is_empty() {
+                    desc.push_str("\n\n## Rationales\n");
+                    for (name, intent) in rats.iter().take(40) {
+                        if name == "*" {
+                            desc.push_str(&format!("- **package**: {intent}\n"));
+                        } else {
+                            desc.push_str(&format!("- **{name}**: {intent}\n"));
+                        }
+                    }
+                }
+                // Attach recent commits so PR Wizard has rationales/history.
+                if let Some(ref slug) = project {
+                    if let Ok(h) = crate::session::SessionManager::global().resolve_for_project(slug)
+                    {
+                        if let Ok(commits) =
+                            crate::session::list_session_commits(&h.session_id())
+                        {
+                            if !commits.is_empty() {
+                                desc.push_str("\n\n## Commits\n");
+                                for c in commits.iter().take(20) {
+                                    desc.push_str(&format!("- {}\n", c.message));
+                                }
+                            }
+                        }
+                    }
+                }
+                let jira = arg_str(arguments, &["jira_ticket", "jira"]).unwrap_or_else(|| {
+                    let secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    format!("VEIL-{secs}")
+                });
                 let body = json!({
                     "title": title,
-                    "description": description.clone().unwrap_or_default(),
+                    "description": desc,
                     "repo_id": arg_str(arguments, &["repo_id", "repo"]),
                     "slug": project.clone(),
-                    "jira_ticket": arg_str(arguments, &["jira_ticket", "jira"]).unwrap_or_default(),
-                    "author": arg_str(arguments, &["author"]).unwrap_or_default(),
-                    "source_branch": arg_str(arguments, &["source_branch", "branch"]),
+                    "jira_ticket": jira,
+                    "author": arg_str(arguments, &["author"]).unwrap_or_else(|| "agent".into()),
+                    "source_branch": source_branch,
                 });
                 let (status, data) =
                     http_json("POST", "/api/change_requests", Some(body)).await?;
@@ -500,6 +588,32 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                // Publish session worktree onto PR source_branch so structural diff sees edits.
+                let mut publish = json!(null);
+                if ok_status(status) && !cr_id.is_empty() {
+                    if let (Some(slug), Some(branch)) = (project.as_deref(), source_branch.as_deref())
+                    {
+                        match crate::pr_writeback::publish_session_for_change(slug, branch, &cr_id)
+                        {
+                            Ok(v) => publish = v,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "publish session for PR failed");
+                                publish = json!({ "ok": false, "error": e });
+                            }
+                        }
+                    } else if let Some(slug) = project.as_deref() {
+                        // Fallback branch name from CR payload
+                        let branch = data
+                            .pointer("/change_request/source_branch")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("work");
+                        match crate::pr_writeback::publish_session_for_change(slug, branch, &cr_id)
+                        {
+                            Ok(v) => publish = v,
+                            Err(e) => publish = json!({ "ok": false, "error": e }),
+                        }
+                    }
+                }
                 let path = if cr_id.is_empty() {
                     "/changes".to_string()
                 } else {
@@ -525,7 +639,121 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "ok": ok_status(status),
                     "http_status": status,
                     "summary": if ok_status(status) {
-                        format!("Created change request: {title}")
+                        format!(
+                            "Created change request: {title}. Session published for PR Wizard review. Call submit_change next — do NOT merge."
+                        )
+                    } else {
+                        format!("create_change failed (HTTP {status})")
+                    },
+                    "change_request": data,
+                    "publish": publish,
+                    "navigation": { "action": "goto", "path": path },
+                    "intent": intent,
+                    "execution": {
+                        "domain": "server",
+                        "present": if ok_status(status) { "illustrate" } else { "none" }
+                    }
+                })
+                .to_string())
+            } else {
+                // Agent often omits title — synthesize so Present can fill the form
+                // and we still create a real CR (empty /changes/new + bare submit_change
+                // left operators on a blank form and reported "fixed" with no PR).
+                let project = arg_str(arguments, &["slug", "project", "repo", "repo_id"]);
+                let branch = arg_str(arguments, &["source_branch", "branch"]).or_else(|| {
+                    let slug = project.as_deref().unwrap_or("");
+                    if slug.is_empty() {
+                        return None;
+                    }
+                    crate::session::SessionManager::global()
+                        .resolve_for_project(slug)
+                        .ok()
+                        .and_then(|h| {
+                            let m = h.snapshot_meta();
+                            m.branch_name.clone().or_else(|| {
+                                let b = m.branch.clone();
+                                if b.is_empty() {
+                                    None
+                                } else {
+                                    Some(b)
+                                }
+                            })
+                        })
+                });
+                let title = branch
+                    .as_deref()
+                    .filter(|b| !b.is_empty() && *b != "main" && *b != "master")
+                    .map(|b| format!("Agent: {b}"))
+                    .unwrap_or_else(|| "Agent coding changes".to_string());
+                let mut desc = arg_str(arguments, &["description", "body"]).unwrap_or_default();
+                if let Some(slug) = &project {
+                    if !desc.to_lowercase().contains("project:") {
+                        desc = format!("project: {slug}\n\n{desc}");
+                    }
+                }
+                let rats = crate::api::snapshot_rationales();
+                if !rats.is_empty() {
+                    desc.push_str("\n\n## Rationales\n");
+                    for (name, intent) in rats.iter().take(40) {
+                        if name == "*" {
+                            desc.push_str(&format!("- **package**: {intent}\n"));
+                        } else {
+                            desc.push_str(&format!("- **{name}**: {intent}\n"));
+                        }
+                    }
+                }
+                if let Some(ref slug) = project {
+                    if let Ok(h) = crate::session::SessionManager::global().resolve_for_project(slug)
+                    {
+                        if let Ok(commits) =
+                            crate::session::list_session_commits(&h.session_id())
+                        {
+                            if !commits.is_empty() {
+                                desc.push_str("\n\n## Commits\n");
+                                for c in commits.iter().take(20) {
+                                    desc.push_str(&format!("- {}\n", c.message));
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut body = json!({
+                    "title": title,
+                    "description": desc,
+                    "author": "agent",
+                });
+                if let Some(b) = &branch {
+                    body["source_branch"] = json!(b);
+                }
+                if let Some(slug) = &project {
+                    body["project"] = json!(slug);
+                    body["slug"] = json!(slug);
+                }
+                let (status, data) =
+                    http_json("POST", "/api/change_requests", Some(body)).await?;
+                let path = if ok_status(status) {
+                    data.get("change_request")
+                        .and_then(|c| c.get("id"))
+                        .and_then(|id| id.as_str())
+                        .map(|id| format!("/changes/{id}"))
+                        .unwrap_or_else(|| "/changes".into())
+                } else {
+                    "/changes/new".into()
+                };
+                let intent = crate::focus::create_change_intent(
+                    Some(&title),
+                    Some(&desc),
+                    project.as_deref(),
+                    &path,
+                    crate::focus::DomainMode::Server,
+                );
+                Ok(json!({
+                    "ok": ok_status(status),
+                    "http_status": status,
+                    "summary": if ok_status(status) {
+                        format!(
+                            "Created change request (synthesized title `{title}` — pass title next time). Call submit_change next — do NOT merge."
+                        )
                     } else {
                         format!("create_change failed (HTTP {status})")
                     },
@@ -536,22 +764,6 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         "domain": "server",
                         "present": if ok_status(status) { "illustrate" } else { "none" }
                     }
-                })
-                .to_string())
-            } else {
-                let intent = crate::focus::create_change_intent(
-                    None,
-                    None,
-                    arg_str(arguments, &["slug", "project"]).as_deref(),
-                    "/changes/new",
-                    crate::focus::DomainMode::Ux,
-                );
-                Ok(json!({
-                    "ok": true,
-                    "summary": "Open create change request form",
-                    "navigation": { "action": "goto", "path": "/changes/new" },
-                    "intent": intent,
-                    "execution": { "domain": "none", "present": "goto" }
                 })
                 .to_string())
             }
@@ -576,13 +788,44 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "submit_change" => {
             let id = arg_str(arguments, &["id", "change_id"])
                 .ok_or_else(|| "submit_change requires id".to_string())?;
+            // Re-publish latest session tree before review so PR Wizard is current.
+            let mut publish = json!(null);
+            if let Some(slug) = arg_str(arguments, &["slug", "project"]).or_else(|| {
+                crate::provider::hub::CURRENT_PROJECT
+                    .try_with(|n| n.clone())
+                    .ok()
+            }) {
+                if let Ok(h) = crate::session::SessionManager::global().resolve_for_project(&slug) {
+                    let m = h.snapshot_meta();
+                    let branch = m
+                        .branch_name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| {
+                            if m.draft_mode {
+                                "work".into()
+                            } else {
+                                "work".into()
+                            }
+                        });
+                    match crate::pr_writeback::publish_session_for_change(&slug, &branch, &id) {
+                        Ok(v) => publish = v,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "submit_change re-publish failed");
+                            let _ = h.set_active_change_id(Some(&id));
+                        }
+                    }
+                }
+            }
             let (status, data) = http_json(
                 "POST",
                 &format!("/api/change_requests/{}/submit", urlencoding_path(&id)),
                 Some(json!({})),
             )
             .await?;
-            let summary = format!("Submitted change {id} for review");
+            let summary = format!(
+                "Submitted change {id} for review — open IDE PR Wizard (Review). Do not merge_branch."
+            );
             let intent = crate::focus::change_action_intent("submit", &id, &summary);
             crate::focus::register_pending_intent(
                 intent.get("id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -593,6 +836,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
+                "publish": publish,
                 "navigation": { "action": "goto", "path": format!("/changes/{id}") },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
@@ -1026,7 +1270,37 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             let sid = crate::session::CURRENT_SESSION
                 .try_with(|s| s.clone())
                 .ok();
-            Ok(crate::focus::context_tool_json(sid.as_deref()).to_string())
+            let mut ctx = crate::focus::context_tool_json(sid.as_deref());
+            // Enrich with live ACP / task-local project so agent never confuses
+            // "UI focus not published" with "no product exists".
+            let live_proj = crate::provider::hub::CURRENT_PROJECT
+                .try_with(|n| n.clone())
+                .ok()
+                .or_else(crate::acp::get_acp_project);
+            if let Some(slug) = live_proj {
+                ctx["live_project"] = json!(slug);
+                ctx["ok"] = json!(true);
+                if ctx.get("focus").and_then(|f| f.as_object()).is_none()
+                    || ctx
+                        .pointer("/focus/project")
+                        .and_then(|p| p.as_str())
+                        .filter(|s| !s.is_empty())
+                        .is_none()
+                {
+                    ctx["focus"] = json!({
+                        "project": slug,
+                        "route": format!("/projects/{slug}/ide"),
+                        "source": "server_scope",
+                    });
+                    ctx["summary"] = json!(format!(
+                        "Project `{slug}` is bound server-side (ACP/task scope). Use list_files / read_source."
+                    ));
+                }
+                ctx["hint"] = json!(
+                    "live_project is authoritative for coding tools. If focus.project was empty, still use live_project."
+                );
+            }
+            Ok(ctx.to_string())
         }
 
         "wait_intent_ack" => {
@@ -1085,6 +1359,12 @@ fn chrono_ms() -> u64 {
 }
 
 /// Domain create (POST /api/repos + S3 scaffold, disk fallback). Shared by tool + `/api/ux/create_project`.
+///
+/// `name` is the **display name** (e.g. `"Agent Registry"`). Storage derives
+/// `slug = name.to_lowercase().replace(' ', '-')` → `agent-registry`.
+///
+/// **Idempotent:** if a repo with the same slug already exists, returns that
+/// project (ok: true, existing: true) instead of creating a duplicate.
 pub async fn create_project_domain(name: &str, description: Option<&str>) -> Result<Value, String> {
     use crate::provider::s3_workspace::{
         allow_disk_project_create, ide_source_mode, seed_new_repo_scaffold, IdeSourceMode,
@@ -1092,6 +1372,51 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
 
     let mode = ide_source_mode();
     let remote_only = matches!(mode, IdeSourceMode::S3);
+    let want_slug = crate::project_layout::slugify_name(name);
+
+    // Idempotent: reuse existing product with same slug
+    if let Ok((st, list)) = http_json("GET", "/api/repos", None).await {
+        if ok_status(st) {
+            let items = list
+                .as_array()
+                .cloned()
+                .or_else(|| list.get("repos").and_then(|r| r.as_array()).cloned())
+                .unwrap_or_default();
+            for repo in items {
+                let slug = repo
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if slug == want_slug || crate::project_layout::slugify_name(
+                    repo.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                ) == want_slug
+                {
+                    let bind = crate::agent_scope::prepare_project(&want_slug, None).ok();
+                    return Ok(json!({
+                        "ok": true,
+                        "existing": true,
+                        "summary": format!(
+                            "Project `{want_slug}` already exists — reusing (not creating a duplicate)"
+                        ),
+                        "http_status": 200,
+                        "project": repo,
+                        "name": repo.get("name").cloned().unwrap_or(json!(name)),
+                        "slug": want_slug,
+                        "source_mode": match mode {
+                            IdeSourceMode::S3 => "s3",
+                            IdeSourceMode::PreferS3 => "prefer_s3",
+                            IdeSourceMode::Disk => "disk",
+                        },
+                        "session": bind,
+                        "hint": "Continue with open_ide / write_source / read_source — do NOT create_project again.",
+                    }));
+                }
+            }
+        }
+    }
+
+    // Keep human title for DDB `name`; slug is derived server-side.
     let body = json!({
         "name": name,
         "description": description,
@@ -1102,6 +1427,7 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
 
     let mut scaffold: Option<Value> = None;
     let mut scaffold_err: Option<String> = None;
+    let mut rebound_session: Option<Value> = None;
     if ok_status(status) {
         let repo_id = data
             .pointer("/id/value")
@@ -1110,18 +1436,39 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
             .map(|s| s.to_string());
         let slug_for_seed = data
             .get("slug")
-            .or_else(|| data.get("name"))
             .and_then(|v| v.as_str())
-            .unwrap_or(name)
-            .to_string();
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| crate::project_layout::slugify_name(name));
         if let Some(rid) = repo_id {
-            match seed_new_repo_scaffold(&rid, &slug_for_seed) {
+            // Seed with slug (filesystem-safe); MISSION title still gets display name via scaffold.
+            match seed_new_repo_scaffold(&rid, name) {
                 Ok(files) => {
                     scaffold = Some(json!({
-                        "repo_id": rid,
+                        "repo_id": rid.clone(),
                         "files": files,
                         "store": "s3",
                     }));
+                    // Drop orphan same-slug sessions (wrong repo_id) and open mainline.
+                    if crate::session::sessions_enabled() {
+                        match crate::session::SessionManager::global()
+                            .rebind_after_repo_create(&slug_for_seed)
+                        {
+                            Ok(h) => {
+                                rebound_session = Some(json!({
+                                    "session_id": h.session_id(),
+                                    "repo_id": h.snapshot_meta().repo_id,
+                                    "slug": slug_for_seed,
+                                }));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    slug = %slug_for_seed,
+                                    error = %e,
+                                    "rebind_after_repo_create failed"
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     scaffold_err = Some(e);
@@ -1179,8 +1526,11 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
 
     let slug = data
         .get("slug")
-        .or_else(|| data.get("name"))
-        .or_else(|| data.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| crate::project_layout::slugify_name(name));
+    let display_name = data
+        .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or(name)
         .to_string();
@@ -1195,19 +1545,23 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
         "ok": ok_status(status),
         "summary": if ok_status(status) {
             if scaffold.is_some() {
-                format!("Created remote project `{slug}` (DDB + S3 scaffold)")
+                format!(
+                    "Created remote project `{display_name}` (slug `{slug}`, DDB + S3 scaffold)"
+                )
             } else {
-                format!("Created project `{slug}`")
+                format!("Created project `{display_name}` (slug `{slug}`)")
             }
         } else {
             format!("create_project failed for `{name}` (HTTP {status})")
         },
         "http_status": status,
         "project": data,
+        "name": display_name,
         "slug": slug,
         "source_mode": source_mode,
         "scaffold": scaffold,
         "scaffold_error": scaffold_err,
+        "session": rebound_session,
     }))
 }
 
@@ -1314,7 +1668,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "create_change",
-            "description": "Create a change request (POST /api/change_requests) when title is provided; otherwise opens /changes/new form. Prefer passing title+description for agent-driven SDLC.",
+            "description": "Open a PR / change request for human review (POST /api/change_requests). Default end of agent coding work — prefer this over merge_branch. Pass title + description with per-slice ## headings and rationales for the PR Wizard. Host attaches session commits + project slug. Then call submit_change. Operator reviews in IDE PR Wizard (not auto-merge).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1340,7 +1694,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "submit_change",
-            "description": "Submit a change request for review.",
+            "description": "Submit a change request for human review (PR Wizard). Call after create_change when agent work is ready for the operator — not after auto-merge.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
@@ -1349,7 +1703,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "approve_change",
-            "description": "Approve a change request.",
+            "description": "Approve a change request. Human review action — agents use only when the operator explicitly requests approval.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1375,7 +1729,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "merge_change",
-            "description": "Merge an approved change request.",
+            "description": "Merge an approved change request. OPERATOR GATE — agents must not call this unless the human explicitly asks to merge after review.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

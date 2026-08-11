@@ -299,11 +299,17 @@ impl WorkspaceFs for WorkspaceFsImpl {
         content: &str,
         if_match: Option<&str>,
     ) -> Result<WriteResult, String> {
+        // Guard: agents sometimes write the full `ws_read` JSON envelope as the file body.
+        let content = if crate::file_ops::is_veil_source_rel(rel) {
+            crate::file_ops::normalize_source_body(content)
+        } else {
+            content.to_string()
+        };
         let abs = path_jail(&self.root, rel)?;
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
         }
-        std::fs::write(&abs, content).map_err(|e| format!("write: {e}"))?;
+        std::fs::write(&abs, &content).map_err(|e| format!("write: {e}"))?;
         let etag = self.put_s3(rel, &abs, if_match)?;
         Ok(WriteResult {
             path: rel.to_string(),

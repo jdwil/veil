@@ -34,6 +34,7 @@ pub mod devloop;
 pub mod devloop_api;
 pub mod agent_runtime_tools;
 pub mod platform_tools;
+pub mod agent_scope;
 pub mod focus;
 pub mod layer_edit;
 pub mod project_layout;
@@ -42,7 +43,9 @@ pub mod product_host;
 pub mod chat_log;
 pub mod session;
 pub mod session_api;
+pub mod pr_writeback;
 pub mod stub_ops;
+pub mod layer_ops;
 
 pub use provider::{FileInfo, FileKind, SourceProvider};
 pub use provider::filesystem::FilesystemProvider;

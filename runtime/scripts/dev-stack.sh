@@ -27,6 +27,8 @@ export VEIL_S3_BUCKET="${VEIL_S3_BUCKET:-$BUCKET}"
 # Override with VEIL_SOURCE_MODE=prefer_s3|disk only when intentionally testing hybrid/local.
 export VEIL_SOURCE_MODE="${VEIL_SOURCE_MODE:-s3}"
 export VEIL_SOURCE_BRANCH="${VEIL_SOURCE_BRANCH:-main}"
+# Platform language packs (ddd, di, …) — monorepo layers/ for local; also seedable to S3+DDB.
+export VEIL_LAYERS_DIR="${VEIL_LAYERS_DIR:-$ROOT/layers}"
 # Durable coding sessions (session workdirs + DDB META + agent turns).
 export VEIL_SESSIONS="${VEIL_SESSIONS:-1}"
 export VEIL_WS_ROOT="${VEIL_WS_ROOT:-${TMPDIR:-/tmp}/veil-ws}"
@@ -43,7 +45,9 @@ export VEIL_VIEWER_STATIC="${VEIL_VIEWER_STATIC:-$ROOT/runtime/bootstrap/static/
 export VEIL_MODEL_PROVIDER="${VEIL_MODEL_PROVIDER:-acp}"
 export VEIL_ACP_COMMAND="${VEIL_ACP_COMMAND:-kiro-cli}"
 export VEIL_ACP_ARGS="${VEIL_ACP_ARGS:-acp --trust-all-tools}"
-export VEIL_ACP_AGENT="${VEIL_ACP_AGENT:-hive}"
+# Dedicated agent with mind-palace + jira + veil-ide-tools (see runtime/config/kiro-agent-veil.json).
+# Does not modify hive.json — install as ~/.kiro/agents/veil.json
+export VEIL_ACP_AGENT="${VEIL_ACP_AGENT:-veil}"
 export VEIL_ACP_CWD="${VEIL_ACP_CWD:-$ROOT}"
 export VEIL_RUNTIME_PROXY="${VEIL_RUNTIME_PROXY:-http://127.0.0.1:$BACKEND_PORT}"
 

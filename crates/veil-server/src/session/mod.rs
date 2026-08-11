@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::provider::s3_workspace::{
-    ide_source_mode, materialize_repo, resolve_repo_id, IdeSourceMode, S3WorkspaceProvider,
+    ide_source_mode, materialize_repo, resolve_project_identity, resolve_repo_id, IdeSourceMode,
+    ProjectIdentity, S3WorkspaceProvider,
 };
 use uuid::Uuid;
 
@@ -128,7 +129,10 @@ impl SessionManager {
                     base.clone()
                 }
             });
-        let repo_id = resolve_repo_id(slug)?;
+        // Always store product slug (not raw UUID from /projects/{id}/ide).
+        let ident = resolve_project_identity(slug)?;
+        let slug = ident.slug.as_str();
+        let repo_id = ident.repo_id.clone();
         let work_dir = session_work_dir(&user_id, &session_id, slug);
         let work_prefix = if draft_mode {
             format!("repos/{repo_id}/drafts/{session_id}/")
@@ -163,13 +167,15 @@ impl SessionManager {
             agent_thread_id: None,
             last_focus: None,
             intent_log: vec![],
+            active_change_id: None,
         };
         put_session_meta(&meta)?;
         write_session_marker(&work_dir, &meta)?;
 
-        // Sticky only for mainline sessions — feature branches are explicit
+        // Sticky only for mainline sessions — feature branches are explicit.
+        // Dual-write product slug + repo_id so UUID and slug routes share one session.
         if !draft_mode {
-            write_sticky_session(&user_id, slug, &session_id);
+            write_sticky_aliases(&user_id, &ident, &session_id);
         }
         let handle = Arc::new(SessionHandle::open(meta, work_dir)?);
         self.handles
@@ -178,7 +184,7 @@ impl SessionManager {
             .insert(session_id.clone(), handle.clone());
         // Feature branches become the active work line for this project immediately
         if draft_mode {
-            self.set_active_for_project(slug, &session_id);
+            self.set_active_for_identity(&ident, &session_id);
         }
         Ok(handle)
     }
@@ -189,6 +195,34 @@ impl SessionManager {
             .lock()
             .unwrap()
             .insert(slug.to_string(), session_id.to_string());
+        // Dual-key when we can resolve identity (best-effort; no AWS fail path).
+        if let Ok(ident) = resolve_project_identity(slug) {
+            if ident.repo_id != ident.slug {
+                self.active_by_project
+                    .lock()
+                    .unwrap()
+                    .insert(ident.repo_id.clone(), session_id.to_string());
+            }
+            if ident.slug != slug {
+                self.active_by_project
+                    .lock()
+                    .unwrap()
+                    .insert(ident.slug, session_id.to_string());
+            }
+        }
+    }
+
+    fn set_active_for_identity(&self, ident: &ProjectIdentity, session_id: &str) {
+        self.active_by_project
+            .lock()
+            .unwrap()
+            .insert(ident.slug.clone(), session_id.to_string());
+        if ident.repo_id != ident.slug {
+            self.active_by_project
+                .lock()
+                .unwrap()
+                .insert(ident.repo_id.clone(), session_id.to_string());
+        }
     }
 
     /// Preferred session for a project (feature branch or explicit switch), if any.
@@ -208,10 +242,19 @@ impl SessionManager {
     /// Resolve the coding session for a project when no header was provided:
     /// active_by_project → sticky mainline default.
     pub fn resolve_for_project(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
-        if let Some(sid) = self.active_for_project(slug) {
-            if let Ok(h) = self.attach(&sid) {
-                if h.slug() == slug {
-                    return Ok(h);
+        let ident = resolve_project_identity(slug).ok();
+        let keys = identity_keys(slug, ident.as_ref());
+        for key in &keys {
+            if let Some(sid) = self.active_for_project(key) {
+                if let Ok(h) = self.attach(&sid) {
+                    if session_matches_current_repo(&h, slug) {
+                        if let Some(ref id) = ident {
+                            self.set_active_for_identity(id, &h.session_id());
+                        }
+                        return Ok(h);
+                    }
+                    // Stale active (e.g. orphan repo_id after re-create) — drop preference
+                    self.clear_active_for_project(key);
                 }
             }
         }
@@ -222,28 +265,75 @@ impl SessionManager {
     /// feature-branch active preference and open draft handles.
     pub fn open_mainline(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
         let user = current_user_id();
-        self.clear_active_for_project(slug);
-        // Local sticky pointer
-        if let Some(sid) = read_sticky_session(&user, slug) {
-            if let Ok(h) = self.attach(&sid) {
-                if h.slug() == slug && !h.snapshot_meta().draft_mode {
-                    self.set_active_for_project(slug, &h.session_id());
-                    return Ok(h);
+        let ident = resolve_project_identity(slug)?;
+        for key in identity_keys(slug, Some(&ident)) {
+            self.clear_active_for_project(&key);
+        }
+        // Local sticky pointer (product slug **or** repo UUID alias)
+        for key in identity_keys(slug, Some(&ident)) {
+            if let Some(sid) = read_sticky_session(&user, &key) {
+                if let Ok(h) = self.attach(&sid) {
+                    if !h.snapshot_meta().draft_mode && session_matches_current_repo(&h, slug) {
+                        write_sticky_aliases(&user, &ident, &h.session_id());
+                        self.set_active_for_identity(&ident, &h.session_id());
+                        return Ok(h);
+                    }
+                    // Wrong repo (re-created project) — clear sticky
+                    clear_sticky_session(&user, &key);
                 }
             }
         }
-        // DDB recent non-draft
+        // DDB recent non-draft for **current** repo only (match by repo_id, not string slug)
         if let Ok(list) = list_sessions_for_user(&user) {
-            if let Some(m) = list.into_iter().find(|m| m.slug == slug && !m.draft_mode) {
+            if let Some(m) = list.into_iter().find(|m| {
+                !m.draft_mode && m.repo_id == ident.repo_id
+            }) {
                 let h = self.attach(&m.session_id)?;
-                write_sticky_session(&user, slug, &m.session_id);
-                self.set_active_for_project(slug, &h.session_id());
+                write_sticky_aliases(&user, &ident, &m.session_id);
+                self.set_active_for_identity(&ident, &h.session_id());
                 return Ok(h);
             }
         }
-        let h = self.create(slug, None)?;
-        write_sticky_session(&user, slug, &h.session_id());
-        self.set_active_for_project(slug, &h.session_id());
+        let h = self.create(&ident.slug, None)?;
+        write_sticky_aliases(&user, &ident, &h.session_id());
+        self.set_active_for_identity(&ident, &h.session_id());
+        Ok(h)
+    }
+
+    /// After `create_project`, drop sessions/sticky that point at a **different**
+    /// repo_id for this slug (orphan from a prior same-slug product) and open a
+    /// fresh mainline session on the current DDB repo.
+    pub fn rebind_after_repo_create(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
+        let ident = resolve_project_identity(slug)?;
+        let want = ident.repo_id.clone();
+        let user = current_user_id();
+        for key in identity_keys(slug, Some(&ident)) {
+            self.clear_active_for_project(&key);
+            clear_sticky_session(&user, &key);
+        }
+        // Drop process handles that claim this product slug but wrong repo_id
+        {
+            let mut map = self.handles.lock().unwrap();
+            map.retain(|_, h| {
+                let m = h.meta.lock().unwrap();
+                let claims_product =
+                    m.slug == ident.slug || m.slug == slug || m.repo_id == slug;
+                if claims_product {
+                    m.repo_id == want
+                } else {
+                    true
+                }
+            });
+        }
+        let h = self.create(&ident.slug, None)?;
+        write_sticky_aliases(&user, &ident, &h.session_id());
+        self.set_active_for_identity(&ident, &h.session_id());
+        tracing::info!(
+            slug = %ident.slug,
+            repo_id = %want,
+            session_id = %h.session_id(),
+            "rebound coding session after create_project"
+        );
         Ok(h)
     }
 
@@ -252,7 +342,7 @@ impl SessionManager {
         {
             let map = self.handles.lock().unwrap();
             if let Some(h) = map.get(session_id) {
-                // In-memory only — never shell out to AWS on the hot path
+                // Hot path: no AWS. Caller must `pull_remote` / merge refresh when S3 advanced.
                 h.touch_local();
                 return Ok(h.clone());
             }
@@ -269,12 +359,39 @@ impl SessionManager {
             );
         }
         let work_dir = session_work_dir(&meta.user_id, &meta.session_id, &meta.slug);
-        // Warm workdir: skip S3 entirely when already materialized (huge load win)
-        if !work_dir.join("veil.toml").is_file() && !has_veil_file(&work_dir) {
-            materialize_repo_to(&meta.repo_id, &work_dir, MaterializePolicy::SyncIncremental)?;
+        // Always incremental sync on cold attach so mainline picks up merges from
+        // feature branches (S3 is source of truth). Skipping when "warm" left IDE
+        // on scaffold after merge_branch promoted domain code to main.
+        if let Err(e) =
+            materialize_repo_to(&meta.repo_id, &work_dir, MaterializePolicy::SyncIncremental)
+        {
+            // Only hard-fail if workdir is empty; otherwise serve last local copy.
+            if !work_dir.join("veil.toml").is_file() && !has_veil_file(&work_dir) {
+                return Err(e);
+            }
+            tracing::warn!(session_id, error = %e, "attach: S3 sync failed; using existing workdir");
+        }
+        // Prefer product slug on META when session was created under raw UUID.
+        let mut meta = meta;
+        if let Ok(ident) = resolve_project_identity(&meta.repo_id) {
+            if meta.slug != ident.slug && ident.slug != ident.repo_id {
+                tracing::info!(
+                    session_id,
+                    from = %meta.slug,
+                    to = %ident.slug,
+                    "normalize session.slug to product slug"
+                );
+                meta.slug = ident.slug.clone();
+                let _ = put_session_meta(&meta);
+            }
+            write_sticky_aliases(&meta.user_id, &ident, session_id);
+        } else {
+            write_sticky_session(&meta.user_id, &meta.slug, session_id);
+            if meta.repo_id != meta.slug {
+                write_sticky_session(&meta.user_id, &meta.repo_id, session_id);
+            }
         }
         write_session_marker(&work_dir, &meta)?;
-        write_sticky_session(&meta.user_id, &meta.slug, session_id);
         let handle = Arc::new(SessionHandle::open(meta, work_dir)?);
         self.handles
             .lock()
@@ -282,6 +399,50 @@ impl SessionManager {
             .insert(session_id.to_string(), handle.clone());
         let _ = touch_session(session_id);
         Ok(handle)
+    }
+
+    /// After `merge_branch` promotes a draft to S3 main: rematerialize mainline
+    /// workdirs for this slug and drop stale in-memory handles so the IDE sees
+    /// the merged source (not the pre-merge scaffold).
+    pub fn refresh_mainline_after_merge(&self, slug: &str, repo_id: &str) -> Result<(), String> {
+        let user = current_user_id();
+        let ident = resolve_project_identity(slug).unwrap_or(ProjectIdentity {
+            slug: slug.to_string(),
+            repo_id: repo_id.to_string(),
+        });
+        // Drop cached handles for this repo's mainline (wrong memory).
+        {
+            let mut map = self.handles.lock().unwrap();
+            map.retain(|_, h| {
+                let m = h.meta.lock().unwrap();
+                !(m.repo_id == repo_id && !m.draft_mode)
+            });
+        }
+        // Sync sticky aliases + known mainline workdirs from S3 main.
+        for key in identity_keys(slug, Some(&ident)) {
+            if let Some(sid) = read_sticky_session(&user, &key) {
+                if let Ok(meta) = get_session_meta(&sid) {
+                    if meta.repo_id == repo_id && !meta.draft_mode {
+                        let work = session_work_dir(&meta.user_id, &meta.session_id, &meta.slug);
+                        materialize_repo_to(&meta.repo_id, &work, MaterializePolicy::SyncDelete)?;
+                        write_session_marker(&work, &meta)?;
+                        write_sticky_aliases(&user, &ident, &sid);
+                    }
+                }
+            }
+        }
+        if let Ok(list) = list_sessions_for_user(&user) {
+            for meta in list
+                .into_iter()
+                .filter(|m| m.repo_id == repo_id && !m.draft_mode)
+            {
+                let work = session_work_dir(&meta.user_id, &meta.session_id, &meta.slug);
+                let _ = materialize_repo_to(&meta.repo_id, &work, MaterializePolicy::SyncDelete);
+                let _ = write_session_marker(&work, &meta);
+            }
+        }
+        tracing::info!(%slug, %repo_id, "refreshed mainline workdirs after merge");
+        Ok(())
     }
 
     /// Snapshot of open in-memory sessions (for status / health).
@@ -296,6 +457,7 @@ impl SessionManager {
                     "revision": m.revision,
                     "draft_mode": m.draft_mode,
                     "work_dir": h.work_dir.to_string_lossy(),
+                    "active_change_id": m.active_change_id,
                 })
             })
             .collect()
@@ -303,59 +465,196 @@ impl SessionManager {
 
     /// Get or create a default sticky session for user+slug (compat when no header).
     /// Prefers: active_by_project → process handle → local sticky file → DDB → create.
+    ///
+    /// Sessions whose `repo_id` no longer matches [`resolve_repo_id`] for the slug
+    /// (orphan after re-create) are skipped.
+    ///
+    /// Product slug and repo UUID are treated as the **same** project so IDE
+    /// (`/projects/{uuid}/ide`) and agent (`agent-registry`) share one mainline.
     pub fn get_or_create_default(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
         let user = current_user_id();
+        let ident = resolve_project_identity(slug)?;
+        let want_repo = Some(ident.repo_id.clone());
+        let keys = identity_keys(slug, Some(&ident));
         // Agent-selected work line (feature branch) wins over sticky main
-        if let Some(sid) = self.active_for_project(slug) {
-            if let Ok(h) = self.attach(&sid) {
-                if h.slug() == slug {
-                    h.touch_local();
-                    return Ok(h);
+        for key in &keys {
+            if let Some(sid) = self.active_for_project(key) {
+                if let Ok(h) = self.attach(&sid) {
+                    if session_matches_current_repo(&h, slug) {
+                        h.touch_local();
+                        self.set_active_for_identity(&ident, &h.session_id());
+                        return Ok(h);
+                    }
+                    self.clear_active_for_project(key);
                 }
             }
         }
-        // Prefer most recent open handle for slug (non-draft preferred)
+        // Prefer most recent open handle for **current** repo
+        // (draft feature branches preferred over mainline when more recent)
         {
             let map = self.handles.lock().unwrap();
             let mut candidates: Vec<_> = map
                 .values()
                 .filter(|h| {
                     let m = h.meta.lock().unwrap();
-                    m.slug == slug && m.user_id == user
+                    m.user_id == user
+                        && want_repo
+                            .as_ref()
+                            .map(|r| &m.repo_id == r)
+                            .unwrap_or(false)
                 })
                 .cloned()
                 .collect();
+            // Prefer active feature branch (draft) when recent; else mainline.
+            // Was: non-draft first — that reattached orphan mainline over create_branch.
             candidates.sort_by_key(|h| {
                 let m = h.meta.lock().unwrap();
-                (m.draft_mode, std::cmp::Reverse(parse_ts(&m.updated_at)))
+                std::cmp::Reverse(parse_ts(&m.updated_at))
             });
             if let Some(h) = candidates.into_iter().next() {
                 h.touch_local();
+                self.set_active_for_identity(&ident, &h.session_id());
+                write_sticky_aliases(&user, &ident, &h.session_id());
                 return Ok(h);
             }
         }
         // Local sticky pointer (survives process restart without DDB scan cost)
-        if let Some(sid) = read_sticky_session(&user, slug) {
-            if let Ok(h) = self.attach(&sid) {
-                if h.slug() == slug {
-                    return Ok(h);
+        for key in &keys {
+            if let Some(sid) = read_sticky_session(&user, key) {
+                if let Ok(h) = self.attach(&sid) {
+                    if session_matches_current_repo(&h, slug) {
+                        write_sticky_aliases(&user, &ident, &h.session_id());
+                        self.set_active_for_identity(&ident, &h.session_id());
+                        return Ok(h);
+                    }
+                    clear_sticky_session(&user, key);
                 }
             }
         }
-        // Try DDB list for recent non-draft session
+        // Try DDB list for recent non-draft session on current repo (by repo_id)
         if let Ok(list) = list_sessions_for_user(&user) {
-            if let Some(m) = list
-                .into_iter()
-                .find(|m| m.slug == slug && !m.draft_mode)
-            {
+            if let Some(m) = list.into_iter().find(|m| {
+                !m.draft_mode && m.repo_id == ident.repo_id
+            }) {
                 let h = self.attach(&m.session_id)?;
-                write_sticky_session(&user, slug, &m.session_id);
+                write_sticky_aliases(&user, &ident, &m.session_id);
+                self.set_active_for_identity(&ident, &h.session_id());
                 return Ok(h);
             }
         }
-        let h = self.create(slug, None)?;
-        write_sticky_session(&user, slug, &h.session_id());
+        let h = self.create(&ident.slug, None)?;
+        write_sticky_aliases(&user, &ident, &h.session_id());
+        self.set_active_for_identity(&ident, &h.session_id());
         Ok(h)
+    }
+
+    /// After a successful mainline source write: bump the writing session's
+    /// revision (so Uncommitted is true) and rematerialize **other** mainline
+    /// workdirs for the same repo so a second sticky clone cannot stay stale.
+    pub fn record_source_write(
+        &self,
+        project_key: &str,
+        path: &str,
+        writing_session_id: Option<&str>,
+    ) -> u64 {
+        let ident = resolve_project_identity(project_key).ok();
+        let repo_id = ident
+            .as_ref()
+            .map(|i| i.repo_id.clone())
+            .or_else(|| resolve_repo_id(project_key).ok());
+
+        let mut rev = 0u64;
+        // Prefer the task-local session, then active work line.
+        let writer = writing_session_id
+            .map(|s| s.to_string())
+            .or_else(current_session_id)
+            .or_else(|| {
+                ident
+                    .as_ref()
+                    .and_then(|i| self.active_for_project(&i.slug))
+                    .or_else(|| self.active_for_project(project_key))
+            });
+
+        if let Some(ref sid) = writer {
+            if let Ok(h) = self.attach(sid) {
+                rev = h.record_write(path);
+                if let Some(ref id) = ident {
+                    write_sticky_aliases(&current_user_id(), id, sid);
+                    self.set_active_for_identity(id, sid);
+                }
+            }
+        } else if let Ok(h) = self.resolve_for_project(project_key) {
+            rev = h.record_write(path);
+        }
+
+        // Invalidate other mainline clones for this repo (stale local workdirs).
+        if let Some(repo) = repo_id.as_deref() {
+            self.refresh_other_mainline_workdirs(repo, writer.as_deref());
+        }
+        rev
+    }
+
+    /// Drop + rematerialize mainline sessions for `repo_id` except `keep_session`.
+    fn refresh_other_mainline_workdirs(&self, repo_id: &str, keep_session: Option<&str>) {
+        let user = current_user_id();
+        let mut to_sync: Vec<(String, String, String)> = Vec::new(); // sid, slug, work
+        {
+            let map = self.handles.lock().unwrap();
+            for (sid, h) in map.iter() {
+                if keep_session == Some(sid.as_str()) {
+                    continue;
+                }
+                let m = h.meta.lock().unwrap();
+                if m.repo_id == repo_id && !m.draft_mode {
+                    to_sync.push((
+                        sid.clone(),
+                        m.slug.clone(),
+                        h.work_dir.to_string_lossy().to_string(),
+                    ));
+                }
+            }
+        }
+        // Also sticky/DDB mainline sessions not currently in memory
+        if let Ok(list) = list_sessions_for_user(&user) {
+            for m in list
+                .into_iter()
+                .filter(|m| m.repo_id == repo_id && !m.draft_mode)
+            {
+                if keep_session == Some(m.session_id.as_str()) {
+                    continue;
+                }
+                if to_sync.iter().any(|(s, _, _)| s == &m.session_id) {
+                    continue;
+                }
+                let work = session_work_dir(&m.user_id, &m.session_id, &m.slug);
+                to_sync.push((
+                    m.session_id.clone(),
+                    m.slug.clone(),
+                    work.to_string_lossy().to_string(),
+                ));
+            }
+        }
+        for (sid, _slug, work) in to_sync {
+            // Drop warm handle so next attach reloads from disk after sync.
+            self.drop_handle(&sid);
+            let work_path = PathBuf::from(&work);
+            if let Err(e) =
+                materialize_repo_to(repo_id, &work_path, MaterializePolicy::SyncIncremental)
+            {
+                tracing::warn!(
+                    session_id = %sid,
+                    %repo_id,
+                    error = %e,
+                    "refresh peer mainline workdir after write failed"
+                );
+            } else {
+                tracing::info!(
+                    session_id = %sid,
+                    %repo_id,
+                    "refreshed peer mainline workdir after write"
+                );
+            }
+        }
     }
 
     pub fn get(&self, session_id: &str) -> Option<Arc<SessionHandle>> {
@@ -431,12 +730,54 @@ fn write_sticky_session(user_id: &str, slug: &str, session_id: &str) {
     let _ = std::fs::write(p, session_id);
 }
 
+/// Sticky under product slug **and** repo UUID so either route reopens the same session.
+fn write_sticky_aliases(user_id: &str, ident: &ProjectIdentity, session_id: &str) {
+    write_sticky_session(user_id, &ident.slug, session_id);
+    if ident.repo_id != ident.slug {
+        write_sticky_session(user_id, &ident.repo_id, session_id);
+    }
+}
+
 fn read_sticky_session(user_id: &str, slug: &str) -> Option<String> {
     let p = sticky_path(user_id, slug);
     std::fs::read_to_string(p)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn clear_sticky_session(user_id: &str, slug: &str) {
+    let p = sticky_path(user_id, slug);
+    let _ = std::fs::remove_file(p);
+}
+
+/// Lookup keys for sticky / active maps: raw input, product slug, repo id.
+fn identity_keys(raw: &str, ident: Option<&ProjectIdentity>) -> Vec<String> {
+    let mut keys = Vec::new();
+    let push = |keys: &mut Vec<String>, s: &str| {
+        let s = s.trim();
+        if !s.is_empty() && !keys.iter().any(|k| k == s) {
+            keys.push(s.to_string());
+        }
+    };
+    push(&mut keys, raw);
+    if let Some(id) = ident {
+        push(&mut keys, &id.slug);
+        push(&mut keys, &id.repo_id);
+    }
+    keys
+}
+
+/// True when session.repo_id matches the live product repo for `slug`.
+fn session_matches_current_repo(h: &SessionHandle, slug: &str) -> bool {
+    match resolve_project_identity(slug) {
+        Ok(want) => h.snapshot_meta().repo_id == want.repo_id,
+        // If we cannot resolve (offline), accept the session rather than dead-end.
+        Err(_) => match resolve_repo_id(slug) {
+            Ok(want) => h.snapshot_meta().repo_id == want,
+            Err(_) => true,
+        },
+    }
 }
 
 /// RFC3339 UTC timestamp without extra crates.
@@ -638,13 +979,25 @@ impl SessionHandle {
         if let Some(e) = etag {
             m.etags.insert(path.to_string(), e);
         }
-        m.dirty.retain(|p| p != path);
+        // `dirty` used to mean "needs S3 flush"; write-through already put S3.
+        // Keep path listed so IDE Uncommitted / dirty_files reflects working tree
+        // changes since last `session_commit` (cleared on commit).
+        if !path.is_empty() && !m.dirty.iter().any(|p| p == path) {
+            m.dirty.push(path.to_string());
+        }
         let rev = m.revision;
         let snap = m.clone();
         drop(m);
         // Debounced durable flush (not every keystroke / tool write)
         schedule_meta_flush(snap);
         rev
+    }
+
+    /// Record an agent/operator source write: bump revision + dirty file list.
+    /// Returns the new revision (0 if unchanged path empty — still bumps).
+    pub fn record_write(&self, path: &str) -> u64 {
+        let p = if path.is_empty() { "main.veil" } else { path };
+        self.bump_revision(p, None)
     }
 
     pub fn set_active_file(&self, name: &str) {
@@ -754,9 +1107,99 @@ impl SessionHandle {
         Ok(commit)
     }
 
+    /// Publish working tree to a named product branch prefix
+    /// (`repos/{repo_id}/{branch}/…`) so CR structural diff can see agent work.
+    /// Does **not** merge to main — use PR Wizard → Approve → Merge.
+    pub fn publish_to_branch(&self, branch: &str) -> Result<serde_json::Value, String> {
+        let branch = branch.trim();
+        if branch.is_empty() {
+            return Err("branch name required".into());
+        }
+        if branch == "main" || branch == "master" {
+            return Err(
+                "refuse publish to main/master — open a PR and merge via PR Wizard".into(),
+            );
+        }
+        let m = self.meta.lock().unwrap().clone();
+        let bucket = std::env::var("BUCKET")
+            .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
+            .unwrap_or_else(|_| "veil-runtime-dev".into());
+        let dest_prefix = format!("repos/{}/{}/", m.repo_id, branch);
+        let dest = format!("s3://{bucket}/{dest_prefix}");
+
+        let mut cmd = std::process::Command::new("aws");
+        if let Ok(p) = std::env::var("AWS_PROFILE") {
+            cmd.env("AWS_PROFILE", p);
+        }
+        let out = cmd
+            .args([
+                "s3",
+                "sync",
+                &self.work_dir.to_string_lossy(),
+                &dest,
+                "--exclude",
+                ".veil-session.json",
+                "--exclude",
+                ".git/*",
+                "--exclude",
+                "target/*",
+                "--exclude",
+                "generated/*",
+            ])
+            .output()
+            .map_err(|e| format!("aws s3 sync publish: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "publish to branch {branch} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(serde_json::json!({
+            "ok": true,
+            "published_to": branch,
+            "dest_prefix": dest_prefix,
+            "repo_id": m.repo_id,
+            "session_id": m.session_id,
+            "revision": m.revision,
+            "head_commit": m.head_commit,
+        }))
+    }
+
+    /// Remember open PR for agent reply writeback.
+    pub fn set_active_change_id(&self, change_id: Option<&str>) -> Result<(), String> {
+        let mut meta = self.meta.lock().unwrap();
+        meta.active_change_id = change_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        meta.updated_at = chrono_now();
+        let snap = meta.clone();
+        drop(meta);
+        put_session_meta(&snap)?;
+        let _ = write_session_marker(&self.work_dir, &snap);
+        Ok(())
+    }
+
     /// Promote this branch's working tree onto the product **base** branch in S3
     /// (git-shaped merge). Only for draft/feature branch sessions.
+    ///
+    /// **Gate:** blocked by default so humans use the PR Wizard. Set
+    /// `VEIL_ALLOW_SESSION_MERGE=1` or pass `force: true` via API for escape hatch.
     pub fn merge_to_base(&self) -> Result<serde_json::Value, String> {
+        self.merge_to_base_gated(false)
+    }
+
+    pub fn merge_to_base_gated(&self, force: bool) -> Result<serde_json::Value, String> {
+        let allow_env = std::env::var("VEIL_ALLOW_SESSION_MERGE")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if !force && !allow_env {
+            return Err(
+                "Session merge to main is disabled. Open the PR Wizard (Review), \
+                 approve structural changes, then Merge from the PR. \
+                 Escape hatch: VEIL_ALLOW_SESSION_MERGE=1 or force=true."
+                    .into(),
+            );
+        }
         let m = self.meta.lock().unwrap().clone();
         if !m.draft_mode {
             return Err("already on base (mainline) session — nothing to merge".into());
@@ -798,6 +1241,13 @@ impl SessionHandle {
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
+        // Mainline sessions still hold pre-merge scaffold in their workdirs.
+        // Rematerialize so IDE open shows the merged product tree.
+        if let Err(e) =
+            SessionManager::global().refresh_mainline_after_merge(&m.slug, &m.repo_id)
+        {
+            tracing::warn!(error = %e, slug = %m.slug, "post-merge mainline refresh failed");
+        }
         Ok(serde_json::json!({
             "ok": true,
             "merged_to": base,
@@ -805,6 +1255,7 @@ impl SessionHandle {
             "from_branch": m.branch_name,
             "session_id": m.session_id,
             "head_commit": m.head_commit,
+            "refreshed_mainline": true,
         }))
     }
 

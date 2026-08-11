@@ -5725,6 +5725,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "veil-ir",
+ "veil-parser",
  "veil-server",
  "veil_shared",
 ]

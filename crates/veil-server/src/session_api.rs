@@ -30,6 +30,11 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
             get(list_commits).post(create_commit),
         )
         .route("/api/sessions/{id}/merge", post(merge_session))
+        .route("/api/sessions/{id}/publish-branch", post(publish_branch))
+        .route(
+            "/api/sessions/{id}/active-change",
+            post(set_active_change),
+        )
         // Workspace tools (also exposed via MCP)
         .route("/api/sessions/{id}/ws/list", post(ws_list))
         .route("/api/sessions/{id}/ws/read", post(ws_read))
@@ -140,6 +145,7 @@ fn session_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> serde_json
         "last_focus": meta.last_focus,
         "intent_log": meta.intent_log,
         "last_activity_at": meta.last_activity_at,
+        "active_change_id": meta.active_change_id,
     })
 }
 
@@ -177,14 +183,80 @@ async fn list_commits(Path(id): Path<String>) -> axum::response::Response {
     }
 }
 
-async fn merge_session(Path(id): Path<String>) -> axum::response::Response {
+#[derive(Deserialize)]
+struct MergeBody {
+    /// Escape hatch only — prefer PR Wizard. Requires VEIL_ALLOW_SESSION_MERGE=1 or true.
+    #[serde(default)]
+    force: bool,
+}
+
+async fn merge_session(
+    Path(id): Path<String>,
+    body: Option<Json<MergeBody>>,
+) -> axum::response::Response {
     let h = match SessionManager::global().attach(&id) {
         Ok(h) => h,
         Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
     };
-    match h.merge_to_base() {
+    let force = body.map(|b| b.force).unwrap_or(false);
+    match h.merge_to_base_gated(force) {
         Ok(v) => json_ok(v),
         Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct PublishBranchBody {
+    branch_name: String,
+    /// Optional change request id to bind for agent history writeback.
+    #[serde(default)]
+    change_id: Option<String>,
+}
+
+async fn publish_branch(
+    Path(id): Path<String>,
+    Json(body): Json<PublishBranchBody>,
+) -> axum::response::Response {
+    let h = match SessionManager::global().attach(&id) {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
+    };
+    match h.publish_to_branch(&body.branch_name) {
+        Ok(mut v) => {
+            if let Some(ref cid) = body.change_id {
+                if let Err(e) = h.set_active_change_id(Some(cid)) {
+                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
+                }
+                v["active_change_id"] = json!(cid);
+            }
+            v["session"] = session_json(&h);
+            json_ok(v)
+        }
+        Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ActiveChangeBody {
+    #[serde(default)]
+    change_id: Option<String>,
+}
+
+async fn set_active_change(
+    Path(id): Path<String>,
+    Json(body): Json<ActiveChangeBody>,
+) -> axum::response::Response {
+    let h = match SessionManager::global().attach(&id) {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
+    };
+    match h.set_active_change_id(body.change_id.as_deref()) {
+        Ok(()) => json_ok(json!({
+            "ok": true,
+            "active_change_id": body.change_id,
+            "session": session_json(&h),
+        })),
+        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
