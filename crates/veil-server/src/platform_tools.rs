@@ -431,7 +431,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             Ok(out.to_string())
         }
 
-        // ─── SDLC / Change requests ───────────────────────────────────────
+        // ─── SDLC / Pull requests (API path still /api/change_requests) ───
         "list_changes" | "open_changes" => {
             let navigate = arg_bool(arguments, "navigate", true);
             let status_filter = arg_str(arguments, &["status"]);
@@ -444,9 +444,10 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             let mut out = json!({
                 "ok": ok_status(status) || status == 0 && data.get("error").is_none(),
-                "summary": "Listed change requests (SDLC)",
+                "summary": "Listed pull requests (SDLC)",
                 "http_status": status,
                 "change_requests": data,
+                "pull_requests": data,
                 "api": format!("{base}/api/change_requests"),
             });
             if navigate {
@@ -454,14 +455,14 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 out["intent"] = crate::focus::page_action_intent(
                     "list_changes",
                     "/changes",
-                    "Open change requests",
+                    "Open pull requests",
                 );
                 out["execution"] = json!({ "domain": "none", "present": "goto" });
             }
             // ok even if API empty — navigation still useful
             if status == 0 {
                 out["ok"] = json!(true);
-                out["summary"] = json!("Open change requests (API unavailable — UI only)");
+                out["summary"] = json!("Open pull requests (API unavailable — UI only)");
             } else {
                 out["ok"] = json!(ok_status(status));
             }
@@ -549,21 +550,27 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     }
                 }
                 // Attach recent commits so PR Wizard has rationales/history.
-                if let Some(ref slug) = project {
-                    if let Ok(h) = crate::session::SessionManager::global().resolve_for_project(slug)
-                    {
-                        if let Ok(commits) =
-                            crate::session::list_session_commits(&h.session_id())
-                        {
-                            if !commits.is_empty() {
-                                desc.push_str("\n\n## Commits\n");
-                                for c in commits.iter().take(20) {
-                                    desc.push_str(&format!("- {}\n", c.message));
-                                }
+                let mut commit_count = 0usize;
+                let sess = project
+                    .as_deref()
+                    .and_then(|s| crate::coding_gates::project_session(Some(s)));
+                if let Some(ref h) = sess {
+                    if let Ok(commits) = crate::session::list_session_commits(&h.session_id()) {
+                        commit_count = commits.len();
+                        if !commits.is_empty() {
+                            desc.push_str("\n\n## Commits\n");
+                            for c in commits.iter().take(20) {
+                                desc.push_str(&format!("- {}\n", c.message));
                             }
                         }
                     }
                 }
+                let gate_notes =
+                    crate::coding_gates::gate_open_pr_notes(sess.as_deref(), commit_count);
+                let host_check = sess
+                    .as_ref()
+                    .map(|h| crate::coding_gates::host_check_value(&h.snapshot_meta()))
+                    .unwrap_or_else(|| json!({ "severity": "unknown", "source": "host" }));
                 let jira = arg_str(arguments, &["jira_ticket", "jira"]).unwrap_or_else(|| {
                     let secs = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -602,7 +609,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                             }
                         }
                     } else if let Some(slug) = project.as_deref() {
-                        // Fallback branch name from CR payload
+                        // Fallback branch name from PR payload
                         let branch = data
                             .pointer("/change_request/source_branch")
                             .and_then(|v| v.as_str())
@@ -640,13 +647,16 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "http_status": status,
                     "summary": if ok_status(status) {
                         format!(
-                            "Created change request: {title}. Session published for PR Wizard review. Call submit_change next — do NOT merge."
+                            "Opened pull request: {title}. Session published for PR Wizard review. Call submit_change next — do NOT merge."
                         )
                     } else {
-                        format!("create_change failed (HTTP {status})")
+                        format!("create_change (open PR) failed (HTTP {status})")
                     },
                     "change_request": data,
+                    "pull_request": data,
                     "publish": publish,
+                    "host_check": host_check,
+                    "gate_notes": gate_notes,
                     "navigation": { "action": "goto", "path": path },
                     "intent": intent,
                     "execution": {
@@ -702,21 +712,27 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         }
                     }
                 }
-                if let Some(ref slug) = project {
-                    if let Ok(h) = crate::session::SessionManager::global().resolve_for_project(slug)
-                    {
-                        if let Ok(commits) =
-                            crate::session::list_session_commits(&h.session_id())
-                        {
-                            if !commits.is_empty() {
-                                desc.push_str("\n\n## Commits\n");
-                                for c in commits.iter().take(20) {
-                                    desc.push_str(&format!("- {}\n", c.message));
-                                }
+                let mut commit_count = 0usize;
+                let sess = project
+                    .as_deref()
+                    .and_then(|s| crate::coding_gates::project_session(Some(s)));
+                if let Some(ref h) = sess {
+                    if let Ok(commits) = crate::session::list_session_commits(&h.session_id()) {
+                        commit_count = commits.len();
+                        if !commits.is_empty() {
+                            desc.push_str("\n\n## Commits\n");
+                            for c in commits.iter().take(20) {
+                                desc.push_str(&format!("- {}\n", c.message));
                             }
                         }
                     }
                 }
+                let gate_notes =
+                    crate::coding_gates::gate_open_pr_notes(sess.as_deref(), commit_count);
+                let host_check = sess
+                    .as_ref()
+                    .map(|h| crate::coding_gates::host_check_value(&h.snapshot_meta()))
+                    .unwrap_or_else(|| json!({ "severity": "unknown", "source": "host" }));
                 let mut body = json!({
                     "title": title,
                     "description": desc,
@@ -752,12 +768,15 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "http_status": status,
                     "summary": if ok_status(status) {
                         format!(
-                            "Created change request (synthesized title `{title}` — pass title next time). Call submit_change next — do NOT merge."
+                            "Opened pull request (synthesized title `{title}` — pass title next time). Call submit_change next — do NOT merge."
                         )
                     } else {
-                        format!("create_change failed (HTTP {status})")
+                        format!("create_change (open PR) failed (HTTP {status})")
                     },
                     "change_request": data,
+                    "pull_request": data,
+                    "host_check": host_check,
+                    "gate_notes": gate_notes,
                     "navigation": { "action": "goto", "path": path },
                     "intent": intent,
                     "execution": {
@@ -778,8 +797,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
-                "summary": format!("Change request {id}"),
+                "summary": format!("Pull request {id}"),
                 "change_request": data,
+                "pull_request": data,
                 "navigation": { "action": "goto", "path": format!("/changes/{id}") }
             })
             .to_string())
@@ -790,42 +810,48 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 .ok_or_else(|| "submit_change requires id".to_string())?;
             // Re-publish latest session tree before review so PR Wizard is current.
             let mut publish = json!(null);
-            if let Some(slug) = arg_str(arguments, &["slug", "project"]).or_else(|| {
+            let slug = arg_str(arguments, &["slug", "project"]).or_else(|| {
                 crate::provider::hub::CURRENT_PROJECT
                     .try_with(|n| n.clone())
                     .ok()
-            }) {
-                if let Ok(h) = crate::session::SessionManager::global().resolve_for_project(&slug) {
-                    let m = h.snapshot_meta();
-                    let branch = m
-                        .branch_name
-                        .clone()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| {
-                            if m.draft_mode {
-                                "work".into()
-                            } else {
-                                "work".into()
-                            }
-                        });
-                    match crate::pr_writeback::publish_session_for_change(&slug, &branch, &id) {
-                        Ok(v) => publish = v,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "submit_change re-publish failed");
-                            let _ = h.set_active_change_id(Some(&id));
-                        }
+            });
+            let sess = slug
+                .as_deref()
+                .and_then(|s| crate::coding_gates::project_session(Some(s)));
+            if let (Some(slug), Some(h)) = (slug.as_deref(), sess.as_ref()) {
+                let m = h.snapshot_meta();
+                let branch = m
+                    .branch_name
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "work".into());
+                match crate::pr_writeback::publish_session_for_change(slug, &branch, &id) {
+                    Ok(v) => publish = v,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "submit_change re-publish failed");
+                        let _ = h.set_active_change_id(Some(&id));
                     }
                 }
             }
+            let gate_notes = crate::coding_gates::gate_submit_pr_notes(sess.as_deref());
+            let host_check = sess
+                .as_ref()
+                .map(|h| crate::coding_gates::host_check_value(&h.snapshot_meta()))
+                .unwrap_or_else(|| json!({ "severity": "unknown", "source": "host" }));
             let (status, data) = http_json(
                 "POST",
                 &format!("/api/change_requests/{}/submit", urlencoding_path(&id)),
                 Some(json!({})),
             )
             .await?;
-            let summary = format!(
-                "Submitted change {id} for review — open IDE PR Wizard (Review). Do not merge_branch."
+            let mut summary = format!(
+                "Submitted pull request {id} for review — open IDE PR Wizard (Review). Do not merge_branch."
             );
+            if gate_notes.iter().any(|n| n.contains("MUST_ACKNOWLEDGE_ERRORS")) {
+                summary.push_str(
+                    " HOST still reports Errors on the working set — do not claim clean check.",
+                );
+            }
             let intent = crate::focus::change_action_intent("submit", &id, &summary);
             crate::focus::register_pending_intent(
                 intent.get("id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -837,6 +863,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "summary": summary,
                 "result": data,
                 "publish": publish,
+                "host_check": host_check,
+                "gate_notes": gate_notes,
                 "navigation": { "action": "goto", "path": format!("/changes/{id}") },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
@@ -1656,7 +1684,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_changes",
-            "description": "List SDLC change requests (GET /api/change_requests) and open /changes. Optional status filter: Draft, ReadyForReview, Approved, Merged, …",
+            "description": "List pull requests (GET /api/change_requests) and open /changes. Optional status filter: Draft, ReadyForReview, Approved, Merged, …. Prefer open/unmerged PRs when reusing a work line.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1668,7 +1696,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "create_change",
-            "description": "Open a PR / change request for human review (POST /api/change_requests). Default end of agent coding work — prefer this over merge_branch. Pass title + description with per-slice ## headings and rationales for the PR Wizard. Host attaches session commits + project slug. Then call submit_change. Operator reviews in IDE PR Wizard (not auto-merge).",
+            "description": "Open a pull request (PR) for human review (POST /api/change_requests; product name: PR, not ticket). Default end of agent coding work — prefer this over merge_branch. Pass title + description with per-slice ## headings and rationales for the PR Wizard. Host attaches session commits + project slug + host_check gate notes. Then call submit_change. Operator reviews in IDE PR Wizard (not auto-merge).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1694,7 +1722,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "submit_change",
-            "description": "Submit a change request for human review (PR Wizard). Call after create_change when agent work is ready for the operator — not after auto-merge.",
+            "description": "Submit a pull request for human review (PR Wizard). Call after create_change when agent work is ready for the operator — not after auto-merge. Response includes host_check; if severity=errors the agent must not claim a clean working set.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },

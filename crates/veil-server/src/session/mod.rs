@@ -12,7 +12,7 @@ mod workspace;
 pub use ddb::{
     append_turn, delete_session_meta, get_session_commit, get_session_meta, list_session_commits,
     list_sessions_for_user, list_turns, merge_session_focus_intents, put_session_commit,
-    put_session_meta, touch_session, SessionCommit, SessionMeta, SessionTurn,
+    put_session_meta, touch_session, HostCheckSnapshot, SessionCommit, SessionMeta, SessionTurn,
 };
 pub use workspace::{
     materialize_policy, path_jail, resolve_under_root, MaterializePolicy, WorkspaceFs,
@@ -168,6 +168,8 @@ impl SessionManager {
             last_focus: None,
             intent_log: vec![],
             active_change_id: None,
+            writes_since_commit: 0,
+            last_host_check: None,
         };
         put_session_meta(&meta)?;
         write_session_marker(&work_dir, &meta)?;
@@ -985,6 +987,7 @@ impl SessionHandle {
         if !path.is_empty() && !m.dirty.iter().any(|p| p == path) {
             m.dirty.push(path.to_string());
         }
+        m.writes_since_commit = m.writes_since_commit.saturating_add(1);
         let rev = m.revision;
         let snap = m.clone();
         drop(m);
@@ -998,6 +1001,16 @@ impl SessionHandle {
     pub fn record_write(&self, path: &str) -> u64 {
         let p = if path.is_empty() { "main.veil" } else { path };
         self.bump_revision(p, None)
+    }
+
+    /// Persist host check result used by coding gates (submit/PR messaging).
+    pub fn set_last_host_check(&self, snap: HostCheckSnapshot) {
+        let mut m = self.meta.lock().unwrap();
+        m.last_host_check = Some(snap);
+        m.last_activity_at = chrono_now();
+        let meta = m.clone();
+        drop(m);
+        schedule_meta_flush(meta);
     }
 
     pub fn set_active_file(&self, name: &str) {
@@ -1034,10 +1047,18 @@ impl SessionHandle {
 
     /// Git-shaped **commit**: snapshot working tree + named message.
     /// Autosaves continue; this is an explicit checkpoint.
+    /// Refuses when there is nothing uncommitted (coding gate).
     pub fn commit(&self, message: &str) -> Result<SessionCommit, String> {
         let message = message.trim();
         if message.is_empty() {
             return Err("commit message required".into());
+        }
+        if !self.has_uncommitted() {
+            return Err(
+                "nothing to commit — working tree clean (no writes since last session_commit). \
+                 Edit with write_source first, or skip commit on explore turns."
+                    .into(),
+            );
         }
         let m = self.meta.lock().unwrap().clone();
         let commit_id = Uuid::new_v4().to_string();
@@ -1098,6 +1119,7 @@ impl SessionHandle {
             meta.head_commit = Some(commit_id);
             meta.committed_revision = Some(meta.revision);
             meta.dirty.clear();
+            meta.writes_since_commit = 0;
             meta.updated_at = now;
             let snap = meta.clone();
             drop(meta);

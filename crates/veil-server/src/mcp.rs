@@ -916,7 +916,19 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
     let registry = provider.registry();
 
     match tool_name {
-        "veil_check" => Ok(rig_tools::run_check(&source, &registry)),
+        "veil_check" => {
+            let check = rig_tools::run_check(&source, &registry);
+            let project = crate::provider::hub::CURRENT_PROJECT
+                .try_with(|n| n.clone())
+                .ok()
+                .or_else(crate::acp::get_acp_project);
+            crate::coding_gates::record_host_check_for_project(project.as_deref(), &check);
+            let host = crate::coding_gates::parse_check_output(&check);
+            Ok(format!(
+                "{check}\n\nHOST_CHECK_SEVERITY={} error_count={} warning_count={} (source=host — do not claim clean if errors>0)",
+                host.severity, host.error_count, host.warning_count
+            ))
+        }
 
         "veil_outline" => Ok(rig_tools::run_outline(&source, &registry)),
 
@@ -1042,31 +1054,35 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             let check = rig_tools::run_check(content, &registry);
             // MultiProjectProvider::write_source records revision/uncommitted.
             // Surface status so the model is nudged to session_commit (History tab).
-            let rev = crate::provider::hub::CURRENT_PROJECT
+            let project = crate::provider::hub::CURRENT_PROJECT
                 .try_with(|n| n.clone())
                 .ok()
-                .or_else(crate::acp::get_acp_project)
+                .or_else(crate::acp::get_acp_project);
+            crate::coding_gates::record_host_check_for_project(project.as_deref(), &check);
+            let rev = project
+                .as_ref()
                 .and_then(|p| {
                     crate::session::SessionManager::global()
-                        .resolve_for_project(&p)
+                        .resolve_for_project(p)
                         .ok()
                         .map(|h| h.revision())
                 })
                 .unwrap_or(0);
-            let lower = check.to_lowercase();
-            let must_fix = lower.contains("\"severity\":\"error\"")
-                || lower.contains("\"severity\": \"error\"")
-                || (lower.contains("error_count")
-                    && !lower.contains("\"error_count\":0")
-                    && !lower.contains("\"error_count\": 0")
-                    && !lower.contains("error_count: 0"));
+            let host = crate::coding_gates::parse_check_output(&check);
+            let must_fix = host.severity == "errors" || host.error_count > 0;
             Ok(format!(
                 "Wrote {} bytes to active file ({active_name}). revision={rev} (uncommitted until session_commit)\n\
                  Smoke: backend gen + cargo check OK.\n\
+                 Host check: severity={} errors={} warnings={}\n\
                  Next (same turn): review diagnostics below — if you introduced new errors/warnings, fix them NOW before any other task claim.\n\
-                 Then session_commit with a short message (include why). When the whole task is done: create_change + submit_change — do NOT merge_branch.\n\
-                 MUST_FIX_DIAGNOSTICS={must_fix}\n\n{check}",
-                content.len()
+                 Then session_commit with a short message (include why). When the whole task is done: open PR via create_change + submit_change — do NOT merge_branch.\n\
+                 MUST_FIX_DIAGNOSTICS={must_fix}\n\
+                 HOST_CHECK_SEVERITY={}\n\n{check}",
+                content.len(),
+                host.severity,
+                host.error_count,
+                host.warning_count,
+                host.severity,
             ))
         }
 
@@ -1275,8 +1291,10 @@ fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Val
         "head_commit": meta.head_commit,
         "uncommitted": uncommitted,
         "dirty_files": meta.dirty,
+        "writes_since_commit": meta.writes_since_commit,
         "work_dir": h.work_dir.to_string_lossy(),
         "active_change_id": meta.active_change_id,
+        "host_check": crate::coding_gates::host_check_value(&meta),
     })
 }
 
@@ -1341,6 +1359,7 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "session_commit requires message".to_string())?;
             let h = resolve_session_for_ws(arguments).await?;
+            crate::coding_gates::gate_session_commit(&h)?;
             let c = h.commit(message)?;
             Ok(serde_json::to_string_pretty(&json!({
                 "ok": true,
@@ -1353,6 +1372,8 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                     "parent": c.parent,
                 },
                 "session": session_status_json(&h),
+                "host_check": crate::coding_gates::host_check_value(&h.snapshot_meta()),
+                "hint": "Slice committed. Continue edits or when task done open PR: create_change + submit_change (do NOT merge).",
             }))
             .unwrap_or_default())
         }

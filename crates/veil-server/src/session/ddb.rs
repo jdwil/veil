@@ -63,9 +63,32 @@ pub struct SessionMeta {
     /// Recent product intents (agent + human + ux), newest last. Capped.
     #[serde(default)]
     pub intent_log: Vec<serde_json::Value>,
-    /// Open change request id for PR Wizard history writeback (agent replies).
+    /// Open pull request id for PR Wizard history writeback (agent replies).
+    /// (API field name remains change_request / active_change_id for compatibility.)
     #[serde(default)]
     pub active_change_id: Option<String>,
+    /// Successful source writes since last `session_commit` (host coding gates).
+    #[serde(default)]
+    pub writes_since_commit: u64,
+    /// Last host-side veil_check / write smoke snapshot (not agent self-report).
+    #[serde(default)]
+    pub last_host_check: Option<HostCheckSnapshot>,
+}
+
+/// Host-owned check result stored on the session (coding gates / PR submit).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct HostCheckSnapshot {
+    /// `ok` | `warnings` | `errors`
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub error_count: u32,
+    #[serde(default)]
+    pub warning_count: u32,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 /// Named commit on a coding session (git-shaped checkpoint).
