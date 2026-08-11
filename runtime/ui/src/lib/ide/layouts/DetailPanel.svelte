@@ -26,10 +26,9 @@
   import { askAgent, formatIssuePrompt } from '$lib/ide/agentPrompt';
   import { formatType } from '$lib/ide/typeDisplay';
   import {
-    isCriticalNode,
     lensesForNode,
-    nodeHasCriticalDiagnostic,
-    nodeHasLens,
+    nodeHasReviewLens,
+    nodeHasHealthIssue,
   } from '$lib/ide/lenses';
   import { BodySourceBlock } from '$lib/ide/editors';
   import { irGraphBodyToExprs } from '$lib/ide/editors/ir-convert';
@@ -50,17 +49,24 @@
     return graph.nodes.find(n => n.id === Number(id)) ?? null;
   });
 
-  /** Why this node is marked critical (layer review lens vs live diagnostics). */
+  let hasReviewLens = $derived(
+    selectedIrNode ? nodeHasReviewLens(selectedIrNode, presentationModel) : false
+  );
+  let hasHealthIssue = $derived(
+    selectedIrNode ? nodeHasHealthIssue(selectedIrNode, $diagnostics) : false
+  );
+
+  /** Why this node is marked for review focus or has real health issues. */
   let criticalReasons = $derived.by((): string[] => {
     if (!selectedIrNode) return [];
     const reasons: string[] = [];
-    if (nodeHasLens(selectedIrNode, 'critical', presentationModel)) {
+    if (hasReviewLens) {
       const sub = selectedIrNode.metadata.subkind || selectedIrNode.kind;
       reasons.push(
         `Layer review lens on ${sub} — architecturally important for review, not a compile/check failure`
       );
     }
-    if (nodeHasCriticalDiagnostic(selectedIrNode, $diagnostics)) {
+    if (hasHealthIssue) {
       reasons.push('Has error or escape-hatch diagnostic on this construct');
     }
     return reasons;
@@ -394,11 +400,17 @@
         {#if layerProvided}
           <span class="detail-badge layer-badge">layer-provided</span>
         {/if}
-        {#if isCriticalNode(selectedIrNode, presentationModel, $diagnostics)}
+        {#if hasHealthIssue}
           <span
             class="detail-badge critical-badge"
-            title={criticalReasons.join(' · ') || 'Critical for review'}
-          >critical</span>
+            title="Error or escape-hatch on this construct"
+          >!</span>
+        {/if}
+        {#if hasReviewLens}
+          <span
+            class="detail-badge review-lens-badge"
+            title="Review focus (layer lens) — not a check failure"
+          >⏳ review</span>
         {/if}
         {#each nodeLenses.filter((l) => l !== 'critical') as lens}
           <span class="detail-badge lens-badge" title="Layer presentation lens">{lens}</span>
@@ -423,19 +435,19 @@
       </div>
     {/if}
 
-    <!-- Critical without issues: explain lens vs diagnostics -->
-    {#if criticalReasons.length > 0 && nodeDiagnostics.length === 0}
-      <section class="detail-section detail-critical-note" role="note">
-        <p class="critical-note-title">Marked critical — no issues on this construct</p>
-        <ul class="critical-note-list">
+    <!-- Review lens only: soft note (not a warning) -->
+    {#if hasReviewLens && !hasHealthIssue && nodeDiagnostics.length === 0}
+      <section class="detail-section detail-review-note" role="note">
+        <p class="review-note-title">⏳ Review focus — no issues on this construct</p>
+        <ul class="review-note-list">
           {#each criticalReasons as reason}
             <li>{reason}</li>
           {/each}
         </ul>
         {#if selectedIrNode.metadata.subkind === 'Port' || selectedIrNode.kind === 'Interface'}
-          <p class="critical-note-hint">
-            Ports are always review-critical in the DDD layer. Check for an implementing
-            <code>adapter</code> and any diagnostics on that adapter (not on the port itself).
+          <p class="review-note-hint">
+            Ports are review-focused in the DDD layer (not broken by default). Check for an
+            implementing <code>adapter</code> and diagnostics on that adapter if something fails.
           </p>
         {/if}
       </section>
@@ -766,32 +778,32 @@
     color: #a78bfa;
   }
 
-  .detail-critical-note {
-    background: color-mix(in srgb, #f59e0b 12%, transparent);
-    border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
+  .detail-review-note {
+    background: color-mix(in srgb, #38bdf8 10%, transparent);
+    border: 1px solid color-mix(in srgb, #38bdf8 32%, transparent);
     border-radius: 8px;
     padding: 0.65rem 0.75rem;
   }
-  .critical-note-title {
+  .review-note-title {
     margin: 0 0 0.35rem;
     font-size: 0.8rem;
     font-weight: 600;
-    color: #fbbf24;
+    color: #7dd3fc;
   }
-  .critical-note-list {
+  .review-note-list {
     margin: 0;
     padding-left: 1.1rem;
     font-size: 0.75rem;
     color: var(--text-muted, #a1a1aa);
     line-height: 1.45;
   }
-  .critical-note-hint {
+  .review-note-hint {
     margin: 0.45rem 0 0;
     font-size: 0.72rem;
     color: var(--text-muted, #a1a1aa);
     line-height: 1.4;
   }
-  .critical-note-hint code {
+  .review-note-hint code {
     font-size: 0.7rem;
     padding: 0.05rem 0.25rem;
     border-radius: 3px;
@@ -806,6 +818,12 @@
   .critical-badge {
     background: rgba(245, 158, 11, 0.15);
     color: #f59e0b;
+  }
+  .review-lens-badge {
+    background: color-mix(in srgb, #38bdf8 14%, transparent);
+    color: #7dd3fc;
+    border: 1px solid color-mix(in srgb, #38bdf8 35%, transparent);
+    font-weight: 600;
   }
 
   .detail-save-status {

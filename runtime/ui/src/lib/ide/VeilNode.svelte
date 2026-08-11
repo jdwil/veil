@@ -39,7 +39,13 @@
   const hasCompensate = $derived(annotations.includes('has_compensate'));
   const isGroup = $derived(data.isGroup ?? false);
   const isAbstract = $derived(properties.some(([k, v]) => k === 'abstract' && v === 'true'));
-  const isCritical = $derived(data.critical ?? false);
+  /** Layer review lens (blue / hourglass) — not a health failure. */
+  const isReviewLens = $derived(
+    Boolean(data.reviewLens ?? (data.critical && !data.healthIssue))
+  );
+  /** Error / escape diagnostic on this node (amber !). */
+  const isHealthIssue = $derived(Boolean(data.healthIssue));
+  const isCritical = $derived(isReviewLens || isHealthIssue);
   const layerProvided = $derived(data.layerProvided ?? false);
   const bodyPreview: { text: string; keyword: string | null }[] = $derived(data.bodyPreview ?? []);
   const bodyEmpty: boolean = $derived(data.bodyEmpty ?? false);
@@ -61,7 +67,9 @@
   class:is-flow={kind === 'Flow'}
   class:is-error={kind === 'ErrorBoundary'}
   class:is-group={isGroup}
-  class:is-critical={isCritical}
+  class:is-review-lens={isReviewLens && !isHealthIssue}
+  class:is-health-issue={isHealthIssue}
+  class:is-critical={isHealthIssue}
   class:layer-provided={layerProvided}
   class:agent-flash={isFlashing}
   class:step-decision={isDecision}
@@ -88,11 +96,16 @@
       {#if layerProvided}
         <span class="infra-badge" title="Layer-provided infrastructure (not user source)">infra</span>
       {/if}
-      {#if isCritical}
+      {#if isHealthIssue}
         <span
           class="critical-badge"
-          title="Review-critical: layer lens (e.g. Port) and/or error/escape diagnostic — not always an issue on this node"
+          title="Error or escape-hatch diagnostic on this construct"
         >!</span>
+      {:else if isReviewLens}
+        <span
+          class="review-lens-badge"
+          title="Review focus (layer lens) — architecturally important, not a check failure"
+        >⏳</span>
       {/if}
       {#if hasCompensate}
         <span class="compensate-badge" title="Has compensation (rollback)">↩</span>
@@ -490,8 +503,25 @@
     margin-left: auto;
   }
 
+  /* Soft blue review lens — distinct from warning amber */
+  .review-lens-badge {
+    font-size: 11px;
+    line-height: 1;
+    background: rgba(56, 189, 248, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 4px;
+    padding: 1px 4px;
+    margin-left: auto;
+    opacity: 0.95;
+  }
+
+  .veil-node.is-health-issue,
   .veil-node.is-critical {
     box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.35), 0 0 12px rgba(251, 191, 36, 0.12);
+  }
+
+  .veil-node.is-review-lens {
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.28), 0 0 10px rgba(56, 189, 248, 0.08);
   }
 
   .node-badges {

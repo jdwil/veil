@@ -56,18 +56,38 @@ export function nodeHasCriticalDiagnostic(
 }
 
 /**
- * Critical for the "Critical only" filter:
- * - construct has presentation lens `critical`, or
- * - node has escape-hatch / error diagnostic, or
- * - annotations include names that layers mark via lens (already in presentation)
+ * Layer presentation lens `critical` — architecturally important for review.
+ * **Not** a compile/check failure. UI uses soft blue + hourglass (not warning colors).
+ */
+export function nodeHasReviewLens(
+  node: IrNode,
+  presentation: PresentationModel | null
+): boolean {
+  return nodeHasLens(node, 'critical', presentation);
+}
+
+/**
+ * Real health problem on this construct (error / escape hatch).
+ * UI keeps amber/red warning styling.
+ */
+export function nodeHasHealthIssue(
+  node: IrNode,
+  diags: Diagnostic[]
+): boolean {
+  return nodeHasCriticalDiagnostic(node, diags);
+}
+
+/**
+ * Union for "Critical / review focus" filter (lens OR health).
+ * Prefer {@link nodeHasReviewLens} / {@link nodeHasHealthIssue} for presentation.
  */
 export function isCriticalNode(
   node: IrNode,
   presentation: PresentationModel | null,
   diags: Diagnostic[]
 ): boolean {
-  if (nodeHasLens(node, 'critical', presentation)) return true;
-  if (nodeHasCriticalDiagnostic(node, diags)) return true;
+  if (nodeHasReviewLens(node, presentation)) return true;
+  if (nodeHasHealthIssue(node, diags)) return true;
   // Layer-provided infrastructure is not "critical" for review focus
   if (node.metadata.annotations.includes('layer-provided')) return false;
   return false;

@@ -99,7 +99,15 @@
     resolveCreateParentSpan,
     uniqueConstructName,
   } from '$lib/ide/createPlacement';
-  import { isCriticalNode, countCritical, collectAllLenses, countByLenses, nodeMatchesLenses } from '$lib/ide/lenses';
+  import {
+    isCriticalNode,
+    countCritical,
+    collectAllLenses,
+    countByLenses,
+    nodeMatchesLenses,
+    nodeHasReviewLens,
+    nodeHasHealthIssue,
+  } from '$lib/ide/lenses';
   import { TreeLayout, FlatLayout, DetailPanel } from '$lib/ide/layouts';
   import type { ProjectResult } from '$lib/ide/presentation';
   import {
@@ -745,6 +753,8 @@
               return t?.name ?? String(e.to);
             })
         );
+      const reviewLens = nodeHasReviewLens(child, pres);
+      const healthIssue = nodeHasHealthIssue(child, diags);
       const critical = isCriticalNode(child, pres, diags);
       return {
         id: String(child.id),
@@ -763,6 +773,8 @@
           inlineChildren,
           refs,
           critical,
+          reviewLens,
+          healthIssue,
           bodyPreview: bodyPrev.lines,
           bodyEmpty: bodyPrev.empty,
           bodyMore: bodyPrev.more,
@@ -774,9 +786,9 @@
 
   function criticalCountLabel(): string {
     const g = get(irGraph);
-    if (!g) return '0 critical';
+    if (!g) return '0 review';
     const n = countCritical(g, get(presentationModel), get(diagnostics));
-    return `${n} critical`;
+    return `${n} review`;
   }
 
   function edgesAmong(graph: IrGraph, visibleIds: Set<number>): Edge[] {
@@ -1648,9 +1660,9 @@
                 {/if}
               </div>
             {:else}
-              <label class="layer-toggle" title="Layer lens critical + escape/error diagnostics (LAY-009)">
+              <label class="layer-toggle" title="Review-focus lens (ports/adapters) + error/escape diagnostics — soft blue ≠ warning">
                 <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); }} />
-                <span>Critical only</span>
+                <span>Review focus</span>
                 <span class="critical-count">{criticalCountLabel()}</span>
               </label>
             {/if}
@@ -1695,7 +1707,7 @@
               {#if shell.showCriticalToggle}
                 <label class="layer-toggle top-bar-more-item" role="menuitemcheckbox">
                   <input type="checkbox" bind:checked={showCriticalOnly} onchange={() => { const g = get(irGraph); const p = get(currentParent); if (g) computeView(g, p, get(paletteConfig)); topBarMoreOpen = false; }} />
-                  <span>Critical only</span>
+                  <span>Review focus</span>
                 </label>
               {/if}
               {#if shell.showThemeToggle}

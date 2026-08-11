@@ -8,7 +8,7 @@
     focusDiagnostic,
     type Diagnostic,
   } from '$lib/ide/store';
-  import { isCriticalNode } from '$lib/ide/lenses';
+  import { nodeHasReviewLens, nodeHasHealthIssue } from '$lib/ide/lenses';
   import type { ProjectResult, PresentationModel } from '$lib/ide/presentation';
   import { canDrillInto, irChildren } from '$lib/ide/presentation';
   import {
@@ -329,8 +329,8 @@
   function diagnosticTitle(node: IrNode): string {
     const diags = getNodeDiagnostics(node);
     if (diags.length === 0) {
-      if (isCriticalNode(node, presentationModel, $diagnostics)) {
-        return 'Marked critical (layer lens) — open diagnostics for project issues';
+      if (nodeHasReviewLens(node, presentationModel)) {
+        return 'Review focus (layer lens) — architecturally important, not a check failure';
       }
       return '';
     }
@@ -349,15 +349,8 @@
     const diags = getNodeDiagnostics(node);
     if (diags[0]) {
       focusDiagnostic(diags[0]);
-    } else {
-      // Lens-only critical: still open the project diagnostics panel
-      focusDiagnostic({
-        severity: 'Warning',
-        message: `${node.name} is marked critical`,
-        node_id: node.id,
-        node_name: node.name,
-      });
     }
+    // Review-lens only: select node; do not fabricate a Warning diagnostic
   }
 
   function isChanged(nodeId: number): boolean {
@@ -471,7 +464,8 @@
     {@const nodeDiags = getNodeDiagnostics(node)}
     {@const errored = hasError(node)}
     {@const warned = hasWarning(node)}
-    {@const critical = isCriticalNode(node, presentationModel, $diagnostics)}
+    {@const reviewLens = nodeHasReviewLens(node, presentationModel)}
+    {@const healthIssue = nodeHasHealthIssue(node, $diagnostics)}
     {@const diagTitle = diagnosticTitle(node)}
 
     <div
@@ -486,7 +480,8 @@
         class:changed
         class:errored
         class:warned
-        class:critical
+        class:review-lens={reviewLens && !errored && !warned}
+        class:health-issue={healthIssue}
         class:group-folder={isGroupFolder(node)}
         class:drillable={canDrillInto(graph, node)}
         style:padding-left="{12 + item.depth * 20}px"
@@ -533,22 +528,32 @@
           <span class="tree-drill-hint" title="Open flow graph">⤵</span>
         {/if}
 
-        {#if critical || errored || warned}
+        {#if errored || warned}
           <button
             type="button"
             class="tree-badge"
-            class:badge-critical={critical && !errored}
             class:badge-error={errored}
-            class:badge-warning={warned && !errored && !critical}
+            class:badge-warning={warned && !errored}
             title={diagTitle || 'Diagnostics'}
             aria-label={diagTitle || 'Show diagnostics'}
             onclick={(e) => onBadgeClick(e, node)}
           >
-            {errored ? '⬤' : critical ? '!' : '⬤'}
+            {errored ? '⬤' : '⬤'}
             {#if nodeDiags.length > 1}
               <span class="badge-count">{nodeDiags.length}</span>
             {/if}
           </button>
+        {:else if reviewLens || healthIssue}
+          <span
+            class="tree-badge"
+            class:badge-review-lens={reviewLens && !healthIssue}
+            class:badge-critical={healthIssue}
+            title={healthIssue
+              ? 'Error or escape-hatch on this construct'
+              : 'Review focus (layer lens) — not a check failure'}
+          >
+            {healthIssue ? '!' : '⏳'}
+          </span>
         {/if}
         {#if changed}
           <span class="tree-badge badge-changed" title="Recently changed">●</span>
@@ -763,6 +768,17 @@
   .badge-critical {
     color: #f59e0b;
     font-weight: 700;
+  }
+
+  .badge-review-lens {
+    color: #38bdf8;
+    font-size: 11px;
+    opacity: 0.95;
+  }
+
+  .tree-row.review-lens {
+    /* Soft blue wash — not warning amber */
+    box-shadow: inset 2px 0 0 rgba(56, 189, 248, 0.45);
   }
 
   .badge-error {

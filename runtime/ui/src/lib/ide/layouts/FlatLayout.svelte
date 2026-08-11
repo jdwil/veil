@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getNodeStyle, paletteStylesVersion, type IrGraph, type IrNode } from '$lib/ide/types';
   import { selectedNodeId, diagnostics, changedNodeIds } from '$lib/ide/store';
-  import { isCriticalNode } from '$lib/ide/lenses';
+  import { nodeHasReviewLens, nodeHasHealthIssue } from '$lib/ide/lenses';
   import type { ProjectResult, PresentationModel } from '$lib/ide/presentation';
 
   let { projected, graph, presentationModel, onDrillDown }: {
@@ -97,7 +97,8 @@
           {@const warned = hasWarning(node.id)}
           {@const fields = getFieldsPreview(node)}
           {@const methods = getMethodsPreview(node)}
-          {@const critical = isCriticalNode(node, presentationModel, $diagnostics)}
+          {@const reviewLens = nodeHasReviewLens(node, presentationModel)}
+          {@const healthIssue = nodeHasHealthIssue(node, $diagnostics)}
 
           <button
             class="flat-item"
@@ -111,8 +112,10 @@
           >
             <div class="flat-item-main">
               <span class="flat-item-name">{node.name}</span>
-              {#if critical}
-                <span class="flat-badge badge-critical" title="Critical">!</span>
+              {#if healthIssue}
+                <span class="flat-badge badge-critical" title="Error or escape-hatch">!</span>
+              {:else if reviewLens}
+                <span class="flat-badge badge-review-lens" title="Review focus (layer lens)">⏳</span>
               {/if}
               {#if errored}
                 <span class="flat-badge badge-error" title="Error">⬤</span>
@@ -269,6 +272,7 @@
   }
 
   .badge-critical { color: #f59e0b; font-weight: 700; }
+  .badge-review-lens { color: #38bdf8; font-size: 11px; }
   .badge-error { color: #ef4444; font-size: 8px; }
   .badge-warning { color: #f59e0b; font-size: 8px; }
   .badge-changed { color: #22c55e; font-size: 8px; }
