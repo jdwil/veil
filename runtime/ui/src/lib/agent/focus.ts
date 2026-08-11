@@ -31,6 +31,18 @@ export type FocusDiagnostics = {
 	}>;
 };
 
+/** One visible IDE / shell pane for multi-pane deictic focus. */
+export type FocusPane = {
+	id: string;
+	label: string;
+	/** What the human sees in this pane right now. */
+	summary: string;
+	/** Last-interacted / primary for "this" when set. */
+	primary?: boolean;
+	/** Structured extras (wizard step, signature, tab, …). */
+	details?: Record<string, string | number | boolean | null | undefined>;
+};
+
 /** Continuous snapshot of human attention in the shell + IDE. */
 export type SessionFocus = {
 	route: string;
@@ -46,6 +58,13 @@ export type SessionFocus = {
 	revision?: number | null;
 	/** AgentSurface contracts on the current page (optional). */
 	surfaces?: unknown[];
+	/**
+	 * All major panes currently visible (outline, canvas, PR wizard, dock, …).
+	 * Agent should use these for "this", "the method", "in the wizard", etc.
+	 */
+	panes?: FocusPane[];
+	/** Id of the primary pane (matches panes[].id). */
+	primaryPane?: string | null;
 	updatedAt: number;
 };
 
@@ -99,6 +118,18 @@ export function patchFocus(partial: Partial<SessionFocus>): SessionFocus {
 		if ('file' in partial && partial.file == null) {
 			next.file = null;
 		}
+		if ('changeId' in partial && partial.changeId == null) {
+			next.changeId = null;
+		}
+		if ('panel' in partial && partial.panel == null) {
+			next.panel = null;
+		}
+		if ('primaryPane' in partial && partial.primaryPane == null) {
+			next.primaryPane = null;
+		}
+		if ('panes' in partial && (partial.panes == null || partial.panes.length === 0)) {
+			next.panes = partial.panes ?? [];
+		}
 		return next;
 	});
 	notify(next);
@@ -129,6 +160,10 @@ export function focusPayload(focus?: SessionFocus): Record<string, unknown> {
 	if (f.surfaces && f.surfaces.length) {
 		out.surfaces = f.surfaces.slice(0, 12);
 	}
+	if (f.panes && f.panes.length) {
+		out.panes = f.panes.slice(0, 16);
+	}
+	if (f.primaryPane) out.primaryPane = f.primaryPane;
 	return out;
 }
 
@@ -145,7 +180,7 @@ export function formatFocusForAgent(focus?: SessionFocus): string {
 		const k = f.constructKind ? ` (${f.constructKind})` : '';
 		lines.push(`- Construct / component in view: \`${f.construct}\`${k}`);
 		lines.push(
-			'  When the user says "this component", "this construct", or "this node", they mean the above.'
+			'  When the user says "this component", "this construct", "this method", or "this node", they mean the above (or the primary pane below).'
 		);
 	}
 	if (f.selection) {
@@ -156,6 +191,7 @@ export function formatFocusForAgent(focus?: SessionFocus): string {
 	}
 	if (f.changeId) lines.push(`- Change request: ${f.changeId}`);
 	if (f.panel) lines.push(`- Panel: ${f.panel}`);
+	if (f.primaryPane) lines.push(`- Primary pane: ${f.primaryPane}`);
 	if (f.form?.id) {
 		lines.push(`- Form: ${f.form.id}` + (f.form.dirty ? ' (dirty)' : ''));
 	}
@@ -168,6 +204,47 @@ export function formatFocusForAgent(focus?: SessionFocus): string {
 		}
 	}
 	if (f.revision != null) lines.push(`- Coding revision: ${f.revision}`);
+
+	// Multi-pane IDE / shell — full picture for casual conversation
+	if (f.panes && f.panes.length > 0) {
+		lines.push('');
+		lines.push('### Visible panes (what the operator is looking at)');
+		lines.push(
+			'Resolve deictic language against these panes. Prefer the pane marked ★ primary.'
+		);
+		for (const p of f.panes) {
+			const star = p.primary ? '★ ' : '  ';
+			lines.push(`${star}**${p.label}** (\`${p.id}\`): ${p.summary}`);
+			if (p.details) {
+				const bits: string[] = [];
+				for (const [k, val] of Object.entries(p.details)) {
+					if (val == null || val === '') continue;
+					// Keep prompt compact — skip long nulls
+					const s = String(val);
+					if (s.length > 220) bits.push(`${k}=${s.slice(0, 200)}…`);
+					else bits.push(`${k}=${s}`);
+				}
+				if (bits.length) lines.push(`     ${bits.join(' · ')}`);
+			}
+		}
+		// Explicit PR Wizard deictic help
+		const wiz = f.panes.find((p) => p.id === 'pr-wizard' && p.primary);
+		if (wiz?.details?.itemName) {
+			lines.push('');
+			lines.push(
+				`Operator is reviewing **\`${wiz.details.itemName}\`** in the PR Wizard` +
+					(wiz.details.itemKind ? ` (${wiz.details.itemKind})` : '') +
+					'. Questions about "this", "why", "the signature", or "this change" refer to that wizard step unless they name something else.'
+			);
+			if (wiz.details.rationale) {
+				lines.push(`Agent rationale on this step: ${wiz.details.rationale}`);
+			}
+			if (wiz.details.signature) {
+				lines.push(`Signature: ${wiz.details.signature}`);
+			}
+		}
+	}
+
 	return lines.join('\n');
 }
 

@@ -69,6 +69,57 @@ export const checkMeta = writable<Omit<CheckResponse, 'diagnostics'> | null>(nul
 /** Active codegen target for check (rust | typescript). */
 export const checkTarget = writable<string>('rust');
 
+/** Live session change list (agent/operator edits this load). Newest first. */
+export interface SessionChangeEntry {
+  id: string;
+  nodeId: number | null;
+  name: string;
+  kind: string;
+  subkind: string | null;
+  change: 'added' | 'changed' | 'removed';
+  at: number;
+}
+export const sessionChanges = writable<SessionChangeEntry[]>([]);
+/** Bumped when structural /diff should refresh (sidebar Changes tab). */
+export const changesRevision = writable(0);
+
+/**
+ * What the Changes tab selected for the main pane review.
+ * Independent of Outline node selection so clicking a change shows a real
+ * before/after review instead of only the construct editor.
+ */
+/** Git-shaped review sources (no structural "vs baseline"). */
+export type ChangeReviewSource = 'uncommitted' | 'commit' | 'session' | 'structural';
+
+export interface ChangeReviewItem {
+  source: ChangeReviewSource;
+  /** Unique key for list selection highlight */
+  key: string;
+  title: string;
+  changeKind: string;
+  name: string | null;
+  nodeId: number | null;
+  subkind: string | null;
+  /** Optional before/after previews */
+  beforePreview?: string[];
+  afterPreview?: string[];
+  beforeText?: string | null;
+  afterText?: string | null;
+  baseLabel?: string | null;
+  headLabel?: string | null;
+  at?: number | null;
+  /** Named commit fields (History tab) */
+  commitId?: string | null;
+  commitMessage?: string | null;
+  commitFiles?: string[];
+}
+
+export const selectedChangeReview = writable<ChangeReviewItem | null>(null);
+
+export function clearChangeReview() {
+  selectedChangeReview.set(null);
+}
+
 /**
  * Host origin for the API.
  * Product default: same-origin ProductHost (runtime shell or /viewer).
@@ -292,7 +343,8 @@ export function embedShellConfig(): EmbedShellConfig {
       paletteLayers: [],
       showTopBar: true,
       showOutline: true,
-      showDiff: true,
+      // Structural IR "vs baseline" is not git status — keep off by default.
+      showDiff: false,
       showInfraToggle: true,
       showCriticalToggle: true,
       showDevToolbar: true,
@@ -398,6 +450,12 @@ function applySessionPayload(data: {
     slug?: string;
     revision?: number;
     draft_mode?: boolean;
+    branch_name?: string;
+    base_branch?: string;
+    head_commit?: string | null;
+    committed_revision?: number | null;
+    uncommitted?: boolean;
+    branch?: string;
   };
   work_dir?: string;
 }) {
@@ -411,6 +469,12 @@ function applySessionPayload(data: {
     revision: s.revision ?? 0,
     draft_mode: s.draft_mode,
     work_dir: data.work_dir,
+    branch_name: s.branch_name,
+    base_branch: s.base_branch,
+    head_commit: s.head_commit ?? null,
+    committed_revision: s.committed_revision ?? null,
+    uncommitted: s.uncommitted,
+    branch: s.branch,
   });
   sessionSaveState.set('ready');
   sessionSaveDetail.set(null);
@@ -745,6 +809,12 @@ export const codingSessionMeta = writable<{
   revision: number;
   draft_mode?: boolean;
   work_dir?: string;
+  branch_name?: string;
+  base_branch?: string;
+  head_commit?: string | null;
+  committed_revision?: number | null;
+  uncommitted?: boolean;
+  branch?: string;
 } | null>(null);
 
 function publishDiagsToHost(diags: Diagnostic[]) {
@@ -847,6 +917,57 @@ function nodeFingerprint(n: IrNode): string {
   return `${n.name}|${n.kind}|${n.metadata?.subkind ?? ''}|${n.span.start}:${n.span.end}|${(n.metadata?.annotations ?? []).join(',')}|${(n.metadata?.properties ?? []).map(([k, v]) => `${k}=${v}`).join(',')}`;
 }
 
+/** Merge IR delta into the live session Changes list (newest first, dedupe). */
+function mergeSessionChanges(prev: IrGraph, next: IrGraph, changedIds: Set<number>) {
+  const prevById = new Map(prev.nodes.map((n) => [n.id, n]));
+  const nextById = new Map(next.nodes.map((n) => [n.id, n]));
+  const now = Date.now();
+  const batch: SessionChangeEntry[] = [];
+
+  for (const id of changedIds) {
+    const n = nextById.get(id);
+    if (!n || n.kind === 'Solution') continue;
+    const was = prevById.get(id);
+    batch.push({
+      id: `${id}:${now}:${was ? 'changed' : 'added'}`,
+      nodeId: id,
+      name: n.name,
+      kind: n.kind,
+      subkind: n.metadata?.subkind ?? null,
+      change: was ? 'changed' : 'added',
+      at: now,
+    });
+  }
+
+  for (const p of prev.nodes) {
+    if (p.kind === 'Solution') continue;
+    if (!nextById.has(p.id)) {
+      batch.push({
+        id: `${p.id}:${now}:removed`,
+        nodeId: null,
+        name: p.name,
+        kind: p.kind,
+        subkind: p.metadata?.subkind ?? null,
+        change: 'removed',
+        at: now,
+      });
+    }
+  }
+
+  if (batch.length === 0) return;
+
+  sessionChanges.update((list) => {
+    const keys = new Set(
+      batch.map((b) => (b.nodeId != null ? `id:${b.nodeId}` : `nm:${b.kind}:${b.name}`))
+    );
+    const kept = list.filter((e) => {
+      const k = e.nodeId != null ? `id:${e.nodeId}` : `nm:${e.kind}:${e.name}`;
+      return !keys.has(k);
+    });
+    return [...batch, ...kept].slice(0, 200);
+  });
+}
+
 export type LoadActiveOptions = {
   /** Keep breadcrumbs / drill-down / selection when possible (agent edits). */
   preserveNav?: boolean;
@@ -904,15 +1025,19 @@ async function loadActiveFile(
     fetchWithTimeout(PROJECT_URL(), withMode()).catch(() => null),
   ]);
 
-  // Detect changed nodes for flash animation (only on preserveNav / agent edits).
+  // Detect changed nodes for flash + live Changes tab (preserveNav / agent edits).
   if (preserveNav) {
     let prevGraph: IrGraph | null = null;
-    const unsub = irGraph.subscribe((g) => { prevGraph = g; });
+    const unsub = irGraph.subscribe((g) => {
+      prevGraph = g;
+    });
     unsub();
     if (prevGraph) {
       const changed = diffNodes(prevGraph, data);
       changedNodeIds.set(changed);
-      // Auto-clear flash after animation duration.
+      mergeSessionChanges(prevGraph, data, changed);
+      changesRevision.update((n) => n + 1);
+      // Auto-clear flash after animation duration (session list keeps history).
       setTimeout(() => changedNodeIds.set(new Set()), 1200);
     }
   }
@@ -922,11 +1047,11 @@ async function loadActiveFile(
     selectedNodeId.set(null);
   }
 
-  // Check: await when preserving nav (agent edit — need live error badge);
+  // Check: await when preserving nav (agent edit — live error/warn counts);
   // otherwise fire-and-forget so first paint isn't blocked on large packages.
   const checkPromise = fetchCheck();
-  if (!preserveNav) {
-    void checkPromise;
+  if (preserveNav) {
+    await checkPromise;
   }
 
   if (srcRes.ok) {
@@ -1080,9 +1205,16 @@ export async function fetchIr() {
 /**
  * Soft reload after agent / edit tools — no full-page loading flash, keep nav.
  * Prefer this when the server already applied source changes in-process.
+ *
+ * Important: bumping `loadGeneration` cancels in-flight `fetchIr` / `selectFile`.
+ * Those paths only clear `loading` when they still own the generation, so a soft
+ * refresh that supersedes them must clear the overlay itself — otherwise the IDE
+ * sticks on "Loading..." after an agent turn (end-of-turn remount + refresh race).
  */
 export async function refreshAfterEdit(): Promise<void> {
   const gen = ++loadGeneration;
+  // Soft path never uses the full-page overlay; also unstick a superseded hard load.
+  loading.set(false);
   error.set(null);
   try {
     await loadActiveFile(gen, { preserveNav: true });
@@ -1417,6 +1549,39 @@ export function focusDiagnostic(diag: Diagnostic) {
   }
   if (!node) return;
   selectedNodeId.set(String(node.id));
+}
+
+/**
+ * Jump to a construct by name for PR Wizard review.
+ * Selects the node and navigates outline host to its parent so the construct is visible.
+ * Returns true if the node was found.
+ */
+export function focusConstructByName(name: string): boolean {
+  const graph = get(irGraph);
+  if (!graph || !name) return false;
+  const node =
+    graph.nodes.find((n) => n.name === name && n.kind !== 'Solution') ||
+    graph.nodes.find((n) => n.name === name);
+  if (!node) return false;
+  selectedNodeId.set(String(node.id));
+  // Navigate so parent context is on canvas/outline (not stuck in unrelated host).
+  const parentId = node.metadata?.parent ?? null;
+  if (parentId != null) {
+    // Prefer showing the parent host that contains this construct
+    const parent = graph.nodes.find((n) => n.id === parentId);
+    if (parent && parent.kind !== 'Solution') {
+      // If parent is a Group, go to grandparent (context) when possible
+      const grand = parent.metadata?.parent;
+      if (parent.kind === 'Group' && grand != null) {
+        navigateTo(grand);
+      } else {
+        navigateTo(parentId);
+      }
+    } else if (parentId != null) {
+      navigateTo(parentId);
+    }
+  }
+  return true;
 }
 
 /** Get children of a given parent node */

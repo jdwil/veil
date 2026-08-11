@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getNodeStyle, type IrGraph, type IrNode } from '$lib/ide/types';
+  import { getNodeStyle, paletteStylesVersion, type IrGraph, type IrNode } from '$lib/ide/types';
   import { onMount } from 'svelte';
   import {
     selectedNodeId,
@@ -170,6 +170,10 @@
   }
 
   let tree = $derived.by(() => {
+    // Depend on palette registration so Aggregate/VO folders re-label after
+    // secondary /api/palette load (otherwise stuck on TypeDef "Types").
+    void $paletteStylesVersion;
+
     const nodeById = new Map<number, IrNode>();
     for (const n of graph.nodes) nodeById.set(n.id, n);
 

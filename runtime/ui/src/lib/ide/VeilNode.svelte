@@ -89,7 +89,10 @@
         <span class="infra-badge" title="Layer-provided infrastructure (not user source)">infra</span>
       {/if}
       {#if isCritical}
-        <span class="critical-badge" title="Critical (layer lens or diagnostic)">!</span>
+        <span
+          class="critical-badge"
+          title="Review-critical: layer lens (e.g. Port) and/or error/escape diagnostic — not always an issue on this node"
+        >!</span>
       {/if}
       {#if hasCompensate}
         <span class="compensate-badge" title="Has compensation (rollback)">↩</span>

@@ -8,6 +8,8 @@ export {
 	agentComposerKey,
 	agentPendingSeed,
 	agentPanelOpen,
+	agentPanelMinimized,
+	openAgentPanel,
 	agentUnreadCount,
 	agentSend,
 	agentAbort,
@@ -42,6 +44,7 @@ export {
 	focusPayload,
 	onFocusChange,
 	type SessionFocus,
+	type FocusPane,
 } from './focus';
 
 export {

@@ -45,7 +45,16 @@ export const agentStatusLine = writable('');
 export const agentComposerKey = writable(0);
 export const agentPendingSeed = writable('');
 export const agentPanelOpen = writable(false);
+/** Collapsed to a thin strip (session stays warm; Cmd+K still toggles open). */
+export const agentPanelMinimized = writable(false);
 export const agentUnreadCount = writable(0);
+
+/** Open the agent dock expanded (un-minimize). Used when agent work needs attention. */
+export function openAgentPanel() {
+	agentPanelOpen.set(true);
+	agentPanelMinimized.set(false);
+	agentUnreadCount.set(0);
+}
 
 // ─── Context (injected per turn) — thin adapter over SessionFocus ───────────
 
@@ -125,6 +134,125 @@ const TOOL_NAV: Record<string, NavigationAction> = {
 	navigate_to: { action: 'goto', path: '/dashboard' }
 };
 
+/** Tools that mean "I'm working on product source" — operator should be in the IDE. */
+const CODING_TOOLS = new Set([
+	'write_source',
+	'create_file',
+	'select_file',
+	'rename_construct',
+	'ws_write',
+	'ws_str_replace',
+	'create_branch',
+	'session_commit',
+	'merge_branch',
+	'veil_check',
+	'veil_outline',
+	'read_source',
+	'list_files'
+]);
+
+/** Tools that mutate source (should refresh IDE + end on IDE). */
+const CODE_EDIT_TOOLS = new Set([
+	'write_source',
+	'create_file',
+	'rename_construct',
+	'ws_write',
+	'ws_str_replace',
+	'session_commit',
+	'merge_branch'
+]);
+
+/** Project slug we're coding on this turn (from create_project / tools / focus). */
+let turnCodingProject: string | null = null;
+/** True if this turn applied a source mutation. */
+let turnDidCodeEdit = false;
+
+function ideNav(project: string): NavigationAction {
+	const p = project.trim();
+	return {
+		action: 'open-ide',
+		path: `/projects/${encodeURIComponent(p)}/ide`,
+		project: p
+	};
+}
+
+function projectFromUnknown(output?: unknown, argsJson?: string): string | null {
+	const tryObj = (o: Record<string, unknown>): string | null => {
+		const direct = o.project ?? o.slug ?? o.name;
+		if (typeof direct === 'string' && direct.trim() && !direct.includes(' ')) {
+			// bare slug
+			return direct.trim();
+		}
+		if (typeof direct === 'string' && direct.trim()) {
+			// display name → leave as-is; routes accept slug mostly
+			return direct.trim().toLowerCase().replace(/\s+/g, '-').replace(/_/g, '-');
+		}
+		const proj = o.project;
+		if (proj && typeof proj === 'object') {
+			const pr = proj as Record<string, unknown>;
+			const s = pr.slug ?? pr.name;
+			if (typeof s === 'string' && s.trim()) return String(s).trim();
+		}
+		const nav = o.navigation;
+		if (nav && typeof nav === 'object') {
+			const n = nav as Record<string, unknown>;
+			if (typeof n.project === 'string' && n.project.trim()) return n.project.trim();
+			if (typeof n.path === 'string') {
+				const m = n.path.match(/\/projects\/([^/]+)/);
+				if (m?.[1]) return decodeURIComponent(m[1]);
+			}
+		}
+		return null;
+	};
+	if (output && typeof output === 'object') {
+		const hit = tryObj(output as Record<string, unknown>);
+		if (hit) return hit;
+	}
+	if (typeof output === 'string') {
+		try {
+			const parsed = JSON.parse(output) as Record<string, unknown>;
+			const hit = tryObj(parsed);
+			if (hit) return hit;
+		} catch {
+			/* ignore */
+		}
+	}
+	if (argsJson) {
+		try {
+			const raw = JSON.parse(argsJson) as Record<string, unknown>;
+			const detail = (raw.detail as Record<string, unknown>) || raw;
+			const hit = tryObj(detail);
+			if (hit) return hit;
+		} catch {
+			/* ignore */
+		}
+	}
+	return getFocus().project ?? null;
+}
+
+function rememberCodingProject(project: string | null) {
+	if (project?.trim()) turnCodingProject = project.trim();
+}
+
+/** Debounce IDE reloads so multi-write turns don't thrash IR/layout mid-stream. */
+let ideRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function refreshIdeAfterEdit() {
+	if (typeof window === 'undefined') {
+		sendToIde({ type: 'agent:refresh', payload: { reason: 'agent-write' } });
+		return;
+	}
+	if (ideRefreshTimer != null) clearTimeout(ideRefreshTimer);
+	ideRefreshTimer = setTimeout(() => {
+		ideRefreshTimer = null;
+		// iframe embed (legacy viewer)
+		sendToIde({ type: 'agent:refresh', payload: { reason: 'agent-write' } });
+		// same-window custom event for in-shell IdeApp
+		window.dispatchEvent(
+			new CustomEvent('veil:agent-refresh', { detail: { reason: 'agent-write' } })
+		);
+	}, 500);
+}
+
 function navigationFromTool(name: string, output?: unknown, argsJson?: string): NavigationAction | null {
 	// Structured navigation in tool output (preferred)
 	if (output && typeof output === 'object') {
@@ -183,6 +311,14 @@ function navigationFromTool(name: string, output?: unknown, argsJson?: string): 
 		}
 		return { action: 'goto', path: '/projects' };
 	}
+	// Source/IDE work → open product IDE (not leave operator on registry/dashboard)
+	if (CODING_TOOLS.has(name) || name === 'create_project' || name === 'create_repo') {
+		const project =
+			projectFromUnknown(output, argsJson) || turnCodingProject || getFocus().project;
+		if (project) {
+			return ideNav(project);
+		}
+	}
 	return TOOL_NAV[name] ?? null;
 }
 
@@ -190,6 +326,57 @@ function navigationFromTool(name: string, output?: unknown, argsJson?: string): 
 
 const stream = new StreamService();
 let currentMessageId: string | null = null;
+
+/**
+ * Coalesce content_delta frames into one store update per animation frame.
+ * ACP (and the old char-typewriter path) can emit dozens of deltas per second;
+ * each update re-runs marked + MessageList and freezes the dock so text looks
+ * like it “dumps” at the end. rAF batching keeps live paint without thrash.
+ */
+const pendingDeltas = new Map<string, string>();
+let deltaRaf: number | null = null;
+
+function flushPendingDeltas() {
+	deltaRaf = null;
+	if (pendingDeltas.size === 0) return;
+	const batch = new Map(pendingDeltas);
+	pendingDeltas.clear();
+	setMessages((prev) =>
+		prev.map((m) => {
+			const delta = batch.get(m.id);
+			if (!delta) return m;
+			const blocks = [...m.content];
+			const last = blocks[blocks.length - 1];
+			if (last && last.type === 'text') {
+				blocks[blocks.length - 1] = { type: 'text', text: last.text + delta };
+			} else {
+				blocks.push({ type: 'text', text: delta });
+			}
+			return { ...m, content: blocks, status: 'streaming' };
+		})
+	);
+}
+
+function queueContentDelta(messageId: string, delta: string) {
+	if (!delta) return;
+	pendingDeltas.set(messageId, (pendingDeltas.get(messageId) ?? '') + delta);
+	if (typeof requestAnimationFrame === 'undefined') {
+		flushPendingDeltas();
+		return;
+	}
+	if (deltaRaf == null) {
+		deltaRaf = requestAnimationFrame(flushPendingDeltas);
+	}
+}
+
+/** Flush before tool/done so text ordering stays correct relative to tools. */
+function flushDeltasNow() {
+	if (deltaRaf != null && typeof cancelAnimationFrame !== 'undefined') {
+		cancelAnimationFrame(deltaRaf);
+		deltaRaf = null;
+	}
+	flushPendingDeltas();
+}
 
 function chatWsUrl(): string {
 	if (typeof window === 'undefined') return 'ws://127.0.0.1:3000/api/agent/chat';
@@ -213,9 +400,14 @@ function setMessages(updater: (prev: Message[]) => Message[]) {
 function handleEvent(event: StreamEvent) {
 	switch (event.event) {
 		case 'message_start': {
+			flushDeltasNow();
+			pendingDeltas.clear();
 			currentMessageId = event.data.messageId;
 			const sid = (event.data as { sessionId?: string }).sessionId;
 			if (sid) setCodingSessionId(sid);
+			// Reset per-turn coding UX state (where to land after research detours)
+			turnCodingProject = getFocus().project;
+			turnDidCodeEdit = false;
 			const msg: Message = {
 				id: event.data.messageId,
 				role: 'assistant',
@@ -226,8 +418,8 @@ function handleEvent(event: StreamEvent) {
 				provider: event.data.provider
 			};
 			setMessages((prev) => [...prev, msg]);
-			// Increment unread if panel is closed
-			if (!get(agentPanelOpen)) {
+			// Increment unread if panel is closed or minimized
+			if (!get(agentPanelOpen) || get(agentPanelMinimized)) {
 				agentUnreadCount.update((n) => n + 1);
 			}
 			agentStatusLine.set('agent running…');
@@ -242,23 +434,11 @@ function handleEvent(event: StreamEvent) {
 			break;
 		}
 		case 'content_delta': {
-			const id = event.data.messageId;
-			setMessages((prev) =>
-				prev.map((m) => {
-					if (m.id !== id) return m;
-					const blocks = [...m.content];
-					const last = blocks[blocks.length - 1];
-					if (last && last.type === 'text') {
-						blocks[blocks.length - 1] = { type: 'text', text: last.text + event.data.delta };
-					} else {
-						blocks.push({ type: 'text', text: event.data.delta });
-					}
-					return { ...m, content: blocks, status: 'streaming' };
-				})
-			);
+			queueContentDelta(event.data.messageId, event.data.delta ?? '');
 			break;
 		}
 		case 'tool_call_start': {
+			flushDeltasNow();
 			const id = event.data.messageId;
 			const toolName = event.data.name as string;
 			setMessages((prev) =>
@@ -301,6 +481,7 @@ function handleEvent(event: StreamEvent) {
 			break;
 		}
 		case 'tool_result': {
+			flushDeltasNow();
 			const id = event.data.messageId;
 			const toolName = event.data.name as string;
 			const output = event.data.output;
@@ -322,22 +503,47 @@ function handleEvent(event: StreamEvent) {
 			);
 			// Git-shaped tools may switch the active coding session (branch/main)
 			maybeApplyCodingSessionSwitch(toolName, output);
+			// Track coding project for end-of-turn landing
+			const proj = projectFromUnknown(output);
+			if (toolName === 'create_project' || toolName === 'create_repo' || CODING_TOOLS.has(toolName)) {
+				rememberCodingProject(proj);
+			}
+			if (CODE_EDIT_TOOLS.has(toolName) && !event.data.isError) {
+				turnDidCodeEdit = true;
+				// Ensure IDE is open *before* refresh so SSE/reload is visible
+				const p = turnCodingProject || proj || getFocus().project;
+				if (p) {
+					emitNavigation(ideNav(p));
+					// Allow SPA route + iframe to settle, then force IR reload
+					setTimeout(() => refreshIdeAfterEdit(), 350);
+				} else {
+					refreshIdeAfterEdit();
+				}
+				agentStatusLine.set(`${toolName} — source updated`);
+			}
 			// Intent + Present preferred over coarse TOOL_NAV
 			const intent = intentFromToolResult(toolName, output);
 			if (intent?.present?.steps?.length) {
 				void runIntentPresent(intent);
-			} else {
+			} else if (!CODE_EDIT_TOOLS.has(toolName)) {
+				// Edit tools already navigated to IDE above
 				const nav = navigationFromTool(toolName, output);
 				if (nav) emitNavigation(nav);
 			}
 			break;
 		}
 		case 'error': {
+			flushDeltasNow();
 			agentError.set(event.data.message);
 			agentStatusLine.set(event.data.message);
 			break;
 		}
+		case 'content_stop': {
+			flushDeltasNow();
+			break;
+		}
 		case 'done': {
+			flushDeltasNow();
 			const id = event.data.messageId;
 			setMessages((prev) =>
 				prev.map((m) => (m.id === id ? { ...m, status: 'complete' as const } : m))
@@ -348,8 +554,24 @@ function handleEvent(event: StreamEvent) {
 			} else if (data.backend && typeof data.backend === 'string') {
 				agentStatusLine.set(data.backend);
 			}
-			// Coarse navigation in done payload (rare). Prefer tool_result Intent Present.
-			if (data.navigation && typeof data.navigation === 'object') {
+			const sourceChanged = data.sourceChanged === true || turnDidCodeEdit;
+			// End-of-turn landing: if we edited (or server says source changed), do NOT leave
+			// the operator on a research detour (/registry, etc.) — open the product IDE.
+			if (sourceChanged) {
+				const project =
+					turnCodingProject ||
+					projectFromUnknown(data) ||
+					getFocus().project ||
+					null;
+				if (project) {
+					emitNavigation(ideNav(project));
+					setTimeout(() => refreshIdeAfterEdit(), 400);
+					agentStatusLine.set(`IDE · ${project}`);
+				} else if (data.navigation && typeof data.navigation === 'object') {
+					emitNavigation(data.navigation as NavigationAction);
+				}
+			} else if (data.navigation && typeof data.navigation === 'object') {
+				// Coarse navigation in done payload when no code edits
 				emitNavigation(data.navigation as NavigationAction);
 			}
 			// Persist after each complete turn
@@ -446,30 +668,48 @@ export async function agentSend(content: string, attachments?: File[]) {
 		.filter((m) => m.status === 'complete' || m.role === 'user')
 		.map((m) => ({ role: m.role, content: textOf(m) }));
 
-	// Refresh surfaces into SessionFocus before the turn
+	// Refresh surfaces + IDE multi-pane viewport into SessionFocus before the turn
 	if (typeof window !== 'undefined') {
 		const w = window as unknown as { __veilAgentSurface?: { surfaces?: unknown[] } };
 		if (w.__veilAgentSurface?.surfaces) {
 			patchFocus({ surfaces: w.__veilAgentSurface.surfaces });
 		}
+		// IDE panes (PR wizard step, outline, dock, …) — deictic "this"
+		try {
+			const { flushIdeViewportToFocus } = await import('../ide/ideViewport');
+			flushIdeViewportToFocus();
+		} catch {
+			/* not on IDE route */
+		}
 	}
 	const focus = getFocus();
 	const ctx = getAgentContext();
 
-	// Ensure durable coding session when project is known
-	const projectSlug = focus.project || ctx.project;
+	// Ensure durable coding session when project is known (slug form for server)
+	const projectSlug = slugifyClientProject(focus.project || ctx.project);
 	if (projectSlug) {
 		await ensureCodingSession(projectSlug);
+		// Keep focus.project as slug so server resolve_chat_project never drops it
+		if (focus.project && focus.project !== projectSlug) {
+			patchFocus({ project: projectSlug });
+		}
+	}
+
+	const focusForSend = getFocus();
+	const focusPayloadObj = focusPayload(focusForSend);
+	// Force slug on wire
+	if (projectSlug && focusPayloadObj && typeof focusPayloadObj === 'object') {
+		(focusPayloadObj as Record<string, unknown>).project = projectSlug;
 	}
 
 	// `project` + `focus` are VEIL hub extensions (not in aether ChatRequest type).
 	const request = {
 		messages: history,
-		systemPrompt: buildSystemPrompt(ctx),
-		project: focus.project || ctx.project || undefined,
+		systemPrompt: buildSystemPrompt(getAgentContext()),
+		project: projectSlug || undefined,
 		sessionId: getCodingSessionId() || undefined,
 		session_id: getCodingSessionId() || undefined,
-		focus: focusPayload(focus)
+		focus: focusPayloadObj
 	} as ChatRequest;
 
 	try {
@@ -593,6 +833,18 @@ function maybeApplyCodingSessionSwitch(toolName: string, output: unknown) {
 	}
 }
 
+/** Display name or path segment → URL/product slug. */
+function slugifyClientProject(raw: string | null | undefined): string | null {
+	if (!raw) return null;
+	const s = raw.trim();
+	if (!s || s.startsWith('(none')) return null;
+	const slug = s
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+	return slug.length >= 2 ? slug : null;
+}
+
 // ─── System Prompt Builder ──────────────────────────────────────────────────
 
 function buildSystemPrompt(ctx: AgentContext): string {
@@ -606,9 +858,11 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'- shell curl/wget/fetch/httpie to /api/repos, /api/projects, /api/change_requests, or any ProductHost API',
 		'- mkdir / writing under VEIL_PROJECTS_DIR, monorepo, or ~/dev/veil-projects',
 		'- describing navigation without calling navigate_to / open_* / create_project',
+		'- inventing "project is empty" without list_files + read_source on the bound slug',
+		'- create_project when the product already exists (tool returns existing:true — reuse it)',
 		'',
 		'REQUIRED platform MCP tools:',
-		'- create_project({name, description?, via?}) — CREATE product. via=ux: form then UX commit; via=server: domain first. Never re-POST.',
+		'- create_project({name, description?, via?}) — CREATE product once. Idempotent if slug exists.',
 		'- After via=ux create: wait_intent_ack({intent_id}) before write_source (intent_id from tool result).',
 		'- REMOTE (VEIL_SOURCE_MODE=s3): create_project → (wait_intent_ack if ux) → write_source/create_file.',
 		'- list_projects / get_project / open_project / open_ide / navigate_to / get_current_context / wait_intent_ack',
@@ -620,9 +874,19 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'- session_status / create_branch / session_commit / merge_branch / switch_main',
 		'- wiki_*, http_request, dev_*',
 		'',
-		'Deictic references ("this component", "this repo", "here"):',
-		'- Use Session Focus below. Do not ask the user to restate what is selected.',
-		'- If Focus.construct is set, operate on that construct.',
+		'Coding loop (non-negotiable for edits/refactors):',
+		'1. Ensure scope: open_ide({project: slug}) OR use Focus/live_project — tool result includes file_count.',
+		'2. list_files → if any .veil files, the project is NOT empty.',
+		'3. read_source (or select_file + read_source) before redesigning domain models.',
+		'4. write_source with full intended content → veil_check → fix any NEW diags same turn → session_commit when multi-step.',
+		'5. When task done: create_change + submit_change (PR for human review). NEVER merge_branch/merge_change unless operator says "merge".',
+		'6. Short requests ("use ddd.layer", "refactor to X") mean edit the EXISTING package, not invent a new one.',
+		'7. Research detours (wiki, registry) are fine mid-turn; always return to IDE for code writes.',
+		'',
+		'Deictic references ("this component", "this method", "this change", "here", "the wizard"):',
+		'- Use Session Focus + Visible panes below. Do not ask the user to restate what is selected.',
+		'- Prefer the pane marked ★ primary. If PR Wizard is primary, "this" = that wizard step (name, signature, rationale).',
+		'- If Focus.construct is set, operate on that construct unless panes point at a more specific review item.',
 		'',
 		'When the user asks to open/show/list something in the UI:',
 		'1. Call the matching tool FIRST',
@@ -690,7 +954,7 @@ function hydrateFocusFromSession(session: Record<string, unknown> | undefined | 
 	}
 }
 
-/** Create or attach durable coding session for a project slug. */
+/** Create or attach durable coding session for a project slug **or** repo UUID. */
 export async function ensureCodingSession(slug: string | null): Promise<string | null> {
 	if (!slug || typeof window === 'undefined') return getCodingSessionId();
 	const existing = getCodingSessionId();
@@ -699,8 +963,19 @@ export async function ensureCodingSession(slug: string | null): Promise<string |
 			const res = await fetch(`/api/sessions/${encodeURIComponent(existing)}`);
 			if (res.ok) {
 				const data = await res.json();
-				if (data?.session?.slug === slug) {
-					hydrateFocusFromSession(data.session as Record<string, unknown>);
+				const s = data?.session as Record<string, unknown> | undefined;
+				// Same product if slug matches **or** route used repo UUID (id).
+				// Without this, /projects/{uuid}/ide creates a second sticky session
+				// while agent-registry sticky holds agent writes — IDE looks unchanged.
+				const sessionSlug = typeof s?.slug === 'string' ? s.slug : '';
+				const sessionRepo = typeof s?.repo_id === 'string' ? s.repo_id : '';
+				if (
+					sessionSlug === slug ||
+					sessionRepo === slug ||
+					// server may canonicalize UUID → product slug on create
+					(sessionSlug && sessionRepo && (slug === sessionSlug || slug === sessionRepo))
+				) {
+					hydrateFocusFromSession(s as Record<string, unknown>);
 					return existing;
 				}
 			}
@@ -709,6 +984,8 @@ export async function ensureCodingSession(slug: string | null): Promise<string |
 		}
 	}
 	try {
+		// Always POST — server get_or_create_default canonicalizes slug↔repo_id
+		// and reuses the single mainline sticky for the product.
 		const res = await fetch('/api/sessions', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -918,8 +1195,7 @@ function handleIdeMessage(event: MessageEvent) {
 			const p = msg.payload as { text?: string; autoSend?: boolean } | undefined;
 			const text = p?.text?.trim();
 			if (!text) break;
-			agentPanelOpen.set(true);
-			agentUnreadCount.set(0);
+			openAgentPanel();
 			if (p?.autoSend !== false) {
 				void agentSend(text);
 			} else {

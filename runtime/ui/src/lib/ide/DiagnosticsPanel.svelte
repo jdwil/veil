@@ -52,7 +52,7 @@
   }
 </script>
 
-{#if count > 0}
+{#if count > 0 || expanded}
   <div
     class="diagnostics-badge"
     class:expanded
@@ -60,8 +60,18 @@
     style:top="{offsetTop}px"
   >
     <button class="badge-btn" onclick={() => (expanded = !expanded)}>
-      {errorCount > 0 ? '⛔' : '⚠️'}
-      {badgeText()}
+      {#if errorCount > 0}
+        ⛔
+      {:else if warningCount > 0}
+        ⚠️
+      {:else}
+        ✓
+      {/if}
+      {#if count > 0}
+        {badgeText()}
+      {:else}
+        No issues
+      {/if}
     </button>
 
     {#if expanded}
@@ -69,6 +79,7 @@
         {#if meta}
           <div class="diag-meta">
             target: {meta.target}
+            · {meta.error_count ?? errorCount} errors · {meta.warning_count ?? warningCount} warnings
             {#if meta.escape_hatch}
               · escape debt: {(meta.escape_hatch.raw_surface ?? 0) +
                 (meta.escape_hatch.empty_adapter ?? 0) +
@@ -76,6 +87,9 @@
                 (meta.escape_hatch.json_boundary ?? 0)}
             {/if}
           </div>
+        {/if}
+        {#if items.length === 0}
+          <div class="diag-item">No diagnostics for this package.</div>
         {/if}
         {#each items as diag}
           <button

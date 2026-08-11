@@ -1,80 +1,77 @@
 /**
- * Publish IDE selection into SessionFocus so the agent understands
- * "this component" / "this file" without extra user explanation.
+ * Publish IDE selection + diagnostics into ideViewport / SessionFocus so the
+ * agent understands "this component" / "this file" without extra explanation.
  */
 import { get } from 'svelte/store';
-import { irGraph, selectedNodeId, diagnostics } from './store';
-import { patchFocus } from '$lib/agent';
+import {
+	irGraph,
+	selectedNodeId,
+	diagnostics,
+	activeFileName,
+	activeFileKind,
+} from './store';
+import {
+	ideViewport,
+	patchIdeViewport,
+	flushIdeViewportToFocus,
+	clearIdeViewport,
+} from './ideViewport';
 
 let unsubs: Array<() => void> = [];
 
 export function startIdeFocusBridge(project: string): () => void {
 	stopIdeFocusBridge();
 
-	const publishSelection = () => {
+	const publish = () => {
 		const id = get(selectedNodeId);
 		const graph = get(irGraph);
 		const diags = get(diagnostics);
-		if (!id || !graph) {
-			patchFocus({
-				project,
-				route: `/projects/${project}/ide`,
-				construct: null,
-				constructKind: null,
-				selection: null,
-				diagnostics: {
-					count: diags.length,
-					sample: diags.slice(0, 5).map((d) => ({
-						severity: d.severity,
-						message: d.message,
-						node_name: d.node_name,
-						code: d.code,
-						hint: d.hint
-					}))
-				}
-			});
-			return;
+		const file = get(activeFileName);
+		const fileKind = get(activeFileKind);
+		const prev = get(ideViewport);
+
+		const sample = diags.slice(0, 5).map((d) => ({
+			severity: d.severity,
+			message: d.message,
+			node_name: d.node_name,
+			code: d.code,
+			hint: d.hint,
+		}));
+
+		const node =
+			id && graph
+				? graph.nodes.find((n) => String(n.id) === String(id))
+				: undefined;
+
+		// Don't steal primary from PR Wizard while the human is reviewing
+		let primaryPane = prev.primaryPane;
+		if (!prev.prWizard.open) {
+			primaryPane = node ? 'canvas' : prev.primaryPane || 'outline';
 		}
-		const node = graph.nodes.find((n) => String(n.id) === String(id));
-		if (!node) {
-			patchFocus({
-				project,
-				route: `/projects/${project}/ide`,
-				construct: null,
-				constructKind: null,
-				selection: null
-			});
-			return;
-		}
-		patchFocus({
+
+		patchIdeViewport({
 			project,
-			route: `/projects/${project}/ide`,
-			construct: node.name,
-			constructKind: node.kind,
-			selection: {
-				kind: node.kind,
-				id: String(node.id),
-				label: node.name
-			},
-			diagnostics: {
-				count: diags.length,
-				sample: diags.slice(0, 5).map((d) => ({
-					severity: d.severity,
-					message: d.message,
-					node_name: d.node_name,
-					code: d.code,
-					hint: d.hint
-				}))
-			}
+			file: file || null,
+			fileKind: fileKind || null,
+			construct: node?.name ?? null,
+			constructKind: node?.kind ?? null,
+			constructSubkind: node?.metadata?.subkind ?? null,
+			selectionId: node ? String(node.id) : null,
+			diagnosticsCount: diags.length,
+			diagnosticsSample: sample,
+			primaryPane,
 		});
+		flushIdeViewportToFocus();
 	};
 
 	unsubs = [
-		selectedNodeId.subscribe(() => publishSelection()),
-		irGraph.subscribe(() => publishSelection()),
-		diagnostics.subscribe(() => publishSelection())
+		selectedNodeId.subscribe(() => publish()),
+		irGraph.subscribe(() => publish()),
+		diagnostics.subscribe(() => publish()),
+		activeFileName.subscribe(() => publish()),
 	];
-	publishSelection();
+	patchIdeViewport({ project, primaryPane: 'canvas' });
+	publish();
 
 	return stopIdeFocusBridge;
 }
@@ -82,4 +79,5 @@ export function startIdeFocusBridge(project: string): () => void {
 export function stopIdeFocusBridge() {
 	for (const u of unsubs) u();
 	unsubs = [];
+	clearIdeViewport();
 }

@@ -14,6 +14,7 @@
 		agentComposerKey,
 		agentPendingSeed,
 		agentPanelOpen,
+		agentPanelMinimized,
 		agentUnreadCount,
 		agentSend,
 		agentAbort,
@@ -200,11 +201,18 @@
 	}
 
 	function togglePanel() {
-		agentPanelOpen.update((v) => !v);
-		if (!$agentPanelOpen) {
-			// Opening — clear unread
-			agentUnreadCount.set(0);
-		}
+		// Close fully (not minimize)
+		agentPanelOpen.set(false);
+		agentPanelMinimized.set(false);
+	}
+
+	function minimizePanel() {
+		agentPanelMinimized.set(true);
+	}
+
+	function expandPanel() {
+		agentPanelMinimized.set(false);
+		agentUnreadCount.set(0);
 	}
 
 	function handleSend(content: string, attachments?: File[]) {
@@ -269,6 +277,38 @@
 </script>
 
 {#if $agentPanelOpen}
+	{#if $agentPanelMinimized}
+		<aside
+			class="agent-dock agent-dock--minimized"
+			role="complementary"
+			aria-label="AI Agent (minimized)"
+		>
+			<button
+				type="button"
+				class="min-strip"
+				title="Expand agent panel (Cmd+K)"
+				onclick={expandPanel}
+				aria-label="Expand agent panel"
+			>
+				<span class="agent-icon" class:connected={isAcpConnected()}>◆</span>
+				<span class="min-label">Agent</span>
+				{#if $agentUnreadCount > 0}
+					<span class="min-badge" aria-label="{$agentUnreadCount} unread">{$agentUnreadCount}</span>
+				{:else if $agentIsStreaming || $agentIsThinking}
+					<span class="min-pulse" title="Agent running">●</span>
+				{/if}
+			</button>
+			<button
+				type="button"
+				class="btn-icon min-close"
+				title="Close agent panel"
+				onclick={togglePanel}
+				aria-label="Close agent panel"
+			>
+				✕
+			</button>
+		</aside>
+	{:else}
 	<aside
 		class="agent-dock"
 		style="width: {panelWidth}px"
@@ -308,6 +348,14 @@
 					aria-label="Clear conversation"
 				>
 					⟲
+				</button>
+				<button
+					class="btn-icon"
+					title="Minimize agent panel"
+					onclick={minimizePanel}
+					aria-label="Minimize agent panel"
+				>
+					—
 				</button>
 				<button
 					class="btn-icon"
@@ -396,6 +444,7 @@
 			{/key}
 		</div>
 	</aside>
+	{/if}
 {/if}
 
 <style>
@@ -415,6 +464,66 @@
 		z-index: 2; /* above content chrome only, not a full-screen overlay */
 		/* no heavy shadow — reads as a panel, not a modal over the IDE */
 		box-shadow: none;
+	}
+
+	.agent-dock--minimized {
+		width: 44px;
+		flex: 0 0 44px;
+		align-items: center;
+		padding: 0.5rem 0.2rem;
+		gap: 0.35rem;
+		background: var(--dk-glass, rgba(26, 26, 26, 0.92));
+	}
+
+	.min-strip {
+		flex: 1;
+		min-height: 0;
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.55rem;
+		padding: 0.65rem 0.15rem;
+		border: none;
+		border-radius: 8px;
+		background: transparent;
+		color: var(--dk-text-muted, #9ca3af);
+		cursor: pointer;
+		transition: background 140ms ease, color 140ms ease;
+	}
+	.min-strip:hover {
+		background: rgba(255, 255, 255, 0.06);
+		color: var(--dk-text, #e5e5e5);
+	}
+	.min-label {
+		writing-mode: vertical-rl;
+		text-orientation: mixed;
+		transform: rotate(180deg);
+		font-size: 0.7rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+	}
+	.min-badge {
+		min-width: 1.15rem;
+		height: 1.15rem;
+		padding: 0 0.25rem;
+		border-radius: 999px;
+		background: var(--dk-brand, #3b82f6);
+		color: #fff;
+		font-size: 0.6rem;
+		font-weight: 700;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.min-pulse {
+		color: #34d399;
+		font-size: 0.65rem;
+		animation: pulse-icon 1.2s ease infinite;
+	}
+	.min-close {
+		flex-shrink: 0;
 	}
 
 	.agent-dock.resizing {
@@ -660,13 +769,13 @@
 	.input-area {
 		flex-shrink: 0;
 		border-top: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
-		padding: 0.5rem;
+		padding: 0.65rem 0.75rem;
 		background: var(--dk-glass, rgba(26, 26, 26, 0.78));
 	}
 
 	/* Fix ChatInput from @aether-ui/core which uses Tailwind classes we don't have */
 	.input-area :global([role="form"]) {
-		padding: 0.6rem 0.75rem;
+		padding: 0;
 		border-top: none;
 		background: transparent;
 	}
@@ -674,11 +783,14 @@
 	.input-area :global([data-no-inner-focus]) {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 0.6rem;
 		border: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
-		border-radius: 8px;
-		padding: 0.5rem 0.75rem;
+		border-radius: 10px;
+		/* Equal inset; slightly more horizontal so text isn't tight to the border */
+		padding: 0.6rem 0.85rem 0.6rem 0.9rem;
 		background: var(--dk-surface-2, #242424);
+		min-height: 3rem;
+		box-sizing: border-box;
 	}
 
 	.input-area :global(textarea) {
@@ -687,12 +799,15 @@
 		border: none;
 		background: transparent;
 		color: var(--dk-text, #e5e5e5);
-		font-size: 0.85rem;
-		line-height: 1.4;
+		font-size: 0.9rem;
+		line-height: 1.45;
 		outline: none;
-		padding: 0;
-		min-height: 1.4em;
+		/* Symmetric padding — left matches right so placeholder isn't cramped after 📎 */
+		padding: 0.45rem 0.5rem;
+		min-height: 2.5rem;
+		max-height: 10rem;
 		font-family: inherit;
+		box-sizing: border-box;
 	}
 
 	.input-area :global(textarea::placeholder) {
@@ -706,12 +821,14 @@
 		color: #fff;
 		border: none;
 		border-radius: 6px;
-		padding: 0.35rem 0.75rem;
-		font-size: 0.75rem;
+		padding: 0.5rem 0.9rem;
+		font-size: 0.8rem;
 		font-weight: 600;
 		cursor: pointer;
 		white-space: nowrap;
 		transition: background 140ms ease;
+		margin: 0;
+		align-self: center;
 	}
 
 	.input-area :global(button[aria-label="Send message"]:hover) {
@@ -736,9 +853,13 @@
 	.input-area :global(label) {
 		cursor: pointer;
 		color: var(--dk-text-muted, #9ca3af);
-		font-size: 1rem;
+		font-size: 1.1rem;
 		line-height: 1;
 		transition: color 140ms ease;
+		align-self: center;
+		padding: 0;
+		margin: 0;
+		flex-shrink: 0;
 	}
 
 	.input-area :global(label:hover) {

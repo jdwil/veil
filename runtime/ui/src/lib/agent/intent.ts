@@ -409,9 +409,11 @@ function findFieldInput(key: string): HTMLInputElement | HTMLTextAreaElement | n
 		| null;
 	if (byId && (byId.tagName === 'INPUT' || byId.tagName === 'TEXTAREA')) return byId;
 
-	// label text match inside create-form
+	// label text match inside create-form (prefer id=create-change / create-project shells)
 	const form =
-		document.querySelector('[data-veil-role="create-form"], .dk-create-shell') || document.body;
+		document.querySelector(
+			'#create-change, #create-project, [data-veil-role="create-form"], .dk-create-shell'
+		) || document.body;
 	const labels = form.querySelectorAll('label, .dk-field__label');
 	for (const lab of labels) {
 		const text = (lab.textContent || '').trim().toLowerCase().replace(/●/g, '').trim();
@@ -844,34 +846,51 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 	}
 
 	if (toolName === 'create_change' || toolName === 'open_create_change') {
-		const title = String(
-			root.title ||
-				(root.payload as Record<string, unknown> | undefined)?.title ||
-				''
+		const payload = (root.payload as Record<string, unknown> | undefined) || {};
+		const title = String(root.title || payload.title || '');
+		const description = String(
+			root.description || payload.description || root.body || payload.body || ''
 		);
+		const project = String(
+			root.slug || root.project || payload.slug || payload.project || ''
+		);
+		const fields: Record<string, string> = {};
+		if (title) fields.title = title;
+		if (description) fields.description = description;
+		if (project) {
+			fields.project = project;
+			fields.slug = project;
+		}
 		const nav = root.navigation as Intent['navigation'] | undefined;
+		const ux =
+			root.pending_ux === true ||
+			(root.execution as { domain?: string } | undefined)?.domain === 'ux';
+		const fillSteps: PresentStep[] =
+			Object.keys(fields).length > 0
+				? [
+						{
+							kind: 'fill',
+							formId: 'create-change',
+							fields,
+							mode: 'type'
+						},
+						{ kind: 'wait', ms: 160 },
+						{ kind: 'pulse', target: 'submit', ms: 550 },
+						{ kind: 'wait', ms: 180 }
+					]
+				: [];
 		return {
 			type: 'CreateChange',
 			id: `intent_create_change_${Date.now()}`,
 			actor: 'agent',
-			payload: { title },
-			domain: { mode: root.pending_ux ? 'ux' : 'server', done: !root.pending_ux },
+			payload: { title, description, project: project || undefined },
+			domain: { mode: ux ? 'ux' : 'server', done: !ux },
 			present: {
 				announce: title ? `Creating change: ${title}` : 'Open create change',
 				steps: [
-					{ kind: 'goto', path: '/changes/new', ms: 300 },
-					...(title
-						? ([
-								{
-									kind: 'fill' as const,
-									formId: 'create-change',
-									fields: { title },
-									mode: 'type' as const
-								},
-								{ kind: 'pulse' as const, target: 'submit', ms: 500 }
-							] as PresentStep[])
-						: []),
-					...(nav?.path && !root.pending_ux
+					{ kind: 'goto', path: '/changes/new', ms: 360 },
+					...fillSteps,
+					...(nav?.path && !ux
 						? ([{ kind: 'goto' as const, path: nav.path, ms: 280 }] as PresentStep[])
 						: [])
 				]

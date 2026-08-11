@@ -345,6 +345,14 @@ export interface ProjectDetailView {
   anyProvisioned: boolean;
   infraStatus: string;
   infraStatusVariant: string;
+  missionText: string;
+  missionBaseline: string;
+  missionExists: boolean;
+  missionLoading: boolean;
+  missionEditing: boolean;
+  missionSaving: boolean;
+  missionMsg: string;
+  missionError: string;
 }
 
 export interface DeployView {

@@ -5,6 +5,8 @@
 // aggregates, ports, sagas, or any future layer's constructs) arrives at
 // runtime via /api/palette and is registered with setPaletteStyles().
 
+import { writable } from 'svelte/store';
+
 export interface IrGraph {
   nodes: IrNode[];
   edges: IrEdge[];
@@ -135,12 +137,19 @@ let paletteStyles: Record<string, NodeStyle> = {};
 // so the property editor can offer them without any hardcoded DDD vocabulary.
 let paletteAnnotations: Record<string, AnnotationSpec[]> = {};
 
+/**
+ * Bumped whenever palette styles are registered. UI `$derived` trees that call
+ * `getNodeStyle` must read this store so labels/icons refresh after the
+ * secondary palette fetch (IR often paints first with core-shape fallbacks).
+ */
+export const paletteStylesVersion = writable(0);
+
 /** Register layer visuals + annotations fetched from /api/palette. */
 export function setPaletteStyles(entries: PaletteEntry[]): void {
   const styles: Record<string, NodeStyle> = {};
   const annotations: Record<string, AnnotationSpec[]> = {};
   for (const e of entries) {
-    if (e.icon || e.color) {
+    if (e.icon || e.color || e.label || e.name) {
       const style: NodeStyle = {
         color: e.color || '#737373',
         icon: e.icon || '•',
@@ -156,6 +165,7 @@ export function setPaletteStyles(entries: PaletteEntry[]): void {
   }
   paletteStyles = styles;
   paletteAnnotations = annotations;
+  paletteStylesVersion.update((n) => n + 1);
 }
 
 /** Annotation definitions available for a construct subkind (layer-driven). */
@@ -166,12 +176,18 @@ export function getAnnotationDefs(subkind?: string | null): AnnotationSpec[] {
 
 /**
  * Get the display style for a node. Precedence:
- * layer-defined subkind style → core action style → core shape style.
+ * layer-defined subkind style → core action style → subkind name fallback → core shape.
+ *
+ * Never collapse Aggregate/ValueObject/… to the core TypeDef "Type" label when
+ * subkind is known but palette has not loaded yet.
  */
 export function getNodeStyle(kind: NodeKind, subkind?: string | null): NodeStyle {
   if (subkind) {
     if (paletteStyles[subkind]) return paletteStyles[subkind];
     if (CORE_ACTION_STYLES[subkind]) return CORE_ACTION_STYLES[subkind];
+    // Humanize CamelCase subkind (ValueObject → Value Object) for folder labels.
+    const label = subkind.replace(/([a-z])([A-Z])/g, '$1 $2');
+    return { color: '#737373', icon: '◇', label };
   }
   return NODE_STYLES[kind] ?? { color: '#737373', icon: '•', label: kind };
 }

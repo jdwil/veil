@@ -24,6 +24,19 @@
   import AgentSideRail from '$lib/ide/AgentSideRail.svelte';
   import OutlinePanel from '$lib/ide/OutlinePanel.svelte';
   import DiffPanel from '$lib/ide/DiffPanel.svelte';
+  import ChangesPanel from '$lib/ide/ChangesPanel.svelte';
+  import ChangeReviewPanel from '$lib/ide/ChangeReviewPanel.svelte';
+  import PrWizard from '$lib/ide/PrWizard.svelte';
+  import {
+    prWizardOpen,
+    prWizardWidth,
+    setPrWizardWidth,
+    restorePrWizardWidth,
+    clampPrWizardWidth,
+    prWizardMaxWidth,
+    PR_WIZARD_MIN_WIDTH,
+  } from '$lib/ide/prWizard';
+  import { patchIdeViewport, flushIdeViewportToFocus, setPrimaryIdePane } from '$lib/ide/ideViewport';
   import DevToolbar from '$lib/ide/DevToolbar.svelte';
   import { layoutNodes, layoutByType } from '$lib/ide/layout';
   import { agentPlacement, setAgentPlacement } from '$lib/ide/agentLayout';
@@ -35,6 +48,7 @@
     error,
     fetchIr,
     startRevisionWatch,
+    refreshAfterEdit,
     drillDown,
     navigateTo,
     navigateUp,
@@ -56,6 +70,11 @@
     currentProjectParam,
     ideApiBase,
     diagnostics,
+    checkMeta,
+    diagnosticsPanelOpen,
+    sessionChanges,
+    selectedChangeReview,
+    clearChangeReview,
     viewRevision,
     agentActive,
     embedShellConfig,
@@ -64,6 +83,7 @@
     ensureCodingSession,
   } from '$lib/ide/store';
   import SessionStatus from '$lib/ide/SessionStatus.svelte';
+  import GitWorkflowBar from '$lib/ide/GitWorkflowBar.svelte';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind, type PaletteEntry } from '$lib/ide/types';
   import {
     projectView,
@@ -111,11 +131,78 @@
   let nodes = $state.raw<Node[]>([]);
   let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
+  /** Outline sidebar: Outline tree vs live Changes list. */
+  type SidebarTab = 'outline' | 'changes';
+  let sidebarTab = $state<SidebarTab>('outline');
+
+  // Publish left-rail tab to agent focus (multi-pane awareness)
+  $effect(() => {
+    const tab = sidebarTab;
+    patchIdeViewport({ sidebarTab: tab });
+    if (tab === 'changes') {
+      setPrimaryIdePane('sidebar-changes');
+    } else {
+      flushIdeViewportToFocus();
+    }
+  });
+
+  const diagErrorCount = $derived(
+    $diagnostics.filter((d) => (d.severity ?? '').toLowerCase() === 'error').length
+  );
+  const diagWarningCount = $derived(
+    Math.max(0, $diagnostics.length - diagErrorCount)
+  );
+  const diagTotal = $derived($diagnostics.length);
+  const sessionChangeCount = $derived($sessionChanges.length);
+
   /** Outline sidebar width (tree/flat); persisted in localStorage. */
   let outlineWidth = $state(
     typeof window !== 'undefined' ? loadOutlineWidth() : 320
   );
   let outlineResizing = $state(false);
+  let prWizardResizing = $state(false);
+
+  function startPrWizardResize(e: PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const handle = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try {
+      handle.setPointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    prWizardResizing = true;
+    document.body.classList.add('pr-wizard-resizing');
+    const startX = e.clientX;
+    const startW = get(prWizardWidth);
+    const cap = prWizardMaxWidth();
+    let latest = startW;
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      // Drag left → wider rail
+      latest = Math.max(PR_WIZARD_MIN_WIDTH, Math.min(cap, startW + (startX - ev.clientX)));
+      setPrWizardWidth(latest);
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      prWizardResizing = false;
+      document.body.classList.remove('pr-wizard-resizing');
+      try {
+        handle.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      setPrWizardWidth(latest);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }
 
   function startOutlineResize(e: PointerEvent) {
     // Mirror AgentDock: pointer capture + window listeners so drag isn't lost.
@@ -500,6 +587,11 @@
   onMount(() => {
     // Apply saved theme on mount (veil tokens + Aether dark: class)
     applyTheme(theme);
+    restorePrWizardWidth();
+    const onWinResize = () => {
+      setPrWizardWidth(clampPrWizardWidth(get(prWizardWidth)));
+    };
+    window.addEventListener('resize', onWinResize);
 
     // Parent drill / file switch → recompute canvas.
     // Skip parent=null (used only as a force-refresh sentinel before set to root).
@@ -529,10 +621,26 @@
       await fetchIr();
     })();
 
+    // Shell AgentDock: after write_source, refresh IR so code appears live in the IDE
+    const onAgentRefresh = () => {
+      void refreshAfterEdit();
+    };
+    const onParentMessage = (ev: MessageEvent) => {
+      const msg = ev.data as { type?: string } | undefined;
+      if (msg?.type === 'agent:refresh' || msg?.type === 'agent:edit') {
+        void refreshAfterEdit();
+      }
+    };
+    window.addEventListener('veil:agent-refresh', onAgentRefresh);
+    window.addEventListener('message', onParentMessage);
+
     return () => {
       unsubParent();
       unsubRev();
       stopSse();
+      window.removeEventListener('resize', onWinResize);
+      window.removeEventListener('veil:agent-refresh', onAgentRefresh);
+      window.removeEventListener('message', onParentMessage);
     };
   });
 
@@ -1449,12 +1557,33 @@
         {/each}
       </div>
       <div class="top-bar-actions">
+        <!-- Always-visible check counts (agent fix progress) -->
+        <button
+          type="button"
+          class="diag-summary-btn"
+          class:has-errors={diagErrorCount > 0}
+          class:has-warnings={diagErrorCount === 0 && diagWarningCount > 0}
+          class:clean={diagTotal === 0 && $checkMeta != null}
+          title="Open diagnostics list"
+          onclick={() => diagnosticsPanelOpen.set(true)}
+        >
+          {#if diagErrorCount > 0}
+            <span class="diag-e">{diagErrorCount} err</span>
+          {/if}
+          {#if diagWarningCount > 0}
+            <span class="diag-w">{diagWarningCount} warn</span>
+          {/if}
+          {#if diagTotal === 0}
+            <span class="diag-ok">{$checkMeta ? '0 issues' : 'check…'}</span>
+          {/if}
+        </button>
         <!-- Wide layout: secondary controls inline -->
         <div class="top-bar-secondary">
           {#if shell.showOutline}
             <OutlinePanel />
           {/if}
-          {#if shell.showDiff}
+          <!-- Diff lives in sidebar Changes tab for tree/flat; keep top control for flow. -->
+          {#if shell.showDiff && currentLayout !== 'tree' && currentLayout !== 'flat'}
             <DiffPanel />
           {/if}
           {#if shell.showInfraToggle}
@@ -1526,6 +1655,7 @@
               </label>
             {/if}
           {/if}
+          <GitWorkflowBar />
           <SessionStatus />
           {#if shell.showThemeToggle}
             <button class="theme-toggle" onclick={toggleTheme} title="Toggle light/dark mode">
@@ -1535,6 +1665,7 @@
         </div>
         <!-- Narrow layout: collapse secondary into ⋯ menu (agent pane wide) -->
         <div class="top-bar-more-wrap">
+          <GitWorkflowBar />
           <SessionStatus compact />
           <button
             type="button"
@@ -1704,20 +1835,53 @@
               style="width: {outlineWidth}px; flex: 0 0 {outlineWidth}px; min-width: {OUTLINE_MIN}px; max-width: {OUTLINE_MAX}px;"
             >
               <div class="tree-toolbar">
-                <span class="tree-toolbar-title">Outline</span>
-                <CreateConstructMenu
-                  contextKind={currentContextKind}
-                  contextKindCore={currentContextKindCore}
-                  activeGroup={activeTab}
-                  onCreate={(item) => createFromPaletteItem(item)}
-                />
+                <div class="sidebar-tabs" role="tablist" aria-label="Sidebar">
+                  <button
+                    type="button"
+                    class="sidebar-tab"
+                    class:active={sidebarTab === 'outline'}
+                    role="tab"
+                    aria-selected={sidebarTab === 'outline'}
+                    onclick={() => {
+                      sidebarTab = 'outline';
+                      clearChangeReview();
+                    }}
+                  >
+                    Outline
+                  </button>
+                  <button
+                    type="button"
+                    class="sidebar-tab"
+                    class:active={sidebarTab === 'changes'}
+                    role="tab"
+                    aria-selected={sidebarTab === 'changes'}
+                    onclick={() => (sidebarTab = 'changes')}
+                  >
+                    Changes
+                    {#if sessionChangeCount > 0}
+                      <span class="sidebar-tab-count" title="Uncommitted construct edits">{sessionChangeCount}</span>
+                    {/if}
+                  </button>
+                </div>
+                {#if sidebarTab === 'outline'}
+                  <CreateConstructMenu
+                    contextKind={currentContextKind}
+                    contextKindCore={currentContextKindCore}
+                    activeGroup={activeTab}
+                    onCreate={(item) => createFromPaletteItem(item)}
+                  />
+                {/if}
               </div>
-              <TreeLayout
-                projected={currentProjected}
-                graph={$irGraph}
-                presentationModel={$presentationModel}
-                onDrillDown={handleOutlineDrill}
-              />
+              {#if sidebarTab === 'outline'}
+                <TreeLayout
+                  projected={currentProjected}
+                  graph={$irGraph}
+                  presentationModel={$presentationModel}
+                  onDrillDown={handleOutlineDrill}
+                />
+              {:else}
+                <ChangesPanel />
+              {/if}
             </div>
             <div
               class="outline-resize-handle"
@@ -1731,10 +1895,14 @@
               onpointerdown={startOutlineResize}
             ></div>
             <div class="native-layout-detail">
-              <DetailPanel
-                graph={$irGraph}
-                presentationModel={$presentationModel}
-              />
+              {#if sidebarTab === 'changes' || $selectedChangeReview}
+                <ChangeReviewPanel />
+              {:else}
+                <DetailPanel
+                  graph={$irGraph}
+                  presentationModel={$presentationModel}
+                />
+              {/if}
             </div>
           </div>
         {:else if currentLayout === 'flat' && currentProjected && $irGraph}
@@ -1745,20 +1913,53 @@
               style="width: {outlineWidth}px; flex: 0 0 {outlineWidth}px; min-width: {OUTLINE_MIN}px; max-width: {OUTLINE_MAX}px;"
             >
               <div class="tree-toolbar">
-                <span class="tree-toolbar-title">Constructs</span>
-                <CreateConstructMenu
-                  contextKind={currentContextKind}
-                  contextKindCore={currentContextKindCore}
-                  activeGroup={activeTab}
-                  onCreate={(item) => createFromPaletteItem(item)}
-                />
+                <div class="sidebar-tabs" role="tablist" aria-label="Sidebar">
+                  <button
+                    type="button"
+                    class="sidebar-tab"
+                    class:active={sidebarTab === 'outline'}
+                    role="tab"
+                    aria-selected={sidebarTab === 'outline'}
+                    onclick={() => {
+                      sidebarTab = 'outline';
+                      clearChangeReview();
+                    }}
+                  >
+                    Constructs
+                  </button>
+                  <button
+                    type="button"
+                    class="sidebar-tab"
+                    class:active={sidebarTab === 'changes'}
+                    role="tab"
+                    aria-selected={sidebarTab === 'changes'}
+                    onclick={() => (sidebarTab = 'changes')}
+                  >
+                    Changes
+                    {#if sessionChangeCount > 0}
+                      <span class="sidebar-tab-count" title="Uncommitted construct edits">{sessionChangeCount}</span>
+                    {/if}
+                  </button>
+                </div>
+                {#if sidebarTab === 'outline'}
+                  <CreateConstructMenu
+                    contextKind={currentContextKind}
+                    contextKindCore={currentContextKindCore}
+                    activeGroup={activeTab}
+                    onCreate={(item) => createFromPaletteItem(item)}
+                  />
+                {/if}
               </div>
-              <FlatLayout
-                projected={currentProjected}
-                graph={$irGraph}
-                presentationModel={$presentationModel}
-                onDrillDown={handleOutlineDrill}
-              />
+              {#if sidebarTab === 'outline'}
+                <FlatLayout
+                  projected={currentProjected}
+                  graph={$irGraph}
+                  presentationModel={$presentationModel}
+                  onDrillDown={handleOutlineDrill}
+                />
+              {:else}
+                <ChangesPanel />
+              {/if}
             </div>
             <div
               class="outline-resize-handle"
@@ -1772,10 +1973,14 @@
               onpointerdown={startOutlineResize}
             ></div>
             <div class="native-layout-detail">
-              <DetailPanel
-                graph={$irGraph}
-                presentationModel={$presentationModel}
-              />
+              {#if sidebarTab === 'changes' || $selectedChangeReview}
+                <ChangeReviewPanel />
+              {:else}
+                <DetailPanel
+                  graph={$irGraph}
+                  presentationModel={$presentationModel}
+                />
+              {/if}
             </div>
           </div>
         {:else}
@@ -1917,10 +2122,68 @@
       </div>
     </div>
   {/if}
+
+  {#if $prWizardOpen}
+    <!-- Right rail only: outline + canvas stay interactive; drag left edge to resize -->
+    <div
+      class="pr-wizard-overlay"
+      class:resizing={prWizardResizing}
+      style="width: {$prWizardWidth}px"
+    >
+      <div
+        class="pr-wizard-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize PR Wizard"
+        aria-valuenow={$prWizardWidth}
+        aria-valuemin={PR_WIZARD_MIN_WIDTH}
+        title="Drag to resize"
+        onpointerdown={startPrWizardResize}
+      ></div>
+      <PrWizard />
+    </div>
+  {/if}
 </div>
 
 <style>
+  .pr-wizard-overlay {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    pointer-events: auto;
+    min-width: 320px;
+    max-width: min(900px, 65vw);
+  }
+  .pr-wizard-overlay.resizing {
+    user-select: none;
+  }
+  .pr-wizard-resize-handle {
+    position: absolute;
+    left: -4px;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: col-resize;
+    z-index: 5;
+    touch-action: none;
+  }
+  .pr-wizard-resize-handle:hover,
+  .pr-wizard-overlay.resizing .pr-wizard-resize-handle {
+    background: color-mix(in srgb, var(--veil-accent, #60a5fa) 55%, transparent);
+  }
+  :global(body.pr-wizard-resizing) {
+    cursor: col-resize !important;
+    user-select: none !important;
+  }
+  :global(body.pr-wizard-resizing iframe) {
+    pointer-events: none !important;
+  }
   .viewer-container {
+    position: relative;
     /* Fill parent flex region only — never 100vw (that covered AgentDock) */
     width: 100%;
     height: 100%;
@@ -2419,12 +2682,101 @@
     color: var(--veil-text-dim, #a3a3a3);
   }
 
+  .sidebar-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .sidebar-tab {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--veil-text-dim, #a3a3a3);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 4px 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .sidebar-tab.active {
+    border-color: var(--veil-border, #444);
+    background: var(--veil-surface, #111);
+    color: var(--veil-text, #e5e5e5);
+  }
+
+  .sidebar-tab-count {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+    background: var(--veil-accent, #525252);
+    color: #fff;
+    border-radius: 999px;
+    padding: 0 6px;
+    line-height: 1.4;
+  }
+
+  .diag-summary-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--veil-surface-alt, rgba(26, 26, 26, 0.9));
+    border: 1px solid var(--veil-border, #333);
+    border-radius: 8px;
+    color: var(--veil-text-dim, #a3a3a3);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 5px 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  .diag-summary-btn.has-errors {
+    border-color: rgba(248, 113, 113, 0.55);
+    color: #fca5a5;
+  }
+
+  .diag-summary-btn.has-warnings {
+    border-color: rgba(251, 191, 36, 0.45);
+    color: #fcd34d;
+  }
+
+  .diag-summary-btn.clean {
+    border-color: rgba(74, 222, 128, 0.35);
+    color: #86efac;
+  }
+
+  .diag-e {
+    color: #f87171;
+  }
+  .diag-w {
+    color: #fbbf24;
+  }
+  .diag-ok {
+    color: inherit;
+  }
+
   .native-layout-sidebar {
     overflow: hidden;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     border-right: none;
+  }
+
+  .native-layout-sidebar :global(.changes-panel) {
+    flex: 1;
+    min-height: 0;
   }
 
   .outline-resize-handle {

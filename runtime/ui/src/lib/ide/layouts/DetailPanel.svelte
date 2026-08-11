@@ -9,7 +9,7 @@
    * Follows ADR-viewer-editors.md: body review via BlockEditor only.
    * Zero domain knowledge — all presentation is layer-driven.
    */
-  import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/ide/types';
+  import { NODE_STYLES, getNodeStyle, getAnnotationDefs, paletteStylesVersion, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/ide/types';
   import {
     irGraph,
     saveEdits,
@@ -25,7 +25,12 @@
   } from '$lib/ide/store';
   import { askAgent, formatIssuePrompt } from '$lib/ide/agentPrompt';
   import { formatType } from '$lib/ide/typeDisplay';
-  import { isCriticalNode } from '$lib/ide/lenses';
+  import {
+    isCriticalNode,
+    lensesForNode,
+    nodeHasCriticalDiagnostic,
+    nodeHasLens,
+  } from '$lib/ide/lenses';
   import { BodySourceBlock } from '$lib/ide/editors';
   import { irGraphBodyToExprs } from '$lib/ide/editors/ir-convert';
   import { exprToVeil } from '$lib/ide/editors/expr-serialize';
@@ -45,9 +50,33 @@
     return graph.nodes.find(n => n.id === Number(id)) ?? null;
   });
 
+  /** Why this node is marked critical (layer review lens vs live diagnostics). */
+  let criticalReasons = $derived.by((): string[] => {
+    if (!selectedIrNode) return [];
+    const reasons: string[] = [];
+    if (nodeHasLens(selectedIrNode, 'critical', presentationModel)) {
+      const sub = selectedIrNode.metadata.subkind || selectedIrNode.kind;
+      reasons.push(
+        `Layer review lens on ${sub} — architecturally important for review, not a compile/check failure`
+      );
+    }
+    if (nodeHasCriticalDiagnostic(selectedIrNode, $diagnostics)) {
+      reasons.push('Has error or escape-hatch diagnostic on this construct');
+    }
+    return reasons;
+  });
+
+  let nodeLenses = $derived.by((): string[] => {
+    if (!selectedIrNode) return [];
+    return lensesForNode(selectedIrNode, presentationModel);
+  });
+
   let kind = $derived<NodeKind | null>(selectedIrNode?.kind as NodeKind ?? null);
   let subkind = $derived<string | null>(selectedIrNode?.metadata.subkind ?? null);
-  let style = $derived(kind ? getNodeStyle(kind, subkind) : null);
+  let style = $derived.by(() => {
+    void $paletteStylesVersion;
+    return kind ? getNodeStyle(kind, subkind) : null;
+  });
   let displayKind = $derived(subkind ?? kind ?? '');
 
   // Node identity for edits
@@ -366,8 +395,14 @@
           <span class="detail-badge layer-badge">layer-provided</span>
         {/if}
         {#if isCriticalNode(selectedIrNode, presentationModel, $diagnostics)}
-          <span class="detail-badge critical-badge">critical</span>
+          <span
+            class="detail-badge critical-badge"
+            title={criticalReasons.join(' · ') || 'Critical for review'}
+          >critical</span>
         {/if}
+        {#each nodeLenses.filter((l) => l !== 'critical') as lens}
+          <span class="detail-badge lens-badge" title="Layer presentation lens">{lens}</span>
+        {/each}
       </div>
       {#if $saving}
         <span class="detail-save-status saving">Saving…</span>
@@ -386,6 +421,24 @@
         <span class="detail-trail-sep">/</span>
         <span class="detail-trail-here">{selectedIrNode.name}</span>
       </div>
+    {/if}
+
+    <!-- Critical without issues: explain lens vs diagnostics -->
+    {#if criticalReasons.length > 0 && nodeDiagnostics.length === 0}
+      <section class="detail-section detail-critical-note" role="note">
+        <p class="critical-note-title">Marked critical — no issues on this construct</p>
+        <ul class="critical-note-list">
+          {#each criticalReasons as reason}
+            <li>{reason}</li>
+          {/each}
+        </ul>
+        {#if selectedIrNode.metadata.subkind === 'Port' || selectedIrNode.kind === 'Interface'}
+          <p class="critical-note-hint">
+            Ports are always review-critical in the DDD layer. Check for an implementing
+            <code>adapter</code> and any diagnostics on that adapter (not on the port itself).
+          </p>
+        {/if}
+      </section>
     {/if}
 
     <!-- Name -->
@@ -713,6 +766,43 @@
     color: #a78bfa;
   }
 
+  .detail-critical-note {
+    background: color-mix(in srgb, #f59e0b 12%, transparent);
+    border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
+    border-radius: 8px;
+    padding: 0.65rem 0.75rem;
+  }
+  .critical-note-title {
+    margin: 0 0 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #fbbf24;
+  }
+  .critical-note-list {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-size: 0.75rem;
+    color: var(--text-muted, #a1a1aa);
+    line-height: 1.45;
+  }
+  .critical-note-hint {
+    margin: 0.45rem 0 0;
+    font-size: 0.72rem;
+    color: var(--text-muted, #a1a1aa);
+    line-height: 1.4;
+  }
+  .critical-note-hint code {
+    font-size: 0.7rem;
+    padding: 0.05rem 0.25rem;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--text-muted, #71717a) 18%, transparent);
+  }
+  .lens-badge {
+    background: color-mix(in srgb, #6366f1 18%, transparent);
+    color: #a5b4fc;
+    border: 1px solid color-mix(in srgb, #6366f1 40%, transparent);
+    text-transform: lowercase;
+  }
   .critical-badge {
     background: rgba(245, 158, 11, 0.15);
     color: #f59e0b;

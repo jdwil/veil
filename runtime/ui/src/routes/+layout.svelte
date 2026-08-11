@@ -9,6 +9,9 @@
       import {
         AgentDock,
         agentPanelOpen,
+        agentPanelMinimized,
+        agentUnreadCount,
+        openAgentPanel,
         onAgentNavigation,
         restoreSession,
         publishRouteFocus,
@@ -53,8 +56,8 @@
         restoreIntentLog();
         publishRouteFocus($page.url.pathname);
         const unsubHuman = installHumanIntentCapture();
-        // Open agent panel by default
-        agentPanelOpen.set(true);
+        // Open agent panel by default (expanded)
+        openAgentPanel();
         // Agent tools (navigate_to / open-ide) → SPA routes (stay in shell)
         // IntentExecutor also calls goto() for Present steps; this handles coarse navigation events.
         const unsubNav = onAgentNavigation((nav) => {
@@ -92,7 +95,15 @@
         const handler = (e: KeyboardEvent) => {
           if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
             e.preventDefault();
-            agentPanelOpen.update((v) => !v);
+            // Minimized → expand; open expanded → close; closed → open
+            if (!$agentPanelOpen) {
+              openAgentPanel();
+            } else if ($agentPanelMinimized) {
+              agentPanelMinimized.set(false);
+              agentUnreadCount.set(0);
+            } else {
+              agentPanelOpen.set(false);
+            }
           }
           if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
             e.preventDefault();

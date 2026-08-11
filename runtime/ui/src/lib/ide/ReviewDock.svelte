@@ -18,6 +18,7 @@
     openAgentPopout,
     setAgentPlacement
   } from '$lib/ide/agentLayout';
+  import { patchIdeViewport, flushIdeViewportToFocus } from '$lib/ide/ideViewport';
 
   /** Bottom dock tabs: VEIL package source, generated target source, agent. */
   type DockTab = 'source' | 'generated' | 'agent' | 'split';
@@ -103,11 +104,26 @@
     } catch {
       /* ignore */
     }
+    publishDockFocus();
   }
 
   function toggleExpanded() {
     expanded = !expanded;
     saveExpanded(expanded);
+    publishDockFocus();
+  }
+
+  function publishDockFocus() {
+    const patch: Parameters<typeof patchIdeViewport>[0] = {
+      reviewDock: {
+        visible: true,
+        tab,
+        expanded,
+      },
+    };
+    if (expanded) patch.primaryPane = 'review-dock';
+    patchIdeViewport(patch);
+    flushIdeViewportToFocus();
   }
 
   function insertSelection() {
@@ -223,6 +239,7 @@
   });
 
   onMount(() => {
+    publishDockFocus();
     const unsub = onAgentLayoutMessage((msg) => {
       if (msg.type === 'popout-closed') {
         agentPopoutRef.set(null);

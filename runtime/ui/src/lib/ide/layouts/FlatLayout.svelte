@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getNodeStyle, type IrGraph, type IrNode } from '$lib/ide/types';
+  import { getNodeStyle, paletteStylesVersion, type IrGraph, type IrNode } from '$lib/ide/types';
   import { selectedNodeId, diagnostics, changedNodeIds } from '$lib/ide/store';
   import { isCriticalNode } from '$lib/ide/lenses';
   import type { ProjectResult, PresentationModel } from '$lib/ide/presentation';
@@ -21,6 +21,7 @@
   }
 
   let groups = $derived.by((): TypeGroup[] => {
+    void $paletteStylesVersion;
     const groupMap = new Map<string, IrNode[]>();
     for (const node of projected.nodes) {
       const type = node.metadata.subkind ?? node.kind;

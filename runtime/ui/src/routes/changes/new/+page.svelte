@@ -25,7 +25,9 @@
           title: title.trim(),
           description: description.trim(),
           jira_ticket: jira_ticket.trim(),
-          source_branch: source_branch.trim() || `feature/${title.trim().toLowerCase().replace(/\s+/g, '-')}`,
+          source_branch:
+            source_branch.trim() ||
+            `feature/${title.trim().toLowerCase().replace(/\s+/g, '-')}`,
           author: 'jd',
         }),
       });
@@ -49,19 +51,54 @@
 </script>
 
 <DetailShell title="Create Change Request" back_href="/changes">
-  <form on:submit|preventDefault={handleSubmit} class="form-body">
+  <!-- Present fill targets: formId=create-change, fields title/description/… -->
+  <form
+    id="create-change"
+    data-veil-role="create-form"
+    data-veil-form="create-change"
+    on:submit|preventDefault={handleSubmit}
+    class="form-body"
+  >
     {#if error}
       <div class="error-msg">{error}</div>
     {/if}
 
-    <FormField label="Title" bind:value={title} placeholder="e.g. Add authorization to relay handlers" />
-    <FormField label="Description" bind:value={description} placeholder="What does this change do?" />
-    <FormField label="Jira Ticket" bind:value={jira_ticket} placeholder="e.g. VEIL-123" />
-    <FormField label="Source Branch" bind:value={source_branch} placeholder="Auto-generated from title if empty" />
+    <FormField
+      id="title"
+      label="Title"
+      bind:value={title}
+      required={true}
+      placeholder="e.g. Add authorization to relay handlers"
+    />
+    <FormField
+      id="description"
+      label="Description"
+      bind:value={description}
+      input_type="textarea"
+      placeholder="What does this change do?"
+      rows={6}
+    />
+    <FormField
+      id="jira_ticket"
+      label="Jira Ticket"
+      bind:value={jira_ticket}
+      placeholder="e.g. VEIL-123"
+    />
+    <FormField
+      id="source_branch"
+      label="Source Branch"
+      bind:value={source_branch}
+      placeholder="Auto-generated from title if empty"
+    />
 
     <div class="actions">
       <a href="/changes" class="btn-ghost">Cancel</a>
-      <button type="submit" class="btn-primary" disabled={loading || !title.trim()}>
+      <button
+        type="submit"
+        class="btn-primary"
+        data-veil-action="submit"
+        disabled={loading || !title.trim()}
+      >
         {#if loading}
           Creating…
         {:else}

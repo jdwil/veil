@@ -27,17 +27,22 @@
   }
 </script>
 
-{#if true}
+{#key open}
 {@const _sync = (() => {
-  const d = dialog_el;
-  if (!d || typeof document === 'undefined') return;
-  if (d.parentElement !== document.body) document.body.appendChild(d);
-  if (open) {
-    if (!d.open) { try { d.showModal(); } catch { d.setAttribute('open', ''); } }
-  } else if (d.open) {
-    d.close();
-  }
+  // {#key open} re-runs this when open flips. queueMicrotask waits for bind:this.
+  const wantOpen = open;
+  queueMicrotask(() => {
+    const d = dialog_el;
+    if (!d || typeof document === 'undefined') return;
+    if (d.parentElement !== document.body) document.body.appendChild(d);
+    if (wantOpen) {
+      if (!d.open) { try { d.showModal(); } catch { d.setAttribute('open', ''); } }
+    } else if (d.open) {
+      d.close();
+    }
+  });
 })()}
+{/key}
 <dialog
   bind:this={dialog_el}
   class="dk-modal-dialog"
@@ -70,7 +75,6 @@
     {/if}
   </div>
 </dialog>
-{/if}
 
 
 <style>
