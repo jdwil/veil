@@ -517,6 +517,7 @@ fn veil_ide_tool_names() -> Vec<&'static str> {
         "open_ide",
         "switch_project",
         "list_changes",
+        "resolve_coding_target",
         "create_change",
         "get_change",
         "submit_change",

@@ -40,6 +40,19 @@ export type PresentStep =
 			/** e.g. /projects/{slug}/ide — fills from commit response */
 			resultPathTemplate?: string;
 			ms?: number;
+	  }
+	| {
+			/** Modal: pick open PR or create new (coding target resolve) */
+			kind: 'choose';
+			title?: string;
+			message?: string;
+			options: Array<{
+				id: string;
+				label: string;
+				detail?: string;
+				source_branch?: string | null;
+			}>;
+			ms?: number;
 	  };
 
 export type Present = {
@@ -562,6 +575,108 @@ export async function executeIntent(intent: Intent): Promise<IntentStatus> {
 	return last;
 }
 
+/** In-DOM modal for choose step (PR target). Resolves with selected option id. */
+function runChoose(
+	step: Extract<PresentStep, { kind: 'choose' }>,
+	intentId: string
+): Promise<Record<string, unknown>> {
+	ensurePulseStyles();
+	return new Promise((resolve) => {
+		if (typeof document === 'undefined') {
+			resolve({ choice: '__new__', ok: true });
+			return;
+		}
+		const existing = document.getElementById('veil-choose-coding-target');
+		if (existing) existing.remove();
+
+		const root = document.createElement('div');
+		root.id = 'veil-choose-coding-target';
+		root.setAttribute('role', 'dialog');
+		root.setAttribute('aria-modal', 'true');
+		root.style.cssText =
+			'position:fixed;inset:0;z-index:10050;display:flex;align-items:center;justify-content:center;' +
+			'background:rgba(0,0,0,0.55);padding:1rem;';
+		const panel = document.createElement('div');
+		panel.style.cssText =
+			'max-width:28rem;width:100%;border-radius:12px;padding:1.1rem 1.2rem;' +
+			'background:var(--dk-surface,#18181b);color:var(--dk-text,#f4f4f5);' +
+			'border:1px solid color-mix(in srgb, var(--dk-accent,#818cf8) 35%, transparent);' +
+			'box-shadow:0 16px 48px rgba(0,0,0,0.45);';
+		const h = document.createElement('h3');
+		h.textContent = step.title || 'Which pull request?';
+		h.style.cssText = 'margin:0 0 0.4rem;font-size:1.05rem;font-weight:600;';
+		panel.appendChild(h);
+		if (step.message) {
+			const p = document.createElement('p');
+			p.textContent = step.message;
+			p.style.cssText = 'margin:0 0 0.85rem;font-size:0.85rem;opacity:0.85;line-height:1.4;';
+			panel.appendChild(p);
+		}
+		const list = document.createElement('div');
+		list.style.cssText = 'display:flex;flex-direction:column;gap:0.45rem;max-height:50vh;overflow:auto;';
+		const finish = (choice: string, extra?: Record<string, unknown>) => {
+			root.remove();
+			const result = { ok: true, choice, intent_id: intentId, ...extra };
+			void fetch('/api/ux/intent_ack', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ intent_id: intentId, result })
+			}).catch(() => {});
+			// Agent/orchestrator should re-call resolve_coding_target({ choice }) after ACK.
+			resolve(result);
+		};
+		for (const opt of step.options || []) {
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.style.cssText =
+				'text-align:left;padding:0.65rem 0.75rem;border-radius:8px;cursor:pointer;' +
+				'border:1px solid color-mix(in srgb, var(--dk-border,#3f3f46) 80%, transparent);' +
+				'background:color-mix(in srgb, var(--dk-surface,#18181b) 90%, #fff 4%);color:inherit;font:inherit;';
+			const label = document.createElement('div');
+			label.textContent = opt.label || opt.id;
+			label.style.cssText = 'font-weight:500;font-size:0.9rem;';
+			btn.appendChild(label);
+			if (opt.detail) {
+				const d = document.createElement('div');
+				d.textContent = opt.detail;
+				d.style.cssText = 'font-size:0.75rem;opacity:0.7;margin-top:0.15rem;';
+				btn.appendChild(d);
+			}
+			btn.onmouseenter = () => {
+				btn.style.borderColor = 'var(--dk-accent,#818cf8)';
+			};
+			btn.onmouseleave = () => {
+				btn.style.borderColor =
+					'color-mix(in srgb, var(--dk-border,#3f3f46) 80%, transparent)';
+			};
+			btn.onclick = () =>
+				finish(opt.id, {
+					source_branch: opt.source_branch ?? null,
+					label: opt.label
+				});
+			list.appendChild(btn);
+		}
+		panel.appendChild(list);
+		const cancel = document.createElement('button');
+		cancel.type = 'button';
+		cancel.textContent = 'Cancel (new PR)';
+		cancel.style.cssText =
+			'margin-top:0.75rem;background:transparent;border:none;color:inherit;opacity:0.65;' +
+			'cursor:pointer;font-size:0.8rem;text-decoration:underline;';
+		cancel.onclick = () => finish('__new__');
+		panel.appendChild(cancel);
+		root.appendChild(panel);
+		document.body.appendChild(root);
+
+		const timeout = step.ms && step.ms > 0 ? step.ms : 120_000;
+		window.setTimeout(() => {
+			if (document.getElementById('veil-choose-coding-target')) {
+				finish('__new__', { timed_out: true });
+			}
+		}, timeout);
+	});
+}
+
 async function runCommit(
 	step: Extract<PresentStep, { kind: 'commit' }>,
 	intent: Intent
@@ -697,6 +812,9 @@ async function runOne(intent: Intent): Promise<IntentStatus> {
 					break;
 				case 'commit':
 					lastResult = await runCommit(step, intent);
+					break;
+				case 'choose':
+					lastResult = await runChoose(step, intent.id);
 					break;
 				default:
 					break;
@@ -845,6 +963,14 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 		};
 	}
 
+	if (toolName === 'resolve_coding_target') {
+		// Prefer embedded intent (needs_choice Present modal)
+		if (root.intent && typeof root.intent === 'object') {
+			return root.intent as Intent;
+		}
+		return null;
+	}
+
 	if (toolName === 'create_change' || toolName === 'open_create_change') {
 		const payload = (root.payload as Record<string, unknown> | undefined) || {};
 		const title = String(root.title || payload.title || '');
@@ -933,7 +1059,8 @@ export const STAGED_PRESENT_TOOLS = new Set([
 	'create_project',
 	'create_repo',
 	'create_change',
-	'open_create_change'
+	'open_create_change',
+	'resolve_coding_target'
 ]);
 
 export function isIntentExecuting(): boolean {

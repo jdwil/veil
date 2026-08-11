@@ -123,6 +123,7 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "get_mission"
             | "update_mission"
             | "wait_intent_ack"
+            | "resolve_coding_target"
     )
 }
 
@@ -431,6 +432,163 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             Ok(out.to_string())
         }
 
+        // ─── Coding target resolve (open unmerged PRs) ───────────────────
+        "resolve_coding_target" => {
+            let request = arg_str(arguments, &["request", "task", "query", "message"])
+                .unwrap_or_else(|| "".into());
+            let project = arg_str(arguments, &["slug", "project"]).or_else(|| {
+                crate::coding_gates::current_project_slug()
+            });
+            // Explicit operator/agent choice (after modal ACK or tool arg)
+            if let Some(choice) = arg_str(arguments, &["choice", "pr_id", "change_id"]) {
+                if choice == "__new__" || choice.eq_ignore_ascii_case("new") {
+                    if let Some(ref slug) = project {
+                        if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
+                            let _ = h.set_active_change_id(None);
+                        }
+                    }
+                    return Ok(json!({
+                        "ok": true,
+                        "decision": "new",
+                        "summary": "Coding target: create new work line / new PR at task end",
+                        "project": project,
+                        "active_change_id": null,
+                        "hint": "create_branch for multi-step; session_commit per slice; create_change+submit_change when done"
+                    })
+                    .to_string());
+                }
+                if let Some(ref slug) = project {
+                    if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
+                        crate::coding_resolve::bind_session_to_pr(&h, &choice)?;
+                    }
+                }
+                return Ok(json!({
+                    "ok": true,
+                    "decision": "bind",
+                    "pr_id": choice,
+                    "change_id": choice,
+                    "summary": format!("Bound coding session to open pull request {choice}"),
+                    "project": project,
+                    "active_change_id": choice,
+                    "hint": "Reuse this PR — session_commit slices; submit_change when task done (do not open a second PR)"
+                })
+                .to_string());
+            }
+
+            let path = match &project {
+                Some(p) if !p.is_empty() => {
+                    // Prefer open statuses; client also filters Merged
+                    format!("/api/change_requests")
+                }
+                _ => "/api/change_requests".to_string(),
+            };
+            let (_status, data) = http_json("GET", &path, None).await.unwrap_or_else(|e| {
+                (0, json!({ "error": e, "change_requests": [] }))
+            });
+            let mut candidates = crate::coding_resolve::candidates_from_list(
+                &data,
+                project.as_deref(),
+                &request,
+            );
+            // Prefer session's already-bound PR when still open
+            if let Some(ref slug) = project {
+                if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
+                    if let Some(aid) = h.snapshot_meta().active_change_id.clone() {
+                        if candidates.iter().any(|c| c.id == aid) {
+                            // Boost bound PR slightly
+                            for c in &mut candidates {
+                                if c.id == aid {
+                                    c.score = (c.score + 0.15).min(1.0);
+                                }
+                            }
+                            candidates.sort_by(|a, b| {
+                                b.score
+                                    .partial_cmp(&a.score)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            });
+                        }
+                    }
+                }
+            }
+
+            let decision = crate::coding_resolve::decide(&candidates, &request);
+            let cand_json: Vec<Value> = candidates
+                .iter()
+                .take(12)
+                .map(crate::coding_resolve::candidate_json)
+                .collect();
+
+            match decision {
+                crate::coding_resolve::ResolveDecision::New => Ok(json!({
+                    "ok": true,
+                    "decision": "new",
+                    "summary": "No matching open pull request — use a new work line; open PR when task done",
+                    "project": project,
+                    "candidates": cand_json,
+                    "request": request,
+                    "hint": "create_branch if multi-step; do not create_change until task complete"
+                })
+                .to_string()),
+                crate::coding_resolve::ResolveDecision::Bind { pr_id } => {
+                    if let Some(ref slug) = project {
+                        if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
+                            let _ = crate::coding_resolve::bind_session_to_pr(&h, &pr_id);
+                        }
+                    }
+                    let branch = candidates
+                        .iter()
+                        .find(|c| c.id == pr_id)
+                        .and_then(|c| c.source_branch.clone());
+                    Ok(json!({
+                        "ok": true,
+                        "decision": "bind",
+                        "pr_id": pr_id,
+                        "change_id": pr_id,
+                        "source_branch": branch,
+                        "summary": format!("Auto-bound to open pull request {pr_id} (scope match)"),
+                        "project": project,
+                        "candidates": cand_json,
+                        "request": request,
+                        "active_change_id": pr_id,
+                        "hint": "Continue on this PR's branch; session_commit per slice; submit when done"
+                    })
+                    .to_string())
+                }
+                crate::coding_resolve::ResolveDecision::NeedsChoice => {
+                    let intent = crate::coding_resolve::choose_pr_intent(
+                        &request,
+                        &candidates,
+                        project.as_deref(),
+                    );
+                    let intent_id = intent
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    crate::focus::register_pending_intent(
+                        &intent_id,
+                        json!({ "tool": "resolve_coding_target", "request": request }),
+                    );
+                    Ok(json!({
+                        "ok": true,
+                        "decision": "needs_choice",
+                        "summary": "Multiple open pull requests — operator must choose (Present modal)",
+                        "project": project,
+                        "candidates": cand_json,
+                        "request": request,
+                        "intent": intent,
+                        "pending_ux": true,
+                        "execution": { "domain": "ux", "present": "choose" },
+                        "hint": format!(
+                            "Wait for Present ACK (wait_intent_ack intent_id={intent_id}) then \
+                             resolve_coding_target(choice=<pr_id|new>) if not auto-applied"
+                        )
+                    })
+                    .to_string())
+                }
+            }
+        }
+
         // ─── SDLC / Pull requests (API path still /api/change_requests) ───
         "list_changes" | "open_changes" => {
             let navigate = arg_bool(arguments, "navigate", true);
@@ -478,6 +636,45 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             } else {
                 crate::focus::DomainMode::Server
             };
+            let force_new = arg_bool(arguments, "force_new", false);
+
+            // Reuse open PR bound on session (resolve_coding_target / prior work)
+            if !force_new {
+                let project = arg_str(arguments, &["slug", "project", "repo", "repo_id"]).or_else(
+                    crate::coding_gates::current_project_slug,
+                );
+                if let Some(ref slug) = project {
+                    if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
+                        if let Some(aid) = h
+                            .snapshot_meta()
+                            .active_change_id
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                        {
+                            let path = format!("/changes/{aid}");
+                            let host_check =
+                                crate::coding_gates::host_check_value(&h.snapshot_meta());
+                            return Ok(json!({
+                                "ok": true,
+                                "reused": true,
+                                "summary": format!(
+                                    "Reusing open pull request {aid} (session active_change_id). \
+                                     Pass force_new=true to open another PR. Call submit_change when ready."
+                                ),
+                                "change_request": { "id": aid },
+                                "pull_request": { "id": aid },
+                                "host_check": host_check,
+                                "gate_notes": [
+                                    "HINT: scope already bound — prefer submit_change over a second create_change"
+                                ],
+                                "navigation": { "action": "goto", "path": path },
+                                "execution": { "domain": "server", "present": "illustrate" }
+                            })
+                            .to_string());
+                        }
+                    }
+                }
+            }
 
             // If title provided → create (or schedule UX commit); else open form
             if let Some(title) = arg_str(arguments, &["title"]) {
@@ -1920,8 +2117,22 @@ pub fn tool_definitions() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {}, "required": [] }
         }),
         json!({
+            "name": "resolve_coding_target",
+            "description": "At the start of coding work: match the task against open unmerged pull requests (not tickets). Auto-binds when one PR strongly matches scope; returns needs_choice + Present modal when multiple candidates; decision=new when none. Pass choice=pr_id or choice=new after modal ACK. Prefer this before create_change.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request": { "type": "string", "description": "Operator task / fix request text for scope matching" },
+                    "project": { "type": "string", "description": "Project slug" },
+                    "slug": { "type": "string" },
+                    "choice": { "type": "string", "description": "After modal: PR id, or 'new' / '__new__'" }
+                },
+                "required": []
+            }
+        }),
+        json!({
             "name": "wait_intent_ack",
-            "description": "Block until the browser finishes Present for an intent_id (from create_project via=ux / create_change via=ux). Call AFTER the create tool so Present can stream first — then wait before write_source. timeout_ms default 45000.",
+            "description": "Block until the browser finishes Present for an intent_id (from create_project via=ux / create_change via=ux / resolve_coding_target needs_choice). Call AFTER the create tool so Present can stream first — then wait before write_source. timeout_ms default 45000.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
