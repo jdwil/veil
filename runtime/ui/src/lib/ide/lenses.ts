@@ -57,7 +57,7 @@ export function nodeHasCriticalDiagnostic(
 
 /**
  * Layer presentation lens `critical` — architecturally important for review.
- * **Not** a compile/check failure. UI uses soft blue + hourglass (not warning colors).
+ * **Not** a compile/check failure. UI uses soft blue + magnifying glass (not warning colors).
  */
 export function nodeHasReviewLens(
   node: IrNode,

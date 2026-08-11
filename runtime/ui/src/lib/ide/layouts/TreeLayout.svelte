@@ -552,7 +552,7 @@
               ? 'Error or escape-hatch on this construct'
               : 'Review focus (layer lens) — not a check failure'}
           >
-            {healthIssue ? '!' : '⏳'}
+            {healthIssue ? '!' : '🔍'}
           </span>
         {/if}
         {#if changed}

@@ -410,7 +410,7 @@
           <span
             class="detail-badge review-lens-badge"
             title="Review focus (layer lens) — not a check failure"
-          >⏳ review</span>
+          >🔍 review</span>
         {/if}
         {#each nodeLenses.filter((l) => l !== 'critical') as lens}
           <span class="detail-badge lens-badge" title="Layer presentation lens">{lens}</span>

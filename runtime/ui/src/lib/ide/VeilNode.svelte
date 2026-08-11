@@ -39,7 +39,7 @@
   const hasCompensate = $derived(annotations.includes('has_compensate'));
   const isGroup = $derived(data.isGroup ?? false);
   const isAbstract = $derived(properties.some(([k, v]) => k === 'abstract' && v === 'true'));
-  /** Layer review lens (blue / hourglass) — not a health failure. */
+  /** Layer review lens (blue / magnifying glass) — not a health failure. */
   const isReviewLens = $derived(
     Boolean(data.reviewLens ?? (data.critical && !data.healthIssue))
   );

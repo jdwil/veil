@@ -115,7 +115,7 @@
               {#if healthIssue}
                 <span class="flat-badge badge-critical" title="Error or escape-hatch">!</span>
               {:else if reviewLens}
-                <span class="flat-badge badge-review-lens" title="Review focus (layer lens)">⏳</span>
+                <span class="flat-badge badge-review-lens" title="Review focus (layer lens)">🔍</span>
               {/if}
               {#if errored}
                 <span class="flat-badge badge-error" title="Error">⬤</span>
