@@ -1,7 +1,8 @@
 //! Unresolved name / call detection (CHK-003).
 //!
 //! Reports errors when calls target unknown constructs/methods, or when type
-//! names are neither builtins, aliases, defined constructs, nor stubs.
+//! names are neither builtins, aliases, defined constructs, stubs, nor the
+//! enclosing construct's type parameters (e.g. `T` on `trait EntityRepo<T>`).
 //!
 //! Locals are tracked so bindings are not flagged as unresolved targets.
 //! Method checks on locals are best-effort when the local's type is known.
@@ -95,17 +96,18 @@ pub fn check_names(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
                 let mut scope = Scope::new();
                 for p in &f.params {
                     scope.bind(&p.name, type_name_hint(&p.type_expr));
-                    check_type_expr(&p.type_expr, &f.name, &index, &mut diagnostics);
+                    check_type_expr(&p.type_expr, &f.name, &index, &scope.type_params, &mut diagnostics);
                 }
                 if let Some(rt) = &f.return_type {
-                    check_type_expr(rt, &f.name, &index, &mut diagnostics);
+                    check_type_expr(rt, &f.name, &index, &scope.type_params, &mut diagnostics);
                 }
                 for e in &f.body {
                     check_expr(e, &f.name, &mut scope, &index, None, &mut diagnostics);
                 }
             }
             TopLevelItem::TypeAlias { name: _, target } => {
-                check_type_expr(target, "type_alias", &index, &mut diagnostics);
+                let empty = HashSet::new();
+                check_type_expr(target, "type_alias", &index, &empty, &mut diagnostics);
             }
             TopLevelItem::Flow(flow) => {
                 check_flow(flow, &index, &mut diagnostics);
@@ -241,11 +243,20 @@ fn strip_bang(name: &str) -> String {
 struct Scope {
     /// local name → optional construct/type name when known
     locals: HashMap<String, Option<String>>,
+    /// Type parameters of the enclosing construct (e.g. `T` on `EntityRepo<T>`).
+    type_params: HashSet<String>,
 }
 
 impl Scope {
     fn new() -> Self {
         Scope::default()
+    }
+
+    fn with_type_params(params: &HashSet<String>) -> Self {
+        Scope {
+            locals: HashMap::new(),
+            type_params: params.clone(),
+        }
     }
 
     fn bind(&mut self, name: &str, ty: Option<String>) {
@@ -275,34 +286,37 @@ fn check_construct(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let location = c.name.as_str();
+    // Type parameters on this construct are in scope for signatures and bodies
+    // (e.g. `trait EntityRepo<T>` → `T` is known inside method types).
+    let type_params: HashSet<String> = c.type_params.iter().cloned().collect();
 
     // Types on fields / methods / inputs
     for f in &c.fields {
-        check_type_expr(&f.type_expr, location, index, diagnostics);
+        check_type_expr(&f.type_expr, location, index, &type_params, diagnostics);
     }
     for b in &c.blocks {
         for f in &b.fields {
-            check_type_expr(&f.type_expr, location, index, diagnostics);
+            check_type_expr(&f.type_expr, location, index, &type_params, diagnostics);
         }
     }
     for m in &c.methods {
         for p in &m.params {
-            check_type_expr(&p.type_expr, location, index, diagnostics);
+            check_type_expr(&p.type_expr, location, index, &type_params, diagnostics);
         }
         if let Some(rt) = &m.return_type {
-            check_type_expr(rt, location, index, diagnostics);
+            check_type_expr(rt, location, index, &type_params, diagnostics);
         }
     }
     for f in &c.inputs {
-        check_type_expr(&f.type_expr, location, index, diagnostics);
+        check_type_expr(&f.type_expr, location, index, &type_params, diagnostics);
     }
     if let Some(rt) = &c.return_type {
-        check_type_expr(rt, location, index, diagnostics);
+        check_type_expr(rt, location, index, &type_params, diagnostics);
     }
 
     // Nested fn methods (aggregate body)
     for fndef in &c.fns {
-        let mut scope = Scope::new();
+        let mut scope = Scope::with_type_params(&type_params);
         // Self fields available as bare idents for assignment targets; also as locals.
         if let Some(info) = index.constructs.get(&c.name) {
             for (field, ty) in &info.fields {
@@ -311,10 +325,16 @@ fn check_construct(
         }
         for p in &fndef.params {
             scope.bind(&p.name, type_name_hint(&p.type_expr));
-            check_type_expr(&p.type_expr, &fndef.name, index, diagnostics);
+            check_type_expr(
+                &p.type_expr,
+                &fndef.name,
+                index,
+                &scope.type_params,
+                diagnostics,
+            );
         }
         if let Some(rt) = &fndef.return_type {
-            check_type_expr(rt, &fndef.name, index, diagnostics);
+            check_type_expr(rt, &fndef.name, index, &scope.type_params, diagnostics);
         }
         for e in &fndef.body {
             check_expr(e, location, &mut scope, index, Some(&c.name), diagnostics);
@@ -323,7 +343,7 @@ fn check_construct(
 
     // Impl method bodies
     for imp in &c.impls {
-        let mut scope = Scope::new();
+        let mut scope = Scope::with_type_params(&type_params);
         for p in &imp.params {
             scope.bind(p, None);
         }
@@ -345,7 +365,7 @@ fn check_construct(
 
     // Flow-shaped steps
     if !c.steps.is_empty() || !c.inputs.is_empty() {
-        let mut scope = Scope::new();
+        let mut scope = Scope::with_type_params(&type_params);
         for f in &c.inputs {
             scope.bind(&f.name, type_name_hint(&f.type_expr));
         }
@@ -369,7 +389,13 @@ fn check_flow(flow: &Flow, index: &NameIndex, diagnostics: &mut Vec<Diagnostic>)
     let mut scope = Scope::new();
     for f in &flow.inputs {
         scope.bind(&f.name, type_name_hint(&f.type_expr));
-        check_type_expr(&f.type_expr, &flow.name, index, diagnostics);
+        check_type_expr(
+            &f.type_expr,
+            &flow.name,
+            index,
+            &scope.type_params,
+            diagnostics,
+        );
     }
     for step in &flow.steps {
         check_flow_step(step, &flow.name, &mut scope, index, diagnostics);
@@ -476,7 +502,7 @@ fn check_expr(
                 _ => None,
             };
             if let Some(ann) = ann {
-                check_type_expr(ann, location, index, diagnostics);
+                check_type_expr(ann, location, index, &scope.type_params, diagnostics);
                 scope.bind(name, type_name_hint(ann).or(ty));
             } else {
                 scope.bind(name, ty);
@@ -485,7 +511,7 @@ fn check_expr(
         Expr::LetPattern(pat, rhs, ty) => {
             check_expr(rhs, location, scope, index, self_type, diagnostics);
             if let Some(t) = ty {
-                check_type_expr(t, location, index, diagnostics);
+                check_type_expr(t, location, index, &scope.type_params, diagnostics);
             }
             bind_pattern(pat, scope, ty.as_ref().and_then(type_name_hint));
         }
@@ -579,7 +605,7 @@ fn check_expr(
         Expr::Cast(e, ty_name) => {
             check_expr(e, location, scope, index, self_type, diagnostics);
             // Cast target as bare type name
-            if !is_known_type(ty_name, index) {
+            if !is_known_type(ty_name, index, &scope.type_params) {
                 push_unknown_type(ty_name, location, index, diagnostics);
             }
         }
@@ -587,6 +613,7 @@ fn check_expr(
             if !index.constructs.contains_key(name)
                 && !index.stub_types.contains(name)
                 && !index.type_aliases.contains(name)
+                && !scope.type_params.contains(name)
             {
                 // Events / messages often defined as struct constructs — error if missing
                 if looks_like_type_name(name) {
@@ -605,7 +632,7 @@ fn check_expr(
             }
         }
         Expr::StructUpdate { name, fields, base } => {
-            if looks_like_type_name(name) && !is_known_type(name, index) {
+            if looks_like_type_name(name) && !is_known_type(name, index, &scope.type_params) {
                 push_unknown_type(name, location, index, diagnostics);
             }
             for (_, e) in fields {
@@ -908,61 +935,59 @@ fn check_type_expr(
     ty: &TypeExpr,
     location: &str,
     index: &NameIndex,
+    type_params: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match ty {
         TypeExpr::Named(name) => {
-            if !is_known_type(name, index) {
+            if !is_known_type(name, index, type_params) {
                 push_unknown_type(name, location, index, diagnostics);
             }
         }
         TypeExpr::Generic(name, args) => {
-            // List/Map/Opt/Res/Set or user generic
-            if !BUILTIN_TYPES.contains(&name.as_str())
-                && !index.constructs.contains_key(name)
-                && !index.type_aliases.contains(name)
-                && !index.stub_types.contains(name)
-            {
+            // List/Map/Opt/Res/Set or user generic (EntityRepo, …)
+            if !is_known_type(name, index, type_params) {
                 push_unknown_type(name, location, index, diagnostics);
             }
             for a in args {
-                check_type_expr(a, location, index, diagnostics);
+                check_type_expr(a, location, index, type_params, diagnostics);
             }
         }
         TypeExpr::Result(inner) => {
             if let Some(t) = inner {
-                check_type_expr(t, location, index, diagnostics);
+                check_type_expr(t, location, index, type_params, diagnostics);
             }
         }
         TypeExpr::Optional(t) | TypeExpr::List(t) | TypeExpr::Set(t) | TypeExpr::Dyn(t)
         | TypeExpr::ImplTrait(t) | TypeExpr::Array(t, _) | TypeExpr::Ref(t, _) => {
-            check_type_expr(t, location, index, diagnostics);
+            check_type_expr(t, location, index, type_params, diagnostics);
         }
         TypeExpr::Map(k, v) => {
-            check_type_expr(k, location, index, diagnostics);
-            check_type_expr(v, location, index, diagnostics);
+            check_type_expr(k, location, index, type_params, diagnostics);
+            check_type_expr(v, location, index, type_params, diagnostics);
         }
         TypeExpr::Tuple(items) => {
             for t in items {
-                check_type_expr(t, location, index, diagnostics);
+                check_type_expr(t, location, index, type_params, diagnostics);
             }
         }
         TypeExpr::FnPtr(args, ret) => {
             for a in args {
-                check_type_expr(a, location, index, diagnostics);
+                check_type_expr(a, location, index, type_params, diagnostics);
             }
             if let Some(r) = ret {
-                check_type_expr(r, location, index, diagnostics);
+                check_type_expr(r, location, index, type_params, diagnostics);
             }
         }
     }
 }
 
-fn is_known_type(name: &str, index: &NameIndex) -> bool {
+fn is_known_type(name: &str, index: &NameIndex, type_params: &HashSet<String>) -> bool {
     BUILTIN_TYPES.contains(&name)
         || index.constructs.contains_key(name)
         || index.type_aliases.contains(name)
         || index.stub_types.contains(name)
+        || type_params.contains(name)
 }
 
 fn is_builtin_call(name: &str) -> bool {
@@ -1428,6 +1453,97 @@ mod tests {
         let diags = check_names(&sol(vec![TopLevelItem::Construct(agg)]), &reg);
         assert!(
             diags.iter().any(|d| d.code == "unresolved_type"),
+            "{:?}",
+            diags
+        );
+    }
+
+    /// `trait EntityRepo<T>` method signatures must not report `unknown type 'T'`.
+    #[test]
+    fn generic_type_params_are_known_on_method_signatures() {
+        let reg = reg_with(vec![spec("port", "Port", Shape::Trait)]);
+        let mut repo = Construct::new(
+            "port",
+            "Port",
+            Shape::Trait,
+            "EntityRepo".into(),
+            Span::new(0, 0),
+        );
+        repo.type_params = vec!["T".into()];
+        repo.methods.push(Method {
+            name: "find!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "id".into(),
+                type_expr: TypeExpr::Named("Id".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Generic(
+                "Opt".into(),
+                vec![TypeExpr::Named("T".into())],
+            )),
+        });
+        repo.methods.push(Method {
+            name: "save!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "entity".into(),
+                type_expr: TypeExpr::Named("T".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: None,
+        });
+        repo.methods.push(Method {
+            name: "list_by_tenant!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "tenant_id".into(),
+                type_expr: TypeExpr::Named("Id".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Generic(
+                "List".into(),
+                vec![TypeExpr::Named("T".into())],
+            )),
+        });
+        let diags = check_names(&sol(vec![TopLevelItem::Construct(repo)]), &reg);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == "unresolved_type" && d.message.contains("'T'")),
+            "type param T should be known: {:?}",
+            diags
+        );
+        assert!(
+            !diags.iter().any(|d| d.severity == Severity::Error),
+            "{:?}",
+            diags
+        );
+    }
+
+    /// Bare `T` without a type parameter list is still an error.
+    #[test]
+    fn bare_t_without_type_param_still_errors() {
+        let reg = reg_with(vec![spec("port", "Port", Shape::Trait)]);
+        let mut repo = Construct::new(
+            "port",
+            "Port",
+            Shape::Trait,
+            "BadRepo".into(),
+            Span::new(0, 0),
+        );
+        // no type_params
+        repo.methods.push(Method {
+            name: "find!".into(),
+            span: Span::new(0, 0),
+            params: Vec::new(),
+            return_type: Some(TypeExpr::Named("T".into())),
+        });
+        let diags = check_names(&sol(vec![TopLevelItem::Construct(repo)]), &reg);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "unresolved_type" && d.message.contains("'T'")),
             "{:?}",
             diags
         );

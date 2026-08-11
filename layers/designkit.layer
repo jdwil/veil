@@ -715,7 +715,8 @@ pkg designkit v1
         .dk-ctx__menu {
           position: absolute; top: calc(100% + 0.35rem); z-index: 10000;
           min-width: 10rem; padding: 0.35rem;
-          background: var(--dk-glass);
+          /* Solid enough to read/click; glass alone looked click-through-ish over rows */
+          background: color-mix(in srgb, var(--dk-surface-2, #242424) 94%, transparent);
           backdrop-filter: blur(16px) saturate(1.3);
           -webkit-backdrop-filter: blur(16px) saturate(1.3);
           border: 1px solid var(--dk-glass-border);
@@ -723,6 +724,24 @@ pkg designkit v1
           box-shadow: var(--dk-shadow-lg);
           animation: dk-menu-in 0.2s var(--dk-ease-out) both;
           transform-origin: top right;
+          pointer-events: auto;
+        }
+        /* Popover UA resets margin/inset — restore fixed placement from JS */
+        .dk-ctx__menu[popover] {
+          margin: 0;
+          inset: auto;
+          border: 1px solid var(--dk-glass-border);
+          background: color-mix(in srgb, var(--dk-surface-2, #242424) 94%, transparent);
+          padding: 0.35rem;
+          color: inherit;
+          overflow: visible;
+        }
+        .dk-ctx__menu[hidden] { display: none !important; }
+        /* Portaled to body — escape table/tile stacking + beat body > * { z-index: 1 } */
+        body > .dk-ctx__menu {
+          position: fixed !important;
+          z-index: 10000 !important;
+          pointer-events: auto !important;
         }
         .dk-ctx__menu--right { right: 0; }
         .dk-ctx__menu--left { left: 0; transform-origin: top left; }

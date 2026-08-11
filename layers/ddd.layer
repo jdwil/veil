@@ -347,6 +347,26 @@ pkg ddd v1
   prompt
     You are writing code using the DDD (Domain-Driven Design) layer for VEIL.
 
+    ## MUST — domain vocabulary (non-negotiable)
+    When this package has `use ddd`, emit **layer keywords**, not base primitives:
+
+    | Concept | Use keyword | Do NOT use |
+    |---------|-------------|------------|
+    | Aggregate root | `agg` | `struct` |
+    | Value object | `val` | `struct` |
+    | Entity | `ent` | `struct` |
+    | Repository | `repo` | `trait` |
+    | Port | `port` | `trait` |
+    | Application service | `handler` | bare `fn` / cosmetic-only `flow` |
+    | Domain service | `svc` | bare `fn` |
+    | Bounded context | `ctx` | bare `mod` alone |
+
+    - Cosmetic `group Aggregates` / `group Repositories` wrapping `struct`/`trait`
+      is **not** a DDD remodel — the outline will still show Structs/Traits.
+    - `enum` remains base (DDD has no separate enum keyword).
+    - To customize DDD itself, fork to a new layer name (`acme-ddd.layer` + `use acme-ddd`);
+      never hand-edit platform `ddd.layer`.
+
     ## Structure
     Every pkg using `use ddd` organizes code into bounded contexts (`ctx`), each
     containing groups: `domain`, `application`, `infrastructure`, and optionally

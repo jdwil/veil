@@ -33,13 +33,31 @@ Layout for an application or library the user owns:
 my-app/                    # git repository root (hub folder id)
   veil.toml                # name, [package] entry, [dependencies], [[targets]]
   main.veil                # primary package (R21)
+  MISSION.md               # optional product intent brief (scaffold on init)
   layers/
     main.layer             # primary language (R21)
   stubs/                   # external crate stubs for this project
   generated/               # codegen output (IDE readonly)
   # optional extra packages:
   # other_ui.veil
+  # ui.veil
 ```
+
+### `MISSION.md` (product intent)
+
+Optional short brief for **what this product is for** — not behavior (that’s
+`.veil`) and not domain vocabulary (that’s `layers/`).
+
+Recommended headings: **Purpose**, **In scope**, **Out of scope**, **Primary
+users & success**, **Hard constraints**. Keep it ~1–2 minutes to read; non-goals
+are the highest-value section for agents.
+
+- **`veil init` / `veil projects create`** write a template `MISSION.md`.
+- **IDE agent** injects a capped slice into the Tier 0/1 preamble when the file
+  exists at the project root (see `read_mission_for_agent`). Prefer that brief
+  over inventing requirements; do not expand it into a PRD every turn.
+- Not listed in the IDE package/layer file picker (not a `.veil`/`.layer`); it is
+  still tracked in durable session work trees when present.
 
 ```toml
 name = "my-app"
@@ -132,18 +150,44 @@ playground; product and runtime docs should not treat `examples/` as home.
 
 ## Core vs userland layers
 
-| Kind | Location | In file picker |
-|------|----------|----------------|
-| Core platform (`ddd`, `base`, `di`, `rust`, …) | Install / monorepo `layers/` / `VEIL_LAYERS_DIR` | **No** (unless language mode / `--show-core-layers`) |
-| Family / client (`wear_test`, `crm`, …) | **Project** `layers/` | **Yes** |
-| Stubs | Project `stubs/` (or package-adjacent) | Browse / palette only |
+| Kind | Location | Editable in product IDE? | In file picker |
+|------|----------|--------------------------|----------------|
+| **Platform** (`ddd`, `base`, `di`, `rust`, …) | Platform catalog: `VEIL_LAYERS_DIR` / monorepo `layers/` / S3+DDB seed → `$TMP/veil-platform-layers` | **No** (read-only). Fork under a new name to customize. | **No** (unless language mode / `--show-core-layers`) |
+| **Product** (`main.layer`, `acme-ddd`, …) | Project `layers/` (S3 repo materialize) | **Yes** | **Yes** |
+| Stubs | Project `stubs/` or platform stub catalog | Project pins yes; platform no | Browse / palette only |
 
-Registry resolution for `use <name>` walks:
+### Platform layer catalog (cloud)
 
-1. Project dir + `layers/`
-2. Ancestor `layers/` and hub **sibling product dirs** (local multi-product hub)
-3. **`veil.toml` `[dependencies]`** product roots (R20 — path / project / git)
-4. Install / system layers (`VEIL_LAYERS_DIR`)
+Same pattern as platform stubs:
+
+| Store | Key |
+|-------|-----|
+| S3 | `layers/platform/{name}/{version}.layer` |
+| DDB | `PK=LAYER#{name}` `SK=META` |
+
+```bash
+AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
+  ./scripts/seed-layers-platform.sh
+```
+
+ProductHost warms the cache on start. Local dev: `VEIL_LAYERS_DIR=$ROOT/layers` (set by `dev-stack.sh`).
+
+### Registry resolution for `use <name>`
+
+**Platform names** (`ddd`, `di`, … — see `veil_ir::is_platform_layer_name`):
+
+1. Platform catalog only (`VEIL_LAYERS_DIR`, `$TMP/veil-platform-layers`, install/monorepo)
+2. Fail closed if missing or ghost (empty stub)
+
+Products **cannot shadow** platform names with `layers/ddd.layer` in the repo. To customize: copy to `acme-ddd.layer` and `use acme-ddd`.
+
+**Product / other names:**
+
+1. Package-adjacent `{name}.layer` / `layers/{name}.layer`
+2. Product root (`veil.toml` package entry / `layers/`)
+3. **`veil.toml` `[dependencies]`** roots (R20)
+4. Disk-hub sibling products only when `VEIL_SOURCE_MODE=disk` (or `VEIL_LAYER_SIBLING_SCAN=1`)
+5. Platform catalog (optional extensions)
 
 Editing is a separate concern from resolution.
 

@@ -674,7 +674,13 @@ Keywords: `stub <name> <version>`, crate-level policy lines, then `struct` /
 `impl` / `trait` blocks with `fn` signature lines.
 
 ```
-stub reqwest 0.12
+stub reqwest 0.13.4
+  # @generated veil-stub-gen 1
+  # source crates.io
+  # surface full
+  # cargo_name reqwest
+  # generated_at 2026-08-06T12:00:00Z
+  # rustdoc_fingerprint <hash>
   struct Client
 
   struct Response
@@ -691,6 +697,27 @@ stub reqwest 0.12
     fn header(name: Str, value: Str) -> RequestBuilder
     fn send() -> Res!<Response>
 ```
+
+**Versioning / provenance (required for platform + agent tooling):**
+
+| Meta | Meaning |
+|------|---------|
+| `stub name <semver>` | Pin to the Cargo crate version (not `*`) |
+| `# @generated veil-stub-gen 1` | Machine-generated — re-run gen, do not hand-edit policy |
+| `# source crates.io` | Where the API was taken from |
+| `# surface full\|curated\|sparse` | Full rustdoc dump vs intentional minimal pin |
+| `# rustdoc_fingerprint …` | Staleness hint |
+| `# generated_at ISO-8601` | When generated |
+| `# cargo_name …` | crates.io name if different from VEIL use-name |
+
+**Where stubs live (resolve order):**
+
+1. Project `name.stub` or `stubs/name.stub` (pin / override)
+2. Platform catalog: `VEIL_STUBS_DIR`, monorepo `runtime/src/stubs`, or S3
+   `stubs/platform/{name}/{ver}.stub` via DDB `STUB#/META` (materialized to `$TMP/veil-platform-stubs`)
+3. Fail → `veil stub-gen` / `POST /api/…/stubs/generate` / agent `stub_gen`
+
+**Never hand-write full SDK stubs** — use `veil stub-gen` or install from the platform catalog.
 
 **Crate-level policy (auto-inferred by stub-gen when possible):**
 

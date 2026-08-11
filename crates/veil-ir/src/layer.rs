@@ -901,31 +901,46 @@ impl LayerRegistry {
     }
 
     /// Load a layer file (and, recursively, layers it `use`s) into this registry.
-    /// Load a layer by name, searching in order:
-    /// 1. The provided local directory
-    /// 2. The system layers directory (ships with VEIL)
-    /// 3. An external resolver (if configured)
+    ///
+    /// Resolution:
+    /// - **Platform names** (`ddd`, `di`, …): platform catalog only (read-only to products)
+    /// - **Product names**: package `layers/`, product root, `[dependencies]`, optional disk-hub siblings
     pub fn load_layer(&mut self, name: &str, dir: &Path) -> Result<(), String> {
         if self.layers.iter().any(|l| l == name) {
             return Ok(()); // already loaded
         }
 
-        // Resolution order: local → system → external
         let content = self.resolve_layer_content(name, dir)?;
+
+        if crate::platform_layers::is_platform_layer_name(name)
+            && crate::platform_layers::is_ghost_layer_content(&content)
+        {
+            return Err(format!(
+                "platform layer '{name}' resolved to empty/ghost content — \
+                 check VEIL_LAYERS_DIR or seed platform layers (scripts/seed-layers-platform.sh)"
+            ));
+        }
 
         // First, load dependency layers (`use xxx` lines at pkg level).
         // Skip silently if not found — it might be a .stub or package reference.
         for line in content.lines() {
             let t = line.trim();
             if let Some(dep) = t.strip_prefix("use ") {
-                let _ = self.load_layer(dep.trim(), dir);
+                let dep = dep.split_whitespace().next().unwrap_or("").trim();
+                if !dep.is_empty() {
+                    let _ = self.load_layer(dep, dir);
+                }
             }
         }
 
-        self.layers.push(name.to_string());
         let raw = parse_layer_file(&content, name)
             .map_err(|e| format!("layer '{}': {}", name, e))?;
-        self.merge_and_resolve(raw)?;
+        // Only mark loaded after successful parse — avoids ghost "ddd" with no constructs.
+        self.layers.push(name.to_string());
+        if let Err(e) = self.merge_and_resolve(raw) {
+            self.layers.retain(|l| l != name);
+            return Err(e);
+        }
         // INV-002 / INV-006: same policy install as load_content (load_layer is the
         // normal path for package `use` lines; without this, identity_policy never
         // reaches the IR builder).
@@ -959,17 +974,45 @@ impl LayerRegistry {
 
     /// Resolve layer content by searching multiple locations.
     fn resolve_layer_content(&self, name: &str, local_dir: &Path) -> Result<String, String> {
-        // 1. Local directory (same dir as the .veil file)
-        let local_path = local_dir.join(format!("{}.layer", name));
-        if local_path.exists() {
-            return std::fs::read_to_string(&local_path)
-                .map_err(|e| format!("cannot read layer '{}' at {}: {}", name, local_path.display(), e));
+        // ── Platform language (VEIL-owned, read-only for products) ──────────
+        if crate::platform_layers::is_platform_layer_name(name) {
+            if let Some(content) = crate::platform_layers::resolve_platform_layer_content(name) {
+                return Ok(content);
+            }
+            if let Some(resolver) = &self.external_resolver {
+                if let Some(content) = resolver(name) {
+                    if !crate::platform_layers::is_ghost_layer_content(&content) {
+                        return Ok(content);
+                    }
+                }
+            }
+            return Err(format!(
+                "platform layer '{name}' not found (searched VEIL_LAYERS_DIR, \
+                 $TMP/veil-platform-layers, install/monorepo layers). \
+                 Seed with scripts/seed-layers-platform.sh or set VEIL_LAYERS_DIR."
+            ));
         }
 
-        // 1b. Walk ancestors: `layers/<name>.layer` next to any parent
-        // (e.g. runtime/src → …/veil/layers/ddd.layer).
-        if let Some(content) = Self::load_layer_walking_ancestors(name, local_dir) {
-            return Ok(content);
+        // ── Product / userland layers ───────────────────────────────────────
+        // 1. Adjacent to the .veil file
+        let local_path = local_dir.join(format!("{name}.layer"));
+        if local_path.is_file() {
+            return std::fs::read_to_string(&local_path).map_err(|e| {
+                format!("cannot read layer '{name}' at {}: {e}", local_path.display())
+            });
+        }
+        let in_layers = local_dir.join("layers").join(format!("{name}.layer"));
+        if in_layers.is_file() {
+            return std::fs::read_to_string(&in_layers).map_err(|e| {
+                format!("cannot read layer '{name}' at {}: {e}", in_layers.display())
+            });
+        }
+
+        // 1b. Product root (veil.toml [package] provides_use / layers/<name>.layer)
+        if let Some(root) = crate::deps::find_project_root(local_dir) {
+            if let Some(content) = Self::load_layer_from_product_root(name, &root) {
+                return Ok(content);
+            }
         }
 
         // 1c. Declared product deps (veil.toml [dependencies]) — R20
@@ -979,8 +1022,15 @@ impl LayerRegistry {
             }
         }
 
-        // 2. System layers directory
-        if let Some(content) = Self::load_system_layer(name) {
+        // 1d. Disk-hub sibling products (opt-in: VEIL_SOURCE_MODE=disk or VEIL_LAYER_SIBLING_SCAN=1)
+        if crate::platform_layers::sibling_product_layer_scan_enabled() {
+            if let Some(content) = Self::load_layer_from_sibling_products(name, local_dir) {
+                return Ok(content);
+            }
+        }
+
+        // 2. Non-listed names may still live in the platform install (extensions)
+        if let Some(content) = crate::platform_layers::resolve_platform_layer_content(name) {
             return Ok(content);
         }
 
@@ -1002,8 +1052,7 @@ impl LayerRegistry {
             )
         };
         Err(format!(
-            "layer '{}' not found (searched: {}, ancestors/layers, system layers){}",
-            name,
+            "layer '{name}' not found (searched: {}, product layers, platform catalog){}",
             local_dir.display(),
             dep_hint
         ))
@@ -1017,24 +1066,10 @@ impl LayerRegistry {
         None
     }
 
-    /// Search `dir`, then each ancestor, for `layers/<name>.layer`.
-    /// Also checks **sibling project** folders under a projects hub
-    /// (e.g. `veil-projects/dlx-designkit/layers/designkit.layer` when the
-    /// leaf package lives in `veil-projects/wear_test/`).
-    fn load_layer_walking_ancestors(name: &str, dir: &Path) -> Option<String> {
+    /// Disk hub only: sibling product dirs under each ancestor (e.g. veil-projects/*).
+    fn load_layer_from_sibling_products(name: &str, dir: &Path) -> Option<String> {
         let mut cur = Some(dir);
         while let Some(d) = cur {
-            let candidate = d.join("layers").join(format!("{}.layer", name));
-            if candidate.exists() {
-                return std::fs::read_to_string(&candidate).ok();
-            }
-            // Also allow a layer file sitting directly in an ancestor
-            // (examples/ddd.layer when the .veil is under examples/).
-            let sibling = d.join(format!("{}.layer", name));
-            if sibling.exists() {
-                return std::fs::read_to_string(&sibling).ok();
-            }
-            // Projects hub: sibling product dirs (each may own layers/)
             if let Ok(entries) = std::fs::read_dir(d) {
                 let mut kids: Vec<_> = entries.filter_map(|e| e.ok()).collect();
                 kids.sort_by_key(|e| e.file_name());
@@ -1043,13 +1078,19 @@ impl LayerRegistry {
                     if !p.is_dir() {
                         continue;
                     }
-                    // Skip hidden / common non-product dirs
-                    let fname = ent.file_name();
-                    let name_s = fname.to_string_lossy();
-                    if name_s.starts_with('.') || name_s == "node_modules" || name_s == "target" {
+                    let name_s = ent.file_name().to_string_lossy().to_string();
+                    // Skip obvious non-product dirs (no language-specific package managers)
+                    if name_s.starts_with('.')
+                        || name_s == "target"
+                        || name_s == "generated"
+                        || name_s == "output"
+                    {
                         continue;
                     }
-                    // R21: package entry main.layer / named layer
+                    // Only consider dirs that look like VEIL products
+                    if !p.join("veil.toml").is_file() && !p.join("main.veil").is_file() {
+                        continue;
+                    }
                     if let Some(s) = Self::load_layer_from_product_root(name, &p) {
                         return Some(s);
                     }
@@ -1057,49 +1098,6 @@ impl LayerRegistry {
             }
             cur = d.parent();
         }
-        None
-    }
-
-    /// Load a layer from the system layers directory.
-    /// Searches relative to the VEIL binary or the VEIL_LAYERS_DIR env var.
-    fn load_system_layer(name: &str) -> Option<String> {
-        // Check VEIL_LAYERS_DIR env var first
-        if let Ok(dir) = std::env::var("VEIL_LAYERS_DIR") {
-            let path = Path::new(&dir).join(format!("{}.layer", name));
-            if path.exists() {
-                return std::fs::read_to_string(&path).ok();
-            }
-        }
-
-        // Check relative to the executable (for installed VEIL)
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(exe_dir) = exe.parent() {
-                // Try ../layers/ (standard install layout)
-                let path = exe_dir.join("../layers").join(format!("{}.layer", name));
-                if path.exists() {
-                    return std::fs::read_to_string(&path).ok();
-                }
-                // Try ./layers/ (dev layout)
-                let path = exe_dir.join("layers").join(format!("{}.layer", name));
-                if path.exists() {
-                    return std::fs::read_to_string(&path).ok();
-                }
-            }
-        }
-
-        // Try workspace root /layers/ (for dev) relative to CWD
-        let path = Path::new("layers").join(format!("{}.layer", name));
-        if path.exists() {
-            return std::fs::read_to_string(&path).ok();
-        }
-
-        // Walk CWD ancestors for layers/ (cargo test CWD is often a crate dir)
-        if let Ok(cwd) = std::env::current_dir() {
-            if let Some(content) = Self::load_layer_walking_ancestors(name, &cwd) {
-                return Some(content);
-            }
-        }
-
         None
     }
 
@@ -1215,6 +1213,10 @@ impl LayerRegistry {
                 }
             }
         }
+        // Auto-load every `stubs/*.stub` under the package dir so `stub_install` /
+        // `stub_gen` take effect for check/codegen without requiring a matching
+        // `use sqlx` / `use reqwest` line. Dedupes by crate name against use-loaded stubs.
+        Self::load_project_stubs_dir(&mut reg, dir);
         // R21: product's primary layer from veil.toml `[package].layer` (or
         // layers/main.layer default). Without this, packages only get layers
         // named in `use` lines — product vocabulary/present never loads and
@@ -1241,6 +1243,40 @@ impl LayerRegistry {
             reg.apply_codegen_overrides(&o);
         }
         Ok(reg)
+    }
+
+    /// Load all `*.stub` files from `{package_dir}/stubs/` into the registry.
+    /// Skips names already present (e.g. loaded via `use sqlx`).
+    fn load_project_stubs_dir(reg: &mut LayerRegistry, package_dir: &Path) {
+        let stubs_dir = package_dir.join("stubs");
+        if !stubs_dir.is_dir() {
+            return;
+        }
+        let existing: std::collections::HashSet<String> = reg
+            .stubs
+            .iter()
+            .map(|s| s.name.replace('-', "_").to_ascii_lowercase())
+            .collect();
+        let Ok(rd) = std::fs::read_dir(&stubs_dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("stub") {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(stub) = parse_stub_file(&content) else {
+                continue;
+            };
+            let key = stub.name.replace('-', "_").to_ascii_lowercase();
+            if existing.contains(&key) {
+                continue;
+            }
+            reg.stubs.push(stub);
+        }
     }
 
     /// Locate a system `.stub` by package use-name (`aws_sdk_dynamodb`, `sqlx`, …).
@@ -3855,6 +3891,35 @@ pkg demo v1
         assert_eq!(host.views.len(), 2);
         let agg = reg.construct_by_name("Aggregate").unwrap();
         assert_eq!(agg.presentation.role.as_deref(), Some("container"));
+    }
+
+    /// Project `stubs/*.stub` load even without a matching `use reqwest` line.
+    #[test]
+    fn for_veil_file_auto_loads_project_stubs_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "veil-stub-autoload-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("stubs")).expect("mkdir stubs");
+        std::fs::write(
+            dir.join("main.veil"),
+            "pkg auto_stub_test v1\n  use ddd\n  ctx C\n    group g\n",
+        )
+        .expect("write main.veil");
+        std::fs::write(
+            dir.join("stubs").join("reqwest.stub"),
+            "stub reqwest 0.1.0\n  struct Client\n    fn post(url: Str) -> Response\n",
+        )
+        .expect("write reqwest.stub");
+        // No `use reqwest` — only stubs/ on disk.
+        let reg = LayerRegistry::for_veil_file(&dir.join("main.veil")).expect("registry");
+        assert!(
+            reg.stubs.iter().any(|s| s.name == "reqwest"),
+            "expected reqwest auto-loaded from stubs/; got {:?}",
+            reg.stubs.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

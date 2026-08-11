@@ -22,6 +22,7 @@ pub mod serialize;
 pub mod span;
 pub mod struct_diff;
 pub mod stub_catalog;
+pub mod platform_layers;
 pub mod coverage;
 pub mod test_lint;
 pub mod validate;
@@ -64,6 +65,10 @@ pub use stub_catalog::{
     list_project_stubs, platform_stub_dirs, project_stub_write_path, resolve_stub,
     stub_file_stems, ResolvedStub, StubCatalogEntry, StubOrigin,
 };
+pub use platform_layers::{
+    is_ghost_layer_content, is_platform_layer_name, platform_layer_dirs,
+    platform_layers_cache_dir, resolve_platform_layer_content, sibling_product_layer_scan_enabled,
+};
 pub use layer_graph::{build_layer_ir, check_layer, layer_prompt};
 pub use presentation::{
     presentation_from_registry, ConstructPresentation, ConstructRoleDto, HostPresentation,
@@ -76,6 +81,9 @@ pub use project::{
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;
-pub use struct_diff::{structural_diff, DiffItem, PathSegment, StructDiff};
+pub use struct_diff::{
+    apply_intents_to_peeks, construct_peek_from_node, enrich_diff_peeks, sort_diff_for_review,
+    structural_diff, ConstructPeek, DiffItem, PathSegment, StructDiff,
+};
 pub use test_lint::check_tests;
 pub use coverage::{compute_coverage, CoverageReport, CoverageMetric, UncoveredItem};
