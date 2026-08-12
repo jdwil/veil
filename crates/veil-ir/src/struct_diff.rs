@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ir::{IrGraph, IrNode, NodeKind};
+use crate::ir::{EdgeKind, IrGraph, IrNode, NodeKind};
 
 /// One segment of a projection-aware container path.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,6 +124,10 @@ pub struct StructDiff {
     /// Optional paired base peeks for modified items (same length as items).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_peeks_base: Option<Vec<Option<ConstructPeek>>>,
+    /// Per-item blast-radius labels from IR graph edges (dependents / deps / container).
+    /// Same length as `items` when populated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_impact: Option<Vec<Vec<String>>>,
 }
 
 fn kind_str(k: &NodeKind) -> String {
@@ -495,11 +499,159 @@ pub fn structural_diff(base: &IrGraph, head: &IrGraph, base_label: &str, head_la
         item_annotations: None,
         item_peeks: None,
         item_peeks_base: None,
+        item_impact: None,
     };
     enrich_diff_peeks(&mut diff, base, head);
+    // Prefer head graph for blast radius (new edges); fall back to base for removals.
+    enrich_diff_impact(&mut diff, head, base);
     // Stable high→low impact order (HashMap walk is otherwise random).
     sort_diff_for_review(&mut diff);
     diff
+}
+
+/// Blast radius for a construct: IR dependents (who Calls/References/Implements us),
+/// dependencies we touch, container parent, and property-text references.
+/// Caps at 12 labels for wizard UI.
+pub fn compute_blast_radius(graph: &IrGraph, name: &str) -> Vec<String> {
+    if name.is_empty() {
+        return vec![];
+    }
+    let Some(node) = find_node_by_name(graph, name) else {
+        // Still surface name-mentions even without a node id.
+        return text_reference_hits(graph, name, None);
+    };
+    let id = node.id;
+    let by_id: std::collections::HashMap<_, _> =
+        graph.nodes.iter().map(|n| (n.id, n)).collect();
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for edge in &graph.edges {
+        let kind_ok = matches!(
+            edge.kind,
+            EdgeKind::Calls
+                | EdgeKind::References
+                | EdgeKind::Implements
+                | EdgeKind::Emits
+                | EdgeKind::Contains
+        );
+        if !kind_ok {
+            continue;
+        }
+        if edge.to == id {
+            if let Some(n) = by_id.get(&edge.from) {
+                if n.name != name && is_blast_label_node(n) {
+                    let label = match edge.kind {
+                        EdgeKind::Contains => format!("in {}", n.name),
+                        EdgeKind::Implements => format!("{} implements", n.name),
+                        EdgeKind::Calls | EdgeKind::Emits => format!("{} calls", n.name),
+                        EdgeKind::References => format!("{} refs", n.name),
+                        _ => n.name.clone(),
+                    };
+                    out.insert(label);
+                }
+            }
+        }
+        if edge.from == id {
+            if let Some(n) = by_id.get(&edge.to) {
+                if n.name != name && is_blast_label_node(n) {
+                    let label = match edge.kind {
+                        EdgeKind::Contains => format!("contains {}", n.name),
+                        EdgeKind::Implements => format!("impl {}", n.name),
+                        EdgeKind::Calls | EdgeKind::Emits => format!("→ {}", n.name),
+                        EdgeKind::References => format!("refs {}", n.name),
+                        _ => n.name.clone(),
+                    };
+                    out.insert(label);
+                }
+            }
+        }
+    }
+
+    for hit in text_reference_hits(graph, name, Some(id)) {
+        out.insert(hit);
+    }
+
+    out.into_iter().take(12).collect()
+}
+
+fn is_blast_label_node(n: &IrNode) -> bool {
+    !matches!(
+        n.kind,
+        NodeKind::Solution
+            | NodeKind::Action
+            | NodeKind::Inputs
+            | NodeKind::Return
+            | NodeKind::Field
+            | NodeKind::MatchArm
+            | NodeKind::ParallelGateway
+            | NodeKind::ErrorBoundary
+    )
+}
+
+fn text_reference_hits(graph: &IrGraph, name: &str, skip_id: Option<u64>) -> Vec<String> {
+    let mut hits = Vec::new();
+    for n in &graph.nodes {
+        if skip_id == Some(n.id) || n.name == name || !is_blast_label_node(n) {
+            continue;
+        }
+        let mut mentions = false;
+        for (_, v) in &n.metadata.properties {
+            if v.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|t| t == name)
+            {
+                mentions = true;
+                break;
+            }
+        }
+        if !mentions {
+            for a in &n.metadata.annotations {
+                if a.contains(name) {
+                    mentions = true;
+                    break;
+                }
+            }
+        }
+        if !mentions {
+            if let Some(doc) = &n.metadata.doc {
+                if doc.contains(name) {
+                    mentions = true;
+                }
+            }
+        }
+        if mentions {
+            hits.push(format!("mentions:{}", n.name));
+        }
+        if hits.len() >= 12 {
+            break;
+        }
+    }
+    hits
+}
+
+/// Attach per-item blast-radius lists. Prefer `primary` (usually head); for
+/// Removed items use `fallback` (base) when the name is gone from primary.
+pub fn enrich_diff_impact(diff: &mut StructDiff, primary: &IrGraph, fallback: &IrGraph) {
+    let mut impacts: Vec<Vec<String>> = Vec::with_capacity(diff.items.len());
+    for item in &diff.items {
+        let name = item_name(item).to_string();
+        let mut labels = compute_blast_radius(primary, &name);
+        if labels.is_empty() {
+            labels = compute_blast_radius(fallback, &name);
+        }
+        // Renames: also surface impact under the old name from base.
+        if let DiffItem::Renamed { from_name, .. } = item {
+            for extra in compute_blast_radius(fallback, from_name) {
+                if !labels.iter().any(|l| l == &extra) {
+                    labels.push(extra);
+                }
+            }
+            labels.truncate(12);
+        }
+        impacts.push(labels);
+    }
+    if impacts.iter().any(|v| !v.is_empty()) {
+        diff.item_impact = Some(impacts);
+    }
 }
 
 /// Change-kind impact: destructive / contract-breaking first, cosmetic last.
@@ -666,6 +818,9 @@ pub fn sort_diff_for_review(diff: &mut StructDiff) {
     }
     if let Some(anns) = diff.item_annotations.take() {
         diff.item_annotations = Some(permute(anns, &order));
+    }
+    if let Some(impacts) = diff.item_impact.take() {
+        diff.item_impact = Some(permute(impacts, &order));
     }
 }
 
@@ -922,5 +1077,43 @@ mod tests {
         assert!(d.items[..first_added]
             .iter()
             .all(|i| matches!(i, DiffItem::Removed { .. })));
+    }
+
+    #[test]
+    fn blast_radius_from_calls_and_contains() {
+        let mut g = IrGraph::new();
+        let root = node(&mut g, NodeKind::Solution, "pkg", None);
+        let agg = node(&mut g, NodeKind::TypeDef, "Order", Some(root));
+        let svc = node(&mut g, NodeKind::TypeDef, "CheckoutSvc", Some(root));
+        g.add_edge(svc, agg, EdgeKind::Calls);
+        let labels = compute_blast_radius(&g, "Order");
+        assert!(
+            labels.iter().any(|l| l.contains("CheckoutSvc")),
+            "expected dependent CheckoutSvc in {labels:?}"
+        );
+        let mut diff = StructDiff {
+            base_label: "b".into(),
+            head_label: "h".into(),
+            items: vec![DiffItem::BodyChanged {
+                path: "pkg".into(),
+                node_kind: "TypeDef".into(),
+                name: "Order".into(),
+                before_lines: 1,
+                after_lines: 2,
+                before_preview: vec![],
+                after_preview: vec![],
+                container_path: vec![],
+            }],
+            added: 0,
+            removed: 0,
+            changed: 1,
+            item_annotations: None,
+            item_peeks: None,
+            item_peeks_base: None,
+            item_impact: None,
+        };
+        enrich_diff_impact(&mut diff, &g, &IrGraph::new());
+        let impact = diff.item_impact.expect("impact");
+        assert!(!impact[0].is_empty());
     }
 }

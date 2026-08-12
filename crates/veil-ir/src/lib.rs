@@ -56,9 +56,10 @@ pub use edit::{
 };
 pub use ir::*;
 pub use layer::{
-    palette_from_registry, parse_layer_file, parse_stub_file, CodegenRule, CodegenTemplate,
-    ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer, ReactivityPolicy, Shape,
-    StatementSpec, StmtShape, StubCrate, StubImpl, StubMethod, StubProvenance, StubStruct,
+    palette_from_registry, parse_layer_file, parse_review_policy, parse_stub_file, CodegenRule,
+    CodegenTemplate, ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer, ReactivityPolicy,
+    ReviewPolicy, Shape, StatementSpec, StmtShape, StubCrate, StubImpl, StubMethod, StubProvenance,
+    StubStruct,
 };
 pub use stub_catalog::{
     content_fingerprint, generated_stub_header, list_catalog, list_platform_stubs,
@@ -82,8 +83,9 @@ pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, res
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;
 pub use struct_diff::{
-    apply_intents_to_peeks, construct_peek_from_node, enrich_diff_peeks, sort_diff_for_review,
-    structural_diff, ConstructPeek, DiffItem, PathSegment, StructDiff,
+    apply_intents_to_peeks, compute_blast_radius, construct_peek_from_node, enrich_diff_impact,
+    enrich_diff_peeks, sort_diff_for_review, structural_diff, ConstructPeek, DiffItem, PathSegment,
+    StructDiff,
 };
 pub use test_lint::check_tests;
 pub use coverage::{compute_coverage, CoverageReport, CoverageMetric, UncoveredItem};

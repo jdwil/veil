@@ -1059,6 +1059,9 @@ async fn compute_branch_structural_diff(
     let mut file_diffs: Vec<Value> = Vec::new();
     let mut files_touched = 0i64;
     let mut parse_notes: Vec<String> = Vec::new();
+    let mut merged_base = veil_ir::IrGraph::new();
+    let mut merged_head = veil_ir::IrGraph::new();
+    let mut used_layers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for path in all {
         let base_src = deps
@@ -1107,6 +1110,16 @@ async fn compute_branch_structural_diff(
             }));
         }
 
+        for line in head_src.lines().chain(base_src.lines()) {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("use ") {
+                let dep = rest.split_whitespace().next().unwrap_or("").trim();
+                if !dep.is_empty() {
+                    used_layers.insert(dep.to_string());
+                }
+            }
+        }
+
         let base_ir = if base_src.is_empty() {
             veil_ir::IrGraph::new()
         } else {
@@ -1129,6 +1142,10 @@ async fn compute_branch_structural_diff(
                 }
             }
         };
+        // Merge nodes/edges for cross-file blast radius (ids may collide across
+        // files — rematerialize by shifting head/base next_id when merging).
+        merge_ir_graph(&mut merged_base, &base_ir);
+        merge_ir_graph(&mut merged_head, &head_ir);
         let d = veil_ir::structural_diff(&base_ir, &head_ir, base_branch, head_branch);
         for item in &d.items {
             product_changes.push(diff_item_to_product(item));
@@ -1147,24 +1164,29 @@ async fn compute_branch_structural_diff(
         }
     }
 
-    // High-impact → low across all packages (per-file HashMap order was arbitrary).
-    {
-        let mut tmp = veil_ir::StructDiff {
-            base_label: base_branch.to_string(),
-            head_label: head_branch.to_string(),
-            items: std::mem::take(&mut merged_items),
-            added,
-            removed,
-            changed,
-            item_annotations: None,
-            item_peeks: None,
-            item_peeks_base: None,
-        };
-        veil_ir::sort_diff_for_review(&mut tmp);
-        merged_items = tmp.items;
-    }
+    // Peeks + IR blast radius on the merged multi-file graphs, then risk sort.
+    let mut tmp = veil_ir::StructDiff {
+        base_label: base_branch.to_string(),
+        head_label: head_branch.to_string(),
+        items: std::mem::take(&mut merged_items),
+        added,
+        removed,
+        changed,
+        item_annotations: None,
+        item_peeks: None,
+        item_peeks_base: None,
+        item_impact: None,
+    };
+    veil_ir::enrich_diff_peeks(&mut tmp, &merged_base, &merged_head);
+    veil_ir::enrich_diff_impact(&mut tmp, &merged_head, &merged_base);
+    veil_ir::sort_diff_for_review(&mut tmp);
 
-    let summary = if merged_items.is_empty() && files_touched == 0 {
+    // Resolve layer review policies for packages touched by this PR.
+    let review_policies = resolve_review_policies_for_layers(
+        used_layers.iter().map(|s| s.as_str()).collect(),
+    );
+
+    let summary = if tmp.items.is_empty() && files_touched == 0 {
         format!(
             "No structural changes detected between `{base_branch}` and `{head_branch}` (slug={slug}). If work is only in the coding session, use the IDE working-tree diff."
         )
@@ -1174,8 +1196,22 @@ async fn compute_branch_structural_diff(
         )
     };
 
-    // Serialize StructDiff items for IDE PR Wizard
-    let items_json = serde_json::to_value(&merged_items).unwrap_or_else(|_| json!([]));
+    let items_json = serde_json::to_value(&tmp.items).unwrap_or_else(|_| json!([]));
+    let peeks_json = tmp
+        .item_peeks
+        .as_ref()
+        .and_then(|v| serde_json::to_value(v).ok())
+        .unwrap_or(json!(null));
+    let peeks_base_json = tmp
+        .item_peeks_base
+        .as_ref()
+        .and_then(|v| serde_json::to_value(v).ok())
+        .unwrap_or(json!(null));
+    let impact_json = tmp
+        .item_impact
+        .as_ref()
+        .and_then(|v| serde_json::to_value(v).ok())
+        .unwrap_or(json!(null));
 
     Ok(json!({
         // IDE / StructDiff shape
@@ -1185,6 +1221,9 @@ async fn compute_branch_structural_diff(
         "added": added,
         "removed": removed,
         "changed": changed,
+        "item_peeks": peeks_json,
+        "item_peeks_base": peeks_base_json,
+        "item_impact": impact_json,
         // Secondary git-style file diffs (not front-and-center; wizard key D)
         "file_diffs": file_diffs,
         // Product ChangeDetail shape
@@ -1195,7 +1234,83 @@ async fn compute_branch_structural_diff(
         "removals": removed as i64,
         "slug": slug,
         "parse_notes": parse_notes,
+        "used_layers": used_layers.into_iter().collect::<Vec<_>>(),
+        "review_policies": review_policies,
     }))
+}
+
+/// Merge `src` into `dst`, shifting node ids so multi-file graphs don't collide.
+fn merge_ir_graph(dst: &mut veil_ir::IrGraph, src: &veil_ir::IrGraph) {
+    if src.nodes.is_empty() {
+        return;
+    }
+    let offset = dst.next_id.saturating_sub(1).max(0);
+    let shift = if offset == 0 && dst.nodes.is_empty() {
+        0u64
+    } else {
+        dst.next_id
+    };
+    for n in &src.nodes {
+        let mut nn = n.clone();
+        nn.id = n.id.saturating_add(shift);
+        if let Some(p) = nn.metadata.parent {
+            nn.metadata.parent = Some(p.saturating_add(shift));
+        }
+        dst.nodes.push(nn);
+    }
+    for e in &src.edges {
+        dst.edges.push(veil_ir::IrEdge {
+            from: e.from.saturating_add(shift),
+            to: e.to.saturating_add(shift),
+            kind: e.kind.clone(),
+        });
+    }
+    dst.next_id = dst
+        .nodes
+        .iter()
+        .map(|n| n.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+}
+
+fn resolve_review_policies_for_layers(layers: Vec<&str>) -> Value {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut reg = veil_ir::LayerRegistry::builtin();
+    let mut names: Vec<String> = layers.iter().map(|s| (*s).to_string()).collect();
+    // Always try base + common UI layers so policies are available.
+    for extra in ["base", "svelte5", "ui"] {
+        if !names.iter().any(|n| n == extra) {
+            names.push(extra.into());
+        }
+    }
+    for name in &names {
+        let _ = reg.load_layer(name, &cwd);
+    }
+    let mut map = serde_json::Map::new();
+    for (name, pol) in &reg.review_policies {
+        map.insert(
+            name.clone(),
+            serde_json::to_value(pol).unwrap_or(json!({})),
+        );
+    }
+    if map.is_empty() {
+        for (name, rel) in [
+            ("base", "layers/base.layer"),
+            ("svelte5", "layers/svelte5.layer"),
+        ] {
+            let path = cwd.join(rel);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Some(pol) = veil_ir::parse_review_policy(&content) {
+                    map.insert(
+                        name.into(),
+                        serde_json::to_value(pol).unwrap_or(json!({})),
+                    );
+                }
+            }
+        }
+    }
+    Value::Object(map)
 }
 
 /// Compact unified-style hunks for secondary file-diff review (line-based, not git plumbing).
@@ -1682,12 +1797,200 @@ fn parse_pr_status(s: Option<&str>) -> Option<change_management::domain::types::
     }
 }
 
-// ─── Living Design Journal (durable-enough for launch; process + optional PR comment) ──
+// ─── Living Design Journal (DDB-durable + process write-through cache) ──
 
 use std::sync::Mutex;
 
 static DESIGN_JOURNAL: std::sync::LazyLock<Mutex<Vec<Value>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[derive(Clone)]
+struct JournalDdb {
+    client: aws_sdk_dynamodb::Client,
+    table: String,
+}
+
+impl JournalDdb {
+    async fn from_env() -> Option<Self> {
+        if std::env::var("VEIL_PLATFORM_LOCAL").ok().as_deref() == Some("1") {
+            return None;
+        }
+        if std::env::var("VEIL_DDB_TABLE").is_err() && std::env::var("AWS_PROFILE").is_err() {
+            return None;
+        }
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let table = std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "veil-runtime-dev".into());
+        Some(Self {
+            client: aws_sdk_dynamodb::Client::new(&config),
+            table,
+        })
+    }
+
+    /// Dual-write: global JOURNAL stream + construct + PR secondary keys.
+    async fn put_entry(&self, entry: &Value) -> Result<(), String> {
+        let id = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let ts = entry
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .unwrap_or("1970-01-01T00:00:00Z");
+        let sk = format!("ENTRY#{ts}#{id}");
+        let data = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+        let mut keys: Vec<(String, String)> = vec![("JOURNAL".into(), sk.clone())];
+        if let Some(name) = entry
+            .get("construct_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            keys.push((
+                format!("JOURNAL_C#{}", name.to_lowercase()),
+                sk.clone(),
+            ));
+        }
+        if let Some(pr) = entry
+            .get("pr_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            keys.push((format!("JOURNAL_PR#{pr}"), sk.clone()));
+        }
+        for (pk, skv) in keys {
+            self.client
+                .put_item()
+                .table_name(&self.table)
+                .item(
+                    "PK",
+                    aws_sdk_dynamodb::types::AttributeValue::S(pk),
+                )
+                .item(
+                    "SK",
+                    aws_sdk_dynamodb::types::AttributeValue::S(skv),
+                )
+                .item(
+                    "data",
+                    aws_sdk_dynamodb::types::AttributeValue::S(data.clone()),
+                )
+                .item(
+                    "GSI1PK",
+                    aws_sdk_dynamodb::types::AttributeValue::S("JOURNAL".into()),
+                )
+                .item(
+                    "GSI1SK",
+                    aws_sdk_dynamodb::types::AttributeValue::S(sk.clone()),
+                )
+                .send()
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+        }
+        Ok(())
+    }
+
+    async fn query_pk(&self, pk: &str, limit: i32) -> Result<Vec<Value>, String> {
+        let resp = self
+            .client
+            .query()
+            .table_name(&self.table)
+            .key_condition_expression("PK = :pk")
+            .expression_attribute_values(
+                ":pk",
+                aws_sdk_dynamodb::types::AttributeValue::S(pk.to_string()),
+            )
+            .scan_index_forward(false)
+            .limit(limit)
+            .send()
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let mut out = Vec::new();
+        for item in resp.items() {
+            if let Some(av) = item.get("data") {
+                if let Ok(s) = av.as_s() {
+                    if let Ok(v) = serde_json::from_str::<Value>(s) {
+                        out.push(v);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+static JOURNAL_DDB: std::sync::OnceLock<Option<JournalDdb>> = std::sync::OnceLock::new();
+
+async fn journal_ddb() -> Option<&'static JournalDdb> {
+    if JOURNAL_DDB.get().is_none() {
+        let _ = JOURNAL_DDB.set(JournalDdb::from_env().await);
+    }
+    JOURNAL_DDB.get().and_then(|o| o.as_ref())
+}
+
+fn journal_cache_push(entry: Value) {
+    if let Ok(mut j) = DESIGN_JOURNAL.lock() {
+        j.push(entry);
+        if j.len() > 2000 {
+            let drop_n = j.len() - 2000;
+            j.drain(0..drop_n);
+        }
+    }
+}
+
+fn journal_cache_filter(
+    construct: Option<&str>,
+    pr: Option<&str>,
+    needle: Option<&str>,
+    limit: usize,
+) -> Vec<Value> {
+    let Ok(lock) = DESIGN_JOURNAL.lock() else {
+        return vec![];
+    };
+    let construct = construct.map(|s| s.to_lowercase());
+    let needle = needle.map(|s| s.to_lowercase());
+    let mut out: Vec<Value> = lock
+        .iter()
+        .rev()
+        .filter(|e| journal_entry_matches(e, construct.as_deref(), pr, needle.as_deref()))
+        .take(limit)
+        .cloned()
+        .collect();
+    out.reverse();
+    out
+}
+
+fn journal_entry_matches(
+    e: &Value,
+    construct: Option<&str>,
+    pr: Option<&str>,
+    needle: Option<&str>,
+) -> bool {
+    if let Some(c) = construct {
+        let name = e
+            .get("construct_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let path = e
+            .get("construct_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !name.contains(c) && !path.contains(c) {
+            return false;
+        }
+    }
+    if let Some(p) = pr {
+        if e.get("pr_id").and_then(|v| v.as_str()) != Some(p) {
+            return false;
+        }
+    }
+    if let Some(n) = needle {
+        let blob = e.to_string().to_lowercase();
+        if !blob.contains(n) {
+            return false;
+        }
+    }
+    true
+}
 
 #[derive(Deserialize)]
 struct JournalBody {
@@ -1739,12 +2042,11 @@ async fn post_journal(
         "package": body.package,
         "author": body.author.unwrap_or_else(|| "operator".into()),
     });
-    if let Ok(mut j) = DESIGN_JOURNAL.lock() {
-        j.push(entry.clone());
-        // Cap memory
-        if j.len() > 2000 {
-            let drop_n = j.len() - 2000;
-            j.drain(0..drop_n);
+    journal_cache_push(entry.clone());
+    // Durable write (best-effort; cache already has the entry).
+    if let Some(ddb) = journal_ddb().await {
+        if let Err(e) = ddb.put_entry(&entry).await {
+            tracing::warn!(error = %e, "journal DDB put failed; entry kept in process cache");
         }
     }
     // Mirror onto PR history when bound
@@ -1776,52 +2078,110 @@ async fn post_journal(
             .await;
         }
     }
-    Ok(Json(json!({ "ok": true, "entry": entry })))
+    Ok(Json(json!({ "ok": true, "entry": entry, "durable": journal_ddb().await.is_some() })))
 }
 
 async fn list_journal(Query(q): Query<JournalQuery>) -> Result<Json<Value>, StatusCode> {
     let limit = q.limit.unwrap_or(50).min(200);
-    let construct = q.construct.as_deref().map(|s| s.to_lowercase());
+    let construct = q.construct.as_deref();
     let pr = q.pr_id.as_deref();
-    let needle = q.q.as_deref().map(|s| s.to_lowercase());
-    let lock = DESIGN_JOURNAL.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut out: Vec<Value> = lock
-        .iter()
-        .rev()
-        .filter(|e| {
-            if let Some(c) = &construct {
-                let name = e
-                    .get("construct_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let path = e
-                    .get("construct_path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if !name.contains(c.as_str()) && !path.contains(c.as_str()) {
-                    return false;
+    let needle = q.q.as_deref();
+
+    // Prefer DDB when available (survives host restart).
+    if let Some(ddb) = journal_ddb().await {
+        let pk = if let Some(p) = pr.filter(|s| !s.is_empty()) {
+            format!("JOURNAL_PR#{p}")
+        } else if let Some(c) = construct.filter(|s| !s.is_empty()) {
+            // Exact secondary key is lowercase full construct name; for partial
+            // search fall back to global + filter.
+            if c.contains(' ') || c.len() < 2 {
+                "JOURNAL".into()
+            } else {
+                // Try exact construct key first; if empty we'll re-query global.
+                format!("JOURNAL_C#{}", c.to_lowercase())
+            }
+        } else {
+            "JOURNAL".into()
+        };
+        let fetch_limit = (limit as i32).saturating_mul(3).min(500);
+        match ddb.query_pk(&pk, fetch_limit).await {
+            Ok(mut rows) => {
+                if rows.is_empty() && pk.starts_with("JOURNAL_C#") {
+                    // Partial construct name — scan global stream.
+                    if let Ok(global) = ddb.query_pk("JOURNAL", fetch_limit).await {
+                        rows = global;
+                    }
+                }
+                let construct_l = construct.map(|s| s.to_lowercase());
+                let needle_l = needle.map(|s| s.to_lowercase());
+                let mut out: Vec<Value> = rows
+                    .into_iter()
+                    .filter(|e| {
+                        journal_entry_matches(
+                            e,
+                            construct_l.as_deref(),
+                            pr,
+                            needle_l.as_deref(),
+                        )
+                    })
+                    .take(limit)
+                    .collect();
+                // DDB returns newest-first; reverse to chronological for UI timelines.
+                out.reverse();
+                return Ok(Json(json!({
+                    "entries": out,
+                    "count": out.len(),
+                    "source": "ddb",
+                })));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "journal DDB query failed; using process cache");
+            }
+        }
+    }
+
+    let out = journal_cache_filter(construct, pr, needle, limit);
+    Ok(Json(json!({
+        "entries": out,
+        "count": out.len(),
+        "source": "memory",
+    })))
+}
+
+/// Layer-declared review policies (from built-in layer files on disk).
+async fn list_review_policies() -> Result<Json<Value>, StatusCode> {
+    let mut reg = veil_ir::LayerRegistry::builtin();
+    // Load known review-bearing layers when present on disk.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    for name in ["base", "svelte5", "sveltekit5", "ui", "ddd"] {
+        let _ = reg.load_layer(name, &cwd);
+    }
+    // Also parse any layers already registered by name from VEIL_LAYERS_DIR.
+    let mut map = serde_json::Map::new();
+    for (name, pol) in &reg.review_policies {
+        map.insert(
+            name.clone(),
+            serde_json::to_value(pol).unwrap_or(json!({})),
+        );
+    }
+    // Fallback: parse files directly if registry load missed (cwd not monorepo root).
+    if map.is_empty() {
+        for (name, rel) in [
+            ("base", "layers/base.layer"),
+            ("svelte5", "layers/svelte5.layer"),
+        ] {
+            let path = cwd.join(rel);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Some(pol) = veil_ir::parse_review_policy(&content) {
+                    map.insert(
+                        name.into(),
+                        serde_json::to_value(pol).unwrap_or(json!({})),
+                    );
                 }
             }
-            if let Some(p) = pr {
-                if e.get("pr_id").and_then(|v| v.as_str()) != Some(p) {
-                    return false;
-                }
-            }
-            if let Some(n) = &needle {
-                let blob = e.to_string().to_lowercase();
-                if !blob.contains(n.as_str()) {
-                    return false;
-                }
-            }
-            true
-        })
-        .take(limit)
-        .cloned()
-        .collect();
-    out.reverse();
-    Ok(Json(json!({ "entries": out, "count": out.len() })))
+        }
+    }
+    Ok(Json(json!({ "policies": map })))
 }
 
 /// Build platform domain router and merge onto ProductHost.
@@ -1913,6 +2273,7 @@ pub async fn build_platform_router(
             get(list_repo_changes).post(create_repo_change),
         )
         .route("/api/journal", get(list_journal).post(post_journal))
+        .route("/api/review_policies", get(list_review_policies))
         .with_state(cm);
 
     let deploy_r = Router::new()

@@ -48,6 +48,9 @@
     resolveReviewPresentation,
     postJournalEntry,
     fetchJournal,
+    fetchLearnJournalWalk,
+    fetchReviewPolicies,
+    type LayerReviewPolicy,
   } from '$lib/ide/prWizard';
   import { publishPrWizardViewport } from '$lib/ide/ideViewport';
   import { agentIsStreaming } from '$lib/agent/runtimeAgentSession';
@@ -80,6 +83,10 @@
   let previewDepth = $state<PreviewDepth>('peek');
   let wizardMode = $state<WizardMode>('review');
   let learnEntries = $state<Record<string, unknown>[]>([]);
+  let learnConstructEntries = $state<Record<string, unknown>[]>([]);
+  let learnPrEntries = $state<Record<string, unknown>[]>([]);
+  let learnCursor = $state(0);
+  let hostReviewPolicies = $state<Record<string, LayerReviewPolicy>>({});
   let statusMsg = $state<string | null>(null);
   /** PRs for other projects / smoke tests (collapsed) */
   let otherPrs = $state<PullRequest[]>([]);
@@ -97,10 +104,21 @@
   );
   const presentation = $derived(
     resolveReviewPresentation({
+      layers: diff?.used_layers || Object.keys(diff?.review_policies || hostReviewPolicies),
       subkind: current?.item.subkind,
       nodeKind: current?.item.node_kind,
+      policies: { ...hostReviewPolicies, ...(diff?.review_policies || {}) },
     })
   );
+  const learnCurrent = $derived(
+    learnEntries.length ? learnEntries[Math.min(learnCursor, learnEntries.length - 1)] : null
+  );
+  const sandboxProps = $derived.by(() => {
+    const peek = current?.peek;
+    if (!peek) return [] as string[];
+    return [...(peek.fields || []), ...(peek.methods || [])].slice(0, 12);
+  });
+  const sandboxBody = $derived((current?.peek?.body_preview || []).slice(0, 16));
   const fileDiffsForStep = $derived.by((): FileDiff[] => {
     const all = diff?.file_diffs || [];
     if (!all.length || !current) return all;
@@ -129,6 +147,16 @@
     rebuildGroups(items);
   }
 
+  function impactJumpName(label: string): string {
+    // Labels may be "in Foo", "→ Bar", "mentions:Baz", "Foo calls", "impl Trait"
+    const t = label.trim();
+    const m =
+      t.match(/^(?:in|contains|impl|refs|→)\s+(.+)$/i) ||
+      t.match(/^mentions:(.+)$/i) ||
+      t.match(/^(.+?)\s+(?:calls|implements|refs)$/i);
+    return (m?.[1] || t).trim();
+  }
+
   function onKey(e: KeyboardEvent) {
     if (phase !== 'walk' || busy) return;
     const tag = (e.target as HTMLElement)?.tagName;
@@ -138,6 +166,31 @@
       closePrWizard();
       return;
     }
+    // Learn mode: arrow keys walk the durable journal timeline.
+    if (wizardMode === 'learn') {
+      if (e.key === 'ArrowRight' || e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        if (learnEntries.length) {
+          learnCursor = Math.min(learnEntries.length - 1, learnCursor + 1);
+        }
+        return;
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'p' || e.key === 'P') {
+        e.preventDefault();
+        learnCursor = Math.max(0, learnCursor - 1);
+        return;
+      }
+      if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault();
+        wizardMode = 'review';
+        return;
+      }
+      // Block approve/reject keys in learn mode (read-only).
+      if (['y', 'Y', 'a', 'A', 'f', 'F', 'r', 'R', 's', 'S'].includes(e.key)) {
+        e.preventDefault();
+        return;
+      }
+    }
     if ((e.key === 'a' || e.key === 'A') && e.shiftKey) {
       e.preventDefault();
       showNote = true;
@@ -146,6 +199,11 @@
     if (e.key === 'y' || e.key === 'Y') {
       e.preventDefault();
       showNote = true;
+      return;
+    }
+    if (e.key === 'l' || e.key === 'L') {
+      e.preventDefault();
+      void enterLearnMode();
       return;
     }
     if (e.key === 'a' || e.key === 'A') {
@@ -231,12 +289,29 @@
     });
   });
 
+  async function enterLearnMode() {
+    wizardMode = 'learn';
+    learnCursor = 0;
+    const name = current ? itemDisplayName(current.item) : undefined;
+    const walk = await fetchLearnJournalWalk({
+      construct: name,
+      pr_id: prId,
+      limit: 50,
+    });
+    learnConstructEntries = walk.construct as Record<string, unknown>[];
+    learnPrEntries = walk.pr as Record<string, unknown>[];
+    learnEntries = walk.merged as Record<string, unknown>[];
+  }
+
   async function bootstrap() {
     phase = 'loading';
     error = null;
     statusMsg = null;
     prId = $prWizardChangeId;
     try {
+      void fetchReviewPolicies().then((p) => {
+        hostReviewPolicies = p;
+      });
       if (prId) {
         await loadPr(prId);
       } else {
@@ -1111,7 +1186,10 @@
             <ul class="impact-list">
               {#each g.impact as name}
                 <li>
-                  <button type="button" class="linkish" onclick={() => focusConstructByName(name)}
+                  <button
+                    type="button"
+                    class="linkish"
+                    onclick={() => focusConstructByName(impactJumpName(name))}
                     >{name}</button
                   >
                 </li>
@@ -1270,12 +1348,45 @@
         </section>
 
         {#if presentation.strategy === 'component_sandbox'}
-          <section class="sandbox-placeholder">
-            <h4>Component preview</h4>
+          <section class="sandbox-frame">
+            <div class="sandbox-chrome">
+              <span class="pill sm">component_sandbox</span>
+              {#if presentation.target}<code>{presentation.target}</code>{/if}
+              {#if presentation.fromLayer}
+                <span class="dim">layer:{presentation.fromLayer}</span>
+              {/if}
+              <span class="dim">fallback:{presentation.fallback}</span>
+            </div>
+            <div class="sandbox-stage" aria-label="Component surface preview">
+              <header class="sandbox-title">
+                <strong>{itemDisplayName(it)}</strong>
+                {#if current?.peek?.subkind}
+                  <span class="pill sm">{current.peek.subkind}</span>
+                {/if}
+              </header>
+              {#if sandboxProps.length}
+                <div class="sandbox-props">
+                  <span class="dim">props / surface</span>
+                  <ul>
+                    {#each sandboxProps as p}
+                      <li><code>{p}</code></li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+              {#if sandboxBody.length}
+                <pre class="sandbox-body">{sandboxBody.join('\n')}</pre>
+              {:else if current?.peek?.signature}
+                <pre class="sandbox-body">{current.peek.signature}</pre>
+              {:else}
+                <p class="muted tiny">
+                  No body surface yet — structural peek above is the live fallback.
+                </p>
+              {/if}
+            </div>
             <p class="muted tiny">
-              Layer strategy <code>component_sandbox</code>
-              {#if presentation.target}({presentation.target}){/if}
-              — isolated render lands with package sandbox; structural peek above is the fallback.
+              Isolated Vite iframe lands with package UI sandbox; this panel is the layer-declared
+              surface preview (props + body) so review never depends on a running app.
             </p>
           </section>
         {/if}
@@ -1285,16 +1396,7 @@
             Show in IDE
           </button>
           {#if wizardMode === 'review'}
-            <button
-              type="button"
-              class="ghost"
-              onclick={() => {
-                wizardMode = 'learn';
-                void fetchJournal({ pr_id: prId || undefined, limit: 30 }).then((list) => {
-                  learnEntries = list as Record<string, unknown>[];
-                });
-              }}
-            >
+            <button type="button" class="ghost" onclick={() => void enterLearnMode()}>
               Learn mode
             </button>
           {:else}
@@ -1303,18 +1405,63 @@
             </button>
           {/if}
         </div>
-        {#if wizardMode === 'learn' && learnEntries.length}
-          <section class="rationale">
-            <h4>Prior decisions (journal)</h4>
-            <ul class="group-parts">
-              {#each learnEntries.slice(0, 8) as e}
-                <li>
-                  <span class="pill sm">{e.decision}</span>
-                  {e.construct_name}
-                  {#if e.teaching_note}<span class="dim">— {e.teaching_note}</span>{/if}
-                </li>
-              {/each}
-            </ul>
+        {#if wizardMode === 'learn'}
+          <section class="learn-walk">
+            <h4>Design journal walk</h4>
+            <p class="muted tiny">
+              Read-only. Construct-scoped → this PR → global history. Use ← → to step journal
+              entries (review keys Y/D still apply to wizard steps).
+            </p>
+            <div class="learn-meta">
+              <span class="pill sm">{learnConstructEntries.length} construct</span>
+              <span class="pill sm">{learnPrEntries.length} PR</span>
+              <span class="pill sm">{learnEntries.length} total</span>
+              {#if learnEntries.length}
+                <span class="dim">{learnCursor + 1}/{learnEntries.length}</span>
+              {/if}
+            </div>
+            {#if learnCurrent}
+              <article class="learn-card">
+                <div class="eh">
+                  <strong>{learnCurrent.construct_name || '—'}</strong>
+                  <span class="pill sm">{learnCurrent.decision}</span>
+                  {#if learnCurrent.risk}<span class="dim">{learnCurrent.risk}</span>{/if}
+                  <span class="dim">{String(learnCurrent.ts || '').slice(0, 19)}</span>
+                </div>
+                {#if learnCurrent.rationale}
+                  <p class="body">{learnCurrent.rationale}</p>
+                {/if}
+                {#if learnCurrent.teaching_note}
+                  <p class="note"><strong>Teaching:</strong> {learnCurrent.teaching_note}</p>
+                {/if}
+                <code class="path">{learnCurrent.construct_path}</code>
+              </article>
+              <div class="fb-actions">
+                <button
+                  type="button"
+                  class="ghost"
+                  disabled={learnCursor <= 0}
+                  onclick={() => (learnCursor = Math.max(0, learnCursor - 1))}
+                >
+                  ← Prior decision
+                </button>
+                <button
+                  type="button"
+                  class="ghost"
+                  disabled={learnCursor >= learnEntries.length - 1}
+                  onclick={() =>
+                    (learnCursor = Math.min(learnEntries.length - 1, learnCursor + 1))
+                  }
+                >
+                  Next decision →
+                </button>
+              </div>
+            {:else}
+              <p class="muted">
+                No journal entries yet. Approve steps with notes (Y) to grow the durable design
+                record.
+              </p>
+            {/if}
           </section>
         {/if}
         {#if jumpMsg}
@@ -1395,13 +1542,36 @@
       <div class="summary">
         <h3>Review summary</h3>
         {#if items.length === 0}
-          <p class="muted">
-            No structural IR changes detected
-            {#if diffSource === 'working-tree'}in the working tree{:else}on this PR{/if}.
+          <div class="empty-diff-banner">
+            <p class="muted">
+              <strong>Empty structural walk</strong> — no IR construct changes detected
+              {#if diffSource === 'working-tree'}in the working tree{:else}on this PR branch{/if}.
+            </p>
             {#if diff?.description}
-              <br />{diff.description}
+              <p class="muted sm">{diff.description}</p>
             {/if}
-          </p>
+            {#if diff?.file_diffs?.length}
+              <p class="muted sm">
+                {diff.file_diffs.length} file-level change(s) exist (key D on a step when present).
+                Structural review needs .veil / .layer edits that change constructs.
+              </p>
+            {:else}
+              <p class="muted sm">
+                Submit is gated against empty diffs — publish session work to the PR branch, or
+                edit constructs first. Force-submit only with <code>?force=1</code>.
+              </p>
+            {/if}
+            {#if diff?.parse_notes?.length}
+              <details class="muted sm">
+                <summary>Parse notes</summary>
+                <ul>
+                  {#each diff.parse_notes as n}
+                    <li>{n}</li>
+                  {/each}
+                </ul>
+              </details>
+            {/if}
+          </div>
         {:else}
           <ul class="sum-list">
             <li><span class="ok">{approvedCount}</span> approved</li>
@@ -2417,12 +2587,101 @@
     max-height: 180px;
     overflow: auto;
   }
-  .sandbox-placeholder {
+  .sandbox-placeholder,
+  .sandbox-frame {
     margin-top: 0.65rem;
     padding: 0.55rem 0.7rem;
     border: 1px dashed rgba(167, 139, 250, 0.4);
     border-radius: 8px;
     background: rgba(139, 92, 246, 0.06);
+  }
+  .sandbox-chrome {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+    margin-bottom: 0.45rem;
+    font-size: 0.72rem;
+  }
+  .sandbox-stage {
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 0.65rem 0.75rem;
+    min-height: 4rem;
+  }
+  .sandbox-title {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    margin-bottom: 0.4rem;
+  }
+  .sandbox-props ul {
+    margin: 0.2rem 0 0.4rem;
+    padding-left: 1.1rem;
+    font-size: 0.78rem;
+  }
+  .sandbox-body {
+    margin: 0.25rem 0 0;
+    padding: 0.45rem 0.55rem;
+    font-size: 0.72rem;
+    background: #0a0a0a;
+    border-radius: 6px;
+    max-height: 160px;
+    overflow: auto;
+    white-space: pre-wrap;
+    color: #d4d4d4;
+  }
+  .learn-walk {
+    margin-top: 0.75rem;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    border-radius: 8px;
+    background: rgba(59, 130, 246, 0.06);
+  }
+  .learn-walk h4 {
+    margin: 0 0 0.35rem;
+    font-size: 0.85rem;
+  }
+  .learn-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+    margin: 0.35rem 0 0.5rem;
+  }
+  .learn-card {
+    padding: 0.55rem 0.65rem;
+    border-radius: 8px;
+    border: 1px solid rgba(115, 115, 115, 0.3);
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .learn-card .eh {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .learn-card .body {
+    margin: 0.35rem 0 0;
+    font-size: 0.82rem;
+  }
+  .learn-card .note {
+    margin: 0.25rem 0 0;
+    color: #c4b5fd;
+    font-size: 0.8rem;
+  }
+  .learn-card .path {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.7rem;
+    color: #737373;
+  }
+  .empty-diff-banner {
+    padding: 0.75rem 0.85rem;
+    border-radius: 8px;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: rgba(251, 191, 36, 0.08);
   }
   .btn.sm,
   .ghost.sm {

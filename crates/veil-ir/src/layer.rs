@@ -432,6 +432,52 @@ impl ReactivityPolicy {
     }
 }
 
+/// Layer-declared PR Wizard review presentation (Track B).
+/// Parsed from a top-level `review` block in a `.layer` file:
+/// ```text
+/// review
+///   strategy component_sandbox
+///   target svelte5
+///   fallback structural
+///   secondary file_diff
+///   impact dependents
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewPolicy {
+    /// Primary walk strategy: structural | component_sandbox | file_diff
+    #[serde(default)]
+    pub strategy: String,
+    /// Optional sandbox / renderer target (e.g. svelte5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// When primary cannot render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+    /// Secondary panels (e.g. file_diff).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secondary: Vec<String>,
+    /// Impact dimensions (e.g. dependents).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub impact: Vec<String>,
+}
+
+impl ReviewPolicy {
+    pub fn is_empty(&self) -> bool {
+        self.strategy.is_empty()
+    }
+
+    /// Default structural presentation when a layer has no `review` block.
+    pub fn structural_default() -> Self {
+        Self {
+            strategy: "structural".into(),
+            target: None,
+            fallback: Some("structural".into()),
+            secondary: vec!["file_diff".into()],
+            impact: vec!["dependents".into()],
+        }
+    }
+}
+
 impl ConstructorPolicy {
     /// Built-in Rust defaults — used only until a target layer overrides.
     /// Living here (layer policy) rather than in rust.rs (INV-002).
@@ -494,6 +540,8 @@ pub struct LayerRegistry {
     pub constructor_policy: ConstructorPolicy,
     /// UI framework reactivity forms (Svelte runes, etc.). From layers only.
     pub reactivity_policy: ReactivityPolicy,
+    /// Per-layer PR Wizard review presentation (`review` blocks). Key = layer name.
+    pub review_policies: HashMap<String, ReviewPolicy>,
     /// Identity / FK inference policy (INV-006). Default off.
     pub identity_policy: IdentityPolicy,
     /// Bus / handler name policy from layers (optional strip prefix). Default: no strip.
@@ -555,6 +603,7 @@ impl Default for LayerRegistry {
             source_resolver: None,
             constructor_policy: ConstructorPolicy::default(),
             reactivity_policy: ReactivityPolicy::default(),
+            review_policies: HashMap::new(),
             identity_policy: IdentityPolicy::default(),
             bus_policy: BusPolicy::default(),
             auth_policy: AuthPolicy::default(),
@@ -578,6 +627,7 @@ impl Clone for LayerRegistry {
             source_resolver: None, // resolver is not cloneable — cleared on clone
             constructor_policy: self.constructor_policy.clone(),
             reactivity_policy: self.reactivity_policy.clone(),
+            review_policies: self.review_policies.clone(),
             identity_policy: self.identity_policy.clone(),
             bus_policy: self.bus_policy.clone(),
             auth_policy: self.auth_policy.clone(),
@@ -952,6 +1002,9 @@ impl LayerRegistry {
         if let Some(rp) = parse_reactivity_policy(&content) {
             self.reactivity_policy = rp;
         }
+        if let Some(rev) = parse_review_policy(&content) {
+            self.review_policies.insert(name.to_string(), rev);
+        }
         if let Some(id_pol) = parse_identity_policy(&content) {
             self.identity_policy = id_pol;
         }
@@ -1133,6 +1186,10 @@ impl LayerRegistry {
         // Framework reactivity (Svelte runes, etc.) — never hardcoded in backends.
         if let Some(rp) = parse_reactivity_policy(content) {
             self.reactivity_policy = rp;
+        }
+        // PR Wizard review presentation (structural / component_sandbox / …).
+        if let Some(rev) = parse_review_policy(content) {
+            self.review_policies.insert(name.to_string(), rev);
         }
         // INV-006: identity / FK policy (ddd opts in; default is off).
         if let Some(id_pol) = parse_identity_policy(content) {
@@ -3217,6 +3274,96 @@ pub fn parse_reactivity_policy(content: &str) -> Option<ReactivityPolicy> {
     }
 }
 
+/// Parse PR Wizard `review` presentation block from a layer:
+/// ```text
+/// review
+///   strategy component_sandbox
+///   target svelte5
+///   fallback structural
+///   secondary file_diff
+///   impact dependents
+/// ```
+/// `secondary` and `impact` accept comma- or space-separated values; multiple
+/// lines of the same key append.
+pub fn parse_review_policy(content: &str) -> Option<ReviewPolicy> {
+    let mut in_block = false;
+    let mut pol = ReviewPolicy::default();
+    let mut found = false;
+    let keys = [
+        "strategy",
+        "target",
+        "fallback",
+        "secondary",
+        "impact",
+    ];
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t == "review" {
+            in_block = true;
+            found = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        // Leave block on column-0 non-key line.
+        if !line.starts_with(' ')
+            && !line.starts_with('\t')
+            && !keys.iter().any(|k| t.starts_with(k))
+        {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("strategy ") {
+            pol.strategy = rest.trim().to_string();
+        } else if let Some(rest) = t.strip_prefix("target ") {
+            let v = rest.trim().to_string();
+            if !v.is_empty() {
+                pol.target = Some(v);
+            }
+        } else if let Some(rest) = t.strip_prefix("fallback ") {
+            let v = rest.trim().to_string();
+            if !v.is_empty() {
+                pol.fallback = Some(v);
+            }
+        } else if let Some(rest) = t.strip_prefix("secondary ") {
+            for part in rest.split(|c: char| c == ',' || c.is_whitespace()) {
+                let p = part.trim();
+                if !p.is_empty() && !pol.secondary.iter().any(|s| s == p) {
+                    pol.secondary.push(p.to_string());
+                }
+            }
+        } else if let Some(rest) = t.strip_prefix("impact ") {
+            for part in rest.split(|c: char| c == ',' || c.is_whitespace()) {
+                let p = part.trim();
+                if !p.is_empty() && !pol.impact.iter().any(|s| s == p) {
+                    pol.impact.push(p.to_string());
+                }
+            }
+        }
+    }
+    if found && !pol.strategy.is_empty() {
+        if pol.fallback.is_none() {
+            pol.fallback = Some("structural".into());
+        }
+        if pol.secondary.is_empty() {
+            pol.secondary.push("file_diff".into());
+        }
+        if pol.impact.is_empty() {
+            pol.impact.push("dependents".into());
+        }
+        Some(pol)
+    } else if found {
+        // `review` present but empty — still return structural default so layers
+        // that only open the block are recognized.
+        Some(ReviewPolicy::structural_default())
+    } else {
+        None
+    }
+}
+
 /// Parse optional INV-002 constructor policy from layer source:
 /// ```text
 /// constructor_policy
@@ -3493,6 +3640,48 @@ pub fn keyword_shapes(reg: &LayerRegistry) -> HashMap<String, Shape> {
 mod tests {
     use super::*;
     use crate::presentation::presentation_from_registry;
+
+    #[test]
+    fn parse_review_policy_svelte_block() {
+        let src = r#"
+pkg svelte5 v1
+  review
+    strategy component_sandbox
+    target svelte5
+    fallback structural
+    secondary file_diff
+    impact dependents
+  construct Page
+    mt mod
+"#;
+        let pol = parse_review_policy(src).expect("review policy");
+        assert_eq!(pol.strategy, "component_sandbox");
+        assert_eq!(pol.target.as_deref(), Some("svelte5"));
+        assert_eq!(pol.fallback.as_deref(), Some("structural"));
+        assert!(pol.secondary.iter().any(|s| s == "file_diff"));
+        assert!(pol.impact.iter().any(|s| s == "dependents"));
+    }
+
+    #[test]
+    fn load_layer_installs_review_policy() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content(
+            "svelte5",
+            r#"
+pkg svelte5 v1
+  review
+    strategy component_sandbox
+    target svelte5
+    fallback structural
+    secondary file_diff
+  construct App
+    mt mod
+"#,
+        )
+        .expect("load");
+        let pol = reg.review_policies.get("svelte5").expect("policy");
+        assert_eq!(pol.strategy, "component_sandbox");
+    }
 
     #[test]
     fn dependency_role_from_di_layer() {

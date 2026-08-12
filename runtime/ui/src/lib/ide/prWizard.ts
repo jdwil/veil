@@ -69,6 +69,14 @@ export interface FileDiff {
   head_lines?: number;
 }
 
+export interface LayerReviewPolicy {
+  strategy?: string;
+  target?: string | null;
+  fallback?: string | null;
+  secondary?: string[];
+  impact?: string[];
+}
+
 export interface StructDiff {
   base_label: string;
   head_label: string;
@@ -86,8 +94,12 @@ export interface StructDiff {
   item_peeks_base?: (ConstructPeek | null)[];
   /** Secondary git-style file diffs (not front-and-center). */
   file_diffs?: FileDiff[];
-  /** Optional per-item impact lists (construct names / paths). */
+  /** Per-item IR graph blast radius (dependents / deps / container). */
   item_impact?: (string[] | null)[];
+  /** Package `use` layers touched by this diff. */
+  used_layers?: string[];
+  /** Layer name → review presentation policy (from layer `review` blocks). */
+  review_policies?: Record<string, LayerReviewPolicy>;
 }
 
 export interface PullRequest {
@@ -167,7 +179,7 @@ export interface QueuedFeedback {
 
 /** Whether the PR Wizard overlay is open. */
 export const prWizardOpen = writable(false);
-/** Optional change-request id (null = session working-tree review). */
+/** Optional pull-request id (null = session working-tree review). */
 export const prWizardChangeId = writable<string | null>(null);
 
 /** PR Wizard right-rail width (px) — drag-resizable like other IDE panes. */
@@ -899,24 +911,21 @@ export function syncGroupDecision(g: WizardGroup): WizardGroup {
 }
 
 function inferImpact(item: DiffItem, allNames: string[], selfIndex: number): string[] {
+  // Client fallback only — prefer server item_impact (IR graph edges).
   const name = itemDisplayName(item);
   const container = (item.container_path || []).map((s) => s.name).join('/');
   const out: string[] = [];
+  if (container) out.push(`in ${container}`);
   for (let i = 0; i < allNames.length; i++) {
     if (i === selfIndex) continue;
     const n = allNames[i];
     if (!n || n === name) continue;
-    // Same container siblings and name-adjacent references
-    if (container && pathOf({ ...item, name: n } as DiffItem)) {
-      /* keep simple */
-    }
-    if (n.includes(name) || name.includes(n)) out.push(n);
+    if (n.includes(name) || (name.length > 3 && name.includes(n))) out.push(n);
   }
-  // Cap
   return out.slice(0, 8);
 }
 
-/** Layer-declared review presentation (resolved client-side for B0). */
+/** Layer-declared review presentation (from layer `review` blocks + heuristics). */
 export type ReviewStrategy = 'structural' | 'component_sandbox' | 'file_diff';
 
 export interface ReviewPresentation {
@@ -925,15 +934,51 @@ export interface ReviewPresentation {
   fallback: ReviewStrategy;
   secondary: ReviewStrategy[];
   impact: string[];
+  /** Which layer policy won (if any). */
+  fromLayer?: string;
 }
 
-/** Resolve review presentation from package layers / construct subkind. */
+function asStrategy(s?: string | null): ReviewStrategy | null {
+  const v = (s || '').toLowerCase().trim();
+  if (v === 'structural' || v === 'component_sandbox' || v === 'file_diff') return v;
+  return null;
+}
+
+/** Resolve review presentation from layer `review` policies + construct subkind. */
 export function resolveReviewPresentation(opts: {
   layers?: string[];
   subkind?: string | null;
   nodeKind?: string | null;
+  policies?: Record<string, LayerReviewPolicy> | null;
 }): ReviewPresentation {
   const layers = (opts.layers || []).map((l) => l.toLowerCase());
+  const policies = opts.policies || {};
+  // Prefer the most specific layer policy (svelte* over base/ui).
+  const order = [...layers].sort((a, b) => {
+    const score = (n: string) =>
+      n.includes('svelte') ? 3 : n === 'ui' || n.includes('react') ? 2 : n === 'base' ? 0 : 1;
+    return score(b) - score(a);
+  });
+  for (const name of order) {
+    const pol =
+      policies[name] ||
+      policies[Object.keys(policies).find((k) => k.toLowerCase() === name) || ''];
+    if (!pol?.strategy) continue;
+    const strategy = asStrategy(pol.strategy) || 'structural';
+    const fallback = asStrategy(pol.fallback) || 'structural';
+    const secondary = (pol.secondary || [])
+      .map((s) => asStrategy(s))
+      .filter((s): s is ReviewStrategy => !!s);
+    return {
+      strategy,
+      target: pol.target || undefined,
+      fallback,
+      secondary: secondary.length ? secondary : ['file_diff'],
+      impact: pol.impact?.length ? pol.impact : ['dependents'],
+      fromLayer: name,
+    };
+  }
+  // Heuristic when no policy map (working-tree without used_layers).
   const sk = (opts.subkind || '').toLowerCase();
   const nk = (opts.nodeKind || '').toLowerCase();
   const isUi =
@@ -941,7 +986,7 @@ export function resolveReviewPresentation(opts: {
     sk.includes('page') ||
     sk.includes('component') ||
     nk.includes('view');
-  if (isUi && layers.some((l) => l.includes('svelte'))) {
+  if (isUi && (layers.some((l) => l.includes('svelte')) || sk.includes('component'))) {
     return {
       strategy: 'component_sandbox',
       target: 'svelte5',
@@ -956,6 +1001,28 @@ export function resolveReviewPresentation(opts: {
     secondary: ['file_diff'],
     impact: ['dependents'],
   };
+}
+
+/** Fetch host layer review policies (cached briefly per page). */
+let _reviewPoliciesCache: { at: number; policies: Record<string, LayerReviewPolicy> } | null =
+  null;
+
+export async function fetchReviewPolicies(): Promise<Record<string, LayerReviewPolicy>> {
+  if (_reviewPoliciesCache && Date.now() - _reviewPoliciesCache.at < 60_000) {
+    return _reviewPoliciesCache.policies;
+  }
+  try {
+    const r = await fetch(`${platformRoot()}/api/review_policies`, {
+      headers: ideRequestHeaders(),
+    });
+    if (!r.ok) return _reviewPoliciesCache?.policies || {};
+    const d = await r.json();
+    const policies = (d.policies || d || {}) as Record<string, LayerReviewPolicy>;
+    _reviewPoliciesCache = { at: Date.now(), policies };
+    return policies;
+  } catch {
+    return _reviewPoliciesCache?.policies || {};
+  }
 }
 
 export async function postJournalEntry(entry: {
@@ -998,4 +1065,38 @@ export async function fetchJournal(opts?: {
   } catch {
     return [];
   }
+}
+
+/** Learn-mode: load construct-scoped journal first, then PR, then global. */
+export async function fetchLearnJournalWalk(opts: {
+  construct?: string;
+  pr_id?: string | null;
+  limit?: number;
+}): Promise<{
+  construct: unknown[];
+  pr: unknown[];
+  global: unknown[];
+  merged: unknown[];
+}> {
+  const limit = opts.limit ?? 40;
+  const [construct, pr, global] = await Promise.all([
+    opts.construct
+      ? fetchJournal({ construct: opts.construct, limit })
+      : Promise.resolve([]),
+    opts.pr_id ? fetchJournal({ pr_id: opts.pr_id, limit }) : Promise.resolve([]),
+    fetchJournal({ limit }),
+  ]);
+  const seen = new Set<string>();
+  const merged: unknown[] = [];
+  for (const list of [construct, pr, global]) {
+    for (const e of list) {
+      const id =
+        (e as { id?: string }).id ||
+        `${(e as { ts?: string }).ts}|${(e as { construct_name?: string }).construct_name}|${(e as { decision?: string }).decision}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      merged.push(e);
+    }
+  }
+  return { construct, pr, global, merged };
 }

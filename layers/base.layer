@@ -4,10 +4,11 @@ pkg base v1
 
   # Review presentation (PR Wizard) — host resolves named strategies.
   # strategy structural | component_sandbox | … ; secondary file_diff; impact dependents
-  # review
-  #   strategy structural
-  #   secondary file_diff
-  #   impact dependents
+  review
+    strategy structural
+    fallback structural
+    secondary file_diff
+    impact dependents
 
   construct struct
     mt primitive
