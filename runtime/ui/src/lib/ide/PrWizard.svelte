@@ -1653,9 +1653,20 @@
         {#if items.length === 0}
           <div class="empty-diff-banner">
             <p class="muted">
-              <strong>Empty structural walk</strong> — no IR construct changes detected
+              <strong>Nothing to review</strong> — no structural construct changes vs baseline
               {#if diffSource === 'working-tree'}in the working tree{:else}on this PR branch{/if}.
             </p>
+            {#if diffNote}
+              <p class="muted sm">{diffNote}</p>
+            {/if}
+            {#if diff?.base_label}
+              <p class="muted sm">Baseline: <code>{diff.base_label}</code></p>
+            {/if}
+            {#if diff?.uncommitted === false}
+              <p class="muted sm">
+                Session is clean (agent agrees — no outstanding uncommitted writes).
+              </p>
+            {/if}
             {#if diff?.description}
               <p class="muted sm">{diff.description}</p>
             {/if}

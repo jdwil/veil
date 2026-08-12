@@ -813,7 +813,36 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
     // Re-sort after criticality/intent annotations so review walks high-impact first.
     veil_ir::sort_diff_for_review(&mut diff);
 
-    match serde_json::to_string(&diff) {
+    // Annotate response with session dirty flag so the PR Wizard can reconcile
+    // "agent says clean" vs structural walk without a second round-trip.
+    let mut value = match serde_json::to_value(&diff) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("base_label".into(), serde_json::json!(diff.base_label));
+        let (uncommitted, session_id) = crate::session::CURRENT_SESSION
+            .try_with(|sid| {
+                crate::session::SessionManager::global()
+                    .attach(sid)
+                    .map(|h| (h.has_uncommitted(), sid.clone()))
+                    .unwrap_or((false, sid.clone()))
+            })
+            .unwrap_or((false, String::new()));
+        obj.insert("uncommitted".into(), serde_json::json!(uncommitted));
+        if !session_id.is_empty() {
+            obj.insert("session_id".into(), serde_json::json!(session_id));
+        }
+        // Phantom full-package walk: empty/missing baseline used to mark every
+        // construct Added. Surface explicitly so the IDE can refuse a 100-step review.
+        let phantom = !uncommitted
+            && diff.removed == 0
+            && diff.changed == 0
+            && diff.added > 0
+            && (diff.base_label.contains("no baseline") || diff.base_label.is_empty());
+        obj.insert("phantom_full_add".into(), serde_json::json!(phantom));
+    }
+    match serde_json::to_string(&value) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

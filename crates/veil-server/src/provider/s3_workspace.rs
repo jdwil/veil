@@ -796,6 +796,97 @@ impl S3WorkspaceProvider {
     pub fn pull_incremental(&self) -> Result<(), String> {
         materialize_repo_incremental(&self.repo_id, &self.work)
     }
+
+    /// Relative path of `file` (or active file) under the workspace root.
+    async fn relative_source_path(&self, file: &str) -> String {
+        let files = self.inner.list_files().await;
+        let path = if file.is_empty() {
+            files
+                .iter()
+                .find(|f| f.active)
+                .or_else(|| files.first())
+                .map(|f| PathBuf::from(&f.path))
+        } else {
+            files
+                .iter()
+                .find(|f| f.name == file || f.path == file)
+                .map(|f| PathBuf::from(&f.path))
+        };
+        let Some(abs) = path else {
+            return if file.is_empty() {
+                "main.veil".into()
+            } else {
+                file.to_string()
+            };
+        };
+        abs.strip_prefix(&self.work)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| {
+                abs.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "main.veil".into())
+            })
+    }
+
+    fn session_base_branch(&self) -> Option<String> {
+        if self.session_id.is_empty() {
+            return None;
+        }
+        crate::session::SessionManager::global()
+            .attach(&self.session_id)
+            .ok()
+            .and_then(|h| {
+                let m = h.snapshot_meta();
+                m.base_branch
+                    .or_else(|| {
+                        if m.draft_mode {
+                            Some("main".into())
+                        } else {
+                            None
+                        }
+                    })
+            })
+    }
+}
+
+/// Fetch `repos/{repo_id}/{branch}/{rel}` text from S3 (best-effort).
+fn s3_get_object_text(repo_id: &str, branch_name: &str, rel: &str) -> Option<String> {
+    let key = format!(
+        "repos/{}/{}/{}",
+        repo_id,
+        branch_name.trim_matches('/'),
+        rel.trim_start_matches('/')
+    );
+    s3_cat_key(&key)
+}
+
+/// Fetch a path from a session commit snapshot prefix.
+fn s3_get_commit_snapshot_text(
+    repo_id: &str,
+    session_id: &str,
+    commit_short: &str,
+    rel: &str,
+) -> Option<String> {
+    let key = format!(
+        "repos/{}/commits/{}/{}/{}",
+        repo_id,
+        session_id,
+        commit_short,
+        rel.trim_start_matches('/')
+    );
+    s3_cat_key(&key)
+}
+
+fn s3_cat_key(key: &str) -> Option<String> {
+    let uri = format!("s3://{}/{}", bucket(), key);
+    let out = aws_base()
+        .args(["s3", "cp", &uri, "-"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()
 }
 
 #[async_trait]
@@ -855,7 +946,55 @@ impl SourceProvider for S3WorkspaceProvider {
     }
 
     async fn baseline_source(&self, file: &str) -> Result<Option<(String, String)>, String> {
-        self.inner.baseline_source(file).await
+        // S3 workspaces are not git checkouts — FilesystemProvider's `git show HEAD`
+        // always fails and used to return None → PR Wizard treated every construct
+        // as Added (162 false steps) while session_status correctly reported clean.
+        let head = match self.inner.read_source(file).await {
+            Ok(s) => s,
+            Err(e) => return Err(e),
+        };
+        let rel = self.relative_source_path(file).await;
+
+        // Feature/draft session: baseline is product base branch (usually main).
+        if self.draft_mode {
+            let base_br = self
+                .session_base_branch()
+                .unwrap_or_else(|| branch());
+            if let Some(text) = s3_get_object_text(&self.repo_id, &base_br, &rel) {
+                return Ok(Some((format!("branch:{base_br}"), text)));
+            }
+            // Greenfield feature branch — empty base is honest (all adds).
+            return Ok(None);
+        }
+
+        // Mainline session bound to a coding session.
+        if !self.session_id.is_empty() {
+            if let Ok(h) = crate::session::SessionManager::global().attach(&self.session_id) {
+                // Clean working tree: structural review must be empty (agent is right).
+                if !h.has_uncommitted() {
+                    return Ok(Some(("session (clean)".into(), head)));
+                }
+                // Dirty: prefer last named commit snapshot as baseline.
+                let meta = h.snapshot_meta();
+                if let Some(ref cid) = meta.head_commit {
+                    let short = &cid[..8.min(cid.len())];
+                    if let Some(text) =
+                        s3_get_commit_snapshot_text(&self.repo_id, &self.session_id, short, &rel)
+                    {
+                        return Ok(Some((format!("commit:{}", &cid[..8.min(cid.len())]), text)));
+                    }
+                }
+            }
+        }
+
+        // Fall back: product main on S3 (may equal head after write-through).
+        let base_br = branch();
+        if let Some(text) = s3_get_object_text(&self.repo_id, &base_br, &rel) {
+            return Ok(Some((format!("s3:{base_br}"), text)));
+        }
+
+        // Last resort: never invent a phantom full-package add walk when we have head.
+        Ok(Some(("working tree".into(), head)))
     }
 
     async fn reload_from_disk(&self) -> Result<usize, String> {

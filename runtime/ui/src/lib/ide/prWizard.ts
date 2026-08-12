@@ -100,6 +100,11 @@ export interface StructDiff {
   used_layers?: string[];
   /** Layer name → review presentation policy (from layer `review` blocks). */
   review_policies?: Record<string, LayerReviewPolicy>;
+  /** Session dirty flag (from /diff) — false when agent reports clean. */
+  uncommitted?: boolean;
+  /** True when all-adds walk with no baseline would invent phantom review steps. */
+  phantom_full_add?: boolean;
+  session_id?: string;
 }
 
 export interface PullRequest {
@@ -605,6 +610,35 @@ export async function loadWizardDiff(opts: {
   if (!r.ok) throw new Error(`working-tree diff HTTP ${r.status}`);
   const diff = (await r.json()) as StructDiff;
   if (!Array.isArray(diff.items)) diff.items = [];
+
+  // Guard: missing baseline used to mark every construct as Added while the
+  // session was clean (agent: no outstanding changes). Refuse that phantom walk.
+  const phantom =
+    diff.phantom_full_add === true ||
+    (diff.uncommitted === false &&
+      (diff.removed || 0) === 0 &&
+      (diff.changed || 0) === 0 &&
+      (diff.added || 0) > 0 &&
+      (!diff.base_label ||
+        diff.base_label.includes('no baseline') ||
+        diff.base_label.includes('(no baseline)')));
+  if (phantom) {
+    return {
+      diff: {
+        ...diff,
+        items: [],
+        added: 0,
+        removed: 0,
+        changed: 0,
+        phantom_full_add: true,
+      },
+      source: 'working-tree',
+      note:
+        'Working tree is clean (matches the agent). Structural review was empty because ' +
+        'there is no uncommitted delta vs the session baseline — not 100+ new constructs. ' +
+        'If you expected real edits, write/commit them first, or open a feature branch PR.',
+    };
+  }
   return { diff, source: 'working-tree' };
 }
 
