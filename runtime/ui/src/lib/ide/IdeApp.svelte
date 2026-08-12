@@ -26,6 +26,7 @@
   import DiffPanel from '$lib/ide/DiffPanel.svelte';
   import ChangesPanel from '$lib/ide/ChangesPanel.svelte';
   import ChangeReviewPanel from '$lib/ide/ChangeReviewPanel.svelte';
+  import DomainLayerExplorer from '$lib/ide/DomainLayerExplorer.svelte';
   import PrWizard from '$lib/ide/PrWizard.svelte';
   import {
     prWizardOpen,
@@ -139,8 +140,8 @@
   let nodes = $state.raw<Node[]>([]);
   let edges = $state.raw<Edge[]>([]);
   let nextNodeId = $state(1000);
-  /** Outline sidebar: Outline tree vs live Changes list. */
-  type SidebarTab = 'outline' | 'changes';
+  /** Outline sidebar: Outline tree vs live Changes list vs design journal. */
+  type SidebarTab = 'outline' | 'changes' | 'journal';
   let sidebarTab = $state<SidebarTab>('outline');
 
   // Publish left-rail tab to agent focus (multi-pane awareness)
@@ -1874,6 +1875,17 @@
                       <span class="sidebar-tab-count" title="Uncommitted construct edits">{sessionChangeCount}</span>
                     {/if}
                   </button>
+                  <button
+                    type="button"
+                    class="sidebar-tab"
+                    class:active={sidebarTab === 'journal'}
+                    role="tab"
+                    aria-selected={sidebarTab === 'journal'}
+                    onclick={() => (sidebarTab = 'journal')}
+                    title="Living design journal — accepted rationales"
+                  >
+                    Journal
+                  </button>
                 </div>
                 {#if sidebarTab === 'outline'}
                   <CreateConstructMenu
@@ -1891,6 +1903,8 @@
                   presentationModel={$presentationModel}
                   onDrillDown={handleOutlineDrill}
                 />
+              {:else if sidebarTab === 'journal'}
+                <DomainLayerExplorer />
               {:else}
                 <ChangesPanel />
               {/if}
@@ -1907,7 +1921,9 @@
               onpointerdown={startOutlineResize}
             ></div>
             <div class="native-layout-detail">
-              {#if sidebarTab === 'changes' || $selectedChangeReview}
+              {#if sidebarTab === 'journal'}
+                <DomainLayerExplorer />
+              {:else if sidebarTab === 'changes' || $selectedChangeReview}
                 <ChangeReviewPanel />
               {:else}
                 <DetailPanel
@@ -1952,6 +1968,17 @@
                       <span class="sidebar-tab-count" title="Uncommitted construct edits">{sessionChangeCount}</span>
                     {/if}
                   </button>
+                  <button
+                    type="button"
+                    class="sidebar-tab"
+                    class:active={sidebarTab === 'journal'}
+                    role="tab"
+                    aria-selected={sidebarTab === 'journal'}
+                    onclick={() => (sidebarTab = 'journal')}
+                    title="Living design journal — accepted rationales"
+                  >
+                    Journal
+                  </button>
                 </div>
                 {#if sidebarTab === 'outline'}
                   <CreateConstructMenu
@@ -1969,6 +1996,8 @@
                   presentationModel={$presentationModel}
                   onDrillDown={handleOutlineDrill}
                 />
+              {:else if sidebarTab === 'journal'}
+                <DomainLayerExplorer />
               {:else}
                 <ChangesPanel />
               {/if}
@@ -1985,7 +2014,9 @@
               onpointerdown={startOutlineResize}
             ></div>
             <div class="native-layout-detail">
-              {#if sidebarTab === 'changes' || $selectedChangeReview}
+              {#if sidebarTab === 'journal'}
+                <DomainLayerExplorer />
+              {:else if sidebarTab === 'changes' || $selectedChangeReview}
                 <ChangeReviewPanel />
               {:else}
                 <DetailPanel

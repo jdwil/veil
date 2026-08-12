@@ -56,6 +56,19 @@ export interface EditAnnotation {
   criticality?: string | null;
 }
 
+export interface FileDiffHunk {
+  header?: string;
+  lines?: string[];
+}
+
+export interface FileDiff {
+  path: string;
+  status: string;
+  hunks?: FileDiffHunk[];
+  base_lines?: number;
+  head_lines?: number;
+}
+
 export interface StructDiff {
   base_label: string;
   head_label: string;
@@ -71,6 +84,10 @@ export interface StructDiff {
   item_annotations?: (EditAnnotation | null)[];
   item_peeks?: (ConstructPeek | null)[];
   item_peeks_base?: (ConstructPeek | null)[];
+  /** Secondary git-style file diffs (not front-and-center). */
+  file_diffs?: FileDiff[];
+  /** Optional per-item impact lists (construct names / paths). */
+  item_impact?: (string[] | null)[];
 }
 
 export interface PullRequest {
@@ -99,11 +116,19 @@ export interface ReviewComment {
 
 export type ItemDecision = 'approve' | 'feedback' | 'skip' | null;
 
+export type RiskLevel = 'critical' | 'high' | 'normal' | 'low';
+
+export type PreviewDepth = 'peek' | 'il' | 'source';
+
+export type WizardMode = 'review' | 'learn';
+
 export interface WizardItemState {
   index: number;
   item: DiffItem;
   decision: ItemDecision;
   feedback: string;
+  /** Optional teaching note attached on accept/reject (journal). */
+  teachingNote: string;
   /** Matched agent rationale from PR description / commits / intent annotations */
   rationale: string | null;
   /** Head (or removed) construct snapshot for review */
@@ -111,6 +136,24 @@ export interface WizardItemState {
   /** Base snapshot for modified items */
   peekBase: ConstructPeek | null;
   sentToAgent: boolean;
+  criticality: RiskLevel;
+  annotation: EditAnnotation | null;
+  /** Blast-radius labels (same container + related names). */
+  impact: string[];
+}
+
+/** One walk step — groups field-level noise under a construct. */
+export interface WizardGroup {
+  key: string;
+  name: string;
+  path: string;
+  risk: RiskLevel;
+  children: WizardItemState[];
+  expanded: boolean;
+  /** Aggregate decision when all children agree; else null. */
+  decision: ItemDecision;
+  rationale: string | null;
+  impact: string[];
 }
 
 export interface QueuedFeedback {
@@ -738,27 +781,221 @@ export function sendFeedbackToAgent(queue: QueuedFeedback[], prTitle?: string) {
   void agentSend(prompt);
 }
 
+export function riskFromCriticality(c?: string | null): RiskLevel {
+  const s = (c || '').toLowerCase();
+  if (s === 'critical' || s === '3') return 'critical';
+  if (s === 'high' || s === '2') return 'high';
+  if (s === 'low' || s === '0') return 'low';
+  return 'normal';
+}
+
+export function riskFromKind(kind: string): RiskLevel {
+  const k = kind.toLowerCase();
+  if (k === 'removed' || k.includes('delete')) return 'high';
+  if (k === 'signature_changed' || k === 'renamed') return 'high';
+  if (k === 'body_changed') return 'normal';
+  if (k === 'annotations_changed') return 'low';
+  if (k === 'added') return 'normal';
+  return 'normal';
+}
+
+export function maxRisk(a: RiskLevel, b: RiskLevel): RiskLevel {
+  const rank = { critical: 3, high: 2, normal: 1, low: 0 };
+  return rank[a] >= rank[b] ? a : b;
+}
+
+export function riskLabel(r: RiskLevel): string {
+  return r === 'critical' ? 'Critical' : r === 'high' ? 'High' : r === 'low' ? 'Low' : 'Normal';
+}
+
 export function buildWizardItems(
   items: DiffItem[],
   rationales: Map<string, string>,
   diff?: StructDiff | null
 ): WizardItemState[] {
+  const allNames = items.map((it) => itemDisplayName(it)).filter(Boolean);
   return items.map((item, index) => {
     const peek = diff?.item_peeks?.[index] ?? null;
     const peekBase = diff?.item_peeks_base?.[index] ?? null;
-    const annIntent = diff?.item_annotations?.[index]?.intent ?? null;
+    const ann = diff?.item_annotations?.[index] ?? null;
+    const annIntent = ann?.intent ?? null;
     const fromPeek = peek?.intent ?? null;
     const matched = matchRationale(item, rationales);
     const rationale = annIntent || fromPeek || matched;
+    const criticality = ann?.criticality
+      ? riskFromCriticality(String(ann.criticality))
+      : riskFromKind(item.kind);
+    const impactFromApi = diff?.item_impact?.[index] ?? null;
+    const impact =
+      impactFromApi && impactFromApi.length
+        ? impactFromApi
+        : inferImpact(item, allNames, index);
     return {
       index,
       item,
       decision: null,
       feedback: '',
+      teachingNote: '',
       rationale: rationale ?? null,
       peek,
       peekBase,
       sentToAgent: false,
+      criticality,
+      annotation: ann,
+      impact,
     };
   });
+}
+
+/** Group DiffItems by construct identity (path + name); sort groups by max risk. */
+export function buildWizardGroups(items: WizardItemState[]): WizardGroup[] {
+  const map = new Map<string, WizardItemState[]>();
+  for (const it of items) {
+    const name = itemDisplayName(it.item) || `item-${it.index}`;
+    const path = pathOf(it.item) || '';
+    const key = `${path}::${name}`;
+    const list = map.get(key) || [];
+    list.push(it);
+    map.set(key, list);
+  }
+  const groups: WizardGroup[] = [];
+  for (const [key, children] of map) {
+    let risk: RiskLevel = 'low';
+    let rationale: string | null = null;
+    const impact = new Set<string>();
+    for (const c of children) {
+      risk = maxRisk(risk, c.criticality);
+      if (!rationale && c.rationale) rationale = c.rationale;
+      for (const i of c.impact) impact.add(i);
+    }
+    const first = children[0];
+    groups.push({
+      key,
+      name: itemDisplayName(first.item) || key,
+      path: pathOf(first.item),
+      risk,
+      children,
+      expanded: children.length > 1,
+      decision: aggregateDecision(children),
+      rationale,
+      impact: [...impact],
+    });
+  }
+  const rank = { critical: 0, high: 1, normal: 2, low: 3 };
+  groups.sort((a, b) => rank[a.risk] - rank[b.risk] || a.name.localeCompare(b.name));
+  return groups;
+}
+
+function aggregateDecision(children: WizardItemState[]): ItemDecision {
+  if (!children.length) return null;
+  if (children.every((c) => c.decision === 'approve')) return 'approve';
+  if (children.some((c) => c.decision === 'feedback')) return 'feedback';
+  if (children.every((c) => c.decision === 'skip')) return 'skip';
+  return null;
+}
+
+export function syncGroupDecision(g: WizardGroup): WizardGroup {
+  return { ...g, decision: aggregateDecision(g.children) };
+}
+
+function inferImpact(item: DiffItem, allNames: string[], selfIndex: number): string[] {
+  const name = itemDisplayName(item);
+  const container = (item.container_path || []).map((s) => s.name).join('/');
+  const out: string[] = [];
+  for (let i = 0; i < allNames.length; i++) {
+    if (i === selfIndex) continue;
+    const n = allNames[i];
+    if (!n || n === name) continue;
+    // Same container siblings and name-adjacent references
+    if (container && pathOf({ ...item, name: n } as DiffItem)) {
+      /* keep simple */
+    }
+    if (n.includes(name) || name.includes(n)) out.push(n);
+  }
+  // Cap
+  return out.slice(0, 8);
+}
+
+/** Layer-declared review presentation (resolved client-side for B0). */
+export type ReviewStrategy = 'structural' | 'component_sandbox' | 'file_diff';
+
+export interface ReviewPresentation {
+  strategy: ReviewStrategy;
+  target?: string;
+  fallback: ReviewStrategy;
+  secondary: ReviewStrategy[];
+  impact: string[];
+}
+
+/** Resolve review presentation from package layers / construct subkind. */
+export function resolveReviewPresentation(opts: {
+  layers?: string[];
+  subkind?: string | null;
+  nodeKind?: string | null;
+}): ReviewPresentation {
+  const layers = (opts.layers || []).map((l) => l.toLowerCase());
+  const sk = (opts.subkind || '').toLowerCase();
+  const nk = (opts.nodeKind || '').toLowerCase();
+  const isUi =
+    layers.some((l) => l.includes('svelte') || l.includes('react') || l === 'ui') ||
+    sk.includes('page') ||
+    sk.includes('component') ||
+    nk.includes('view');
+  if (isUi && layers.some((l) => l.includes('svelte'))) {
+    return {
+      strategy: 'component_sandbox',
+      target: 'svelte5',
+      fallback: 'structural',
+      secondary: ['file_diff'],
+      impact: ['dependents'],
+    };
+  }
+  return {
+    strategy: 'structural',
+    fallback: 'structural',
+    secondary: ['file_diff'],
+    impact: ['dependents'],
+  };
+}
+
+export async function postJournalEntry(entry: {
+  pr_id?: string | null;
+  construct_path: string;
+  construct_name: string;
+  decision: string;
+  rationale?: string | null;
+  teaching_note?: string | null;
+  risk?: string | null;
+  package?: string | null;
+}): Promise<void> {
+  try {
+    await fetch(`${platformRoot()}/api/journal`, {
+      method: 'POST',
+      headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry),
+    });
+  } catch {
+    /* journal is best-effort until host is fully wired */
+  }
+}
+
+export async function fetchJournal(opts?: {
+  construct?: string;
+  pr_id?: string;
+  q?: string;
+  limit?: number;
+}): Promise<unknown[]> {
+  const u = new URL(`${platformRoot()}/api/journal`);
+  if (opts?.construct) u.searchParams.set('construct', opts.construct);
+  if (opts?.pr_id) u.searchParams.set('pr_id', opts.pr_id);
+  if (opts?.q) u.searchParams.set('q', opts.q);
+  if (opts?.limit) u.searchParams.set('limit', String(opts.limit));
+  try {
+    const r = await fetch(u.toString(), { headers: ideRequestHeaders() });
+    if (!r.ok) return [];
+    const d = await r.json();
+    return Array.isArray(d) ? d : d.entries || d.items || [];
+  } catch {
+    return [];
+  }
 }

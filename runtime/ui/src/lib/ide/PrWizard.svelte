@@ -15,9 +15,14 @@
     type DiffItem,
     type ReviewComment,
     type WizardItemState,
+    type WizardGroup,
     type QueuedFeedback,
     type StructDiff,
     type ConstructPeek,
+    type PreviewDepth,
+    type WizardMode,
+    type RiskLevel,
+    type FileDiff,
     closePrWizard,
     prWizardChangeId,
     loadWizardDiff,
@@ -25,6 +30,7 @@
     fetchOpenPullRequests,
     rationalesFromPrTexts,
     buildWizardItems,
+    buildWizardGroups,
     refreshWizardRationales,
     prBelongsToProject,
     isSmokeOrFixturePr,
@@ -38,6 +44,10 @@
     createAndSubmitPr,
     sendFeedbackToAgent,
     pathOf,
+    riskLabel,
+    resolveReviewPresentation,
+    postJournalEntry,
+    fetchJournal,
   } from '$lib/ide/prWizard';
   import { publishPrWizardViewport } from '$lib/ide/ideViewport';
   import { agentIsStreaming } from '$lib/agent/runtimeAgentSession';
@@ -56,26 +66,68 @@
   let diff = $state<StructDiff | null>(null);
   let diffSource = $state<'pr' | 'working-tree' | 'pr-empty'>('working-tree');
   let diffNote = $state<string | null>(null);
+  /** Flat items (decisions + API posts). */
   let items = $state<WizardItemState[]>([]);
+  /** Grouped walk steps (risk-ordered). */
+  let groups = $state<WizardGroup[]>([]);
+  /** Index into `groups` (not flat items). */
   let step = $state(0);
   let feedbackDraft = $state('');
+  let noteDraft = $state('');
   let showFeedback = $state(false);
+  let showNote = $state(false);
+  let showFileDiff = $state(false);
+  let previewDepth = $state<PreviewDepth>('peek');
+  let wizardMode = $state<WizardMode>('review');
+  let learnEntries = $state<Record<string, unknown>[]>([]);
   let statusMsg = $state<string | null>(null);
   /** PRs for other projects / smoke tests (collapsed) */
   let otherPrs = $state<PullRequest[]>([]);
 
-  const current = $derived(items[step] ?? null);
+  const currentGroup = $derived(groups[step] ?? null);
+  /** Primary child for display (first in group). */
+  const current = $derived(currentGroup?.children[0] ?? null);
   const approvedCount = $derived(items.filter((i) => i.decision === 'approve').length);
   const feedbackCount = $derived(items.filter((i) => i.decision === 'feedback').length);
   const pendingCount = $derived(items.filter((i) => i.decision == null).length);
   const progressPct = $derived(
-    items.length === 0 ? 0 : Math.round(((step + (current?.decision ? 1 : 0)) / items.length) * 100)
+    groups.length === 0
+      ? 0
+      : Math.round(((step + (currentGroup?.decision ? 1 : 0)) / groups.length) * 100)
   );
+  const presentation = $derived(
+    resolveReviewPresentation({
+      subkind: current?.item.subkind,
+      nodeKind: current?.item.node_kind,
+    })
+  );
+  const fileDiffsForStep = $derived.by((): FileDiff[] => {
+    const all = diff?.file_diffs || [];
+    if (!all.length || !current) return all;
+    const name = itemDisplayName(current.item).toLowerCase();
+    const path = pathOf(current.item).toLowerCase();
+    const filtered = all.filter(
+      (f) =>
+        f.path.toLowerCase().includes(name) ||
+        path.includes(f.path.toLowerCase()) ||
+        f.path.toLowerCase().includes(path.split('/').pop() || '')
+    );
+    return filtered.length ? filtered : all.slice(0, 3);
+  });
 
   const meta = $derived($codingSessionMeta as Record<string, unknown> | null);
   const branchName = $derived(
     (meta?.branch_name as string) || (meta?.draft_mode ? 'work' : 'main')
   );
+
+  function rebuildGroups(from: WizardItemState[]) {
+    groups = buildWizardGroups(from);
+  }
+
+  function patchItems(mutator: (it: WizardItemState) => WizardItemState) {
+    items = items.map(mutator);
+    rebuildGroups(items);
+  }
 
   function onKey(e: KeyboardEvent) {
     if (phase !== 'walk' || busy) return;
@@ -86,27 +138,51 @@
       closePrWizard();
       return;
     }
+    if ((e.key === 'a' || e.key === 'A') && e.shiftKey) {
+      e.preventDefault();
+      showNote = true;
+      return;
+    }
+    if (e.key === 'y' || e.key === 'Y') {
+      e.preventDefault();
+      showNote = true;
+      return;
+    }
     if (e.key === 'a' || e.key === 'A') {
       e.preventDefault();
-      if (current?.decision === 'approve') void clearDecision();
+      if (currentGroup?.decision === 'approve') void clearDecision();
       else void decide('approve');
     } else if (e.key === 'u' || e.key === 'U') {
       e.preventDefault();
-      if (current?.decision) void clearDecision();
-    } else if (e.key === 'f' || e.key === 'F') {
+      if (currentGroup?.decision) void clearDecision();
+    } else if (e.key === 'f' || e.key === 'F' || e.key === 'r' || e.key === 'R') {
       e.preventDefault();
       showFeedback = true;
     } else if (e.key === 'n' || e.key === 'N' || e.key === 'ArrowRight') {
       e.preventDefault();
-      if (current?.decision) advance();
+      if (currentGroup?.decision) advance();
       else skip();
     } else if (e.key === 'p' || e.key === 'P' || e.key === 'ArrowLeft') {
       e.preventDefault();
       goStep(step - 1);
     } else if (e.key === 's' || e.key === 'S') {
       e.preventDefault();
-      if (current?.decision === 'skip') void clearDecision();
+      if (currentGroup?.decision === 'skip') void clearDecision();
       else skip();
+    } else if (e.key === 'd' || e.key === 'D') {
+      e.preventDefault();
+      showFileDiff = !showFileDiff;
+    } else if (e.key === 'i' || e.key === 'I') {
+      e.preventDefault();
+      previewDepth =
+        previewDepth === 'peek' ? 'il' : previewDepth === 'il' ? 'source' : 'peek';
+    } else if (e.key === 'e' || e.key === 'E') {
+      e.preventDefault();
+      if (currentGroup) {
+        groups = groups.map((g, i) =>
+          i === step ? { ...g, expanded: !g.expanded } : g
+        );
+      }
     }
   }
 
@@ -252,11 +328,16 @@
           comments,
           items,
         });
-        if (refreshed.applied > 0) items = refreshed.items;
+        if (refreshed.applied > 0) {
+          items = refreshed.items;
+          rebuildGroups(items);
+        }
       } catch {
         /* keep initial items */
       }
     }
+    rebuildGroups(items);
+    step = 0;
   }
 
   let refreshingRationales = $state(false);
@@ -275,6 +356,7 @@
         items,
       });
       items = next;
+      rebuildGroups(items);
       if (applied > 0) {
         rationaleRefreshMsg = `Loaded ${applied} agent rationale(s)${reason ? ` (${reason})` : ''}.`;
       } else if (reason === 'manual') {
@@ -343,11 +425,10 @@
     phase = 'walk';
   }
 
-  async function decide(decision: 'approve' | 'feedback', opts?: { sendNow?: boolean }) {
-    const cur = current;
-    if (!cur || busy) return;
-    // Already decided the same way — don't re-post; allow navigation only.
-    if (decision === 'approve' && cur.decision === 'approve') {
+  async function decide(decision: 'approve' | 'feedback', opts?: { sendNow?: boolean; note?: string }) {
+    const g = currentGroup;
+    if (!g || busy || wizardMode === 'learn') return;
+    if (decision === 'approve' && g.decision === 'approve') {
       advance();
       return;
     }
@@ -359,29 +440,37 @@
         busy = false;
         return;
       }
-      items = items.map((it, i) =>
-        i === step
+      const note = (opts?.note ?? noteDraft).trim();
+      const childIdx = new Set(g.children.map((c) => c.index));
+      items = items.map((it) =>
+        childIdx.has(it.index)
           ? {
               ...it,
               decision,
               feedback: decision === 'feedback' ? feedbackDraft.trim() : it.feedback,
+              teachingNote: note || it.teachingNote,
             }
           : it
       );
-      const updated = items[step];
+      rebuildGroups(items);
+      const updated = items.find((it) => childIdx.has(it.index))!;
 
       if (prId) {
         await postReviewItem(prId, {
           decision,
           construct_path: pathOf(updated.item),
-          body: decision === 'feedback' ? updated.feedback : 'Approved in PR Wizard.',
+          body:
+            decision === 'feedback'
+              ? updated.feedback
+              : note
+                ? `Approved in PR Wizard. Note: ${note}`
+                : 'Approved in PR Wizard.',
           send_now: !!opts?.sendNow,
-          item_index: step,
+          item_index: updated.index,
           item_kind: updated.item.kind,
           item_name: itemDisplayName(updated.item),
           rationale: updated.rationale || undefined,
         });
-        // refresh history
         try {
           const d = await fetchPullRequestDetail(prId);
           comments = d.comments;
@@ -390,11 +479,22 @@
         }
       }
 
+      void postJournalEntry({
+        pr_id: prId,
+        construct_path: pathOf(updated.item),
+        construct_name: itemDisplayName(updated.item),
+        decision,
+        rationale: updated.rationale,
+        teaching_note: note || null,
+        risk: updated.criticality,
+        package: currentProjectParam(),
+      });
+
       if (decision === 'feedback' && opts?.sendNow) {
         sendFeedbackToAgent(
           [
             {
-              index: step,
+              index: updated.index,
               path: pathOf(updated.item),
               name: itemDisplayName(updated.item),
               kind: updated.item.kind,
@@ -404,11 +504,16 @@
           ],
           pr?.title
         );
-        items = items.map((it, i) => (i === step ? { ...it, sentToAgent: true } : it));
+        items = items.map((it) =>
+          childIdx.has(it.index) ? { ...it, sentToAgent: true } : it
+        );
+        rebuildGroups(items);
       }
 
       feedbackDraft = '';
+      noteDraft = '';
       showFeedback = false;
+      showNote = false;
       advance();
     } catch (e) {
       error = String(e);
@@ -417,16 +522,18 @@
     }
   }
 
-  /** Undo approve / feedback / skip — item becomes pending again. */
+  /** Undo approve / feedback / skip — group becomes pending again. */
   async function clearDecision() {
+    const g = currentGroup;
     const cur = current;
-    if (!cur || busy || cur.decision == null) return;
-    const prev = cur.decision;
+    if (!g || !cur || busy || g.decision == null || wizardMode === 'learn') return;
+    const prev = g.decision;
     busy = true;
     error = null;
     try {
-      items = items.map((it, i) =>
-        i === step
+      const childIdx = new Set(g.children.map((c) => c.index));
+      items = items.map((it) =>
+        childIdx.has(it.index)
           ? {
               ...it,
               decision: null,
@@ -435,6 +542,7 @@
             }
           : it
       );
+      rebuildGroups(items);
       feedbackDraft = '';
       showFeedback = false;
       if (prId && (prev === 'approve' || prev === 'feedback')) {
@@ -442,7 +550,7 @@
           decision: 'clear',
           construct_path: pathOf(cur.item),
           body: `Cleared ${prev} decision in PR Wizard.`,
-          item_index: step,
+          item_index: cur.index,
           item_kind: cur.item.kind,
           item_name: itemDisplayName(cur.item),
         });
@@ -462,31 +570,43 @@
   }
 
   function skip() {
-    if (current?.decision === 'skip') {
+    if (wizardMode === 'learn') {
       advance();
       return;
     }
-    items = items.map((it, i) => (i === step ? { ...it, decision: 'skip' } : it));
+    if (currentGroup?.decision === 'skip') {
+      advance();
+      return;
+    }
+    const g = currentGroup;
+    if (!g) return;
+    const childIdx = new Set(g.children.map((c) => c.index));
+    items = items.map((it) =>
+      childIdx.has(it.index) ? { ...it, decision: 'skip' as const } : it
+    );
+    rebuildGroups(items);
     advance();
   }
 
   function advance() {
-    if (step < items.length - 1) {
+    if (step < groups.length - 1) {
       step += 1;
-      const next = items[step];
+      const next = groups[step]?.children[0];
       feedbackDraft = next?.feedback || '';
       showFeedback = false;
+      showNote = false;
     } else {
       phase = 'summary';
     }
   }
 
   function goStep(i: number) {
-    if (i < 0 || i >= items.length) return;
+    if (i < 0 || i >= groups.length) return;
     step = i;
     phase = 'walk';
-    feedbackDraft = items[i]?.feedback || '';
-    showFeedback = items[i]?.decision === 'feedback';
+    feedbackDraft = groups[i]?.children[0]?.feedback || '';
+    showFeedback = groups[i]?.decision === 'feedback';
+    showNote = false;
   }
 
   function queuedFeedback(): QueuedFeedback[] {
@@ -792,20 +912,28 @@
     </div>
   </header>
 
-  {#if phase === 'walk' && items.length > 0}
+  {#if phase === 'walk' && groups.length > 0}
     <div class="progress" aria-hidden="true">
-      <div class="bar" style="width: {Math.max(4, ((step + 1) / items.length) * 100)}%"></div>
+      <div class="bar" style="width: {Math.max(4, ((step + 1) / groups.length) * 100)}%"></div>
     </div>
     <div class="step-meta">
-      <span>Change {step + 1} of {items.length}</span>
+      <span
+        >Step {step + 1} of {groups.length}
+        {#if groups[step]?.children.length > 1}
+          · {groups[step].children.length} changes
+        {/if}
+      </span>
       <span class="counts">
         <span class="ok">{approvedCount} ✓</span>
         <span class="fb">{feedbackCount} 💬</span>
         <span class="pend">{pendingCount} left</span>
       </span>
       <span class="keys dim" title="Keyboard"
-        >A approve · U undo · F feedback · N next · P prev · Esc close</span
+        >A approve · Y note · R feedback · S skip · D file diff · I depth · E expand · N/P · Esc</span
       >
+      {#if wizardMode === 'learn'}
+        <span class="pill sm">Learn mode</span>
+      {/if}
     </div>
   {/if}
 
@@ -943,28 +1071,61 @@
       <button type="button" class="btn" onclick={() => (phase = items.length ? 'walk' : 'summary')}>
         Back to review
       </button>
-    {:else if phase === 'walk' && current}
+    {:else if phase === 'walk' && current && currentGroup}
       {@const it = current.item}
+      {@const g = currentGroup}
       <div class="item-card" class:add={itemKindClass(it.kind) === 'add'} class:rem={itemKindClass(it.kind) === 'rem'} class:chg={itemKindClass(it.kind) === 'chg'}>
         <div class="item-top">
           <span class="kind-badge {itemKindClass(it.kind)}">{itemKindLabel(it.kind)}</span>
-          <h3 class="item-name">{itemDisplayName(it)}</h3>
+          <h3 class="item-name">{g.name}</h3>
+          <span class="risk-chip risk-{g.risk}" title="Review risk">{riskLabel(g.risk)}</span>
           {#if it.subkind}
             <span class="pill sm">{it.subkind}</span>
           {/if}
           {#if it.node_kind}
             <span class="dim">{it.node_kind}</span>
           {/if}
+          {#if g.children.length > 1}
+            <span class="pill sm">{g.children.length} parts</span>
+          {/if}
         </div>
         <p class="container">{containerLabel(it)}</p>
         <p class="path"><code>{pathOf(it)}</code></p>
+
+        <!-- Evidence strip -->
+        <div class="evidence-strip">
+          <span class:on={!!current.rationale}>Rationale {current.rationale ? '✓' : '—'}</span>
+          <span class:on={g.risk === 'critical' || g.risk === 'high'}>Risk {riskLabel(g.risk)}</span>
+          <span class:on={(g.impact?.length || 0) > 0}
+            >Impact {g.impact?.length || 0}</span
+          >
+          <span class:on={presentation.strategy === 'component_sandbox'}
+            >Preview {presentation.strategy}</span
+          >
+          <span class:on={previewDepth !== 'peek'}>View {previewDepth}</span>
+        </div>
+
+        {#if g.impact?.length}
+          <section class="impact-section">
+            <h4>Blast radius</h4>
+            <ul class="impact-list">
+              {#each g.impact as name}
+                <li>
+                  <button type="button" class="linkish" onclick={() => focusConstructByName(name)}
+                    >{name}</button
+                  >
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
 
         {#if current.rationale}
           <section class="rationale">
             <h4>Agent rationale</h4>
             <p>{current.rationale}</p>
           </section>
-        {:else}
+        {:else if wizardMode === 'review'}
           <section class="rationale empty">
             <h4>Agent rationale</h4>
             <p class="muted">
@@ -986,10 +1147,32 @@
           </section>
         {/if}
 
-        <!-- Construct snapshot (what actually changed) -->
-        {#if current.peek || current.peekBase}
+        {#if g.expanded && g.children.length > 1}
+          <section class="group-parts">
+            <h4>Grouped changes</h4>
+            <ul>
+              {#each g.children as ch}
+                <li>
+                  <span class="kind-badge sm {itemKindClass(ch.item.kind)}"
+                    >{itemKindLabel(ch.item.kind)}</span
+                  >
+                  {itemDisplayName(ch.item)}
+                  {#if ch.decision}<span class="dim">· {ch.decision}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+
+        <!-- Construct snapshot / IL -->
+        {#if previewDepth !== 'source' && (current.peek || current.peekBase)}
           <section class="peek-section">
-            <h4>Construct</h4>
+            <h4>
+              {previewDepth === 'il' ? 'IL detail' : 'Construct'}
+              <button type="button" class="ghost sm" onclick={() => (previewDepth = previewDepth === 'il' ? 'peek' : 'il')}
+                >{previewDepth === 'il' ? 'Simpler' : 'Deeper (I)'}</button
+              >
+            </h4>
             <div class="peek-grid" class:pair={!!(current.peek && current.peekBase)}>
               {#if current.peekBase}
                 {@render peekCard(current.peekBase, 'Before')}
@@ -1001,8 +1184,27 @@
                 )}
               {/if}
             </div>
+            {#if previewDepth === 'il' && current.peek}
+              <div class="il-extra">
+                {#if current.peek.signature}
+                  <p><strong>Signature</strong> <code>{current.peek.signature}</code></p>
+                {/if}
+                {#if current.peek.fields?.length}
+                  <p><strong>Fields</strong></p>
+                  <ul>{#each current.peek.fields as f}<li><code>{f}</code></li>{/each}</ul>
+                {/if}
+                {#if current.peek.methods?.length}
+                  <p><strong>Methods</strong></p>
+                  <ul>{#each current.peek.methods as m}<li><code>{m}</code></li>{/each}</ul>
+                {/if}
+                {#if current.peek.body_preview?.length}
+                  <p><strong>Body</strong></p>
+                  <pre class="body-il">{current.peek.body_preview.join('\n')}</pre>
+                {/if}
+              </div>
+            {/if}
           </section>
-        {:else if beforeLines(it).length || afterLines(it).length || it.kind === 'signature_changed'}
+        {:else if beforeLines(it).length || afterLines(it).length || it.kind === 'signature_changed' || previewDepth === 'source'}
           <div class="diff-grid">
             <div class="col before">
               <div class="col-h">Before</div>
@@ -1032,16 +1234,117 @@
           </p>
         {/if}
 
+        <!-- Secondary file diff (key D) -->
+        <section class="file-diff-section">
+          <button
+            type="button"
+            class="ghost sm"
+            onclick={() => (showFileDiff = !showFileDiff)}
+          >
+            {showFileDiff ? 'Hide' : 'Show'} file diff (D)
+            {#if fileDiffsForStep.length}
+              · {fileDiffsForStep.length} file(s)
+            {/if}
+          </button>
+          {#if showFileDiff}
+            {#if fileDiffsForStep.length === 0}
+              <p class="muted tiny">No file-level hunks for this step.</p>
+            {:else}
+              {#each fileDiffsForStep as fd}
+                <div class="file-diff-block">
+                  <div class="file-diff-h">
+                    <code>{fd.path}</code>
+                    <span class="pill sm">{fd.status}</span>
+                  </div>
+                  {#each fd.hunks || [] as hunk}
+                    <pre class="file-diff-pre"
+                      >{hunk.header || ''}
+{#each hunk.lines || [] as line}{line}
+{/each}</pre
+                    >
+                  {/each}
+                </div>
+              {/each}
+            {/if}
+          {/if}
+        </section>
+
+        {#if presentation.strategy === 'component_sandbox'}
+          <section class="sandbox-placeholder">
+            <h4>Component preview</h4>
+            <p class="muted tiny">
+              Layer strategy <code>component_sandbox</code>
+              {#if presentation.target}({presentation.target}){/if}
+              — isolated render lands with package sandbox; structural peek above is the fallback.
+            </p>
+          </section>
+        {/if}
+
         <div class="item-actions-row">
           <button type="button" class="btn" onclick={() => jumpConstruct(it)}>
             Show in IDE
           </button>
+          {#if wizardMode === 'review'}
+            <button
+              type="button"
+              class="ghost"
+              onclick={() => {
+                wizardMode = 'learn';
+                void fetchJournal({ pr_id: prId || undefined, limit: 30 }).then((list) => {
+                  learnEntries = list as Record<string, unknown>[];
+                });
+              }}
+            >
+              Learn mode
+            </button>
+          {:else}
+            <button type="button" class="ghost" onclick={() => (wizardMode = 'review')}>
+              Review mode
+            </button>
+          {/if}
         </div>
+        {#if wizardMode === 'learn' && learnEntries.length}
+          <section class="rationale">
+            <h4>Prior decisions (journal)</h4>
+            <ul class="group-parts">
+              {#each learnEntries.slice(0, 8) as e}
+                <li>
+                  <span class="pill sm">{e.decision}</span>
+                  {e.construct_name}
+                  {#if e.teaching_note}<span class="dim">— {e.teaching_note}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
         {#if jumpMsg}
           <p class="jump-msg">{jumpMsg}</p>
         {/if}
 
-        {#if showFeedback}
+        {#if showNote && wizardMode === 'review'}
+          <div class="feedback-box">
+            <label for="note">Accept with note (optional teaching note)</label>
+            <textarea
+              id="note"
+              rows="2"
+              placeholder="Why this is correct / what future readers should know…"
+              bind:value={noteDraft}
+            ></textarea>
+            <div class="fb-actions">
+              <button
+                type="button"
+                class="btn primary"
+                disabled={busy}
+                onclick={() => void decide('approve', { note: noteDraft })}
+              >
+                Approve with note ✓
+              </button>
+              <button type="button" class="ghost" onclick={() => (showNote = false)}>Cancel</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if showFeedback && wizardMode === 'review'}
           <div class="feedback-box">
             <label for="fb">What needs to change?</label>
             <textarea
@@ -1073,17 +1376,17 @@
         {/if}
       </div>
 
-      <!-- step strip -->
+      <!-- step strip = groups -->
       <div class="step-strip" role="tablist">
-        {#each items as it, i}
+        {#each groups as g, i}
           <button
             type="button"
-            class="dot"
+            class="dot risk-{g.risk}"
             class:current={i === step}
-            class:ok={it.decision === 'approve'}
-            class:fb={it.decision === 'feedback'}
-            class:skip={it.decision === 'skip'}
-            title="{itemDisplayName(it.item)} — {it.decision || 'pending'}"
+            class:ok={g.decision === 'approve'}
+            class:fb={g.decision === 'feedback'}
+            class:skip={g.decision === 'skip'}
+            title="{g.name} — {riskLabel(g.risk)} — {g.decision || 'pending'}"
             onclick={() => goStep(i)}
           ></button>
         {/each}
@@ -1159,15 +1462,19 @@
     {#if error && phase === 'walk'}
       <p class="err foot-err">{error}</p>
     {/if}
-    {#if phase === 'walk' && current}
+    {#if phase === 'walk' && currentGroup}
       <button type="button" class="ghost" disabled={step === 0} onclick={() => goStep(step - 1)}>
         ← Back
       </button>
       <div class="spacer"></div>
-      {#if current.decision}
-        <span class="decision-badge" class:ok={current.decision === 'approve'} class:fb={current.decision === 'feedback'} class:skip={current.decision === 'skip'}>
-          {#if current.decision === 'approve'}Approved
-          {:else if current.decision === 'feedback'}Feedback queued
+      {#if wizardMode === 'learn'}
+        <button type="button" class="btn" onclick={() => advance()}>
+          {step < groups.length - 1 ? 'Next →' : 'Done →'}
+        </button>
+      {:else if currentGroup.decision}
+        <span class="decision-badge" class:ok={currentGroup.decision === 'approve'} class:fb={currentGroup.decision === 'feedback'} class:skip={currentGroup.decision === 'skip'}>
+          {#if currentGroup.decision === 'approve'}Approved
+          {:else if currentGroup.decision === 'feedback'}Feedback queued
           {:else}Skipped{/if}
         </span>
         <button
@@ -1185,9 +1492,9 @@
           disabled={busy}
           onclick={() => advance()}
         >
-          {step < items.length - 1 ? 'Next →' : 'Summary →'}
+          {step < groups.length - 1 ? 'Next →' : 'Summary →'}
         </button>
-        {#if current.decision !== 'approve'}
+        {#if currentGroup.decision !== 'approve'}
           <button
             type="button"
             class="btn primary"
@@ -1197,7 +1504,7 @@
             Approve ✓
           </button>
         {/if}
-        {#if current.decision !== 'feedback'}
+        {#if currentGroup.decision !== 'feedback'}
           <button
             type="button"
             class="btn warn"
@@ -1220,6 +1527,15 @@
           }}
         >
           Request changes
+        </button>
+        <button
+          type="button"
+          class="ghost"
+          disabled={busy}
+          title="Approve with note (Y)"
+          onclick={() => (showNote = true)}
+        >
+          Note…
         </button>
         <button
           type="button"
@@ -1968,5 +2284,155 @@
   }
   .item-actions-row {
     margin-top: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .risk-chip {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.15rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid rgba(115, 115, 115, 0.35);
+  }
+  .risk-critical {
+    color: #fca5a5;
+    border-color: rgba(239, 68, 68, 0.5);
+    background: rgba(239, 68, 68, 0.12);
+  }
+  .risk-high {
+    color: #fdba74;
+    border-color: rgba(249, 115, 22, 0.45);
+    background: rgba(249, 115, 22, 0.1);
+  }
+  .risk-normal {
+    color: #93c5fd;
+    border-color: rgba(59, 130, 246, 0.4);
+    background: rgba(59, 130, 246, 0.08);
+  }
+  .risk-low {
+    color: #a3a3a3;
+    border-color: rgba(115, 115, 115, 0.35);
+  }
+  .evidence-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin: 0.5rem 0 0.65rem;
+    font-size: 0.68rem;
+    color: #737373;
+  }
+  .evidence-strip span {
+    padding: 0.15rem 0.4rem;
+    border-radius: 6px;
+    border: 1px solid rgba(115, 115, 115, 0.25);
+    background: rgba(0, 0, 0, 0.2);
+  }
+  .evidence-strip span.on {
+    color: #a7f3d0;
+    border-color: rgba(52, 211, 153, 0.35);
+  }
+  .impact-section h4,
+  .group-parts h4,
+  .file-diff-section h4 {
+    margin: 0.65rem 0 0.35rem;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #a3a3a3;
+  }
+  .impact-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+  .impact-list li {
+    margin: 0;
+  }
+  .linkish {
+    background: none;
+    border: none;
+    color: #93c5fd;
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 0;
+    text-decoration: underline;
+  }
+  .group-parts ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 0.8rem;
+  }
+  .group-parts li {
+    padding: 0.25rem 0;
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+  }
+  .file-diff-block {
+    margin-top: 0.45rem;
+    border: 1px solid rgba(115, 115, 115, 0.3);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .file-diff-h {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.35rem 0.55rem;
+    background: rgba(0, 0, 0, 0.35);
+    font-size: 0.75rem;
+  }
+  .file-diff-pre {
+    margin: 0;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.7rem;
+    line-height: 1.35;
+    overflow-x: auto;
+    max-height: 220px;
+    background: #0a0a0a;
+    color: #d4d4d4;
+    white-space: pre-wrap;
+  }
+  .il-extra {
+    margin-top: 0.5rem;
+    font-size: 0.78rem;
+  }
+  .il-extra ul {
+    margin: 0.2rem 0 0.5rem;
+    padding-left: 1.1rem;
+  }
+  .body-il {
+    margin: 0.25rem 0 0;
+    padding: 0.5rem;
+    font-size: 0.72rem;
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 6px;
+    max-height: 180px;
+    overflow: auto;
+  }
+  .sandbox-placeholder {
+    margin-top: 0.65rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px dashed rgba(167, 139, 250, 0.4);
+    border-radius: 8px;
+    background: rgba(139, 92, 246, 0.06);
+  }
+  .btn.sm,
+  .ghost.sm {
+    font-size: 0.72rem;
+    padding: 0.2rem 0.5rem;
+  }
+  .dot.risk-critical {
+    box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.55);
+  }
+  .dot.risk-high {
+    box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.45);
   }
 </style>

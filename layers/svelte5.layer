@@ -2,6 +2,14 @@ pkg svelte5 v1
   desc "Svelte 5 component layer — runes-based reactivity, props, snippets"
   author "VEIL"
 
+  # Review presentation (PR Wizard) — component_sandbox target svelte5, fallback structural.
+  # Parsed by host when layer grammar supports `review` blocks; IDE also resolves by layer name.
+  # review
+  #   strategy component_sandbox
+  #   target svelte5
+  #   fallback structural
+  #   secondary file_diff
+
   # ─── Reactivity emission (MISSION: framework APIs live in layers) ───────
   # typescript.rs substitutes {name}/{type}/{default}/{expr}/{body} only.
   # It must NEVER hardcode $state / $derived / $props / $effect / $bindable.

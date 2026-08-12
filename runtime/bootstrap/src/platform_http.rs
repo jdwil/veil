@@ -1682,6 +1682,148 @@ fn parse_pr_status(s: Option<&str>) -> Option<change_management::domain::types::
     }
 }
 
+// ─── Living Design Journal (durable-enough for launch; process + optional PR comment) ──
+
+use std::sync::Mutex;
+
+static DESIGN_JOURNAL: std::sync::LazyLock<Mutex<Vec<Value>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[derive(Deserialize)]
+struct JournalBody {
+    #[serde(default)]
+    pr_id: Option<String>,
+    construct_path: String,
+    construct_name: String,
+    decision: String,
+    #[serde(default)]
+    rationale: Option<String>,
+    #[serde(default)]
+    teaching_note: Option<String>,
+    #[serde(default)]
+    risk: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JournalQuery {
+    #[serde(default)]
+    construct: Option<String>,
+    #[serde(default)]
+    pr_id: Option<String>,
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn post_journal(
+    State(st): State<CmState>,
+    Json(body): Json<JournalBody>,
+) -> Result<Json<Value>, StatusCode> {
+    let id = Uuid::new_v4().to_string();
+    let ts = chrono::Utc::now().to_rfc3339();
+    let entry = json!({
+        "id": id,
+        "ts": ts,
+        "pr_id": body.pr_id,
+        "construct_path": body.construct_path,
+        "construct_name": body.construct_name,
+        "decision": body.decision,
+        "rationale": body.rationale,
+        "teaching_note": body.teaching_note,
+        "risk": body.risk,
+        "package": body.package,
+        "author": body.author.unwrap_or_else(|| "operator".into()),
+    });
+    if let Ok(mut j) = DESIGN_JOURNAL.lock() {
+        j.push(entry.clone());
+        // Cap memory
+        if j.len() > 2000 {
+            let drop_n = j.len() - 2000;
+            j.drain(0..drop_n);
+        }
+    }
+    // Mirror onto PR history when bound
+    if let Some(ref pr_id) = body.pr_id {
+        if let Ok(uuid) = Uuid::parse_str(pr_id) {
+            let mut lines = vec![
+                "[pr-wizard:journal]".to_string(),
+                format!("decision: {}", body.decision),
+                format!("name: {}", body.construct_name),
+                format!("path: {}", body.construct_path),
+            ];
+            if let Some(r) = &body.rationale {
+                if !r.is_empty() {
+                    lines.push(format!("rationale: {r}"));
+                }
+            }
+            if let Some(n) = &body.teaching_note {
+                if !n.is_empty() {
+                    lines.push(format!("teaching_note: {n}"));
+                }
+            }
+            let _ = change_management::application::add_review_comment(
+                &st.deps,
+                uuid,
+                "operator".into(),
+                Some(body.construct_path.clone()),
+                lines.join("\n"),
+            )
+            .await;
+        }
+    }
+    Ok(Json(json!({ "ok": true, "entry": entry })))
+}
+
+async fn list_journal(Query(q): Query<JournalQuery>) -> Result<Json<Value>, StatusCode> {
+    let limit = q.limit.unwrap_or(50).min(200);
+    let construct = q.construct.as_deref().map(|s| s.to_lowercase());
+    let pr = q.pr_id.as_deref();
+    let needle = q.q.as_deref().map(|s| s.to_lowercase());
+    let lock = DESIGN_JOURNAL.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut out: Vec<Value> = lock
+        .iter()
+        .rev()
+        .filter(|e| {
+            if let Some(c) = &construct {
+                let name = e
+                    .get("construct_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let path = e
+                    .get("construct_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if !name.contains(c.as_str()) && !path.contains(c.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(p) = pr {
+                if e.get("pr_id").and_then(|v| v.as_str()) != Some(p) {
+                    return false;
+                }
+            }
+            if let Some(n) = &needle {
+                let blob = e.to_string().to_lowercase();
+                if !blob.contains(n.as_str()) {
+                    return false;
+                }
+            }
+            true
+        })
+        .take(limit)
+        .cloned()
+        .collect();
+    out.reverse();
+    Ok(Json(json!({ "entries": out, "count": out.len() })))
+}
+
 /// Build platform domain router and merge onto ProductHost.
 pub async fn build_platform_router(
     bus: Arc<dyn veil_shared::Bus + Send + Sync>,
@@ -1770,6 +1912,7 @@ pub async fn build_platform_router(
             "/api/repos/{id}/pull_requests",
             get(list_repo_changes).post(create_repo_change),
         )
+        .route("/api/journal", get(list_journal).post(post_journal))
         .with_state(cm);
 
     let deploy_r = Router::new()
