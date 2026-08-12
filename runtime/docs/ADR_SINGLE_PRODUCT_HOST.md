@@ -55,7 +55,7 @@ another backend, and made “Open changes / control the UX” brittle.
 - Optional legacy static `/viewer` build from `runtime/ide-ui` may remain for
   standalone dual-loop debugging — **not** the product path.
 - Ops: stop running `veil serve --multi` just to feed the dashboard agent.
-- Platform domain HTTP (repos, change_requests, deploy, registry) is mounted on
+- Platform domain HTTP (repos, pull_requests, deploy, registry) is mounted on
   ProductHost via `runtime/bootstrap/src/platform_http.rs` (generated crates +
   AWS/local ports). No separate `veil_bin` on :3000 for the dashboard.
 
@@ -68,7 +68,7 @@ VEIL_PORT=8080 AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=vei
 
 curl -s localhost:8080/api/projects | head
 curl -s localhost:8080/api/repos | head
-curl -s localhost:8080/api/change_requests | head
+curl -s localhost:8080/api/pull_requests | head
 curl -s localhost:8080/api/deploy_environments | head
 # Agent MCP on same origin
 curl -s -X POST localhost:8080/api/mcp -H 'Content-Type: application/json' \

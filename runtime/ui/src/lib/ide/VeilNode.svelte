@@ -1,13 +1,16 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
-  import { NODE_STYLES, getNodeStyle, type NodeKind } from '$lib/ide/types';
+  import { NODE_STYLES, getNodeStyle, paletteStylesVersion, type NodeKind } from '$lib/ide/types';
   import { changedNodeIds } from '$lib/ide/store';
 
   let { id, data } = $props();
 
   const kind: NodeKind = $derived(data.kind);
   const subkind: string | null = $derived(data.subkind ?? null);
-  const style = $derived(getNodeStyle(kind, subkind));
+  const style = $derived.by(() => {
+    void $paletteStylesVersion;
+    return getNodeStyle(kind, subkind);
+  });
   const hasChildren = $derived(data.hasChildren ?? false);
   const annotations: string[] = $derived(data.annotations ?? []);
   const refs: string[] = $derived(data.refs ?? []);
@@ -105,7 +108,7 @@
         <span
           class="review-lens-badge"
           title="Review focus (layer lens) — architecturally important, not a check failure"
-        >⏳</span>
+        >🔍</span>
       {/if}
       {#if hasCompensate}
         <span class="compensate-badge" title="Has compensation (rollback)">↩</span>

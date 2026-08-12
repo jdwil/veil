@@ -64,15 +64,18 @@ pub struct SessionMeta {
     #[serde(default)]
     pub intent_log: Vec<serde_json::Value>,
     /// Open pull request id for PR Wizard history writeback (agent replies).
-    /// (API field name remains change_request / active_change_id for compatibility.)
     #[serde(default)]
-    pub active_change_id: Option<String>,
+    pub active_pr_id: Option<String>,
     /// Successful source writes since last `session_commit` (host coding gates).
     #[serde(default)]
     pub writes_since_commit: u64,
     /// Last host-side veil_check / write smoke snapshot (not agent self-report).
     #[serde(default)]
     pub last_host_check: Option<HostCheckSnapshot>,
+    /// Durable construct → rationale map for PR Wizard (survives process restart).
+    /// Merged into process RATIONALE_CACHE on session open / status.
+    #[serde(default)]
+    pub rationales: HashMap<String, String>,
 }
 
 /// Host-owned check result stored on the session (coding gates / PR submit).

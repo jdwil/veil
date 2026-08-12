@@ -1,4 +1,4 @@
-//! ChangeManagement — Context.
+//! PullRequestManagement — Context.
 
 pub mod adapters;
 pub mod application;

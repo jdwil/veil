@@ -14,12 +14,12 @@
   async function handle_submit() {
     loading = true;
     error = "";
-    await (async () => { const __r = await fetch("/api/change_requests", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, description, jira_ticket, source_branch, author: "jd" }) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
-    "/changes";
+    await (async () => { const __r = await fetch("/api/pull_requests", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, description, jira_ticket, source_branch, author: "jd" }) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
+    "/pulls";
   }
 </script>
 
-<DetailShell title="Create Change Request" back_href="/changes">
+<DetailShell title="Create Pull Request" back_href="/pulls">
   <form class="form-body" on:submit|preventDefault={handle_submit}>
     {#if error}
       <div class="error-msg">{error}</div>
@@ -29,9 +29,9 @@
     <FormField label="Jira Ticket" bind:value={jira_ticket} placeholder="e.g. VEIL-123" />
     <FormField label="Source Branch" bind:value={source_branch} placeholder="Auto-generated from title if empty" />
     <div class="actions">
-      <a href="/changes" class="btn-ghost">Cancel</a>
+      <a href="/pulls" class="btn-ghost">Cancel</a>
       <button type="submit" class="btn-primary" disabled={loading || !title.trim()}>
-        {#if loading}Creating…{:else}Create Change Request{/if}
+        {#if loading}Creating…{:else}Create Pull Request{/if}
       </button>
     </div>
   </form>

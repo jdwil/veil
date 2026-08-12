@@ -219,7 +219,7 @@ export function installHumanIntentCapture(): () => void {
 			const path = url.replace(/^https?:\/\/[^/]+/, '');
 			if (path.includes('/api/ux/')) return res; // agent present commit — already logged
 			if (!res.ok) return res;
-			if (path.includes('/api/repos') && method === 'POST' && !path.includes('/changes')) {
+			if (path.includes('/api/repos') && method === 'POST' && !path.includes('/pulls')) {
 				let name = '';
 				try {
 					const body = init?.body ? JSON.parse(String(init.body)) : {};
@@ -233,7 +233,7 @@ export function installHumanIntentCapture(): () => void {
 					summary: name || 'project',
 					payload: { path }
 				});
-			} else if (path.includes('/api/change_requests') && method === 'POST') {
+			} else if (path.includes('/api/pull_requests') && method === 'POST') {
 				let title = '';
 				try {
 					const body = init?.body ? JSON.parse(String(init.body)) : {};
@@ -971,7 +971,7 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 		return null;
 	}
 
-	if (toolName === 'create_change' || toolName === 'open_create_change') {
+	if (toolName === 'create_pr' || toolName === 'open_create_pr') {
 		const payload = (root.payload as Record<string, unknown> | undefined) || {};
 		const title = String(root.title || payload.title || '');
 		const description = String(
@@ -1007,14 +1007,14 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 				: [];
 		return {
 			type: 'CreateChange',
-			id: `intent_create_change_${Date.now()}`,
+			id: `intent_create_pr_${Date.now()}`,
 			actor: 'agent',
 			payload: { title, description, project: project || undefined },
 			domain: { mode: ux ? 'ux' : 'server', done: !ux },
 			present: {
 				announce: title ? `Creating change: ${title}` : 'Open create change',
 				steps: [
-					{ kind: 'goto', path: '/changes/new', ms: 360 },
+					{ kind: 'goto', path: '/pulls/new', ms: 360 },
 					...fillSteps,
 					...(nav?.path && !ux
 						? ([{ kind: 'goto' as const, path: nav.path, ms: 280 }] as PresentStep[])
@@ -1058,8 +1058,8 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 export const STAGED_PRESENT_TOOLS = new Set([
 	'create_project',
 	'create_repo',
-	'create_change',
-	'open_create_change',
+	'create_pr',
+	'open_create_pr',
 	'resolve_coding_target'
 ]);
 

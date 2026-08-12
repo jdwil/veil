@@ -578,7 +578,7 @@ pub async fn ensure_stock_catalog_veil(
 // IO: DDB adapters (single table), S3 flat-file git adapter
 
 use change_management::adapters::{
-    DdbApprovalRepo, DdbChangeRequestRepo, DdbCiRunRepo, DdbCommentRepo, S3GitServiceAdapter,
+    DdbApprovalRepo, DdbPullRequestRepo, DdbCiRunRepo, DdbCommentRepo, S3GitServiceAdapter,
 };
 
 /// Build change_management Deps backed by DDB + S3.
@@ -596,7 +596,7 @@ pub async fn change_management_deps() -> change_management::application::Deps {
             bucket,
             s3: s3_client,
         }),
-        cr_repo: std::sync::Arc::new(DdbChangeRequestRepo {
+        pr_repo: std::sync::Arc::new(DdbPullRequestRepo {
             client: ddb_client.clone(),
             table: table.clone(),
         }),

@@ -1,3 +1,5 @@
+# STALE DRAFT — canonical SDLC lives in runtime.veil ctx PullRequestManagement.
+# Do not gen from this file.
 # Change Management — SDLC workflow for SOC 2 compliance
 #
 # Provides: branch-based development, pull requests with structural review,
@@ -8,9 +10,9 @@
 # Diff engine: veil_ir::struct_diff (AST-level structural diffs)
 #
 # Standalone package (parse / roundtrip fixture). Live runtime also embeds an
-# equivalent ChangeManagement context in runtime.veil for multi-ctx gen.
+# equivalent PullRequestManagement context in runtime.veil for multi-ctx gen.
 
-pkg ChangeManagement
+pkg PullRequestManagement
   use ddd
   use di
   use aws_storage
@@ -21,7 +23,7 @@ pkg ChangeManagement
 
   # ─── Domain Types ────────────────────────────────────────────────────────
 
-  ctx ChangeManagement
+  ctx PullRequestManagement
     group domain
 
       enum PrStatus
@@ -86,7 +88,7 @@ pkg ChangeManagement
         logs_key: Opt<Str>
         error_summary: Opt<Str>
 
-      agg ChangeRequest
+      agg PullRequest
         root
           id: Id
           repo_id: Id
@@ -105,12 +107,12 @@ pkg ChangeManagement
 
       # ─── Repositories ──────────────────────────────────────────────────
 
-      repo ChangeRequestRepo
-        find!(id: Id) -> Opt<ChangeRequest>
-        list_by_repo!(repo_id: Id, status: Opt<PrStatus>) -> List<ChangeRequest>
-        list_open!(repo_id: Id) -> List<ChangeRequest>
-        list_all!(status: Opt<PrStatus>) -> List<ChangeRequest>
-        save!(cr: ChangeRequest)
+      repo PullRequestRepo
+        find!(id: Id) -> Opt<PullRequest>
+        list_by_repo!(repo_id: Id, status: Opt<PrStatus>) -> List<PullRequest>
+        list_open!(repo_id: Id) -> List<PullRequest>
+        list_all!(status: Opt<PrStatus>) -> List<PullRequest>
+        save!(cr: PullRequest)
 
       repo ApprovalRepo
         find_for_pr!(pr_id: Id) -> List<Approval>
@@ -146,8 +148,8 @@ pkg ChangeManagement
         diff_files!(slug: Str, base_ref: Str, head_ref: Str) -> Json
         can_merge!(slug: Str, source: Str, target: Str) -> Json
 
-      # DDB adapter for ChangeRequest aggregate (same pattern as DdbDeploymentStore)
-      adapter DdbChangeRequestRepo for ChangeRequestRepo
+      # DDB adapter for PullRequest aggregate (same pattern as DdbDeploymentStore)
+      adapter DdbPullRequestRepo for PullRequestRepo
         @field(client: DdbClient, table)
 
         impl find(id)
@@ -163,7 +165,7 @@ pkg ChangeManagement
           mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr: ChangeRequest = Json.parse(data)
+            cr: PullRequest = Json.parse(data)
             if status.is_none() || cr.status == status.unwrap()
               out = out + [cr]
           ret out
@@ -174,7 +176,7 @@ pkg ChangeManagement
           mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr: ChangeRequest = Json.parse(data)
+            cr: PullRequest = Json.parse(data)
             if cr.status != PrStatus.Merged && cr.status != PrStatus.Rejected && cr.status != PrStatus.Closed
               out = out + [cr]
           ret out
@@ -185,7 +187,7 @@ pkg ChangeManagement
           mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr: ChangeRequest = Json.parse(data)
+            cr: PullRequest = Json.parse(data)
             if status.is_none() || cr.status == status.unwrap()
               out = out + [cr]
           ret out
@@ -260,13 +262,13 @@ pkg ChangeManagement
 
     group application
 
-      # Create a new change request (branch + PR record).
-      # Nested under repo: POST /api/repos/{id}/changes
-      @route("POST /api/repos/{id}/changes")
-      svc CreateChangeRequest
-        -> ChangeRequest
+      # Create a new pull request (branch + PR record).
+      # Nested under repo: POST /api/repos/{id}/pull_requests
+      @route("POST /api/repos/{id}/pull_requests")
+      svc CreatePullRequest
+        -> PullRequest
         @dep(git: GitService)
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           slug: Str
@@ -282,49 +284,49 @@ pkg ChangeManagement
           git.create_branch!(slug, branch_name, "main")
         step persist
           now = Dt.now()
-          cr_id = Id.new()
-          cr = ChangeRequest{id: cr_id, repo_id: id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
-          cr_repo.save!(cr)
+          pr_id = Id.new()
+          cr = PullRequest{id: pr_id, repo_id: id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
+          pr_repo.save!(cr)
           ret cr
 
-      # List change requests for a repo: GET /api/repos/{id}/changes
-      @route("GET /api/repos/{id}/changes")
-      svc ListChangeRequests
-        -> List<ChangeRequest>
-        @dep(cr_repo: ChangeRequestRepo)
+      # List pull requests for a repo: GET /api/repos/{id}/pull_requests
+      @route("GET /api/repos/{id}/pull_requests")
+      svc ListPullRequests
+        -> List<PullRequest>
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           status: Opt<PrStatus>
         step query
           # Local copy avoids codegen auto-unwrap of Opt at the call site.
           filter = status
-          items = cr_repo.list_by_repo!(id, filter)
+          items = pr_repo.list_by_repo!(id, filter)
           ret items
 
-      # Global list (dashboard Changes page): GET /api/change_requests
-      @route("GET /api/change_requests")
-      svc ListAllChangeRequests
-        -> List<ChangeRequest>
-        @dep(cr_repo: ChangeRequestRepo)
+      # Global list (dashboard Changes page): GET /api/pull_requests
+      @route("GET /api/pull_requests")
+      svc ListAllPullRequests
+        -> List<PullRequest>
+        @dep(pr_repo: PullRequestRepo)
         input
           status: Opt<PrStatus>
         step query
           filter = status
-          items = cr_repo.list_all!(filter)
+          items = pr_repo.list_all!(filter)
           ret items
 
-      # Get PR detail (approvals, comments, CI): GET /api/change_requests/{id}
-      @route("GET /api/change_requests/{id}")
-      svc GetChangeRequest
+      # Get PR detail (approvals, comments, CI): GET /api/pull_requests/{id}
+      @route("GET /api/pull_requests/{id}")
+      svc GetPullRequest
         -> Json
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         @dep(approval_repo: ApprovalRepo)
         @dep(comment_repo: CommentRepo)
         @dep(ci_repo: CiRunRepo)
         input
           id: Id
         step load
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           approvals = approval_repo.find_for_pr!(id)
@@ -333,24 +335,24 @@ pkg ChangeManagement
           ret {pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs}
 
       # Transition PR status (draft → review, approve, reject, close, …)
-      @route("PUT /api/change_requests/{id}/status")
-      svc UpdateChangeRequestStatus
-        -> ChangeRequest
-        @dep(cr_repo: ChangeRequestRepo)
+      @route("PUT /api/pull_requests/{id}/status")
+      svc UpdatePullRequestStatus
+        -> PullRequest
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           status: PrStatus
         step update
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           pr.status = status
           pr.updated_at = Dt.now()
-          cr_repo.save!(pr)
+          pr_repo.save!(pr)
           ret pr
 
       # Add a review comment (optionally anchored to a construct path)
-      @route("POST /api/change_requests/{id}/comments")
+      @route("POST /api/pull_requests/{id}/comments")
       svc AddReviewComment
         -> ReviewComment
         @dep(comment_repo: CommentRepo)
@@ -366,11 +368,11 @@ pkg ChangeManagement
           ret comment
 
       # Create via flat collection path (dashboard form without repo path segment)
-      @route("POST /api/change_requests")
-      svc CreateChangeRequestFlat
-        -> ChangeRequest
+      @route("POST /api/pull_requests")
+      svc CreatePullRequestFlat
+        -> PullRequest
         @dep(git: GitService)
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         input
           repo_id: Id
           slug: Str
@@ -386,7 +388,7 @@ pkg ChangeManagement
           git.create_branch!(slug, branch_name, "main")
         step persist
           now = Dt.now()
-          cr_id = Id.new()
-          cr = ChangeRequest{id: cr_id, repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
-          cr_repo.save!(cr)
+          pr_id = Id.new()
+          cr = PullRequest{id: pr_id, repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
+          pr_repo.save!(cr)
           ret cr

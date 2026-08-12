@@ -150,7 +150,7 @@
   void (async () => {
         if (delete_busy === true) {
           if (id !== "") {
-            await (async () => { const __r = await fetch(`/api/repos/${id}`, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
+            await (async () => { const __r = await fetch(`KEEPid}`, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
             delete_busy = false;
             delete_open = false;
             (window.location.href = "/projects");
@@ -254,7 +254,7 @@
   try {
   const branch = default_branch || 'main';
   const r = await fetch(
-  `/api/repos/${encodeURIComponent(id)}/mission?branch=${encodeURIComponent(branch)}`
+  `KEEPencodeURIComponent(id)}/mission?branch=${encodeURIComponent(branch)}`
   );
   if (!r.ok) throw new Error(await r.text() || `mission ${r.status}`);
   const body = await r.json();
@@ -278,7 +278,7 @@
   mission_msg = '';
   try {
   const branch = default_branch || 'main';
-  const r = await fetch(`/api/repos/${encodeURIComponent(id)}/mission`, {
+  const r = await fetch(`KEEPencodeURIComponent(id)}/mission`, {
   method: 'PUT',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -302,7 +302,7 @@
   async function load_project_detail(id: string, environment: string): Promise<any> {
   try {
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
-  const repoRes = await fetch(`${origin}/api/repos/${encodeURIComponent(id)}`);
+  const repoRes = await fetch(`${origin}KEEPencodeURIComponent(id)}`);
   if (!repoRes.ok) throw new Error(await repoRes.text() || `repo ${repoRes.status}`);
   const repo = await repoRes.json();
   let catalog: any = { default: 'dev', environments: [] };

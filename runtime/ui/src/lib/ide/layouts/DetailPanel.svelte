@@ -438,7 +438,7 @@
     <!-- Review lens only: soft note (not a warning) -->
     {#if hasReviewLens && !hasHealthIssue && nodeDiagnostics.length === 0}
       <section class="detail-section detail-review-note" role="note">
-        <p class="review-note-title">⏳ Review focus — no issues on this construct</p>
+        <p class="review-note-title">🔍 Review focus — no issues on this construct</p>
         <ul class="review-note-list">
           {#each criticalReasons as reason}
             <li>{reason}</li>

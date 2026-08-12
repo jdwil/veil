@@ -350,7 +350,7 @@ impl Default for AcpConnectParams {
 /// ValueObject: AgentLoopMetrics
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentLoopMetrics {
-    pub change_id: String,
+    pub pr_id: String,
     pub tokens_consumed: i64,
     pub check_failures_before_green: i64,
     pub time_to_approve_ms: Option<i64>,
@@ -361,9 +361,9 @@ pub struct AgentLoopMetrics {
 }
 
 impl AgentLoopMetrics {
-    pub fn new(change_id: String, started_at: DateTime<Utc>, status: AgentChangeStatus) -> Self {
+    pub fn new(pr_id: String, started_at: DateTime<Utc>, status: AgentChangeStatus) -> Self {
         Self {
-            change_id,
+            pr_id,
             tokens_consumed: 0,
             check_failures_before_green: 0,
             time_to_approve_ms: None,

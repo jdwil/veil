@@ -14,7 +14,7 @@
 			open_cr_count = 0;
 			try {
 				const __u = new URL(
-					'/api/change_requests?status=ReadyForReview',
+					'/api/pull_requests?status=ReadyForReview',
 					typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
 				);
 				const __r = await fetch(__u.toString());
@@ -30,7 +30,7 @@
 	const links = [
 		{ href: '/dashboard', label: 'Dashboard', icon: '⌂' },
 		{ href: '/projects', label: 'Projects', icon: '▣' },
-		{ href: '/changes', label: 'Changes', icon: '⇄', badge: true },
+		{ href: '/pulls', label: 'Changes', icon: '⇄', badge: true },
 		{ href: '/deploy', label: 'Deploy', icon: '☁' },
 		{ href: '/registry', label: 'Registry', icon: '⧉' },
 		{ href: '/bus', label: 'Bus', icon: '⚡' },
@@ -42,7 +42,7 @@
 		const path = $page.url.pathname;
 		if (href === '/dashboard') return path === '/' || path.startsWith('/dashboard');
 		if (href === '/projects') return path.startsWith('/projects');
-		if (href === '/changes') return path.startsWith('/changes') || path.startsWith('/changecreate') || path.startsWith('/changedetail');
+		if (href === '/pulls') return path.startsWith('/pulls') || path.startsWith('/changecreate') || path.startsWith('/changedetail');
 		return path === href || path.startsWith(href + '/');
 	}
 </script>

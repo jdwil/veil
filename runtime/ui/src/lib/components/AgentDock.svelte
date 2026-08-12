@@ -40,7 +40,7 @@
           <p class="empty-hint">Ask me to edit code, manage changes, deploy projects, or navigate — I can control the entire veil platform. <kbd>Cmd+K</kbd> to toggle.</p>
           <div class="empty-examples">
             <button class="example-chip" on:click={() => pending_seed = 'Open the relay project in the IDE'}>Open relay in IDE</button>
-            <button class="example-chip" on:click={() => pending_seed = 'Show me open change requests'}>Open changes</button>
+            <button class="example-chip" on:click={() => pending_seed = 'Show me open pull requests'}>Open changes</button>
             <button class="example-chip" on:click={() => pending_seed = 'Deploy wear-test to staging'}>Deploy to staging</button>
           </div>
         </div>

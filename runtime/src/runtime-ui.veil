@@ -24,7 +24,7 @@ pkg VeilRuntimeUI
           open_cr_count: Int
         effect load_open_count
           open_cr_count = 0
-          mut resp = ApiClient.fetch("/api/change_requests?status=ReadyForReview")
+          mut resp = ApiClient.fetch("/api/pull_requests?status=ReadyForReview")
           open_cr_count = resp.length
         template """
           <aside class="sidebar">
@@ -32,7 +32,7 @@ pkg VeilRuntimeUI
             <nav>
               <a href="/dashboard">Dashboard</a>
               <a href="/projects">Projects</a>
-              <a href="/changes" class="nav-badge-link">
+              <a href="/pulls" class="nav-badge-link">
                 Changes
                 {#if open_cr_count > 0}
                   <span class="nav-badge">{open_cr_count}</span>
@@ -662,7 +662,7 @@ One short paragraph: what this product is for.
             try {
               const branch = default_branch || 'main';
               const r = await fetch(
-                `/api/repos/${encodeURIComponent(id)}/mission?branch=${encodeURIComponent(branch)}`
+                `KEEPencodeURIComponent(id)}/mission?branch=${encodeURIComponent(branch)}`
               );
               if (!r.ok) throw new Error(await r.text() || `mission ${r.status}`);
               const body = await r.json();
@@ -686,7 +686,7 @@ One short paragraph: what this product is for.
             mission_msg = '';
             try {
               const branch = default_branch || 'main';
-              const r = await fetch(`/api/repos/${encodeURIComponent(id)}/mission`, {
+              const r = await fetch(`KEEPencodeURIComponent(id)}/mission`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -710,7 +710,7 @@ One short paragraph: what this product is for.
           async function load_project_detail(id: string, environment: string): Promise<any> {
             try {
               const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
-              const repoRes = await fetch(`${origin}/api/repos/${encodeURIComponent(id)}`);
+              const repoRes = await fetch(`${origin}KEEPencodeURIComponent(id)}`);
               if (!repoRes.ok) throw new Error(await repoRes.text() || `repo ${repoRes.status}`);
               const repo = await repoRes.json();
               let catalog: any = { default: 'dev', environments: [] };
@@ -1838,47 +1838,47 @@ One short paragraph: what this product is for.
           .actions { display: flex; justify-content: flex-end; }
         """
 
-      comp ChangesView
+      comp PullRequestsView
         state
-          change_requests: List<Json>
+          pull_requests: List<Json>
           loading: Bool
           error: Str
           active_filter: Str
-          cr_href_tpl: Str = "/changes/{id}"
+          pr_href_tpl: Str = "/pulls/{id}"
         effect load_on_mount
           loading = true
           error = ""
           active_filter = "All"
-          change_requests = ApiClient.fetch("/api/change_requests")
+          pull_requests = ApiClient.fetch("/api/pull_requests")
           loading = false
         fn set_filter(filter: Str)
           active_filter = filter
           loading = true
           error = ""
           if filter == "All"
-            change_requests = ApiClient.fetch("/api/change_requests")
+            pull_requests = ApiClient.fetch("/api/pull_requests")
           else
-            change_requests = ApiClient.fetch(f"/api/change_requests?status={filter}")
+            pull_requests = ApiClient.fetch(f"/api/pull_requests?status={filter}")
           loading = false
         template """
           <div class="changes">
             <CollectionView
               title="Changes"
-              description="Change requests — branch-based review workflow"
-              items={change_requests}
+              description="Pull requests — branch-based review workflow"
+              items={pull_requests}
               loading={loading}
               error={error}
               view_mode="list"
               default_layout="list"
               layout_storage_key="veil_runtime.changes.layout"
-              item_href_template={cr_href_tpl}
+              item_href_template={pr_href_tpl}
               show_avatar={false}
-              primary_href="/changes/new"
+              primary_href="/pulls/new"
               primary_label="Create"
-              empty_title="No change requests"
-              empty_description="Create a change request to start a branch-based review workflow."
-              empty_action_href="/changes/new"
-              empty_action_label="Create change request"
+              empty_title="No pull requests"
+              empty_description="Create a pull request to start a branch-based review workflow."
+              empty_action_href="/pulls/new"
+              empty_action_label="Create pull request"
               columns={[
                 { key: 'title', label: 'Title', cell: 'identity', showAvatar: false, subtitleKey: 'source_branch' },
                 { key: 'status', label: 'Status' },
@@ -1888,13 +1888,13 @@ One short paragraph: what this product is for.
               ]}
               agent={{
                 intent: 'list-change-requests',
-                entity: 'ChangeRequest',
-                entityLabel: 'Change Request',
+                entity: 'PullRequest',
+                entityLabel: 'Pull Request',
                 actions: [
-                  { id: 'create', label: 'Create', href: '/changes/new', via: 'primary', method: 'navigate' },
-                  { id: 'view', label: 'View', hrefTemplate: '/changes/{id}', via: 'item-click', method: 'navigate' },
+                  { id: 'create', label: 'Create', href: '/pulls/new', via: 'primary', method: 'navigate' },
+                  { id: 'view', label: 'View', hrefTemplate: '/pulls/{id}', via: 'item-click', method: 'navigate' },
                 ],
-                api: { list: 'GET /api/change_requests', get: 'GET /api/change_requests/{id}' },
+                api: { list: 'GET /api/pull_requests', get: 'GET /api/pull_requests/{id}' },
               }}
             >
               {#snippet header_below()}
@@ -1970,7 +1970,7 @@ One short paragraph: what this product is for.
           .cr-branch { font-size: 0.75rem; color: var(--dk-text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
         """
 
-      comp ChangeDetailView
+      comp PullRequestDetailView
         state
           id: Str
           cr: Json
@@ -1998,23 +1998,23 @@ One short paragraph: what this product is for.
           comments = []
           approvals = []
           ci = {}
-          id = cr_id_from_path()
+          id = pr_id_from_path()
           if id == ""
             loading = false
-            error = "Missing change request id"
+            error = "Missing pull request id"
         effect load_detail
           if id != ""
             if loaded == false
               loading = true
               error = ""
               # Composite detail: { pr, comments, approvals, ci_runs } — not separate endpoints
-              mut detail = ApiClient.fetch(f"/api/change_requests/{id}")
+              mut detail = ApiClient.fetch(f"/api/pull_requests/{id}")
               mut unpacked = unpack_cr_detail(detail)
               cr = unpacked.cr
               comments = unpacked.comments
               approvals = unpacked.approvals
               ci = unpacked.ci
-              mut diff_resp = ApiClient.fetch(f"/api/change_requests/{id}/diff")
+              mut diff_resp = ApiClient.fetch(f"/api/pull_requests/{id}/diff")
               diff = coerce_json_obj(diff_resp)
               loading = false
               loaded = true
@@ -2025,38 +2025,38 @@ One short paragraph: what this product is for.
         effect submit_comment
           if comment_submitting == true
             error = ""
-            ApiClient.mutate(f"/api/change_requests/{id}/comments", {body: new_comment, construct_path: new_comment_path || null})
+            ApiClient.mutate(f"/api/pull_requests/{id}/comments", {body: new_comment, construct_path: new_comment_path || null})
             new_comment = ""
             new_comment_path = ""
             comment_submitting = false
             loaded = false
         fn submit_for_review()
           error = ""
-          ApiClient.mutate(f"/api/change_requests/{id}/submit", {})
+          ApiClient.mutate(f"/api/pull_requests/{id}/submit", {})
           loaded = false
         fn approve()
           error = ""
-          ApiClient.mutate(f"/api/change_requests/{id}/approve", {})
+          ApiClient.mutate(f"/api/pull_requests/{id}/approve", {})
           loaded = false
-        fn request_changes()
+        fn request_pr_changes()
           error = ""
-          ApiClient.mutate(f"/api/change_requests/{id}/request-changes", {comment: "Changes requested"})
+          ApiClient.mutate(f"/api/pull_requests/{id}/request-changes", {comment: "Changes requested"})
           loaded = false
         fn merge()
           error = ""
-          ApiClient.mutate(f"/api/change_requests/{id}/merge", {})
+          ApiClient.mutate(f"/api/pull_requests/{id}/merge", {})
           loaded = false
         script """
-          function cr_id_from_path(): string {
+          function pr_id_from_path(): string {
             if (typeof window === 'undefined') return '';
             const p = window.location.pathname;
             const t = p.endsWith('/') ? p.slice(0, -1) : p;
             const parts = t.split('/').filter(Boolean);
-            const i = parts.indexOf('changes');
+            const i = parts.indexOf('pulls');
             if (i >= 0 && parts[i + 1] && parts[i + 1] !== 'new') return parts[i + 1];
             return '';
           }
-          // Unpack GET /api/change_requests/{id} shape: { pr, comments, approvals, ci_runs }
+          // Unpack GET /api/pull_requests/{id} shape: { pr, comments, approvals, ci_runs }
           function unpack_cr_detail(detail: any): any {
             const d = detail && typeof detail === 'object' ? detail : {};
             const cr = d.pr != null && typeof d.pr === 'object' ? d.pr : d;
@@ -2106,29 +2106,29 @@ One short paragraph: what this product is for.
         """
         template """
           <DetailShell
-            title={cr?.title ? String(cr.title) : 'Change Request'}
+            title={cr?.title ? String(cr.title) : 'Pull Request'}
             subtitle={cr?.source_branch ? String(cr.source_branch) : ''}
-            back_href="/changes"
+            back_href="/pulls"
             loading={loading}
             error={error}
-            agent={{ intent: 'view-change-request', entity: 'ChangeRequest', entityLabel: 'Change Request', itemId: id }}
+            agent={{ intent: 'view-pull-request', entity: 'PullRequest', entityLabel: 'Pull Request', itemId: id }}
           >
             {#snippet header_actions()}
               {#if cr?.status === 'Draft'}
-                <button type="button" class="btn-primary" data-veil-action="submit-change" onclick={() => { submit_for_review(); }}>
+                <button type="button" class="btn-primary" data-veil-action="submit-pr" onclick={() => { submit_for_review(); }}>
                   Submit for Review
                 </button>
               {/if}
               {#if cr?.status === 'ReadyForReview'}
-                <button type="button" class="btn-outline" data-veil-action="request-changes" onclick={() => { request_changes(); }}>
+                <button type="button" class="btn-outline" data-veil-action="request-pr-changes" onclick={() => { request_pr_changes(); }}>
                   Request Changes
                 </button>
-                <button type="button" class="btn-primary" data-veil-action="approve-change" onclick={() => { approve(); }}>
+                <button type="button" class="btn-primary" data-veil-action="approve-pr" onclick={() => { approve(); }}>
                   Approve
                 </button>
               {/if}
               {#if cr?.status === 'Approved'}
-                <button type="button" class="btn-primary" data-veil-action="merge-change" onclick={() => { merge(); }}>
+                <button type="button" class="btn-primary" data-veil-action="merge-pr" onclick={() => { merge(); }}>
                   Merge
                 </button>
               {/if}
@@ -2448,13 +2448,13 @@ One short paragraph: what this product is for.
         """
 
       page Changes
-        @route("/changes")
+        @route("/pulls")
         template """
-          <ChangesView />
+          <PullRequestsView />
         """
 
       page ChangeDetail
-        @route("/changes/[id]")
+        @route("/pulls/[id]")
         template """
-          <ChangeDetailView />
+          <PullRequestDetailView />
         """

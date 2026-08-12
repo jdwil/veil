@@ -1,6 +1,6 @@
 //! Resolve coding work onto an open unmerged pull request (or create new).
 //!
-//! Product language: **PR**, not Change Request. API ids remain `change_request`.
+//! Product language: **PR** only. APIs: `/api/pull_requests`; tools `*_pr`.
 //!
 //! Auto-bind when a single strong scope match exists; Present modal only when
 //! multiple open candidates are plausible (or match scores are close).
@@ -213,12 +213,12 @@ pub fn score_request_detailed(
     (score, parts)
 }
 
-/// Parse list payload from GET /api/change_requests into open candidates.
+/// Parse list payload from GET /api/pull_requests into open candidates.
 pub fn candidates_from_list(data: &Value, project_filter: Option<&str>, request: &str) -> Vec<PrCandidate> {
     let arr = if let Some(a) = data.as_array() {
         a.clone()
     } else if let Some(a) = data
-        .get("change_requests")
+        .get("pull_requests")
         .or_else(|| data.get("pull_requests"))
         .or_else(|| data.get("items"))
         .and_then(|v| v.as_array())
@@ -374,7 +374,7 @@ fn request_is_continue_style(request: &str) -> bool {
 
 /// Bind session to PR id (+ optional branch name memory).
 pub fn bind_session_to_pr(h: &SessionHandle, pr_id: &str) -> Result<(), String> {
-    h.set_active_change_id(Some(pr_id))
+    h.set_active_pr_id(Some(pr_id))
 }
 
 pub fn candidate_json(c: &PrCandidate) -> Value {

@@ -128,6 +128,32 @@ const CORE_ACTION_STYLES: Record<string, NodeStyle> = {
   assign: { color: '#a3a3a3', icon: '←', label: 'Assign' },
 };
 
+/**
+ * Core language construct visuals (mirrors LayerRegistry::builtin / base.layer).
+ * Used when palette has not loaded yet, or if a style key is missing — never show
+ * the generic diamond fallback for known base types like Enum.
+ */
+const CORE_CONSTRUCT_STYLES: Record<string, NodeStyle> = {
+  Enum: { color: '#8b5cf6', icon: '🔀', label: 'Enum' },
+  enum: { color: '#8b5cf6', icon: '🔀', label: 'Enum' },
+  Struct: { color: '#14b8a6', icon: '📋', label: 'Struct' },
+  struct: { color: '#14b8a6', icon: '📋', label: 'Struct' },
+  Trait: { color: '#10b981', icon: '🔌', label: 'Trait' },
+  trait: { color: '#10b981', icon: '🔌', label: 'Trait' },
+  Impl: { color: '#a855f7', icon: '🔗', label: 'Implementation' },
+  impl: { color: '#a855f7', icon: '🔗', label: 'Implementation' },
+  Fn: { color: '#f97316', icon: '⚡', label: 'Function' },
+  fn: { color: '#f97316', icon: '⚡', label: 'Function' },
+  Module: { color: '#8b5cf6', icon: '📦', label: 'Module' },
+  mod: { color: '#8b5cf6', icon: '📦', label: 'Module' },
+  Group: { color: '#475569', icon: '📂', label: 'Group' },
+  group: { color: '#475569', icon: '📂', label: 'Group' },
+  Flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
+  flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
+  Step: { color: '#3b82f6', icon: '▶', label: 'Step' },
+  step: { color: '#3b82f6', icon: '▶', label: 'Step' },
+};
+
 // Runtime style registry, populated from /api/palette. Keyed by both the
 // construct name (subkind, e.g. "Aggregate") and keyword (e.g. "agg" or
 // statement keywords like "dispatch").
@@ -176,16 +202,23 @@ export function getAnnotationDefs(subkind?: string | null): AnnotationSpec[] {
 
 /**
  * Get the display style for a node. Precedence:
- * layer-defined subkind style → core action style → subkind name fallback → core shape.
+ * layer-defined subkind style → core action style → core construct style →
+ * subkind name fallback → core shape.
  *
  * Never collapse Aggregate/ValueObject/… to the core TypeDef "Type" label when
  * subkind is known but palette has not loaded yet.
+ *
+ * **Reactivity:** palette styles load asynchronously after IR. Callers in
+ * `$derived` / templates must also read `paletteStylesVersion` (or bake styles
+ * inside a derived that does) or domain icons stay on the ◇ interim fallback.
  */
 export function getNodeStyle(kind: NodeKind, subkind?: string | null): NodeStyle {
   if (subkind) {
     if (paletteStyles[subkind]) return paletteStyles[subkind];
     if (CORE_ACTION_STYLES[subkind]) return CORE_ACTION_STYLES[subkind];
+    if (CORE_CONSTRUCT_STYLES[subkind]) return CORE_CONSTRUCT_STYLES[subkind];
     // Humanize CamelCase subkind (ValueObject → Value Object) for folder labels.
+    // Icon is interim until /palette registers the layer visual (see reactivity note).
     const label = subkind.replace(/([a-z])([A-Z])/g, '$1 $2');
     return { color: '#737373', icon: '◇', label };
   }

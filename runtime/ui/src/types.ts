@@ -393,7 +393,7 @@ export interface ConfigView {
   error: string;
 }
 
-export interface ChangesView {
+export interface PullRequestsView {
   changeRequests: Record<string, unknown>[];
   loading: boolean;
   error: string;
@@ -401,7 +401,7 @@ export interface ChangesView {
   crHrefTpl: string;
 }
 
-export interface ChangeDetailView {
+export interface PullRequestDetailView {
   id: string;
   cr: Record<string, unknown>;
   diff: Record<string, unknown>;

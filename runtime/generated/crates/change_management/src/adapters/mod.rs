@@ -42,15 +42,15 @@ impl AuthService for BusAuthAdapter {
     }
 }
 
-/// Adapter: DdbChangeRequestRepo (implements ChangeRequestRepo)
-pub struct DdbChangeRequestRepo {
+/// Adapter: DdbPullRequestRepo (implements PullRequestRepo)
+pub struct DdbPullRequestRepo {
     pub client: aws_sdk_dynamodb::Client,
     pub table: String,
 }
 
 #[async_trait]
-impl ChangeRequestRepo for DdbChangeRequestRepo {
-    async fn find(&self, id: Uuid) -> Result<Option<ChangeRequest>, DomainError> {
+impl PullRequestRepo for DdbPullRequestRepo {
+    async fn find(&self, id: Uuid) -> Result<Option<PullRequest>, DomainError> {
         let pk = format!("PR#{}", id);
         let resp = self
             .client
@@ -82,7 +82,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
         )?));
     }
 
-    async fn list_all(&self, status: Option<PrStatus>) -> Result<Vec<ChangeRequest>, DomainError> {
+    async fn list_all(&self, status: Option<PrStatus>) -> Result<Vec<PullRequest>, DomainError> {
         let resp = self
             .client
             .scan()
@@ -108,7 +108,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
                 .as_s()
                 .map(|s| s.to_string())
                 .map_err(|e| DomainError::External(format!("{:?}", e)))?;
-            let cr: ChangeRequest = serde_json::from_str::<_>(&data)?;
+            let cr: PullRequest = serde_json::from_str::<_>(&data)?;
             if status.is_none() || cr.status == status.clone().ok_or(DomainError::NotFound)? {
                 out.push(cr);
             };
@@ -120,7 +120,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
         &self,
         repo_id: Uuid,
         status: Option<PrStatus>,
-    ) -> Result<Vec<ChangeRequest>, DomainError> {
+    ) -> Result<Vec<PullRequest>, DomainError> {
         let resp = self
             .client
             .query()
@@ -143,7 +143,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
                 .as_s()
                 .map(|s| s.to_string())
                 .map_err(|e| DomainError::External(format!("{:?}", e)))?;
-            let cr: ChangeRequest = serde_json::from_str::<_>(&data)?;
+            let cr: PullRequest = serde_json::from_str::<_>(&data)?;
             if status.is_none() || cr.status == status.clone().ok_or(DomainError::NotFound)? {
                 out.push(cr);
             };
@@ -151,7 +151,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
         return Ok(out);
     }
 
-    async fn list_open(&self, repo_id: Uuid) -> Result<Vec<ChangeRequest>, DomainError> {
+    async fn list_open(&self, repo_id: Uuid) -> Result<Vec<PullRequest>, DomainError> {
         let resp = self
             .client
             .query()
@@ -174,7 +174,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
                 .as_s()
                 .map(|s| s.to_string())
                 .map_err(|e| DomainError::External(format!("{:?}", e)))?;
-            let cr: ChangeRequest = serde_json::from_str::<_>(&data)?;
+            let cr: PullRequest = serde_json::from_str::<_>(&data)?;
             if cr.status != PrStatus::Merged
                 && cr.status != PrStatus::Rejected
                 && cr.status != PrStatus::Closed
@@ -185,7 +185,7 @@ impl ChangeRequestRepo for DdbChangeRequestRepo {
         return Ok(out);
     }
 
-    async fn save(&self, cr: ChangeRequest) -> Result<(), DomainError> {
+    async fn save(&self, cr: PullRequest) -> Result<(), DomainError> {
         let pk = format!("PR#{}", cr.id);
         let gsi1pk = format!("REPO_PRS#{}", cr.repo_id);
         self.client

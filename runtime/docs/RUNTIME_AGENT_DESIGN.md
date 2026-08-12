@@ -116,7 +116,7 @@ The runtime agent has a **superset** of tools compared to the IDE agent:
 |----------|-------|-------|
 | **IDE/Editing** | `write_source`, `read_source`, `create_file`, `list_files`, `veil_check`, dual-loop `dev_*` | Active project via MCP / Rig |
 | **Projects** | `create_project`, `list_projects`, `get_project`, `delete_project`, `open_project`, `open_ide` | `POST/GET /api/repos` + disk scaffold; **not** wiki-only |
-| **SDLC** | `create_change`, `list_changes`, `get_change`, `submit_change`, `approve_change`, `request_changes`, `merge_change`, `add_comment`, `get_change_diff` | Real CM APIs + SPA navigation |
+| **SDLC** | `create_pr`, `list_prs`, `get_pr`, `submit_pr`, `approve_pr`, `request_pr_changes`, `merge_pr`, `add_comment`, `get_pr_diff` | Real CM APIs + SPA navigation |
 | **Deploy** | `provision_project`, `plan_provision`, `deploy_status`, `list_deploy_environments`, `get_provision_job` | ProductHost deploy routes |
 | **Navigation** | `navigate_to`, `switch_project`, `open_*` | SPA `navigation` in tool result |
 | **Registry** | `search_registry`, `list_registry_layers`, `list_registry_stubs` | Lightweight listing |
@@ -148,7 +148,7 @@ spawns on-demand) to per-project veil-server instances:
 Runtime Backend (port 3003)
   ├── /api/agent/chat          ← Agent WebSocket (runtime-level)
   ├── /api/p/{project}/…       ← Hub proxy to per-project veil-serve
-  ├── /api/change_requests/…   ← SDLC services
+  ├── /api/pull_requests/…   ← SDLC services
   └── /api/deploy/…            ← Deploy services
 ```
 
@@ -192,7 +192,7 @@ package now" → user sees the IDE update in real-time in the embedded viewer.
 │  /api/agent/chat  →  AgentRouter                                   │
 │    ├── LLM Provider (ACP / Bedrock / Ollama)                       │
 │    ├── Tool Registry (runtime tools)                               │
-│    │     ├── SDLC tools → ChangeManagement services                │
+│    │     ├── SDLC tools → PullRequestManagement services                │
 │    │     ├── Deploy tools → LocalDeployExec services               │
 │    │     ├── IDE tools → proxy to per-project veil-server          │
 │    │     ├── Nav tools → return navigation commands to frontend    │
@@ -201,7 +201,7 @@ package now" → user sees the IDE update in real-time in the embedded viewer.
 │    └── Context injection (page, project, surfaces)                 │
 │                                                                    │
 │  /api/p/{project}/…  →  Hub proxy (existing multi-project)         │
-│  /api/change_requests/…  →  ChangeManagement aggregate             │
+│  /api/pull_requests/…  →  PullRequestManagement aggregate             │
 │  /api/deploy/…  →  DeployExec                                      │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -286,9 +286,9 @@ Current context will be injected per turn with page, project, and available acti
 14. IDE tools proxy: agent → runtime backend → per-project veil-server
 
 ### Phase 4: SDLC & Deploy Tools
-15. Wire `create_change`, `approve_change`, `merge_change` tools to change-management services
+15. Wire `create_pr`, `approve_pr`, `merge_pr` tools to change-management services
 16. Wire `deploy_project` tool to LocalDeployExec
-17. Wire `list_changes`, `deploy_status` read tools
+17. Wire `list_prs`, `deploy_status` read tools
 
 ### Phase 5: Polish
 18. `sessionStorage` persistence (survive page reload)

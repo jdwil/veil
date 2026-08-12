@@ -189,7 +189,7 @@ export function formatFocusForAgent(focus?: SessionFocus): string {
 				(f.selection.label ? ` label=${f.selection.label}` : '')
 		);
 	}
-	if (f.changeId) lines.push(`- Change request: ${f.changeId}`);
+	if (f.changeId) lines.push(`- Pull request: ${f.changeId}`);
 	if (f.panel) lines.push(`- Panel: ${f.panel}`);
 	if (f.primaryPane) lines.push(`- Primary pane: ${f.primaryPane}`);
 	if (f.form?.id) {

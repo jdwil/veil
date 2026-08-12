@@ -92,12 +92,12 @@ pub async fn get_tool_registry() -> Result<Vec<ToolDef>, DomainError> {
         category: "sdlc".to_string(),
     });
     tools.push(ToolDef {
-        name: "approve_change".to_string(),
+        name: "approve_pr".to_string(),
         description: "Approve a change request".to_string(),
         category: "sdlc".to_string(),
     });
     tools.push(ToolDef {
-        name: "merge_change".to_string(),
+        name: "merge_pr".to_string(),
         description: "Merge an approved change request".to_string(),
         category: "sdlc".to_string(),
     });

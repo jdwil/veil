@@ -13,10 +13,10 @@
 - **One diagnostic class per commit** when fixing large lists.
 - **Start of coding:** `resolve_coding_target` or `run_coding_plan` matches **open unmerged PRs** by scope (never Merged/Closed). Auto-bind, Present modal if ambiguous, or new work line.
 - **End of agent task = open a pull request, not merge.**
-  - `run_coding_plan` `coding.finish_task` **or** `create_change` + `submit_change`
-  - `create_change` reuses session `active_change_id` unless `force_new`
+  - `run_coding_plan` `coding.finish_task` **or** `create_pr` + `submit_pr`
+  - `create_pr` reuses session `active_pr_id` unless `force_new`
   - Operator walks PR Wizard DiffItems. **FORBIDDEN:** merge unless operator explicitly says merge/land
-- **Terminology:** product name is **pull request (PR)**. “Change Request” reserved for future ticket systems. API paths may still say `change_requests`.
+- **Terminology:** product name is **pull request (PR)**. “Change Request” reserved for future ticket systems. API paths may still say `pull_requests`.
 - **IDE Changes** = **Uncommitted** + **History**. Agent decides branch/commit; human decides merge.
 - **Bang law (ACS-010):** `find!` → `Opt<T>`; force with `require` / `.unwrap()`. See `veil-contract-bang-opt-res`.
 
@@ -32,7 +32,7 @@
 7. veil_check → host_check; if you introduced new err/warn → fix same turn
 8. session_commit with message (slice + why)  # host rejects if clean
 9. Repeat 5–8 until task complete or blocked
-10. run_coding_plan(coding.finish_task)  # or create_change → submit_change
+10. run_coding_plan(coding.finish_task)  # or create_pr → submit_pr
 11. merge ONLY if operator explicitly asked to land
 ```
 
@@ -46,8 +46,8 @@
 | `create_branch` | Isolated feature branch; becomes active work line |
 | `session_commit` | Named checkpoint (empty tree rejected) |
 | `list_commits` | History |
-| `create_change` / `submit_change` | Open/submit **pull request** (default landing) |
-| `merge_branch` / `merge_change` | Operator gate only — never auto |
+| `create_pr` / `submit_pr` | Open/submit **pull request** (default landing) |
+| `merge_branch` / `merge_pr` | Operator gate only — never auto |
 | `switch_main` | Return to sticky mainline |
 
 ## Forbidden
@@ -56,7 +56,7 @@
 - Treating change-list size as progress / errors fixed
 - Claiming success without post-edit `veil_check` counts
 - Ending a turn with new diagnostics you introduced (unless hard-blocked and reported)
-- Auto-merging when a task finishes (`merge_branch` / `merge_change` without explicit operator request)
+- Auto-merging when a task finishes (`merge_branch` / `merge_pr` without explicit operator request)
 - Asking the operator for every branch/commit decision
 - Assuming bang forces Opt→T (obsolete ACS-001)
 
@@ -67,8 +67,8 @@ POST /api/sessions              { slug, branch_name? }
 POST /api/sessions/{id}/commits { message }
 GET  /api/sessions/{id}/commits
 POST /api/sessions/{id}/merge   # operator gate
-POST /api/change_requests       # create PR
-POST /api/change_requests/{id}/submit
+POST /api/pull_requests       # create PR
+POST /api/pull_requests/{id}/submit
 ```
 
 **Source of truth:** `runtime/docs/DURABLE_SESSIONS.md` · palace `decision-durable-coding-sessions` · SOP `veil-agent-git-shaped-coding` · UX `veil-sdlc-ux-design`

@@ -6,7 +6,7 @@
    $effect(() => { // load_open_count
   void (async () => {
         open_cr_count = 0;
-        resp = await (async () => { const __u = new URL("/api/change_requests?status=ReadyForReview", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
+        resp = await (async () => { const __u = new URL("/api/pull_requests?status=ReadyForReview", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
         open_cr_count = resp.length;
   })();
     });
@@ -17,7 +17,7 @@
   <nav>
     <a href="/dashboard">Dashboard</a>
     <a href="/projects">Projects</a>
-    <a href="/changes" class="nav-badge-link">
+    <a href="/pulls" class="nav-badge-link">
       Changes
       {#if open_cr_count > 0}
         <span class="nav-badge">{open_cr_count}</span>

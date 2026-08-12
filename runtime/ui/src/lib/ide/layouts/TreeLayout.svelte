@@ -37,6 +37,9 @@
         collapseKey: string;
         children: TreeNode[];
         depth: number;
+        /** Baked with kind folders when paletteStylesVersion changes (not at paint-time). */
+        icon: string;
+        styleLabel: string;
       }
     | {
         type: 'kind';
@@ -210,7 +213,19 @@
       const kids = childNodesOf(node.id);
       const collapseKey = nodePathKey(node, nodeById);
       const children = wrapByKind(node, collapseKey, kids, depth + 1);
-      return { type: 'ir', node, collapseKey, children, depth };
+      // Resolve icon here (inside paletteStylesVersion-dependent $derived), not in
+      // the template — paint-time getNodeStyle() misses secondary /palette load and
+      // leaves Aggregate/Port/… stuck on the ◇ fallback while kind folders update.
+      const style = getNodeStyle(node.kind, node.metadata.subkind);
+      return {
+        type: 'ir',
+        node,
+        collapseKey,
+        children,
+        depth,
+        icon: style.icon,
+        styleLabel: style.label,
+      };
     }
 
     function wrapByKind(
@@ -456,7 +471,6 @@
     </div>
   {:else}
     {@const node = item.node}
-    {@const style = getNodeStyle(node.kind, node.metadata.subkind)}
     {@const hasChildren = item.children.length > 0}
     {@const isCollapsed = collapsed.has(item.collapseKey)}
     {@const selected = isSelected(node.id)}
@@ -515,8 +529,8 @@
           <span class="tree-spacer"></span>
         {/if}
 
-        <span class="tree-icon" title={style.label}
-          >{isGroupFolder(node) ? (isCollapsed ? '📁' : '📂') : style.icon}</span
+        <span class="tree-icon" title={item.styleLabel}
+          >{isGroupFolder(node) ? (isCollapsed ? '📁' : '📂') : item.icon}</span
         >
         <span class="tree-name" class:group-name={isGroupFolder(node)}>{node.name}</span>
         {#if !isGroupFolder(node)}
@@ -579,6 +593,7 @@
 {/snippet}
 
 {#snippet leafItem(node: IrNode, depth: number)}
+  {@const _pv = $paletteStylesVersion}
   {@const style = getNodeStyle(node.kind, node.metadata.subkind)}
   {@const selected = isSelected(node.id)}
   {@const changed = isChanged(node.id)}

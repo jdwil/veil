@@ -747,8 +747,8 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
     }
     // Fall back to well-known tool → path mapping when ACP only reports the name.
     let path: Option<String> = match name {
-        "list_changes" | "open_changes" => Some("/changes".into()),
-        "create_change" | "open_create_change" => Some("/changes/new".into()),
+        "list_prs" | "open_prs" => Some("/pulls".into()),
+        "create_pr" | "open_create_pr" => Some("/pulls/new".into()),
         "list_projects" | "open_projects" | "delete_project" => Some("/projects".into()),
         "create_project" | "create_repo" => {
             let project = detail

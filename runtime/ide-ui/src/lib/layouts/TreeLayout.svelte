@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getNodeStyle, type IrGraph, type IrNode } from '$lib/types';
+  import { getNodeStyle, paletteStylesVersion, type IrGraph, type IrNode } from '$lib/types';
   import { onMount } from 'svelte';
   import {
     selectedNodeId,
@@ -37,6 +37,9 @@
         collapseKey: string;
         children: TreeNode[];
         depth: number;
+        /** Baked with kind folders when palette styles load. */
+        icon: string;
+        styleLabel: string;
       }
     | {
         type: 'kind';
@@ -170,6 +173,7 @@
   }
 
   let tree = $derived.by(() => {
+    void $paletteStylesVersion;
     const nodeById = new Map<number, IrNode>();
     for (const n of graph.nodes) nodeById.set(n.id, n);
 
@@ -206,7 +210,16 @@
       const kids = childNodesOf(node.id);
       const collapseKey = nodePathKey(node, nodeById);
       const children = wrapByKind(node, collapseKey, kids, depth + 1);
-      return { type: 'ir', node, collapseKey, children, depth };
+      const style = getNodeStyle(node.kind, node.metadata.subkind);
+      return {
+        type: 'ir',
+        node,
+        collapseKey,
+        children,
+        depth,
+        icon: style.icon,
+        styleLabel: style.label,
+      };
     }
 
     function wrapByKind(
@@ -459,7 +472,6 @@
     </div>
   {:else}
     {@const node = item.node}
-    {@const style = getNodeStyle(node.kind, node.metadata.subkind)}
     {@const hasChildren = item.children.length > 0}
     {@const isCollapsed = collapsed.has(item.collapseKey)}
     {@const selected = isSelected(node.id)}
@@ -516,8 +528,8 @@
           <span class="tree-spacer"></span>
         {/if}
 
-        <span class="tree-icon" title={style.label}
-          >{isGroupFolder(node) ? (isCollapsed ? '📁' : '📂') : style.icon}</span
+        <span class="tree-icon" title={item.styleLabel}
+          >{isGroupFolder(node) ? (isCollapsed ? '📁' : '📂') : item.icon}</span
         >
         <span class="tree-name" class:group-name={isGroupFolder(node)}>{node.name}</span>
         {#if !isGroupFolder(node)}

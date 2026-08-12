@@ -106,11 +106,11 @@ pub fn format_focus_block(focus: &Value) -> String {
     }
     if let Some(ch) = focus
         .get("changeId")
-        .or_else(|| focus.get("change_id"))
+        .or_else(|| focus.get("pr_id"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
     {
-        lines.push(format!("- Change request: {ch}"));
+        lines.push(format!("- Pull request: {ch}"));
     }
     if let Some(panel) = focus.get("panel").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
     {
@@ -269,8 +269,8 @@ pub fn create_project_intent(
     })
 }
 
-/// Present for create_change (form + optional UX commit).
-pub fn create_change_intent(
+/// Present for create_pr (form + optional UX commit).
+pub fn create_pr_intent(
     title: Option<&str>,
     description: Option<&str>,
     project: Option<&str>,
@@ -289,7 +289,7 @@ pub fn create_change_intent(
         fields["slug"] = json!(p);
     }
     let mut steps = vec![
-        json!({ "kind": "goto", "path": "/changes/new", "ms": 320 }),
+        json!({ "kind": "goto", "path": "/pulls/new", "ms": 320 }),
     ];
     if !fields.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         steps.push(json!({
@@ -308,14 +308,14 @@ pub fn create_change_intent(
                 "kind": "commit",
                 "formId": "create-change",
                 "method": "POST",
-                "path": "/api/ux/create_change",
+                "path": "/api/ux/create_pr",
                 "body": {
                     "title": title,
                     "description": description,
                     "slug": project,
                     "project": project,
                 },
-                "resultPathTemplate": "/changes/{id}",
+                "resultPathTemplate": "/pulls/{id}",
             }));
         }
         DomainMode::Server => {
@@ -335,7 +335,7 @@ pub fn create_change_intent(
     };
     json!({
         "type": "CreateChange",
-        "id": format!("intent_create_change_{}", short_id()),
+        "id": format!("intent_create_pr_{}", short_id()),
         "actor": "agent",
         "payload": {
             "title": title,
@@ -538,13 +538,13 @@ pub async fn wait_intent_ack(intent_id: &str, timeout_ms: u64) -> Result<Value, 
 
 /// Present for change lifecycle actions (submit / approve / merge / …).
 pub fn change_action_intent(action: &str, change_id: &str, summary: &str) -> Value {
-    let path = format!("/changes/{change_id}");
+    let path = format!("/pulls/{change_id}");
     // Prefer stable data-veil-action; fall back to button text labels.
     let (action_attr, btn_text) = match action {
         "submit" => ("submit-change", "Submit for Review"),
         "approve" => ("approve-change", "Approve"),
         "merge" => ("merge-change", "Merge"),
-        "request_changes" => ("request-changes", "Request Changes"),
+        "request_pr_changes" => ("request-changes", "Request Changes"),
         "comment" => ("add-comment", "Post Comment"),
         _ => ("primary", "btn-primary"),
     };

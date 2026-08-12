@@ -114,7 +114,7 @@ pub async fn run_turn<P: SourceProvider>(
     }];
 
     // Platform UX tools (navigate + real product ops) — host path, no project required.
-    // Chips / "create project X" / list_changes must work even when ACP MCP is incomplete.
+    // Chips / "create project X" / list_prs must work even when ACP MCP is incomplete.
     if let Some(ux) = parse_platform_ux_intent(prompt) {
         let mut args = ux.args.clone().unwrap_or_else(|| serde_json::json!({}));
         // Pure create on a browser turn → via=ux (Agent→Present→UX→Server). Multi-step
@@ -128,7 +128,7 @@ pub async fn run_turn<P: SourceProvider>(
                 args["open_ide"] = serde_json::json!(true);
             }
         }
-        if (ux.tool == "create_change" || ux.tool == "open_create_change")
+        if (ux.tool == "create_pr" || ux.tool == "open_create_pr")
             && args.get("via").is_none()
             && crate::focus::client_present()
             && args.get("title").is_some()
@@ -1204,7 +1204,7 @@ pub struct PlatformUxIntent {
 
 /// Map dashboard / chip prompts → platform UX tool + SPA path.
 ///
-/// Prefer explicit tool names (`list_changes`, `navigate_to`, …) and common
+/// Prefer explicit tool names (`list_prs`, `navigate_to`, …) and common
 /// natural phrases used by AgentDock chips.
 ///
 /// When aether_chat folds a system prompt under `# User request`, only the
@@ -1274,37 +1274,37 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
     // Explicit tool / phrase → path.
     // IMPORTANT: only short-circuit when the *user intent* is navigation/UX.
     // Multi-line Fix-button / coding prompts often *mention* tool names
-    // (`create_change`, `session_commit`, …) as SOP — those must reach ACP/LLM,
-    // not open an empty form and stop (regression: Diagnostics "Fix" → create_change).
+    // (`create_pr`, `session_commit`, …) as SOP — those must reach ACP/LLM,
+    // not open an empty form and stop (regression: Diagnostics "Fix" → create_pr).
     if is_primary_platform_nav_prompt(&lower) {
         let pairs: &[(&[&str], &str, &str, &str)] = &[
             (
                 &[
-                    "list_changes",
-                    "open_changes",
+                    "list_prs",
+                    "open_prs",
                     "open changes",
                     "show me open change",
                     "show open change",
-                    "change requests",
-                    "navigate to /changes",
-                    "go to /changes",
+                    "pull requests",
+                    "navigate to /pulls",
+                    "go to /pulls",
                     "go to changes",
                 ],
-                "list_changes",
-                "/changes",
-                "Opening change requests",
+                "list_prs",
+                "/pulls",
+                "Opening pull requests",
             ),
             (
                 &[
-                    "create_change",
-                    "open_create_change",
-                    "create change request",
-                    "new change request",
-                    "navigate to /changes/new",
+                    "create_pr",
+                    "open_create_pr",
+                    "create pull request",
+                    "new pull request",
+                    "navigate to /pulls/new",
                 ],
-                "create_change",
-                "/changes/new",
-                "Opening create change request",
+                "create_pr",
+                "/pulls/new",
+                "Opening create pull request",
             ),
             (
                 &[
@@ -1779,7 +1779,7 @@ Use body from repo fixtures when available: `fixtures/palace_contracts/<slug>.md
    - Link: docs/BANG_CONTRACT.md
 
 1b. **veil-contract-git-shaped-sessions** (Concept) + **veil-agent-git-shaped-coding** (Sop)
-   - Tools: session_status → create_branch → veil_check → one class → write → check (fix new diags same turn) → session_commit → create_change + submit_change
+   - Tools: session_status → create_branch → veil_check → one class → write → check (fix new diags same turn) → session_commit → create_pr + submit_pr
    - Agent decides branch/commit; human merges after PR review. NEVER auto-merge. Autosave ≠ commit; change list ≠ error count
    - Fixture: fixtures/palace_contracts/veil-contract-git-shaped-sessions.md
 
@@ -1940,7 +1940,7 @@ fn extract_name_token(original: &str, lower_token: &str) -> Option<String> {
 }
 
 /// True when the prompt is a short, primary platform-navigation request
-/// (AgentDock chips, "open changes", "create change request") — safe to
+/// (AgentDock chips, "open changes", "create pull request") — safe to
 /// short-circuit without the LLM.
 ///
 /// False for multi-line coding / Fix-button prompts that merely *document*
@@ -1963,7 +1963,7 @@ fn is_primary_platform_nav_prompt(lower: &str) -> bool {
         "session_status",
         "write_source",
         "create_branch",
-        "submit_change",
+        "submit_pr",
         "git-shaped",
         "per-slice",
         "rationales",
@@ -2007,31 +2007,31 @@ mod platform_ux_tests {
     }
 
     #[test]
-    fn list_changes_still_maps() {
+    fn list_prs_still_maps() {
         let ux = parse_platform_ux_intent("open changes").unwrap();
-        assert_eq!(ux.tool, "list_changes");
+        assert_eq!(ux.tool, "list_prs");
     }
 
     #[test]
-    fn create_change_chip_still_maps() {
-        let ux = parse_platform_ux_intent("create change request").unwrap();
-        assert_eq!(ux.tool, "create_change");
-        let ux2 = parse_platform_ux_intent("create_change").unwrap();
-        assert_eq!(ux2.tool, "create_change");
+    fn create_pr_chip_still_maps() {
+        let ux = parse_platform_ux_intent("create pull request").unwrap();
+        assert_eq!(ux.tool, "create_pr");
+        let ux2 = parse_platform_ux_intent("create_pr").unwrap();
+        assert_eq!(ux2.tool, "create_pr");
     }
 
-    /// Regression: Diagnostics "Fix" / formatIssuePrompt embeds `create_change`
-    /// in SOP text. Must NOT short-circuit to open empty /changes/new.
+    /// Regression: Diagnostics "Fix" / formatIssuePrompt embeds `create_pr`
+    /// in SOP text. Must NOT short-circuit to open empty /pulls/new.
     #[test]
-    fn fix_issue_prompt_does_not_false_trigger_create_change() {
+    fn fix_issue_prompt_does_not_false_trigger_create_pr() {
         let prompt = r#"Investigate and fix this issue on construct `Agent` in project `agent-registry`.
 
 Use IDE / project tools as needed (read source, apply edits, re-check). Prefer minimal correct fixes.
 After every edit: veil_check. Fix any new errors/warnings you introduced on this same turn.
 Git-shaped workflow (you decide branch/commit — do not ask the operator for every step):
 session_status → multi-step? create_branch → veil_check baseline → fix one class → write → veil_check → session_commit.
-When the task is complete: create_change (title + description with per-slice rationales) → submit_change.
-NEVER merge_branch or merge_change unless the operator explicitly asks to merge. Humans review via the PR Wizard.
+When the task is complete: create_pr (title + description with per-slice rationales) → submit_pr.
+NEVER merge_branch or merge_pr unless the operator explicitly asks to merge. Humans review via the PR Wizard.
 
 ## Issues
 1. Warning [ACS-010] @ Agent: optional field should use bang
@@ -2039,7 +2039,7 @@ NEVER merge_branch or merge_change unless the operator explicitly asks to merge.
 "#;
         assert!(
             parse_platform_ux_intent(prompt).is_none(),
-            "Fix-button prompt must reach ACP, not host create_change short-circuit"
+            "Fix-button prompt must reach ACP, not host create_pr short-circuit"
         );
     }
 

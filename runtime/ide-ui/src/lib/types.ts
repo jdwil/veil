@@ -5,6 +5,8 @@
 // aggregates, ports, sagas, or any future layer's constructs) arrives at
 // runtime via /api/palette and is registered with setPaletteStyles().
 
+import { writable } from 'svelte/store';
+
 export interface IrGraph {
   nodes: IrNode[];
   edges: IrEdge[];
@@ -126,6 +128,31 @@ const CORE_ACTION_STYLES: Record<string, NodeStyle> = {
   assign: { color: '#a3a3a3', icon: '←', label: 'Assign' },
 };
 
+/**
+ * Core language construct visuals (mirrors LayerRegistry::builtin / base.layer).
+ * Used when palette has not loaded yet, or if a style key is missing.
+ */
+const CORE_CONSTRUCT_STYLES: Record<string, NodeStyle> = {
+  Enum: { color: '#8b5cf6', icon: '🔀', label: 'Enum' },
+  enum: { color: '#8b5cf6', icon: '🔀', label: 'Enum' },
+  Struct: { color: '#14b8a6', icon: '📋', label: 'Struct' },
+  struct: { color: '#14b8a6', icon: '📋', label: 'Struct' },
+  Trait: { color: '#10b981', icon: '🔌', label: 'Trait' },
+  trait: { color: '#10b981', icon: '🔌', label: 'Trait' },
+  Impl: { color: '#a855f7', icon: '🔗', label: 'Implementation' },
+  impl: { color: '#a855f7', icon: '🔗', label: 'Implementation' },
+  Fn: { color: '#f97316', icon: '⚡', label: 'Function' },
+  fn: { color: '#f97316', icon: '⚡', label: 'Function' },
+  Module: { color: '#8b5cf6', icon: '📦', label: 'Module' },
+  mod: { color: '#8b5cf6', icon: '📦', label: 'Module' },
+  Group: { color: '#475569', icon: '📂', label: 'Group' },
+  group: { color: '#475569', icon: '📂', label: 'Group' },
+  Flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
+  flow: { color: '#f97316', icon: '🌊', label: 'Flow' },
+  Step: { color: '#3b82f6', icon: '▶', label: 'Step' },
+  step: { color: '#3b82f6', icon: '▶', label: 'Step' },
+};
+
 // Runtime style registry, populated from /api/palette. Keyed by both the
 // construct name (subkind, e.g. "Aggregate") and keyword (e.g. "agg" or
 // statement keywords like "dispatch").
@@ -135,12 +162,15 @@ let paletteStyles: Record<string, NodeStyle> = {};
 // so the property editor can offer them without any hardcoded DDD vocabulary.
 let paletteAnnotations: Record<string, AnnotationSpec[]> = {};
 
+/** Bumped when palette styles register — UI must depend on this to refresh icons. */
+export const paletteStylesVersion = writable(0);
+
 /** Register layer visuals + annotations fetched from /api/palette. */
 export function setPaletteStyles(entries: PaletteEntry[]): void {
   const styles: Record<string, NodeStyle> = {};
   const annotations: Record<string, AnnotationSpec[]> = {};
   for (const e of entries) {
-    if (e.icon || e.color) {
+    if (e.icon || e.color || e.label || e.name) {
       const style: NodeStyle = {
         color: e.color || '#737373',
         icon: e.icon || '•',
@@ -156,6 +186,7 @@ export function setPaletteStyles(entries: PaletteEntry[]): void {
   }
   paletteStyles = styles;
   paletteAnnotations = annotations;
+  paletteStylesVersion.update((n) => n + 1);
 }
 
 /** Annotation definitions available for a construct subkind (layer-driven). */
@@ -172,6 +203,7 @@ export function getNodeStyle(kind: NodeKind, subkind?: string | null): NodeStyle
   if (subkind) {
     if (paletteStyles[subkind]) return paletteStyles[subkind];
     if (CORE_ACTION_STYLES[subkind]) return CORE_ACTION_STYLES[subkind];
+    if (CORE_CONSTRUCT_STYLES[subkind]) return CORE_CONSTRUCT_STYLES[subkind];
   }
   return NODE_STYLES[kind] ?? { color: '#737373', icon: '•', label: kind };
 }

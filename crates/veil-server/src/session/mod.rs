@@ -167,9 +167,10 @@ impl SessionManager {
             agent_thread_id: None,
             last_focus: None,
             intent_log: vec![],
-            active_change_id: None,
+            active_pr_id: None,
             writes_since_commit: 0,
             last_host_check: None,
+            rationales: HashMap::new(),
         };
         put_session_meta(&meta)?;
         write_session_marker(&work_dir, &meta)?;
@@ -459,7 +460,7 @@ impl SessionManager {
                     "revision": m.revision,
                     "draft_mode": m.draft_mode,
                     "work_dir": h.work_dir.to_string_lossy(),
-                    "active_change_id": m.active_change_id,
+                    "active_pr_id": m.active_pr_id,
                 })
             })
             .collect()
@@ -940,12 +941,15 @@ impl SessionHandle {
             meta.session_id.clone(),
             meta.draft_mode,
         );
-        Ok(Self {
+        let handle = Self {
             meta: Mutex::new(meta),
             work_dir,
             provider,
             fs,
-        })
+        };
+        // PR Wizard intents: reload durable rationales into process cache.
+        crate::api::rehydrate_rationales_from_session(&handle);
+        Ok(handle)
     }
 
     pub fn session_id(&self) -> String {
@@ -1188,9 +1192,9 @@ impl SessionHandle {
     }
 
     /// Remember open PR for agent reply writeback.
-    pub fn set_active_change_id(&self, change_id: Option<&str>) -> Result<(), String> {
+    pub fn set_active_pr_id(&self, pr_id: Option<&str>) -> Result<(), String> {
         let mut meta = self.meta.lock().unwrap();
-        meta.active_change_id = change_id
+        meta.active_pr_id = pr_id
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         meta.updated_at = chrono_now();
@@ -1199,6 +1203,33 @@ impl SessionHandle {
         put_session_meta(&snap)?;
         let _ = write_session_marker(&self.work_dir, &snap);
         Ok(())
+    }
+
+    /// Merge construct rationales into durable session meta (PR Wizard intents).
+    pub fn merge_rationales(&self, map: &HashMap<String, String>) -> Result<(), String> {
+        if map.is_empty() {
+            return Ok(());
+        }
+        let mut meta = self.meta.lock().unwrap();
+        for (k, v) in map {
+            let name = k.trim();
+            let intent = v.trim();
+            if name.is_empty() || intent.is_empty() {
+                continue;
+            }
+            meta.rationales.insert(name.to_string(), intent.to_string());
+        }
+        meta.updated_at = chrono_now();
+        let snap = meta.clone();
+        drop(meta);
+        put_session_meta(&snap)?;
+        let _ = write_session_marker(&self.work_dir, &snap);
+        Ok(())
+    }
+
+    /// Snapshot of durable rationales for cache rehydrate.
+    pub fn snapshot_rationales(&self) -> HashMap<String, String> {
+        self.meta.lock().unwrap().rationales.clone()
     }
 
     /// Promote this branch's working tree onto the product **base** branch in S3

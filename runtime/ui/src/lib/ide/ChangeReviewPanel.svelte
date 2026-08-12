@@ -13,7 +13,7 @@
     type ChangeReviewItem,
     type Diagnostic,
   } from '$lib/ide/store';
-  import { getNodeStyle, type NodeKind } from '$lib/ide/types';
+  import { getNodeStyle, paletteStylesVersion, type NodeKind } from '$lib/ide/types';
 
   let review = $derived($selectedChangeReview);
 
@@ -33,9 +33,12 @@
   );
   let warnN = $derived(relatedDiags.length - errN);
 
-  function style(r: ChangeReviewItem) {
+  let reviewStyle = $derived.by(() => {
+    void $paletteStylesVersion;
+    const r = review;
+    if (!r) return null;
     return getNodeStyle('TypeDef' as NodeKind, r.subkind);
-  }
+  });
 
   function openConstruct(r: ChangeReviewItem) {
     if (r.nodeId != null) {
@@ -85,11 +88,11 @@
     </ul>
   </div>
 {:else}
-  {@const st = style(review)}
+  {@const st = reviewStyle}
   <div class="review">
     <header class="review-head">
       <div class="title-row">
-        <span class="icon" style="color: {st.color}">{st.icon}</span>
+        <span class="icon" style="color: {st?.color}">{st?.icon}</span>
         <div class="titles">
           <h2>{review.title}</h2>
           <p class="sub">

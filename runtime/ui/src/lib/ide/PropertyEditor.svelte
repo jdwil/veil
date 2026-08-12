@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { NODE_STYLES, getNodeStyle, getAnnotationDefs, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/ide/types';
+  import { NODE_STYLES, getNodeStyle, getAnnotationDefs, paletteStylesVersion, type NodeKind, type IrGraph, type IrNode, type AnnotationSpec } from '$lib/ide/types';
   import { irGraph, saveEdits, saving, saveError, paletteConfig, selectedNodeId, type EditOp } from '$lib/ide/store';
   import { get } from 'svelte/store';
   import { formatType } from '$lib/ide/typeDisplay';
@@ -21,7 +21,10 @@
   let name = $state(node.data.label ?? '');
   let kind = $derived<NodeKind>(node.data.kind);
   let subkind = $derived<string | null>(node.data.subkind ?? null);
-  let style = $derived(getNodeStyle(kind, subkind));
+  let style = $derived.by(() => {
+    void $paletteStylesVersion;
+    return getNodeStyle(kind, subkind);
+  });
   let displayKind = $derived(subkind ?? kind);
 
   // Meta-type support: fetch available callables for Callable field widgets.

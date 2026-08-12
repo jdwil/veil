@@ -13,18 +13,18 @@ use uuid::Uuid;
 /// Injected dependencies (ports).
 pub struct Deps {
     pub approval_repo: std::sync::Arc<dyn ApprovalRepo + Send + Sync>,
-    pub cr_repo: std::sync::Arc<dyn ChangeRequestRepo + Send + Sync>,
+    pub pr_repo: std::sync::Arc<dyn PullRequestRepo + Send + Sync>,
     pub ci_repo: std::sync::Arc<dyn CiRunRepo + Send + Sync>,
     pub comment_repo: std::sync::Arc<dyn CommentRepo + Send + Sync>,
     pub git: std::sync::Arc<dyn GitService + Send + Sync>,
 }
 
-/// DomainService: CreateChangeRequest
+/// DomainService: CreatePullRequest
 /// @route
 /// @dep
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn create_change_request(
+pub async fn create_pull_request(
     deps: &Deps,
     id: Uuid,
     slug: String,
@@ -32,7 +32,7 @@ pub async fn create_change_request(
     description: String,
     jira_ticket: String,
     author: String,
-) -> Result<ChangeRequest, DomainError> {
+) -> Result<PullRequest, DomainError> {
     // step: validate
     if !((jira_ticket.len() as i64) > 0) {
         return Err(DomainError::Validation("Jira ticket required".to_string()));
@@ -54,7 +54,7 @@ pub async fn create_change_request(
     // step: persist
     let now = Utc::now();
     let cr_id = Uuid::new_v4();
-    let cr = ChangeRequest {
+    let cr = PullRequest {
         id: cr_id.clone(),
         repo_id: id.clone(),
         title: title.clone(),
@@ -70,16 +70,16 @@ pub async fn create_change_request(
         merged_by: None,
         merge_commit: None,
     };
-    deps.cr_repo.save(cr.clone()).await?;
+    deps.pr_repo.save(cr.clone()).await?;
     return Ok(cr);
 }
 
-/// DomainService: CreateChangeRequestFlat
+/// DomainService: CreatePullRequestFlat
 /// @route
 /// @dep
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn create_change_request_flat(
+pub async fn create_pull_request_flat(
     deps: &Deps,
     repo_id: Uuid,
     slug: String,
@@ -87,7 +87,7 @@ pub async fn create_change_request_flat(
     description: String,
     jira_ticket: String,
     author: String,
-) -> Result<ChangeRequest, DomainError> {
+) -> Result<PullRequest, DomainError> {
     // step: validate
     if !((jira_ticket.len() as i64) > 0) {
         return Err(DomainError::Validation("Jira ticket required".to_string()));
@@ -109,7 +109,7 @@ pub async fn create_change_request_flat(
     // step: persist
     let now = Utc::now();
     let cr_id = Uuid::new_v4();
-    let cr = ChangeRequest {
+    let cr = PullRequest {
         id: cr_id.clone(),
         repo_id: repo_id.clone(),
         title: title.clone(),
@@ -125,7 +125,7 @@ pub async fn create_change_request_flat(
         merged_by: None,
         merge_commit: None,
     };
-    deps.cr_repo.save(cr.clone()).await?;
+    deps.pr_repo.save(cr.clone()).await?;
     return Ok(cr);
 }
 
@@ -134,7 +134,7 @@ pub async fn create_change_request_flat(
 /// @dep
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn commit_to_change(
+pub async fn commit_to_pr(
     deps: &Deps,
     id: Uuid,
     slug: String,
@@ -144,7 +144,7 @@ pub async fn commit_to_change(
     author: String,
 ) -> Result<serde_json::Value, DomainError> {
     // step: resolve
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
@@ -183,7 +183,7 @@ pub async fn commit_to_change(
 #[tracing::instrument(skip_all)]
 pub async fn submit_for_review(deps: &Deps, id: Uuid) -> Result<(), DomainError> {
     // step: transition
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
@@ -195,7 +195,7 @@ pub async fn submit_for_review(deps: &Deps, id: Uuid) -> Result<(), DomainError>
     };
     pr.status = PrStatus::ReadyForReview;
     pr.updated_at = Utc::now();
-    deps.cr_repo.save(pr.clone()).await?;
+    deps.pr_repo.save(pr.clone()).await?;
 
     Ok(())
 }
@@ -205,14 +205,14 @@ pub async fn submit_for_review(deps: &Deps, id: Uuid) -> Result<(), DomainError>
 /// @dep
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn approve_change(
+pub async fn approve_pr(
     deps: &Deps,
     id: Uuid,
     reviewer: String,
     comment: Option<String>,
 ) -> Result<(), DomainError> {
     // step: validate
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
@@ -238,7 +238,7 @@ pub async fn approve_change(
     deps.approval_repo.save(approval.clone()).await?;
     pr.status = PrStatus::Approved;
     pr.updated_at = Utc::now();
-    deps.cr_repo.save(pr.clone()).await?;
+    deps.pr_repo.save(pr.clone()).await?;
 
     Ok(())
 }
@@ -248,14 +248,14 @@ pub async fn approve_change(
 /// @dep
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn request_changes(
+pub async fn request_pr_changes(
     deps: &Deps,
     id: Uuid,
     reviewer: String,
     comment: String,
 ) -> Result<(), DomainError> {
     // step: validate
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
@@ -284,7 +284,7 @@ pub async fn request_changes(
     deps.comment_repo.save(review_comment.clone()).await?;
     pr.status = PrStatus::ChangesRequested;
     pr.updated_at = Utc::now();
-    deps.cr_repo.save(pr.clone()).await?;
+    deps.pr_repo.save(pr.clone()).await?;
 
     Ok(())
 }
@@ -296,14 +296,14 @@ pub async fn request_changes(
 /// @dep
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn merge_change(
+pub async fn merge_pr(
     deps: &Deps,
     id: Uuid,
     merger: String,
     slug: String,
 ) -> Result<serde_json::Value, DomainError> {
     // step: validate_gates
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
@@ -333,7 +333,7 @@ pub async fn merge_change(
 
     // step: merge
     pr.status = PrStatus::Merging;
-    deps.cr_repo.save(pr.clone()).await?;
+    deps.pr_repo.save(pr.clone()).await?;
     let merge_msg = format!(
         "Merge {}: {} [{}]",
         pr.source_branch, pr.title, pr.jira_ticket
@@ -355,7 +355,7 @@ pub async fn merge_change(
     pr.merged_by = Some(merger);
     pr.merge_commit = Some(merge_hash.clone());
     pr.updated_at = Utc::now();
-    deps.cr_repo.save(pr.clone()).await?;
+    deps.pr_repo.save(pr.clone()).await?;
     return Ok(
         serde_json::json!({ "merge_commit": merge_hash.clone(), "branch": serde_json::json!(pr.clone())["source_branch"].clone(), "target": serde_json::json!(pr.clone())["target_branch"].clone() }),
     );
@@ -372,7 +372,7 @@ pub async fn get_structural_diff(
     slug: String,
 ) -> Result<serde_json::Value, DomainError> {
     // step: resolve
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
@@ -457,48 +457,48 @@ pub async fn add_comment(
     return Ok(comment);
 }
 
-/// DomainService: ListChangeRequests
+/// DomainService: ListPullRequests
 /// @route
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn list_change_requests(
+pub async fn list_pull_requests(
     deps: &Deps,
     id: Uuid,
     status: Option<PrStatus>,
-) -> Result<Vec<ChangeRequest>, DomainError> {
+) -> Result<Vec<PullRequest>, DomainError> {
     // step: query
     let filter = status;
     let items = deps
-        .cr_repo
+        .pr_repo
         .list_by_repo(id.clone(), filter.clone())
         .await?;
     return Ok(items);
 }
 
-/// DomainService: ListAllChangeRequests
+/// DomainService: ListAllPullRequests
 /// @route
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn list_all_change_requests(
+pub async fn list_all_pull_requests(
     deps: &Deps,
     status: Option<PrStatus>,
-) -> Result<Vec<ChangeRequest>, DomainError> {
+) -> Result<Vec<PullRequest>, DomainError> {
     // step: query
     let filter = status;
-    let items = deps.cr_repo.list_all(filter.clone()).await?;
+    let items = deps.pr_repo.list_all(filter.clone()).await?;
     return Ok(items);
 }
 
-/// DomainService: GetChangeRequest
+/// DomainService: GetPullRequest
 /// @route
 /// @dep
 /// @dep
 /// @dep
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn get_change_request(deps: &Deps, id: Uuid) -> Result<serde_json::Value, DomainError> {
+pub async fn get_pull_request(deps: &Deps, id: Uuid) -> Result<serde_json::Value, DomainError> {
     // step: load
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
@@ -511,23 +511,23 @@ pub async fn get_change_request(deps: &Deps, id: Uuid) -> Result<serde_json::Val
     );
 }
 
-/// DomainService: UpdateChangeRequestStatus
+/// DomainService: UpdatePullRequestStatus
 /// @route
 /// @dep
 #[tracing::instrument(skip_all)]
-pub async fn update_change_request_status(
+pub async fn update_pull_request_status(
     deps: &Deps,
     id: Uuid,
     status: PrStatus,
-) -> Result<ChangeRequest, DomainError> {
+) -> Result<PullRequest, DomainError> {
     // step: update
-    let cr = deps.cr_repo.find(id.clone()).await?;
+    let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
     let mut pr = cr.clone().ok_or(DomainError::NotFound)?;
     pr.status = status;
     pr.updated_at = Utc::now();
-    deps.cr_repo.save(pr.clone()).await?;
+    deps.pr_repo.save(pr.clone()).await?;
     return Ok(pr);
 }

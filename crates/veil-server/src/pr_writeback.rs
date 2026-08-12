@@ -31,11 +31,11 @@ pub fn publish_session_for_change(
     }
     let h = SessionManager::global().resolve_for_project(slug)?;
     let pub_result = h.publish_to_branch(branch)?;
-    h.set_active_change_id(Some(change_id))?;
+    h.set_active_pr_id(Some(change_id))?;
     Ok(json!({
         "ok": true,
         "publish": pub_result,
-        "active_change_id": change_id,
+        "active_pr_id": change_id,
         "slug": slug,
         "branch": branch,
     }))
@@ -52,22 +52,22 @@ pub async fn writeback_agent_turn_to_pr(
     if text.is_empty() && tool_names.is_empty() {
         return;
     }
-    // Prefer active_change_id on the project session
+    // Prefer active_pr_id on the project session
     let change_id = slug
         .filter(|s| !s.is_empty())
         .and_then(|s| {
             SessionManager::global()
                 .resolve_for_project(s)
                 .ok()
-                .and_then(|h| h.snapshot_meta().active_change_id)
+                .and_then(|h| h.snapshot_meta().active_pr_id)
         })
         .or_else(|| {
-            // Any open handle with active_change_id
+            // Any open handle with active_pr_id
             SessionManager::global()
                 .open_handles_summary()
                 .into_iter()
                 .find_map(|v| {
-                    v.get("active_change_id")
+                    v.get("active_pr_id")
                         .and_then(|x| x.as_str())
                         .map(|s| s.to_string())
                 })
@@ -98,7 +98,7 @@ pub async fn writeback_agent_turn_to_pr(
         .or_else(|_| std::env::var("VEIL_API_BASE"))
         .unwrap_or_else(|_| "http://127.0.0.1:8080".into());
     let url = format!(
-        "{}/api/change_requests/{}/comments",
+        "{}/api/pull_requests/{}/comments",
         base.trim_end_matches('/'),
         change_id
     );

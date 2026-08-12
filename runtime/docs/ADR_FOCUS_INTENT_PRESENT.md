@@ -46,7 +46,7 @@ ad-hoc `TOOL_NAV` when a tool returns `intent.present`.
 | **`via=ux`** | Browser pure create (host short-circuit + Focus) | Present form → pulse → `POST /api/ux/create_project` → IDE (true Agent→UX→Server) |
 | **`via=server`** | Multi-step prefix, ACP mid-turn, headless | Domain first (DDB+S3) → Present illustrates form → goto (no second POST) |
 
-### create_change
+### create_pr
 
 Same dual path; open form-only when no title.
 
@@ -60,7 +60,7 @@ Same dual path; open form-only when no title.
 
 ### Change / deploy Present
 
-- `submit_change`, `approve_change`, `request_changes`, `merge_change`, `add_comment` → goto change + pulse + announce
+- `submit_pr`, `approve_pr`, `request_pr_changes`, `merge_pr`, `add_comment` → goto change + pulse + announce
 - `plan_provision`, `provision_project` → goto `/deploy` + pulse + announce
 
 ## Consequences

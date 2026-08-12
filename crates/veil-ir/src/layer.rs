@@ -3022,13 +3022,10 @@ pub struct PaletteEntry {
 pub fn palette_from_registry(reg: &LayerRegistry) -> Vec<PaletteEntry> {
     let mut out = Vec::new();
     for c in &reg.constructs {
-        if c.layer == "core" && c.keyword != "flow" && c.keyword != "group" && c.keyword != "mod" && c.keyword != "step" {
-            // Core type primitives are implicit; keep the palette focused on
-            // structural + layer vocabulary. mod/group/flow stay draggable.
-            if reg.constructs.iter().any(|o| o.layer != "core") {
-                continue;
-            }
-        }
+        // Always include core type primitives (enum, struct, trait, …).
+        // Domain layers (e.g. ddd) deliberately leave `enum` as base; the IDE
+        // still needs their visual entries so icons/labels resolve. Create menus
+        // may de-emphasize core types, but styles must never be dropped.
         out.push(PaletteEntry {
             name: c.name.clone(),
             keyword: c.keyword.clone(),
@@ -3579,6 +3576,27 @@ pkg wf v1
         if let Some(d) = dispatch {
             assert!(d.annotations.is_empty());
         }
+    }
+
+    /// Core type visuals stay on the palette when domain layers load (enum is base).
+    #[test]
+    fn palette_keeps_core_enum_icon_with_domain_layers() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd layer should load");
+        let palette = palette_from_registry(&reg);
+        let en = palette
+            .iter()
+            .find(|e| e.name == "Enum" || e.keyword == "enum")
+            .expect("Enum must remain on palette for icon/label resolution");
+        assert_eq!(en.icon, "🔀");
+        assert_eq!(en.label, "Enum");
+        assert_eq!(en.layer, "core");
+        // Struct etc. also stay (styles), even if create UI de-emphasizes them.
+        assert!(
+            palette.iter().any(|e| e.keyword == "struct" && e.icon == "📋"),
+            "core Struct visual must remain"
+        );
     }
 
     /// LAY-002: `present` blocks parse into ConstructSpec and API model.

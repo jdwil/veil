@@ -264,7 +264,7 @@ impl SourceProvider for MultiProjectProvider {
 
     async fn read_source(&self, file: &str) -> Result<String, String> {
         // Hub-level agent (/api/agent/chat) has no CURRENT_PROJECT. Platform UX
-        // tools (navigate_to, list_changes, …) still work with empty source.
+        // tools (navigate_to, list_prs, …) still work with empty source.
         match self.session() {
             Ok(p) => p.read_source(file).await,
             Err(e) if e.contains("project scope missing") => Ok(String::new()),

@@ -101,15 +101,15 @@ start_ui() {
 smoke() {
   echo "==> smoke"
   local ok=1
-  for path in /health /api/projects /api/repos /api/change_requests /api/deploy_environments; do
+  for path in /health /api/projects /api/repos /api/pull_requests /api/deploy_environments; do
     code=$(curl -sf -o /tmp/veil-smoke.json -w "%{http_code}" --max-time 8 \
       "http://127.0.0.1:${BACKEND_PORT}${path}" || echo err)
     echo "  backend $code  $path"
     [[ "$code" == "200" ]] || ok=0
   done
   code=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 8 \
-    "http://127.0.0.1:${UI_PORT}/api/change_requests" || echo err)
-  echo "  ui-proxy $code  /api/change_requests"
+    "http://127.0.0.1:${UI_PORT}/api/pull_requests" || echo err)
+  echo "  ui-proxy $code  /api/pull_requests"
   [[ "$code" == "200" ]] || ok=0
   if [[ "$ok" -eq 1 ]]; then
     echo "✓ stack OK  UI http://127.0.0.1:${UI_PORT}/  API http://127.0.0.1:${BACKEND_PORT}/"

@@ -11,7 +11,7 @@
 The VEIL runtime runs on ECS in AWS and serves the platform dashboard (project management, SDLC, deploy, registry). A separate `veil serve` process provides the IDE experience (code editing, check, gen, agent).
 
 Currently these are conceptually separate agents with different capabilities:
-- **Platform agent** — navigates dashboard, manages change requests, triggers deploys
+- **Platform agent** — navigates dashboard, manages pull requests, triggers deploys
 - **IDE agent** — edits `.veil` source, runs check/gen/smoke, manages code structure
 
 Users interact with a dashboard that embeds an agent chat pane. They expect to talk to **one agent** that can do everything — not two agents they must mentally route between.
@@ -30,7 +30,7 @@ Additionally, we want to support multiple LLM backends:
 One agent session per user. All tools — platform, SDLC, and IDE — are registered in a single tool set. The LLM decides which tools to invoke based on user intent.
 
 ```
-User: "Show me open change requests"     → platform tool
+User: "Show me open pull requests"     → platform tool
 User: "Add a guard to CreateCustomer"    → IDE tool (proxied to veil-serve)
 User: "Deploy relay to staging"          → deploy tool
 User: "Open the relay project in the IDE" → navigation tool (client-side)
@@ -112,7 +112,7 @@ The ACP tunnel allows a user to connect their own local agent (Kiro, custom agen
   "tools": [
     { "name": "navigate_to", "description": "...", "parameters": {...} },
     { "name": "edit_source", "description": "...", "parameters": {...} },
-    { "name": "create_change_request", "description": "...", "parameters": {...} }
+    { "name": "create_pr", "description": "...", "parameters": {...} }
   ]
 }
 ```
@@ -179,7 +179,7 @@ All tools execute on ECS regardless of LLM provider mode:
 | Tool Category | Execution Location | Backend |
 |---|---|---|
 | Navigation (`navigate_to`, `open_ide`) | ECS → push to browser via WS | Client-side routing |
-| Platform (`create_change_request`, `list_repos`) | ECS | DDB / S3 |
+| Platform (`create_pr`, `list_repos`) | ECS | DDB / S3 |
 | IDE (`edit_source`, `veil_check`, `veil_gen`) | ECS → veil-serve instance | Per-project veil-serve on ECS |
 | Deploy (`plan_provision`, `deploy`) | ECS | AWS APIs (Lambda, API Gateway, etc.) |
 | Observability (`dev_logs`, `smoke_status`) | ECS → veil-serve | Per-project veil-serve |

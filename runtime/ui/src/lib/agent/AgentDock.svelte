@@ -407,10 +407,10 @@
 								class="example-chip"
 								onclick={() =>
 									agentSend(
-										'Show open change requests — use list_changes so the UI navigates to /changes'
+										'Show open pull requests — use list_prs so the UI navigates to /pulls'
 									)}
 							>
-								Open change requests
+								Open pull requests
 							</button>
 						{/if}
 					</div>

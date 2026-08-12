@@ -73,7 +73,7 @@ export interface StructDiff {
   item_peeks_base?: (ConstructPeek | null)[];
 }
 
-export interface ChangeRequest {
+export interface PullRequest {
   id: string;
   title: string;
   description: string;
@@ -167,8 +167,8 @@ export function restorePrWizardWidth() {
   prWizardWidth.set(loadPrWizardWidth());
 }
 
-export function openPrWizard(changeId?: string | null) {
-  prWizardChangeId.set(changeId ?? null);
+export function openPrWizard(prId?: string | null) {
+  prWizardChangeId.set(prId ?? null);
   prWizardOpen.set(true);
 }
 
@@ -180,8 +180,8 @@ export function closePrWizard() {
   });
 }
 
-/** Does this change request belong to the open IDE project? */
-export function prBelongsToProject(pr: ChangeRequest, slug: string | null): boolean {
+/** Does this pull request belong to the open IDE project? */
+export function prBelongsToProject(pr: PullRequest, slug: string | null): boolean {
   if (!slug) return true;
   const s = slug.toLowerCase();
   const desc = (pr.description || '').toLowerCase();
@@ -196,7 +196,7 @@ export function prBelongsToProject(pr: ChangeRequest, slug: string | null): bool
 }
 
 /** API smoke / fixture PRs from platform bring-up — not real product work. */
-export function isSmokeOrFixturePr(pr: ChangeRequest): boolean {
+export function isSmokeOrFixturePr(pr: PullRequest): boolean {
   const t = (pr.title || '').toLowerCase();
   return (
     t.includes('smoke') ||
@@ -432,7 +432,7 @@ export function mergeRationalesIntoItems(
  * (write_source → record_rationales). PR branch diffs do not carry that cache.
  */
 export async function refreshWizardRationales(opts: {
-  changeId: string | null;
+  prId: string | null;
   slug?: string | null;
   description?: string;
   comments?: ReviewComment[] | null;
@@ -443,7 +443,7 @@ export async function refreshWizardRationales(opts: {
   try {
     // Live intent cache is always on the project working-tree endpoint.
     const wt = await loadWizardDiff({
-      changeId: null,
+      prId: null,
       slug: opts.slug ?? null,
       allowWorkingTreeFallback: true,
     });
@@ -458,34 +458,34 @@ export async function refreshWizardRationales(opts: {
   return { items: merged, diff: nextDiff, applied: Math.max(0, after - before) };
 }
 
-export async function fetchOpenChangeRequests(status?: string): Promise<ChangeRequest[]> {
-  const u = new URL(`${platformRoot()}/api/change_requests`);
+export async function fetchOpenPullRequests(status?: string): Promise<PullRequest[]> {
+  const u = new URL(`${platformRoot()}/api/pull_requests`);
   if (status) u.searchParams.set('status', status);
   const r = await fetch(u.toString(), { headers: ideRequestHeaders() });
   if (!r.ok) throw new Error(`list changes HTTP ${r.status}`);
   const data = await r.json();
-  return Array.isArray(data) ? data : data.change_requests || data.items || [];
+  return Array.isArray(data) ? data : data.pull_requests || data.items || [];
 }
 
-export async function fetchChangeDetail(id: string): Promise<{
-  pr: ChangeRequest;
+export async function fetchPullRequestDetail(id: string): Promise<{
+  pr: PullRequest;
   comments: ReviewComment[];
   approvals: unknown[];
   ci_runs: unknown[];
 }> {
-  const r = await fetch(`${platformRoot()}/api/change_requests/${id}`, {
+  const r = await fetch(`${platformRoot()}/api/pull_requests/${id}`, {
     headers: ideRequestHeaders(),
   });
   if (!r.ok) throw new Error(`get change HTTP ${r.status}`);
   const d = await r.json();
-  const pr = (d.pr && typeof d.pr === 'object' ? d.pr : d) as ChangeRequest;
+  const pr = (d.pr && typeof d.pr === 'object' ? d.pr : d) as PullRequest;
   // Bind PR for agent reply writeback while reviewing.
   const sid = getCodingSessionId();
   if (sid && pr.id) {
     void fetch(`${platformRoot()}/api/sessions/${sid}/active-change`, {
       method: 'POST',
       headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ change_id: pr.id }),
+      body: JSON.stringify({ pr_id: pr.id }),
     }).catch(() => {});
   }
   return {
@@ -498,13 +498,13 @@ export async function fetchChangeDetail(id: string): Promise<{
 
 /**
  * Load structural diff for the wizard.
- * - Working-tree mode (no changeId): IDE `/diff` (live session vs baseline).
+ * - Working-tree mode (no prId): IDE `/diff` (live session vs baseline).
  * - PR mode: **only** the CR branch diff. Do **not** silently substitute the live
  *   working tree (that produced "124 changes" on an Approved smoke PR that had
  *   nothing to do with the open project).
  */
 export async function loadWizardDiff(opts: {
-  changeId: string | null;
+  prId: string | null;
   slug: string | null;
   /** When true, allow working-tree fallback (session review only). */
   allowWorkingTreeFallback?: boolean;
@@ -514,9 +514,9 @@ export async function loadWizardDiff(opts: {
   note?: string;
 }> {
   const slug = opts.slug || currentProjectParam();
-  if (opts.changeId) {
+  if (opts.prId) {
     try {
-      const u = new URL(`${platformRoot()}/api/change_requests/${opts.changeId}/diff`);
+      const u = new URL(`${platformRoot()}/api/pull_requests/${opts.prId}/diff`);
       if (slug) u.searchParams.set('slug', slug);
       const r = await fetch(u.toString(), { headers: ideRequestHeaders() });
       if (r.ok) {
@@ -565,7 +565,7 @@ function emptyDiff(): StructDiff {
 }
 
 export async function postReviewItem(
-  changeId: string,
+  prId: string,
   body: {
     /** approve | feedback | clear (undo prior decision for this construct) */
     decision: 'approve' | 'feedback' | 'clear';
@@ -578,7 +578,7 @@ export async function postReviewItem(
     rationale?: string;
   }
 ): Promise<void> {
-  const r = await fetch(`${platformRoot()}/api/change_requests/${changeId}/review-item`, {
+  const r = await fetch(`${platformRoot()}/api/pull_requests/${prId}/review-item`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -587,7 +587,7 @@ export async function postReviewItem(
 }
 
 export async function finalizeWizardApi(
-  changeId: string,
+  prId: string,
   body: {
     outcome: 'all_approved' | 'needs_work';
     summary?: string;
@@ -595,7 +595,7 @@ export async function finalizeWizardApi(
     feedback_count?: number;
   }
 ): Promise<{ status?: string }> {
-  const r = await fetch(`${platformRoot()}/api/change_requests/${changeId}/finalize-wizard`, {
+  const r = await fetch(`${platformRoot()}/api/pull_requests/${prId}/finalize-wizard`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -604,8 +604,8 @@ export async function finalizeWizardApi(
   return r.json();
 }
 
-export async function mergeChangeApi(changeId: string, slug?: string | null): Promise<void> {
-  const r = await fetch(`${platformRoot()}/api/change_requests/${changeId}/merge`, {
+export async function mergeChangeApi(prId: string, slug?: string | null): Promise<void> {
+  const r = await fetch(`${platformRoot()}/api/pull_requests/${prId}/merge`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -621,7 +621,7 @@ export async function createAndSubmitPr(opts: {
   description: string;
   source_branch?: string;
   slug?: string;
-}): Promise<ChangeRequest> {
+}): Promise<PullRequest> {
   const slug = opts.slug || currentProjectParam() || '';
   const meta = get(codingSessionMeta) as Record<string, unknown> | null;
   const branch =
@@ -657,7 +657,7 @@ export async function createAndSubmitPr(opts: {
     desc = `project: ${slug}\n\n` + desc;
   }
 
-  const create = await fetch(`${platformRoot()}/api/change_requests`, {
+  const create = await fetch(`${platformRoot()}/api/pull_requests`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -671,7 +671,7 @@ export async function createAndSubmitPr(opts: {
   });
   if (!create.ok) throw new Error(`create PR HTTP ${create.status}: ${await create.text()}`);
   const created = await create.json();
-  const pr = (created.change_request || created) as ChangeRequest;
+  const pr = (created.pull_request || created) as PullRequest;
   if (!pr.id) throw new Error('create PR returned no id');
 
   // Publish session worktree onto PR branch so structural diff is real.
@@ -681,7 +681,7 @@ export async function createAndSubmitPr(opts: {
       await fetch(`${platformRoot()}/api/sessions/${sid}/publish-branch`, {
         method: 'POST',
         headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ branch_name: pubBranch, change_id: pr.id }),
+        body: JSON.stringify({ branch_name: pubBranch, pr_id: pr.id }),
       });
     } catch (e) {
       console.warn('publish-branch failed', e);
@@ -691,14 +691,14 @@ export async function createAndSubmitPr(opts: {
       await fetch(`${platformRoot()}/api/sessions/${sid}/active-change`, {
         method: 'POST',
         headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ change_id: pr.id }),
+        body: JSON.stringify({ pr_id: pr.id }),
       });
     } catch {
       /* ignore */
     }
   }
 
-  const sub = await fetch(`${platformRoot()}/api/change_requests/${pr.id}/submit`, {
+  const sub = await fetch(`${platformRoot()}/api/pull_requests/${pr.id}/submit`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({}),

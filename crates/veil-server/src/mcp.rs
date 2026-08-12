@@ -393,7 +393,7 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "merge_branch",
-            "description": "DISABLED by default. Lands session work on main without PR review. Prefer create_change + submit_change; human uses PR Wizard → Approve → Merge. Only call if operator explicitly said merge AND pass force:true (or host VEIL_ALLOW_SESSION_MERGE=1).",
+            "description": "DISABLED by default. Lands session work on main without PR review. Prefer create_pr + submit_pr; human uses PR Wizard → Approve → Merge. Only call if operator explicitly said merge AND pass force:true (or host VEIL_ALLOW_SESSION_MERGE=1).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1075,7 +1075,7 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                  Smoke: backend gen + cargo check OK.\n\
                  Host check: severity={} errors={} warnings={}\n\
                  Next (same turn): review diagnostics below — if you introduced new errors/warnings, fix them NOW before any other task claim.\n\
-                 Then session_commit with a short message (include why). When the whole task is done: open PR via create_change + submit_change — do NOT merge_branch.\n\
+                 Then session_commit with a short message (include why). When the whole task is done: open PR via create_pr + submit_pr — do NOT merge_branch.\n\
                  MUST_FIX_DIAGNOSTICS={must_fix}\n\
                  HOST_CHECK_SEVERITY={}\n\n{check}",
                 content.len(),
@@ -1293,7 +1293,7 @@ fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Val
         "dirty_files": meta.dirty,
         "writes_since_commit": meta.writes_since_commit,
         "work_dir": h.work_dir.to_string_lossy(),
-        "active_change_id": meta.active_change_id,
+        "active_pr_id": meta.active_pr_id,
         "host_check": crate::coding_gates::host_check_value(&meta),
     })
 }
@@ -1373,7 +1373,7 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                 },
                 "session": session_status_json(&h),
                 "host_check": crate::coding_gates::host_check_value(&h.snapshot_meta()),
-                "hint": "Slice committed. Continue edits or when task done open PR: create_change + submit_change (do NOT merge).",
+                "hint": "Slice committed. Continue edits or when task done open PR: create_pr + submit_pr (do NOT merge).",
             }))
             .unwrap_or_default())
         }

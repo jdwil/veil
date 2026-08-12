@@ -19,7 +19,7 @@
     type SessionChangeEntry,
     type ChangeReviewItem,
   } from '$lib/ide/store';
-  import { getNodeStyle, type NodeKind } from '$lib/ide/types';
+  import { getNodeStyle, paletteStylesVersion, type NodeKind } from '$lib/ide/types';
   import { openPrWizard } from '$lib/ide/prWizard';
 
   interface CommitRow {
@@ -301,6 +301,7 @@
         </p>
       {:else}
         {#each $sessionChanges as e (e.id)}
+          {@const _pv = $paletteStylesVersion}
           {@const st = styleFor(e.kind, e.subkind)}
           <button
             type="button"

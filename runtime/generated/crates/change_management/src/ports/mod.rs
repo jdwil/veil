@@ -9,18 +9,18 @@ use crate::domain::types::*;
 pub use veil_shared::*;
 pub use veil_shared::{DomainError, ValidationError};
 
-/// Repository: ChangeRequestRepo
+/// Repository: PullRequestRepo
 #[async_trait]
-pub trait ChangeRequestRepo: Send + Sync {
-    async fn find(&self, id: Uuid) -> Result<Option<ChangeRequest>, DomainError>;
+pub trait PullRequestRepo: Send + Sync {
+    async fn find(&self, id: Uuid) -> Result<Option<PullRequest>, DomainError>;
     async fn list_by_repo(
         &self,
         repo_id: Uuid,
         status: Option<PrStatus>,
-    ) -> Result<Vec<ChangeRequest>, DomainError>;
-    async fn list_open(&self, repo_id: Uuid) -> Result<Vec<ChangeRequest>, DomainError>;
-    async fn list_all(&self, status: Option<PrStatus>) -> Result<Vec<ChangeRequest>, DomainError>;
-    async fn save(&self, cr: ChangeRequest) -> Result<(), DomainError>;
+    ) -> Result<Vec<PullRequest>, DomainError>;
+    async fn list_open(&self, repo_id: Uuid) -> Result<Vec<PullRequest>, DomainError>;
+    async fn list_all(&self, status: Option<PrStatus>) -> Result<Vec<PullRequest>, DomainError>;
+    async fn save(&self, cr: PullRequest) -> Result<(), DomainError>;
 }
 
 /// Repository: ApprovalRepo

@@ -125,13 +125,13 @@ pub fn plan_steps(id: PlanId) -> &'static [PlanStepSpec] {
             PlanStepSpec {
                 id: "open_or_reuse_pr",
                 owner: "host",
-                tool: Some("create_change"),
-                instruction: "Reuse active_change_id or open PR",
+                tool: Some("create_pr"),
+                instruction: "Reuse active_pr_id or open PR",
             },
             PlanStepSpec {
                 id: "submit_pr",
                 owner: "host",
-                tool: Some("submit_change"),
+                tool: Some("submit_pr"),
                 instruction: "Submit for PR Wizard; surface host_check",
             },
         ],

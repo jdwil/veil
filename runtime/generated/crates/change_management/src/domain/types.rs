@@ -168,9 +168,9 @@ impl CiRun {
     }
 }
 
-/// Aggregate: ChangeRequest
+/// Aggregate: PullRequest
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChangeRequest {
+pub struct PullRequest {
     pub id: Uuid,
     pub repo_id: Uuid,
     pub title: String,
@@ -187,7 +187,7 @@ pub struct ChangeRequest {
     pub merge_commit: Option<String>,
 }
 
-impl ChangeRequest {
+impl PullRequest {
     pub fn new(
         id: Uuid,
         repo_id: Uuid,

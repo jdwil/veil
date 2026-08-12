@@ -397,12 +397,12 @@ struct ListAllQuery {
     status: Option<String>,
 }
 
-async fn list_all_change_requests(
+async fn list_all_pull_requests(
     State(st): State<CmState>,
     Query(q): Query<ListAllQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let status = parse_pr_status(q.status.as_deref());
-    match change_management::application::list_all_change_requests(&st.deps, status).await {
+    match change_management::application::list_all_pull_requests(&st.deps, status).await {
         Ok(items) => Ok(Json(json!(items))),
         Err(e) => Err(domain_status(e)),
     }
@@ -425,7 +425,7 @@ struct CreateFlatBody {
     source_branch: Option<String>,
 }
 
-async fn create_change_request_flat(
+async fn create_pull_request_flat(
     State(st): State<CmState>,
     Json(body): Json<CreateFlatBody>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -462,7 +462,7 @@ async fn create_change_request_flat(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    match change_management::application::create_change_request_flat(
+    match change_management::application::create_pull_request_flat(
         &st.deps,
         repo_id,
         slug.clone(),
@@ -478,33 +478,33 @@ async fn create_change_request_flat(
                 if b != &cr.source_branch {
                     cr.source_branch = b.clone();
                     cr.updated_at = chrono::Utc::now();
-                    if let Err(e) = st.deps.cr_repo.save(cr.clone()).await {
+                    if let Err(e) = st.deps.pr_repo.save(cr.clone()).await {
                         return Err(domain_status(e));
                     }
                 }
             }
             let _ = ensure_ci_passed(&st.deps, cr.id, "pending").await;
             Ok(Json(json!({
-                "change_request": cr,
+                "pull_request": cr,
                 "slug": slug,
-                "wizard_path": format!("/changes/{}", cr.id),
+                "wizard_path": format!("/pulls/{}", cr.id),
             })))
         }
         Err(e) => {
             // Soft path: if git branch create failed, still persist a CR for PR Wizard.
-            tracing::warn!(?e, "create_change_request_flat failed — soft-creating META only");
-            use change_management::domain::types::{ChangeRequest, PrStatus};
+            tracing::warn!(?e, "create_pull_request_flat failed — soft-creating META only");
+            use change_management::domain::types::{PullRequest, PrStatus};
             let now = chrono::Utc::now();
-            let cr_id = Uuid::new_v4();
+            let pr_id = Uuid::new_v4();
             let source = preferred_branch.unwrap_or_else(|| {
                 format!(
-                    "cr/{}/{}",
+                    "pr/{}/{}",
                     jira,
                     body.title.to_lowercase().replace(' ', "-")
                 )
             });
-            let cr = ChangeRequest {
-                id: cr_id,
+            let cr = PullRequest {
+                id: pr_id,
                 repo_id,
                 title: body.title,
                 description: body.description,
@@ -520,15 +520,15 @@ async fn create_change_request_flat(
                 merge_commit: None,
             };
             st.deps
-                .cr_repo
+                .pr_repo
                 .save(cr.clone())
                 .await
                 .map_err(domain_status)?;
             let _ = ensure_ci_passed(&st.deps, cr.id, "pending").await;
             Ok(Json(json!({
-                "change_request": cr,
+                "pull_request": cr,
                 "slug": slug,
-                "wizard_path": format!("/changes/{}", cr.id),
+                "wizard_path": format!("/pulls/{}", cr.id),
                 "soft_create": true,
             })))
         }
@@ -566,12 +566,12 @@ async fn ensure_ci_passed(
     }
 }
 
-async fn get_change_request(
+async fn get_pull_request(
     State(st): State<CmState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
-    match change_management::application::get_change_request(&st.deps, id).await {
+    match change_management::application::get_pull_request(&st.deps, id).await {
         Ok(v) => Ok(Json(v)),
         Err(e) => Err(domain_status(e)),
     }
@@ -584,8 +584,8 @@ async fn list_repo_changes(
 ) -> Result<Json<Value>, StatusCode> {
     let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let status = parse_pr_status(q.status.as_deref());
-    match change_management::application::list_change_requests(&st.deps, id, status).await {
-        Ok(items) => Ok(Json(json!({ "change_requests": items }))),
+    match change_management::application::list_pull_requests(&st.deps, id, status).await {
+        Ok(items) => Ok(Json(json!({ "pull_requests": items }))),
         Err(e) => Err(domain_status(e)),
     }
 }
@@ -615,7 +615,7 @@ async fn create_repo_change(
     } else {
         body.author
     };
-    match change_management::application::create_change_request(
+    match change_management::application::create_pull_request(
         &st.deps,
         id,
         slug,
@@ -626,16 +626,68 @@ async fn create_repo_change(
     )
     .await
     {
-        Ok(cr) => Ok(Json(json!({ "change_request": cr }))),
+        Ok(cr) => Ok(Json(json!({ "pull_request": cr }))),
         Err(e) => Err(domain_status(e)),
     }
+}
+
+#[derive(Deserialize)]
+struct SubmitQuery {
+    /// When true, allow ReadyForReview even with empty structural/file diff.
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    slug: Option<String>,
 }
 
 async fn submit_for_review(
     State(st): State<CmState>,
     Path(id): Path<String>,
+    Query(q): Query<SubmitQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    // Gate empty structural walks — ReadyForReview with nothing to review is cruft.
+    if !q.force {
+        if let Ok(Some(pr)) = st.deps.pr_repo.find(id).await {
+            let slug = q
+                .slug
+                .clone()
+                .filter(|s| !s.is_empty())
+                .or_else(|| extract_slug_from_description(&pr.description))
+                .unwrap_or_else(|| pr.repo_id.to_string());
+            if let Ok(diff) = compute_branch_structural_diff(
+                &st.deps,
+                &slug,
+                &pr.target_branch,
+                &pr.source_branch,
+            )
+            .await
+            {
+                let items = diff
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let files = diff
+                    .get("files_changed")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if items == 0 && files == 0 {
+                    return Ok(Json(json!({
+                        "ok": false,
+                        "error": "empty_diff",
+                        "status": format!("{:?}", pr.status),
+                        "message": format!(
+                            "No structural or file changes between `{}` and `{}` for slug `{slug}`. \
+Publish the coding session to the PR branch before submit, or pass force=1 to override.",
+                            pr.target_branch, pr.source_branch
+                        ),
+                        "hint": "session_publish / create_pr after real edits; check product slug git root.",
+                    })));
+                }
+            }
+        }
+    }
     match change_management::application::submit_for_review(&st.deps, id).await {
         Ok(()) => {
             // Local PR Wizard: ensure merge isn't blocked by missing CI runner.
@@ -658,7 +710,7 @@ struct ReviewBody {
     comment: Option<String>,
 }
 
-async fn approve_change(
+async fn approve_pr(
     State(st): State<CmState>,
     Path(id): Path<String>,
     Json(body): Json<ReviewBody>,
@@ -670,13 +722,13 @@ async fn approve_change(
     } else {
         body.reviewer
     };
-    if let Ok(Some(pr)) = st.deps.cr_repo.find(id).await {
+    if let Ok(Some(pr)) = st.deps.pr_repo.find(id).await {
         if reviewer == pr.author {
             reviewer = format!("{reviewer}-reviewer");
         }
     }
     let _ = ensure_ci_passed(&st.deps, id, "approved").await;
-    match change_management::application::approve_change(&st.deps, id, reviewer, body.comment)
+    match change_management::application::approve_pr(&st.deps, id, reviewer, body.comment)
         .await
     {
         Ok(()) => Ok(Json(json!({ "ok": true, "status": "Approved" }))),
@@ -692,7 +744,7 @@ struct RequestChangesBody {
     comment: String,
 }
 
-async fn request_changes(
+async fn request_pr_changes(
     State(st): State<CmState>,
     Path(id): Path<String>,
     Json(body): Json<RequestChangesBody>,
@@ -703,7 +755,7 @@ async fn request_changes(
     } else {
         body.reviewer
     };
-    if let Ok(Some(pr)) = st.deps.cr_repo.find(id).await {
+    if let Ok(Some(pr)) = st.deps.pr_repo.find(id).await {
         if reviewer == pr.author {
             reviewer = format!("{reviewer}-reviewer");
         }
@@ -713,7 +765,7 @@ async fn request_changes(
     } else {
         body.comment
     };
-    match change_management::application::request_changes(&st.deps, id, reviewer, comment)
+    match change_management::application::request_pr_changes(&st.deps, id, reviewer, comment)
         .await
     {
         Ok(()) => Ok(Json(json!({ "ok": true, "status": "ChangesRequested" }))),
@@ -729,7 +781,7 @@ struct MergeBody {
     slug: String,
 }
 
-async fn merge_change(
+async fn merge_pr(
     State(st): State<CmState>,
     Path(id): Path<String>,
     Json(body): Json<MergeBody>,
@@ -743,7 +795,7 @@ async fn merge_change(
     let slug = if body.slug.is_empty() {
         // Infer slug from PR source/target when client omits it.
         st.deps
-            .cr_repo
+            .pr_repo
             .find(id)
             .await
             .ok()
@@ -762,7 +814,7 @@ async fn merge_change(
         body.slug
     };
     let _ = ensure_ci_passed(&st.deps, id, "merge").await;
-    match change_management::application::merge_change(&st.deps, id, merger, slug).await {
+    match change_management::application::merge_pr(&st.deps, id, merger, slug).await {
         Ok(v) => Ok(Json(v)),
         Err(e) => Err(domain_status(e)),
     }
@@ -816,7 +868,7 @@ async fn get_structural_diff(
     let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let pr = st
         .deps
-        .cr_repo
+        .pr_repo
         .find(id)
         .await
         .map_err(domain_status)?
@@ -825,7 +877,7 @@ async fn get_structural_diff(
         .slug
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            // Heuristic: description may contain "project: slug" from agent create_change.
+            // Heuristic: description may contain "project: slug" from agent create_pr.
             extract_slug_from_description(&pr.description).unwrap_or_else(|| pr.repo_id.to_string())
         });
     let diff = compute_branch_structural_diff(
@@ -1004,6 +1056,7 @@ async fn compute_branch_structural_diff(
 
     let mut merged_items: Vec<veil_ir::DiffItem> = Vec::new();
     let mut product_changes: Vec<Value> = Vec::new();
+    let mut file_diffs: Vec<Value> = Vec::new();
     let mut files_touched = 0i64;
     let mut parse_notes: Vec<String> = Vec::new();
 
@@ -1024,6 +1077,20 @@ async fn compute_branch_structural_diff(
             continue;
         }
         files_touched += 1;
+        let status = if base_src.is_empty() {
+            "added"
+        } else if head_src.is_empty() {
+            "removed"
+        } else {
+            "modified"
+        };
+        file_diffs.push(json!({
+            "path": path,
+            "status": status,
+            "hunks": unified_hunks(&base_src, &head_src, 3),
+            "base_lines": base_src.lines().count(),
+            "head_lines": head_src.lines().count(),
+        }));
         if base_src.is_empty() && !head_src.is_empty() {
             product_changes.push(json!({
                 "kind": "Added",
@@ -1118,6 +1185,8 @@ async fn compute_branch_structural_diff(
         "added": added,
         "removed": removed,
         "changed": changed,
+        // Secondary git-style file diffs (not front-and-center; wizard key D)
+        "file_diffs": file_diffs,
         // Product ChangeDetail shape
         "description": summary,
         "changes": product_changes,
@@ -1127,6 +1196,84 @@ async fn compute_branch_structural_diff(
         "slug": slug,
         "parse_notes": parse_notes,
     }))
+}
+
+/// Compact unified-style hunks for secondary file-diff review (line-based, not git plumbing).
+fn unified_hunks(base: &str, head: &str, context: usize) -> Vec<Value> {
+    let a: Vec<&str> = base.lines().collect();
+    let b: Vec<&str> = head.lines().collect();
+    // Simple LCS-free walk: emit full file as one hunk when small; else truncated.
+    const MAX_LINES: usize = 400;
+    if a.is_empty() && b.is_empty() {
+        return vec![];
+    }
+    let mut lines_out: Vec<String> = Vec::new();
+    if a.is_empty() {
+        for (i, l) in b.iter().enumerate().take(MAX_LINES) {
+            lines_out.push(format!("+{}", l));
+            if i + 1 == MAX_LINES && b.len() > MAX_LINES {
+                lines_out.push(format!("… +{} more lines", b.len() - MAX_LINES));
+            }
+        }
+        return vec![json!({
+            "header": format!("@@ -0,0 +1,{} @@", b.len().min(MAX_LINES)),
+            "lines": lines_out,
+        })];
+    }
+    if b.is_empty() {
+        for (i, l) in a.iter().enumerate().take(MAX_LINES) {
+            lines_out.push(format!("-{}", l));
+            if i + 1 == MAX_LINES && a.len() > MAX_LINES {
+                lines_out.push(format!("… −{} more lines", a.len() - MAX_LINES));
+            }
+        }
+        return vec![json!({
+            "header": format!("@@ -1,{} +0,0 @@", a.len().min(MAX_LINES)),
+            "lines": lines_out,
+        })];
+    }
+    // Myers-lite: mark unequal lines by index zip; good enough for review secondary panel.
+    let max = a.len().max(b.len()).min(MAX_LINES);
+    let mut changed = false;
+    for i in 0..max {
+        let al = a.get(i).copied();
+        let bl = b.get(i).copied();
+        match (al, bl) {
+            (Some(x), Some(y)) if x == y => {
+                if context > 0 {
+                    lines_out.push(format!(" {}", x));
+                }
+            }
+            (Some(x), Some(y)) => {
+                changed = true;
+                lines_out.push(format!("-{}", x));
+                lines_out.push(format!("+{}", y));
+            }
+            (Some(x), None) => {
+                changed = true;
+                lines_out.push(format!("-{}", x));
+            }
+            (None, Some(y)) => {
+                changed = true;
+                lines_out.push(format!("+{}", y));
+            }
+            _ => {}
+        }
+    }
+    if a.len().max(b.len()) > MAX_LINES {
+        lines_out.push(format!(
+            "… truncated ({} base / {} head lines)",
+            a.len(),
+            b.len()
+        ));
+    }
+    if !changed && a.len() == b.len() {
+        return vec![];
+    }
+    vec![json!({
+        "header": format!("@@ -1,{} +1,{} @@", a.len().min(MAX_LINES), b.len().min(MAX_LINES)),
+        "lines": lines_out,
+    })]
 }
 
 #[derive(Deserialize)]
@@ -1162,7 +1309,7 @@ async fn review_item(
     let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let _pr = st
         .deps
-        .cr_repo
+        .pr_repo
         .find(id)
         .await
         .map_err(domain_status)?
@@ -1235,7 +1382,7 @@ async fn review_item(
     }
 }
 
-/// Finalize wizard: all items approved → approve PR; any feedback → request_changes with summary.
+/// Finalize wizard: all items approved → approve PR; any feedback → request_pr_changes with summary.
 #[derive(Deserialize)]
 struct FinalizeWizardBody {
     /// all_approved | needs_work
@@ -1262,7 +1409,7 @@ async fn finalize_wizard(
     } else {
         body.reviewer
     };
-    if let Ok(Some(pr)) = st.deps.cr_repo.find(id).await {
+    if let Ok(Some(pr)) = st.deps.pr_repo.find(id).await {
         if reviewer == pr.author {
             reviewer = format!("{reviewer}-reviewer");
         }
@@ -1288,7 +1435,7 @@ async fn finalize_wizard(
         };
         // Ensure ReadyForReview
         let _ = change_management::application::submit_for_review(&st.deps, id).await;
-        match change_management::application::approve_change(
+        match change_management::application::approve_pr(
             &st.deps,
             id,
             reviewer,
@@ -1313,7 +1460,7 @@ async fn finalize_wizard(
             body.summary
         };
         let _ = change_management::application::submit_for_review(&st.deps, id).await;
-        match change_management::application::request_changes(&st.deps, id, reviewer, summary)
+        match change_management::application::request_pr_changes(&st.deps, id, reviewer, summary)
             .await
         {
             Ok(()) => Ok(Json(json!({
@@ -1340,7 +1487,7 @@ async fn update_status(
 ) -> Result<Json<Value>, StatusCode> {
     let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let status = parse_pr_status(Some(body.status.as_str())).ok_or(StatusCode::BAD_REQUEST)?;
-    match change_management::application::update_change_request_status(&st.deps, id, status).await
+    match change_management::application::update_pull_request_status(&st.deps, id, status).await
     {
         Ok(cr) => Ok(Json(json!(cr))),
         Err(e) => Err(domain_status(e)),
@@ -1576,51 +1723,51 @@ pub async fn build_platform_router(
 
     let cm_r = Router::new()
         .route(
-            "/api/change_requests",
-            get(list_all_change_requests).post(create_change_request_flat),
+            "/api/pull_requests",
+            get(list_all_pull_requests).post(create_pull_request_flat),
         )
         .route(
-            "/api/change_requests/{id}",
-            get(get_change_request),
+            "/api/pull_requests/{id}",
+            get(get_pull_request),
         )
         .route(
-            "/api/change_requests/{id}/submit",
+            "/api/pull_requests/{id}/submit",
             post(submit_for_review),
         )
         .route(
-            "/api/change_requests/{id}/approve",
-            post(approve_change),
+            "/api/pull_requests/{id}/approve",
+            post(approve_pr),
         )
         .route(
-            "/api/change_requests/{id}/request-changes",
-            post(request_changes),
+            "/api/pull_requests/{id}/request-changes",
+            post(request_pr_changes),
         )
         .route(
-            "/api/change_requests/{id}/merge",
-            post(merge_change),
+            "/api/pull_requests/{id}/merge",
+            post(merge_pr),
         )
         .route(
-            "/api/change_requests/{id}/comments",
+            "/api/pull_requests/{id}/comments",
             post(add_review_comment),
         )
         .route(
-            "/api/change_requests/{id}/diff",
+            "/api/pull_requests/{id}/diff",
             get(get_structural_diff),
         )
         .route(
-            "/api/change_requests/{id}/review-item",
+            "/api/pull_requests/{id}/review-item",
             post(review_item),
         )
         .route(
-            "/api/change_requests/{id}/finalize-wizard",
+            "/api/pull_requests/{id}/finalize-wizard",
             post(finalize_wizard),
         )
         .route(
-            "/api/change_requests/{id}/status",
+            "/api/pull_requests/{id}/status",
             put(update_status),
         )
         .route(
-            "/api/repos/{id}/changes",
+            "/api/repos/{id}/pull_requests",
             get(list_repo_changes).post(create_repo_change),
         )
         .with_state(cm);

@@ -109,10 +109,10 @@ function emitNavigation(nav: NavigationAction) {
 
 /** Well-known MCP / agent tool names → SPA navigation (agent owns UX, not Svelte chips). */
 const TOOL_NAV: Record<string, NavigationAction> = {
-	list_changes: { action: 'goto', path: '/changes' },
-	open_changes: { action: 'goto', path: '/changes' },
-	create_change: { action: 'goto', path: '/changes/new' },
-	open_create_change: { action: 'goto', path: '/changes/new' },
+	list_prs: { action: 'goto', path: '/pulls' },
+	open_prs: { action: 'goto', path: '/pulls' },
+	create_pr: { action: 'goto', path: '/pulls/new' },
+	open_create_pr: { action: 'goto', path: '/pulls/new' },
 	list_projects: { action: 'goto', path: '/projects' },
 	open_projects: { action: 'goto', path: '/projects' },
 	// create_project: prefer structured navigation from tool output (project/ide path)
@@ -855,7 +855,7 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'The user watches the dashboard: EVERY product action MUST be an MCP tool call. create_project returns intent.present — UX will animate the form; do NOT re-create.',
 		'',
 		'FORBIDDEN (silent / invisible — never do these):',
-		'- shell curl/wget/fetch/httpie to /api/repos, /api/projects, /api/change_requests, or any ProductHost API',
+		'- shell curl/wget/fetch/httpie to /api/repos, /api/projects, /api/pull_requests, or any ProductHost API',
 		'- mkdir / writing under VEIL_PROJECTS_DIR, monorepo, or ~/dev/veil-projects',
 		'- describing navigation without calling navigate_to / open_* / create_project',
 		'- inventing "project is empty" without list_files + read_source on the bound slug',
@@ -866,7 +866,7 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'- After via=ux create: wait_intent_ack({intent_id}) before write_source (intent_id from tool result).',
 		'- REMOTE (VEIL_SOURCE_MODE=s3): create_project → (wait_intent_ack if ux) → write_source/create_file.',
 		'- list_projects / get_project / open_project / open_ide / navigate_to / get_current_context / wait_intent_ack',
-		'- list_changes / create_change / get_change / submit_change / approve_change / merge_change / …',
+		'- list_prs / create_pr / get_pr / submit_pr / approve_pr / merge_pr / …',
 		'- deploy / registry / config tools as needed',
 		'',
 		'IDE dual-loop tools (when a project is open):',
@@ -879,7 +879,7 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'2. list_files → if any .veil files, the project is NOT empty.',
 		'3. read_source (or select_file + read_source) before redesigning domain models.',
 		'4. write_source with full intended content → veil_check → fix any NEW diags same turn → session_commit when multi-step.',
-		'5. When task done: create_change + submit_change (PR for human review). NEVER merge_branch/merge_change unless operator says "merge".',
+		'5. When task done: create_pr + submit_pr (PR for human review). NEVER merge_branch/merge_pr unless operator says "merge".',
 		'6. Short requests ("use ddd.layer", "refactor to X") mean edit the EXISTING package, not invent a new one.',
 		'7. Research detours (wiki, registry) are fine mid-turn; always return to IDE for code writes.',
 		'',

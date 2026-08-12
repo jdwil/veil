@@ -102,7 +102,7 @@ pub async fn run_turn_stream<P: SourceProvider>(
 
     // Host-side structured commands (create package, list files, platform UX …)
     // must not go through ACP streaming — `run_turn` handles them immediately.
-    // Platform UX (list_changes / open_deploy / …) is included so AgentDock chips
+    // Platform UX (list_prs / open_deploy / …) is included so AgentDock chips
     // always emit navigation tool events without waiting on ACP MCP discovery.
     if crate::agent::is_structured_agent_command(&req.prompt)
         || crate::agent::parse_platform_ux_intent(&req.prompt).is_some()
@@ -539,7 +539,7 @@ async fn stream_acp_turn<P: SourceProvider>(
         context_budget_tokens: preamble_pack.max_tokens,
         context_layers: preamble_pack.layers.clone(),
     };
-    // Durable PR history: agent reply under open change request.
+    // Durable PR history: agent reply under open pull request.
     let tool_names: Vec<String> = tool_calls.iter().map(|t| t.name.clone()).collect();
     let slug = crate::provider::hub::CURRENT_PROJECT
         .try_with(|n| n.clone())

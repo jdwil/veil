@@ -40,10 +40,14 @@ static RATIONALE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Record agent rationales for PR Wizard (write_source or structured edits).
+///
+/// Writes to the process cache **and** durable session meta when a coding
+/// session is active (survives product-host restart).
 pub fn record_rationales(map: HashMap<String, String>) {
     if map.is_empty() {
         return;
     }
+    let mut clean: HashMap<String, String> = HashMap::new();
     if let Ok(mut cache) = RATIONALE_CACHE.lock() {
         for (k, v) in map {
             let name = k.trim().to_string();
@@ -52,6 +56,7 @@ pub fn record_rationales(map: HashMap<String, String>) {
                 continue;
             }
             cache.insert(name.clone(), intent.clone());
+            clean.insert(name.clone(), intent.clone());
             // Also seed annotation cache so /diff item_annotations light up.
             if let Ok(mut ac) = ANNOTATION_CACHE.lock() {
                 for kind in [
@@ -77,9 +82,55 @@ pub fn record_rationales(map: HashMap<String, String>) {
             }
         }
     }
+    if clean.is_empty() {
+        return;
+    }
+    // Durable: active project session (survives process restart via DDB session META).
+    if let Some(h) = crate::coding_gates::project_session(
+        crate::coding_gates::current_project_slug().as_deref(),
+    ) {
+        let _ = h.merge_rationales(&clean);
+    }
 }
 
-/// Snapshot of all known rationales (for create_change description injection).
+/// Rehydrate process RATIONALE_CACHE from durable session meta (call after open).
+pub fn rehydrate_rationales_from_session(h: &crate::session::SessionHandle) {
+    let map = h.snapshot_rationales();
+    if map.is_empty() {
+        return;
+    }
+    record_rationales_memory_only(map);
+}
+
+fn record_rationales_memory_only(map: HashMap<String, String>) {
+    if let Ok(mut cache) = RATIONALE_CACHE.lock() {
+        for (k, v) in map {
+            if k.is_empty() || v.is_empty() {
+                continue;
+            }
+            cache.entry(k.clone()).or_insert_with(|| v.clone());
+            if let Ok(mut ac) = ANNOTATION_CACHE.lock() {
+                for kind in [
+                    "added",
+                    "removed",
+                    "renamed",
+                    "signature_changed",
+                    "body_changed",
+                    "annotations_changed",
+                ] {
+                    ac.entry((k.clone(), kind.to_string()))
+                        .or_insert_with(|| veil_ir::EditAnnotation {
+                            intent: Some(v.clone()),
+                            category: None,
+                            criticality: None,
+                        });
+                }
+            }
+        }
+    }
+}
+
+/// Snapshot of all known rationales (for create_pr description injection).
 pub fn snapshot_rationales() -> HashMap<String, String> {
     RATIONALE_CACHE
         .lock()
@@ -235,7 +286,7 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
         ));
 
     // Hub-level agent + MCP for the runtime shell (same-origin ProductHost).
-    // Platform UX tools (navigate_to, list_changes, …) do not require a project.
+    // Platform UX tools (navigate_to, list_prs, …) do not require a project.
     let hub_agent = Router::new()
         .route("/agent/chat", get(ws_aether_chat_route::<MultiProjectProvider>))
         .route("/chat", get(ws_aether_chat_route::<MultiProjectProvider>))

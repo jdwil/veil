@@ -1,6 +1,6 @@
 //! Platform UX tools — agent drives the full runtime dashboard (projects, SDLC, deploy).
 //!
-//! These tools call ProductHost platform APIs (`/api/repos`, `/api/change_requests`, …)
+//! These tools call ProductHost platform APIs (`/api/repos`, `/api/pull_requests`, …)
 //! and return structured JSON that always includes `navigation` when a SPA route applies
 //! so the dashboard updates without hard-coded chips.
 //!
@@ -86,28 +86,21 @@ pub fn is_platform_tool(name: &str) -> bool {
     matches!(
         name,
         "navigate_to"
-            | "list_changes"
-            | "open_changes"
             | "list_prs"
+            | "open_prs"
             | "list_pull_requests"
-            | "create_change"
-            | "open_create_change"
             | "create_pr"
+            | "open_create_pr"
             | "open_pr"
             | "create_pull_request"
-            | "get_change"
             | "get_pr"
             | "get_pull_request"
-            | "submit_change"
             | "submit_pr"
             | "submit_pull_request"
-            | "approve_change"
             | "approve_pr"
-            | "request_changes"
-            | "merge_change"
+            | "request_pr_changes"
             | "merge_pr"
             | "add_comment"
-            | "get_change_diff"
             | "get_pr_diff"
             | "list_projects"
             | "open_projects"
@@ -143,13 +136,13 @@ pub fn is_platform_tool(name: &str) -> bool {
 /// Canonicalize PR-facing aliases → existing handlers (product language: PR).
 fn canonicalize_tool(name: &str) -> &str {
     match name {
-        "list_prs" | "list_pull_requests" => "list_changes",
-        "create_pr" | "open_pr" | "create_pull_request" => "create_change",
-        "get_pr" | "get_pull_request" => "get_change",
-        "submit_pr" | "submit_pull_request" => "submit_change",
-        "approve_pr" => "approve_change",
-        "merge_pr" => "merge_change",
-        "get_pr_diff" => "get_change_diff",
+        "list_prs" | "list_pull_requests" => "list_prs",
+        "create_pr" | "open_pr" | "create_pull_request" => "create_pr",
+        "get_pr" | "get_pull_request" => "get_pr",
+        "submit_pr" | "submit_pull_request" => "submit_pr",
+        "approve_pr" => "approve_pr",
+        "merge_pr" => "merge_pr",
+        "get_pr_diff" => "get_pr_diff",
         other => other,
     }
 }
@@ -637,17 +630,17 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     create_args["slug"] = json!(p);
                     create_args["project"] = json!(p);
                 }
-                let create_raw = Box::pin(dispatch("create_change", &create_args))
+                let create_raw = Box::pin(dispatch("create_pr", &create_args))
                     .await
                     .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string());
                 let create_val: Value = serde_json::from_str(&create_raw)
                     .unwrap_or_else(|_| json!({ "raw": create_raw }));
                 let pr_id = create_val
-                    .pointer("/change_request/id")
-                    .or_else(|| create_val.pointer("/change_request/change_request/id"))
+                    .pointer("/pull_request/id")
+                    .or_else(|| create_val.pointer("/pull_request/pull_request/id"))
                     .or_else(|| create_val.pointer("/pull_request/id"))
                     .and_then(|v| v.as_str())
-                    .or_else(|| create_val.get("change_id").and_then(|v| v.as_str()))
+                    .or_else(|| create_val.get("pr_id").and_then(|v| v.as_str()))
                     .unwrap_or("")
                     .to_string();
                 let mut submit_val = json!(null);
@@ -656,7 +649,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     if let Some(ref p) = project {
                         sub_args["slug"] = json!(p);
                     }
-                    let sub_raw = Box::pin(dispatch("submit_change", &sub_args))
+                    let sub_raw = Box::pin(dispatch("submit_pr", &sub_args))
                         .await
                         .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string());
                     submit_val = serde_json::from_str(&sub_raw)
@@ -669,9 +662,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "phase": "done",
                     "summary": "finish_task: open/reuse PR + submit for PR Wizard (no auto-merge)",
                     "resolve": resolve_val,
-                    "create_change": create_val,
                     "create_pr": create_val,
-                    "submit_change": submit_val,
+                    "create_pr": create_val,
+                    "submit_pr": submit_val,
                     "submit_pr": submit_val,
                     "plan_spec": crate::coding_orchestrator::plan_json(plan_id),
                     "host_check": submit_val.get("host_check").cloned()
@@ -719,11 +712,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 crate::coding_gates::current_project_slug()
             });
             // Explicit operator/agent choice (after modal ACK or tool arg)
-            if let Some(choice) = arg_str(arguments, &["choice", "pr_id", "change_id"]) {
+            if let Some(choice) = arg_str(arguments, &["choice", "pr_id", "pr_id"]) {
                 if choice == "__new__" || choice.eq_ignore_ascii_case("new") {
                     if let Some(ref slug) = project {
                         if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
-                            let _ = h.set_active_change_id(None);
+                            let _ = h.set_active_pr_id(None);
                         }
                     }
                     return Ok(json!({
@@ -731,8 +724,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         "decision": "new",
                         "summary": "Coding target: create new work line / new PR at task end",
                         "project": project,
-                        "active_change_id": null,
-                        "hint": "create_branch for multi-step; session_commit per slice; create_change+submit_change when done"
+                        "active_pr_id": null,
+                        "hint": "create_branch for multi-step; session_commit per slice; create_pr+submit_pr when done"
                     })
                     .to_string());
                 }
@@ -745,11 +738,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "ok": true,
                     "decision": "bind",
                     "pr_id": choice,
-                    "change_id": choice,
+                    "pr_id": choice,
                     "summary": format!("Bound coding session to open pull request {choice}"),
                     "project": project,
-                    "active_change_id": choice,
-                    "hint": "Reuse this PR — session_commit slices; submit_change when task done (do not open a second PR)"
+                    "active_pr_id": choice,
+                    "hint": "Reuse this PR — session_commit slices; submit_pr when task done (do not open a second PR)"
                 })
                 .to_string());
             }
@@ -757,12 +750,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             let path = match &project {
                 Some(p) if !p.is_empty() => {
                     // Prefer open statuses; client also filters Merged
-                    format!("/api/change_requests")
+                    format!("/api/pull_requests")
                 }
-                _ => "/api/change_requests".to_string(),
+                _ => "/api/pull_requests".to_string(),
             };
             let (_status, data) = http_json("GET", &path, None).await.unwrap_or_else(|e| {
-                (0, json!({ "error": e, "change_requests": [] }))
+                (0, json!({ "error": e, "pull_requests": [] }))
             });
             let mut candidates = crate::coding_resolve::candidates_from_list(
                 &data,
@@ -772,7 +765,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             // Prefer session's already-bound PR when still open
             if let Some(ref slug) = project {
                 if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
-                    if let Some(aid) = h.snapshot_meta().active_change_id.clone() {
+                    if let Some(aid) = h.snapshot_meta().active_pr_id.clone() {
                         if candidates.iter().any(|c| c.id == aid) {
                             // Boost bound PR slightly
                             for c in &mut candidates {
@@ -805,7 +798,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "project": project,
                     "candidates": cand_json,
                     "request": request,
-                    "hint": "create_branch if multi-step; do not create_change until task complete"
+                    "hint": "create_branch if multi-step; do not create_pr until task complete"
                 })
                 .to_string()),
                 crate::coding_resolve::ResolveDecision::Bind { pr_id } => {
@@ -822,13 +815,13 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         "ok": true,
                         "decision": "bind",
                         "pr_id": pr_id,
-                        "change_id": pr_id,
+                        "pr_id": pr_id,
                         "source_branch": branch,
                         "summary": format!("Auto-bound to open pull request {pr_id} (scope match)"),
                         "project": project,
                         "candidates": cand_json,
                         "request": request,
-                        "active_change_id": pr_id,
+                        "active_pr_id": pr_id,
                         "hint": "Continue on this PR's branch; session_commit per slice; submit when done"
                     })
                     .to_string())
@@ -868,13 +861,13 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             }
         }
 
-        // ─── SDLC / Pull requests (API path still /api/change_requests) ───
-        "list_changes" | "open_changes" => {
+        // ─── SDLC / Pull requests (API path still /api/pull_requests) ───
+        "list_prs" | "open_prs" => {
             let navigate = arg_bool(arguments, "navigate", true);
             let status_filter = arg_str(arguments, &["status"]);
             let path = match &status_filter {
-                Some(s) => format!("/api/change_requests?status={}", s),
-                None => "/api/change_requests".to_string(),
+                Some(s) => format!("/api/pull_requests?status={}", s),
+                None => "/api/pull_requests".to_string(),
             };
             let (status, data) = http_json("GET", &path, None).await.unwrap_or_else(|e| {
                 (0, json!({ "error": e }))
@@ -883,15 +876,15 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "ok": ok_status(status) || status == 0 && data.get("error").is_none(),
                 "summary": "Listed pull requests (SDLC)",
                 "http_status": status,
-                "change_requests": data,
                 "pull_requests": data,
-                "api": format!("{base}/api/change_requests"),
+                "pull_requests": data,
+                "api": format!("{base}/api/pull_requests"),
             });
             if navigate {
-                out["navigation"] = json!({ "action": "goto", "path": "/changes" });
+                out["navigation"] = json!({ "action": "goto", "path": "/pulls" });
                 out["intent"] = crate::focus::page_action_intent(
-                    "list_changes",
-                    "/changes",
+                    "list_prs",
+                    "/pulls",
                     "Open pull requests",
                 );
                 out["execution"] = json!({ "domain": "none", "present": "goto" });
@@ -906,7 +899,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             Ok(out.to_string())
         }
 
-        "create_change" | "open_create_change" => {
+        "create_pr" | "open_create_pr" => {
             let via = arg_str(arguments, &["via"])
                 .map(|s| s.to_lowercase())
                 .unwrap_or_default();
@@ -926,25 +919,25 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
                         if let Some(aid) = h
                             .snapshot_meta()
-                            .active_change_id
+                            .active_pr_id
                             .clone()
                             .filter(|s| !s.is_empty())
                         {
-                            let path = format!("/changes/{aid}");
+                            let path = format!("/pulls/{aid}");
                             let host_check =
                                 crate::coding_gates::host_check_value(&h.snapshot_meta());
                             return Ok(json!({
                                 "ok": true,
                                 "reused": true,
                                 "summary": format!(
-                                    "Reusing open pull request {aid} (session active_change_id). \
-                                     Pass force_new=true to open another PR. Call submit_change when ready."
+                                    "Reusing open pull request {aid} (session active_pr_id). \
+                                     Pass force_new=true to open another PR. Call submit_pr when ready."
                                 ),
-                                "change_request": { "id": aid },
+                                "pull_request": { "id": aid },
                                 "pull_request": { "id": aid },
                                 "host_check": host_check,
                                 "gate_notes": [
-                                    "HINT: scope already bound — prefer submit_change over a second create_change"
+                                    "HINT: scope already bound — prefer submit_pr over a second create_pr"
                                 ],
                                 "navigation": { "action": "goto", "path": path },
                                 "execution": { "domain": "server", "present": "illustrate" }
@@ -961,8 +954,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 let description = arg_str(arguments, &["description", "body"]);
 
                 if domain_mode == crate::focus::DomainMode::Ux {
-                    let path = "/changes".to_string();
-                    let intent = crate::focus::create_change_intent(
+                    let path = "/pulls".to_string();
+                    let intent = crate::focus::create_pr_intent(
                         Some(&title),
                         description.as_deref(),
                         project.as_deref(),
@@ -978,9 +971,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     }));
                     return Ok(json!({
                         "ok": true,
-                        "summary": format!("Scheduled create_change `{title}` — UX Present then commit"),
+                        "summary": format!("Scheduled create_pr `{title}` — UX Present then commit"),
                         "pending_ux": true,
-                        "navigation": { "action": "goto", "path": "/changes/new" },
+                        "navigation": { "action": "goto", "path": "/pulls/new" },
                         "intent": intent,
                         "execution": { "domain": "ux", "present": "ux_commit" }
                     })
@@ -1064,19 +1057,19 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "source_branch": source_branch,
                 });
                 let (status, data) =
-                    http_json("POST", "/api/change_requests", Some(body)).await?;
-                let cr_id = data
-                    .pointer("/change_request/id")
+                    http_json("POST", "/api/pull_requests", Some(body)).await?;
+                let pr_id = data
+                    .pointer("/pull_request/id")
                     .or_else(|| data.get("id"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 // Publish session worktree onto PR source_branch so structural diff sees edits.
                 let mut publish = json!(null);
-                if ok_status(status) && !cr_id.is_empty() {
+                if ok_status(status) && !pr_id.is_empty() {
                     if let (Some(slug), Some(branch)) = (project.as_deref(), source_branch.as_deref())
                     {
-                        match crate::pr_writeback::publish_session_for_change(slug, branch, &cr_id)
+                        match crate::pr_writeback::publish_session_for_change(slug, branch, &pr_id)
                         {
                             Ok(v) => publish = v,
                             Err(e) => {
@@ -1087,22 +1080,22 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     } else if let Some(slug) = project.as_deref() {
                         // Fallback branch name from PR payload
                         let branch = data
-                            .pointer("/change_request/source_branch")
+                            .pointer("/pull_request/source_branch")
                             .and_then(|v| v.as_str())
                             .unwrap_or("work");
-                        match crate::pr_writeback::publish_session_for_change(slug, branch, &cr_id)
+                        match crate::pr_writeback::publish_session_for_change(slug, branch, &pr_id)
                         {
                             Ok(v) => publish = v,
                             Err(e) => publish = json!({ "ok": false, "error": e }),
                         }
                     }
                 }
-                let path = if cr_id.is_empty() {
-                    "/changes".to_string()
+                let path = if pr_id.is_empty() {
+                    "/pulls".to_string()
                 } else {
-                    format!("/changes/{cr_id}")
+                    format!("/pulls/{pr_id}")
                 };
-                let intent = crate::focus::create_change_intent(
+                let intent = crate::focus::create_pr_intent(
                     Some(&title),
                     description.as_deref(),
                     project.as_deref(),
@@ -1123,12 +1116,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "http_status": status,
                     "summary": if ok_status(status) {
                         format!(
-                            "Opened pull request: {title}. Session published for PR Wizard review. Call submit_change next — do NOT merge."
+                            "Opened pull request: {title}. Session published for PR Wizard review. Call submit_pr next — do NOT merge."
                         )
                     } else {
-                        format!("create_change (open PR) failed (HTTP {status})")
+                        format!("create_pr (open PR) failed (HTTP {status})")
                     },
-                    "change_request": data,
+                    "pull_request": data,
                     "pull_request": data,
                     "publish": publish,
                     "host_check": host_check,
@@ -1143,7 +1136,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 .to_string())
             } else {
                 // Agent often omits title — synthesize so Present can fill the form
-                // and we still create a real CR (empty /changes/new + bare submit_change
+                // and we still create a real CR (empty /pulls/new + bare submit_pr
                 // left operators on a blank form and reported "fixed" with no PR).
                 let project = arg_str(arguments, &["slug", "project", "repo", "repo_id"]);
                 let branch = arg_str(arguments, &["source_branch", "branch"]).or_else(|| {
@@ -1222,17 +1215,17 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     body["slug"] = json!(slug);
                 }
                 let (status, data) =
-                    http_json("POST", "/api/change_requests", Some(body)).await?;
+                    http_json("POST", "/api/pull_requests", Some(body)).await?;
                 let path = if ok_status(status) {
-                    data.get("change_request")
+                    data.get("pull_request")
                         .and_then(|c| c.get("id"))
                         .and_then(|id| id.as_str())
-                        .map(|id| format!("/changes/{id}"))
-                        .unwrap_or_else(|| "/changes".into())
+                        .map(|id| format!("/pulls/{id}"))
+                        .unwrap_or_else(|| "/pulls".into())
                 } else {
-                    "/changes/new".into()
+                    "/pulls/new".into()
                 };
-                let intent = crate::focus::create_change_intent(
+                let intent = crate::focus::create_pr_intent(
                     Some(&title),
                     Some(&desc),
                     project.as_deref(),
@@ -1244,12 +1237,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "http_status": status,
                     "summary": if ok_status(status) {
                         format!(
-                            "Opened pull request (synthesized title `{title}` — pass title next time). Call submit_change next — do NOT merge."
+                            "Opened pull request (synthesized title `{title}` — pass title next time). Call submit_pr next — do NOT merge."
                         )
                     } else {
-                        format!("create_change (open PR) failed (HTTP {status})")
+                        format!("create_pr (open PR) failed (HTTP {status})")
                     },
-                    "change_request": data,
+                    "pull_request": data,
                     "pull_request": data,
                     "host_check": host_check,
                     "gate_notes": gate_notes,
@@ -1264,26 +1257,26 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             }
         }
 
-        "get_change" => {
-            let id = arg_str(arguments, &["id", "change_id", "change_request_id"])
-                .ok_or_else(|| "get_change requires id".to_string())?;
+        "get_pr" => {
+            let id = arg_str(arguments, &["id", "pr_id", "pull_request_id"])
+                .ok_or_else(|| "get_pr requires id".to_string())?;
             let (status, data) =
-                http_json("GET", &format!("/api/change_requests/{}", urlencoding_path(&id)), None)
+                http_json("GET", &format!("/api/pull_requests/{}", urlencoding_path(&id)), None)
                     .await?;
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
                 "summary": format!("Pull request {id}"),
-                "change_request": data,
                 "pull_request": data,
-                "navigation": { "action": "goto", "path": format!("/changes/{id}") }
+                "pull_request": data,
+                "navigation": { "action": "goto", "path": format!("/pulls/{id}") }
             })
             .to_string())
         }
 
-        "submit_change" => {
-            let id = arg_str(arguments, &["id", "change_id"])
-                .ok_or_else(|| "submit_change requires id".to_string())?;
+        "submit_pr" => {
+            let id = arg_str(arguments, &["id", "pr_id"])
+                .ok_or_else(|| "submit_pr requires id".to_string())?;
             // Re-publish latest session tree before review so PR Wizard is current.
             let mut publish = json!(null);
             let slug = arg_str(arguments, &["slug", "project"]).or_else(|| {
@@ -1304,8 +1297,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 match crate::pr_writeback::publish_session_for_change(slug, &branch, &id) {
                     Ok(v) => publish = v,
                     Err(e) => {
-                        tracing::warn!(error = %e, "submit_change re-publish failed");
-                        let _ = h.set_active_change_id(Some(&id));
+                        tracing::warn!(error = %e, "submit_pr re-publish failed");
+                        let _ = h.set_active_pr_id(Some(&id));
                     }
                 }
             }
@@ -1332,7 +1325,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             }
             let (status, data) = http_json(
                 "POST",
-                &format!("/api/change_requests/{}/submit", urlencoding_path(&id)),
+                &format!("/api/pull_requests/{}/submit", urlencoding_path(&id)),
                 Some(json!({})),
             )
             .await?;
@@ -1347,7 +1340,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             let intent = crate::focus::change_action_intent("submit", &id, &summary);
             crate::focus::register_pending_intent(
                 intent.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                json!({ "tool": "submit_change", "id": id }),
+                json!({ "tool": "submit_pr", "id": id }),
             );
             Ok(json!({
                 "ok": ok_status(status),
@@ -1357,23 +1350,23 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "publish": publish,
                 "host_check": host_check,
                 "gate_notes": gate_notes,
-                "navigation": { "action": "goto", "path": format!("/changes/{id}") },
+                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
             .to_string())
         }
 
-        "approve_change" => {
-            let id = arg_str(arguments, &["id", "change_id"])
-                .ok_or_else(|| "approve_change requires id".to_string())?;
+        "approve_pr" => {
+            let id = arg_str(arguments, &["id", "pr_id"])
+                .ok_or_else(|| "approve_pr requires id".to_string())?;
             let body = json!({
                 "reviewer": arg_str(arguments, &["reviewer"]).unwrap_or_default(),
                 "comment": arg_str(arguments, &["comment"]),
             });
             let (status, data) = http_json(
                 "POST",
-                &format!("/api/change_requests/{}/approve", urlencoding_path(&id)),
+                &format!("/api/pull_requests/{}/approve", urlencoding_path(&id)),
                 Some(body),
             )
             .await?;
@@ -1384,50 +1377,50 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/changes/{id}") },
+                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
             .to_string())
         }
 
-        "request_changes" => {
-            let id = arg_str(arguments, &["id", "change_id"])
-                .ok_or_else(|| "request_changes requires id".to_string())?;
+        "request_pr_changes" => {
+            let id = arg_str(arguments, &["id", "pr_id"])
+                .ok_or_else(|| "request_pr_changes requires id".to_string())?;
             let body = json!({
                 "reviewer": arg_str(arguments, &["reviewer"]).unwrap_or_default(),
                 "comment": arg_str(arguments, &["comment"]).unwrap_or_default(),
             });
             let (status, data) = http_json(
                 "POST",
-                &format!("/api/change_requests/{}/request-changes", urlencoding_path(&id)),
+                &format!("/api/pull_requests/{}/request-changes", urlencoding_path(&id)),
                 Some(body),
             )
             .await?;
             let summary = format!("Requested changes on {id}");
-            let intent = crate::focus::change_action_intent("request_changes", &id, &summary);
+            let intent = crate::focus::change_action_intent("request_pr_changes", &id, &summary);
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/changes/{id}") },
+                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
             .to_string())
         }
 
-        "merge_change" => {
-            let id = arg_str(arguments, &["id", "change_id"])
-                .ok_or_else(|| "merge_change requires id".to_string())?;
+        "merge_pr" => {
+            let id = arg_str(arguments, &["id", "pr_id"])
+                .ok_or_else(|| "merge_pr requires id".to_string())?;
             let body = json!({
                 "merger": arg_str(arguments, &["merger"]).unwrap_or_default(),
                 "slug": arg_str(arguments, &["slug"]).unwrap_or_default(),
             });
             let (status, data) = http_json(
                 "POST",
-                &format!("/api/change_requests/{}/merge", urlencoding_path(&id)),
+                &format!("/api/pull_requests/{}/merge", urlencoding_path(&id)),
                 Some(body),
             )
             .await?;
@@ -1438,7 +1431,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/changes/{id}") },
+                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
@@ -1446,7 +1439,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         }
 
         "add_comment" => {
-            let id = arg_str(arguments, &["id", "change_id"])
+            let id = arg_str(arguments, &["id", "pr_id"])
                 .ok_or_else(|| "add_comment requires id".to_string())?;
             let body_text = arg_str(arguments, &["body", "comment", "text"])
                 .ok_or_else(|| "add_comment requires body/comment".to_string())?;
@@ -1457,7 +1450,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             let (status, data) = http_json(
                 "POST",
-                &format!("/api/change_requests/{}/comments", urlencoding_path(&id)),
+                &format!("/api/pull_requests/{}/comments", urlencoding_path(&id)),
                 Some(body),
             )
             .await?;
@@ -1468,19 +1461,19 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/changes/{id}") },
+                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
             .to_string())
         }
 
-        "get_change_diff" => {
-            let id = arg_str(arguments, &["id", "change_id"])
-                .ok_or_else(|| "get_change_diff requires id".to_string())?;
+        "get_pr_diff" => {
+            let id = arg_str(arguments, &["id", "pr_id"])
+                .ok_or_else(|| "get_pr_diff requires id".to_string())?;
             let (status, data) = http_json(
                 "GET",
-                &format!("/api/change_requests/{}/diff", urlencoding_path(&id)),
+                &format!("/api/pull_requests/{}/diff", urlencoding_path(&id)),
                 None,
             )
             .await?;
@@ -1489,7 +1482,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": format!("Structural diff for change {id}"),
                 "diff": data,
-                "navigation": { "action": "goto", "path": format!("/changes/{id}") }
+                "navigation": { "action": "goto", "path": format!("/pulls/{id}") }
             })
             .to_string())
         }
@@ -1844,7 +1837,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "ok": false,
                     "summary": e,
                     "intent_id": intent_id,
-                    "hint": "Call after create_project(via=ux) / create_change(via=ux) so the browser can finish Present. Or use via=server for multi-step without wait."
+                    "hint": "Call after create_project(via=ux) / create_pr(via=ux) so the browser can finish Present. Or use via=server for multi-step without wait."
                 })
                 .to_string()),
             }
@@ -2090,7 +2083,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "navigate_to",
-            "description": "Navigate the VEIL runtime dashboard SPA to a path. Use for any UI destination: /dashboard, /projects, /projects/{id}, /changes, /changes/new, /deploy, /registry, /config, /agents.",
+            "description": "Navigate the VEIL runtime dashboard SPA to a path. Use for any UI destination: /dashboard, /projects, /projects/{id}, /pulls, /pulls/new, /deploy, /registry, /config, /agents.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2175,8 +2168,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "list_changes",
-            "description": "List pull requests (GET /api/change_requests) and open /changes. Optional status filter: Draft, ReadyForReview, Approved, Merged, …. Prefer open/unmerged PRs when reusing a work line.",
+            "name": "list_prs",
+            "description": "List pull requests (GET /api/pull_requests) and open /pulls. Optional status filter: Draft, ReadyForReview, Approved, Merged, …. Prefer open/unmerged PRs when reusing a work line.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2187,8 +2180,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "create_change",
-            "description": "Open a pull request (PR) for human review (POST /api/change_requests; product name: PR, not ticket). Default end of agent coding work — prefer this over merge_branch. Pass title + description with per-slice ## headings and rationales for the PR Wizard. Host attaches session commits + project slug + host_check gate notes. Then call submit_change. Operator reviews in IDE PR Wizard (not auto-merge).",
+            "name": "create_pr",
+            "description": "Open a pull request (PR) for human review (POST /api/pull_requests; product name: PR, not ticket). Default end of agent coding work — prefer this over merge_branch. Pass title + description with per-slice ## headings and rationales for the PR Wizard. Host attaches session commits + project slug + host_check gate notes. Then call submit_pr. Operator reviews in IDE PR Wizard (not auto-merge).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2204,8 +2197,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "get_change",
-            "description": "Get a change request by id and open its detail page.",
+            "name": "get_pr",
+            "description": "Get a pull request by id and open its detail page.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
@@ -2213,8 +2206,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "submit_change",
-            "description": "Submit a pull request for human review (PR Wizard). Call after create_change when agent work is ready for the operator — not after auto-merge. Response includes host_check; if severity=errors the agent must not claim a clean working set.",
+            "name": "submit_pr",
+            "description": "Submit a pull request for human review (PR Wizard). Call after create_pr when agent work is ready for the operator — not after auto-merge. Response includes host_check; if severity=errors the agent must not claim a clean working set.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
@@ -2222,8 +2215,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "approve_change",
-            "description": "Approve a change request. Human review action — agents use only when the operator explicitly requests approval.",
+            "name": "approve_pr",
+            "description": "Approve a pull request. Human review action — agents use only when the operator explicitly requests approval.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2235,8 +2228,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "request_changes",
-            "description": "Request changes on a change request (review feedback).",
+            "name": "request_pr_changes",
+            "description": "Request changes on a pull request (review feedback).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2248,8 +2241,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "merge_change",
-            "description": "Merge an approved change request. OPERATOR GATE — agents must not call this unless the human explicitly asks to merge after review.",
+            "name": "merge_pr",
+            "description": "Merge an approved pull request. OPERATOR GATE — agents must not call this unless the human explicitly asks to merge after review.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2262,7 +2255,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "add_comment",
-            "description": "Add a review comment on a change request (optional construct_path for structural comments).",
+            "description": "Add a review comment on a pull request (optional construct_path for structural comments).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2275,8 +2268,8 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "get_change_diff",
-            "description": "Fetch structural diff for a change request.",
+            "name": "get_pr_diff",
+            "description": "Fetch structural diff for a pull request.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
@@ -2413,7 +2406,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "resolve_coding_target",
-            "description": "At the start of coding work: match the task against open unmerged pull requests (not tickets). Auto-binds when one PR strongly matches scope; returns needs_choice + Present modal when multiple candidates; decision=new when none. Pass choice=pr_id or choice=new after modal ACK. Prefer this before create_change.",
+            "description": "At the start of coding work: match the task against open unmerged pull requests (not tickets). Auto-binds when one PR strongly matches scope; returns needs_choice + Present modal when multiple candidates; decision=new when none. Pass choice=pr_id or choice=new after modal ACK. Prefer this before create_pr.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2444,7 +2437,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "create_pr",
-            "description": "Alias for create_change — open a pull request for human review (not a ticket).",
+            "description": "Alias for create_pr — open a pull request for human review (not a ticket).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2460,12 +2453,12 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "submit_pr",
-            "description": "Alias for submit_change — submit pull request to PR Wizard. Respects VEIL_STRICT_SUBMIT=1 (hard-block on host Errors).",
+            "description": "Alias for submit_pr — submit pull request to PR Wizard. Respects VEIL_STRICT_SUBMIT=1 (hard-block on host Errors).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string" },
-                    "change_id": { "type": "string" },
+                    "pr_id": { "type": "string" },
                     "project": { "type": "string" }
                 },
                 "required": []
@@ -2473,7 +2466,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_prs",
-            "description": "Alias for list_changes — list pull requests.",
+            "description": "Alias for list_prs — list pull requests.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2485,7 +2478,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "wait_intent_ack",
-            "description": "Block until the browser finishes Present for an intent_id (from create_project via=ux / create_change via=ux / resolve_coding_target needs_choice). Call AFTER the create tool so Present can stream first — then wait before write_source. timeout_ms default 45000.",
+            "description": "Block until the browser finishes Present for an intent_id (from create_project via=ux / create_pr via=ux / resolve_coding_target needs_choice). Call AFTER the create tool so Present can stream first — then wait before write_source. timeout_ms default 45000.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2693,7 +2686,7 @@ impl Tool for NavigateToTool {
 pub struct ListChangesTool;
 
 impl Tool for ListChangesTool {
-    const NAME: &'static str = "list_changes";
+    const NAME: &'static str = "list_prs";
     type Error = ToolErr;
     type Args = EmptyArgs;
     type Output = String;
@@ -2701,13 +2694,13 @@ impl Tool for ListChangesTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "List SDLC change requests and open /changes.".into(),
+            description: "List SDLC pull requests and open /pulls.".into(),
             parameters: json!({ "type": "object", "properties": {} }),
         }
     }
 
     async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("list_changes", &json!({})).await.map_err(ToolErr)
+        dispatch("list_prs", &json!({})).await.map_err(ToolErr)
     }
 }
 
@@ -2727,7 +2720,7 @@ pub struct CreateChangeArgs {
 pub struct CreateChangeTool;
 
 impl Tool for CreateChangeTool {
-    const NAME: &'static str = "create_change";
+    const NAME: &'static str = "create_pr";
     type Error = ToolErr;
     type Args = CreateChangeArgs;
     type Output = String;
@@ -2735,7 +2728,7 @@ impl Tool for CreateChangeTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Create change request (with title) or open /changes/new.".into(),
+            description: "Create pull request (with title) or open /pulls/new.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -2749,7 +2742,7 @@ impl Tool for CreateChangeTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("create_change", &serde_json::to_value(args).unwrap_or_default())
+        dispatch("create_pr", &serde_json::to_value(args).unwrap_or_default())
             .await
             .map_err(ToolErr)
     }
@@ -2772,7 +2765,7 @@ pub struct ChangeIdArgs {
 pub struct ApproveChangeTool;
 
 impl Tool for ApproveChangeTool {
-    const NAME: &'static str = "approve_change";
+    const NAME: &'static str = "approve_pr";
     type Error = ToolErr;
     type Args = ChangeIdArgs;
     type Output = String;
@@ -2780,7 +2773,7 @@ impl Tool for ApproveChangeTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Approve a change request by id.".into(),
+            description: "Approve a pull request by id.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -2794,7 +2787,7 @@ impl Tool for ApproveChangeTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("approve_change", &serde_json::to_value(args).unwrap_or_default())
+        dispatch("approve_pr", &serde_json::to_value(args).unwrap_or_default())
             .await
             .map_err(ToolErr)
     }
@@ -2804,7 +2797,7 @@ impl Tool for ApproveChangeTool {
 pub struct MergeChangeTool;
 
 impl Tool for MergeChangeTool {
-    const NAME: &'static str = "merge_change";
+    const NAME: &'static str = "merge_pr";
     type Error = ToolErr;
     type Args = ChangeIdArgs;
     type Output = String;
@@ -2812,7 +2805,7 @@ impl Tool for MergeChangeTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Merge an approved change request.".into(),
+            description: "Merge an approved pull request.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -2825,7 +2818,7 @@ impl Tool for MergeChangeTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("merge_change", &serde_json::to_value(args).unwrap_or_default())
+        dispatch("merge_pr", &serde_json::to_value(args).unwrap_or_default())
             .await
             .map_err(ToolErr)
     }
@@ -2942,10 +2935,10 @@ pub fn rig_platform_tool_names() -> &'static [&'static str] {
         "open_project",
         "open_ide",
         "navigate_to",
-        "list_changes",
-        "create_change",
-        "approve_change",
-        "merge_change",
+        "list_prs",
+        "create_pr",
+        "approve_pr",
+        "merge_pr",
         "provision_project",
         "deploy_status",
         "get_config",
@@ -2961,14 +2954,14 @@ mod tests {
         assert!(is_platform_tool("create_project"));
         assert!(is_platform_tool("create_repo"));
         assert!(is_platform_tool("list_projects"));
-        assert!(is_platform_tool("approve_change"));
+        assert!(is_platform_tool("approve_pr"));
         assert!(is_platform_tool("provision_project"));
         assert!(is_platform_tool("create_pr"));
         assert!(is_platform_tool("submit_pr"));
         assert!(is_platform_tool("list_prs"));
         assert!(is_platform_tool("run_coding_plan"));
-        assert_eq!(canonicalize_tool("create_pr"), "create_change");
-        assert_eq!(canonicalize_tool("submit_pr"), "submit_change");
+        assert_eq!(canonicalize_tool("create_pr"), "create_pr");
+        assert_eq!(canonicalize_tool("submit_pr"), "submit_pr");
         assert!(!is_platform_tool("veil_check"));
         assert!(!is_platform_tool("write_source"));
     }
@@ -3004,9 +2997,9 @@ mod tests {
             .collect();
         assert!(names.contains(&"create_project"));
         assert!(names.contains(&"list_projects"));
-        assert!(names.contains(&"list_changes"));
-        assert!(names.contains(&"approve_change"));
-        assert!(names.contains(&"merge_change"));
+        assert!(names.contains(&"list_prs"));
+        assert!(names.contains(&"approve_pr"));
+        assert!(names.contains(&"merge_pr"));
         assert!(names.contains(&"provision_project"));
         assert!(names.contains(&"deploy_status"));
         assert!(names.contains(&"search_registry"));

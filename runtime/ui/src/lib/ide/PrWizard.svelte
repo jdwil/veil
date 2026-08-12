@@ -11,7 +11,7 @@
     codingSessionMeta,
   } from '$lib/ide/store';
   import {
-    type ChangeRequest,
+    type PullRequest,
     type DiffItem,
     type ReviewComment,
     type WizardItemState,
@@ -21,8 +21,8 @@
     closePrWizard,
     prWizardChangeId,
     loadWizardDiff,
-    fetchChangeDetail,
-    fetchOpenChangeRequests,
+    fetchPullRequestDetail,
+    fetchOpenPullRequests,
     rationalesFromPrTexts,
     buildWizardItems,
     refreshWizardRationales,
@@ -49,10 +49,10 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
 
-  let changeId = $state<string | null>(null);
-  let pr = $state<ChangeRequest | null>(null);
+  let prId = $state<string | null>(null);
+  let pr = $state<PullRequest | null>(null);
   let comments = $state<ReviewComment[]>([]);
-  let openPrs = $state<ChangeRequest[]>([]);
+  let openPrs = $state<PullRequest[]>([]);
   let diff = $state<StructDiff | null>(null);
   let diffSource = $state<'pr' | 'working-tree' | 'pr-empty'>('working-tree');
   let diffNote = $state<string | null>(null);
@@ -62,7 +62,7 @@
   let showFeedback = $state(false);
   let statusMsg = $state<string | null>(null);
   /** PRs for other projects / smoke tests (collapsed) */
-  let otherPrs = $state<ChangeRequest[]>([]);
+  let otherPrs = $state<PullRequest[]>([]);
 
   const current = $derived(items[step] ?? null);
   const approvedCount = $derived(items.filter((i) => i.decision === 'approve').length);
@@ -122,8 +122,8 @@
   $effect(() => {
     // react if parent sets a different change id while open
     const id = $prWizardChangeId;
-    if (id !== changeId && phase !== 'loading') {
-      changeId = id;
+    if (id !== prId && phase !== 'loading') {
+      prId = id;
       void bootstrap();
     }
   });
@@ -135,7 +135,7 @@
     publishPrWizardViewport({
       open: true,
       phase,
-      changeId,
+      prId,
       prTitle: pr?.title ?? null,
       prStatus: pr?.status ?? null,
       sourceBranch: pr?.source_branch ?? null,
@@ -159,14 +159,14 @@
     phase = 'loading';
     error = null;
     statusMsg = null;
-    changeId = $prWizardChangeId;
+    prId = $prWizardChangeId;
     try {
-      if (changeId) {
-        await loadPr(changeId);
+      if (prId) {
+        await loadPr(prId);
       } else {
         // Offer open PRs or start session review
         try {
-          const all = await fetchOpenChangeRequests();
+          const all = await fetchOpenPullRequests();
           const slug = currentProjectParam();
           const open = all.filter((p) =>
             ['Draft', 'ReadyForReview', 'ChangesRequested', 'Approved'].includes(p.status)
@@ -197,8 +197,8 @@
   }
 
   async function loadPr(id: string) {
-    changeId = id;
-    const detail = await fetchChangeDetail(id);
+    prId = id;
+    const detail = await fetchPullRequestDetail(id);
     pr = detail.pr;
     comments = detail.comments;
     await loadDiffAndItems(id, detail.pr.description || '');
@@ -222,7 +222,7 @@
 
   async function loadSessionReview() {
     pr = null;
-    changeId = null;
+    prId = null;
     comments = [];
     await loadDiffAndItems(null, '');
     phase = items.length === 0 ? 'summary' : 'walk';
@@ -232,7 +232,7 @@
   async function loadDiffAndItems(id: string | null, description: string) {
     const slug = currentProjectParam();
     const { diff: d, source, note } = await loadWizardDiff({
-      changeId: id,
+      prId: id,
       slug,
       allowWorkingTreeFallback: !id,
     });
@@ -246,7 +246,7 @@
     if (items.some((it) => !it.rationale)) {
       try {
         const refreshed = await refreshWizardRationales({
-          changeId: id,
+          prId: id,
           slug,
           description,
           comments,
@@ -268,7 +268,7 @@
     refreshingRationales = true;
     try {
       const { items: next, applied } = await refreshWizardRationales({
-        changeId,
+        prId,
         slug: currentProjectParam(),
         description: pr?.description || '',
         comments,
@@ -295,8 +295,8 @@
     if (wasAgentStreaming && !streaming && phase === 'walk' && items.length) {
       void refreshRationalesNow('agent turn');
       // Also re-pull PR comments (agent_reply may list construct rationales).
-      if (changeId) {
-        void fetchChangeDetail(changeId)
+      if (prId) {
+        void fetchPullRequestDetail(prId)
           .then((d) => {
             comments = d.comments;
             pr = d.pr;
@@ -370,8 +370,8 @@
       );
       const updated = items[step];
 
-      if (changeId) {
-        await postReviewItem(changeId, {
+      if (prId) {
+        await postReviewItem(prId, {
           decision,
           construct_path: pathOf(updated.item),
           body: decision === 'feedback' ? updated.feedback : 'Approved in PR Wizard.',
@@ -383,7 +383,7 @@
         });
         // refresh history
         try {
-          const d = await fetchChangeDetail(changeId);
+          const d = await fetchPullRequestDetail(prId);
           comments = d.comments;
         } catch {
           /* ignore */
@@ -437,8 +437,8 @@
       );
       feedbackDraft = '';
       showFeedback = false;
-      if (changeId && (prev === 'approve' || prev === 'feedback')) {
-        await postReviewItem(changeId, {
+      if (prId && (prev === 'approve' || prev === 'feedback')) {
+        await postReviewItem(prId, {
           decision: 'clear',
           construct_path: pathOf(cur.item),
           body: `Cleared ${prev} decision in PR Wizard.`,
@@ -447,7 +447,7 @@
           item_name: itemDisplayName(cur.item),
         });
         try {
-          const d = await fetchChangeDetail(changeId);
+          const d = await fetchPullRequestDetail(prId);
           comments = d.comments;
         } catch {
           /* ignore */
@@ -513,7 +513,7 @@
     busy = true;
     error = null;
     try {
-      let id = changeId;
+      let id = prId;
       if (!id) {
         // Create PR from session review so history is durable
         const title =
@@ -537,7 +537,7 @@
           source_branch: branchName,
         });
         id = created.id;
-        changeId = id;
+        prId = id;
         pr = created;
       }
 
@@ -589,7 +589,7 @@
       }
 
       try {
-        const d = await fetchChangeDetail(id);
+        const d = await fetchPullRequestDetail(id);
         pr = d.pr;
         comments = d.comments;
       } catch {
@@ -603,11 +603,11 @@
   }
 
   async function doMerge() {
-    if (!changeId) return;
+    if (!prId) return;
     busy = true;
     error = null;
     try {
-      await mergeChangeApi(changeId, currentProjectParam());
+      await mergeChangeApi(prId, currentProjectParam());
       statusMsg = 'Merged to main. Product base updated.';
       if (pr) pr = { ...pr, status: 'Merged' };
     } catch (e) {
@@ -841,7 +841,7 @@
         </button>
       </section>
 
-      <!-- Secondary: formal change requests for THIS project -->
+      <!-- Secondary: formal pull requests for THIS project -->
       <section class="pick-section">
         <h4>
           PRs for
@@ -853,7 +853,7 @@
           ({openPrs.length})
         </h4>
         <p class="muted sm">
-          Change requests are <strong>platform-wide SDLC records</strong>, not VEIL packages.
+          Pull requests are <strong>platform-wide SDLC records</strong>, not VEIL packages.
           The PR Wizard is part of the <strong>core IDE</strong>; these cards are optional formal
           reviews. <code>work</code> / <code>pr-wizard-test</code> are <strong>git-shaped branch
           names</strong>, not project names.
@@ -1135,7 +1135,7 @@
           </p>
           <p class="muted sm">
             Branch <code>{pr.source_branch}</code> → <code>{pr.target_branch || 'main'}</code>.
-            This is a platform change request, not a VEIL project.
+            This is a platform pull request, not a VEIL project.
           </p>
           {#if diffSource === 'pr-empty'}
             <p class="banner-warn">
@@ -1282,7 +1282,7 @@
           Browse {items.length} structural items
         </button>
       {/if}
-      {#if pr?.status === 'Approved' && changeId}
+      {#if pr?.status === 'Approved' && prId}
         <button type="button" class="btn primary" disabled={busy} onclick={() => void doMerge()}>
           Merge to {pr.target_branch || 'main'}
         </button>

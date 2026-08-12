@@ -757,7 +757,7 @@ pkg VeilRuntime
         s3_bucket: Opt<Str>
         ddb_table: Opt<Str>
         aws_region: Str
-        ecr_repository_prefix: Opt<Str>
+        epr_repository_prefix: Opt<Str>
         llm_api_key: Opt<Str>
         llm_model: Str
 
@@ -790,7 +790,7 @@ pkg VeilRuntime
           ecr_prefix = Env.get_opt("VEIL_ECR_PREFIX")
           llm_api_key = Env.get_opt("OPENAI_API_KEY")
           llm_model = Env.get_or("VEIL_LLM_MODEL", "gpt-4o")
-          ret DaemonConfig{port: 8080, work_dir, s3_bucket, ddb_table, aws_region, ecr_repository_prefix: ecr_prefix, llm_api_key, llm_model}
+          ret DaemonConfig{port: 8080, work_dir, s3_bucket, ddb_table, aws_region, epr_repository_prefix: ecr_prefix, llm_api_key, llm_model}
 
       ws_handler HandleConnection
         @path("/ws")
@@ -1992,7 +1992,7 @@ pkg VeilRuntime
         ecs_cluster_arn: Opt<Str>
         role_arn: Opt<Str>
         log_group: Opt<Str>
-        ecr_repository: Opt<Str>
+        epr_repository: Opt<Str>
 
       enum HealthState
         Healthy
@@ -2194,7 +2194,7 @@ pkg VeilRuntime
           now = Dt.now()
           current = DeploymentStateStore.get_current!(environment, desired.name)
           version = if current.is_some() then current.unwrap().version + 1 else 1
-          new_state = DeploymentState{project: "", context: desired.context, unit_name: desired.name, unit_type: desired.unit_type, environment, region: "", status: DeploymentStatus.Active, version, artifact: ArtifactInfo{hash: artifact_hash, image_uri: null, compiled_at: now, source_commit: null}, config: DeployedConfig{memory_mb: null, timeout_seconds: null, architecture: null, reserved_concurrency: null, cpu: null, desired_count: null, env_vars: Map.new()}, aws_resources: AwsResources{lambda_arn: null, lambda_version: null, api_gw_id: null, api_gw_route_id: null, sqs_queue_url: null, sqs_queue_arn: null, sqs_dlq_url: null, ecs_service_arn: null, ecs_cluster_arn: null, role_arn: null, log_group: null, ecr_repository: null}, health: HealthStatus{last_check: null, status: HealthState.Unknown, error_rate_1h: null, p99_latency_ms: null, invocations_1h: null}, deployed_at: now, deployed_by: actor, description: desired.description}
+          new_state = DeploymentState{project: "", context: desired.context, unit_name: desired.name, unit_type: desired.unit_type, environment, region: "", status: DeploymentStatus.Active, version, artifact: ArtifactInfo{hash: artifact_hash, image_uri: null, compiled_at: now, source_commit: null}, config: DeployedConfig{memory_mb: null, timeout_seconds: null, architecture: null, reserved_concurrency: null, cpu: null, desired_count: null, env_vars: Map.new()}, aws_resources: AwsResources{lambda_arn: null, lambda_version: null, api_gw_id: null, api_gw_route_id: null, sqs_queue_url: null, sqs_queue_arn: null, sqs_dlq_url: null, ecs_service_arn: null, ecs_cluster_arn: null, role_arn: null, log_group: null, epr_repository: null}, health: HealthStatus{last_check: null, status: HealthState.Unknown, error_rate_1h: null, p99_latency_ms: null, invocations_1h: null}, deployed_at: now, deployed_by: actor, description: desired.description}
           DeploymentStateStore.save_current!(new_state)
           DeploymentStateStore.save_version!(new_state)
           event = DeployEvent{event_type: EventType.Deployed, version, actor, changes: [], message, timestamp: now, duration_ms: null}
@@ -3278,10 +3278,10 @@ pkg VeilRuntime
           ret ActionResult{success: true, message: f"Mock executed: {action.description}", resource_updates: Map.new(), duration_ms: 0}
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # ChangeManagement — SDLC workflow (SOC 2: PRs, reviews, merge gates)
+  # PullRequestManagement — SDLC workflow (SOC 2: PRs, reviews, merge gates)
   # ═══════════════════════════════════════════════════════════════════════════
 
-  ctx ChangeManagement
+  ctx PullRequestManagement
     group domain
 
       enum PrStatus
@@ -3346,7 +3346,7 @@ pkg VeilRuntime
         logs_key: Opt<Str>
         error_summary: Opt<Str>
 
-      agg ChangeRequest
+      agg PullRequest
         root
           id: Id
           repo_id: Id
@@ -3365,12 +3365,12 @@ pkg VeilRuntime
 
       # ─── Repositories ──────────────────────────────────────────────────
 
-      repo ChangeRequestRepo
-        find!(id: Id) -> Opt<ChangeRequest>
-        list_by_repo!(repo_id: Id, status: Opt<PrStatus>) -> List<ChangeRequest>
-        list_open!(repo_id: Id) -> List<ChangeRequest>
-        list_all!(status: Opt<PrStatus>) -> List<ChangeRequest>
-        save!(cr: ChangeRequest)
+      repo PullRequestRepo
+        find!(id: Id) -> Opt<PullRequest>
+        list_by_repo!(repo_id: Id, status: Opt<PrStatus>) -> List<PullRequest>
+        list_open!(repo_id: Id) -> List<PullRequest>
+        list_all!(status: Opt<PrStatus>) -> List<PullRequest>
+        save!(cr: PullRequest)
 
       repo ApprovalRepo
         find_for_pr!(pr_id: Id) -> List<Approval>
@@ -3404,8 +3404,8 @@ pkg VeilRuntime
         diff_files!(slug: Str, base_ref: Str, head_ref: Str) -> Json
         can_merge!(slug: Str, source: Str, target: Str) -> Json
 
-      # DDB adapter for ChangeRequest aggregate (same pattern as DdbDeploymentStore)
-      adapter DdbChangeRequestRepo for ChangeRequestRepo
+      # DDB adapter for PullRequest aggregate (same pattern as DdbDeploymentStore)
+      adapter DdbPullRequestRepo for PullRequestRepo
         @field(client: DdbClient, table)
 
         impl find(id)
@@ -3421,7 +3421,7 @@ pkg VeilRuntime
           mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr: ChangeRequest = Json.parse(data)
+            cr: PullRequest = Json.parse(data)
             if status.is_none() || cr.status == status.unwrap()
               out = out + [cr]
           ret out
@@ -3432,7 +3432,7 @@ pkg VeilRuntime
           mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr: ChangeRequest = Json.parse(data)
+            cr: PullRequest = Json.parse(data)
             if cr.status != PrStatus.Merged && cr.status != PrStatus.Rejected && cr.status != PrStatus.Closed
               out = out + [cr]
           ret out
@@ -3443,7 +3443,7 @@ pkg VeilRuntime
           mut out = []
           for item in items
             data = item.get("data").unwrap().as_s().unwrap()
-            cr: ChangeRequest = Json.parse(data)
+            cr: PullRequest = Json.parse(data)
             if status.is_none() || cr.status == status.unwrap()
               out = out + [cr]
           ret out
@@ -3657,13 +3657,13 @@ pkg VeilRuntime
 
     group application
 
-      # Create a new change request (branch + PR record)
-      # Nested under repo: POST /api/repos/{id}/changes
-      @route("POST /api/repos/{id}/changes")
-      svc CreateChangeRequest
-        -> ChangeRequest
+      # Create a new pull request (branch + PR record)
+      # Nested under repo: POST /api/repos/{id}/pull_requests
+      @route("POST /api/repos/{id}/pull_requests")
+      svc CreatePullRequest
+        -> PullRequest
         @dep(git: GitService)
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           slug: Str
@@ -3679,17 +3679,17 @@ pkg VeilRuntime
           git.create_branch!(slug, branch_name, "main")
         step persist
           now = Dt.now()
-          cr_id = Id.new()
-          cr = ChangeRequest{id: cr_id, repo_id: id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
-          cr_repo.save!(cr)
+          pr_id = Id.new()
+          cr = PullRequest{id: pr_id, repo_id: id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
+          pr_repo.save!(cr)
           ret cr
 
       # Flat create for dashboard form (no repo path segment)
-      @route("POST /api/change_requests")
-      svc CreateChangeRequestFlat
-        -> ChangeRequest
+      @route("POST /api/pull_requests")
+      svc CreatePullRequestFlat
+        -> PullRequest
         @dep(git: GitService)
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         input
           repo_id: Id
           slug: Str
@@ -3705,17 +3705,17 @@ pkg VeilRuntime
           git.create_branch!(slug, branch_name, "main")
         step persist
           now = Dt.now()
-          cr_id = Id.new()
-          cr = ChangeRequest{id: cr_id, repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
-          cr_repo.save!(cr)
+          pr_id = Id.new()
+          cr = PullRequest{id: pr_id, repo_id, title, description, jira_ticket, source_branch: branch_name, target_branch: "main", author, status: PrStatus.Draft, created_at: now, updated_at: now, merged_at: null, merged_by: null, merge_commit: null}
+          pr_repo.save!(cr)
           ret cr
 
       # Commit a file to a PR's branch
-      @route("POST /api/change_requests/{id}/commit")
-      svc CommitToChange
+      @route("POST /api/pull_requests/{id}/commit")
+      svc CommitToPullRequest
         -> Json
         @dep(git: GitService)
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           slug: Str
@@ -3724,7 +3724,7 @@ pkg VeilRuntime
           message: Str
           author: Str
         step resolve
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status != PrStatus.Merged, "Cannot commit to merged PR"
@@ -3734,31 +3734,31 @@ pkg VeilRuntime
           ret {hash: hash, branch: pr.source_branch}
 
       # Submit PR for review
-      @route("POST /api/change_requests/{id}/submit")
+      @route("POST /api/pull_requests/{id}/submit")
       svc SubmitForReview
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
         step transition
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.Draft || pr.status == PrStatus.ChangesRequested, "PR not in submittable state"
           pr.status = PrStatus.ReadyForReview
           pr.updated_at = Dt.now()
-          cr_repo.save!(pr)
+          pr_repo.save!(pr)
 
-      # Approve a change
-      @route("POST /api/change_requests/{id}/approve")
-      svc ApproveChange
-        @dep(cr_repo: ChangeRequestRepo)
+      # Approve a pull request
+      @route("POST /api/pull_requests/{id}/approve")
+      svc ApprovePullRequest
+        @dep(pr_repo: PullRequestRepo)
         @dep(approval_repo: ApprovalRepo)
         input
           id: Id
           reviewer: Str
           comment: Opt<Str>
         step validate
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
@@ -3768,19 +3768,19 @@ pkg VeilRuntime
           approval_repo.save!(approval)
           pr.status = PrStatus.Approved
           pr.updated_at = Dt.now()
-          cr_repo.save!(pr)
+          pr_repo.save!(pr)
 
-      # Request changes
-      @route("POST /api/change_requests/{id}/request-changes")
-      svc RequestChanges
-        @dep(cr_repo: ChangeRequestRepo)
+      # Request changes on a pull request
+      @route("POST /api/pull_requests/{id}/request-changes")
+      svc RequestPullRequestChanges
+        @dep(pr_repo: PullRequestRepo)
         @dep(comment_repo: CommentRepo)
         input
           id: Id
           reviewer: Str
           comment: Str
         step validate
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.ReadyForReview, "PR not in reviewable state"
@@ -3790,14 +3790,14 @@ pkg VeilRuntime
           comment_repo.save!(review_comment)
           pr.status = PrStatus.ChangesRequested
           pr.updated_at = Dt.now()
-          cr_repo.save!(pr)
+          pr_repo.save!(pr)
 
       # Merge a PR (all gates must pass)
-      @route("POST /api/change_requests/{id}/merge")
-      svc MergeChange
+      @route("POST /api/pull_requests/{id}/merge")
+      svc MergePullRequest
         -> Json
         @dep(git: GitService)
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         @dep(ci_repo: CiRunRepo)
         @dep(approval_repo: ApprovalRepo)
         input
@@ -3805,7 +3805,7 @@ pkg VeilRuntime
           merger: Str
           slug: Str
         step validate_gates
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           guard pr.status == PrStatus.Approved, "PR must be approved before merge"
@@ -3818,7 +3818,7 @@ pkg VeilRuntime
           guard !approvals.is_empty(), "At least one approval required"
         step merge
           pr.status = PrStatus.Merging
-          cr_repo.save!(pr)
+          pr_repo.save!(pr)
           merge_msg = f"Merge {pr.source_branch}: {pr.title} [{pr.jira_ticket}]"
           merge_hash = git.merge!(slug, pr.source_branch, pr.target_branch, merge_msg, merger)
         step finalize
@@ -3827,20 +3827,20 @@ pkg VeilRuntime
           pr.merged_by = Opt.some(merger)
           pr.merge_commit = Opt.some(merge_hash.clone())
           pr.updated_at = Dt.now()
-          cr_repo.save!(pr)
+          pr_repo.save!(pr)
           ret {merge_commit: merge_hash, branch: pr.source_branch, target: pr.target_branch}
 
       # Get structural diff for visual review
-      @route("GET /api/change_requests/{id}/diff")
+      @route("GET /api/pull_requests/{id}/diff")
       svc GetStructuralDiff
         -> Json
         @dep(git: GitService)
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           slug: Str
         step resolve
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
         step compute_diff
@@ -3861,8 +3861,8 @@ pkg VeilRuntime
           # TODO: wire veil_parser + veil_ir for full structural diff
           ret Json.object()
 
-      # Add a review comment (dashboard + nested under change request)
-      @route("POST /api/change_requests/{id}/comments")
+      # Add a review comment (dashboard + nested under pull request)
+      @route("POST /api/pull_requests/{id}/comments")
       svc AddReviewComment
         -> ReviewComment
         @dep(comment_repo: CommentRepo)
@@ -3892,44 +3892,44 @@ pkg VeilRuntime
           comment_repo.save!(comment)
           ret comment
 
-      # List PRs for a repo: GET /api/repos/{id}/changes
-      @route("GET /api/repos/{id}/changes")
-      svc ListChangeRequests
-        -> List<ChangeRequest>
-        @dep(cr_repo: ChangeRequestRepo)
+      # List PRs for a repo: GET /api/repos/{id}/pull_requests
+      @route("GET /api/repos/{id}/pull_requests")
+      svc ListPullRequests
+        -> List<PullRequest>
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           status: Opt<PrStatus>
         step query
           # Local copy avoids codegen auto-unwrap of Opt at the call site.
           filter = status
-          items = cr_repo.list_by_repo!(id, filter)
+          items = pr_repo.list_by_repo!(id, filter)
           ret items
 
-      # Global list for dashboard Changes page
-      @route("GET /api/change_requests")
-      svc ListAllChangeRequests
-        -> List<ChangeRequest>
-        @dep(cr_repo: ChangeRequestRepo)
+      # Global list for dashboard Pull requests page
+      @route("GET /api/pull_requests")
+      svc ListAllPullRequests
+        -> List<PullRequest>
+        @dep(pr_repo: PullRequestRepo)
         input
           status: Opt<PrStatus>
         step query
           filter = status
-          items = cr_repo.list_all!(filter)
+          items = pr_repo.list_all!(filter)
           ret items
 
       # Get PR detail
-      @route("GET /api/change_requests/{id}")
-      svc GetChangeRequest
+      @route("GET /api/pull_requests/{id}")
+      svc GetPullRequest
         -> Json
-        @dep(cr_repo: ChangeRequestRepo)
+        @dep(pr_repo: PullRequestRepo)
         @dep(approval_repo: ApprovalRepo)
         @dep(comment_repo: CommentRepo)
         @dep(ci_repo: CiRunRepo)
         input
           id: Id
         step load
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           approvals = approval_repo.find_for_pr!(id)
@@ -3938,20 +3938,20 @@ pkg VeilRuntime
           ret {pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs}
 
       # Transition PR status (draft → review, close, reject, …)
-      @route("PUT /api/change_requests/{id}/status")
-      svc UpdateChangeRequestStatus
-        -> ChangeRequest
-        @dep(cr_repo: ChangeRequestRepo)
+      @route("PUT /api/pull_requests/{id}/status")
+      svc UpdatePullRequestStatus
+        -> PullRequest
+        @dep(pr_repo: PullRequestRepo)
         input
           id: Id
           status: PrStatus
         step update
-          cr = cr_repo.find!(id)
+          cr = pr_repo.find!(id)
           guard cr.is_some(), "PR not found"
           pr = cr.unwrap()
           pr.status = status
           pr.updated_at = Dt.now()
-          cr_repo.save!(pr)
+          pr_repo.save!(pr)
           ret pr
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -4072,7 +4072,7 @@ pkg VeilRuntime
 
       # ─── Agent Loop Metrics ─────────────────────────────────────────────
       val AgentLoopMetrics
-        change_id: Str
+        pr_id: Str
         tokens_consumed: Int
         check_failures_before_green: Int
         time_to_approve_ms: Opt<Int>
@@ -4120,10 +4120,10 @@ pkg VeilRuntime
           tools = tools.concat([ToolDef{name: "navigate_to", description: "Navigate the runtime UI to a specific page", category: "navigation"}])
           tools = tools.concat([ToolDef{name: "open_ide", description: "Open the IDE for a specific project", category: "navigation"}])
           tools = tools.concat([ToolDef{name: "switch_project", description: "Switch to a different project", category: "navigation"}])
-          tools = tools.concat([ToolDef{name: "list_changes", description: "List open change requests", category: "sdlc"}])
-          tools = tools.concat([ToolDef{name: "create_change", description: "Create a new change request", category: "sdlc"}])
-          tools = tools.concat([ToolDef{name: "approve_change", description: "Approve a change request", category: "sdlc"}])
-          tools = tools.concat([ToolDef{name: "merge_change", description: "Merge an approved change request", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "list_prs", description: "List open pull requests", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "create_pr", description: "Create a new pull request", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "approve_pr", description: "Approve a pull request", category: "sdlc"}])
+          tools = tools.concat([ToolDef{name: "merge_pr", description: "Merge an approved pull request", category: "sdlc"}])
           tools = tools.concat([ToolDef{name: "deploy_project", description: "Deploy a project to an environment", category: "deploy"}])
           tools = tools.concat([ToolDef{name: "deploy_status", description: "Get deployment status", category: "deploy"}])
           tools = tools.concat([ToolDef{name: "rollback", description: "Rollback a deployment", category: "deploy"}])
@@ -4157,10 +4157,10 @@ pkg VeilRuntime
             "switch_project" =>
               project = args["project"].as_str().unwrap_or("unknown")
               ret ToolExecutionResult{output: {switched_to: project}, is_error: false, navigation: {action: "switch-project", project}}
-            "list_changes" =>
-              ret ToolExecutionResult{output: {summary: "Opening change requests", navigation: {action: "goto", path: "/changes"}}, is_error: false, navigation: {action: "goto", path: "/changes"}}
-            "create_change" =>
-              ret ToolExecutionResult{output: {summary: "Opening new change request form", navigation: {action: "goto", path: "/changes/new"}}, is_error: false, navigation: {action: "goto", path: "/changes/new"}}
+            "list_prs" =>
+              ret ToolExecutionResult{output: {summary: "Opening pull requests", navigation: {action: "goto", path: "/pulls"}}, is_error: false, navigation: {action: "goto", path: "/pulls"}}
+            "create_pr" =>
+              ret ToolExecutionResult{output: {summary: "Opening new pull request form", navigation: {action: "goto", path: "/pulls/new"}}, is_error: false, navigation: {action: "goto", path: "/pulls/new"}}
             "list_projects" =>
               ret ToolExecutionResult{output: {summary: "Opening projects", navigation: {action: "goto", path: "/projects"}}, is_error: false, navigation: {action: "goto", path: "/projects"}}
             "navigate_to" =>

@@ -1,12 +1,12 @@
 //! Host coding policy gates (backend-agnostic).
 //!
-//! Enforced around shared tools (`session_commit`, `create_change` / open PR,
-//! `submit_change`) so ACP and future Bedrock share the same rules. Soft SOP
+//! Enforced around shared tools (`session_commit`, `create_pr` / open PR,
+//! `submit_pr`) so ACP and future Bedrock share the same rules. Soft SOP
 //! in `agent_context` remains documentation; this module fails closed where
 //! agreed and always surfaces **host** check state (not agent self-report).
 //!
-//! Product language: **Pull Request (PR)** — not "Change Request". Tool/API
-//! ids may still say `change` / `change_request` for compatibility.
+//! Product language: **Pull Request (PR)** only — not "Change Request".
+//! Tools/API: `create_pr`, `/api/pull_requests`, `active_pr_id`. CR reserved.
 
 use serde_json::{json, Value};
 
@@ -146,7 +146,7 @@ pub fn gate_session_commit(h: &SessionHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Soft gate notes for opening a PR (`create_change`).
+/// Soft gate notes for opening a PR (`create_pr`).
 /// Does not block; returns warnings the caller must include in the tool result.
 pub fn gate_open_pr_notes(h: Option<&SessionHandle>, commit_count: usize) -> Vec<String> {
     let mut notes = Vec::new();
@@ -183,7 +183,7 @@ pub fn gate_open_pr_notes(h: Option<&SessionHandle>, commit_count: usize) -> Vec
                         .unwrap_or("errors")
                 ));
             }
-            if let Some(id) = meta.active_change_id.as_ref().filter(|s| !s.is_empty()) {
+            if let Some(id) = meta.active_pr_id.as_ref().filter(|s| !s.is_empty()) {
                 notes.push(format!(
                     "HINT: session already bound to open PR id `{id}` — prefer reuse \
                      (update/submit that PR) when scope matches; avoid a second PR."
@@ -194,7 +194,7 @@ pub fn gate_open_pr_notes(h: Option<&SessionHandle>, commit_count: usize) -> Vec
     notes
 }
 
-/// When `VEIL_STRICT_SUBMIT=1` (or true/yes), submit_change hard-refuses if host has errors.
+/// When `VEIL_STRICT_SUBMIT=1` (or true/yes), submit_pr hard-refuses if host has errors.
 pub fn strict_submit_enabled() -> bool {
     match std::env::var("VEIL_STRICT_SUBMIT") {
         Ok(v) => {
@@ -205,7 +205,7 @@ pub fn strict_submit_enabled() -> bool {
     }
 }
 
-/// Soft gate for `submit_change` / submit PR.
+/// Soft gate for `submit_pr` / submit PR.
 /// Returns notes; always attach `host_check` in the tool JSON.
 pub fn gate_submit_pr_notes(h: Option<&SessionHandle>) -> Vec<String> {
     let mut notes = Vec::new();
@@ -343,7 +343,7 @@ mod tests {
             agent_thread_id: None,
             last_focus: None,
             intent_log: vec![],
-            active_change_id: None,
+            active_pr_id: None,
             writes_since_commit: 0,
             last_host_check: None,
         };

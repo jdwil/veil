@@ -81,8 +81,8 @@ All path-jailed to the session workdir. Prefer structured VEIL tools for package
 | `POST /api/sessions/{id}/publish-branch` | Sync worktree → `repos/{repo}/{branch}/` for CR structural diff |
 | `POST /api/sessions/{id}/active-change` | Bind open PR id for agent reply writeback |
 
-Agent loop: status → branch (if multi-step) → check → edit → check (fix new diags same turn) → commit → … → **create_change + submit_change** when done (host publishes session to PR branch).  
-**Never session-merge to main.** Humans review in the IDE **PR Wizard** then Merge. Agent replies append to PR history when `active_change_id` is set.  
+Agent loop: status → branch (if multi-step) → check → edit → check (fix new diags same turn) → commit → … → **create_pr + submit_pr** when done (host publishes session to PR branch).  
+**Never session-merge to main.** Humans review in the IDE **PR Wizard** then Merge. Agent replies append to PR history when `active_pr_id` is set.  
 The process remembers the **active work line** per project so subsequent MCP calls without a session header still hit the feature branch.
 
 ## Env

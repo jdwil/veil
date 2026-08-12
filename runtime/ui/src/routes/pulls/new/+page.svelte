@@ -18,7 +18,7 @@
     loading = true;
     error = '';
     try {
-      const resp = await fetch('/api/change_requests', {
+      const resp = await fetch('/api/pull_requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -36,21 +36,21 @@
         throw new Error(text || `HTTP ${resp.status}`);
       }
       const data = await resp.json();
-      const id = data?.change_request?.id;
+      const id = data?.pull_request?.id;
       if (id) {
-        goto(`/changes/${id}`);
+        goto(`/pulls/${id}`);
       } else {
-        goto('/changes');
+        goto('/pulls');
       }
     } catch (e: any) {
-      error = e.message || 'Failed to create change request';
+      error = e.message || 'Failed to create pull request';
     } finally {
       loading = false;
     }
   }
 </script>
 
-<DetailShell title="Create Change Request" back_href="/changes">
+<DetailShell title="Create Change Request" back_href="/pulls">
   <!-- Present fill targets: formId=create-change, fields title/description/… -->
   <form
     id="create-change"
@@ -92,7 +92,7 @@
     />
 
     <div class="actions">
-      <a href="/changes" class="btn-ghost">Cancel</a>
+      <a href="/pulls" class="btn-ghost">Cancel</a>
       <button
         type="submit"
         class="btn-primary"

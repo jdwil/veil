@@ -33,7 +33,7 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/sessions/{id}/publish-branch", post(publish_branch))
         .route(
             "/api/sessions/{id}/active-change",
-            post(set_active_change),
+            post(set_active_pr),
         )
         // Workspace tools (also exposed via MCP)
         .route("/api/sessions/{id}/ws/list", post(ws_list))
@@ -44,7 +44,7 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/sessions/{id}/ws/rm", post(ws_rm))
         // Intent Present commit targets (Agent → UX → Server product path)
         .route("/api/ux/create_project", post(ux_create_project))
-        .route("/api/ux/create_change", post(ux_create_change))
+        .route("/api/ux/create_pr", post(ux_create_pr))
         .route("/api/ux/intent_log", post(ux_intent_log).get(ux_intent_log_list))
         .route("/api/ux/intent_ack", post(ux_intent_ack))
         .route("/api/ux/intent_ack/{id}", get(ux_intent_ack_get))
@@ -145,7 +145,7 @@ fn session_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> serde_json
         "last_focus": meta.last_focus,
         "intent_log": meta.intent_log,
         "last_activity_at": meta.last_activity_at,
-        "active_change_id": meta.active_change_id,
+        "active_pr_id": meta.active_pr_id,
     })
 }
 
@@ -208,9 +208,9 @@ async fn merge_session(
 #[derive(Deserialize)]
 struct PublishBranchBody {
     branch_name: String,
-    /// Optional change request id to bind for agent history writeback.
+    /// Optional pull request id to bind for agent history writeback.
     #[serde(default)]
-    change_id: Option<String>,
+    pr_id: Option<String>,
 }
 
 async fn publish_branch(
@@ -223,11 +223,11 @@ async fn publish_branch(
     };
     match h.publish_to_branch(&body.branch_name) {
         Ok(mut v) => {
-            if let Some(ref cid) = body.change_id {
-                if let Err(e) = h.set_active_change_id(Some(cid)) {
+            if let Some(ref cid) = body.pr_id {
+                if let Err(e) = h.set_active_pr_id(Some(cid)) {
                     return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e);
                 }
-                v["active_change_id"] = json!(cid);
+                v["active_pr_id"] = json!(cid);
             }
             v["session"] = session_json(&h);
             json_ok(v)
@@ -237,23 +237,23 @@ async fn publish_branch(
 }
 
 #[derive(Deserialize)]
-struct ActiveChangeBody {
+struct ActivePrBody {
     #[serde(default)]
-    change_id: Option<String>,
+    pr_id: Option<String>,
 }
 
-async fn set_active_change(
+async fn set_active_pr(
     Path(id): Path<String>,
-    Json(body): Json<ActiveChangeBody>,
+    Json(body): Json<ActivePrBody>,
 ) -> axum::response::Response {
     let h = match SessionManager::global().attach(&id) {
         Ok(h) => h,
         Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
     };
-    match h.set_active_change_id(body.change_id.as_deref()) {
+    match h.set_active_pr_id(body.pr_id.as_deref()) {
         Ok(()) => json_ok(json!({
             "ok": true,
-            "active_change_id": body.change_id,
+            "active_pr_id": body.pr_id,
             "session": session_json(&h),
         })),
         Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
@@ -649,7 +649,7 @@ struct UxCreateChangeBody {
     repo_id: Option<String>,
 }
 
-async fn ux_create_change(Json(body): Json<UxCreateChangeBody>) -> axum::response::Response {
+async fn ux_create_pr(Json(body): Json<UxCreateChangeBody>) -> axum::response::Response {
     let args = json!({
         "title": body.title,
         "description": body.description,
@@ -658,15 +658,15 @@ async fn ux_create_change(Json(body): Json<UxCreateChangeBody>) -> axum::respons
         "repo_id": body.repo_id,
         "via": "server",
     });
-    match crate::platform_tools::dispatch("create_change", &args).await {
+    match crate::platform_tools::dispatch("create_pr", &args).await {
         Ok(s) => {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap_or(json!({ "raw": s }));
             let ok = v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
             // Normalize id for resultPathTemplate
             let mut out = v.clone();
             if let Some(id) = v
-                .pointer("/change_request/id")
-                .or_else(|| v.pointer("/change_request/change_request/id"))
+                .pointer("/pull_request/id")
+                .or_else(|| v.pointer("/pull_request/pull_request/id"))
                 .or_else(|| v.get("id"))
                 .cloned()
             {
