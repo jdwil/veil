@@ -9,6 +9,8 @@
     focusConstructByName,
     currentProjectParam,
     codingSessionMeta,
+    getCodingSessionId,
+    ideRequestHeaders,
   } from '$lib/ide/store';
   import {
     type PullRequest,
@@ -50,6 +52,7 @@
     fetchJournal,
     fetchLearnJournalWalk,
     fetchReviewPolicies,
+    platformRoot,
     type LayerReviewPolicy,
   } from '$lib/ide/prWizard';
   import { publishPrWizardViewport } from '$lib/ide/ideViewport';
@@ -88,6 +91,10 @@
   let learnCursor = $state(0);
   let hostReviewPolicies = $state<Record<string, LayerReviewPolicy>>({});
   let statusMsg = $state<string | null>(null);
+  /** True after a successful all_approved finalize — always show Merge even if detail refresh lags. */
+  let readyToMerge = $state(false);
+  /** Approved PRs for this project (surfaced first on reopen). */
+  let approvedPrs = $state<PullRequest[]>([]);
   /** PRs for other projects / smoke tests (collapsed) */
   let otherPrs = $state<PullRequest[]>([]);
 
@@ -326,16 +333,23 @@
           openPrs = open.filter(
             (p) => prBelongsToProject(p, slug) && !isSmokeOrFixturePr(p)
           );
+          approvedPrs = openPrs.filter((p) => p.status === 'Approved');
           otherPrs = open.filter(
             (p) => !prBelongsToProject(p, slug) || isSmokeOrFixturePr(p)
           );
         } catch {
           openPrs = [];
+          approvedPrs = [];
           otherPrs = [];
+        }
+        // Single Approved PR for this project → land on merge pad (don't re-walk 162 steps).
+        if (approvedPrs.length === 1 && openPrs.length === 1) {
+          await loadPr(approvedPrs[0].id);
+          return;
         }
         // No project PRs → go straight to live working-tree (normal agent-edit path).
         // Still show chooser if project PRs exist OR only smoke/other (so they can pick working tree).
-        if (openPrs.length > 0 || otherPrs.length > 0) {
+        if (openPrs.length > 0 || otherPrs.length > 0 || approvedPrs.length > 0) {
           phase = 'pick';
           return;
         }
@@ -349,6 +363,7 @@
 
   async function loadPr(id: string) {
     prId = id;
+    readyToMerge = false;
     const detail = await fetchPullRequestDetail(id);
     pr = detail.pr;
     comments = detail.comments;
@@ -356,6 +371,7 @@
     step = 0;
     // Already approved/merged → landing pad (merge / history), not a 100-item re-walk
     if (pr.status === 'Approved' || pr.status === 'Merged') {
+      readyToMerge = pr.status === 'Approved';
       statusMsg =
         pr.status === 'Approved'
           ? 'This PR is already approved. Merge when ready, or re-walk structural changes below.'
@@ -709,77 +725,113 @@
     error = null;
     try {
       let id = prId;
+      // Count from current items (avoid stale derived if walk just finished).
+      const nApproved = items.filter((i) => i.decision === 'approve').length;
+      const nFeedback = items.filter((i) => i.decision === 'feedback').length;
       if (!id) {
         // Create PR from session review so history is durable
+        statusMsg = 'Creating PR and publishing session work…';
         const title =
           diff && (diff.added || diff.removed || diff.changed)
-            ? `Review: +${diff.added} −${diff.removed} ~${diff.changed} on ${branchName}`
-            : `Review: ${branchName}`;
+            ? `Review: +${diff.added} −${diff.removed} ~${diff.changed}`
+            : `Review: ${branchName || 'work'}`;
         const descParts = [
           'Opened from IDE PR Wizard (session working tree).',
           '',
           '## Changes',
-          ...items.map(
+          ...items.slice(0, 80).map(
             (it) =>
               `- **${itemDisplayName(it.item)}** (${it.item.kind}): ${it.decision || 'pending'}${
                 it.rationale ? ` — ${it.rationale.slice(0, 120)}` : ''
               }`
           ),
+          items.length > 80 ? `\n…and ${items.length - 80} more.` : '',
         ];
         const created = await createAndSubmitPr({
           title,
           description: descParts.join('\n'),
-          source_branch: branchName,
+          // omit main — server allocates cr/… and client publishes to it
+          source_branch:
+            branchName && branchName !== 'main' && branchName !== 'master'
+              ? branchName
+              : undefined,
         });
         id = created.id;
         prId = id;
         pr = created;
       }
 
-      // Persist any decisions not yet posted (session-first path)
-      for (const it of items) {
-        if (it.decision === 'approve' || it.decision === 'feedback') {
-          try {
-            await postReviewItem(id, {
-              decision: it.decision,
-              construct_path: pathOf(it.item),
-              body:
-                it.decision === 'feedback'
-                  ? it.feedback || 'Needs work'
-                  : 'Approved in PR Wizard.',
-              item_index: it.index,
-              item_kind: it.item.kind,
-              item_name: itemDisplayName(it.item),
-              rationale: it.rationale || undefined,
-            });
-          } catch {
-            /* continue */
-          }
-        }
+      // Persist any decisions not yet posted (session-first path). Cap concurrency.
+      statusMsg = `Recording ${nApproved + nFeedback} decision(s)…`;
+      const pending = items.filter(
+        (it) => it.decision === 'approve' || it.decision === 'feedback'
+      );
+      const chunk = 12;
+      for (let i = 0; i < pending.length; i += chunk) {
+        await Promise.all(
+          pending.slice(i, i + chunk).map(async (it) => {
+            try {
+              await postReviewItem(id!, {
+                decision: it.decision as 'approve' | 'feedback',
+                construct_path: pathOf(it.item),
+                body:
+                  it.decision === 'feedback'
+                    ? it.feedback || 'Needs work'
+                    : 'Approved in PR Wizard.',
+                item_index: it.index,
+                item_kind: it.item.kind,
+                item_name: itemDisplayName(it.item),
+                rationale: it.rationale || undefined,
+              });
+            } catch {
+              /* continue */
+            }
+          })
+        );
       }
 
       const summary =
         outcome === 'all_approved'
-          ? `PR Wizard: approved ${approvedCount} structural change(s).`
-          : `PR Wizard: ${approvedCount} approved, ${feedbackCount} need work.\n\n` +
+          ? `PR Wizard: approved ${nApproved} structural change(s).`
+          : `PR Wizard: ${nApproved} approved, ${nFeedback} need work.\n\n` +
             queuedFeedback()
               .map((q) => `- ${q.name}: ${q.text}`)
               .join('\n');
 
-      await finalizeWizardApi(id, {
+      const fin = await finalizeWizardApi(id, {
         outcome,
         summary,
-        approved_count: approvedCount,
-        feedback_count: feedbackCount,
+        approved_count: nApproved,
+        feedback_count: nFeedback,
       });
 
       if (outcome === 'needs_work') {
+        readyToMerge = false;
         const q = queuedFeedback();
         if (q.length) sendFeedbackToAgent(q, pr?.title);
         statusMsg = 'Changes requested — feedback sent to the agent.';
+        if (pr) pr = { ...pr, status: 'ChangesRequested' };
         phase = 'done';
       } else {
-        statusMsg = 'All changes approved. Ready to merge.';
+        // Always show Merge after approve — do not wait on detail refresh.
+        readyToMerge = true;
+        statusMsg = `All ${nApproved} change(s) approved. Click Merge to land on main.`;
+        if (pr) {
+          pr = {
+            ...pr,
+            status: (fin?.status as string) || 'Approved',
+          };
+        } else {
+          pr = {
+            id,
+            title: 'Approved PR',
+            description: '',
+            source_branch: 'work',
+            target_branch: 'main',
+            author: 'operator',
+            status: 'Approved',
+          };
+        }
         phase = 'done';
       }
 
@@ -787,11 +839,13 @@
         const d = await fetchPullRequestDetail(id);
         pr = d.pr;
         comments = d.comments;
+        if (pr.status === 'Approved') readyToMerge = true;
       } catch {
-        /* ignore */
+        /* keep optimistic status */
       }
     } catch (e) {
       error = String(e);
+      statusMsg = null;
     } finally {
       busy = false;
     }
@@ -801,12 +855,28 @@
     if (!prId) return;
     busy = true;
     error = null;
+    statusMsg = 'Merging to main…';
     try {
-      await mergeChangeApi(prId, currentProjectParam());
-      statusMsg = 'Merged to main. Product base updated.';
+      const result = await mergeChangeApi(prId, currentProjectParam());
+      readyToMerge = false;
+      statusMsg =
+        'Merged to main. Product base updated. Re-open Review to confirm the working tree is clear.';
       if (pr) pr = { ...pr, status: 'Merged' };
+      // Nudge session endpoint so clients refresh meta after land.
+      const sid = getCodingSessionId();
+      if (sid) {
+        try {
+          await fetch(`${platformRoot()}/api/sessions/${sid}`, {
+            headers: ideRequestHeaders(),
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+      void result;
     } catch (e) {
       error = String(e);
+      statusMsg = null;
     } finally {
       busy = false;
     }
@@ -1028,7 +1098,34 @@
         </p>
       </div>
 
-      <!-- Primary: live edits in this IDE session -->
+      {#if approvedPrs.length > 0}
+        <section class="pick-section approved-pad">
+          <h4>Ready to merge ({approvedPrs.length})</h4>
+          <p class="muted sm">
+            You already finished a structural walk. Do <strong>not</strong> re-walk the working
+            tree — merge the approved PR to land on main.
+          </p>
+          <ul class="pr-list">
+            {#each approvedPrs as p}
+              <li>
+                <button type="button" class="pr-row" onclick={() => void loadPr(p.id)}>
+                  <div class="pr-row-main">
+                    <span class="pill sm">Approved</span>
+                    <span class="t">{p.title}</span>
+                  </div>
+                  <div class="pr-row-meta">
+                    <code>{p.source_branch}</code>
+                    <span class="meta-arrow">→</span>
+                    <code>{p.target_branch || 'main'}</code>
+                  </div>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
+      <!-- Live edits in this IDE session -->
       <section class="pick-section">
         <h4>This IDE session</h4>
         <p class="muted sm">
@@ -1038,13 +1135,25 @@
             in project <code>{currentProjectParam()}</code>
           {/if}.
           Use this after the agent just finished editing — even if no PR exists yet.
+          {#if approvedPrs.length > 0}
+            <br />
+            <strong class="warn-inline"
+              >An approved PR is waiting — re-reviewing the working tree will show the same
+              steps until you merge.</strong
+            >
+          {/if}
         </p>
-        <button type="button" class="btn primary pick-primary" onclick={() => void loadSessionReview()}>
+        <button
+          type="button"
+          class="btn pick-primary"
+          class:primary={approvedPrs.length === 0}
+          onclick={() => void loadSessionReview()}
+        >
           Review current working tree
         </button>
       </section>
 
-      <!-- Secondary: formal pull requests for THIS project -->
+      <!-- Formal pull requests for THIS project -->
       <section class="pick-section">
         <h4>
           PRs for
@@ -1597,7 +1706,13 @@
       </div>
     {:else if phase === 'done'}
       <div class="summary">
-        <h3>{pr?.status === 'Approved' ? 'Approved PR' : 'Done'}</h3>
+        <h3>
+          {pr?.status === 'Merged'
+            ? 'Merged'
+            : pr?.status === 'Approved' || readyToMerge
+              ? 'Approved — merge to land'
+              : 'Done'}
+        </h3>
         {#if statusMsg}
           <p class="ok-msg">{statusMsg}</p>
         {/if}
@@ -1608,13 +1723,29 @@
           </p>
           <p class="muted sm">
             Branch <code>{pr.source_branch}</code> → <code>{pr.target_branch || 'main'}</code>.
-            This is a platform pull request, not a VEIL project.
+            Nothing is on product main until you click Merge.
           </p>
+          {#if (pr.status === 'Approved' || readyToMerge) && prId}
+            <div class="merge-cta">
+              <button
+                type="button"
+                class="btn primary merge-big"
+                disabled={busy}
+                onclick={() => void doMerge()}
+              >
+                {busy ? 'Merging…' : `Merge to ${pr.target_branch || 'main'}`}
+              </button>
+              <p class="muted sm">
+                This promotes the published feature branch into main and closes the PR. Re-opening
+                “Review working tree” before merge will still show the same steps.
+              </p>
+            </div>
+          {/if}
           {#if diffSource === 'pr-empty'}
             <p class="banner-warn">
               No structural snapshot on this PR’s branch — there is nothing to re-approve item-by-item.
             </p>
-          {:else if items.length > 0}
+          {:else if items.length > 0 && pr.status !== 'Approved' && !readyToMerge}
             <p class="muted sm">
               Structural snapshot has {items.length} item(s). Status is already
               <strong>{pr.status}</strong> — you do not need to approve each again.
@@ -1763,14 +1894,14 @@
     {:else if phase === 'done'}
       <button type="button" class="ghost" onclick={() => closePrWizard()}>Close</button>
       <div class="spacer"></div>
-      {#if items.length > 0 && diffSource !== 'pr-empty'}
+      {#if items.length > 0 && diffSource !== 'pr-empty' && pr?.status !== 'Approved' && !readyToMerge}
         <button type="button" class="btn" onclick={() => startWalkFromDone()}>
           Browse {items.length} structural items
         </button>
       {/if}
-      {#if pr?.status === 'Approved' && prId}
+      {#if (pr?.status === 'Approved' || readyToMerge) && prId}
         <button type="button" class="btn primary" disabled={busy} onclick={() => void doMerge()}>
-          Merge to {pr.target_branch || 'main'}
+          {busy ? 'Merging…' : `Merge to ${pr?.target_branch || 'main'}`}
         </button>
       {/if}
       {#if pr?.status === 'ChangesRequested'}
@@ -2682,6 +2813,26 @@
     border-radius: 8px;
     border: 1px solid rgba(251, 191, 36, 0.35);
     background: rgba(251, 191, 36, 0.08);
+  }
+  .pick-section.approved-pad {
+    border-color: rgba(34, 197, 94, 0.45);
+    background: rgba(34, 197, 94, 0.08);
+  }
+  .warn-inline {
+    color: #fbbf24;
+    font-weight: 600;
+  }
+  .merge-cta {
+    margin: 1rem 0;
+    padding: 0.85rem 1rem;
+    border-radius: 10px;
+    border: 1px solid rgba(34, 197, 94, 0.45);
+    background: rgba(34, 197, 94, 0.1);
+  }
+  .merge-big {
+    font-size: 1rem;
+    padding: 0.65rem 1.25rem;
+    width: 100%;
   }
   .btn.sm,
   .ghost.sm {

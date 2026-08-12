@@ -659,7 +659,10 @@ export async function finalizeWizardApi(
   return r.json();
 }
 
-export async function mergeChangeApi(prId: string, slug?: string | null): Promise<void> {
+export async function mergeChangeApi(
+  prId: string,
+  slug?: string | null
+): Promise<Record<string, unknown>> {
   const r = await fetch(`${platformRoot()}/api/pull_requests/${prId}/merge`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
@@ -668,7 +671,22 @@ export async function mergeChangeApi(prId: string, slug?: string | null): Promis
       slug: slug || currentProjectParam() || '',
     }),
   });
-  if (!r.ok) throw new Error(`merge HTTP ${r.status}: ${await r.text()}`);
+  const text = await r.text();
+  let data: Record<string, unknown> = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+  if (!r.ok) {
+    throw new Error(
+      `merge HTTP ${r.status}: ${(data.message as string) || (data.error as string) || text}`
+    );
+  }
+  if (data.ok === false) {
+    throw new Error(String(data.message || data.error || 'merge rejected'));
+  }
+  return data;
 }
 
 export async function createAndSubmitPr(opts: {
@@ -679,10 +697,19 @@ export async function createAndSubmitPr(opts: {
 }): Promise<PullRequest> {
   const slug = opts.slug || currentProjectParam() || '';
   const meta = get(codingSessionMeta) as Record<string, unknown> | null;
-  const branch =
+  const sessionBranch =
     opts.source_branch ||
     (meta?.branch_name as string) ||
     (meta?.draft_mode ? 'work' : undefined);
+  // Never pin a PR to main — server allocates `cr/{jira}/{title}` when omitted /
+  // when session is on mainline. Passing main overwrote that branch and made merge
+  // a no-op (main → main) while skipping publish.
+  const sourceBranchForCreate =
+    sessionBranch &&
+    sessionBranch.toLowerCase() !== 'main' &&
+    sessionBranch.toLowerCase() !== 'master'
+      ? sessionBranch
+      : undefined;
 
   // Attach recent session commits for history/rationales
   let desc = opts.description;
@@ -712,32 +739,39 @@ export async function createAndSubmitPr(opts: {
     desc = `project: ${slug}\n\n` + desc;
   }
 
+  const createBody: Record<string, unknown> = {
+    title: opts.title,
+    description: desc,
+    slug,
+    author: 'operator',
+    jira_ticket: `VEIL-${Date.now().toString(36).toUpperCase()}`,
+  };
+  if (sourceBranchForCreate) {
+    createBody.source_branch = sourceBranchForCreate;
+  }
+
   const create = await fetch(`${platformRoot()}/api/pull_requests`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      title: opts.title,
-      description: desc,
-      slug,
-      source_branch: branch,
-      author: 'agent',
-      jira_ticket: `VEIL-${Date.now().toString(36).toUpperCase()}`,
-    }),
+    body: JSON.stringify(createBody),
   });
   if (!create.ok) throw new Error(`create PR HTTP ${create.status}: ${await create.text()}`);
   const created = await create.json();
   const pr = (created.pull_request || created) as PullRequest;
   if (!pr.id) throw new Error('create PR returned no id');
 
-  // Publish session worktree onto PR branch so structural diff is real.
-  const pubBranch = branch || pr.source_branch || 'work';
-  if (sid && pubBranch && pubBranch !== 'main') {
+  // Always publish session worktree onto the PR's feature branch so merge has files.
+  const pubBranch = pr.source_branch;
+  if (sid && pubBranch && pubBranch.toLowerCase() !== 'main' && pubBranch.toLowerCase() !== 'master') {
     try {
-      await fetch(`${platformRoot()}/api/sessions/${sid}/publish-branch`, {
+      const pub = await fetch(`${platformRoot()}/api/sessions/${sid}/publish-branch`, {
         method: 'POST',
         headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ branch_name: pubBranch, pr_id: pr.id }),
       });
+      if (!pub.ok) {
+        console.warn('publish-branch failed', await pub.text());
+      }
     } catch (e) {
       console.warn('publish-branch failed', e);
     }
@@ -753,7 +787,7 @@ export async function createAndSubmitPr(opts: {
     }
   }
 
-  const sub = await fetch(`${platformRoot()}/api/pull_requests/${pr.id}/submit`, {
+  const sub = await fetch(`${platformRoot()}/api/pull_requests/${pr.id}/submit?force=1`, {
     method: 'POST',
     headers: { ...ideRequestHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({}),

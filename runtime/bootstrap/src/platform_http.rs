@@ -454,12 +454,18 @@ async fn create_pull_request_flat(
     };
     // Ensure git refs exist so create_branch doesn't 500 on fresh repos.
     let _ = st.deps.git.init_repo(slug.clone()).await;
-    // Prefer explicit work branch when provided (coding session).
+    // Prefer an explicit *feature* work branch from the coding session.
+    // Never overwrite the freshly created PR branch with `main`/`master` —
+    // that makes merge a no-op and blocks session publish-to-branch.
     let preferred_branch = body
         .source_branch
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .filter(|s| {
+            let l = s.to_ascii_lowercase();
+            l != "main" && l != "master"
+        })
         .map(|s| s.to_string());
 
     match change_management::application::create_pull_request_flat(
@@ -792,32 +798,94 @@ async fn merge_pr(
     } else {
         body.merger
     };
+    let pr = st
+        .deps
+        .pr_repo
+        .find(id)
+        .await
+        .map_err(domain_status)?
+        .ok_or(StatusCode::NOT_FOUND)?;
     let slug = if body.slug.is_empty() {
-        // Infer slug from PR source/target when client omits it.
-        st.deps
-            .pr_repo
-            .find(id)
-            .await
-            .ok()
-            .flatten()
-            .map(|pr| {
-                // Prefer repo name from jira path — agent often passes project as slug.
-                pr.source_branch
-                    .split('/')
-                    .next()
-                    .filter(|s| *s != "cr")
-                    .unwrap_or("main")
-                    .to_string()
-            })
-            .unwrap_or_else(|| "main".into())
+        extract_slug_from_description(&pr.description)
+            .unwrap_or_else(|| pr.repo_id.to_string())
     } else {
         body.slug
     };
+    let source = pr.source_branch.clone();
+    let target = pr.target_branch.clone();
+    if source == target
+        || source.eq_ignore_ascii_case("main")
+        || source.eq_ignore_ascii_case("master")
+    {
+        return Ok(Json(json!({
+            "ok": false,
+            "error": "invalid_merge_branches",
+            "message": format!(
+                "Cannot merge `{source}` → `{target}`. This PR has no distinct feature branch \
+(often created while the session was on main without publish). Re-open Review, Approve again \
+so a `cr/…` branch is created and the session is published, then Merge."
+            ),
+            "source_branch": source,
+            "target_branch": target,
+            "hint": "create_pr + publish-branch to a non-main source, then merge.",
+        })));
+    }
     let _ = ensure_ci_passed(&st.deps, id, "merge").await;
-    match change_management::application::merge_pr(&st.deps, id, merger, slug).await {
-        Ok(v) => Ok(Json(v)),
+    match change_management::application::merge_pr(&st.deps, id, merger, slug.clone()).await {
+        Ok(mut v) => {
+            // Domain merge only advances the git ref pointer. Product source lives
+            // under repos/{id|slug}/{branch}/ — promote trees so main actually updates.
+            let promoted = promote_branch_trees(&slug, &pr.repo_id.to_string(), &source, &target).await;
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("file_promote".into(), promoted);
+            }
+            Ok(Json(v))
+        }
         Err(e) => Err(domain_status(e)),
     }
+}
+
+/// Copy product file trees source → target in S3 (repo_id and/or slug prefixes).
+async fn promote_branch_trees(
+    slug: &str,
+    repo_id: &str,
+    source: &str,
+    target: &str,
+) -> Value {
+    let bucket = std::env::var("BUCKET")
+        .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
+        .unwrap_or_else(|_| "veil-runtime-dev".into());
+    let mut results = Vec::new();
+    for key in [repo_id, slug] {
+        if key.is_empty() || key == "main" {
+            continue;
+        }
+        let src = format!("s3://{bucket}/repos/{key}/{source}/");
+        let dst = format!("s3://{bucket}/repos/{key}/{target}/");
+        let mut cmd = std::process::Command::new("aws");
+        if let Ok(p) = std::env::var("AWS_PROFILE") {
+            cmd.env("AWS_PROFILE", p);
+        }
+        let out = cmd
+            .args(["s3", "sync", &src, &dst, "--only-show-errors"])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                results.push(json!({ "prefix": key, "ok": true, "src": src, "dst": dst }));
+            }
+            Ok(o) => {
+                results.push(json!({
+                    "prefix": key,
+                    "ok": false,
+                    "stderr": String::from_utf8_lossy(&o.stderr).to_string(),
+                }));
+            }
+            Err(e) => {
+                results.push(json!({ "prefix": key, "ok": false, "error": e.to_string() }));
+            }
+        }
+    }
+    json!({ "promotions": results })
 }
 
 #[derive(Deserialize)]
