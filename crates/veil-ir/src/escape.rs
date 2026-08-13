@@ -754,6 +754,7 @@ fn type_contains_json(ty: &TypeExpr) -> bool {
         }
         TypeExpr::Result(None) => false,
         TypeExpr::Named(_) => false,
+        TypeExpr::LitStr(_) => false,
     }
 }
 

@@ -77,6 +77,7 @@ pub fn type_to_ts(ty: &TypeExpr) -> String {
             let r = ret.as_ref().map(|t| type_to_ts(t)).unwrap_or_else(|| "void".to_string());
             format!("({}) => {}", p, r)
         }
+        TypeExpr::LitStr(_) => "string".to_string(),
     }
 }
 

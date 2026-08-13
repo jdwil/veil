@@ -55,6 +55,7 @@ pub fn type_to_display(ty: &TypeExpr) -> String {
         TypeExpr::Dyn(inner) => format!("dyn {}", type_to_display(inner)),
         TypeExpr::ImplTrait(inner) => format!("impl {}", type_to_display(inner)),
         TypeExpr::FnPtr(params, ret) => { let p = params.iter().map(type_to_display).collect::<Vec<_>>().join(", "); let r = ret.as_ref().map(|t| format!(" -> {}", type_to_display(t))).unwrap_or_default(); format!("fn({}){}", p, r) }
+        TypeExpr::LitStr(s) => format!("\"{s}\""),
     }
 }
 

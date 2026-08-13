@@ -16,6 +16,14 @@ use veil_ir::span::Span;
 
 use crate::lexer::{Token, TokenKind};
 
+/// HTTP method tokens (protocol, not product vocabulary — POLICY_ROLES).
+fn is_http_verb(word: &str) -> bool {
+    matches!(
+        word.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
+}
+
 /// Parse error with span information and optional recovery hint.
 #[derive(Debug, Clone)]
 pub struct ParseError {
@@ -548,6 +556,12 @@ impl<'a> Parser<'a> {
     // ─── Type parsing ─────────────────────────────────────────────────
 
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
+        // Quoted string in type position (harness `path: "/api/items/{id}"`).
+        if self.at(&TokenKind::StringLit) {
+            let text = self.advance().text;
+            return Ok(TypeExpr::LitStr(Self::extract_string_content(&text)));
+        }
+
         // fn(A, B) -> C — function pointer type
         if self.at(&TokenKind::Fn) {
             self.advance(); // consume 'fn'
@@ -1854,6 +1868,90 @@ impl<'a> Parser<'a> {
         Ok(c)
     }
 
+    /// Compact `METHOD /path -> Handler` after an `role:http_endpoint` construct name.
+    /// HTTP verbs are protocol tokens (POLICY_ROLES). Path may be quoted or bare.
+    fn try_parse_http_endpoint_header(
+        &mut self,
+        c: &mut Construct,
+    ) -> Result<(), ParseError> {
+        let verb = self.current_word().unwrap_or("");
+        if !is_http_verb(verb) {
+            return Ok(());
+        }
+        let method_span = self.current().span;
+        let method = self.advance().text.to_ascii_uppercase();
+        let path = self.parse_endpoint_path()?;
+        if !self.at(&TokenKind::Arrow) {
+            return Err(self.error(
+                "compact endpoint header needs `-> Handler` after the path".into(),
+            ));
+        }
+        self.advance(); // ->
+        let handler = self.expect_ident()?;
+        let span = method_span.merge(self.current().span);
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "method".into(),
+            type_expr: TypeExpr::Named(method),
+            default_expr: None,
+            span,
+        });
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "path".into(),
+            type_expr: TypeExpr::LitStr(path),
+            default_expr: None,
+            span,
+        });
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "handle".into(),
+            type_expr: TypeExpr::Named(handler),
+            default_expr: None,
+            span,
+        });
+        Ok(())
+    }
+
+    fn parse_endpoint_path(&mut self) -> Result<String, ParseError> {
+        if self.at(&TokenKind::StringLit) {
+            let text = self.advance().text;
+            return Ok(Self::extract_string_content(&text));
+        }
+        let mut out = String::new();
+        loop {
+            if self.at(&TokenKind::Arrow)
+                || self.at_block_start()
+                || self.at(&TokenKind::Newline)
+                || self.at(&TokenKind::Dedent)
+                || self.at(&TokenKind::Eof)
+            {
+                break;
+            }
+            let tok = self.advance();
+            match tok.kind {
+                TokenKind::Slash => out.push('/'),
+                TokenKind::LBrace => out.push('{'),
+                TokenKind::RBrace => out.push('}'),
+                TokenKind::Ident | TokenKind::IntLit => out.push_str(&tok.text),
+                TokenKind::Minus => out.push('-'),
+                TokenKind::Dot => out.push('.'),
+                _ => {
+                    return Err(self.error(format!(
+                        "unexpected token in endpoint path: {}",
+                        tok.text
+                    )));
+                }
+            }
+        }
+        if out.is_empty() || !out.starts_with('/') {
+            return Err(self.error(
+                "endpoint path must start with `/` or be a quoted string".into(),
+            ));
+        }
+        Ok(out)
+    }
+
     /// struct shape: `kw Name` + block of fields, named sub-blocks (from the
     /// layer's `contains`), nested constructs, fns, and an optional `-> Type`.
     fn parse_struct_shape(
@@ -1865,6 +1963,10 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident()?;
         let mut c = Construct::new(&spec.keyword, &spec.name, Shape::Struct, name, start_span);
         c.type_params = self.parse_type_params();
+        // Compact HTTP header is role-driven (INV-001): never match keyword "endpoint".
+        if spec.roles.iter().any(|r| r == "http_endpoint") {
+            self.try_parse_http_endpoint_header(&mut c)?;
+        }
 
         if self.at_block_start() {
             self.enter_block()?;

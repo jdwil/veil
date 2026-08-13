@@ -4,6 +4,53 @@ pkg harness v1
   use base
   use di
 
+  harness_policy
+    profile axum_http
+    bin veil_bin
+    listen_env PORT
+    listen_default 3000
+    health /health
+    cors localhost
+    cors_outside_auth true
+    auth api_key
+    emit_bin on_entry
+    bus_wire explicit
+    collide error
+    bind_defaults method
+    delete_extras query
+
+  construct DepsBundle
+    kw deps
+    mt struct
+    role deps_bundle
+    in any
+    group application
+    desc "Declared application dependency bundle — the Deps type"
+
+  construct ComposeRoot
+    kw compose
+    mt struct
+    role compose
+    in any
+    group infrastructure
+    has
+      bundle: ident
+      wire: struct
+    desc "Composition root: which adapter satisfies each deps field"
+
+  construct HttpEndpoint
+    kw endpoint
+    mt struct
+    role http_endpoint
+    in any
+    group presentation
+    has
+      method: ident
+      path: path
+      handle: ident
+      bind: struct
+    desc "Explicit HTTP endpoint — engineer-defined method/path/handler/binds"
+
   # CAP-002 / CAP-004: system + host ports provided by runtime trampoline.
   # Declared as traits (core shape); host implements via ProductHost / LocalFs.
   declare

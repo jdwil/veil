@@ -117,6 +117,7 @@ fn ty_from_type_expr(te: &TypeExpr) -> Ty {
             .as_ref()
             .map(|t| ty_from_type_expr(t))
             .unwrap_or(Ty::Unit),
+        TypeExpr::LitStr(_) => Ty::Named("Str".into()),
     }
 }
 

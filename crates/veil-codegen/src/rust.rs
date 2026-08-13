@@ -2413,6 +2413,7 @@ fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
         TypeExpr::Dyn(inner) => collect_type_refs(inner, refs),
         TypeExpr::ImplTrait(inner) => collect_type_refs(inner, refs),
         TypeExpr::FnPtr(params, ret) => { for p in params { collect_type_refs(p, refs); } if let Some(r) = ret { collect_type_refs(r, refs); } }
+        TypeExpr::LitStr(_) => {}
     }
 }
 
@@ -6405,6 +6406,7 @@ fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>) 
             let r = ret.as_ref().map(|t| format!(" -> {}", rec(t))).unwrap_or_default();
             format!("fn({}){}", p, r)
         }
+        TypeExpr::LitStr(s) => format!("&'static str /* {s} */"),
     }
 }
 

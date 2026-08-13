@@ -251,6 +251,33 @@ struct Customer
   email: Email
 ```
 
+A field’s type may also be a **quoted string** (`TypeExpr::LitStr`). This is
+for layer-declared config (e.g. an HTTP path), not a domain type. Serialize
+keeps the quotes so `path: "/api/items/{id}"` round-trips.
+
+Layers may tag constructs with `role` (INV-001). A construct with
+`role http_endpoint` accepts an optional **compact header** after the name:
+
+```
+endpoint CreateItemHttp POST /api/items/{id} -> CreateItem
+  bind
+    id: path
+```
+
+That desugars to the same fields as:
+
+```
+endpoint CreateItemHttp
+  method: POST
+  path: "/api/items/{id}"
+  handle: CreateItem
+  bind
+    id: path
+```
+
+The engine matches the **role**, not the keyword `endpoint`. Serialize always
+emits the field form. HTTP verbs (`GET`/`POST`/…) are protocol tokens.
+
 ### `enum` — variants, optionally a state machine
 Variant lines, where `A -> B -> C` records both variants **and** transitions.
 ```

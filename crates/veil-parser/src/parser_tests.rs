@@ -1592,3 +1592,148 @@ sol App
         assert!(sol.guidance[0].message.contains("pkg"), "guidance should suggest pkg");
     }
 }
+
+#[cfg(test)]
+mod harness_tests {
+    use crate::lexer::lex;
+    use crate::parser::parse_with_registry;
+    use veil_ir::ast::*;
+    use veil_ir::layer::LayerRegistry;
+
+    fn find_construct<'a>(items: &'a [TopLevelItem], name: &str) -> &'a Construct {
+        items
+            .iter()
+            .find_map(|i| match i {
+                TopLevelItem::Construct(c) if c.name == name => Some(c),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("construct '{name}' not found"))
+    }
+
+    fn harness_registry() -> LayerRegistry {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+            .expect("harness layer");
+        assert!(
+            reg.construct("endpoint").is_some(),
+            "endpoint construct missing"
+        );
+        assert!(
+            reg.construct("endpoint")
+                .unwrap()
+                .roles
+                .iter()
+                .any(|r| r == "http_endpoint")
+        );
+        reg
+    }
+
+    fn parse_harness(src: &str) -> Solution {
+        let tokens = lex(src);
+        parse_with_registry(&tokens, harness_registry()).expect("parse failed")
+    }
+
+    #[test]
+    fn parse_endpoint_field_syntax_and_litstr_path() {
+        let src = r#"
+pkg App
+  use harness
+  endpoint CreateItemHttp
+    method: POST
+    path: "/api/items/{id}"
+    handle: CreateItem
+    bind
+      id: path
+      name: body
+  deps CatalogDeps
+    item_repo: ItemRepo
+  compose CatalogLocal
+    bundle: CatalogDeps
+    wire
+      item_repo: MemItemRepo
+"#;
+        let sol = parse_harness(src);
+        let ep = find_construct(&sol.items, "CreateItemHttp");
+        assert_eq!(ep.keyword, "endpoint");
+        assert_eq!(ep.subkind, "HttpEndpoint");
+        let path = ep
+            .fields
+            .iter()
+            .find(|f| f.name == "path")
+            .expect("path field");
+        assert!(
+            matches!(&path.type_expr, TypeExpr::LitStr(s) if s == "/api/items/{id}"),
+            "path={:?}",
+            path.type_expr
+        );
+        let method = ep.fields.iter().find(|f| f.name == "method").unwrap();
+        assert!(matches!(&method.type_expr, TypeExpr::Named(n) if n == "POST"));
+        assert!(ep.blocks.iter().any(|b| b.keyword == "bind"));
+        assert!(find_construct(&sol.items, "CatalogDeps").fields.iter().any(|f| f.name == "item_repo"));
+        assert!(find_construct(&sol.items, "CatalogLocal")
+            .blocks
+            .iter()
+            .any(|b| b.keyword == "wire"));
+
+        let out = veil_ir::serialize::serialize_solution(&sol);
+        assert!(
+            out.contains("path: \"/api/items/{id}\""),
+            "serialize must quote LitStr path, got:\n{out}"
+        );
+        assert!(
+            !out.contains("CreateItemHttp POST"),
+            "serialize stays field form, got:\n{out}"
+        );
+
+        let tokens2 = lex(&out);
+        let sol2 = parse_with_registry(&tokens2, harness_registry()).expect("reparse");
+        let ep2 = find_construct(&sol2.items, "CreateItemHttp");
+        let path2 = ep2.fields.iter().find(|f| f.name == "path").unwrap();
+        assert!(matches!(&path2.type_expr, TypeExpr::LitStr(s) if s == "/api/items/{id}"));
+    }
+
+    #[test]
+    fn parse_compact_endpoint_header() {
+        let src = r#"
+pkg App
+  use harness
+  endpoint CreateItemHttp POST /api/items -> CreateItem
+    bind
+      name: body
+  endpoint GetItemHttp GET "/api/items/{id}" -> GetItem
+    bind
+      id: path
+"#;
+        let sol = parse_harness(src);
+        let create = find_construct(&sol.items, "CreateItemHttp");
+        assert!(
+            create
+                .fields
+                .iter()
+                .any(|f| f.name == "method" && matches!(&f.type_expr, TypeExpr::Named(n) if n == "POST"))
+        );
+        assert!(
+            create
+                .fields
+                .iter()
+                .any(|f| f.name == "path" && matches!(&f.type_expr, TypeExpr::LitStr(s) if s == "/api/items"))
+        );
+        assert!(
+            create
+                .fields
+                .iter()
+                .any(|f| f.name == "handle" && matches!(&f.type_expr, TypeExpr::Named(n) if n == "CreateItem"))
+        );
+        let get = find_construct(&sol.items, "GetItemHttp");
+        assert!(
+            get.fields
+                .iter()
+                .any(|f| f.name == "path" && matches!(&f.type_expr, TypeExpr::LitStr(s) if s == "/api/items/{id}"))
+        );
+
+        let out = veil_ir::serialize::serialize_solution(&sol);
+        assert!(out.contains("method: POST"), "{out}");
+        assert!(out.contains("path: \"/api/items\""), "{out}");
+        assert!(out.contains("handle: CreateItem"), "{out}");
+    }
+}

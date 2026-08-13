@@ -739,6 +739,7 @@ fn type_name_simple(ty: &TypeExpr) -> String {
         TypeExpr::Dyn(inner) => format!("dyn {}", type_name_simple(inner)),
         TypeExpr::ImplTrait(inner) => format!("impl {}", type_name_simple(inner)),
         TypeExpr::FnPtr(_, _) => "fn()".to_string(),
+        TypeExpr::LitStr(_) => "str".to_string(),
     }
 }
 

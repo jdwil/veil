@@ -822,6 +822,9 @@ pub fn parse_type_str(s: &str) -> TypeExpr {
             return TypeExpr::Generic(name, args);
         }
     }
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        return TypeExpr::LitStr(s[1..s.len() - 1].to_string());
+    }
     TypeExpr::Named(s.to_string())
 }
 

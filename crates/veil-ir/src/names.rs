@@ -979,6 +979,7 @@ fn check_type_expr(
                 check_type_expr(r, location, index, type_params, diagnostics);
             }
         }
+        TypeExpr::LitStr(_) => {}
     }
 }
 

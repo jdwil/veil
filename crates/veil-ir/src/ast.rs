@@ -652,6 +652,9 @@ pub enum TypeExpr {
     ImplTrait(Box<TypeExpr>),
     /// Function pointer: fn(A, B) -> C
     FnPtr(Vec<TypeExpr>, Option<Box<TypeExpr>>),
+    /// Quoted string in type position (harness config: `path: "/api/items/{id}"`).
+    /// Not a domain type — serialize must keep the quotes.
+    LitStr(String),
 }
 
 /// An annotation (@keyword or @keyword(args)).
