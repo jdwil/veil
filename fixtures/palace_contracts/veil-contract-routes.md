@@ -1,22 +1,28 @@
 # veil-contract-routes
 
 **Type:** Concept  
-**Summary:** `@route` is authoritative. Name-derived List/Get/Create is fallback only. Use `list_routes`.
+**Summary:** Declared `endpoint` is the HTTP surface. API `@route` on svc/handler is gone. Use `list_routes`.
 
 ## Contract
 
-- Public handlers: `@route("METHOD /path")` (e.g. `GET /api/items`).
+- Public handlers: first-class `endpoint Name METHOD /path -> Handler` (or field form).
 - Never invent paths in English — call `list_routes` or `read_generated(what=routes)`.
-- Name-derived routes exist only when `@route` is missing (fallback).
-- Prefer stock examples + ladder fixtures that already declare routes.
+- Do **not** write `@route` on `svc` / `handler`. That role was removed from `ddd.layer`.
+- Svelte page `@route("/path")` stays and must **never** gain `role:http_route`.
+- Name-derived List/Get exists only when `[harness] compat = "auto"` (legacy). New `veil init` is `compat = "off"`.
+- `use ddd` includes `endpoint` / `deps` / `compose` (`ddd` uses harness). Opt-out: `[harness] emit_bin = "never"`.
 
 ## Example
 
 ```
-@route("GET /api/items")
+endpoint ListItemsHttp GET /api/items -> ListItems
+  bind
+    tenant_id: tenant
+
 svc ListItems
   input
     @dep item_repo: ItemRepo
+    tenant_id: Id
   step query
     items = item_repo.list_all!()
     ret items
@@ -24,4 +30,4 @@ svc ListItems
 
 Agent: after edit → `list_routes` → `http_request(path="/api/items", target=backend)`.
 
-**Source of truth:** `docs/HARNESS.md` (ACS-005)
+**Source of truth:** `docs/HARNESS.md`, `docs/DESIGN_CONFIGURABLE_HARNESS.md`

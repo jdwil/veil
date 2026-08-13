@@ -88,14 +88,16 @@ pkg harness v1
     (CAP-002/006). FileSystem / GitRepo are provided_by runtime (CAP-004).
 
     ## Local REST routes (dual-loop harness)
-    - Prefer `@route("GET /api/…")` on application services (annotation name is
-      layer-declared with **role:http_route** in ddd — the engine matches the
-      role, not the string `"route"`).
-    - **Path params use brace form** `{id}`, `{cohort_id}`, … — same as
-      name-derived routes. Do **not** write Express-style `:id`.
-    - Without any http_route annotation, names drive paths: ListX → GET /api/{x}s, …
+    - Declare first-class `endpoint Name METHOD /path -> Handler` (or field form).
+      The engine matches **role:http_endpoint**, not the keyword `endpoint`.
+    - **Path params use brace form** `{id}`, `{cohort_id}`, … — not Express `:id`.
+    - Do **not** put `@route` on svc/handler. Svelte page `@route("/path")` is a
+      different surface and must never gain `role:http_route`.
+    - Name-derived List/Get is compat-only (`[harness] compat = "auto"`).
+      New projects default to `compat = "off"` — declare endpoints.
     - Bus message keys: optional `bus_policy.strip_name_prefix` in ddd (e.g. Handle).
     - Inspect routes via `list_routes` / `read_generated(what=harness)`.
+    - Opt out of a generated bin: `[harness] emit_bin = "never"`.
 
     ## Patterns
     - Construct `InProcessBus.new()` in `@main` when you need multi-context
@@ -107,4 +109,4 @@ pkg harness v1
     ## Constraints
     - You MUST NOT rely on eternal handwritten bootstrap for new apps
     - You SHOULD keep `@main` thin: wire + one demo invoke
-    - For dual-loop REST APIs, modules + services (+ optional @route) are enough
+    - For dual-loop REST APIs, declare `deps` / `compose` / `endpoint`

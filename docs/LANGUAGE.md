@@ -278,6 +278,10 @@ endpoint CreateItemHttp
 The engine matches the **role**, not the keyword `endpoint`. Serialize always
 emits the field form. HTTP verbs (`GET`/`POST`/…) are protocol tokens.
 
+API `@route` on `svc`/`handler` is **not** part of the language after the flip
+(`ddd.layer` no longer declares `role:http_route`). Svelte page `@route("/path")`
+is a different annotation and must never gain that role.
+
 ### `enum` — variants, optionally a state machine
 Variant lines, where `A -> B -> C` records both variants **and** transitions.
 ```

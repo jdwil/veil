@@ -6,6 +6,9 @@ pkg ddd v1
   use rest_english
   use bus_handle
   use auth_local
+  # After the flip: use ddd includes endpoint / deps / compose.
+  # Opt-out: [harness] emit_bin = "never"
+  use harness
 
   # INV-006: FK / identity conventions (opt-in; off without this block)
   identity_policy
@@ -246,8 +249,6 @@ pkg ddd v1
     ann
       trace: "Add distributed tracing" method
       timeout: "Service-level timeout" ms
-      # role:http_route — dual-loop harness REST surface (engine never hardcodes "route")
-      route: "HTTP method and path, e.g. GET /api/items" method_path role:http_route
     group domain
 
   construct ApplicationService
@@ -262,7 +263,6 @@ pkg ddd v1
     ann
       trace: "Add distributed tracing" method
       timeout: "Service-level timeout" ms
-      route: "HTTP method and path, e.g. GET /api/items" method_path role:http_route
       # role:permission — required permission key (harness/host may enforce)
       auth: "Required permission claim, e.g. relay.admin" permission role:permission
     group application

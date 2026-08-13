@@ -232,6 +232,11 @@ package = "main.veil"
 target = "rust"
 output = "generated/backend"
 dev_command = "VEIL_DEV=1 cargo run -p veil_bin"
+
+# Flip: new projects require declared endpoint / deps / compose.
+# Existing packages without [harness] stay compat=auto for one release.
+[harness]
+compat = "off"
 "#
     );
     let pkg_src = format!(
@@ -617,6 +622,10 @@ mod tests {
         let toml = std::fs::read_to_string(root.join("veil.toml")).unwrap();
         assert!(toml.contains("[package]"), "{toml}");
         assert!(toml.contains("main.veil"), "{toml}");
+        assert!(
+            toml.contains("[harness]") && toml.contains("compat = \"off\""),
+            "veil init must default compat=off:\n{toml}"
+        );
         let mission = std::fs::read_to_string(root.join("MISSION.md")).unwrap();
         assert!(mission.contains("# hello-app"), "{mission}");
         assert!(mission.contains("## Out of scope"), "{mission}");

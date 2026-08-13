@@ -1,5 +1,5 @@
 pkg rest_rpc v1
-  desc "RPC-style REST — no name-derived routes; require role:http_route annotations"
+  desc "RPC-style REST — no name-derived routes; require declared endpoint constructs"
   author "VEIL"
 
   # Clear English prefixes so stacked layers cannot leave List/Get/… active.
@@ -14,6 +14,8 @@ pkg rest_rpc v1
 
   prompt
     REST pack (rest_rpc):
-    - Name-derived routes are OFF. Every dual-loop HTTP surface must use
-      an annotation with role:http_route (e.g. @route("GET /api/…") from ddd).
+    - Name-derived routes are OFF. Every dual-loop HTTP surface must be a
+      declared `endpoint` (role:http_endpoint) — method, path, handle, bind.
+    - Do not write API `@route` on svc/handler. Svelte page `@route` is separate
+      and must never gain role:http_route.
     - Use this pack when handler names are not English REST verbs.

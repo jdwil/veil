@@ -14,8 +14,9 @@ pkg rest_english v1
     path_prefix /api/
 
   prompt
-    REST naming pack (rest_english):
-    - Without role:http_route, service names drive paths:
-      ListX → GET /api/{x}s, GetX → GET /api/{x}s/{id}, CreateX → POST, …
-    - Prefer explicit @route("METHOD /path") when paths differ from English.
-    - Override path root in veil.toml: [codegen] http_path_prefix = "/api/v1/"
+    REST naming pack (rest_english) — migrate helper only after the flip:
+    - New packages declare `endpoint` (method/path/handle). Do not write API `@route`.
+    - `veil migrate harness` may still use these prefixes to seed endpoints.
+    - `[harness] compat = "auto"` still synthesizes ListX → GET /api/{x}s, …
+    - `[codegen] http_*` is unused by codegen when compat=off (warning).
+    - Svelte page `@route("/path")` is unrelated and must never gain role:http_route.

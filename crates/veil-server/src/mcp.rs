@@ -457,7 +457,7 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "list_routes",
-            "description": "JSON routes before inventing paths. source=auto|generated|ir (default auto: generated harness if present, else package IR @route/name). Use ir when gen failed (ACS-011).",
+            "description": "JSON routes before inventing paths. source=auto|generated|ir (default auto: generated harness if present, else package IR endpoints). Use ir when gen failed (ACS-011).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

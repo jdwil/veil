@@ -91,6 +91,36 @@ pub fn check_harness(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic
 
     let emit = registry.harness_policy.emit_bin.unwrap_or(EmitBin::OnEntry);
     let compat = registry.harness_policy.compat.unwrap_or(CompatMode::Auto);
+    for c in &all {
+        if registry.construct_has_http_route(c) {
+            let d = match compat {
+                CompatMode::Off => Diagnostic::error(
+                    "harness_route_annotation_removed",
+                    format!(
+                        "'{}' still has a role:http_route annotation; declare `endpoint` instead (API @route was removed)",
+                        c.name
+                    ),
+                    Some(c.name.clone()),
+                ),
+                CompatMode::Auto => Diagnostic::warning(
+                    "harness_route_annotation_removed",
+                    format!(
+                        "'{}' has a leftover role:http_route annotation; prefer `endpoint` (compat still synthesizes)",
+                        c.name
+                    ),
+                    Some(c.name.clone()),
+                ),
+            };
+            diags.push(d);
+        }
+    }
+    if registry.codegen_http_from_toml {
+        diags.push(Diagnostic::warning(
+            "harness_http_codegen_unused",
+            "[codegen] http_* does not drive codegen after the flip; declare `endpoint` or set [harness] compat = \"auto\"",
+            None,
+        ));
+    }
     if emit == EmitBin::OnEntry && !endpoints.is_empty() && composes.is_empty() {
         let d = match compat {
             CompatMode::Off => Diagnostic::error(
@@ -670,6 +700,47 @@ mod tests {
             !diags.iter().any(|d| d.severity == Severity::Error
                 && d.code.starts_with("harness_endpoint")
                 || d.code.starts_with("harness_bind")),
+            "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn leftover_http_route_is_error_when_compat_off() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content(
+            "legacy_route",
+            "pkg legacy_route v1\n  construct Svc\n    kw svc\n    mt fn\n    ann\n      route: \"HTTP\" method_path role:http_route\n",
+        )
+        .unwrap();
+        reg.harness_policy.compat = Some(CompatMode::Off);
+        let mut svc = Construct::new(
+            "svc",
+            "Svc",
+            Shape::Fn,
+            "ListItems".into(),
+            Span::new(0, 0),
+        );
+        svc.annotations.push(crate::ast::Annotation {
+            name: "route".into(),
+            args: vec!["GET /api/items".into()],
+            span: Span::new(0, 0),
+        });
+        let sol = Solution {
+            name: "App".into(),
+            span: Span::new(0, 0),
+            uses: Vec::new(),
+            links: Vec::new(),
+            items: vec![TopLevelItem::Construct(svc)],
+            expose: None,
+            guidance: Vec::new(),
+        };
+        let diags = check_harness(&sol, &reg);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "harness_route_annotation_removed"
+                    && d.severity == Severity::Error),
             "{:?}",
             diags
         );

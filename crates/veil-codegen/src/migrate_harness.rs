@@ -85,7 +85,7 @@ fn migrate_module(
         if existing_handlers.contains(&svc.name) {
             continue;
         }
-        let (method, path) = rest_route_for_service(svc, registry);
+        let (method, path) = leftover_or_rest_route(svc, registry);
         let (path, n) = rewrite_express_params(&path);
         report.id_rewrites += n;
         let binds = infer_binds(svc, &method, &path, registry);
@@ -384,12 +384,43 @@ fn construct_mentions_ident(c: &Construct, ident: &str) -> bool {
     })
 }
 
+/// After the flip, leftover `@route` has no role:http_route. Migrate still
+/// reads the annotation **name** so old files rewrite to `endpoint`.
+fn leftover_or_rest_route(svc: &Construct, registry: &LayerRegistry) -> (String, String) {
+    if let Some(ann) = svc.annotations.iter().find(|a| a.name == "route") {
+        if let Some(raw) = ann.args.first() {
+            let s = raw.trim().trim_matches('"').trim_matches('\'');
+            let mut parts = s.splitn(2, char::is_whitespace);
+            if let (Some(first), Some(path)) = (parts.next(), parts.next()) {
+                let path = path.trim();
+                if veil_ir::is_http_verb(first) && path.starts_with('/') {
+                    return (first.to_ascii_lowercase(), path.to_string());
+                }
+            }
+            if s.starts_with('/') {
+                let (m, _) = rest_route_for_service(svc, registry);
+                return (m, s.to_string());
+            }
+        }
+    }
+    rest_route_for_service(svc, registry)
+}
+
 fn strip_http_routes(module: &mut Construct, registry: &LayerRegistry) -> usize {
     let mut n = 0;
     fn walk(c: &mut Construct, registry: &LayerRegistry, n: &mut usize) {
         let before = c.annotations.len();
-        c.annotations
-            .retain(|a| !registry.is_http_route_annotation(&a.name));
+        let is_fn = c.shape == Shape::Fn;
+        c.annotations.retain(|a| {
+            if registry.is_http_route_annotation(&a.name) {
+                return false;
+            }
+            // Flip leftover: ddd no longer declares role:http_route.
+            if is_fn && a.name == "route" {
+                return false;
+            }
+            true
+        });
         *n += before - c.annotations.len();
         for ch in &mut c.children {
             walk(ch, registry, n);

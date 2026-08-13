@@ -40,8 +40,9 @@ veil check examples/di_example.veil
 |------------|--------|
 | `@main` composition into generated main | Working via `di.layer` + rust codegen (`role:main`) |
 | `@dep` / `@pvd` DI graph | Working (INV-001: `role:dependency` / `role:provider`) |
-| `@route` dual-loop REST | Working (`role:http_route`; never hard-coded `"route"`) |
-| Name-derived REST | `rest_english` pack (`ddd`/`rust` use it); override via `rest_rpc` or `[codegen]` |
+| Declared `endpoint` | Working (`role:http_endpoint`; compact header or field form) |
+| API `@route` on svc/handler | **Removed** from `ddd.layer`. Svelte page `@route` stays (no `role:http_route`). |
+| Name-derived REST | Compat only (`[harness] compat = "auto"`). New `veil init` is `compat = "off"`. `rest_english` is a migrate helper. |
 | Bus message key strip | `bus_handle` pack; `[codegen] bus_strip_prefix` |
 | Product policy knobs | `veil.toml` `[codegen]` (see POLICY_ROLES.md) |
 | Auth default | Open only with `VEIL_DEV=1`; else require `VEIL_API_KEY` |

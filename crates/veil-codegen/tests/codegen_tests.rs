@@ -702,13 +702,14 @@ pkg HostApp
     );
 }
 
-/// AGT-026: @route on services drives veil_bin paths.
+/// Flip: declared `endpoint` drives veil_bin paths (API @route removed from ddd).
 #[test]
-fn harness_honors_route_annotation() {
+fn harness_honors_declared_endpoint() {
     let src = r#"
 pkg RouteApp
   use ddd
   use di
+  use harness
 
   ctx Store
     group domain
@@ -716,7 +717,6 @@ pkg RouteApp
         list!() -> List<Str>
 
     group application
-      @route("GET /api/custom-things")
       svc ListThings
         input
         step q
@@ -728,10 +728,19 @@ pkg RouteApp
         @dep
         impl list()
           ret Ok
+    group presentation
+      deps StoreDeps
+        thing_repo: ThingRepo
+      compose StoreLocal
+        bundle: StoreDeps
+        wire
+          thing_repo: MemRepo
+      endpoint ListThingsHttp GET /api/custom-things -> ListThings
 "#;
     let mut reg = LayerRegistry::builtin();
     let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
     let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+    let _ = reg.load_content("harness", include_str!("../../../layers/harness.layer"));
     // examples path fallback
     if reg.constructs.iter().all(|c| c.keyword != "ctx") {
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
@@ -749,12 +758,12 @@ pkg RouteApp
         .expect("veil_bin main");
     assert!(
         main.content.contains("/api/custom-things"),
-        "expected @route path in harness:\n{}",
+        "expected declared endpoint path in harness:\n{}",
         main.content
     );
     assert!(
         !main.content.contains("/api/thingss") && !main.content.contains("\"/api/things\""),
-        "should not use name-derived path when @route present:\n{}",
+        "should not use name-derived path when endpoint is declared:\n{}",
         main.content
     );
 }

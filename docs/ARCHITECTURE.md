@@ -219,6 +219,14 @@ code reads `.veil` files directly.
 | `handlers.<MessageName>.inputs` | Typed parameter list (for deserialization) |
 | `expose` | Public API contract (from the `expose` block, if present) |
 
+### Customer-app harness (not this manifest)
+
+Customer `veil_bin` is **declared** (`deps` / `compose` / `endpoint` in `.veil`)
+and emitted by codegen from HarnessIR. ProductHost’s handwritten injector
+(`platform_http.rs`) constructs **runtime-product** `application::Deps` only.
+Do not treat this manifest as a generic host injector for customer apps.
+See `docs/DESIGN_CONFIGURABLE_HARNESS.md`.
+
 ### What veil-runtime Does With It
 
 1. **Reads `deps`** → constructs each adapter (using env vars), builds the `Deps` struct

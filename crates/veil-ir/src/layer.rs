@@ -563,6 +563,8 @@ pub struct LayerRegistry {
     /// Extra product roots from `veil.toml` `[dependencies]` (R20).
     /// Each root may contain `layers/<name>.layer` or `<name>.layer`.
     pub extra_layer_roots: Vec<std::path::PathBuf>,
+    /// True when `veil.toml` `[codegen] http_*` was present (warn after flip).
+    pub codegen_http_from_toml: bool,
 }
 
 /// Layer-declared bus message naming (no hard-coded `Handle` in the engine).
@@ -620,6 +622,7 @@ impl Default for LayerRegistry {
             http_name_policy: HttpNamePolicy::default(),
             harness_policy: crate::harness::HarnessPolicy::documented_defaults(),
             extra_layer_roots: Vec::new(),
+            codegen_http_from_toml: false,
         }
     }
 }
@@ -645,6 +648,7 @@ impl Clone for LayerRegistry {
             http_name_policy: self.http_name_policy.clone(),
             harness_policy: self.harness_policy.clone(),
             extra_layer_roots: self.extra_layer_roots.clone(),
+            codegen_http_from_toml: self.codegen_http_from_toml,
         }
     }
 }
@@ -878,6 +882,15 @@ impl LayerRegistry {
         }
         if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.auth_service_trait) {
             self.auth_policy.service_trait = v;
+        }
+        if o.http_path_prefix.is_some()
+            || o.http_list_prefix.is_some()
+            || o.http_get_prefix.is_some()
+            || o.http_create_prefix.is_some()
+            || o.http_update_prefix.is_some()
+            || o.http_delete_prefix.is_some()
+        {
+            self.codegen_http_from_toml = true;
         }
         if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_path_prefix) {
             self.http_name_policy.path_prefix = v;
@@ -3884,7 +3897,12 @@ pkg wf v1
             .expect("Enum must remain on palette for icon/label resolution");
         assert_eq!(en.icon, "🔀");
         assert_eq!(en.label, "Enum");
-        assert_eq!(en.layer, "core");
+        // ddd → harness → base may tag Enum as "base"; core visual must remain.
+        assert!(
+            en.layer == "core" || en.layer == "base",
+            "Enum layer should stay platform foundation, got {}",
+            en.layer
+        );
         // Struct etc. also stay (styles), even if create UI de-emphasizes them.
         assert!(
             palette.iter().any(|e| e.keyword == "struct" && e.icon == "📋"),
@@ -4029,6 +4047,10 @@ pkg bad v1
         let api = presentation_from_registry(&reg);
         assert!(api.hosts.contains_key("App"));
         assert!(!api.hosts.contains_key("Context")); // different paradigm host
+        assert!(
+            !reg.is_http_route_annotation("route"),
+            "Svelte page @route must never gain role:http_route"
+        );
     }
 
     /// LAY-004: real ddd.layer ships Context groups + model presentation.
@@ -4038,7 +4060,15 @@ pkg bad v1
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
         reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
         assert!(reg.is_runtime_strategy_annotation("strategy"), "strategy role");
-        assert!(reg.is_http_route_annotation("route"), "route role");
+        assert!(
+            !reg.is_http_route_annotation("route"),
+            "API @route / role:http_route must be gone from ddd"
+        );
+        assert!(
+            reg.constructs.iter().any(|c| c.roles.iter().any(|r| r == "http_endpoint")),
+            "ddd use harness must install endpoint role: {:?}",
+            reg.constructs.iter().map(|c| &c.keyword).collect::<Vec<_>>()
+        );
         assert!(reg.is_main_annotation("main"), "main role");
         assert!(reg.is_adapter_field_annotation("field"), "field role");
         assert!(reg.is_adapter_env_annotation("env"), "env role");

@@ -11,7 +11,8 @@ On any construct annotation in a `.layer` file:
 ```text
 ann
   dep: "Injected dependency" field role:dependency
-  route: "HTTP method and path" method_path role:http_route
+  # API @route / role:http_route was removed from ddd (flip).
+  # HTTP surface is construct role http_endpoint (harness.layer).
 ```
 
 | Role | Purpose | Declared in |
@@ -21,7 +22,7 @@ ann
 | `main` | Composition-root contribution | `di.layer` (`@main`) |
 | `secret` | Omit from outbound serialization | `di.layer` (`@secret`) |
 | `shared` | Shared ownership (e.g. Arc) | `di.layer` (`@shared`) |
-| `http_route` | Dual-loop REST surface | `ddd.layer` (`@route`) |
+| `http_endpoint` | Dual-loop REST surface | `harness.layer` (`endpoint`) |
 | `permission` | Required permission claim | `ddd.layer` (`@auth`) |
 | `invariant` | Smart-constructor validation | `ddd.layer` (`@invariant`) |
 | `adapter_env` | Required env vars for adapters | `ddd.layer` (`@env`) |
@@ -29,7 +30,7 @@ ann
 | `runtime_strategy` | Runtime provider key | `ddd.layer` (`@strategy`) |
 
 Engine API (examples): `registry.is_dependency_annotation(name)`,
-`registry.http_route_annotation(construct)`, `registry.field_is_secret(field)`.
+`registry.construct_has_role(c, "http_endpoint")`, `registry.field_is_secret(field)`.
 
 Products may **rename** annotations in a custom layer as long as the **role**
 stays the same. Engine code never matches the surface name.
@@ -109,7 +110,7 @@ harness_policy
 | auth | `auth api_key` | `auth` | `api_key` |
 | emit bin | `emit_bin on_entry` | `emit_bin` | `on_entry` |
 | collide | `collide error` | `collide` | `error` |
-| compat | *(none)* | `compat` | `auto` until flip |
+| compat | *(none)* | `compat` | `off` for new `veil init`; existing toml without `[harness]` still `auto` |
 | bind defaults | `bind_defaults method` | `bind_defaults` | `method` |
 | delete extras | `delete_extras query` | `delete_extras` | `query` |
 
@@ -163,7 +164,7 @@ Still supported for layer self-reference: `has_annotation("dep")`.
 
 Placeholders:
 
-- `{{route}}` — first arg of any `role:http_route` annotation
+- `{{route}}` — leftover `role:http_route` first arg (deprecated; prefer `endpoint`)
 - `{{annotation_value:name}}` / `{{annotation_arg:name:N}}` — generic, any name
 
 ## Catalog of shipped layers (policy surface)
@@ -171,9 +172,10 @@ Placeholders:
 | Layer | Policies / roles |
 |-------|------------------|
 | `di.layer` | dependency, provider, main, secret, shared |
-| `ddd.layer` | `use rest_english` + `use bus_handle`; auth/identity; http_route, invariant, adapter_*, strategy; declare Bus/Auth/saga |
-| `rest_english.layer` | http_name_policy (List/Get/… `/api/`) |
-| `rest_rpc.layer` | clears name-derived REST |
+| `ddd.layer` | `use rest_english` + `use bus_handle` + **`use harness`**; auth/identity; invariant, adapter_*, strategy; declare Bus/Auth/saga |
+| `harness.layer` | `endpoint` / `deps` / `compose`; harness_policy |
+| `rest_english.layer` | http_name_policy migrate helper (codegen unused when compat=off) |
+| `rest_rpc.layer` | clears name-derived REST; require declared `endpoint` |
 | `bus_handle.layer` | bus_policy strip `Handle` |
 | `auth_local.layer` | auth_policy.service_trait AuthService (AllowAllAuth) |
 | `rust.layer` | constructor_policy; `use rest_english` |
@@ -214,7 +216,7 @@ Wired in `LayerRegistry::for_veil_file` via `apply_codegen_overrides`.
 ```toml
 [harness]
 profile = "axum_http"
-compat = "auto"
+compat = "off"
 cors = "localhost"
 auth = "api_key"
 emit_bin = "on_entry"
@@ -225,14 +227,14 @@ item_repo = "PgItemRepo"
 ```
 
 Same tokens as layer `harness_policy`. Applied after layers via
-`apply_harness_overrides`. Does **not** change codegen emission yet.
+`apply_harness_overrides`. Codegen emits `veil_bin` from HarnessIR.
 
 ### B. Named policy packs (shipped)
 
 | Layer | Effect |
 |-------|--------|
 | `rest_english` | List/Get/Create/Update/Delete + `/api/` |
-| `rest_rpc` | Clears name-derived prefixes (`none`); require `role:http_route` |
+| `rest_rpc` | Clears name-derived prefixes (`none`); require declared `endpoint` |
 | `bus_handle` | `strip_name_prefix Handle` |
 | `auth_local` | `service_trait AuthService` → AllowAllAuth for dual-loop |
 

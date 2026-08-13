@@ -350,7 +350,7 @@ impl ListRoutesSource {
 /// Structured route list (AGT-027 / ACS-011).
 ///
 /// - `source=generated` — parse `veil_bin` main.rs under target outputs
-/// - `source=ir` — derive from package IR (`@route` first, else name fallback)
+/// - `source=ir` — derive from HarnessIR (`endpoint`, then compat synthesis)
 /// - `source=auto` (default) — generated when present, else IR
 pub fn tool_list_routes(project_root: &Path) -> Result<String, String> {
     tool_list_routes_with(project_root, None, None, ListRoutesSource::Auto)
