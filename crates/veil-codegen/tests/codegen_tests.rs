@@ -1158,3 +1158,107 @@ pkg App
         main.content
     );
 }
+
+#[test]
+fn declared_harness_emits_named_deps_and_only_declared_routes() {
+    let src = r#"
+pkg Demo
+  use ddd
+  use harness
+  ctx Catalog
+    group domain
+      port ItemRepo
+        save(name: Str) -> Res!
+    group application
+      svc CreateItem
+        input
+          name: Str
+        ret name
+      svc SecretUnused
+        input
+          x: Str
+        ret x
+    group infrastructure
+      adapter MemItemRepo for ItemRepo
+        impl save(name)
+          ret
+    group presentation
+      deps CatalogDeps
+        item_repo: ItemRepo
+      compose CatalogLocal
+        bundle: CatalogDeps
+        wire
+          item_repo: MemItemRepo
+      endpoint CreateItemHttp POST /api/items -> CreateItem
+        bind
+          name: body
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+        .unwrap();
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let diags = veil_ir::check_solution(&sol, &reg);
+    assert!(
+        !diags
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "unresolved_type"),
+        "{:?}",
+        diags.diagnostics
+    );
+    let project = veil_codegen::generate(&sol, &reg);
+    let types = project
+        .files
+        .iter()
+        .find(|f| f.path.contains("/types.rs") || f.path.ends_with("domain/types.rs"))
+        .map(|f| f.content.as_str())
+        .unwrap_or("");
+    assert!(
+        !types.contains("pub struct CreateItemHttp"),
+        "endpoint must not be a domain struct:\n{types}"
+    );
+    let app = project
+        .files
+        .iter()
+        .find(|f| f.path.contains("application"))
+        .expect("application");
+    assert!(
+        app.content.contains("pub struct CatalogDeps"),
+        "{}",
+        app.content
+    );
+    assert!(
+        app.content.contains("pub type Deps = CatalogDeps"),
+        "{}",
+        app.content
+    );
+    let main = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("veil_bin/src/main.rs"))
+        .expect("veil_bin");
+    assert!(
+        main.content.contains(".route(\"/api/items\""),
+        "{}",
+        main.content
+    );
+    assert!(
+        !main.content.contains(".route(\"/api/secret-unused\""),
+        "must not HTTP-host undeclared svc:\n{}",
+        main.content
+    );
+    let routes = veil_codegen::list_rest_routes_from_solution(&sol, &reg);
+    assert!(
+        routes.iter().any(|r| r.via == "endpoint" && r.path == "/api/items"),
+        "{:?}",
+        routes
+    );
+    assert!(
+        !routes.iter().any(|r| r.handler == "SecretUnused"),
+        "{:?}",
+        routes
+    );
+}

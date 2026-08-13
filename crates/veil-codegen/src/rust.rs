@@ -130,6 +130,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // RT-001b / RT-001: @main → dedicated veil_bin with local harness main.
     // Prefer a generated InProcessBus harness (RT-001/003/004) over raw
     // template fragments when we have context modules.
+    let harness_ir = veil_ir::lower_harness(solution, registry);
+    let declared_harness = veil_ir::has_declared_harness(solution, registry);
     let has_main = crate::template::compose_main_section(&template_output, "rust").is_some()
         || package_has_main_annotation(solution, registry)
         || !modules.is_empty(); // Packages with modules always get a harness binary.
@@ -141,8 +143,10 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             .any(|l| l.rust_name == "veil_server" || l.cargo_name == "veil-server");
         let main_body = if wants_product_host {
             gen_product_host_main(solution, &handler_names)
+        } else if declared_harness && !modules.is_empty() {
+            gen_local_harness_main(solution, &modules, registry, Some(&harness_ir))
         } else if !modules.is_empty() {
-            gen_local_harness_main(solution, &modules, registry)
+            gen_local_harness_main(solution, &modules, registry, None)
         } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust")
         {
             body
@@ -209,7 +213,13 @@ struct ModuleContents<'a> {
     fns: Vec<&'a Construct>,
 }
 
-fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
+fn is_harness_config_construct(c: &Construct, registry: &LayerRegistry) -> bool {
+    registry.construct_has_role(c, "http_endpoint")
+        || registry.construct_has_role(c, "compose")
+        || registry.construct_has_role(c, "deps_bundle")
+}
+
+fn flatten_module<'a>(module: &'a Construct, registry: &LayerRegistry) -> ModuleContents<'a> {
     let mut contents = ModuleContents {
         structs: Vec::new(),
         enums: Vec::new(),
@@ -217,19 +227,22 @@ fn flatten_module<'a>(module: &'a Construct) -> ModuleContents<'a> {
         impls: Vec::new(),
         fns: Vec::new(),
     };
-    fn walk<'a>(c: &'a Construct, contents: &mut ModuleContents<'a>) {
+    fn walk<'a>(c: &'a Construct, registry: &LayerRegistry, contents: &mut ModuleContents<'a>) {
         for child in &c.children {
+            if is_harness_config_construct(child, registry) {
+                continue;
+            }
             match child.shape {
                 Shape::Struct => contents.structs.push(child),
                 Shape::Enum => contents.enums.push(child),
                 Shape::Trait => contents.traits.push(child),
                 Shape::Impl => contents.impls.push(child),
                 Shape::Fn => contents.fns.push(child),
-                Shape::Group | Shape::Mod => walk(child, contents),
+                Shape::Group | Shape::Mod => walk(child, registry, contents),
             }
         }
     }
-    walk(module, &mut contents);
+    walk(module, registry, &mut contents);
     contents
 }
 
@@ -456,6 +469,7 @@ fn gen_local_harness_main(
     sol: &Solution,
     modules: &[&Construct],
     registry: &LayerRegistry,
+    declared: Option<&veil_ir::HarnessIR>,
 ) -> String {
     // ── Pre-scan: free-fn routing imports + whether any handler needs Query ─
     // Axum: only the first method on a path is a free fn (`get(h)`); chained
@@ -464,12 +478,29 @@ fn gen_local_harness_main(
         std::collections::BTreeSet::from(["get".to_string()]); // /health
     let mut any_query = false;
     for module in modules {
-        let flat = flatten_module(module);
-        let routable = http_routable_services(&flat.fns, registry);
+        let flat = flatten_module(module, registry);
+        let crate_name_ps = module_crate_name(module, sol);
+        let declared_eps = declared.and_then(|ir| {
+            ir.contexts
+                .iter()
+                .find(|c| c.crate_name == crate_name_ps || c.module_name == module.name)
+                .map(|c| c.endpoints.as_slice())
+        });
         let mut by_path: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         let mut seen: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
+        if let Some(eps) = declared_eps {
+            for ep in eps {
+                let method = ep.method.to_ascii_lowercase();
+                let path = ep.path.clone();
+                if !seen.insert((method.clone(), path.clone())) {
+                    continue;
+                }
+                by_path.entry(path).or_default().push(method);
+            }
+        } else {
+        let routable = http_routable_services(&flat.fns, registry);
         for svc in &routable {
             let (method, path) = rest_route_for_service(svc, registry);
             if !seen.insert((method.clone(), path.clone())) {
@@ -478,6 +509,16 @@ fn gen_local_harness_main(
             by_path.entry(path.clone()).or_default().push(method.clone());
             let path_params = path_param_names(&path);
             if harness_handler_needs_query(svc, registry, &method, &path, &path_params) {
+                any_query = true;
+            }
+        }
+        }
+        if let Some(eps) = declared_eps {
+            if eps.iter().any(|e| {
+                e.binds
+                    .iter()
+                    .any(|b| matches!(b.source, veil_ir::BindSource::Query))
+            }) {
                 any_query = true;
             }
         }
@@ -515,10 +556,27 @@ fn gen_local_harness_main(
     out.push_str("use veil_shared::*;\n");
     for m in modules {
         let cn = module_crate_name(m, sol);
-        let flat = flatten_module(m);
+        let flat = flatten_module(m, registry);
         let name_to_shape_temp = build_name_to_shape(sol, registry);
         let (deps_set, _) = collect_deps_field_map(&flat.fns, registry, &name_to_shape_temp);
-        if !deps_set.is_empty() {
+        let declared_deps = declared.and_then(|ir| {
+            ir.contexts
+                .iter()
+                .find(|c| c.crate_name == cn || c.module_name == m.name)
+                .and_then(|c| c.deps.as_ref())
+        });
+        if let Some(deps) = declared_deps {
+            if deps.type_name == "Deps" {
+                out.push_str(&format!(
+                    "use {cn}::application::{{self as {cn}_app, Deps as {cn}_Deps}};\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "use {cn}::application::{{self as {cn}_app, {} as {cn}_Deps}};\n",
+                    deps.type_name
+                ));
+            }
+        } else if !deps_set.is_empty() {
             out.push_str(&format!(
                 "use {cn}::application::{{self as {cn}_app, Deps as {cn}_Deps}};\n"
             ));
@@ -544,7 +602,7 @@ fn gen_local_harness_main(
 
     for module in modules {
         let crate_name = module_crate_name(module, sol);
-        let flat = flatten_module(module);
+        let flat = flatten_module(module, registry);
         let adapters = &flat.impls;
         let services = &flat.fns;
         if adapters.is_empty() && services.is_empty() {
@@ -566,16 +624,41 @@ fn gen_local_harness_main(
             std::collections::HashSet::new();
         let mut wired_adapter_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        let declared_compose = declared.and_then(|ir| {
+            ir.contexts
+                .iter()
+                .find(|c| c.crate_name == crate_name || c.module_name == module.name)
+                .and_then(|c| c.compose.as_ref())
+        });
         for ad in adapters {
             if is_pure_generic_adapter_template(ad) {
                 continue;
             }
+            if let Some(compose) = declared_compose {
+                let named = compose.wires.iter().any(|w| match &w.kind {
+                    veil_ir::WireKind::Adapter { name } => name == &ad.name,
+                    _ => false,
+                });
+                if !named {
+                    continue;
+                }
+            }
             if let Some(target) = &ad.target {
-                let field = adapter_deps_field_name(sol, ad, target, &dep_fields);
+                let field = if let Some(compose) = declared_compose {
+                    compose
+                        .wires
+                        .iter()
+                        .find(|w| matches!(&w.kind, veil_ir::WireKind::Adapter { name } if name == &ad.name))
+                        .map(|w| w.field.clone())
+                        .unwrap_or_else(|| adapter_deps_field_name(sol, ad, target, &dep_fields))
+                } else {
+                    adapter_deps_field_name(sol, ad, target, &dep_fields)
+                };
                 if !wired_fields.insert(field.clone()) {
                     continue;
                 }
-                if !dep_fields.is_empty()
+                if declared_compose.is_none()
+                    && !dep_fields.is_empty()
                     && !dep_fields.values().any(|v| v == &field)
                     && !dep_fields.contains_key(target)
                 {
@@ -744,21 +827,29 @@ fn gen_local_harness_main(
         let routing_traits = registry.routing_traits();
         let mut missing: Vec<String> = Vec::new();
         let mut auto_bus_field: Option<String> = None;
-        for (trait_name, field) in &dep_fields {
-            if !wired_fields.contains(field) {
-                if routing_traits.contains(trait_name) {
-                    // Auto-wire the routing trait with InProcessBus
-                    auto_bus_field = Some(field.clone());
-                } else {
-                    missing.push(format!("`{field}` (trait {trait_name})"));
+        if let Some(compose) = declared_compose {
+            for w in &compose.wires {
+                if matches!(w.kind, veil_ir::WireKind::ProvidedRuntime) {
+                    auto_bus_field = Some(w.field.clone());
                 }
             }
-        }
-        if !missing.is_empty() {
-            out.push_str(&format!(
-                "    compile_error!(\"Deps requires adapter(s) for: {} — add `adapter … for <Trait>` in the package\");\n\n",
-                missing.join(", ")
-            ));
+        } else {
+            for (trait_name, field) in &dep_fields {
+                if !wired_fields.contains(field) {
+                    if routing_traits.contains(trait_name) {
+                        // Auto-wire the routing trait with InProcessBus
+                        auto_bus_field = Some(field.clone());
+                    } else {
+                        missing.push(format!("`{field}` (trait {trait_name})"));
+                    }
+                }
+            }
+            if !missing.is_empty() {
+                out.push_str(&format!(
+                    "    compile_error!(\"Deps requires adapter(s) for: {} — add `adapter … for <Trait>` in the package\");\n\n",
+                    missing.join(", ")
+                ));
+            }
         }
         let has_deps = !dep_fields.is_empty();
         if has_deps {
@@ -782,6 +873,12 @@ fn gen_local_harness_main(
 
         // HTTP surface: prefer `@route` endpoints; dedupe (method, path).
         // Without any @route in the module, fall back to name-derived for all fns.
+        let declared_eps = declared.and_then(|ir| {
+            ir.contexts
+                .iter()
+                .find(|c| c.crate_name == crate_name || c.module_name == module.name)
+                .map(|c| c.endpoints.as_slice())
+        });
         let routable = http_routable_services(&services, registry);
         out.push_str(&format!("    let {crate_name}_router = Router::new()\n"));
         let mut routes_emitted: std::collections::BTreeMap<String, Vec<(String, String)>> =
@@ -789,6 +886,22 @@ fn gen_local_harness_main(
         // path → list of (method, handler_fn_name)
         let mut seen_method_path: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
+        if let Some(eps) = declared_eps {
+            for ep in eps {
+                let fn_name = format!("{}_{}", crate_name, to_snake(&ep.handler));
+                let method = ep.method.to_ascii_lowercase();
+                let path = ep.path.clone();
+                let key = (method.clone(), path.clone());
+                if !seen_method_path.insert(key.clone()) {
+                    continue;
+                }
+                global_method_path.insert(key);
+                routes_emitted
+                    .entry(path)
+                    .or_default()
+                    .push((method, format!("{fn_name}_handler")));
+            }
+        } else {
         for svc in &routable {
             let fn_name = format!("{}_{}", crate_name, to_snake(&svc.name));
             let (method, mut path) = rest_route_for_service(svc, registry);
@@ -811,6 +924,7 @@ fn gen_local_harness_main(
                 .entry(path)
                 .or_default()
                 .push((method, format!("{fn_name}_handler")));
+        }
         }
         for (path, handlers) in &routes_emitted {
             let chained = handlers
@@ -857,7 +971,7 @@ fn gen_local_harness_main(
     // Merge all context routers into a single app
     let router_names: Vec<String> = modules.iter()
         .filter(|m| {
-            let flat = flatten_module(m);
+            let flat = flatten_module(m, registry);
             !flat.fns.is_empty()
         })
         .map(|m| format!("{}_router", module_crate_name(m, sol)))
@@ -872,6 +986,13 @@ fn gen_local_harness_main(
         // Single shared health probe after merge (avoids path overlap across contexts).
         out.push_str("\n        .route(\"/health\", get(|| async { \"ok\" }));\n");
     }
+    if let Some(ir) = declared {
+        let n: usize = ir.contexts.iter().map(|c| c.endpoints.len()).sum();
+        out.push_str(&format!(
+            "    println!(\"veil_bin: profile={} endpoints={n}\");\n",
+            ir.profile
+        ));
+    }
     out.push_str(&format!(
         "    println!(\"veil_bin: listening on :{{}}\", port);\n"
     ));
@@ -882,14 +1003,40 @@ fn gen_local_harness_main(
     // Generate handler functions only for HTTP-routable services
     for module in modules {
         let crate_name = module_crate_name(module, sol);
-        let flat = flatten_module(module);
-        let routable = http_routable_services(&flat.fns, registry);
+        let flat = flatten_module(module, registry);
+        let declared_ctx = declared.and_then(|ir| {
+            ir.contexts
+                .iter()
+                .find(|c| c.crate_name == crate_name || c.module_name == module.name)
+        });
+        let routable: Vec<(&Construct, String, String)> = if let Some(ctx) = declared_ctx {
+            ctx.endpoints
+                .iter()
+                .filter_map(|ep| {
+                    let svc = flat.fns.iter().find(|s| s.name == ep.handler)?;
+                    Some((
+                        *svc,
+                        ep.method.to_ascii_lowercase(),
+                        ep.path.clone(),
+                    ))
+                })
+                .collect()
+        } else {
+            http_routable_services(&flat.fns, registry)
+                .into_iter()
+                .map(|svc| {
+                    let (m, p) = rest_route_for_service(svc, registry);
+                    (svc, m, p)
+                })
+                .collect()
+        };
         let mut seen_handler_fns: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for svc in &routable {
+        for (svc, method, path) in &routable {
             let app_fn_name = to_snake(&svc.name);
             let fn_name = format!("{}_{}", crate_name, &app_fn_name);
-            let (method, path) = rest_route_for_service(svc, registry);
+            let method = method.clone();
+            let path = path.clone();
             // Deduplicate by handler fn name — two services that name-derive to
             // the same (method, path) may still need distinct handlers when one
             // gets a collision-adjusted path prefix during route registration.
@@ -1484,6 +1631,23 @@ pub fn list_rest_routes_from_solution(
     sol: &Solution,
     registry: &LayerRegistry,
 ) -> Vec<IrRestRoute> {
+    let ir = veil_ir::lower_harness(sol, registry);
+    let declared: Vec<IrRestRoute> = veil_ir::list_endpoints_from_ir(&ir)
+        .into_iter()
+        .map(|e| IrRestRoute {
+            method: e.method.to_ascii_lowercase(),
+            path: e.path.clone(),
+            handler: e.handler.clone(),
+            via: match e.via.as_str() {
+                "endpoint" => "endpoint",
+                "compat_route" => "compat_route",
+                _ => "compat_name",
+            },
+        })
+        .collect();
+    if declared.iter().any(|r| r.via == "endpoint") {
+        return declared;
+    }
     let mut out = Vec::new();
     for item in &sol.items {
         let TopLevelItem::Construct(c) = item else {
@@ -1492,7 +1656,7 @@ pub fn list_rest_routes_from_solution(
         if c.shape != Shape::Mod {
             continue;
         }
-        let flat = flatten_module(c);
+        let flat = flatten_module(c, registry);
         let routable = http_routable_services(&flat.fns, registry);
         let mut seen: std::collections::HashSet<(String, String)> =
             std::collections::HashSet::new();
@@ -1995,7 +2159,7 @@ fn gen_module_crate(
 ) -> Vec<GeneratedFile> {
     let crate_name = module_crate_name(module, solution);
     let mut files = Vec::new();
-    let mut contents = flatten_module(module);
+    let mut contents = flatten_module(module, registry);
 
     // Solution-level layer-provided traits (the injected Bus) live in the
     // shared crate and are re-exported by gen_traits — do NOT duplicate them
@@ -2115,7 +2279,19 @@ uuid.workspace = true"#);
         *flow_generated = true;
         app_flows.extend(top_level_flows.iter().map(|f| FlowLike::Flow(f)));
     }
-    files.push(gen_application(&app_flows, &contents, &crate_name, solution, registry));
+    let deps_decl = veil_ir::lower_harness(solution, registry)
+        .contexts
+        .iter()
+        .find(|c| c.crate_name == crate_name || c.module_name == module.name)
+        .and_then(|c| c.deps.clone());
+    files.push(gen_application(
+        &app_flows,
+        &contents,
+        &crate_name,
+        solution,
+        registry,
+        deps_decl.as_ref(),
+    ));
 
     // Generate manifest.json only for deployment units (constructs marked with `au`)
     if module.deployment_unit {
@@ -3544,7 +3720,7 @@ fn collect_handler_names(
 ) -> Vec<String> {
     let mut names = Vec::new();
     for module in modules {
-        let flat = flatten_module(module);
+        let flat = flatten_module(module, registry);
         for f in &flat.fns {
             let message = registry.bus_message_name(&f.name);
             if !names.contains(&message) {
@@ -5355,7 +5531,7 @@ fn scan_dep_calls(
     }
 }
 
-fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry) -> GeneratedFile {
+fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry, deps_decl: Option<&veil_ir::DepsDecl>) -> GeneratedFile {
     use crate::expr::{build_ctx_from_solution, collect_deps, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
@@ -5496,8 +5672,23 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             .or_insert_with(|| to_snake(t));
     }
 
-    // Generate Deps struct using the shared field map
-    if !all_deps.is_empty() {
+    // Generate Deps struct: declared `deps` construct wins (INV-001 authored type).
+    if let Some(decl) = deps_decl {
+        out.push_str(&format!(
+            "/// Declared dependency bundle (`deps {}`).\npub struct {} {{\n",
+            decl.type_name, decl.type_name
+        ));
+        for f in &decl.fields {
+            out.push_str(&format!(
+                "    pub {}: std::sync::Arc<dyn {} + Send + Sync>,\n",
+                f.name, f.trait_name
+            ));
+        }
+        out.push_str("}\n\n");
+        if decl.type_name != "Deps" {
+            out.push_str(&format!("pub type Deps = {};\n\n", decl.type_name));
+        }
+    } else if !all_deps.is_empty() {
         out.push_str("/// Injected dependencies (ports).\npub struct Deps {\n");
         let mut sorted: Vec<&String> = all_deps.iter().collect();
         sorted.sort();
@@ -6492,7 +6683,7 @@ pub fn generate_multi_package_harness(
     // For each module: wire adapters + deps (same logic as gen_local_harness_main)
     let mut router_names: Vec<String> = Vec::new();
     for (module, crate_name, registry, sol) in &all_modules {
-        let flat = flatten_module(module);
+        let flat = flatten_module(module, registry);
         let adapters = &flat.impls;
         let services = &flat.fns;
         if adapters.is_empty() && services.is_empty() {
@@ -6710,7 +6901,7 @@ pub fn generate_multi_package_harness(
     // Generate handler functions for each service across all modules
     // (same path/query/body policy as single-package local harness).
     for (module, crate_name, registry, _) in &all_modules {
-        let flat = flatten_module(module);
+        let flat = flatten_module(module, registry);
         let routable = http_routable_services(&flat.fns, registry);
         for svc in &routable {
             let fn_name = to_snake(&svc.name);

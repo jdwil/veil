@@ -292,10 +292,17 @@ fn check_construct(
 
     // Types on fields / methods / inputs
     for f in &c.fields {
+        if crate::harness_check::skip_name_check_for_field(c, f, None, registry) {
+            continue;
+        }
         check_type_expr(&f.type_expr, location, index, &type_params, diagnostics);
     }
     for b in &c.blocks {
         for f in &b.fields {
+            if crate::harness_check::skip_name_check_for_field(c, f, Some(&b.keyword), registry)
+            {
+                continue;
+            }
             check_type_expr(&f.type_expr, location, index, &type_params, diagnostics);
         }
     }
@@ -1251,7 +1258,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layer::{ConstructSpec, Shape, Visual};
+    use crate::layer::{ConstructSpec, LayerRegistry, Shape, Visual};
     use crate::span::Span;
 
     fn empty_visual() -> Visual {
@@ -1457,6 +1464,76 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == "unresolved_type"),
             "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn harness_config_fields_are_not_unresolved_types() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+            .expect("harness");
+        let mut ep = Construct::new(
+            "endpoint",
+            "HttpEndpoint",
+            Shape::Struct,
+            "CreateItemHttp".into(),
+            Span::new(0, 0),
+        );
+        ep.fields.push(Field {
+            annotations: Vec::new(),
+            name: "method".into(),
+            type_expr: TypeExpr::Named("POST".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        ep.fields.push(Field {
+            annotations: Vec::new(),
+            name: "path".into(),
+            type_expr: TypeExpr::LitStr("/api/items/{id}".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        ep.fields.push(Field {
+            annotations: Vec::new(),
+            name: "handle".into(),
+            type_expr: TypeExpr::Named("CreateItem".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        ep.blocks.push(crate::ast::NamedBlock {
+            keyword: "bind".into(),
+            shape: Shape::Struct,
+            name: None,
+            fields: vec![Field {
+                annotations: Vec::new(),
+                name: "id".into(),
+                type_expr: TypeExpr::Named("path".into()),
+                default_expr: None,
+                span: Span::new(0, 0),
+            }],
+            variants: Vec::new(),
+            transitions: Vec::new(),
+            span: Span::new(0, 0),
+        });
+        let mut handler = Construct::new("fn", "Fn", Shape::Fn, "CreateItem".into(), Span::new(0, 0));
+        handler.inputs.push(Field {
+            annotations: Vec::new(),
+            name: "id".into(),
+            type_expr: TypeExpr::Named("Str".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let diags = check_names(
+            &sol(vec![
+                TopLevelItem::Construct(ep),
+                TopLevelItem::Construct(handler),
+            ]),
+            &reg,
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "unresolved_type"),
+            "config tokens must not be types: {:?}",
             diags
         );
     }

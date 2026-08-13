@@ -10,6 +10,7 @@ pub mod diagnostics;
 pub mod edit;
 pub mod escape;
 pub mod harness;
+pub mod harness_check;
 pub mod ir;
 pub mod layer;
 pub mod layer_graph;
@@ -42,8 +43,11 @@ pub use deps::{
     PackageEntry, ProductDep,
 };
 pub use harness::{
-    merge_harness_policy, parse_harness_policy, AuthMode, BindDefaults, BusWire, CollideMode,
-    CompatMode, CorsMode, DeleteExtras, EmitBin, HarnessPolicy, HARNESS_CLEAR,
+    has_declared_harness, is_http_verb, list_endpoints_from_ir, lower_harness, merge_harness_policy,
+    parse_harness_policy, AuthMode, BindDecl, BindDefaults, BindSource, BusHandlerDecl, BusWire,
+    CollideMode, CompatMode, ComposeDecl, CorsMode, DeleteExtras, DepsDecl, DepsField, EmitBin,
+    EndpointDecl, HarnessContext, HarnessIR, HarnessPolicy, ListenSpec, WireDecl, WireKind,
+    HARNESS_CLEAR,
 };
 pub use ast::*;
 pub use builder::{build_ir, build_ir_with_registry};

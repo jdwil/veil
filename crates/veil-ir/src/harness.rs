@@ -335,6 +335,14 @@ impl HarnessPolicy {
     }
 }
 
+/// HTTP method tokens (protocol, not product vocabulary).
+pub fn is_http_verb(word: &str) -> bool {
+    matches!(
+        word.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
+}
+
 fn normalize_token(s: &str) -> &str {
     s.trim()
 }
@@ -498,6 +506,512 @@ pub fn merge_harness_policy(base: &HarnessPolicy, over: &HarnessPolicy) -> Harne
     }
 }
 
+// ─── HarnessIR (lowered, role-driven) ────────────────────────────────────────
+
+use crate::ast::{Construct, Solution, TopLevelItem, TypeExpr};
+use crate::layer::{LayerRegistry, Shape};
+
+/// Listen bind for the generated bin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListenSpec {
+    pub env: String,
+    pub host: String,
+    pub default_port: u16,
+}
+
+impl Default for ListenSpec {
+    fn default() -> Self {
+        Self {
+            env: "PORT".into(),
+            host: "0.0.0.0".into(),
+            default_port: 3000,
+        }
+    }
+}
+
+/// Lowered harness. No product annotation names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessIR {
+    pub profile: String,
+    pub bin_name: String,
+    pub listen: ListenSpec,
+    pub health_path: Option<String>,
+    pub cors: CorsMode,
+    pub cors_outside_auth: bool,
+    pub auth: AuthMode,
+    pub path_prefix: Option<String>,
+    pub collide: CollideMode,
+    pub emit_bin: EmitBin,
+    pub compat: CompatMode,
+    pub contexts: Vec<HarnessContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessContext {
+    pub crate_name: String,
+    pub module_name: String,
+    pub deps: Option<DepsDecl>,
+    pub compose: Option<ComposeDecl>,
+    pub endpoints: Vec<EndpointDecl>,
+    pub bus_handlers: Vec<BusHandlerDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepsDecl {
+    pub type_name: String,
+    pub fields: Vec<DepsField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepsField {
+    pub name: String,
+    pub trait_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeDecl {
+    pub name: String,
+    pub bundle: String,
+    pub wires: Vec<WireDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireDecl {
+    pub field: String,
+    pub kind: WireKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireKind {
+    Adapter { name: String },
+    ProvidedRuntime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointDecl {
+    pub name: String,
+    pub method: String,
+    pub path: String,
+    pub handler: String,
+    pub binds: Vec<BindDecl>,
+    /// `endpoint` | `compat_route` | `compat_name`
+    pub via: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindDecl {
+    pub input: String,
+    pub source: BindSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BindSource {
+    Path,
+    Query,
+    Header,
+    Body,
+    Tenant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BusHandlerDecl {
+    pub name: String,
+}
+
+/// True when the package authored compose + at least one endpoint.
+pub fn has_declared_harness(sol: &Solution, registry: &LayerRegistry) -> bool {
+    let mut compose = false;
+    let mut endpoint = false;
+    for c in iter_constructs(sol) {
+        walk_roles(c, registry, &mut compose, &mut endpoint);
+    }
+    compose && endpoint
+}
+
+fn walk_roles(c: &Construct, registry: &LayerRegistry, compose: &mut bool, endpoint: &mut bool) {
+    if registry.construct_has_role(c, "compose") {
+        *compose = true;
+    }
+    if registry.construct_has_role(c, "http_endpoint") {
+        *endpoint = true;
+    }
+    for child in &c.children {
+        walk_roles(child, registry, compose, endpoint);
+    }
+}
+
+/// Lower Solution → HarnessIR (declared constructs + optional compat synthesis).
+pub fn lower_harness(sol: &Solution, registry: &LayerRegistry) -> HarnessIR {
+    let p = &registry.harness_policy;
+    let mut ir = HarnessIR {
+        profile: p.profile.clone().unwrap_or_else(|| "axum_http".into()),
+        bin_name: p.bin.clone().unwrap_or_else(|| "veil_bin".into()),
+        listen: listen_from_policy(p),
+        health_path: p.health.clone(),
+        cors: p.cors.unwrap_or(CorsMode::Localhost),
+        cors_outside_auth: p.cors_outside_auth.unwrap_or(true),
+        auth: p.auth.unwrap_or(AuthMode::ApiKey),
+        path_prefix: p.path_prefix.clone(),
+        collide: p.collide.unwrap_or(CollideMode::Error),
+        emit_bin: p.emit_bin.unwrap_or(EmitBin::OnEntry),
+        compat: p.compat.unwrap_or(CompatMode::Auto),
+        contexts: Vec::new(),
+    };
+
+    let mods: Vec<&Construct> = sol
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevelItem::Construct(c) if c.shape == Shape::Mod => Some(c),
+            _ => None,
+        })
+        .collect();
+
+    if mods.is_empty() {
+        let ctx = lower_context("app", "App", sol, &iter_constructs(sol).collect::<Vec<_>>(), registry, ir.compat);
+        if ctx.deps.is_some() || ctx.compose.is_some() || !ctx.endpoints.is_empty() {
+            ir.contexts.push(ctx);
+        }
+    } else {
+        for m in mods {
+            let mut members = Vec::new();
+            collect_constructs(m, &mut members);
+            ir.contexts.push(lower_context(
+                &to_snake(&m.name),
+                &m.name,
+                sol,
+                &members,
+                registry,
+                ir.compat,
+            ));
+        }
+    }
+    ir
+}
+
+pub fn list_endpoints_from_ir(ir: &HarnessIR) -> Vec<&EndpointDecl> {
+    ir.contexts.iter().flat_map(|c| c.endpoints.iter()).collect()
+}
+
+fn listen_from_policy(p: &HarnessPolicy) -> ListenSpec {
+    let mut spec = ListenSpec {
+        env: p.listen_env.clone().unwrap_or_else(|| "PORT".into()),
+        host: "0.0.0.0".into(),
+        default_port: p.listen_default.unwrap_or(3000),
+    };
+    if let Some(listen) = &p.listen {
+        if let Some((host, port)) = listen.rsplit_once(':') {
+            spec.host = host.to_string();
+            if let Ok(n) = port.parse() {
+                spec.default_port = n;
+            }
+        }
+    }
+    spec
+}
+
+fn lower_context(
+    crate_name: &str,
+    module_name: &str,
+    sol: &Solution,
+    members: &[&Construct],
+    registry: &LayerRegistry,
+    compat: CompatMode,
+) -> HarnessContext {
+    let deps = members
+        .iter()
+        .copied()
+        .find(|c| registry.construct_has_role(c, "deps_bundle"))
+        .map(lower_deps);
+    let compose = members
+        .iter()
+        .copied()
+        .find(|c| registry.construct_has_role(c, "compose"))
+        .map(|c| lower_compose(c, registry));
+    let mut endpoints: Vec<EndpointDecl> = members
+        .iter()
+        .copied()
+        .filter(|c| registry.construct_has_role(c, "http_endpoint"))
+        .filter_map(|c| lower_endpoint(c, registry))
+        .collect();
+
+    if endpoints.is_empty() && compat == CompatMode::Auto {
+        endpoints = synthesize_compat_endpoints(members, registry);
+    }
+
+    let routing_on_bundle = deps.as_ref().is_some_and(|d| {
+        d.fields.iter().any(|f| {
+            registry.routing_traits().iter().any(|t| t == &f.trait_name)
+        })
+    }) || !registry.routing_traits().is_empty();
+
+    let bus_handlers = if routing_on_bundle {
+        members
+            .iter()
+            .copied()
+            .filter(|c| c.shape == Shape::Fn)
+            .map(|c| BusHandlerDecl {
+                name: c.name.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let _ = sol;
+    HarnessContext {
+        crate_name: crate_name.to_string(),
+        module_name: module_name.to_string(),
+        deps,
+        compose,
+        endpoints,
+        bus_handlers,
+    }
+}
+
+fn lower_deps(c: &Construct) -> DepsDecl {
+    DepsDecl {
+        type_name: c.name.clone(),
+        fields: c
+            .fields
+            .iter()
+            .filter_map(|f| {
+                Some(DepsField {
+                    name: f.name.clone(),
+                    trait_name: type_name(&f.type_expr)?.to_string(),
+                })
+            })
+            .collect(),
+    }
+}
+
+fn lower_compose(c: &Construct, registry: &LayerRegistry) -> ComposeDecl {
+    let bundle = c
+        .fields
+        .iter()
+        .find(|f| f.name == "bundle")
+        .and_then(|f| type_name(&f.type_expr))
+        .unwrap_or("")
+        .to_string();
+    let wires = c
+        .blocks
+        .iter()
+        .filter(|b| b.keyword == "wire")
+        .flat_map(|b| b.fields.iter())
+        .filter_map(|f| {
+            let target = type_name(&f.type_expr)?;
+            let kind = if target == "provided_runtime"
+                || registry.constructs.iter().any(|s| {
+                    (s.keyword == target || s.name == target)
+                        && s.roles.iter().any(|r| r == "runtime_provider")
+                })
+            {
+                WireKind::ProvidedRuntime
+            } else {
+                WireKind::Adapter {
+                    name: target.to_string(),
+                }
+            };
+            Some(WireDecl {
+                field: f.name.clone(),
+                kind,
+            })
+        })
+        .collect();
+    ComposeDecl {
+        name: c.name.clone(),
+        bundle,
+        wires,
+    }
+}
+
+fn lower_endpoint(c: &Construct, registry: &LayerRegistry) -> Option<EndpointDecl> {
+    let method = c
+        .fields
+        .iter()
+        .find(|f| f.name == "method")
+        .and_then(|f| type_name(&f.type_expr))?
+        .to_ascii_uppercase();
+    let path = c
+        .fields
+        .iter()
+        .find(|f| f.name == "path")
+        .and_then(|f| type_name(&f.type_expr))?
+        .to_string();
+    let handler = c
+        .fields
+        .iter()
+        .find(|f| f.name == "handle")
+        .and_then(|f| type_name(&f.type_expr))?
+        .to_string();
+    let binds = c
+        .blocks
+        .iter()
+        .filter(|b| b.keyword == "bind")
+        .flat_map(|b| b.fields.iter())
+        .filter_map(|f| {
+            Some(BindDecl {
+                input: f.name.clone(),
+                source: parse_bind_source(type_name(&f.type_expr)?)?,
+            })
+        })
+        .collect();
+    let mut path = path;
+    if let Some(pre) = &registry.harness_policy.path_prefix {
+        if !path.starts_with(pre) {
+            path = format!("{}{}", pre.trim_end_matches('/'), path);
+        }
+    }
+    Some(EndpointDecl {
+        name: c.name.clone(),
+        method,
+        path,
+        handler,
+        binds,
+        via: "endpoint".into(),
+    })
+}
+
+fn parse_bind_source(s: &str) -> Option<BindSource> {
+    match s {
+        "path" => Some(BindSource::Path),
+        "query" => Some(BindSource::Query),
+        "header" => Some(BindSource::Header),
+        "body" => Some(BindSource::Body),
+        "tenant" => Some(BindSource::Tenant),
+        _ => None,
+    }
+}
+
+fn synthesize_compat_endpoints(
+    members: &[&Construct],
+    registry: &LayerRegistry,
+) -> Vec<EndpointDecl> {
+    let fns: Vec<&Construct> = members.iter().copied().filter(|c| c.shape == Shape::Fn).collect();
+    let with_route: Vec<&Construct> = fns
+        .iter()
+        .copied()
+        .filter(|c| registry.construct_has_http_route(c))
+        .collect();
+    let routable = if !with_route.is_empty() {
+        with_route
+    } else {
+        fns
+    };
+    let mut out = Vec::new();
+    for svc in routable {
+        let (method, path, via) = compat_route_for(svc, registry);
+        out.push(EndpointDecl {
+            name: format!("{}Http", svc.name),
+            method: method.to_ascii_uppercase(),
+            path,
+            handler: svc.name.clone(),
+            binds: Vec::new(),
+            via,
+        });
+    }
+    out
+}
+
+fn compat_route_for(svc: &Construct, registry: &LayerRegistry) -> (String, String, String) {
+    if let Some(ann) = registry.http_route_annotation(svc) {
+        if let Some(raw) = ann.args.first() {
+            let s = raw.trim().trim_matches('"').trim_matches('\'');
+            let mut parts = s.splitn(2, char::is_whitespace);
+            if let (Some(first), Some(path)) = (parts.next(), parts.next()) {
+                if is_http_verb(first) && path.starts_with('/') {
+                    return (first.to_string(), path.trim().to_string(), "compat_route".into());
+                }
+            }
+            if s.starts_with('/') {
+                let (m, _) = derive_name_route(&svc.name, registry);
+                return (m, s.to_string(), "compat_route".into());
+            }
+        }
+    }
+    let (m, p) = derive_name_route(&svc.name, registry);
+    (m, p, "compat_name".into())
+}
+
+fn derive_name_route(service_name: &str, registry: &LayerRegistry) -> (String, String) {
+    let pol = &registry.http_name_policy;
+    let path_root = pol.path_prefix.as_deref().unwrap_or("/api/");
+    let pairs: [(&Option<String>, &str, bool); 5] = [
+        (&pol.list_prefix, "GET", true),
+        (&pol.get_prefix, "GET", false),
+        (&pol.create_prefix, "POST", true),
+        (&pol.update_prefix, "PUT", false),
+        (&pol.delete_prefix, "DELETE", false),
+    ];
+    for (prefix_opt, method, collection) in pairs {
+        let Some(prefix) = prefix_opt.as_ref() else {
+            continue;
+        };
+        if prefix.is_empty() {
+            continue;
+        }
+        if let Some(resource) = service_name.strip_prefix(prefix.as_str()) {
+            if resource.is_empty() {
+                continue;
+            }
+            let snake = to_snake(resource);
+            let plural = if snake.ends_with('s') {
+                snake.clone()
+            } else {
+                format!("{snake}s")
+            };
+            let path = if collection || method == "POST" {
+                format!("{path_root}{plural}")
+            } else {
+                format!("{path_root}{plural}/{{id}}")
+            };
+            return ((*method).to_string(), path);
+        }
+    }
+    let fallback = format!(
+        "{}/{}",
+        path_root.trim_end_matches('/'),
+        to_snake(service_name).replace('_', "-")
+    );
+    ("POST".into(), fallback)
+}
+
+fn type_name(ty: &TypeExpr) -> Option<&str> {
+    match ty {
+        TypeExpr::Named(n) | TypeExpr::LitStr(n) => Some(n.as_str()),
+        _ => None,
+    }
+}
+
+fn to_snake(name: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn iter_constructs(sol: &Solution) -> impl Iterator<Item = &Construct> {
+    sol.items.iter().filter_map(|i| match i {
+        TopLevelItem::Construct(c) => Some(c),
+        _ => None,
+    })
+}
+
+fn collect_constructs<'a>(c: &'a Construct, out: &mut Vec<&'a Construct>) {
+    out.push(c);
+    for child in &c.children {
+        collect_constructs(child, out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +1089,63 @@ pkg demo v1
     #[test]
     fn absent_file_has_no_block() {
         assert!(parse_harness_policy("pkg x v1\n  construct Y\n    mt struct\n").is_none());
+    }
+
+    #[test]
+    fn lower_declared_endpoint() {
+        let mut reg = crate::layer::LayerRegistry::builtin();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+            .unwrap();
+        let mut ep = crate::ast::Construct::new(
+            "endpoint",
+            "HttpEndpoint",
+            crate::layer::Shape::Struct,
+            "CreateItemHttp".into(),
+            crate::span::Span::new(0, 0),
+        );
+        ep.fields.push(crate::ast::Field {
+            annotations: Vec::new(),
+            name: "method".into(),
+            type_expr: crate::ast::TypeExpr::Named("POST".into()),
+            default_expr: None,
+            span: crate::span::Span::new(0, 0),
+        });
+        ep.fields.push(crate::ast::Field {
+            annotations: Vec::new(),
+            name: "path".into(),
+            type_expr: crate::ast::TypeExpr::LitStr("/api/items".into()),
+            default_expr: None,
+            span: crate::span::Span::new(0, 0),
+        });
+        ep.fields.push(crate::ast::Field {
+            annotations: Vec::new(),
+            name: "handle".into(),
+            type_expr: crate::ast::TypeExpr::Named("CreateItem".into()),
+            default_expr: None,
+            span: crate::span::Span::new(0, 0),
+        });
+        let sol = crate::ast::Solution {
+            name: "App".into(),
+            span: crate::span::Span::new(0, 0),
+            uses: Vec::new(),
+            links: Vec::new(),
+            items: vec![crate::ast::TopLevelItem::Construct(ep)],
+            expose: None,
+            guidance: Vec::new(),
+        };
+        let ir = lower_harness(&sol, &reg);
+        assert_eq!(ir.endpoints_count_for_test(), 1);
+        let ep = &ir.contexts[0].endpoints[0];
+        assert_eq!(ep.method, "POST");
+        assert_eq!(ep.path, "/api/items");
+        assert_eq!(ep.handler, "CreateItem");
+        assert_eq!(ep.via, "endpoint");
+    }
+}
+
+impl HarnessIR {
+    #[cfg(test)]
+    fn endpoints_count_for_test(&self) -> usize {
+        self.contexts.iter().map(|c| c.endpoints.len()).sum()
     }
 }
