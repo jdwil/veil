@@ -702,6 +702,40 @@ pkg HostApp
     );
 }
 
+/// emit_bin=never is ignored when the package links veil_server (host.veil).
+#[test]
+fn emit_bin_never_still_emits_product_host() {
+    let src = r#"
+pkg HostApp
+  use ddd
+  use di
+  link veil_server
+  @main
+  fn bootstrap() -> Res!
+    step run
+      ret Ok
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .expect("ddd");
+    reg.load_content("di", include_str!("../../../layers/di.layer"))
+        .expect("di");
+    reg.harness_policy.emit_bin = Some(veil_ir::EmitBin::Never);
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate(&sol, &reg);
+    let main = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("veil_bin/src/main.rs"))
+        .expect("host veil_bin must survive emit_bin=never");
+    assert!(
+        main.content.contains("ProductHost"),
+        "expected ProductHost main:\n{}",
+        main.content
+    );
+}
+
 /// Flip: declared `endpoint` drives veil_bin paths (API @route removed from ddd).
 #[test]
 fn harness_honors_declared_endpoint() {

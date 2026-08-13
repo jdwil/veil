@@ -145,11 +145,18 @@ backward compatibility but they should never be used in new code.
 - Discriminated unions for data-carrying enums
 - Project scaffolding (package.json, tsconfig.json)
 
-**The runtime provides:**
-- Concrete Bus implementation (InProcessBus, HttpBus, etc.)
-- `main()` entry point (constructs deps, starts server)
-- HTTP interface to expose the Bus
+**Customer-app local harness (codegen, not ProductHost):**
+- `veil_bin` from HarnessIR (`deps` / `compose` / `endpoint` in `.veil`)
+- Adapters + `application::Deps` (authored type, or `pub type Deps = Name`)
+- Axum routes only for declared (or compat-synthesized) endpoints
+
+**The runtime product provides (ProductHost / bootstrap):**
+- IDE kernel + handwritten constructors for *runtime-product* `application::Deps`
+  (`platform_http.rs`, `local_ports.rs`)
+- Provision / deploy (`[deploy]`, LocalDeployExec) — unchanged
 - Operational concerns (health checks, shutdown, observability)
+
+The runtime does **not** invent customer-app Deps or HTTP routes.
 
 ---
 
@@ -227,20 +234,27 @@ and emitted by codegen from HarnessIR. ProductHost’s handwritten injector
 Do not treat this manifest as a generic host injector for customer apps.
 See `docs/DESIGN_CONFIGURABLE_HARNESS.md`.
 
-### What veil-runtime Does With It
+### What the runtime product does with it
 
-1. **Reads `deps`** → constructs each adapter (using env vars), builds the `Deps` struct
-2. **Reads `handlers`** → registers each handler as a Bus message listener
-3. **Reads `provided_by: "runtime"`** → injects its own implementations (Bus, AuthService)
-4. **Reads `strategy`** → selects the appropriate runtime implementation variant
-5. **Reads `expose`** (future) → generates API Gateway routes or Lambda entrypoints
+Manifest is a **description** for deploy / API GW / operators — not a generic
+injector for customer apps.
+
+| Consumer | Uses manifest for | Does not |
+|----------|-------------------|----------|
+| ProductHost bootstrap | Runtime-product crate names + handler list | Customer-app adapter graphs |
+| Deploy / provision | Topology hints, env, expose | Inventing HTTP paths |
+| Customer `veil_bin` | Nothing — composition is in `.veil` | — |
+
+ProductHost constructs `storage::application::Deps` (and CM / deploy) in
+handwritten Rust. That stays. Customer apps declare `compose` + `endpoint`.
 
 ### Design Principles
 
-- The manifest is **declarative** — it describes WHAT is needed, not HOW to build it
-- The VEIL compiler is **not aware** of runtime implementation details (Lambda vs ECS vs local)
-- The runtime is **not aware** of domain semantics — it just wires traits to adapters
-- Deployment topology (single Lambda vs multiple Lambdas vs monolith) is a **runtime decision** based on config, not a compiler decision
+- Manifest is **declarative** — what is needed, not how to host it
+- Compiler is **not** aware of Lambda vs ECS vs local
+- Runtime is **not** aware of customer domain semantics and must not invent
+  customer Deps or routes
+- Deployment topology is a runtime/`[deploy]` decision, not a compiler one
 
 ---
 

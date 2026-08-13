@@ -1187,7 +1187,7 @@ fn gen_local_harness_main(
                 let field = to_snake(&input.name);
                 let rust_type = crate::rust::type_to_rust(&input.type_expr);
 
-                // Path params from @route `{name}` segments.
+                // Path params from endpoint `{name}` segments.
                 if path_params.iter().any(|p| p == &field) {
                     if rust_type == "Uuid" {
                         out.push_str(&format!(
@@ -1702,80 +1702,10 @@ pub fn list_rest_routes_from_solution(
         .collect()
 }
 
-/// Derive a RESTful (method, path) from a service name, or from an annotation
-/// whose layer role is `http_route` (not a hard-coded annotation name).
-///
-/// Annotation forms (first arg):
-/// - `"GET /api/foo"` / `"POST /api/foo"` …
-/// - `"/api/foo"` alone → method from service name (`derive_rest_route`)
+/// Compat / migrate helper — delegates to HarnessIR `compat_rest_route`.
 pub fn rest_route_for_service(svc: &Construct, registry: &LayerRegistry) -> (String, String) {
     let (method, path, _) = veil_ir::compat_rest_route(svc, registry);
     (method.to_ascii_lowercase(), path)
-}
-
-#[allow(dead_code)] // kept until PR 13; migrate uses rest_route_for_service → IR
-fn parse_route_annotation(s: &str) -> Option<(String, String)> {
-    let s = s.trim();
-    let mut parts = s.splitn(2, char::is_whitespace);
-    let first = parts.next()?.trim();
-    let rest = parts.next().map(|r| r.trim()).filter(|r| !r.is_empty());
-    let methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"];
-    if let Some(path) = rest {
-        if methods.iter().any(|m| first.eq_ignore_ascii_case(m)) && path.starts_with('/') {
-            return Some((first.to_lowercase(), path.to_string()));
-        }
-    }
-    None
-}
-
-/// CreateInitiative → (post, /api/initiatives)
-/// UpdateInitiative → (put, /api/initiatives/{id})
-/// DeleteInitiative → (delete, /api/initiatives/{id})
-///
-/// `use_id_path`: only emit `/{id}` when the service has an id-like input; otherwise
-/// collection path + query (avoids unused Path extractors).
-#[allow(dead_code)] // kept until PR 13 (HttpNamePolicy helpers)
-fn derive_rest_route(
-    service_name: &str,
-    registry: &LayerRegistry,
-    use_id_path: bool,
-) -> (String, String) {
-    let pol = &registry.http_name_policy;
-    let path_root = pol.path_prefix.as_deref().unwrap_or("/api/");
-    let pairs: [(&Option<String>, &str, bool); 5] = [
-        (&pol.list_prefix, "get", true),
-        (&pol.get_prefix, "get", false),
-        (&pol.create_prefix, "post", true),
-        (&pol.update_prefix, "put", false),
-        (&pol.delete_prefix, "delete", false),
-    ];
-    for (prefix_opt, method, collection) in pairs {
-        let Some(prefix) = prefix_opt.as_ref() else {
-            continue;
-        };
-        if prefix.is_empty() {
-            continue;
-        }
-        if let Some(resource) = service_name.strip_prefix(prefix.as_str()) {
-            if resource.is_empty() {
-                continue;
-            }
-            let resource_snake = to_snake(resource);
-            let resource_plural = pluralize_resource(&resource_snake);
-            let path = if collection || method == "post" || !use_id_path {
-                format!("{path_root}{resource_plural}")
-            } else {
-                format!("{path_root}{resource_plural}/{{id}}")
-            };
-            return (method.to_string(), path);
-        }
-    }
-    let fallback_path = format!(
-        "{}{}",
-        path_root.trim_end_matches('/'),
-        format!("/{}", to_snake(service_name).replace('_', "-"))
-    );
-    ("post".to_string(), fallback_path)
 }
 
 /// Emit `bus.register("Msg", …)` that deserializes the JSON envelope and calls
@@ -1909,43 +1839,7 @@ fn harness_string_field_default(fname: &str, ftype: &str) -> String {
     }
 }
 
-/// English-ish plural for REST resource segments (`branch` → `branches`).
-#[allow(dead_code)] // kept until PR 13
-fn pluralize_resource(snake: &str) -> String {
-    if snake.is_empty() {
-        return snake.to_string();
-    }
-    // Already plural (or ends with s): keep as-is (`branches`, `files`).
-    if snake.ends_with('s') {
-        return snake.to_string();
-    }
-    if snake.ends_with("sh")
-        || snake.ends_with("ch")
-        || snake.ends_with('x')
-        || snake.ends_with('z')
-    {
-        return format!("{snake}es");
-    }
-    if snake.ends_with('y') {
-        let prev = snake.chars().rev().nth(1);
-        if prev.map(|c| !"aeiou".contains(c)).unwrap_or(true) {
-            return format!("{}ies", &snake[..snake.len() - 1]);
-        }
-    }
-    format!("{snake}s")
-}
 
-#[allow(dead_code)] // kept until PR 13
-fn service_has_id_input(svc: &Construct, registry: &LayerRegistry) -> bool {
-    // Only a bare `id` input maps to REST `/{id}`. Fields like `repo_id` are
-    // query/body params, not path segments from name-derived routes.
-    svc.inputs.iter().any(|i| {
-        if registry.field_is_dependency(i) {
-            return false;
-        }
-        to_snake(&i.name) == "id"
-    })
-}
 
 /// RT-001b: dedicated binary crate for `@main` / composition root.
 fn gen_bin_crate(

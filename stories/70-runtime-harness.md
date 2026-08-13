@@ -82,8 +82,9 @@ harnesses; prefer manifest-driven hosts when one binary runs many packages.
 `@main` / Exec, not as the only path.
 
 **Done notes:** `InProcessBus` generated into `veil_shared` when layer declares
-`Bus`; `layers/harness.layer` + `gen_local_harness_main` wires adapters and
-calls app services from `veil_bin`. Bootstrap marked seed-only (RT-005).
+`Bus`. Customer `veil_bin` is emitted from HarnessIR (`deps` / `compose` /
+`endpoint`). ProductHost handwritten injector is only for runtime-product
+`application::Deps`. Bootstrap marked seed-only (RT-005).
 
 ---
 
