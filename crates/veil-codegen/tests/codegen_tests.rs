@@ -1262,3 +1262,72 @@ pkg Demo
         routes
     );
 }
+
+/// PR 11: undeclared packages still host every fn via compat synthesis
+/// (POST `/api/{snake}` fallback). No parallel heuristic path.
+#[test]
+fn single_emitter_compat_synthesizes_post_fallback() {
+    let src = r#"
+pkg App
+  use ddd
+  ctx Hello
+    group application
+      svc GreetUser
+        input
+          name: Str
+        ret name
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .unwrap();
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate(&sol, &reg);
+    let main = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("veil_bin/src/main.rs"))
+        .expect("veil_bin");
+    assert!(
+        main.content.contains(".route(\"/api/greet-user\""),
+        "compat POST fallback missing:\n{}",
+        main.content
+    );
+    let routes = veil_codegen::list_rest_routes_from_solution(&sol, &reg);
+    assert!(
+        routes.iter().any(|r| r.via == "compat_name"
+            && r.path == "/api/greet-user"
+            && r.handler == "GreetUser"),
+        "{:?}",
+        routes
+    );
+}
+
+/// emit_bin=never suppresses customer veil_bin; link veil_server still emits.
+#[test]
+fn emit_bin_never_skips_customer_bin() {
+    let src = r#"
+pkg App
+  use ddd
+  ctx Hello
+    group application
+      svc GreetUser
+        input
+          name: Str
+        ret name
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .unwrap();
+    reg.harness_policy.emit_bin = Some(veil_ir::EmitBin::Never);
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate(&sol, &reg);
+    assert!(
+        !project
+            .files
+            .iter()
+            .any(|f| f.path.contains("veil_bin")),
+        "emit_bin=never must not emit customer veil_bin"
+    );
+}

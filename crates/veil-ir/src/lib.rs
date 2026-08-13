@@ -43,7 +43,8 @@ pub use deps::{
     PackageEntry, ProductDep,
 };
 pub use harness::{
-    has_declared_harness, is_http_verb, list_endpoints_from_ir, lower_harness, merge_harness_policy,
+    compat_rest_route, has_declared_harness, is_http_verb, list_endpoints_from_ir, lower_harness,
+    merge_harness_policy, trait_is_provided_runtime,
     parse_harness_policy, AuthMode, BindDecl, BindDefaults, BindSource, BusHandlerDecl, BusWire,
     CollideMode, CompatMode, ComposeDecl, CorsMode, DeleteExtras, DepsDecl, DepsField, EmitBin,
     EndpointDecl, HarnessContext, HarnessIR, HarnessPolicy, ListenSpec, WireDecl, WireKind,

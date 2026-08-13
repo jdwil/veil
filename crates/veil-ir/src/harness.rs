@@ -893,6 +893,7 @@ fn synthesize_compat_endpoints(
         .copied()
         .filter(|c| registry.construct_has_http_route(c))
         .collect();
+    // Bit-compat: if any role:http_route exists, only those; else every fn.
     let routable = if !with_route.is_empty() {
         with_route
     } else {
@@ -900,7 +901,7 @@ fn synthesize_compat_endpoints(
     };
     let mut out = Vec::new();
     for svc in routable {
-        let (method, path, via) = compat_route_for(svc, registry);
+        let (method, path, via) = compat_rest_route(svc, registry);
         out.push(EndpointDecl {
             name: format!("{}Http", svc.name),
             method: method.to_ascii_uppercase(),
@@ -913,27 +914,102 @@ fn synthesize_compat_endpoints(
     out
 }
 
-fn compat_route_for(svc: &Construct, registry: &LayerRegistry) -> (String, String, String) {
+/// Same method/path table as today's `rest_route_for_service` (http_route +
+/// English prefixes + unconditional POST `/api/{snake}` fallback).
+///
+/// Returns `(METHOD, path, via)` where `via` is `compat_route` or `compat_name`.
+pub fn compat_rest_route(
+    svc: &Construct,
+    registry: &LayerRegistry,
+) -> (String, String, String) {
+    let use_id = service_has_id_input(svc, registry);
     if let Some(ann) = registry.http_route_annotation(svc) {
         if let Some(raw) = ann.args.first() {
             let s = raw.trim().trim_matches('"').trim_matches('\'');
             let mut parts = s.splitn(2, char::is_whitespace);
             if let (Some(first), Some(path)) = (parts.next(), parts.next()) {
+                let path = path.trim();
                 if is_http_verb(first) && path.starts_with('/') {
-                    return (first.to_string(), path.trim().to_string(), "compat_route".into());
+                    return (
+                        first.to_ascii_uppercase(),
+                        path.to_string(),
+                        "compat_route".into(),
+                    );
                 }
             }
             if s.starts_with('/') {
-                let (m, _) = derive_name_route(&svc.name, registry);
+                let (m, _) = derive_name_route(&svc.name, registry, use_id);
                 return (m, s.to_string(), "compat_route".into());
             }
         }
     }
-    let (m, p) = derive_name_route(&svc.name, registry);
+    let (m, p) = derive_name_route(&svc.name, registry, use_id);
     (m, p, "compat_name".into())
 }
 
-fn derive_name_route(service_name: &str, registry: &LayerRegistry) -> (String, String) {
+/// True when `compose` may wire this trait as `provided_runtime`.
+pub fn trait_is_provided_runtime(trait_name: &str, registry: &LayerRegistry) -> bool {
+    if trait_name.is_empty() {
+        return false;
+    }
+    if registry
+        .harness_policy
+        .provided_runtime_traits
+        .iter()
+        .any(|t| t == trait_name)
+    {
+        return true;
+    }
+    if registry.routing_traits().iter().any(|t| t == trait_name) {
+        return true;
+    }
+    if registry.is_auth_service_trait(trait_name) {
+        return true;
+    }
+    registry.constructs.iter().any(|s| {
+        (s.name == trait_name || s.keyword == trait_name)
+            && s.roles.iter().any(|r| r == "runtime_provider")
+    })
+}
+
+fn service_has_id_input(svc: &Construct, registry: &LayerRegistry) -> bool {
+    // Only a bare `id` input maps to REST `/{id}` (matches rust.rs).
+    svc.inputs.iter().any(|i| {
+        if registry.field_is_dependency(i) {
+            return false;
+        }
+        to_snake(&i.name) == "id"
+    })
+}
+
+fn pluralize_resource(snake: &str) -> String {
+    if snake.is_empty() {
+        return snake.to_string();
+    }
+    if snake.ends_with('s') {
+        return snake.to_string();
+    }
+    if snake.ends_with("sh")
+        || snake.ends_with("ch")
+        || snake.ends_with('x')
+        || snake.ends_with('z')
+    {
+        return format!("{snake}es");
+    }
+    if snake.ends_with('y') {
+        let prev = snake.chars().rev().nth(1);
+        if prev.map(|c| !"aeiou".contains(c)).unwrap_or(true) {
+            return format!("{}ies", &snake[..snake.len() - 1]);
+        }
+    }
+    format!("{snake}s")
+}
+
+fn derive_name_route(
+    service_name: &str,
+    registry: &LayerRegistry,
+    use_id_path: bool,
+) -> (String, String) {
     let pol = &registry.http_name_policy;
     let path_root = pol.path_prefix.as_deref().unwrap_or("/api/");
     let pairs: [(&Option<String>, &str, bool); 5] = [
@@ -955,12 +1031,8 @@ fn derive_name_route(service_name: &str, registry: &LayerRegistry) -> (String, S
                 continue;
             }
             let snake = to_snake(resource);
-            let plural = if snake.ends_with('s') {
-                snake.clone()
-            } else {
-                format!("{snake}s")
-            };
-            let path = if collection || method == "POST" {
+            let plural = pluralize_resource(&snake);
+            let path = if collection || method == "POST" || !use_id_path {
                 format!("{path_root}{plural}")
             } else {
                 format!("{path_root}{plural}/{{id}}")
@@ -1140,6 +1212,42 @@ pkg demo v1
         assert_eq!(ep.path, "/api/items");
         assert_eq!(ep.handler, "CreateItem");
         assert_eq!(ep.via, "endpoint");
+    }
+
+    fn fn_construct(name: &str, inputs: &[(&str, &str)]) -> crate::ast::Construct {
+        let mut c = crate::ast::Construct::new(
+            "svc",
+            "ApplicationService",
+            crate::layer::Shape::Fn,
+            name.into(),
+            crate::span::Span::new(0, 0),
+        );
+        for (n, ty) in inputs {
+            c.inputs.push(crate::ast::Field {
+                annotations: Vec::new(),
+                name: (*n).into(),
+                type_expr: crate::ast::TypeExpr::Named((*ty).into()),
+                default_expr: None,
+                span: crate::span::Span::new(0, 0),
+            });
+        }
+        c
+    }
+
+    #[test]
+    fn compat_synthesis_post_fallback_and_use_id() {
+        let mut reg = crate::layer::LayerRegistry::builtin();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer"))
+            .unwrap();
+        let greet = fn_construct("GreetUser", &[("name", "Str")]);
+        let get = fn_construct("GetItem", &[("id", "Id")]);
+        let list = fn_construct("ListItem", &[]);
+        let (m, p, via) = compat_rest_route(&greet, &reg);
+        assert_eq!((m.as_str(), p.as_str(), via.as_str()), ("POST", "/api/greet-user", "compat_name"));
+        let (m, p, via) = compat_rest_route(&get, &reg);
+        assert_eq!((m.as_str(), p.as_str(), via.as_str()), ("GET", "/api/items/{id}", "compat_name"));
+        let (m, p, via) = compat_rest_route(&list, &reg);
+        assert_eq!((m.as_str(), p.as_str(), via.as_str()), ("GET", "/api/items", "compat_name"));
     }
 }
 
