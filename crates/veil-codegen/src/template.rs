@@ -230,22 +230,20 @@ fn matches_construct(construct: &Construct, rule: &CodegenRule, registry: &Layer
 /// Supported placeholders:
 /// - `{{name}}` — construct name (as-is)
 /// - `{{name_lower}}` — lowercase construct name
-/// - `{{route}}` — http_route annotation value (or `/name_lower`)
+/// - `{{route}}` — UI (`role:ui_route`) or leftover HTTP route path, slash-stripped for files
 /// - `{{subkind}}` — layer subkind
 fn expand_file_path(pattern: &str, construct: &Construct, registry: &LayerRegistry) -> String {
     let name = &construct.name;
     let name_lower = name.to_lowercase();
-    let route = registry
-        .http_route_annotation(construct)
-        .and_then(|a| a.args.first())
-        .map(|s| strip_ann_arg(s))
-        .unwrap_or_else(|| format!("/{name_lower}"));
+    let route = route_file_segment(&construct_route_url(construct, registry));
 
-    pattern
-        .replace("{{name}}", name)
-        .replace("{{name_lower}}", &name_lower)
-        .replace("{{route}}", &route)
-        .replace("{{subkind}}", &construct.subkind)
+    collapse_duplicate_slashes(
+        &pattern
+            .replace("{{name}}", name)
+            .replace("{{name_lower}}", &name_lower)
+            .replace("{{route}}", &route)
+            .replace("{{subkind}}", &construct.subkind),
+    )
 }
 
 /// Render a template body with interpolation against a construct.
@@ -257,12 +255,8 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
     output = output.replace("{{subkind}}", &construct.subkind);
     output = output.replace("{{keyword}}", &construct.keyword);
 
-    // {{route}} — annotation with role:http_route (layer policy, INV-001)
-    let route_val = registry
-        .http_route_annotation(construct)
-        .and_then(|a| a.args.first())
-        .map(|s| strip_ann_arg(s))
-        .unwrap_or_else(|| format!("/{}", construct.name.to_lowercase()));
+    // {{route}} — role:ui_route (svelte page/layout) or leftover role:http_route
+    let route_val = construct_route_url(construct, registry);
     output = output.replace("{{route}}", &route_val);
 
     // Generic annotation args (zero domain knowledge — any layer annotation):
@@ -518,6 +512,42 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
     }
 
     output
+}
+
+/// URL path for a page/layout (or leftover API route). Prefers `role:ui_route`.
+fn construct_route_url(construct: &Construct, registry: &LayerRegistry) -> String {
+    registry
+        .ui_route_path(construct)
+        .or_else(|| {
+            registry
+                .http_route_annotation(construct)
+                .and_then(|a| a.args.first())
+                .map(|s| strip_ann_arg(s))
+        })
+        .unwrap_or_else(|| format!("/{}", construct.name.to_lowercase()))
+}
+
+/// File-path segment for sveltekit `src/routes/{{route}}/+page.svelte`.
+/// `/` → ``, `/pulls/[id]` → `pulls/[id]`.
+fn route_file_segment(route: &str) -> String {
+    route.trim().trim_matches('/').to_string()
+}
+
+fn collapse_duplicate_slashes(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut prev_slash = false;
+    for ch in path.chars() {
+        if ch == '/' {
+            if !prev_slash {
+                out.push(ch);
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn strip_ann_arg(s: &str) -> String {

@@ -91,7 +91,7 @@ match struct where field_typed("Pool")    # structs with a Pool-typed field
 {{name}}                    # construct name
 {{field.name}}              # field property access
 {{field.type}}              # field type
-{{route}}                   # role:http_route first arg (or /name_lower)
+{{route}}                   # role:ui_route (svelte page/layout) or leftover role:http_route; file paths strip leading `/`
 {{annotation_value:name}}   # first arg of @name (quotes stripped)
 {{annotation_arg:name:N}}   # Nth arg (0-based) of @name
 {{annotation_value("name")}}  # same as annotation_value:name

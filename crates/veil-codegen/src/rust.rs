@@ -673,8 +673,16 @@ fn gen_local_harness_main(
     out.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
     out.push_str("    let port: u16 = std::env::var(\"PORT\").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);\n\n");
 
-    // Instantiate the shared InProcessBus for inter-context routing.
-    let has_bus = !registry.routing_traits().is_empty();
+    // Instantiate InProcessBus only when a context wires a routing trait
+    // (ProvidedRuntime) or has declared bus handlers.
+    let has_bus = ir.contexts.iter().any(|c| {
+        !c.bus_handlers.is_empty()
+            || c.compose.as_ref().is_some_and(|co| {
+                co.wires
+                    .iter()
+                    .any(|w| matches!(w.kind, veil_ir::WireKind::ProvidedRuntime))
+            })
+    });
     if has_bus {
         out.push_str("    let bus = veil_shared::InProcessBus::new();\n\n");
     }
@@ -932,27 +940,18 @@ fn gen_local_harness_main(
             out.push_str("    });\n\n");
         }
 
-        // Collect application fns for bus registration (after all deps exist).
+        // Bus registration: only HarnessIR-declared handlers (deps bundle
+        // actually wires a routing trait). Do not dump every fn.
         if has_bus {
             if let Some(ctx) = ctx {
-                if !ctx.bus_handlers.is_empty() {
-                    for bh in &ctx.bus_handlers {
-                        if let Some(svc) = services.iter().find(|s| s.name == bh.name) {
-                            bus_handler_targets.push((
-                                crate_name.clone(),
-                                has_deps,
-                                (*svc).clone(),
-                            ));
-                        }
+                for bh in &ctx.bus_handlers {
+                    if let Some(svc) = services.iter().find(|s| s.name == bh.name) {
+                        bus_handler_targets.push((
+                            crate_name.clone(),
+                            has_deps,
+                            (*svc).clone(),
+                        ));
                     }
-                } else {
-                    for svc in services {
-                        bus_handler_targets.push((crate_name.clone(), has_deps, (*svc).clone()));
-                    }
-                }
-            } else {
-                for svc in services {
-                    bus_handler_targets.push((crate_name.clone(), has_deps, (*svc).clone()));
                 }
             }
         }

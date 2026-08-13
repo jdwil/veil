@@ -904,7 +904,7 @@ fn package_has_ui_constructs(solution: &Solution) -> bool {
 fn gen_spa_bundle(solution: &Solution, sol_name: &str, registry: &LayerRegistry) -> Vec<TsFile> {
     let mut files = Vec::new();
 
-    // Collect http_route annotation paths on pages (role-driven; INV-001).
+    // Collect page URL paths (role:ui_route on svelte5 `@route`; not http_route).
     let mut routes: Vec<(String, String)> = Vec::new();
     fn strip_ann_quotes(s: &str) -> String {
         let t = s.trim();
@@ -926,9 +926,13 @@ fn gen_spa_bundle(solution: &Solution, sol_name: &str, registry: &LayerRegistry)
     ) {
         if c.subkind.eq_ignore_ascii_case("page") {
             let route = registry
-                .http_route_annotation(c)
-                .and_then(|a| a.args.first())
-                .map(|s| strip_ann_quotes(s))
+                .ui_route_path(c)
+                .or_else(|| {
+                    registry
+                        .http_route_annotation(c)
+                        .and_then(|a| a.args.first())
+                        .map(|s| strip_ann_quotes(s))
+                })
                 .unwrap_or_else(|| format!("/{}", to_camel(&c.name)));
             routes.push((c.name.clone(), route));
         }

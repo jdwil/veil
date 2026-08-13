@@ -897,6 +897,50 @@ struct CommentBody {
     body: String,
 }
 
+/// GET /api/pull_requests/{id}/comments — same comments as the composite GET detail.
+async fn list_review_comments(
+    State(st): State<CmState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    pr_detail_field(&st, &id, "comments").await
+}
+
+/// GET /api/pull_requests/{id}/approvals — embedded on GET /{id}; also a first-class GET.
+async fn list_pr_approvals(
+    State(st): State<CmState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    pr_detail_field(&st, &id, "approvals").await
+}
+
+/// GET /api/pull_requests/{id}/ci — first CI run from composite `ci_runs`.
+async fn get_pr_ci(
+    State(st): State<CmState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let detail = pr_detail_json(&st, &id).await?;
+    let runs = detail.get("ci_runs").cloned().unwrap_or(Value::Array(vec![]));
+    let first = runs.as_array().and_then(|a| a.first()).cloned().unwrap_or(json!({}));
+    Ok(Json(first))
+}
+
+async fn pr_detail_json(st: &CmState, id: &str) -> Result<Value, StatusCode> {
+    let id = Uuid::parse_str(id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    change_management::application::get_pull_request(&st.deps, id)
+        .await
+        .map_err(domain_status)
+}
+
+async fn pr_detail_field(st: &CmState, id: &str, field: &str) -> Result<Json<Value>, StatusCode> {
+    let detail = pr_detail_json(st, id).await?;
+    Ok(Json(
+        detail
+            .get(field)
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    ))
+}
+
 async fn add_review_comment(
     State(st): State<CmState>,
     Path(id): Path<String>,
@@ -2318,7 +2362,15 @@ pub async fn build_platform_router(
         )
         .route(
             "/api/pull_requests/{id}/comments",
-            post(add_review_comment),
+            get(list_review_comments).post(add_review_comment),
+        )
+        .route(
+            "/api/pull_requests/{id}/approvals",
+            get(list_pr_approvals),
+        )
+        .route(
+            "/api/pull_requests/{id}/ci",
+            get(get_pr_ci),
         )
         .route(
             "/api/pull_requests/{id}/diff",

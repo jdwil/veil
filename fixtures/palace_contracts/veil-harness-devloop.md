@@ -40,14 +40,16 @@ crates/veil_bin/        # [[bin]] with main.rs harness
 Engine matches **roles and policies**, not annotation spellings. Full catalog:
 `docs/POLICY_ROLES.md`.
 
-**Preferred:** annotation with `role:http_route` (shipped as `@route` in `ddd.layer`):
+**Preferred:** first-class `endpoint` (`role:http_endpoint`):
 ```
-@route("GET /api/users/{id}")
-handler HandleGetUser
-  ...
+endpoint GetUserHttp GET /api/users/{id} -> HandleGetUser
+  bind
+    id: path
 ```
 
-**Fallback** when no http_route annotation: `http_name_policy` prefixes
+Svelte page `@route("/path")` is `role:ui_route` — never `role:http_route`.
+
+**Fallback** when no declared endpoint and `[harness] compat = "auto"`: `http_name_policy` prefixes
 (`List`/`Get`/`Create`/`Update`/`Delete`, path `/api/` — configurable in layer):
 | Name pattern | Method | Path |
 |-------------|--------|------|

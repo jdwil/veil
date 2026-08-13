@@ -23,6 +23,7 @@ ann
 | `secret` | Omit from outbound serialization | `di.layer` (`@secret`) |
 | `shared` | Shared ownership (e.g. Arc) | `di.layer` (`@shared`) |
 | `http_endpoint` | Dual-loop REST surface | `harness.layer` (`endpoint`) |
+| `ui_route` | Svelte page/layout URL path | `svelte5.layer` (`@route`) |
 | `permission` | Required permission claim | `ddd.layer` (`@auth`) |
 | `invariant` | Smart-constructor validation | `ddd.layer` (`@invariant`) |
 | `adapter_env` | Required env vars for adapters | `ddd.layer` (`@env`) |
@@ -164,7 +165,7 @@ Still supported for layer self-reference: `has_annotation("dep")`.
 
 Placeholders:
 
-- `{{route}}` — leftover `role:http_route` first arg (deprecated; prefer `endpoint`)
+- `{{route}}` — `role:ui_route` (svelte page/layout) or leftover `role:http_route`
 - `{{annotation_value:name}}` / `{{annotation_arg:name:N}}` — generic, any name
 
 ## Catalog of shipped layers (policy surface)
@@ -173,6 +174,7 @@ Placeholders:
 |-------|------------------|
 | `di.layer` | dependency, provider, main, secret, shared |
 | `ddd.layer` | `use rest_english` + `use bus_handle` + **`use harness`**; auth/identity; invariant, adapter_*, strategy; declare Bus/Auth/saga |
+| `svelte5.layer` | `role:ui_route` on page/layout `@route` (not `http_route`) |
 | `harness.layer` | `endpoint` / `deps` / `compose`; harness_policy |
 | `rest_english.layer` | http_name_policy migrate helper (codegen unused when compat=off) |
 | `rest_rpc.layer` | clears name-derived REST; require declared `endpoint` |

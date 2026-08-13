@@ -9,12 +9,12 @@
 - Soft GET: `ret` the `Opt` (harness / handler policy may map None → 404)
 - Hard path: `require repo.find!(id)` or `.unwrap()` when you need bare `T`
 - `guard expr, "msg"` for validation
-- `@route` on every public handler
+- Declared `endpoint` on every public HTTP surface
 
 ## DON'T
 
 - Assume `find!` already yields bare `T` (ACS-001 transitional is obsolete)
-- Invent paths without `@route` / `list_routes`
+- Invent paths without `endpoint` / `list_routes`
 - Skip memory adapter for ports the harness wires
 
 ## Contract

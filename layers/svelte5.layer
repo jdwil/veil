@@ -79,7 +79,8 @@ pkg svelte5 v1
       color "#ff6b35"
       label "Page"
     ann
-      route: "URL route path" path
+      # role:ui_route — SvelteKit/SPA path. NEVER role:http_route (API harness).
+      route: "URL route path" path role:ui_route
       load: "Server-side load function"
       guard: "Route guard condition" expr
     in App
@@ -102,7 +103,7 @@ pkg svelte5 v1
       color "#e85d04"
       label "Layout"
     ann
-      route: "URL route prefix" path
+      route: "URL route prefix" path role:ui_route
     in App
     group pages
     present

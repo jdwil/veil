@@ -785,6 +785,30 @@ impl LayerRegistry {
             .find(|a| self.is_http_route_annotation(&a.name))
     }
 
+    /// Annotation carries `role:ui_route` (Svelte page/layout `@route` path).
+    /// Distinct from `role:http_route` (removed API harness surface).
+    pub fn is_ui_route_annotation(&self, name: &str) -> bool {
+        self.annotation_has_role(name, "ui_route")
+    }
+
+    /// First UI-route annotation on a page/layout (svelte5 `ann route`, role:ui_route).
+    pub fn ui_route_annotation<'a>(
+        &self,
+        c: &'a crate::ast::Construct,
+    ) -> Option<&'a crate::ast::Annotation> {
+        c.annotations
+            .iter()
+            .find(|a| self.is_ui_route_annotation(&a.name))
+    }
+
+    /// Quoted-stripped UI path (`/pulls/[id]`). Prefer this over `http_route_annotation`
+    /// for page/layout constructs.
+    pub fn ui_route_path(&self, c: &crate::ast::Construct) -> Option<String> {
+        self.ui_route_annotation(c)
+            .and_then(|a| a.args.first())
+            .map(|s| strip_annotation_arg_quotes(s))
+    }
+
     /// Apply layer bus_policy strip to a construct/fn name for message keys.
     pub fn bus_message_name(&self, construct_name: &str) -> String {
         if let Some(prefix) = &self.bus_policy.strip_name_prefix {
@@ -3695,6 +3719,17 @@ pub fn parse_http_name_policy(content: &str) -> Option<HttpNamePolicy> {
 /// Sentinel stored when a layer says `list_prefix none` (explicit clear).
 const POLICY_CLEAR: &str = "\0clear";
 
+fn strip_annotation_arg_quotes(s: &str) -> String {
+    let t = s.trim();
+    if (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
+        || (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
+    {
+        t[1..t.len() - 1].to_string()
+    } else {
+        t.to_string()
+    }
+}
+
 fn normalize_policy_string(p: &str) -> String {
     let t = p.trim();
     if t.is_empty() || t == "-" || t.eq_ignore_ascii_case("none") {
@@ -4050,6 +4085,10 @@ pkg bad v1
         assert!(
             !reg.is_http_route_annotation("route"),
             "Svelte page @route must never gain role:http_route"
+        );
+        assert!(
+            reg.is_ui_route_annotation("route"),
+            "Svelte page @route must carry role:ui_route"
         );
     }
 

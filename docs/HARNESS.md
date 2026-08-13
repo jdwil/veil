@@ -141,9 +141,9 @@ this path. `@main` is still used for Bus composition demos and ProductHost
 
 ### Route selection (AGT-026 · ACS-005)
 
-1. **Authoritative:** `@route("METHOD /path")` on the svc/handler — prefer this on all public HTTP surface.
-2. Path-only `@route("/path")` keeps the name-derived method.
-3. **Fallback only** (legacy): name prefixes when no `@route`:
+1. **Authoritative:** declared `endpoint` (method/path/handle/bind).
+2. Svelte page `@route("/path")` is a **UI** path (`role:ui_route`) — never API.
+3. **Fallback only** (`[harness] compat = "auto"`): name prefixes when no endpoint:
 
 | Service name pattern | Method | Path |
 |---------------------|--------|------|

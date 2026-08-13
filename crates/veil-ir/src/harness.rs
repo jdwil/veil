@@ -739,11 +739,13 @@ fn lower_context(
         endpoints = synthesize_compat_endpoints(members, registry);
     }
 
+    // Only when this context's Deps actually includes a routing trait.
+    // (Do not register every fn just because some layer declared Bus.)
     let routing_on_bundle = deps.as_ref().is_some_and(|d| {
         d.fields.iter().any(|f| {
             registry.routing_traits().iter().any(|t| t == &f.trait_name)
         })
-    }) || !registry.routing_traits().is_empty();
+    });
 
     let bus_handlers = if routing_on_bundle {
         members

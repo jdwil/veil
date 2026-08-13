@@ -831,8 +831,22 @@ pkg UiApp
     };
     let project = veil_codegen::generate_ts(&sol, &reg);
     let has_dist = project.files.iter().any(|f| f.path == "dist/index.html");
-    let has_spa = project.files.iter().any(|f| f.path.contains("spa.js"));
-    assert!(has_dist && has_spa, "SPA files missing: {:?}", project.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+    let spa = project
+        .files
+        .iter()
+        .find(|f| f.path.contains("spa.js"))
+        .expect("spa.js");
+    assert!(has_dist, "SPA files missing: {:?}", project.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+    assert!(
+        spa.content.contains("href: \"/\""),
+        "page @route(\"/\") must drive SPA nav, not /{{name}}: {}",
+        spa.content
+    );
+    assert!(
+        !spa.content.contains("href: \"/Dashboard\""),
+        "must not fall back to camel construct name: {}",
+        spa.content
+    );
 }
 
 /// sveltekit5.layer: @proxy → vite.config.ts server.proxy (layer template + generic ann args).
@@ -901,6 +915,68 @@ pkg WearUi
         !hooks.content.contains("annotation_arg"),
         "placeholder not expanded:\n{}",
         hooks.content
+    );
+
+    // svelte5 `@route("/")` is role:ui_route — emit_file must not fall back to /{name}.
+    let root_page = project
+        .files
+        .iter()
+        .find(|f| f.path == "src/routes/+page.svelte");
+    assert!(
+        root_page.is_some(),
+        "Dashboard @route(\"/\") must emit src/routes/+page.svelte, got: {:?}",
+        project.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert!(
+        !project
+            .files
+            .iter()
+            .any(|f| f.path.contains("src/routes/dashboard/") || f.path.contains("src/routes/Dashboard")),
+        "must not fall back to construct name for sveltekit route dir: {:?}",
+        project.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+}
+
+/// sveltekit `{{route}}` uses role:ui_route (not http_route) including nested [id].
+#[test]
+fn sveltekit5_ui_route_annotation_drives_file_path() {
+    let src = r#"
+pkg WearUi
+  use sveltekit5
+  app WearTest
+    page PullDetail
+      @route("/pulls/[id]")
+      template """
+        <h1>PR</h1>
+      """
+    page Settings
+      @route("/settings")
+      template """
+        <h1>Settings</h1>
+      """
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let layers = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers");
+    for name in ["svelte5", "sveltekit5"] {
+        let p = layers.join(format!("{name}.layer"));
+        if p.is_file() {
+            reg.load_layer(name, &layers)
+                .unwrap_or_else(|e| panic!("load {name}: {e}"));
+        } else {
+            return;
+        }
+    }
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate_ts(&sol, &reg);
+    let paths: Vec<&str> = project.files.iter().map(|f| f.path.as_str()).collect();
+    assert!(
+        paths.iter().any(|p| *p == "src/routes/pulls/[id]/+page.svelte"),
+        "nested ui_route missing: {paths:?}"
+    );
+    assert!(
+        paths.iter().any(|p| *p == "src/routes/settings/+page.svelte"),
+        "settings ui_route missing: {paths:?}"
     );
 }
 

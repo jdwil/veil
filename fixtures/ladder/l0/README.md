@@ -6,12 +6,12 @@
 
 - One context, one aggregate, one port, list + create handlers
 - Memory adapter with `ret []` / `ret Ok` / `ret null`
-- Prefer `@route("METHOD /path")` on every public handler
+- Prefer a declared `endpoint` (method/path/handle) for every public HTTP surface
 
 ## DON'T
 
 - Multi-package or external SDKs (see L2 / L3)
-- `.unwrap()` / invent REST paths without `@route`
+- `.unwrap()` / invent REST paths without `endpoint` / `list_routes`
 - Empty infrastructure group (harness needs an adapter)
 
 ## Verify
