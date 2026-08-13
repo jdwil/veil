@@ -412,6 +412,8 @@ fn list_routes_from_generated(project_root: &Path) -> Result<String, String> {
                     "post"
                 } else if line.contains("put(") {
                     "put"
+                } else if line.contains("patch(") {
+                    "patch"
                 } else if line.contains("delete(") {
                     "delete"
                 } else {
@@ -461,7 +463,7 @@ fn list_routes_from_ir(
     let routes = veil_codegen::list_rest_routes_from_solution(&sol, &reg);
     if routes.is_empty() {
         return Ok(
-            "[]\n(no svc/handler routes in package IR — add @route or List/Get/Create names)"
+            "[]\n(no HTTP endpoints in package IR — declare `endpoint` or run `veil migrate harness`)"
                 .into(),
         );
     }
@@ -489,7 +491,7 @@ fn extract_quoted_path(line: &str) -> Option<String> {
 
 fn extract_handler_name(line: &str) -> Option<String> {
     // get(list_wear_tests_handler) or get(|| async
-    for m in ["get(", "post(", "put(", "delete("] {
+    for m in ["get(", "post(", "put(", "patch(", "delete("] {
         if let Some(i) = line.find(m) {
             let rest = &line[i + m.len()..];
             if rest.starts_with('|') {
@@ -787,8 +789,11 @@ mod tests {
         assert!(out.contains("\"source\": \"ir\""), "{out}");
         assert!(out.contains("ListItems") || out.contains("list"), "{out}");
         assert!(
-            out.contains("\"via\": \"http_route\"") || out.contains("\"via\": \"route\""),
-            "expected http_route via: {out}"
+            out.contains("\"via\": \"compat_route\"")
+                || out.contains("\"via\": \"endpoint\"")
+                || out.contains("\"via\": \"http_route\"")
+                || out.contains("\"via\": \"route\""),
+            "expected endpoint/compat via: {out}"
         );
     }
 

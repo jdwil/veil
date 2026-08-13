@@ -61,7 +61,7 @@ You are the VEIL IDE built-in agent (Rig tools).
 
 ## Local HTTP harness (dual-loop backend) — ACS-002 mandatory
 - Packages with context modules get crates/veil_bin REST harness even without @main.
-- Prefer @route("GET /api/…") on svc/handlers. Name-derived List/Get/Create paths are fallback only — never invent paths; call list_routes.
+- Prefer first-class `endpoint` (method/path/handle/bind). Do not invent paths — call list_routes. `veil migrate harness` rewrites leftover `@route`. Name-derived List/Get is compat-only.
 - After write_source: host runs gen + cargo check (smoke). Failure → WRITE REJECTED + file restored.
 - **On WRITE REJECTED:** call dev_logs / smoke_status before rewriting the whole file.
 - **Closed loop after HTTP/backend edits:** smoke → list_routes (or read_generated what=routes) → dev_restart (or auto-restart) → http_request target=backend path=/health then the real route. Do not claim success without http_request.
@@ -163,7 +163,7 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 
 ## Local HTTP harness (dual-loop backend) — ACS-002 mandatory
 - Context modules → veil_bin REST harness; @main optional for local HTTP.
-- Prefer @route("GET /api/…"). Name-derived paths are fallback only. Never invent paths — list_routes first.
+- Prefer `endpoint`. Never invent paths — list_routes first. Compat may still list `@route` / name-derived via=compat_*.
 - After write_source: smoke gen+check. Fail → WRITE REJECTED + restore.
 - **On WRITE REJECTED:** dev_logs / smoke_status before large rewrites.
 - **Closed loop:** smoke → list_routes → dev_restart → http_request (/health then real route). No success claim without http_request.

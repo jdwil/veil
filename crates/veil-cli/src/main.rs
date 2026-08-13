@@ -196,6 +196,11 @@ enum Commands {
         #[arg(long, global = true, alias = "yes")]
         non_interactive: bool,
     },
+    /// Mechanical source rewrites (`veil migrate harness`).
+    Migrate {
+        #[command(subcommand)]
+        what: MigrateCmd,
+    },
     /// Serialize: parse then re-emit VEIL source (round-trip test)
     Emit {
         /// Path to the .veil file
@@ -258,6 +263,19 @@ enum Commands {
         /// Update snapshot files (passed through to target runner)
         #[arg(long)]
         update_snapshots: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateCmd {
+    /// Rewrite `@route` / implicit Deps into `endpoint` / `deps` / `compose`.
+    /// Dry-run by default; pass `--write` to overwrite the file.
+    Harness {
+        /// Path to a `.veil` file
+        path: PathBuf,
+        /// Apply the rewrite (default is print-only)
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -2010,6 +2028,34 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Migrate { what } => match what {
+            MigrateCmd::Harness { path, write } => {
+                let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    eprintln!("cannot read {}: {e}", path.display());
+                    std::process::exit(1);
+                });
+                let (mut sol, registry) = parse_solution_or_exit(&source, &path);
+                let report = veil_codegen::migrate_harness(&mut sol, &registry);
+                let out = veil_ir::serialize::serialize_solution(&sol);
+                eprintln!("{}", report.summary());
+                for e in &report.endpoints {
+                    eprintln!("  + {e}");
+                }
+                for a in &report.ambiguous_adapters {
+                    eprintln!("  ? adapter {a}");
+                }
+                if write {
+                    std::fs::write(&path, out.as_bytes()).unwrap_or_else(|e| {
+                        eprintln!("cannot write {}: {e}", path.display());
+                        std::process::exit(1);
+                    });
+                    eprintln!("wrote {}", path.display());
+                } else {
+                    println!("{out}");
+                    eprintln!("(dry-run — pass --write to overwrite)");
+                }
+            }
+        },
         Commands::Prompt { file, max_tokens } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let (sol, registry) = parse_solution_or_exit(&source, &file);

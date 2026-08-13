@@ -1794,7 +1794,7 @@ Use body from repo fixtures when available: `fixtures/palace_contracts/<slug>.md
    - .stub + harness_field + @field/@env; engine does not hardcode SDKs
 
 5. **veil-contract-routes** (Concept)
-   - @route authoritative; list_routes; name-derived = fallback only
+   - endpoint authoritative; list_routes; @route / name-derived = compat only
 
 ### Platform overview (also ensure)
 

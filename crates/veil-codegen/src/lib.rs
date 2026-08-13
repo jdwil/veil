@@ -6,6 +6,7 @@ pub mod capabilities;
 pub mod expr;
 pub mod kotlin;
 pub mod links;
+pub mod migrate_harness;
 pub mod rust;
 pub mod swift;
 pub mod template;
@@ -17,6 +18,7 @@ pub use links::{cargo_dep_line, resolve_link, resolve_links, ResolvedLink};
 pub use capabilities::{
     check_multi_target_debt, check_target_capabilities, target_capability_summary, Feature,
 };
+pub use migrate_harness::{migrate_harness, MigrateReport};
 pub use rust::{generate, list_rest_routes_from_solution, rest_route_for_service, IrRestRoute};
 pub use template::execute_templates;
 pub use typescript::generate_ts;
