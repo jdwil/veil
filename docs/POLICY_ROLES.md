@@ -73,6 +73,67 @@ Name-derived REST when no `role:http_route` annotation is present.
 `ListInitiatives` → `GET /api/initiatives`. Override in product layers or
 `rust.layer`.
 
+### `harness_policy`
+
+Reusable local-harness knobs (listen, CORS, auth, when to emit `veil_bin`).
+**Same tokens** as `veil.toml` `[harness]`. Codegen does **not** emit from
+this yet — parse/merge only. See `docs/DESIGN_CONFIGURABLE_HARNESS.md`.
+
+```text
+harness_policy
+  profile axum_http          # axum_http | axum_rpc | product_host
+  bin veil_bin
+  listen_env PORT
+  listen_default 3000
+  health /health             # or none
+  cors localhost             # localhost | env | permissive | none
+  cors_outside_auth true     # orthogonal to cors origin mode
+  auth api_key               # none | api_key
+  emit_bin on_entry          # on_entry | never
+  bus_wire explicit          # explicit | synthesize_runtime
+  collide error              # error | prefix_crate
+  bind_defaults method       # method | none
+  delete_extras query        # query | body | error
+  provided_runtime_trait Bus # layer-owned names; engine does not hard-code "Bus"
+```
+
+| Knob | Layer token | Toml key | Default (`axum_http`) |
+|------|-------------|----------|------------------------|
+| profile | `profile axum_http` | `profile` | `axum_http` |
+| bin | `bin veil_bin` | `bin` | `veil_bin` |
+| listen env | `listen_env PORT` | *(part of `listen`)* | `PORT` |
+| listen default | `listen_default 3000` | `listen = "0.0.0.0:3000"` | `0.0.0.0:3000` |
+| health | `health /health` | `health` | `/health` (`none` clears) |
+| CORS origins | `cors localhost` | `cors` | `localhost` (not `permissive`) |
+| CORS vs auth | `cors_outside_auth true` | `cors_outside_auth` | `true` |
+| auth | `auth api_key` | `auth` | `api_key` |
+| emit bin | `emit_bin on_entry` | `emit_bin` | `on_entry` |
+| collide | `collide error` | `collide` | `error` |
+| compat | *(none)* | `compat` | `auto` until flip |
+| bind defaults | `bind_defaults method` | `bind_defaults` | `method` |
+| delete extras | `delete_extras query` | `delete_extras` | `query` |
+
+Merge: **documented defaults → layers (`use` order) → `veil.toml` `[harness]`**.
+`[harness.wire]` is a field→adapter map (compose overrides; unused by codegen yet).
+
+**Construct roles** (on `construct` bodies, not annotations):
+
+```text
+construct HttpEndpoint
+  kw endpoint
+  mt struct
+  role http_endpoint
+  has
+    method: ident
+    path: path
+    handle: ident
+    bind: struct
+```
+
+Engine matches `role http_endpoint` / `deps_bundle` / `compose` / `runtime_provider`.
+It does **not** match keywords (`endpoint`, `ctx`) or DDD names. `has` field
+names become `ConstructSpec.config_keys` (protocol tokens, not domain types).
+
 ### `identity_policy` / `constructor_policy`
 
 Existing INV-006 / INV-002 blocks — FK suffix / smart-constructor defaults.
@@ -116,7 +177,7 @@ Placeholders:
 | `bus_handle.layer` | bus_policy strip `Handle` |
 | `auth_local.layer` | auth_policy.service_trait AuthService (AllowAllAuth) |
 | `rust.layer` | constructor_policy; `use rest_english` |
-| `harness.layer` | docs for dual-loop roles + bus_policy |
+| `harness.layer` | docs for dual-loop roles + bus_policy; `harness_policy` (parse-ready, not shipped on this layer yet) |
 
 ## What still lives in the engine (acceptable)
 
@@ -147,6 +208,24 @@ http_delete_prefix = "Delete"
 Merge order: **builtin defaults → layers (load order) → veil.toml**.
 
 Wired in `LayerRegistry::for_veil_file` via `apply_codegen_overrides`.
+
+### `veil.toml` `[harness]` overrides
+
+```toml
+[harness]
+profile = "axum_http"
+compat = "auto"
+cors = "localhost"
+auth = "api_key"
+emit_bin = "on_entry"
+health = "/health"          # "none" disables
+
+[harness.wire]
+item_repo = "PgItemRepo"
+```
+
+Same tokens as layer `harness_policy`. Applied after layers via
+`apply_harness_overrides`. Does **not** change codegen emission yet.
 
 ### B. Named policy packs (shipped)
 

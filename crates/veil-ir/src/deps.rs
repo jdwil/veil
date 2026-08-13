@@ -62,6 +62,10 @@ struct VeilTomlFile {
     /// Product codegen policy overrides (INV-001). Applied after layers load.
     #[serde(default)]
     codegen: Option<CodegenToml>,
+    /// Product harness knobs (INV-001). Applied after layers; same tokens as
+    /// layer `harness_policy`. Codegen does not emit from this yet.
+    #[serde(default)]
+    harness: Option<HarnessToml>,
 }
 
 /// `[codegen]` section in `veil.toml` — product knobs over layer policies.
@@ -146,6 +150,140 @@ pub fn load_codegen_overrides(project_root: &Path) -> Result<Option<CodegenToml>
 pub fn load_codegen_overrides_for(veil_path: &Path) -> Option<CodegenToml> {
     let root = find_project_root(veil_path)?;
     load_codegen_overrides(&root).ok().flatten()
+}
+
+/// `[harness]` section in `veil.toml` — project knobs over layer `harness_policy`.
+///
+/// Tokens match `docs/POLICY_ROLES.md` / design §5.3. Absent keys leave layer
+/// policy alone. `"none"` / `"-"` / `""` clears optional strings (same as
+/// [`CodegenToml::normalize_opt`]).
+///
+/// ```toml
+/// [harness]
+/// profile = "axum_http"
+/// compat = "auto"
+/// cors = "localhost"
+/// auth = "api_key"
+/// emit_bin = "on_entry"
+///
+/// [harness.wire]
+/// item_repo = "PgItemRepo"
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HarnessToml {
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub bin: Option<String>,
+    #[serde(default)]
+    pub listen: Option<String>,
+    #[serde(default)]
+    pub listen_env: Option<String>,
+    #[serde(default)]
+    pub listen_default: Option<u16>,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub health: Option<String>,
+    #[serde(default)]
+    pub cors: Option<String>,
+    #[serde(default)]
+    pub cors_outside_auth: Option<bool>,
+    #[serde(default)]
+    pub auth: Option<String>,
+    #[serde(default)]
+    pub collide: Option<String>,
+    #[serde(default)]
+    pub emit_bin: Option<String>,
+    #[serde(default)]
+    pub bus_wire: Option<String>,
+    #[serde(default)]
+    pub bind_defaults: Option<String>,
+    #[serde(default)]
+    pub delete_extras: Option<String>,
+    #[serde(default)]
+    pub compat: Option<String>,
+    #[serde(default)]
+    pub wire: BTreeMap<String, String>,
+}
+
+impl HarnessToml {
+    pub fn is_empty(&self) -> bool {
+        self.profile.is_none()
+            && self.bin.is_none()
+            && self.listen.is_none()
+            && self.listen_env.is_none()
+            && self.listen_default.is_none()
+            && self.path_prefix.is_none()
+            && self.health.is_none()
+            && self.cors.is_none()
+            && self.cors_outside_auth.is_none()
+            && self.auth.is_none()
+            && self.collide.is_none()
+            && self.emit_bin.is_none()
+            && self.bus_wire.is_none()
+            && self.bind_defaults.is_none()
+            && self.delete_extras.is_none()
+            && self.compat.is_none()
+            && self.wire.is_empty()
+    }
+
+    /// Convert set keys to a [`crate::harness::HarnessPolicy`] overlay.
+    ///
+    /// Absent toml keys stay `None` (keep layer). `"none"` becomes
+    /// [`crate::harness::HARNESS_CLEAR`] so merge actually drops the layer value.
+    pub fn to_policy(&self) -> crate::harness::HarnessPolicy {
+        use crate::harness::{
+            AuthMode, BindDefaults, BusWire, CollideMode, CompatMode, CorsMode, DeleteExtras,
+            EmitBin, HarnessPolicy, HARNESS_CLEAR,
+        };
+        fn overlay_str(src: &Option<String>) -> Option<String> {
+            match CodegenToml::normalize_opt(src) {
+                None => None,
+                Some(None) => Some(HARNESS_CLEAR.to_string()),
+                Some(Some(v)) => Some(v),
+            }
+        }
+        HarnessPolicy {
+            profile: overlay_str(&self.profile),
+            bin: overlay_str(&self.bin),
+            listen_env: overlay_str(&self.listen_env),
+            listen_default: self.listen_default,
+            listen: overlay_str(&self.listen),
+            health: overlay_str(&self.health),
+            cors: self.cors.as_deref().and_then(CorsMode::parse),
+            cors_outside_auth: self.cors_outside_auth,
+            auth: self.auth.as_deref().and_then(AuthMode::parse),
+            emit_bin: self.emit_bin.as_deref().and_then(EmitBin::parse),
+            bus_wire: self.bus_wire.as_deref().and_then(BusWire::parse),
+            collide: self.collide.as_deref().and_then(CollideMode::parse),
+            bind_defaults: self.bind_defaults.as_deref().and_then(BindDefaults::parse),
+            delete_extras: self.delete_extras.as_deref().and_then(DeleteExtras::parse),
+            compat: self.compat.as_deref().and_then(CompatMode::parse),
+            path_prefix: overlay_str(&self.path_prefix),
+            provided_runtime_traits: Vec::new(),
+            wire: self.wire.clone(),
+        }
+    }
+}
+
+/// Load `[harness]` from a product root’s `veil.toml` (None if missing/empty).
+pub fn load_harness_overrides(project_root: &Path) -> Result<Option<HarnessToml>, String> {
+    let toml_path = project_root.join("veil.toml");
+    if !toml_path.is_file() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&toml_path)
+        .map_err(|e| format!("cannot read {}: {e}", toml_path.display()))?;
+    let parsed: VeilTomlFile =
+        toml::from_str(&content).map_err(|e| format!("veil.toml parse error: {e}"))?;
+    Ok(parsed.harness.filter(|h| !h.is_empty()))
+}
+
+/// Walk from a `.veil` path to project root and load `[harness]` if present.
+pub fn load_harness_overrides_for(veil_path: &Path) -> Option<HarnessToml> {
+    let root = find_project_root(veil_path)?;
+    load_harness_overrides(&root).ok().flatten()
 }
 
 /// `[package]` entry in veil.toml (R21).
@@ -684,6 +822,38 @@ http_list_prefix = "List"
         assert_eq!(o.http_path_prefix.as_deref(), Some("/api/v1/"));
         assert_eq!(o.http_list_prefix.as_deref(), Some("List"));
         assert!(o.http_get_prefix.is_none());
+    }
+
+    #[test]
+    fn parse_harness_overrides() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+name = "app"
+[harness]
+profile = "axum_rpc"
+cors = "localhost"
+auth = "api_key"
+emit_bin = "never"
+health = "none"
+compat = "off"
+
+[harness.wire]
+item_repo = "PgItemRepo"
+"#,
+        )
+        .unwrap();
+        let o = load_harness_overrides(&dir).unwrap().expect("harness");
+        assert_eq!(o.profile.as_deref(), Some("axum_rpc"));
+        assert_eq!(o.cors.as_deref(), Some("localhost"));
+        assert_eq!(o.emit_bin.as_deref(), Some("never"));
+        assert_eq!(o.health.as_deref(), Some("none"));
+        assert_eq!(o.compat.as_deref(), Some("off"));
+        assert_eq!(o.wire.get("item_repo").map(String::as_str), Some("PgItemRepo"));
+        let pol = o.to_policy();
+        assert_eq!(pol.emit_bin, Some(crate::harness::EmitBin::Never));
+        assert_eq!(pol.health.as_deref(), Some(crate::harness::HARNESS_CLEAR));
     }
 
     #[test]

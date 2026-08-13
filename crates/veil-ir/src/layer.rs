@@ -261,6 +261,13 @@ pub struct ConstructSpec {
     /// Layer-driven IDE presentation (`present` block). See `docs/PRESENTATION.md`.
     #[serde(default)]
     pub presentation: crate::presentation::ConstructPresentation,
+    /// INV-001 construct roles (e.g. `http_endpoint`, `deps_bundle`, `compose`).
+    /// Engine matches these — never the keyword spelling (`endpoint`, `ctx`, …).
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// `has` field names that are config/protocol keys (not domain types).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_keys: Vec<String>,
 }
 
 /// Runtime binding for a delegated fn-shaped construct (e.g. `saga`).
@@ -550,6 +557,9 @@ pub struct LayerRegistry {
     pub auth_policy: AuthPolicy,
     /// Name-derived REST verb/path prefixes. Default empty = no name-derived REST.
     pub http_name_policy: HttpNamePolicy,
+    /// Declared local-harness knobs (layers + `veil.toml` `[harness]`).
+    /// Codegen does not emit from this yet.
+    pub harness_policy: crate::harness::HarnessPolicy,
     /// Extra product roots from `veil.toml` `[dependencies]` (R20).
     /// Each root may contain `layers/<name>.layer` or `<name>.layer`.
     pub extra_layer_roots: Vec<std::path::PathBuf>,
@@ -608,6 +618,7 @@ impl Default for LayerRegistry {
             bus_policy: BusPolicy::default(),
             auth_policy: AuthPolicy::default(),
             http_name_policy: HttpNamePolicy::default(),
+            harness_policy: crate::harness::HarnessPolicy::documented_defaults(),
             extra_layer_roots: Vec::new(),
         }
     }
@@ -632,6 +643,7 @@ impl Clone for LayerRegistry {
             bus_policy: self.bus_policy.clone(),
             auth_policy: self.auth_policy.clone(),
             http_name_policy: self.http_name_policy.clone(),
+            harness_policy: self.harness_policy.clone(),
             extra_layer_roots: self.extra_layer_roots.clone(),
         }
     }
@@ -693,6 +705,8 @@ impl LayerRegistry {
                 tgt: String::new(),
                 dg: String::new(),
                 presentation: Default::default(),
+                roles: Vec::new(),
+                config_keys: Vec::new(),
             });
         }
         reg.layers.push("core".to_string());
@@ -885,6 +899,51 @@ impl LayerRegistry {
         }
     }
 
+    /// Apply product `[harness]` overrides from `veil.toml`.
+    ///
+    /// Merge order: **documented defaults → layers → veil.toml**.
+    pub fn apply_harness_overrides(&mut self, o: &crate::deps::HarnessToml) {
+        let overlay = o.to_policy();
+        self.harness_policy = crate::harness::merge_harness_policy(&self.harness_policy, &overlay);
+    }
+
+    /// Whether a construct's **layer spec** carries `role`.
+    /// Matches keyword or construct name (subkind). Never matches DDD spellings.
+    pub fn construct_has_role(&self, c: &crate::ast::Construct, role: &str) -> bool {
+        self.spec_for_construct(c)
+            .map(|spec| spec.roles.iter().any(|r| r == role))
+            .unwrap_or(false)
+    }
+
+    /// Layer spec for an authored construct (keyword, then name/subkind).
+    pub fn spec_for_construct(&self, c: &crate::ast::Construct) -> Option<&ConstructSpec> {
+        self.construct(&c.keyword)
+            .or_else(|| self.construct_by_name(&c.subkind))
+            .or_else(|| self.construct_by_name(&c.keyword))
+    }
+
+    /// Config/protocol field names on this construct's spec (`has` keys).
+    pub fn construct_config_keys(&self, c: &crate::ast::Construct) -> &[String] {
+        self.spec_for_construct(c)
+            .map(|s| s.config_keys.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// All constructs in `sol` whose spec has `role`.
+    pub fn constructs_with_role<'a>(
+        &'a self,
+        sol: &'a crate::ast::Solution,
+        role: &str,
+    ) -> Vec<&'a crate::ast::Construct> {
+        let mut out = Vec::new();
+        for item in &sol.items {
+            if let crate::ast::TopLevelItem::Construct(c) = item {
+                collect_constructs_with_role(self, c, role, &mut out);
+            }
+        }
+        out
+    }
+
     /// Look up a statement by its source keyword.
     pub fn statement(&self, keyword: &str) -> Option<&StatementSpec> {
         self.statements.iter().find(|s| s.keyword == keyword)
@@ -1021,6 +1080,10 @@ impl LayerRegistry {
         }
         if let Some(http) = parse_http_name_policy(&content) {
             self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
+        }
+        if let Some(harness) = crate::harness::parse_harness_policy(&content) {
+            self.harness_policy =
+                crate::harness::merge_harness_policy(&self.harness_policy, &harness);
         }
         Ok(())
     }
@@ -1208,6 +1271,10 @@ impl LayerRegistry {
         if let Some(http) = parse_http_name_policy(content) {
             self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
         }
+        if let Some(harness) = crate::harness::parse_harness_policy(content) {
+            self.harness_policy =
+                crate::harness::merge_harness_policy(&self.harness_policy, &harness);
+        }
         Ok(())
     }
 
@@ -1295,9 +1362,12 @@ impl LayerRegistry {
                 let _ = reg.load_layer(&entry.use_name, dir);
             }
         }
-        // Product veil.toml [codegen] wins over layer policies (INV-001).
+        // Product veil.toml [codegen] / [harness] win over layer policies (INV-001).
         if let Some(o) = crate::deps::load_codegen_overrides_for(veil_path) {
             reg.apply_codegen_overrides(&o);
+        }
+        if let Some(h) = crate::deps::load_harness_overrides_for(veil_path) {
+            reg.apply_harness_overrides(&h);
         }
         Ok(reg)
     }
@@ -2498,6 +2568,8 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 tgt: String::new(),
                 dg: String::new(),
                 presentation: Default::default(),
+                roles: Vec::new(),
+                config_keys: Vec::new(),
             }));
             section = Section::None;
             present_view = None;
@@ -2611,6 +2683,10 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                             c.raw_block_keywords.push(kw.trim().to_string());
                         } else if let Some(shape) = Shape::from_name(shape_str) {
                             c.blocks.push((kw.trim().to_string(), shape));
+                        }
+                        let key = kw.trim().to_string();
+                        if !key.is_empty() && !c.config_keys.iter().any(|k| k == &key) {
+                            c.config_keys.push(key);
                         }
                         // Build StepFieldSpec with meta-type for step-type constructs.
                         c.step_fields.push(StepFieldSpec {
@@ -2781,6 +2857,12 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                         c.dg = v.trim().to_string();
                     } else if trimmed == "au" {
                         c.au = true;
+                    } else if let Some(v) = trimmed.strip_prefix("role ") {
+                        for role in parse_construct_roles(v) {
+                            if !c.roles.iter().any(|r| r == &role) {
+                                c.roles.push(role);
+                            }
+                        }
                     }
                 }
                 Item::Statement(s) => {
@@ -3617,6 +3699,28 @@ fn resolve_policy_opt(over: &Option<String>, base: &Option<String>) -> Option<St
     }
 }
 
+fn parse_construct_roles(v: &str) -> Vec<String> {
+    v.split(',')
+        .flat_map(|s| s.split_whitespace())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn collect_constructs_with_role<'a>(
+    reg: &'a LayerRegistry,
+    c: &'a crate::ast::Construct,
+    role: &str,
+    out: &mut Vec<&'a crate::ast::Construct>,
+) {
+    if reg.construct_has_role(c, role) {
+        out.push(c);
+    }
+    for child in &c.children {
+        collect_constructs_with_role(reg, child, role, out);
+    }
+}
+
 fn merge_http_name_policy(base: &HttpNamePolicy, over: &HttpNamePolicy) -> HttpNamePolicy {
     HttpNamePolicy {
         list_prefix: resolve_policy_opt(&over.list_prefix, &base.list_prefix),
@@ -4032,6 +4136,112 @@ http_list_prefix = "Fetch"
         // Unset keys leave layer values
         assert_eq!(reg.http_name_policy.get_prefix.as_deref(), Some("Get"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn harness_policy_loads_and_toml_overrides() {
+        let src = r#"
+pkg demo v1
+  harness_policy
+    profile axum_http
+    cors localhost
+    emit_bin on_entry
+    provided_runtime_trait Clock
+  construct HttpEndpoint
+    kw endpoint
+    mt struct
+    role http_endpoint
+    has
+      method: ident
+      path: path
+      handle: ident
+      bind: struct
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("demo", src).expect("load");
+        assert_eq!(reg.harness_policy.profile.as_deref(), Some("axum_http"));
+        assert_eq!(
+            reg.harness_policy.cors,
+            Some(crate::harness::CorsMode::Localhost)
+        );
+        assert!(reg
+            .harness_policy
+            .provided_runtime_traits
+            .iter()
+            .any(|t| t == "Clock"));
+        let spec = reg.construct("endpoint").expect("endpoint");
+        assert!(spec.roles.iter().any(|r| r == "http_endpoint"));
+        assert!(spec.config_keys.iter().any(|k| k == "method"));
+        assert!(spec.config_keys.iter().any(|k| k == "path"));
+        assert!(spec.config_keys.iter().any(|k| k == "bind"));
+
+        let c = crate::ast::Construct::new(
+            "endpoint",
+            "HttpEndpoint",
+            Shape::Struct,
+            "CreateItemHttp".into(),
+            crate::span::Span::new(0, 0),
+        );
+        assert!(reg.construct_has_role(&c, "http_endpoint"));
+        assert!(!reg.construct_has_role(&c, "deps_bundle"));
+        assert!(reg.construct_config_keys(&c).contains(&"handle".to_string()));
+
+        let dir = std::env::temp_dir().join(format!(
+            "veil-harness-ov-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+[harness]
+emit_bin = "never"
+cors = "env"
+health = "none"
+
+[harness.wire]
+item_repo = "PgItemRepo"
+"#,
+        )
+        .unwrap();
+        let o = crate::deps::load_harness_overrides(&dir)
+            .unwrap()
+            .expect("harness toml");
+        reg.apply_harness_overrides(&o);
+        assert_eq!(
+            reg.harness_policy.emit_bin,
+            Some(crate::harness::EmitBin::Never)
+        );
+        assert_eq!(
+            reg.harness_policy.cors,
+            Some(crate::harness::CorsMode::Env)
+        );
+        assert_eq!(reg.harness_policy.health, None);
+        assert_eq!(
+            reg.harness_policy.wire.get("item_repo").map(String::as_str),
+            Some("PgItemRepo")
+        );
+        // Unset keys keep layer/defaults
+        assert_eq!(reg.harness_policy.profile.as_deref(), Some("axum_http"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn construct_roles_comma_list() {
+        let src = r#"
+pkg demo v1
+  construct Foo
+    kw foo
+    mt struct
+    role deps_bundle, compose
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("demo", src).unwrap();
+        let spec = reg.construct("foo").unwrap();
+        assert_eq!(spec.roles, vec!["deps_bundle", "compose"]);
     }
 
     /// Regression: `prompt` then comments then `declare` must not swallow declarations

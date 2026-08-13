@@ -314,6 +314,8 @@ mod tests {
             tgt: String::new(),
             dg: String::new(),
             presentation: Default::default(),
+            roles: Vec::new(),
+            config_keys: Vec::new(),
         }
     }
 
