@@ -264,7 +264,6 @@ pkg PullRequestManagement
 
       # Create a new pull request (branch + PR record).
       # Nested under repo: POST /api/repos/{id}/pull_requests
-      @route("POST /api/repos/{id}/pull_requests")
       svc CreatePullRequest
         -> PullRequest
         @dep(git: GitService)
@@ -290,7 +289,6 @@ pkg PullRequestManagement
           ret cr
 
       # List pull requests for a repo: GET /api/repos/{id}/pull_requests
-      @route("GET /api/repos/{id}/pull_requests")
       svc ListPullRequests
         -> List<PullRequest>
         @dep(pr_repo: PullRequestRepo)
@@ -304,7 +302,6 @@ pkg PullRequestManagement
           ret items
 
       # Global list (dashboard Changes page): GET /api/pull_requests
-      @route("GET /api/pull_requests")
       svc ListAllPullRequests
         -> List<PullRequest>
         @dep(pr_repo: PullRequestRepo)
@@ -316,7 +313,6 @@ pkg PullRequestManagement
           ret items
 
       # Get PR detail (approvals, comments, CI): GET /api/pull_requests/{id}
-      @route("GET /api/pull_requests/{id}")
       svc GetPullRequest
         -> Json
         @dep(pr_repo: PullRequestRepo)
@@ -335,7 +331,6 @@ pkg PullRequestManagement
           ret {pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs}
 
       # Transition PR status (draft → review, approve, reject, close, …)
-      @route("PUT /api/pull_requests/{id}/status")
       svc UpdatePullRequestStatus
         -> PullRequest
         @dep(pr_repo: PullRequestRepo)
@@ -352,7 +347,6 @@ pkg PullRequestManagement
           ret pr
 
       # Add a review comment (optionally anchored to a construct path)
-      @route("POST /api/pull_requests/{id}/comments")
       svc AddReviewComment
         -> ReviewComment
         @dep(comment_repo: CommentRepo)
@@ -368,7 +362,6 @@ pkg PullRequestManagement
           ret comment
 
       # Create via flat collection path (dashboard form without repo path segment)
-      @route("POST /api/pull_requests")
       svc CreatePullRequestFlat
         -> PullRequest
         @dep(git: GitService)

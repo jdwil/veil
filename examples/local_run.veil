@@ -1,11 +1,3 @@
-# RT-001 / RT-003 — VEIL-authored local harness (real handler path, not echo).
-#
-#   veil gen examples/local_run.veil -o /tmp/local_run -t rust
-#   cd /tmp/local_run && cargo run -p veil_bin
-#
-# Catalog.CreateItem is a real application service (validate + persist via
-# MemItemRepo). Generated main wires InProcessBus + repo and invokes it.
-
 pkg LocalRun
   use ddd
   use di
@@ -23,10 +15,11 @@ pkg LocalRun
         find(id: UUID) -> Res!<Opt<Item>>
 
     group application
-      @route("POST /api/items")
       svc CreateItem
         input
           name: Str
+          @dep
+          item_repo: ItemRepo
         step validate
           guard name != "", "name required"
         step persist
@@ -41,7 +34,23 @@ pkg LocalRun
         impl find(id)
           ret Ok(None)
 
+    group presentation
+      deps CatalogDeps
+        item_repo: ItemRepo
+
+      compose CatalogLocal
+        bundle: CatalogDeps
+        wire
+          item_repo: MemItemRepo
+
+      endpoint CreateItemHttp
+        method: POST
+        path: "/api/items"
+        handle: CreateItem
+        bind
+          name: body
+
+  @main
   fn bootstrap
-    @main
     step demo
-      call run_local_demo
+      run_local_demo()

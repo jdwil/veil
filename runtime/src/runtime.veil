@@ -3659,7 +3659,6 @@ pkg VeilRuntime
 
       # Create a new pull request (branch + PR record)
       # Nested under repo: POST /api/repos/{id}/pull_requests
-      @route("POST /api/repos/{id}/pull_requests")
       svc CreatePullRequest
         -> PullRequest
         @dep(git: GitService)
@@ -3685,7 +3684,6 @@ pkg VeilRuntime
           ret cr
 
       # Flat create for dashboard form (no repo path segment)
-      @route("POST /api/pull_requests")
       svc CreatePullRequestFlat
         -> PullRequest
         @dep(git: GitService)
@@ -3711,7 +3709,6 @@ pkg VeilRuntime
           ret cr
 
       # Commit a file to a PR's branch
-      @route("POST /api/pull_requests/{id}/commit")
       svc CommitToPullRequest
         -> Json
         @dep(git: GitService)
@@ -3734,7 +3731,6 @@ pkg VeilRuntime
           ret {hash: hash, branch: pr.source_branch}
 
       # Submit PR for review
-      @route("POST /api/pull_requests/{id}/submit")
       svc SubmitForReview
         @dep(pr_repo: PullRequestRepo)
         input
@@ -3749,7 +3745,6 @@ pkg VeilRuntime
           pr_repo.save!(pr)
 
       # Approve a pull request
-      @route("POST /api/pull_requests/{id}/approve")
       svc ApprovePullRequest
         @dep(pr_repo: PullRequestRepo)
         @dep(approval_repo: ApprovalRepo)
@@ -3771,7 +3766,6 @@ pkg VeilRuntime
           pr_repo.save!(pr)
 
       # Request changes on a pull request
-      @route("POST /api/pull_requests/{id}/request-changes")
       svc RequestPullRequestChanges
         @dep(pr_repo: PullRequestRepo)
         @dep(comment_repo: CommentRepo)
@@ -3793,7 +3787,6 @@ pkg VeilRuntime
           pr_repo.save!(pr)
 
       # Merge a PR (all gates must pass)
-      @route("POST /api/pull_requests/{id}/merge")
       svc MergePullRequest
         -> Json
         @dep(git: GitService)
@@ -3831,7 +3824,6 @@ pkg VeilRuntime
           ret {merge_commit: merge_hash, branch: pr.source_branch, target: pr.target_branch}
 
       # Get structural diff for visual review
-      @route("GET /api/pull_requests/{id}/diff")
       svc GetStructuralDiff
         -> Json
         @dep(git: GitService)
@@ -3862,7 +3854,6 @@ pkg VeilRuntime
           ret Json.object()
 
       # Add a review comment (dashboard + nested under pull request)
-      @route("POST /api/pull_requests/{id}/comments")
       svc AddReviewComment
         -> ReviewComment
         @dep(comment_repo: CommentRepo)
@@ -3893,7 +3884,6 @@ pkg VeilRuntime
           ret comment
 
       # List PRs for a repo: GET /api/repos/{id}/pull_requests
-      @route("GET /api/repos/{id}/pull_requests")
       svc ListPullRequests
         -> List<PullRequest>
         @dep(pr_repo: PullRequestRepo)
@@ -3907,7 +3897,6 @@ pkg VeilRuntime
           ret items
 
       # Global list for dashboard Pull requests page
-      @route("GET /api/pull_requests")
       svc ListAllPullRequests
         -> List<PullRequest>
         @dep(pr_repo: PullRequestRepo)
@@ -3919,7 +3908,6 @@ pkg VeilRuntime
           ret items
 
       # Get PR detail
-      @route("GET /api/pull_requests/{id}")
       svc GetPullRequest
         -> Json
         @dep(pr_repo: PullRequestRepo)
@@ -3938,7 +3926,6 @@ pkg VeilRuntime
           ret {pr: pr, approvals: approvals, comments: comments, ci_runs: ci_runs}
 
       # Transition PR status (draft → review, close, reject, …)
-      @route("PUT /api/pull_requests/{id}/status")
       svc UpdatePullRequestStatus
         -> PullRequest
         @dep(pr_repo: PullRequestRepo)

@@ -1,6 +1,11 @@
 # veil-runtime UX package — platform shell UI
 name = "veil-runtime-ui"
 
+# Customer-style HTTP veil_bin is not the ProductHost. host.veil still emits a
+# bin because link veil_server ignores emit_bin=never.
+[harness]
+emit_bin = "never"
+
 [package]
 name = "veil_runtime_ui"
 veil = "src/runtime-ui.veil"

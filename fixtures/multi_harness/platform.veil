@@ -1,9 +1,7 @@
-# Minimal platform package for multi-package dual-loop (ACS-003).
-# Memory adapter only — no Dynamo/sqlx. Co-hosted with product via gen-harness.
-
 pkg PlatformSlice
   use ddd
   use di
+  use harness
 
   ctx Catalog
     group domain
@@ -13,44 +11,72 @@ pkg PlatformSlice
           title: Str
 
       port NoteRepo
-        find!(id: Id) -> Opt<Note>
-        list_all!() -> List<Note>
-        save!(note: Note)
+        find(id: Id) -> Res!<Opt<Note>>
+        list_all() -> Res!<List<Note>>
+        save(note: Note) -> Res!
 
     group application
-      @route("GET /api/notes")
       svc ListNotes
         input
-          @dep note_repo: NoteRepo
+          @dep
+          note_repo: NoteRepo
         step query
           items = note_repo.list_all!()
           ret items
 
-      @route("GET /api/notes/:id")
       svc GetNote
         input
           id: Id
-          @dep note_repo: NoteRepo
+          @dep
+          note_repo: NoteRepo
         step load
           n = note_repo.find!(id)
           ret n
 
-      @route("POST /api/notes")
       svc CreateNote
         input
           title: Str
-          @dep note_repo: NoteRepo
+          @dep
+          note_repo: NoteRepo
         step persist
           n = Note.new(title)
           note_repo.save!(n)
           ret n
 
     group infrastructure
+      @dep
       impl MemNoteRepo for NoteRepo
-        @dep
         impl find(id)
           ret null
         impl list_all()
           ret []
         impl save(note)
           ret Ok
+
+    group presentation
+      deps CatalogDeps
+        note_repo: NoteRepo
+
+      compose CatalogLocal
+        bundle: CatalogDeps
+        wire
+          note_repo: MemNoteRepo
+
+      endpoint ListNotesHttp
+        method: GET
+        path: "/api/notes"
+        handle: ListNotes
+
+      endpoint GetNoteHttp
+        method: GET
+        path: "/api/notes/{id}"
+        handle: GetNote
+        bind
+          id: path
+
+      endpoint CreateNoteHttp
+        method: POST
+        path: "/api/notes"
+        handle: CreateNote
+        bind
+          title: body

@@ -1,9 +1,7 @@
-# Minimal product package co-hosted with platform.veil (ACS-003).
-# Multi-package local harness ≠ multi-project IDE hub.
-
 pkg ProductApp
   use ddd
   use di
+  use harness
 
   ctx Storefront
     group domain
@@ -13,44 +11,72 @@ pkg ProductApp
           name: Str
 
       port WidgetRepo
-        find!(id: Id) -> Opt<Widget>
-        list_all!() -> List<Widget>
-        save!(widget: Widget)
+        find(id: Id) -> Res!<Opt<Widget>>
+        list_all() -> Res!<List<Widget>>
+        save(widget: Widget) -> Res!
 
     group application
-      @route("GET /api/widgets")
       svc ListWidgets
         input
-          @dep widget_repo: WidgetRepo
+          @dep
+          widget_repo: WidgetRepo
         step query
           items = widget_repo.list_all!()
           ret items
 
-      @route("GET /api/widgets/:id")
       svc GetWidget
         input
           id: Id
-          @dep widget_repo: WidgetRepo
+          @dep
+          widget_repo: WidgetRepo
         step load
           w = widget_repo.find!(id)
           ret w
 
-      @route("POST /api/widgets")
       svc CreateWidget
         input
           name: Str
-          @dep widget_repo: WidgetRepo
+          @dep
+          widget_repo: WidgetRepo
         step persist
           w = Widget.new(name)
           widget_repo.save!(w)
           ret w
 
     group infrastructure
+      @dep
       impl MemWidgetRepo for WidgetRepo
-        @dep
         impl find(id)
           ret null
         impl list_all()
           ret []
         impl save(widget)
           ret Ok
+
+    group presentation
+      deps StorefrontDeps
+        widget_repo: WidgetRepo
+
+      compose StorefrontLocal
+        bundle: StorefrontDeps
+        wire
+          widget_repo: MemWidgetRepo
+
+      endpoint ListWidgetsHttp
+        method: GET
+        path: "/api/widgets"
+        handle: ListWidgets
+
+      endpoint GetWidgetHttp
+        method: GET
+        path: "/api/widgets/{id}"
+        handle: GetWidget
+        bind
+          id: path
+
+      endpoint CreateWidgetHttp
+        method: POST
+        path: "/api/widgets"
+        handle: CreateWidget
+        bind
+          name: body

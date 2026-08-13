@@ -1,9 +1,7 @@
-# L1 — CRUD + bang find/list/save
-# Skills: Opt/Res portable bang (find! → Opt); force with require/unwrap when need T
-
 pkg LadderL1
   use ddd
   use di
+  use harness
 
   ctx Catalog
     group domain
@@ -13,34 +11,33 @@ pkg LadderL1
           name: Str
 
       port ItemRepo
-        find!(id: Id) -> Opt<Item>
-        list_all!() -> List<Item>
-        save!(item: Item)
+        find(id: Id) -> Res!<Opt<Item>>
+        list_all() -> Res!<List<Item>>
+        save(item: Item) -> Res!
 
     group application
-      @route("GET /api/items")
       svc ListItems
         input
-          @dep item_repo: ItemRepo
+          @dep
+          item_repo: ItemRepo
         step query
           items = item_repo.list_all!()
           ret items
 
-      @route("GET /api/items/:id")
       svc GetItem
         input
           id: Id
-          @dep item_repo: ItemRepo
+          @dep
+          item_repo: ItemRepo
         step load
-          # portable bang: find! → Opt<Item>; soft ret is valid
           item = item_repo.find!(id)
           ret item
 
-      @route("POST /api/items")
       svc CreateItem
         input
           name: Str
-          @dep item_repo: ItemRepo
+          @dep
+          item_repo: ItemRepo
         step validate
           guard name != "", "name required"
         step persist
@@ -49,11 +46,39 @@ pkg LadderL1
           ret item
 
     group infrastructure
+      @dep
       impl MemItemRepo for ItemRepo
-        @dep
         impl find(id)
           ret null
         impl list_all()
           ret []
         impl save(item)
           ret Ok
+
+    group presentation
+      deps CatalogDeps
+        item_repo: ItemRepo
+
+      compose CatalogLocal
+        bundle: CatalogDeps
+        wire
+          item_repo: MemItemRepo
+
+      endpoint ListItemsHttp
+        method: GET
+        path: "/api/items"
+        handle: ListItems
+
+      endpoint GetItemHttp
+        method: GET
+        path: "/api/items/{id}"
+        handle: GetItem
+        bind
+          id: path
+
+      endpoint CreateItemHttp
+        method: POST
+        path: "/api/items"
+        handle: CreateItem
+        bind
+          name: body

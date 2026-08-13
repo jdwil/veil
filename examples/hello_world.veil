@@ -1,6 +1,6 @@
-# Hello World — comprehensive example exercising a cross-section of VEIL
 pkg HelloWorld
   use ddd
+  use harness
 
   lang
     Greeting: A personalized welcome message
@@ -17,65 +17,65 @@ pkg HelloWorld
           active: Bool
           created: DateTime
         state UserStatus
-          Pending -> Active -> Suspended
-
-        evt UserGreeted
-          id: UUID
-          message: Str
-          at: DateTime
-
-        evt UserSuspended
-          id: UUID
-          reason: Str
-
+          Pending -> Active
+          Active -> Suspended
         fn greet(time_of_day: Str) -> Res!<Str>
           @invariant(active == true)
           greeting_count = greeting_count + 1
           mut msg: Str = "Hello!"
-          emit UserGreeted{id, msg, now()}
+          emit UserGreeted{id, msg, now: now()}
           ret msg
-
         fn activate() -> Res!
           @invariant(active == false)
           active = true
-
         fn suspend(reason: Str) -> Res!
           @invariant(active == true)
           active = false
           emit UserSuspended{id, reason}
+        evt UserGreeted
+          id: UUID
+          message: Str
+          at: DateTime
+        evt UserSuspended
+          id: UUID
+          reason: Str
 
       val Email
         addr: Str
 
       port UserRepo
-        save!(user: User)
-        find!(id: UUID) -> Opt<User>
-        find_by_email!(email: Str) -> Opt<User>
+        save(user: User) -> Res!
+        find(id: UUID) -> Res!<Opt<User>>
+        find_by_email(email: Str) -> Res!<Opt<User>>
         list_active() -> Res!<List<User>>
-        delete!(id: UUID)
+        delete(id: UUID) -> Res!
 
       port Notifier
-        send_email!(to: Str, subject: Str, body: Str)
+        send_email(to: Str, subject: Str, body: Str) -> Res!
 
     group application
-      @route("POST /api/users")
       svc CreateUser
         input
           name: Str
           email: Str
+          @dep
+          user_repo: UserRepo
+          @dep
+          bus: Bus
         step validate
           guard email != "", "email required"
         step persist
           user = User.new(name, email)
           UserRepo.save(user)
-          dispatch UserGreeted{user.id, email, now()}
+          dispatch UserGreeted{id: user.id, email, now: now()}
         ret user.id
 
-      @route("POST /api/users/greet")
       svc GreetUser
         input
           user_id: UUID
           time_of_day: Str
+          @dep
+          notifier: Notifier
         step load
           user = UserRepo.find(user_id)
         step greet
@@ -83,7 +83,35 @@ pkg HelloWorld
           Notifier.send_email(user.email, "Greeting sent!", time_of_day)
 
     group infrastructure
+      @env(SMTP_HOST, SMTP_PORT)
       adapter SmtpNotifier for Notifier
-        @env(SMTP_HOST, SMTP_PORT)
         impl send_email(to, subject, body)
           http.post("https://smtp.example.com/send", {to, subject, body})
+
+    group presentation
+      deps GreetingsDeps
+        bus: Bus
+        notifier: Notifier
+        user_repo: UserRepo
+
+      compose GreetingsLocal
+        bundle: GreetingsDeps
+        wire
+          notifier: SmtpNotifier
+          bus: provided_runtime
+
+      endpoint CreateUserHttp
+        method: POST
+        path: "/api/users"
+        handle: CreateUser
+        bind
+          name: body
+          email: body
+
+      endpoint GreetUserHttp
+        method: POST
+        path: "/api/users/greet"
+        handle: GreetUser
+        bind
+          user_id: body
+          time_of_day: body
