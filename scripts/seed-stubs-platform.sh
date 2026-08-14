@@ -8,11 +8,11 @@
 #   AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
 #     ./scripts/seed-stubs-platform.sh [stubs_dir]
 #
-# Default stubs_dir: runtime/src/stubs
+# Default stubs_dir: stubs/
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-STUBS_DIR="${1:-$ROOT/runtime/src/stubs}"
+STUBS_DIR="${1:-$ROOT/stubs}"
 TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
 BUCKET="${BUCKET:-${VEIL_S3_BUCKET:-veil-runtime-dev}}"
 export AWS_PROFILE="${AWS_PROFILE:-dashlx_dev}"

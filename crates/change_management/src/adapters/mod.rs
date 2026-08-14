@@ -448,9 +448,32 @@ impl CommentRepo for DdbCommentRepo {
 }
 
 /// Adapter: S3GitServiceAdapter (implements GitService)
+///
+/// When git origin is on (`VEIL_GIT_ORIGIN`, default auto with sessions),
+/// mutating methods are no-ops. Real history lives in `veil_server::git_origin`.
+/// This adapter must not write SHA stubs to `git/{slug}/refs`.
 pub struct S3GitServiceAdapter {
     pub bucket: String,
     pub s3: aws_sdk_s3::Client,
+}
+
+fn git_origin_owns() -> bool {
+    let flag = |name: &str, default: &str| {
+        std::env::var(name).unwrap_or_else(|_| default.into())
+            .to_ascii_lowercase()
+    };
+    match flag("VEIL_GIT_ORIGIN", "auto").as_str() {
+        "0" | "false" | "off" | "no" => false,
+        "1" | "true" | "on" | "yes" => true,
+        _ => match flag("VEIL_SESSIONS", "auto").as_str() {
+            "0" | "false" | "off" | "no" => false,
+            "1" | "true" | "on" | "yes" => true,
+            _ => {
+                let mode = flag("VEIL_SOURCE_MODE", "prefer_s3");
+                !matches!(mode.as_str(), "disk" | "fs" | "filesystem" | "local")
+            }
+        },
+    }
 }
 
 #[async_trait]
@@ -475,6 +498,9 @@ impl GitService for S3GitServiceAdapter {
         message: String,
         author: String,
     ) -> Result<String, DomainError> {
+        if git_origin_owns() {
+            return Ok("git-origin".into());
+        }
         let cache_path = format!("/tmp/veil-git-cache/{}", slug);
         veil_local_fs::LocalFs::create_dir_all(cache_path.clone())
             .map_err(|e| DomainError::External(e.to_string()))?;
@@ -530,6 +556,9 @@ impl GitService for S3GitServiceAdapter {
         branch_name: String,
         from_ref: String,
     ) -> Result<String, DomainError> {
+        if git_origin_owns() {
+            return Ok(branch_name);
+        }
         let src_key = format!("git/{}/refs/heads/{}", slug, from_ref);
         let resp = self
             .s3
@@ -560,6 +589,9 @@ impl GitService for S3GitServiceAdapter {
     }
 
     async fn delete_branch(&self, slug: String, branch_name: String) -> Result<(), DomainError> {
+        if git_origin_owns() {
+            return Ok(());
+        }
         let key = format!("git/{}/refs/heads/{}", slug, branch_name);
         self.s3
             .delete_object()
@@ -610,6 +642,9 @@ impl GitService for S3GitServiceAdapter {
     }
 
     async fn init_repo(&self, slug: String) -> Result<(), DomainError> {
+        if git_origin_owns() {
+            return Ok(());
+        }
         let cache_path = format!("/tmp/veil-git-cache/{}", slug);
         veil_local_fs::LocalFs::create_dir_all(cache_path.clone())
             .map_err(|e| DomainError::External(e.to_string()))?;
@@ -709,6 +744,10 @@ impl GitService for S3GitServiceAdapter {
         message: String,
         author: String,
     ) -> Result<String, DomainError> {
+        if git_origin_owns() {
+            // Real merge is GitOrigin::merge_and_push in platform_http.
+            return Ok("git-origin".into());
+        }
         let src_key = format!("git/{}/refs/heads/{}", slug, source);
         let resp = self
             .s3

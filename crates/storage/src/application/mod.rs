@@ -286,9 +286,19 @@ pub async fn write_file(
         parent_hashes: vec![],
         files_changed: vec![path],
     };
-    deps.metadata_store
-        .put_commit(repo_id.clone(), commit.clone())
-        .await?;
+    // Git origin owns history. Do not write DDB COMMIT# facsimiles.
+    let origin_off = matches!(
+        std::env::var("VEIL_GIT_ORIGIN")
+            .unwrap_or_else(|_| "auto".into())
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "no"
+    );
+    if origin_off {
+        deps.metadata_store
+            .put_commit(repo_id.clone(), commit.clone())
+            .await?;
+    }
     return Ok(commit);
 }
 

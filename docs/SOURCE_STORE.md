@@ -9,30 +9,24 @@ Local dual-loop against the **dev** account should mirror production:
 | Checkout cache (compile / HTTP) | S3 `repos/{repo_id}/{branch}/{path}` — updated on push/merge |
 | Deploy state (CURRENT / versions) | DynamoDB `DEPLOY#…` rows |
 
-## Env (local server)
+## Env (local ProductHost)
 
-**Required for jd@dashlx.com local development** — always use the **dashlx_dev**
-profile and the dev account table/bucket. Without these, repos/changes look empty
-or fail silently, and provision cannot talk to real AWS.
+`scripts/dev-stack.sh` sets these. Override only when you mean to.
 
 ```bash
 export AWS_PROFILE=dashlx_dev AWS_REGION=us-west-2
 export VEIL_DDB_TABLE=veil-runtime-dev
-export BUCKET=veil-runtime-dev          # or VEIL_S3_BUCKET (same bucket)
-export VEIL_SOURCE_MODE=s3              # strict remote (default for dev-stack) | `prefer_s3` | `disk`
-export VEIL_DEPLOY_CONFIG=runtime/config/deploy.toml
+export BUCKET=veil-runtime-dev          # or VEIL_S3_BUCKET
+export VEIL_SOURCE_MODE=s3              # s3 | prefer_s3 | disk
+export VEIL_GIT_ORIGIN=auto             # on with sessions
 export VEIL_DEV=1
-export PORT=3000
 
-# From monorepo root after `veil gen runtime/src/runtime.veil -o runtime/generated`:
-cd runtime/generated && cargo build -p veil_bin
-AWS_PROFILE=dashlx_dev AWS_REGION=us-west-2 \
-  VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev VEIL_DEV=1 PORT=3000 \
-  ./target/debug/veil_bin
+# One process — do not run a second veil serve:
+scripts/dev-stack.sh restart            # API :8080 + UI :5180
 ```
 
-UI (Vite) proxies `/api` → `:3000` and `/api/agent` (WS) → IDE agent on `:3001`.
-Confirm identity: `AWS_PROFILE=dashlx_dev aws sts get-caller-identity` → account `086261225885`.
+UI (Vite `:5180`) proxies `/api` → ProductHost `:8080`.
+Confirm identity: `AWS_PROFILE=dashlx_dev aws sts get-caller-identity`.
 
 | Mode | Behavior |
 |------|----------|

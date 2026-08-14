@@ -1,8 +1,7 @@
-    <script lang="ts">
-      import PullRequestCreateView from '$lib/components/PullRequestCreateView.svelte';
-    
-    
-    
-    </script>
-              <PullRequestCreateView />
-        
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	onMount(() => {
+		void goto('/pulls/new', { replaceState: true });
+	});
+</script>

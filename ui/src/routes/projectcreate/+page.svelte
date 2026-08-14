@@ -1,8 +1,7 @@
-    <script lang="ts">
-      import ProjectCreateView from '$lib/components/ProjectCreateView.svelte';
-    
-    
-    
-    </script>
-              <ProjectCreateView />
-        
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	onMount(() => {
+		void goto('/projects/new', { replaceState: true });
+	});
+</script>
