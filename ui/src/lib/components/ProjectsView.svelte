@@ -146,6 +146,7 @@
     {#snippet row(item)}
       {@const repo = /** @type {Record<string, unknown>} */ (item)}
       {@const rid = repo?.id != null && typeof repo.id === 'object' && repo.id.value != null ? String(repo.id.value) : String(repo?.id ?? repo?.slug ?? '')}
+      {@const rev = reviewForSlug(rid || String(repo?.slug ?? ''), $reviewProjects)}
       <td>
         <EntityIdentity name={String(repo?.name ?? '—')} show_avatar={true} size="sm" />
       </td>
@@ -153,7 +154,6 @@
       <td><span class="dk-tile__meta">{repo?.updated_at ? String(repo.updated_at).slice(0, 10) : '—'}</span></td>
       <td><span class="dk-tile__meta">{repo?.slug ? String(repo.slug) : '—'}</span></td>
       <td>
-        {@const rev = reviewForSlug(rid || String(repo?.slug ?? ''), $reviewProjects)}
         {#if rev?.needs_sign_off}
           <StatusPill label={`Sign-off · ${rev.outstanding}`} variant="warning" />
         {:else if rev?.touched}

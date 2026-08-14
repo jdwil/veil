@@ -1459,6 +1459,9 @@
       updateReferenceEdges(get(irGraph)!, null);
     }
   }
+
+  const reviewSlug = $derived(currentProjectParam() ?? $activeProject?.name ?? '');
+  const ideReview = $derived(reviewSlug ? reviewForSlug(reviewSlug, $reviewProjects) : null);
 </script>
 
 <svelte:window onkeydown={handleKeyDown} onpointerdown={() => { if (lensPickerOpen) lensPickerOpen = false; }} />
@@ -1468,8 +1471,6 @@
   class:viewer-container--flow={shell.mode === 'flow'}
   data-veil-shell={shell.mode}
 >
-  {@const reviewSlug = currentProjectParam() ?? $activeProject?.name ?? ''}
-  {@const ideReview = reviewSlug ? reviewForSlug(reviewSlug, $reviewProjects) : null}
   {#if ideReview?.needs_sign_off}
     <a class="outstanding-ide-banner" href={`/review/${encodeURIComponent(reviewSlug)}`}>
       {ideReview.outstanding} unreviewed change{ideReview.outstanding === 1 ? '' : 's'} — sign off
