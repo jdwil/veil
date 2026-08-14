@@ -9,7 +9,7 @@ diffs.
 | Rule | Canonical choice |
 |------|------------------|
 | Indentation | **2 spaces** per block level |
-| Package keyword | **`pkg`** (`sol` is deprecated and is rewritten to `pkg` on emit) |
+| Package keyword | **`pkg`** (legacy `sol` rewrites to `pkg` on emit; do not author `sol`) |
 | Export / public | **`+`** prefix (`export ` is rewritten to `+`) |
 | Calls | **Bare** `Target.method(args)` or `name(args)` — never the `call` keyword |
 | Statement sugar | Preserve layer sugar (`dispatch`, `guard`, …) when `CallExpr.sugar` is set |

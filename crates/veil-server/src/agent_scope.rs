@@ -5,9 +5,10 @@
 //! - `write_source` fails "project scope missing"
 //! - agent invents "empty project" stories for packages that exist on S3
 //!
-//! Call [`prepare_project`] before ACP turns and on `open_ide` / `create_project`.
-
-use std::sync::Arc;
+//! Call [`prepare_project`] at **turn start** (S3 rematerialize).
+//! Mid-turn MCP (`write_source` after `create_project`) must use
+//! [`ensure_bound`] — rematerialize + `reset_acp` on every tool call
+//! deadlocks ACP and burns seconds per call.
 
 use serde_json::{json, Value};
 
@@ -138,6 +139,75 @@ pub fn prepare_project(
     }))
 }
 
+/// Bind hub + ACP_PROJECT for `slug` **without** S3 rematerialize or ACP kill.
+///
+/// Use from hub `/api/mcp` on every unscoped coding tool. [`prepare_project`]
+/// drops session handles and pulls S3 — fine once per turn, fatal mid-turn.
+pub fn ensure_bound(
+    slug_raw: &str,
+    hub: Option<&dyn SourceProvider>,
+) -> Result<Value, String> {
+    let slug = normalize_slug(slug_raw)
+        .ok_or_else(|| format!("invalid project slug: {slug_raw:?}"))?;
+    let ident = crate::provider::s3_workspace::resolve_project_identity(&slug)
+        .unwrap_or_else(|_| crate::provider::s3_workspace::ProjectIdentity {
+            slug: slug.clone(),
+            repo_id: slug.clone(),
+        });
+    let slug = ident.slug.clone();
+
+    crate::acp::ensure_acp_project_scope(Some(slug.clone()));
+
+    if hub.map(|h| h.has_coding_session(&slug)).unwrap_or(false) {
+        return Ok(json!({
+            "ok": true,
+            "slug": slug,
+            "repo_id": ident.repo_id,
+            "hot": true,
+            "message": format!("Project `{slug}` already bound — write_source/create_file now."),
+        }));
+    }
+
+    if !session::sessions_enabled() {
+        return Ok(json!({
+            "ok": true,
+            "slug": slug,
+            "repo_id": ident.repo_id,
+            "sessions": false,
+            "hot": false,
+            "message": "Sessions disabled — ACP project scope set only",
+        }));
+    }
+
+    let mgr = SessionManager::global();
+    let h = if let Some(sid) = mgr.active_for_project(&slug) {
+        mgr.attach(&sid)
+            .or_else(|_| mgr.resolve_for_project(&slug))?
+    } else {
+        mgr.resolve_for_project(&slug)?
+    };
+    mgr.set_active_for_project(&slug, &h.session_id());
+    mgr.set_active_for_project(&ident.repo_id, &h.session_id());
+
+    if let Some(hub) = hub {
+        hub.bind_coding_session(&slug, h.provider.clone());
+        if ident.repo_id != slug {
+            hub.bind_coding_session(&ident.repo_id, h.provider.clone());
+        }
+    }
+
+    Ok(json!({
+        "ok": true,
+        "slug": slug,
+        "session_id": h.session_id(),
+        "repo_id": h.snapshot_meta().repo_id,
+        "hot": false,
+        "message": format!(
+            "Bound project `{slug}`. Write layers/*.layer, MISSION.md, main.veil via write_source — do not re-create."
+        ),
+    }))
+}
+
 fn futures_list_files(h: &SessionHandle) -> Vec<Value> {
     // Filesystem list from workdir (sync)
     let root = &h.work_dir;
@@ -188,6 +258,25 @@ pub fn slug_from_tool(
     arguments: &Value,
     result_json: &str,
 ) -> Option<String> {
+    // rename/update: `name` is the new display name — never treat it as the slug.
+    if matches!(tool_name, "rename_project" | "update_project") {
+        if let Ok(v) = serde_json::from_str::<Value>(result_json) {
+            if let Some(s) = v
+                .get("slug")
+                .or_else(|| v.pointer("/project/slug"))
+                .and_then(|x| x.as_str())
+                .and_then(normalize_slug)
+            {
+                return Some(s);
+            }
+        }
+        return arguments
+            .get("project")
+            .or_else(|| arguments.get("slug"))
+            .or_else(|| arguments.get("id"))
+            .and_then(|v| v.as_str())
+            .and_then(normalize_slug);
+    }
     let from_args = arguments
         .get("project")
         .or_else(|| arguments.get("slug"))
@@ -212,9 +301,41 @@ pub fn slug_from_tool(
     }
     if matches!(
         tool_name,
-        "open_ide" | "open_project" | "switch_project" | "create_project" | "create_repo"
+        "open_ide"
+            | "open_project"
+            | "switch_project"
+            | "create_project"
+            | "create_repo"
+            | "rename_project"
+            | "update_project"
     ) {
         // nothing
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ensure_bound_rejects_empty_slug() {
+        let err = ensure_bound(" ", None).unwrap_err();
+        assert!(err.contains("invalid"), "{err}");
+    }
+
+    #[test]
+    fn slug_from_create_project_result() {
+        let result = json!({
+            "ok": true,
+            "slug": "dlx-bus",
+            "name": "DLX Bus"
+        })
+        .to_string();
+        assert_eq!(
+            slug_from_tool("create_project", &json!({}), &result).as_deref(),
+            Some("dlx-bus")
+        );
+    }
 }

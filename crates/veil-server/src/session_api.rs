@@ -29,6 +29,7 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
             "/api/sessions/{id}/commits",
             get(list_commits).post(create_commit),
         )
+        .route("/api/sessions/{id}/diff", get(session_git_diff))
         .route("/api/sessions/{id}/merge", post(merge_session))
         .route("/api/sessions/{id}/publish-branch", post(publish_branch))
         .route(
@@ -121,6 +122,12 @@ async fn create_session(Json(body): Json<CreateBody>) -> axum::response::Respons
 fn session_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> serde_json::Value {
     let meta = h.snapshot_meta();
     let uncommitted = h.has_uncommitted();
+    let git_files = h.git_status_files();
+    let dirty: Vec<String> = if !git_files.is_empty() {
+        git_files.iter().map(|f| f.path.clone()).collect()
+    } else {
+        meta.dirty.clone()
+    };
     json!({
         "session_id": meta.session_id,
         "user_id": meta.user_id,
@@ -139,7 +146,10 @@ fn session_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> serde_json
         "draft_mode": meta.draft_mode,
         "active_file": meta.active_file,
         "open_files": meta.open_files,
-        "dirty": meta.dirty,
+        "dirty": dirty,
+        "git_status": git_files,
+        "git_origin": crate::git_origin::origin_enabled(),
+        "git_workdir": h.work_dir.join(".git").is_dir(),
         "created_at": meta.created_at,
         "updated_at": meta.updated_at,
         "last_focus": meta.last_focus,
@@ -172,10 +182,52 @@ async fn create_commit(
     }
 }
 
+async fn session_git_diff(Path(id): Path<String>) -> axum::response::Response {
+    let h = match SessionManager::global().attach(&id) {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
+    };
+    let patch = h.git_working_diff();
+    let status = h.git_status_files();
+    json_ok(json!({
+        "session_id": id,
+        "via": "git",
+        "patch": patch,
+        "status": status,
+        "uncommitted": h.has_uncommitted(),
+    }))
+}
+
 async fn list_commits(Path(id): Path<String>) -> axum::response::Response {
-    // Ensure session exists / attach for auth side-effects
-    if let Err(e) = SessionManager::global().attach(&id) {
-        return err_resp(StatusCode::NOT_FOUND, e);
+    let h = match SessionManager::global().attach(&id) {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
+    };
+    if crate::git_origin::origin_enabled() && h.work_dir.join(".git").is_dir() {
+        match h.git_log(50) {
+            Ok(log) => {
+                let commits: Vec<serde_json::Value> = log
+                    .into_iter()
+                    .map(|e| {
+                        json!({
+                            "commit_id": e.sha,
+                            "message": e.message,
+                            "created_at": e.created_at,
+                            "parent": e.parent,
+                            "author": e.author,
+                            "files": e.files,
+                            "via": "git",
+                        })
+                    })
+                    .collect();
+                return json_ok(json!({
+                    "session_id": id,
+                    "commits": commits,
+                    "via": "git",
+                }));
+            }
+            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+        }
     }
     match list_session_commits(&id) {
         Ok(commits) => json_ok(json!({ "session_id": id, "commits": commits })),

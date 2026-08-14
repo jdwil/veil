@@ -1,20 +1,24 @@
 # Durable coding sessions
 
-Production-like ProductHost keeps **efficient local checkouts** and **never loses accepted work**.
+Production-like ProductHost keeps **local git checkouts** and a **real origin on S3**.
+See [`ADR_GIT_ORIGIN_S3.md`](./ADR_GIT_ORIGIN_S3.md).
 
-## Git-shaped workflow (operator model)
+## Git workflow (operator model)
 
-Think **branch → commit → merge**, even though the store is S3 + DDB (not a local git forge):
+This **is** git. Origin lives on the ProductHost bucket (`git/{repo_id}/` bundles).
+A session is a clone, not a shared tree.
 
 | Familiar | Runtime meaning |
 |----------|-----------------|
-| **Branch** | Isolated session (`draft` prefix). Create with `POST /api/sessions` `{ slug, branch_name }` |
-| **Working tree** | Session workdir under `VEIL_WS_ROOT` |
-| **Autosave / push of dirty files** | Every successful write → S3 (fail-closed). Chip: Synced / Saved |
-| **Commit** | Named checkpoint: `POST /api/sessions/{id}/commits` `{ message }` → S3 snapshot + DDB `COMMIT#` |
-| **Commit log** | `GET /api/sessions/{id}/commits` |
-| **Merge to main** | `POST /api/sessions/{id}/merge` → sync workdir to product base branch prefix |
-| **IDE Changes** | **Uncommitted** (working tree) + **History** (named commits) — not structural IR "vs baseline" |
+| **Origin** | `s3://$BUCKET/git/{repo_id}/` (bundle per ref tip) |
+| **Branch** | `git checkout -b` in a **new** session workdir |
+| **Working tree** | `{VEIL_WS_ROOT}/{user}/{session}/{slug}/` (has `.git`) |
+| **Uncommitted edits** | Session-local. Other sessions do not see them. |
+| **Commit** | `POST /api/sessions/{id}/commits` / MCP `session_commit` → `git commit` + push bundle |
+| **Commit log** | `git log` (DDB `COMMIT#` is an index, not the object store) |
+| **PR** | Feature branch on origin + DDB `PR#` metadata |
+| **Merge to main** | `git merge` + push `main` (PR Wizard). Not `aws s3 sync`. |
+| **IDE Changes** | `git status` (uncommitted) + `git log` (history) |
 
 Mainline sticky session (`POST /api/sessions` with only `slug`) still exists for quick open on **main**.
 
@@ -25,7 +29,8 @@ Mainline sticky session (`POST /api/sessions` with only `slug`) still exists for
 | Browser / tab | view + typing buffer | yes |
 | Session workdir | `{VEIL_WS_ROOT}/{user}/{session_id}/{slug}/` | yes (rebuildable) |
 | **DDB `SESSION#…/META`** | session metadata, revision, etags, head_commit | **no** |
-| **S3 objects** | file bytes (branch / drafts / commit snapshots) | **no** |
+| **S3 git origin** | bundles + HEAD/TIP (`git/{repo_id}/`) | **no** |
+| **S3 checkout cache** | `repos/{repo_id}/{branch}/` for compile | rebuildable |
 | **DDB `SESSION#…/TURN#…`** | agent transcript | **no** |
 | **DDB `SESSION#…/COMMIT#…`** | named commits | **no** |
 
@@ -97,11 +102,14 @@ The process remembers the **active work line** per project so subsequent MCP cal
 
 ## Draft / branch isolation
 
-`POST /api/sessions` with `"draft": true` **or** `"branch_name": "fix-foo"` writes under  
-`repos/{repo_id}/drafts/{session_id}/` instead of the shared product branch tree.
+`POST /api/sessions` with `"draft": true` **or** `"branch_name": "fix-foo"` creates a
+**new local checkout** and `git checkout -b`. Uncommitted files never land on
+another session's tree. `session_commit` pushes that branch's bundle to origin.
 
-Commits snapshot to `repos/{repo_id}/commits/{session_id}/{short_id}/`.  
-Merge syncs the workdir to `repos/{repo_id}/{base_branch}/` (default `main`).
+Merge is `git merge` into `main` and a push — not an S3 tree copy.
+
+Legacy (when `VEIL_GIT_ORIGIN=0`): draft prefix `repos/{id}/drafts/{session}/`
+and snapshot commits under `repos/{id}/commits/`. Do not use that path.
 
 ## Client
 
@@ -111,7 +119,7 @@ Merge syncs the workdir to `repos/{repo_id}/{base_branch}/` (default `main`).
 - IDE top bar **SessionStatus** chip: Synced / Saving / Saved / Conflict
 - Agent dock shows session slug · revision when status API reports open handles
 - Sticky default session per user+slug (server `.sticky/` + DDB list) avoids creating a new session every page load
-- **Identity:** product slug and repo UUID are the same project. Sticky is dual-written (`agent-registry.session` + `{uuid}.session` → one session_id) so `/projects/{uuid}/ide` and agent scope on the slug share one workdir. `write_source` bumps `revision` / `dirty` (Uncommitted) and rematerializes peer mainline workdirs for that repo.
+- **Identity:** product slug and repo UUID are the same project. Sticky is dual-written (`agent-core.session` + `{uuid}.session` → one session_id) so `/projects/{uuid}/ide` and agent scope on the slug share one workdir. `write_source` bumps `revision` / `dirty` (Uncommitted) and rematerializes peer mainline workdirs for that repo.
 - Response headers on durable writes: `X-Veil-Session-Id`, `X-Veil-Revision`, `X-Veil-Etag`
 - Idle in-memory handle reaper every 5m (`VEIL_SESSION_TTL_SECS`, default 86400)
 

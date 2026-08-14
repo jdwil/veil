@@ -142,6 +142,8 @@ const TOOL_NAV: Record<string, NavigationAction> = {
 	// create_project: prefer structured navigation from tool output (project/ide path)
 	create_project: { action: 'goto', path: '/projects' },
 	create_repo: { action: 'goto', path: '/projects' },
+	rename_project: { action: 'goto', path: '/projects' },
+	update_project: { action: 'goto', path: '/projects' },
 	delete_project: { action: 'goto', path: '/projects' },
 	open_deploy: { action: 'goto', path: '/deploy' },
 	list_deploy_environments: { action: 'goto', path: '/deploy' },
@@ -935,9 +937,12 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'- create_project when the product already exists (tool returns existing:true — reuse it)',
 		'',
 		'REQUIRED platform MCP tools:',
-		'- create_project({name, description?, via?}) — CREATE product once. Idempotent if slug exists.',
+		'- create_project({name, description?, via?}) — CREATE product once. Idempotent if slug exists. Then write layers/*.layer + MISSION.md + main.veil immediately.',
+		'- File root keyword is pkg only. Never write sol (removed).',
+		'- Product annotations (@on, @command, @request, …) are authored in layers/*.layer via `ann`. Missing from ddd.layer is NOT a VEIL platform gap — do not stop to wiki-search it.',
+		'- rename_project({name, project?, new_slug?}) / update_project — RENAME display name. NEVER curl/PATCH /api/repos or Bitbucket.',
 		'- After via=ux create: wait_intent_ack({intent_id}) before write_source (intent_id from tool result).',
-		'- REMOTE (VEIL_SOURCE_MODE=s3): create_project → (wait_intent_ack if ux) → write_source/create_file.',
+		'- REMOTE (VEIL_SOURCE_MODE=s3): origin is git on S3. create_project inits the repo; a session is a local checkout. create_project → (wait_intent_ack if ux) → write_source/create_file → session_commit (git commit + push).',
 		'- list_projects / get_project / open_project / open_ide / navigate_to / get_current_context / wait_intent_ack',
 		'- list_prs / create_pr / get_pr / submit_pr / approve_pr / merge_pr / …',
 		'- deploy / registry / config tools as needed',
@@ -951,10 +956,10 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'1. Ensure scope: open_ide({project: slug}) OR use Focus/live_project — tool result includes file_count.',
 		'2. list_files → if any .veil files, the project is NOT empty.',
 		'3. read_source (or select_file + read_source) before redesigning domain models.',
-		'4. write_source with full intended content → veil_check → fix any NEW diags same turn → session_commit when multi-step.',
+		'4. write_source with full intended content → veil_check → fix any NEW diags same turn → session_commit (real git commit + push branch).',
 		'5. When task done: create_pr + submit_pr (PR for human review). NEVER merge_branch/merge_pr unless operator says "merge".',
 		'6. Short requests ("use ddd.layer", "refactor to X") mean edit the EXISTING package, not invent a new one.',
-		'7. Research detours (wiki, registry) are fine mid-turn; always return to IDE for code writes.',
+		'7. After create_project succeeds, write files. wiki_search is for platform contracts (bang/harness), not a tour before building.',
 		'',
 		'Deictic references ("this component", "this method", "this change", "here", "the wizard"):',
 		'- Use Session Focus + Visible panes below. Do not ask the user to restate what is selected.',
@@ -1039,7 +1044,7 @@ export async function ensureCodingSession(slug: string | null): Promise<string |
 				const s = data?.session as Record<string, unknown> | undefined;
 				// Same product if slug matches **or** route used repo UUID (id).
 				// Without this, /projects/{uuid}/ide creates a second sticky session
-				// while agent-registry sticky holds agent writes — IDE looks unchanged.
+				// while an old-slug sticky holds agent writes — IDE looks unchanged.
 				const sessionSlug = typeof s?.slug === 'string' ? s.slug : '';
 				const sessionRepo = typeof s?.repo_id === 'string' ? s.repo_id : '';
 				if (

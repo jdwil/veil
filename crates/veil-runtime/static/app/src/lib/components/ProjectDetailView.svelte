@@ -102,7 +102,7 @@
           if (loaded === false) {
             error = "";
             loading = true;
-            let repo = await (async () => { const __u = new URL(`KEEPid}`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {  } as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
+            let repo = await (async () => { const __u = new URL(`/api/repos/${encodeURIComponent(id)}`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {  } as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
             name = field_str(repo, "name");
             slug = field_str(repo, "slug");
             description = field_str(repo, "description");
@@ -126,7 +126,7 @@
   void (async () => {
         if (delete_busy === true) {
           if (id !== "") {
-            await (async () => { const __r = await fetch(`KEEPid}`, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
+            await (async () => { const __r = await fetch(`/api/repos/${encodeURIComponent(id)}`, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
             delete_busy = false;
             delete_open = false;
             (window.location.href = "/projects");

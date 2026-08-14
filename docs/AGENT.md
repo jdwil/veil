@@ -186,7 +186,7 @@ export VEIL_ACP_ARGS="acp --trust-all-tools"
 export VEIL_ACP_CWD=$PWD          # workspace root for Kiro
 export VEIL_ACP_AGENT=veil        # ~/.kiro/agents/veil.json (mind-palace + jira + veil-ide-tools)
 export VEIL_ACP_MODEL=…          # if your Kiro plan exposes model ids
-export VEIL_ACP_TIMEOUT_SECS=300
+export VEIL_ACP_TIMEOUT_SECS=300   # idle silence between ACP lines, not a total-turn cap
 ```
 
 Kiro edits files on disk; after each ACP turn the server **reloads from disk**

@@ -15,7 +15,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -142,7 +142,10 @@ impl AcpProcess {
         let mut line = String::new();
         loop {
             if Instant::now() > deadline {
-                return Err("ACP read timed out".into());
+                return Err(format!(
+                    "ACP idle timed out (no agent traffic for {}s)",
+                    timeout_secs()
+                ));
             }
             // Check child still alive
             match self.child.try_wait() {
@@ -194,11 +197,13 @@ impl AcpProcess {
             "method": method,
             "params": params,
         }))?;
-        let deadline = Instant::now() + timeout;
+        // Idle budget, not a total-turn wall clock. Reset on every ACP line.
+        let mut deadline = Instant::now() + timeout;
         let mut text_chunks: Vec<String> = Vec::new();
         let mut tool_hints: Vec<String> = Vec::new();
         loop {
             let line = self.read_line_timeout(deadline)?;
+            deadline = Instant::now() + timeout;
             let msg: Value = serde_json::from_str(&line)
                 .map_err(|e| format!("ACP JSON parse: {e}: {line}"))?;
 
@@ -536,6 +541,8 @@ fn veil_ide_tool_names() -> Vec<&'static str> {
         "create_project",
         "create_repo",
         "get_project",
+        "rename_project",
+        "update_project",
         "delete_project",
         "open_project",
         "open_ide",
@@ -688,26 +695,48 @@ pub fn get_acp_project() -> Option<String> {
     ACP_PROJECT.lock().ok().and_then(|g| g.clone())
 }
 
+/// Live `session/prompt` holds [`ACP`]. MCP `create_project` → `prepare_project`
+/// must **not** take that mutex or the turn deadlocks (Kiro waits for MCP,
+/// host waits for Kiro stdout).
+static ACP_TURN_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Drop the child after the current turn returns (project changed mid-turn).
+static ACP_DEFER_RESET: AtomicBool = AtomicBool::new(false);
+
 /// Ensure ACP MCP routing matches `name` (project-scoped IDE tools).
 ///
-/// Rewrites workspace `mcp.json` only (does not touch `~/.kiro/agents/*`).
-/// Drops a live ACP process when the project changes so the next prompt
-/// reconnects with `/api/p/{proj}/mcp`.
+/// Always updates [`ACP_PROJECT`] so hub `/api/mcp` scopes `write_source`
+/// via `get_acp_project()`. Rewrites workspace `mcp.json` for the *next* spawn.
+///
+/// Does **not** kill a live ACP child mid-turn (that deadlocks the mutex
+/// held by [`prompt_acp_streaming_media`]). Respawn is deferred until the
+/// turn ends. The `veil` Kiro agent uses hub `/api/mcp` anyway — routing
+/// is `ACP_PROJECT`, not a process restart.
 pub fn ensure_acp_project_scope(name: Option<String>) {
     let prev_spawn = ACP_SPAWN_PROJECT.lock().ok().and_then(|g| g.clone());
     set_acp_project(name.clone());
     let cwd = resolve_acp_cwd();
     write_workspace_mcp_json(&cwd);
-    if prev_spawn != name {
-        reset_acp();
-        if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
-            *g = name;
-        }
-        tracing::info!(
-            project = ?ACP_PROJECT.lock().ok().and_then(|g| g.clone()),
-            "ACP project scope changed — workspace mcp rewritten, will respawn"
-        );
+    if prev_spawn == name {
+        return;
     }
+    if ACP_TURN_ACTIVE.load(Ordering::SeqCst) {
+        // Hub `/api/mcp` routes via ACP_PROJECT. Do not kill Kiro after the
+        // turn — that wiped session memory on every create/bind.
+        tracing::debug!(
+            project = ?name,
+            prev_spawn = ?prev_spawn,
+            "ACP project bound mid-turn via ACP_PROJECT (no respawn)"
+        );
+        return;
+    }
+    reset_acp();
+    if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
+        *g = name;
+    }
+    tracing::info!(
+        project = ?ACP_PROJECT.lock().ok().and_then(|g| g.clone()),
+        "ACP project scope changed — workspace mcp rewritten, will respawn"
+    );
 }
 
 /// Process-wide ACP session (one agent child).
@@ -740,6 +769,32 @@ pub fn prompt_acp_streaming_media(
     media: &AcpMedia,
     mut on_chunk: impl FnMut(&str),
 ) -> Result<AcpTurnResult, String> {
+    struct TurnGuard;
+    impl Drop for TurnGuard {
+        fn drop(&mut self) {
+            ACP_TURN_ACTIVE.store(false, Ordering::SeqCst);
+        }
+    }
+
+    ACP_TURN_ACTIVE.store(true, Ordering::SeqCst);
+    let _turn = TurnGuard;
+    let result = prompt_acp_streaming_media_locked(text, media, &mut on_chunk);
+    drop(_turn);
+    if ACP_DEFER_RESET.swap(false, Ordering::SeqCst) {
+        reset_acp();
+        if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
+            *g = None;
+        }
+        tracing::info!("ACP child dropped after mid-turn project change — next prompt respawns");
+    }
+    result
+}
+
+fn prompt_acp_streaming_media_locked(
+    text: &str,
+    media: &AcpMedia,
+    on_chunk: &mut dyn FnMut(&str),
+) -> Result<AcpTurnResult, String> {
     let timeout = Duration::from_secs(timeout_secs());
     let mut guard = ACP
         .lock()
@@ -753,8 +808,7 @@ pub fn prompt_acp_streaming_media(
         *guard = Some(AcpProcess::spawn()?);
     }
     let proc = guard.as_mut().unwrap();
-    let mut cb = |s: &str| on_chunk(s);
-    match proc.prompt_streaming(text, media, timeout, Some(&mut cb)) {
+    match proc.prompt_streaming(text, media, timeout, Some(on_chunk)) {
         Ok(r) => Ok(r),
         Err(e) => {
             // Drop broken process so next call respawns
@@ -815,11 +869,20 @@ pub fn acp_info() -> serde_json::Value {
     })
 }
 
-/// Force-drop the agent process (tests / config change).
+/// Force-drop the agent process (tests / config change / next-turn respawn).
+///
+/// Mid-turn this only sets [`ACP_DEFER_RESET`] — taking [`ACP`] while
+/// [`prompt_acp_streaming_media`] holds it deadlocks create_project MCP.
 pub fn reset_acp() {
+    if ACP_TURN_ACTIVE.load(Ordering::SeqCst) {
+        ACP_DEFER_RESET.store(true, Ordering::SeqCst);
+        tracing::info!("ACP reset deferred until turn ends (live prompt holds the process lock)");
+        return;
+    }
     if let Ok(mut g) = ACP.lock() {
         *g = None;
     }
+    ACP_DEFER_RESET.store(false, Ordering::SeqCst);
 }
 
 /// Abort the current ACP turn by killing the child process.
@@ -837,4 +900,81 @@ pub fn cancel_acp() {
 #[allow(dead_code)]
 fn _arc_marker() -> Arc<()> {
     Arc::new(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+    use std::thread;
+    use std::time::Instant;
+
+    static TEST: StdMutex<()> = StdMutex::new(());
+
+    fn reset_turn_flags() {
+        ACP_TURN_ACTIVE.store(false, Ordering::SeqCst);
+        ACP_DEFER_RESET.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn reset_acp_during_turn_does_not_take_process_lock() {
+        let _t = TEST.lock().unwrap();
+        reset_turn_flags();
+        ACP_TURN_ACTIVE.store(true, Ordering::SeqCst);
+
+        // Hold ACP as the live prompt does. reset_acp must return immediately.
+        let hold = thread::spawn(|| {
+            let _g = ACP.lock().unwrap();
+            thread::sleep(Duration::from_millis(400));
+        });
+        // Give the holder time to acquire
+        thread::sleep(Duration::from_millis(30));
+        let start = Instant::now();
+        reset_acp();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "reset_acp blocked {elapsed:?} — would deadlock create_project MCP"
+        );
+        assert!(ACP_DEFER_RESET.load(Ordering::SeqCst));
+        hold.join().unwrap();
+        reset_turn_flags();
+    }
+
+    #[test]
+    fn ensure_scope_mid_turn_sets_project_without_reset() {
+        let _t = TEST.lock().unwrap();
+        reset_turn_flags();
+        set_acp_project(Some("agent-core".into()));
+        if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
+            *g = Some("agent-core".into());
+        }
+        ACP_TURN_ACTIVE.store(true, Ordering::SeqCst);
+
+        let hold = thread::spawn(|| {
+            let _g = ACP.lock().unwrap();
+            thread::sleep(Duration::from_millis(250));
+        });
+        thread::sleep(Duration::from_millis(20));
+        let start = Instant::now();
+        ensure_acp_project_scope(Some("dlx-bus".into()));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "ensure_acp_project_scope blocked {elapsed:?}"
+        );
+        assert_eq!(get_acp_project().as_deref(), Some("dlx-bus"));
+        assert!(
+            !ACP_DEFER_RESET.load(Ordering::SeqCst),
+            "mid-turn bind must not schedule a Kiro kill"
+        );
+        let spawn = ACP_SPAWN_PROJECT.lock().ok().and_then(|g| g.clone());
+        assert_eq!(spawn.as_deref(), Some("agent-core"));
+        hold.join().unwrap();
+        reset_turn_flags();
+        set_acp_project(None);
+        if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
+            *g = None;
+        }
+    }
 }

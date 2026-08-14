@@ -60,6 +60,7 @@ async fn http_json(
         "GET" => client.get(&url),
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
+        "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
         other => return Err(format!("unsupported method {other}")),
     };
@@ -107,6 +108,8 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "create_project"
             | "create_repo"
             | "get_project"
+            | "rename_project"
+            | "update_project"
             | "delete_project"
             | "open_project"
             | "open_ide"
@@ -143,6 +146,7 @@ fn canonicalize_tool(name: &str) -> &str {
         "approve_pr" => "approve_pr",
         "merge_pr" => "merge_pr",
         "get_pr_diff" => "get_pr_diff",
+        "rename_project" | "update_project" => "update_project",
         other => other,
     }
 }
@@ -368,6 +372,90 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "summary": format!("Project `{id}`"),
                 "project": data,
                 "navigation": { "action": "goto", "path": format!("/projects/{id}"), "project": id }
+            })
+            .to_string())
+        }
+
+        "update_project" => {
+            let id = arg_str(arguments, &["project", "slug", "id"])
+                .or_else(|| crate::coding_gates::current_project_slug())
+                .or_else(|| {
+                    crate::provider::hub::CURRENT_PROJECT
+                        .try_with(|n| n.clone())
+                        .ok()
+                })
+                .ok_or_else(|| {
+                    "update_project / rename_project requires project/slug/id (or a bound project)"
+                        .to_string()
+                })?;
+            let name = arg_str(arguments, &["name", "new_name", "title", "display_name"]);
+            let new_slug = arg_str(arguments, &["new_slug"]);
+            let description = arg_str(arguments, &["description", "desc"]);
+            let clear_description = arg_bool(arguments, "clear_description", false);
+            if name.is_none() && new_slug.is_none() && description.is_none() && !clear_description
+            {
+                return Err(
+                    "update_project requires name, new_slug, and/or description".into(),
+                );
+            }
+            let mut body = json!({});
+            if let Some(ref n) = name {
+                body["name"] = json!(n);
+            }
+            if let Some(ref s) = new_slug {
+                body["slug"] = json!(s);
+            }
+            if let Some(ref d) = description {
+                body["description"] = json!(d);
+            }
+            if clear_description {
+                body["clear_description"] = json!(true);
+            }
+            let (status, data) = http_json(
+                "PATCH",
+                &format!("/api/repos/{}", urlencoding_path(&id)),
+                Some(body),
+            )
+            .await?;
+            let slug = data
+                .get("slug")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id)
+                .to_string();
+            let display = data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&slug)
+                .to_string();
+            if ok_status(status) {
+                crate::focus::push_intent_log(json!({
+                    "type": "UpdateProject",
+                    "actor": "agent",
+                    "summary": format!("{id} → {display}"),
+                    "domain": "server",
+                    "ts": chrono_ms(),
+                }));
+            }
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": if ok_status(status) {
+                    format!("Renamed project `{id}` to `{display}` (slug `{slug}`)")
+                } else {
+                    format!("update_project failed for `{id}` (HTTP {status})")
+                },
+                "project": data,
+                "name": display,
+                "slug": slug,
+                "navigation": {
+                    "action": "goto",
+                    "path": format!("/projects/{slug}"),
+                    "project": slug
+                },
+                "execution": {
+                    "domain": "server",
+                    "present": if ok_status(status) { "illustrate" } else { "none" }
+                }
             })
             .to_string())
         }
@@ -1922,7 +2010,7 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
                             IdeSourceMode::Disk => "disk",
                         },
                         "session": bind,
-                        "hint": "Continue with open_ide / write_source / read_source — do NOT create_project again.",
+                        "hint": "Continue with write_source / create_file / update_mission — do NOT create_project again. Product annotations belong in layers/*.layer (`ann`), not a platform ticket.",
                     }));
                 }
             }
@@ -2075,6 +2163,11 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
         "scaffold": scaffold,
         "scaffold_error": scaffold_err,
         "session": rebound_session,
+        "hint": if ok_status(status) {
+            "Project is bound. Write layers/*.layer (declare product `ann`s there), MISSION.md, and main.veil via write_source/create_file NOW. Do not wiki-search for whether @on/@command exist in ddd — author them in the product layer. Do not create_project again."
+        } else {
+            "Report the error; do not invent a local disk tree."
+        },
     }))
 }
 
@@ -2105,7 +2198,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "create_project",
-            "description": "Create a new product project/repo. Returns intent.present (form fill + pulse). via=ux: UX commits after Present (browser); via=server: domain first (default for multi-step/ACP). Do NOT re-create or curl. ALWAYS use when the user asks to create a project.",
+            "description": "Create a new product project/repo. Returns intent.present (form fill + pulse). via=ux: UX commits after Present (browser); via=server: domain first (default for multi-step/ACP). Do NOT re-create or curl. ALWAYS use when the user asks to create a project. On success the project is bound — immediately write layers/*.layer (declare product annotations with `ann`), MISSION.md, and main.veil. Do not wiki-search for whether those annotations exist in ddd.layer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2127,6 +2220,39 @@ pub fn tool_definitions() -> Vec<Value> {
                     "project": { "type": "string" },
                     "slug": { "type": "string" },
                     "id": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "rename_project",
+            "description": "Rename a product project (display name and optionally slug). ALWAYS use this when the user asks to rename/retitle a project — NEVER curl/PATCH /api/repos or use Bitbucket. Default: update display name only; pass new_slug to also change the URL slug. S3 keys stay on repo UUID. Bound project is used when project is omitted.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Current id or slug (default: bound project)" },
+                    "slug": { "type": "string", "description": "Current slug (alias of project)" },
+                    "id": { "type": "string" },
+                    "name": { "type": "string", "description": "New display name (e.g. Agent Core)" },
+                    "new_slug": { "type": "string", "description": "Optional new URL slug; omit to keep the current slug" },
+                    "description": { "type": "string" }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
+            "name": "update_project",
+            "description": "Update project metadata (name, optional new_slug, description). Alias of rename_project. Do NOT PATCH /api/repos yourself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" },
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "new_slug": { "type": "string" },
+                    "description": { "type": "string" },
+                    "clear_description": { "type": "boolean" }
                 },
                 "required": []
             }
@@ -2577,6 +2703,74 @@ impl Tool for CreateProjectTool {
 }
 
 #[derive(Deserialize, Serialize, Default)]
+pub struct RenameProjectArgs {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub new_slug: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct RenameProjectTool;
+
+impl Tool for RenameProjectTool {
+    const NAME: &'static str = "rename_project";
+    type Error = ToolErr;
+    type Args = RenameProjectArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Rename a product project display name (and optional slug). Use when the user asks to rename a project. Never curl /api/repos.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" },
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "new_slug": { "type": "string" },
+                    "description": { "type": "string" }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let mut v = json!({});
+        if let Some(p) = args.project {
+            v["project"] = json!(p);
+        }
+        if let Some(s) = args.slug {
+            v["slug"] = json!(s);
+        }
+        if let Some(i) = args.id {
+            v["id"] = json!(i);
+        }
+        if let Some(n) = args.name {
+            v["name"] = json!(n);
+        }
+        if let Some(s) = args.new_slug {
+            v["new_slug"] = json!(s);
+        }
+        if let Some(d) = args.description {
+            v["description"] = json!(d);
+        }
+        dispatch("rename_project", &v).await.map_err(ToolErr)
+    }
+}
+
+#[derive(Deserialize, Serialize, Default)]
 pub struct ProjectArgs {
     #[serde(default)]
     pub project: Option<String>,
@@ -2932,6 +3126,7 @@ pub fn rig_platform_tool_names() -> &'static [&'static str] {
     &[
         "list_projects",
         "create_project",
+        "rename_project",
         "open_project",
         "open_ide",
         "navigate_to",
@@ -2953,6 +3148,9 @@ mod tests {
     fn create_project_is_platform_tool() {
         assert!(is_platform_tool("create_project"));
         assert!(is_platform_tool("create_repo"));
+        assert!(is_platform_tool("rename_project"));
+        assert!(is_platform_tool("update_project"));
+        assert_eq!(canonicalize_tool("rename_project"), "update_project");
         assert!(is_platform_tool("list_projects"));
         assert!(is_platform_tool("approve_pr"));
         assert!(is_platform_tool("provision_project"));
@@ -2996,6 +3194,17 @@ mod tests {
             .filter_map(|d| d.get("name").and_then(|n| n.as_str()))
             .collect();
         assert!(names.contains(&"create_project"));
+        let create_desc = defs
+            .iter()
+            .find(|d| d.get("name").and_then(|n| n.as_str()) == Some("create_project"))
+            .and_then(|d| d.get("description").and_then(|s| s.as_str()))
+            .unwrap_or("");
+        assert!(
+            create_desc.contains("layers/*.layer") && create_desc.contains("ann"),
+            "{create_desc}"
+        );
+        assert!(names.contains(&"rename_project"));
+        assert!(names.contains(&"update_project"));
         assert!(names.contains(&"list_projects"));
         assert!(names.contains(&"list_prs"));
         assert!(names.contains(&"approve_pr"));

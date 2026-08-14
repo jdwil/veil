@@ -895,6 +895,29 @@ function normalizeIntent(
 
 function synthesizeIntent(toolName: string, root: Record<string, unknown>): Intent | null {
 	// Only synthesize for platform tools that benefit from present
+	if (toolName === 'rename_project' || toolName === 'update_project') {
+		const name = String(root.name || '');
+		const slug = String(
+			root.slug ||
+				(root.project as Record<string, unknown> | undefined)?.slug ||
+				''
+		);
+		const nav = root.navigation as Intent['navigation'] | undefined;
+		const path = nav?.path || (slug ? `/projects/${encodeURIComponent(slug)}` : '/projects');
+		return {
+			type: 'UpdateProject',
+			id: `intent_rename_project_${Date.now()}`,
+			actor: 'agent',
+			payload: { name, slug },
+			domain: { mode: 'server', done: root.ok !== false },
+			present: {
+				announce: name ? `Renamed project to ${name}` : 'Renamed project',
+				steps: [{ kind: 'goto', path, ms: 280, project: slug || undefined }]
+			},
+			navigation: nav || { action: 'goto', path, project: slug || undefined }
+		};
+	}
+
 	if (toolName === 'create_project' || toolName === 'create_repo') {
 		const name = String(
 			root.slug ||

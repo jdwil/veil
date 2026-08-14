@@ -181,7 +181,7 @@ pub async fn run_turn_stream<P: SourceProvider>(
                         if let Some(s) = slug {
                             created_slug = Some(s.clone());
                             prefix_notes.push(format!(
-                                "HOST already ran create_project for `{s}` (DDB+S3). UX Present will animate create form then open IDE. Do NOT re-create, curl /api/repos, or mkdir disk hub. Continue with write_source/create_file only."
+                                "HOST already ran create_project for `{s}` (DDB+S3). UX Present will animate create form then open IDE. Do NOT re-create, curl /api/repos, or mkdir disk hub. Continue with write_source/create_file only. Product annotations (`@on`, `@command`, …) go in layers/*.layer via `ann` — not a platform gap."
                             ));
                         }
                         // Let the browser finish Present before ACP floods write_source
@@ -224,6 +224,28 @@ pub async fn run_turn_stream<P: SourceProvider>(
                     } else {
                         prefix_notes.push(format!(
                             "HOST create_project failed: {detail}. Report the error; do not invent local files."
+                        ));
+                    }
+                }
+            }
+            if step.tool == "rename_project" || step.tool == "update_project" {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&detail) {
+                    if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
+                        let name = v
+                            .get("name")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?");
+                        let slug = v
+                            .get("slug")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?");
+                        prefix_notes.push(format!(
+                            "HOST already ran rename_project → `{name}` (slug `{slug}`). Do NOT curl/PATCH /api/repos or Bitbucket. Confirm to the user; do not retry."
+                        ));
+                        let _ = crate::agent_scope::prepare_project(slug, None);
+                    } else {
+                        prefix_notes.push(format!(
+                            "HOST rename_project failed: {detail}. Report the error; do not PATCH /api/repos."
                         ));
                     }
                 }
@@ -562,6 +584,38 @@ async fn stream_acp_turn<P: SourceProvider>(
         source_changed,
     )
     .await;
+    // Persist even on ACP idle/timeout so the operator can read the partial turn.
+    let persist_sid = crate::session::current_session_id().or_else(|| {
+        slug.as_ref().and_then(|s| {
+            crate::session::SessionManager::global()
+                .resolve_for_project(s)
+                .ok()
+                .map(|h| h.session_id())
+        })
+    });
+    if let Some(sid) = persist_sid {
+        let _ = crate::session::append_turn(
+            &sid,
+            &crate::session::SessionTurn {
+                turn_id: format!("a_{}", chrono_id()),
+                role: "assistant".into(),
+                content: content.clone(),
+                tool_calls: tool_calls
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "name": t.name,
+                            "detail": t.detail,
+                        })
+                    })
+                    .collect(),
+                project: slug.clone(),
+                active_file: None,
+                ts: crate::session::chrono_now(),
+                backend: Some(resp.backend.clone()),
+            },
+        );
+    }
     emit(
         tx,
         "done",

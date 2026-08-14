@@ -15,7 +15,7 @@ structured the way they are.
 | Extension | Purpose | Contains |
 |-----------|---------|----------|
 | `.layer` | Teaches vocabulary | Construct/statement definitions. Never contains domain logic. |
-| `.veil` | Application code | Domain models, ports, adapters, services. `pkg <Name>` at the top. (`sol` is deprecated alias.) |
+| `.veil` | Application code | Domain models, ports, adapters, services. `pkg <Name>` at the top. Never `sol`. |
 | `.stub` | External crate API | Declares shapes of third-party Rust crate types for type inference. |
 
 **Key rule:** If it defines concrete entities, repos, or business logic, it's a `.veil` file.

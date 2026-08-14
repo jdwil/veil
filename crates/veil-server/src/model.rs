@@ -255,7 +255,7 @@ pub async fn prompt_with_tools(
     use crate::platform_tools::{
         ApproveChangeTool, CreateChangeTool, CreateProjectTool, DeployStatusTool, GetConfigTool,
         ListChangesTool, ListProjectsTool, MergeChangeTool, NavigateToTool, OpenIdeTool,
-        OpenProjectTool, ProvisionProjectTool,
+        OpenProjectTool, ProvisionProjectTool, RenameProjectTool,
     };
     use crate::rig_tools::{
         CheckTool, CreateFileTool, DevLogsTool, DevRestartTool, DevStatusTool, HttpRequestTool,
@@ -310,6 +310,7 @@ pub async fn prompt_with_tools(
                 // Platform UX (create_project, SDLC, deploy, nav)
                 .tool(ListProjectsTool)
                 .tool(CreateProjectTool)
+                .tool(RenameProjectTool)
                 .tool(OpenProjectTool)
                 .tool(OpenIdeTool)
                 .tool(NavigateToTool)
@@ -360,6 +361,7 @@ pub async fn prompt_with_tools(
                 .tool(StubInstallTool { ws: ws.clone() })
                 .tool(ListProjectsTool)
                 .tool(CreateProjectTool)
+                .tool(RenameProjectTool)
                 .tool(OpenProjectTool)
                 .tool(OpenIdeTool)
                 .tool(NavigateToTool)

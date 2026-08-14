@@ -1588,7 +1588,7 @@ sol App
         let sol = parse(&tokens).expect("should parse");
         assert_eq!(sol.name, "MyApp");
         assert!(!sol.guidance.is_empty(), "expected guidance diagnostic for 'sol' keyword");
-        assert_eq!(sol.guidance[0].code, "prefer_terse");
+        assert_eq!(sol.guidance[0].code, "sol_removed");
         assert!(sol.guidance[0].message.contains("pkg"), "guidance should suggest pkg");
     }
 }

@@ -1,4 +1,4 @@
-//! Durable coding sessions: DDB META + session-keyed workdirs + S3 write-through.
+//! Durable coding sessions: local git checkout + S3 origin + DDB META.
 //!
 //! See `docs/DURABLE_SESSIONS.md`.
 //!
@@ -106,7 +106,7 @@ impl SessionManager {
     }
 
     /// Create a session. When `branch_name` is set (or draft_mode), this is a
-    /// git-shaped **feature branch**: isolated S3 draft prefix + named work line.
+    /// **feature branch**: new local checkout of origin, `git checkout -b`.
     pub fn create_branch(
         &self,
         slug: &str,
@@ -134,14 +134,28 @@ impl SessionManager {
         let slug = ident.slug.as_str();
         let repo_id = ident.repo_id.clone();
         let work_dir = session_work_dir(&user_id, &session_id, slug);
-        let work_prefix = if draft_mode {
+        let work_prefix = if crate::git_origin::origin_enabled() {
+            format!("git/{repo_id}#refs/heads/{branch_name}")
+        } else if draft_mode {
             format!("repos/{repo_id}/drafts/{session_id}/")
         } else {
             format!("repos/{repo_id}/{base}/")
         };
 
-        // Materialize from **base** product tree (main), then work in isolation
-        materialize_repo_to(&repo_id, &work_dir, MaterializePolicy::SyncIncremental)?;
+        // Local checkout of origin (real git) or legacy S3 tree.
+        materialize_repo_to(
+            &repo_id,
+            &work_dir,
+            MaterializePolicy::SyncIncremental,
+            Some(&base),
+        )?;
+        if crate::git_origin::origin_enabled()
+            && draft_mode
+            && branch_name != base
+        {
+            crate::git_origin::GitOrigin::new(&repo_id)
+                .create_branch(&work_dir, &branch_name)?;
+        }
 
         let now = chrono_now();
         let meta = SessionMeta {
@@ -328,7 +342,14 @@ impl SessionManager {
                 }
             });
         }
+        let inherit_pr = list_sessions_for_user(&user).ok().and_then(|list| {
+            list.into_iter()
+                .find_map(|m| m.active_pr_id.filter(|s| !s.is_empty()))
+        });
         let h = self.create(&ident.slug, None)?;
+        if let Some(pr) = inherit_pr {
+            let _ = h.set_active_pr_id(Some(&pr));
+        }
         write_sticky_aliases(&user, &ident, &h.session_id());
         self.set_active_for_identity(&ident, &h.session_id());
         tracing::info!(
@@ -365,8 +386,16 @@ impl SessionManager {
         // Always incremental sync on cold attach so mainline picks up merges from
         // feature branches (S3 is source of truth). Skipping when "warm" left IDE
         // on scaffold after merge_branch promoted domain code to main.
-        if let Err(e) =
-            materialize_repo_to(&meta.repo_id, &work_dir, MaterializePolicy::SyncIncremental)
+        let attach_branch = meta
+            .branch_name
+            .clone()
+            .unwrap_or_else(|| meta.branch.clone());
+        if let Err(e) = materialize_repo_to(
+            &meta.repo_id,
+            &work_dir,
+            MaterializePolicy::SyncIncremental,
+            Some(&attach_branch),
+        )
         {
             // Only hard-fail if workdir is empty; otherwise serve last local copy.
             if !work_dir.join("veil.toml").is_file() && !has_veil_file(&work_dir) {
@@ -427,7 +456,12 @@ impl SessionManager {
                 if let Ok(meta) = get_session_meta(&sid) {
                     if meta.repo_id == repo_id && !meta.draft_mode {
                         let work = session_work_dir(&meta.user_id, &meta.session_id, &meta.slug);
-                        materialize_repo_to(&meta.repo_id, &work, MaterializePolicy::SyncDelete)?;
+                        materialize_repo_to(
+                            &meta.repo_id,
+                            &work,
+                            MaterializePolicy::SyncDelete,
+                            Some("main"),
+                        )?;
                         write_session_marker(&work, &meta)?;
                         write_sticky_aliases(&user, &ident, &sid);
                     }
@@ -440,7 +474,12 @@ impl SessionManager {
                 .filter(|m| m.repo_id == repo_id && !m.draft_mode)
             {
                 let work = session_work_dir(&meta.user_id, &meta.session_id, &meta.slug);
-                let _ = materialize_repo_to(&meta.repo_id, &work, MaterializePolicy::SyncDelete);
+                let _ = materialize_repo_to(
+                    &meta.repo_id,
+                    &work,
+                    MaterializePolicy::SyncDelete,
+                    Some("main"),
+                );
                 let _ = write_session_marker(&work, &meta);
             }
         }
@@ -642,7 +681,12 @@ impl SessionManager {
             self.drop_handle(&sid);
             let work_path = PathBuf::from(&work);
             if let Err(e) =
-                materialize_repo_to(repo_id, &work_path, MaterializePolicy::SyncIncremental)
+                materialize_repo_to(
+                    repo_id,
+                    &work_path,
+                    MaterializePolicy::SyncIncremental,
+                    Some("main"),
+                )
             {
                 tracing::warn!(
                     session_id = %sid,
@@ -689,11 +733,30 @@ fn materialize_repo_to(
     repo_id: &str,
     work: &Path,
     policy: MaterializePolicy,
+    branch: Option<&str>,
 ) -> Result<(), String> {
+    if crate::git_origin::origin_enabled() {
+        let origin = crate::git_origin::GitOrigin::new(repo_id);
+        let br = branch.unwrap_or("main");
+        let mode = match policy {
+            MaterializePolicy::SyncDelete => crate::git_origin::CheckoutMode::ResetHard,
+            MaterializePolicy::SyncIncremental => crate::git_origin::CheckoutMode::FetchKeepDirty,
+        };
+        match origin.checkout(work, br, mode) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                // First open of a pre-git product: import the legacy S3 tree.
+                if let Ok(Some(_)) = origin.import_legacy_tree(br) {
+                    origin.checkout(work, br, mode)?;
+                    return Ok(());
+                }
+                tracing::warn!(%repo_id, error = %e, "git origin checkout failed; falling back to tree sync");
+            }
+        }
+    }
     match policy {
         MaterializePolicy::SyncDelete => materialize_repo(repo_id, work),
         MaterializePolicy::SyncIncremental => {
-            // Same as materialize but without --delete (see s3_workspace helper)
             crate::provider::s3_workspace::materialize_repo_incremental(repo_id, work)
         }
     }
@@ -1040,16 +1103,28 @@ impl SessionHandle {
     /// Pull remote into workdir (incremental).
     pub fn pull_remote(&self) -> Result<(), String> {
         let m = self.meta.lock().unwrap().clone();
-        materialize_repo_to(&m.repo_id, &self.work_dir, MaterializePolicy::SyncIncremental)
+        let br = m.branch_name.clone().unwrap_or(m.branch.clone());
+        materialize_repo_to(
+            &m.repo_id,
+            &self.work_dir,
+            MaterializePolicy::SyncIncremental,
+            Some(&br),
+        )
     }
 
     /// Hard reset workdir from remote.
     pub fn reset_to_remote(&self) -> Result<(), String> {
         let m = self.meta.lock().unwrap().clone();
-        materialize_repo_to(&m.repo_id, &self.work_dir, MaterializePolicy::SyncDelete)
+        let br = m.branch_name.clone().unwrap_or(m.branch.clone());
+        materialize_repo_to(
+            &m.repo_id,
+            &self.work_dir,
+            MaterializePolicy::SyncDelete,
+            Some(&br),
+        )
     }
 
-    /// Git-shaped **commit**: snapshot working tree + named message.
+    /// **commit**: native `git commit` + push branch to S3 origin.
     /// Autosaves continue; this is an explicit checkpoint.
     /// Refuses when there is nothing uncommitted (coding gate).
     pub fn commit(&self, message: &str) -> Result<SessionCommit, String> {
@@ -1065,58 +1140,82 @@ impl SessionHandle {
             );
         }
         let m = self.meta.lock().unwrap().clone();
-        let commit_id = Uuid::new_v4().to_string();
-        let short = &commit_id[..8.min(commit_id.len())];
-        let snapshot_prefix = format!("repos/{}/commits/{}/{}/", m.repo_id, m.session_id, short);
-        let bucket = std::env::var("BUCKET")
-            .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
-            .unwrap_or_else(|_| "veil-runtime-dev".into());
-        let dest = format!("s3://{bucket}/{snapshot_prefix}");
+        let branch = m
+            .branch_name
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| m.branch.clone());
 
-        // Snapshot workdir → S3 (exclude session marker noise)
-        let mut cmd = std::process::Command::new("aws");
-        if let Ok(p) = std::env::var("AWS_PROFILE") {
-            cmd.env("AWS_PROFILE", p);
-        }
-        let out = cmd
-            .args([
-                "s3",
-                "sync",
-                &self.work_dir.to_string_lossy(),
-                &dest,
-                "--exclude",
-                ".veil-session.json",
-                "--exclude",
-                ".git/*",
-                "--exclude",
-                "target/*",
-                "--exclude",
-                "generated/*",
-            ])
-            .output()
-            .map_err(|e| format!("aws s3 sync commit: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "commit snapshot failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
+        let (commit_id, snapshot_prefix, files, parent) =
+            if crate::git_origin::origin_enabled() {
+                let origin = crate::git_origin::GitOrigin::new(&m.repo_id);
+                let info = origin.commit_and_push(&self.work_dir, message, &branch)?;
+                let prefix = format!(
+                    "git/{}/refs/heads/{}/{}.bundle",
+                    m.repo_id, info.branch, info.sha
+                );
+                (info.sha, prefix, info.files, info.parent)
+            } else {
+                let commit_id = Uuid::new_v4().to_string();
+                let short = &commit_id[..8.min(commit_id.len())];
+                let snapshot_prefix =
+                    format!("repos/{}/commits/{}/{}/", m.repo_id, m.session_id, short);
+                let bucket = std::env::var("BUCKET")
+                    .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
+                    .unwrap_or_else(|_| "veil-runtime-dev".into());
+                let dest = format!("s3://{bucket}/{snapshot_prefix}");
+                let mut cmd = std::process::Command::new("aws");
+                if let Ok(p) = std::env::var("AWS_PROFILE") {
+                    cmd.env("AWS_PROFILE", p);
+                }
+                let out = cmd
+                    .args([
+                        "s3",
+                        "sync",
+                        &self.work_dir.to_string_lossy(),
+                        &dest,
+                        "--exclude",
+                        ".veil-session.json",
+                        "--exclude",
+                        ".git/*",
+                        "--exclude",
+                        "target/*",
+                        "--exclude",
+                        "generated/*",
+                    ])
+                    .output()
+                    .map_err(|e| format!("aws s3 sync commit: {e}"))?;
+                if !out.status.success() {
+                    return Err(format!(
+                        "commit snapshot failed: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    ));
+                }
+                (
+                    commit_id,
+                    snapshot_prefix,
+                    list_work_files(&self.work_dir),
+                    m.head_commit.clone(),
+                )
+            };
 
-        let files = list_work_files(&self.work_dir);
         let now = chrono_now();
         let commit = SessionCommit {
             commit_id: commit_id.clone(),
             session_id: m.session_id.clone(),
             message: message.to_string(),
-            parent: m.head_commit.clone(),
+            parent,
             snapshot_prefix: snapshot_prefix.clone(),
             revision: m.revision,
             files,
-            branch_name: m.branch_name.clone(),
+            branch_name: Some(branch),
             created_at: now.clone(),
             author: Some(m.user_id.clone()),
         };
-        put_session_commit(&commit)?;
+        // Git is the commit graph. DDB COMMIT# is not a second history.
+        if !crate::git_origin::origin_enabled() {
+            put_session_commit(&commit)?;
+        }
 
         {
             let mut meta = self.meta.lock().unwrap();
@@ -1133,8 +1232,7 @@ impl SessionHandle {
         Ok(commit)
     }
 
-    /// Publish working tree to a named product branch prefix
-    /// (`repos/{repo_id}/{branch}/…`) so CR structural diff can see agent work.
+    /// Push this session's branch to origin (and refresh the checkout cache).
     /// Does **not** merge to main — use PR Wizard → Approve → Merge.
     pub fn publish_to_branch(&self, branch: &str) -> Result<serde_json::Value, String> {
         let branch = branch.trim();
@@ -1147,6 +1245,22 @@ impl SessionHandle {
             );
         }
         let m = self.meta.lock().unwrap().clone();
+        if crate::git_origin::origin_enabled() {
+            let origin = crate::git_origin::GitOrigin::new(&m.repo_id);
+            if self.work_dir.join(".git").is_dir() {
+                let _ = origin.create_branch(&self.work_dir, branch);
+            }
+            let sha = origin.push(&self.work_dir, branch)?;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "published_to": branch,
+                "dest_prefix": format!("git/{}/refs/heads/{}/", m.repo_id, branch),
+                "repo_id": m.repo_id,
+                "session_id": m.session_id,
+                "revision": m.revision,
+                "head_commit": sha,
+            }));
+        }
         let bucket = std::env::var("BUCKET")
             .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
             .unwrap_or_else(|_| "veil-runtime-dev".into());
@@ -1261,39 +1375,51 @@ impl SessionHandle {
             .base_branch
             .clone()
             .unwrap_or_else(default_branch);
-        let bucket = std::env::var("BUCKET")
-            .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
-            .unwrap_or_else(|_| "veil-runtime-dev".into());
-        let dest_prefix = format!("repos/{}/{}/", m.repo_id, base);
-        let dest = format!("s3://{bucket}/{dest_prefix}");
+        let source = m
+            .branch_name
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("work/{}", &m.session_id[..8.min(m.session_id.len())]));
+        let dest_prefix = if crate::git_origin::origin_enabled() {
+            let origin = crate::git_origin::GitOrigin::new(&m.repo_id);
+            origin.merge_and_push(&self.work_dir, &source, &base)?;
+            format!("git/{}/refs/heads/{}/", m.repo_id, base)
+        } else {
+            let bucket = std::env::var("BUCKET")
+                .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
+                .unwrap_or_else(|_| "veil-runtime-dev".into());
+            let dest_prefix = format!("repos/{}/{}/", m.repo_id, base);
+            let dest = format!("s3://{bucket}/{dest_prefix}");
 
-        let mut cmd = std::process::Command::new("aws");
-        if let Ok(p) = std::env::var("AWS_PROFILE") {
-            cmd.env("AWS_PROFILE", p);
-        }
-        let out = cmd
-            .args([
-                "s3",
-                "sync",
-                &self.work_dir.to_string_lossy(),
-                &dest,
-                "--exclude",
-                ".veil-session.json",
-                "--exclude",
-                ".git/*",
-                "--exclude",
-                "target/*",
-                "--exclude",
-                "generated/*",
-            ])
-            .output()
-            .map_err(|e| format!("aws s3 sync merge: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "merge to {base} failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
+            let mut cmd = std::process::Command::new("aws");
+            if let Ok(p) = std::env::var("AWS_PROFILE") {
+                cmd.env("AWS_PROFILE", p);
+            }
+            let out = cmd
+                .args([
+                    "s3",
+                    "sync",
+                    &self.work_dir.to_string_lossy(),
+                    &dest,
+                    "--exclude",
+                    ".veil-session.json",
+                    "--exclude",
+                    ".git/*",
+                    "--exclude",
+                    "target/*",
+                    "--exclude",
+                    "generated/*",
+                ])
+                .output()
+                .map_err(|e| format!("aws s3 sync merge: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "merge to {base} failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            dest_prefix
+        };
         // Mainline sessions still hold pre-merge scaffold in their workdirs.
         // Rematerialize so IDE open shows the merged product tree.
         if let Err(e) =
@@ -1313,9 +1439,29 @@ impl SessionHandle {
     }
 
     pub fn has_uncommitted(&self) -> bool {
+        if crate::git_origin::origin_enabled() && self.work_dir.join(".git").is_dir() {
+            return crate::git_origin::status_dirty(&self.work_dir).unwrap_or(false);
+        }
         let m = self.meta.lock().unwrap();
         let committed = m.committed_revision.unwrap_or(0);
         m.revision > committed || !m.dirty.is_empty()
+    }
+
+    /// Commit log from **git**, not DDB.
+    pub fn git_log(&self, n: usize) -> Result<Vec<crate::git_origin::LogEntry>, String> {
+        if !self.work_dir.join(".git").is_dir() {
+            return Ok(vec![]);
+        }
+        let repo = self.meta.lock().unwrap().repo_id.clone();
+        crate::git_origin::GitOrigin::new(repo).log(&self.work_dir, n)
+    }
+
+    pub fn git_status_files(&self) -> Vec<crate::git_origin::StatusFile> {
+        crate::git_origin::GitOrigin::status_files(&self.work_dir).unwrap_or_default()
+    }
+
+    pub fn git_working_diff(&self) -> String {
+        crate::git_origin::GitOrigin::working_diff(&self.work_dir).unwrap_or_default()
     }
 }
 

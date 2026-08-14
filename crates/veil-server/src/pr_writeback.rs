@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::session::SessionManager;
 
-/// Sync the coding-session worktree onto `repos/{repo}/{branch}/` and bind the CR id.
+/// Push the coding-session branch to git origin and bind the PR id.
 pub fn publish_session_for_change(
     slug: &str,
     branch: &str,
@@ -70,6 +70,14 @@ pub async fn writeback_agent_turn_to_pr(
                     v.get("active_pr_id")
                         .and_then(|x| x.as_str())
                         .map(|s| s.to_string())
+                })
+        })
+        .or_else(|| {
+            // After create_project rebound the new session has no PR — scan DDB.
+            crate::session::list_sessions_for_user(&crate::session::current_user_id())
+                .ok()
+                .and_then(|list| {
+                    list.into_iter().find_map(|m| m.active_pr_id.filter(|s| !s.is_empty()))
                 })
         });
 

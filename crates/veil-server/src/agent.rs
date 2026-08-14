@@ -1170,6 +1170,10 @@ fn chrono_like_id() -> String {
 fn parse_rename(prompt: &str) -> Option<(String, String)> {
     let p = prompt.trim();
     let lower = p.to_lowercase();
+    // Product rename is rename_project — never steal as construct rename.
+    if looks_like_rename_project_prompt(&lower) {
+        return None;
+    }
     let rest = if let Some(r) = lower.strip_prefix("confirm rename ") {
         // keep original casing from prompt after "confirm rename "
         &p[prompt.len() - r.len()..]
@@ -1240,11 +1244,17 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
     // Only short-circuit *simple* create prompts; multi-step ("create X and design…")
     // stays with the LLM/MCP tool loop so create_project can run mid-turn.
     let looks_like_create_project = looks_like_create_project_prompt(&lower);
+    let looks_like_rename_project = looks_like_rename_project_prompt(&lower);
     let multi_step = lower.contains(" and ")
         || lower.contains(" then ")
         || lower.contains(" with ")
         || lower.contains(" that ")
         || lower.len() > 120;
+    if looks_like_rename_project && !multi_step {
+        if let Some(intent) = rename_project_ux_intent(user_part, prompt) {
+            return Some(intent);
+        }
+    }
     if looks_like_create_project && !multi_step {
         let name = extract_create_project_name(user_part).or_else(|| {
             // "create_project foo" / tool-style
@@ -1631,6 +1641,23 @@ pub fn host_platform_prefix_steps(prompt: &str) -> Vec<HostPlatformStep> {
     let mut steps = Vec::new();
 
     let looks_like_create = looks_like_create_project_prompt(&lower);
+    let looks_like_rename = looks_like_rename_project_prompt(&lower);
+
+    if looks_like_rename {
+        if let Some(name) = extract_rename_project_name(user_part) {
+            let project = extract_rename_project_target(user_part)
+                .or_else(|| bound_project_from_prompt(prompt));
+            let mut args = serde_json::json!({ "name": name });
+            if let Some(ref p) = project {
+                args["project"] = serde_json::json!(p);
+            }
+            steps.push(HostPlatformStep {
+                tool: "rename_project".into(),
+                args,
+                summary: format!("rename_project → `{name}` (host — PATCH /api/repos)"),
+            });
+        }
+    }
 
     if looks_like_create {
         if let Some(name) = extract_create_project_name(user_part)
@@ -1927,6 +1954,134 @@ fn parse_create_file(prompt: &str) -> Option<(String, String)> {
     None
 }
 
+/// Product-level rename (repo display name / slug), not construct rename.
+fn looks_like_rename_project_prompt(lower: &str) -> bool {
+    if lower.contains("rename_construct") || lower.contains("confirm rename ") {
+        return false;
+    }
+    if lower.contains("rename_project") || lower.contains("update_project") {
+        return true;
+    }
+    if (lower.contains("rename") || lower.contains("retitle"))
+        && lower.contains("project")
+        && (lower.contains(" to ") || lower.contains(" name"))
+    {
+        return true;
+    }
+    if lower.contains("change the project name")
+        || lower.contains("update the project name")
+        || lower.contains("change this project's name")
+        || lower.contains("change this project name")
+    {
+        return true;
+    }
+    // "rename agent-registry to Agent Core" — display name (space/quotes), not a construct.
+    if lower.contains("rename") {
+        if let Some(idx) = lower.rfind(" to ") {
+            let dest = lower[idx + 4..].trim();
+            if dest.starts_with('"') || dest.starts_with('\'') || dest.contains(' ') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn rename_project_ux_intent(user_part: &str, full_prompt: &str) -> Option<PlatformUxIntent> {
+    let name = extract_rename_project_name(user_part)?;
+    let project = extract_rename_project_target(user_part)
+        .or_else(|| bound_project_from_prompt(full_prompt));
+    let mut args = serde_json::json!({ "name": name });
+    if let Some(ref p) = project {
+        args["project"] = serde_json::json!(p);
+    }
+    let path_slug = project
+        .clone()
+        .unwrap_or_else(|| crate::project_layout::slugify_name(&name));
+    Some(PlatformUxIntent {
+        tool: "rename_project".into(),
+        path: format!("/projects/{path_slug}"),
+        summary: format!("Renaming project to `{name}`"),
+        action: "goto".into(),
+        project: project.or(Some(path_slug)),
+        args: Some(args),
+    })
+}
+
+fn extract_rename_project_name(prompt: &str) -> Option<String> {
+    let s = prompt.trim();
+    let lower = s.to_lowercase();
+    if let Some(idx) = lower.rfind(" to ") {
+        let rest = s.get(idx + 4..).unwrap_or("");
+        if let Some(name) = extract_project_name_phrase(rest) {
+            if !matches!(
+                name.to_lowercase().as_str(),
+                "it" | "this" | "that" | "the" | "project"
+            ) {
+                return Some(name);
+            }
+        }
+    }
+    for prefix in ["rename_project ", "update_project "] {
+        if let Some(idx) = lower.find(prefix) {
+            let rest = s.get(idx + prefix.len()..).unwrap_or("");
+            if let Some(name) = extract_project_name_phrase(rest) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// Explicit current project in "rename agent-registry to …" (not "this"/"the").
+fn extract_rename_project_target(prompt: &str) -> Option<String> {
+    let s = prompt.trim();
+    let lower = s.to_lowercase();
+    let idx = lower.find("rename ")?;
+    let rest = s.get(idx + "rename ".len()..)?;
+    let rest_l = rest.to_lowercase();
+    let until = rest_l.find(" to ").unwrap_or(rest.len());
+    let mid = rest.get(..until).unwrap_or("").trim();
+    let mid_l = mid.to_lowercase();
+    if mid_l.is_empty()
+        || mid_l == "this project"
+        || mid_l == "the project"
+        || mid_l == "this"
+        || mid_l == "it"
+        || mid_l == "project"
+    {
+        return None;
+    }
+    extract_project_name_phrase(mid).map(|n| crate::project_layout::slugify_name(&n))
+}
+
+/// Slug from the host-injected bound-project preamble, else CURRENT_PROJECT.
+fn bound_project_from_prompt(prompt: &str) -> Option<String> {
+    for line in prompt.lines() {
+        let t = line.trim();
+        let lower = t.to_lowercase();
+        if lower.starts_with("- slug:") || lower.starts_with("slug:") {
+            if let Some(start) = t.find('`') {
+                if let Some(end) = t[start + 1..].find('`') {
+                    let slug = t[start + 1..start + 1 + end].trim();
+                    if !slug.is_empty() {
+                        return Some(slug.to_string());
+                    }
+                }
+            }
+            let after = t.split(':').nth(1).unwrap_or("").trim();
+            let slug = after.trim_matches('`').trim();
+            if !slug.is_empty() {
+                return Some(slug.to_string());
+            }
+        }
+    }
+    crate::provider::hub::CURRENT_PROJECT
+        .try_with(|n| n.clone())
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
 /// Product-level create (repo/project), not package/layer file create.
 fn looks_like_create_project_prompt(lower: &str) -> bool {
     lower.contains("create_project")
@@ -2137,5 +2292,53 @@ NEVER merge_branch or merge_pr unless the operator explicitly asks to merge. Hum
         .unwrap();
         assert_eq!(name, "Agent Registry");
         assert_eq!(slugify_project_name(&name), "agent-registry");
+    }
+
+    #[test]
+    fn rename_project_prompt_is_not_construct_rename() {
+        assert!(parse_rename("rename this project to Agent Core").is_none());
+        assert!(looks_like_rename_project_prompt(
+            "rename this project to \"agent core\""
+        ));
+        let ux = parse_platform_ux_intent(r#"rename this project to "Agent Core""#).unwrap();
+        assert_eq!(ux.tool, "rename_project");
+        assert_eq!(ux.args.as_ref().unwrap()["name"], "Agent Core");
+    }
+
+    #[test]
+    fn rename_project_host_prefix_from_bound_slug() {
+        let prompt = r#"## Bound project (server — authoritative)
+- Slug: `agent-registry`
+- Files on disk/S3: 2
+
+# User request
+we fixed your tools... now rename this project to "Agent Core"
+"#;
+        assert!(
+            parse_rename(prompt).is_none(),
+            "must not steal as construct rename"
+        );
+        let steps = host_platform_prefix_steps(prompt);
+        let step = steps
+            .iter()
+            .find(|s| s.tool == "rename_project")
+            .expect("host prefix must schedule rename_project");
+        assert_eq!(step.args["name"], "Agent Core");
+        assert_eq!(step.args["project"], "agent-registry");
+    }
+
+    #[test]
+    fn rename_explicit_slug_target() {
+        let ux = parse_platform_ux_intent("rename agent-registry to Agent Core").unwrap();
+        assert_eq!(ux.tool, "rename_project");
+        assert_eq!(ux.args.as_ref().unwrap()["project"], "agent-registry");
+        assert_eq!(ux.args.as_ref().unwrap()["name"], "Agent Core");
+    }
+
+    #[test]
+    fn construct_rename_still_parses() {
+        let (from, to) = parse_rename("rename Widget to Gadget").unwrap();
+        assert_eq!(from, "Widget");
+        assert_eq!(to, "Gadget");
     }
 }

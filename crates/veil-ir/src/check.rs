@@ -71,14 +71,24 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
     diagnostics.extend(crate::escape::check_escape_hatches(sol, registry));
     diagnostics.extend(crate::test_lint::check_tests(sol));
 
-    // Include parser-emitted guidance diagnostics (terse form hints, etc.)
+    // Parser-emitted notes. `sol` is removed — treat as a hard error so agents
+    // cannot flip-flop Sol vs Pkg. Other guidance stays non-blocking.
     for g in &sol.guidance {
+        let sol_dead = g.code == "sol_removed" || g.code == "prefer_terse";
         diagnostics.push(Diagnostic {
-            severity: Severity::Guidance,
+            severity: if sol_dead {
+                Severity::Error
+            } else {
+                Severity::Guidance
+            },
             message: g.message.clone(),
             node_id: None,
             node_name: None,
-            code: g.code.clone(),
+            code: if sol_dead {
+                "sol_removed".into()
+            } else {
+                g.code.clone()
+            },
             constraint: g.code.clone(),
             parent: None,
             hint: Some(g.hint.clone()),
@@ -344,6 +354,31 @@ items: vec![TopLevelItem::Construct(root)],
             expose: None,
             guidance: Vec::new(),
         }
+    }
+
+    #[test]
+    fn sol_keyword_is_hard_error() {
+        let mut sol = sol_with(Construct::new(
+            "struct",
+            "Struct",
+            Shape::Struct,
+            "User".into(),
+            Span::new(0, 0),
+        ));
+        sol.guidance.push(crate::ast::GuidanceDiagnostic {
+            code: "sol_removed".into(),
+            message: "`sol` is removed — use `pkg`".into(),
+            hint: "Replace `sol` with `pkg`".into(),
+            span: Span::new(0, 3),
+        });
+        let r = check_solution(&sol, &LayerRegistry::builtin());
+        assert!(
+            r.diagnostics.iter().any(|d| {
+                d.code == "sol_removed" && matches!(d.severity, Severity::Error)
+            }),
+            "{:?}",
+            r.diagnostics
+        );
     }
 
     #[test]

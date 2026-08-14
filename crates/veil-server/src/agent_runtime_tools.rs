@@ -509,6 +509,36 @@ fn extract_handler_name(line: &str) -> Option<String> {
     None
 }
 
+/// ProductHost catalog/SDLC APIs are MCP-only. Dual-loop `http_request` is for
+/// the customer's generated backend, not `/api/repos`.
+fn product_host_http_forbidden(method: &str, url: &str) -> Option<String> {
+    let path = url
+        .split("://")
+        .nth(1)
+        .and_then(|s| s.find('/').map(|i| &s[i..]))
+        .unwrap_or(url);
+    let path_only = path.split('?').next().unwrap_or(path);
+    let product = path_only.starts_with("/api/repos")
+        || path_only.starts_with("/api/projects")
+        || path_only.starts_with("/api/pull_requests")
+        || path_only.starts_with("/api/ux/");
+    if !product {
+        return None;
+    }
+    let hint = if path_only.contains("/repos")
+        && matches!(method, "PATCH" | "PUT")
+    {
+        "http_request cannot mutate ProductHost. Use MCP rename_project / update_project (name, optional new_slug). Never PATCH /api/repos."
+    } else if path_only.contains("/repos") && method == "POST" {
+        "http_request cannot create ProductHost repos. Use MCP create_project."
+    } else if path_only.contains("/repos") && method == "DELETE" {
+        "http_request cannot delete ProductHost repos. Use MCP delete_project."
+    } else {
+        "http_request is for the dual-loop customer backend only. Product ops: list_projects / get_project / create_project / rename_project / delete_project / list_prs / …"
+    };
+    Some(hint.to_string())
+}
+
 // ─── AGT-023 http_request ──────────────────────────────────────────────────
 
 fn allowed_ports(project_root: &Path) -> Vec<u16> {
@@ -619,6 +649,9 @@ pub async fn tool_http_request(
     let method = method.unwrap_or("GET").to_uppercase();
     let path = path.unwrap_or("/health");
     let full_url = resolve_http_url(project_root, target, path, url)?;
+    if let Some(hint) = product_host_http_forbidden(&method, &full_url) {
+        return Err(hint);
+    }
     let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(3000).clamp(200, 30_000));
 
     let client = reqwest::Client::builder()
@@ -795,6 +828,22 @@ mod tests {
                 || out.contains("\"via\": \"route\""),
             "expected endpoint/compat via: {out}"
         );
+    }
+
+    #[test]
+    fn http_request_blocks_product_host_repos() {
+        let hint = product_host_http_forbidden(
+            "PATCH",
+            "http://127.0.0.1:8080/api/repos/328d843b-a853-4ff8-a3cf-0a28e4747c18",
+        )
+        .expect("must block");
+        assert!(hint.contains("rename_project"), "{hint}");
+        assert!(product_host_http_forbidden("GET", "http://127.0.0.1:8080/health").is_none());
+        assert!(product_host_http_forbidden(
+            "GET",
+            "http://127.0.0.1:5173/api/items"
+        )
+        .is_none());
     }
 
     #[test]

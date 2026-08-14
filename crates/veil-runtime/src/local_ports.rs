@@ -247,9 +247,39 @@ impl MetadataStore for LocalMetadataStore {
         Ok(v)
     }
 
+    async fn update_repo(&self, metadata: Repo) -> Result<(), DomainError> {
+        let mut db = self.inner.lock().unwrap();
+        // Drop stale index keys (id / old name / old slug) then re-index.
+        let stale: Vec<String> = db
+            .repos
+            .iter()
+            .filter(|(_, r)| r.id.value == metadata.id.value)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in stale {
+            db.repos.remove(&k);
+        }
+        db.repos
+            .insert(metadata.id.value.clone(), metadata.clone());
+        db.repos.insert(metadata.slug.clone(), metadata.clone());
+        if metadata.name != metadata.slug && metadata.name != metadata.id.value {
+            db.repos.insert(metadata.name.clone(), metadata.clone());
+        }
+        self.save(&db);
+        Ok(())
+    }
+
     async fn delete_repo(&self, id: RepoId) -> Result<(), DomainError> {
         let mut db = self.inner.lock().unwrap();
-        db.repos.remove(&id.value);
+        let stale: Vec<String> = db
+            .repos
+            .iter()
+            .filter(|(k, r)| *k == &id.value || r.id.value == id.value)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in stale {
+            db.repos.remove(&k);
+        }
         self.save(&db);
         Ok(())
     }

@@ -34,20 +34,31 @@ pub fn global_dev_loops() -> Option<&'static SharedDevLoops> {
     GLOBAL_DEV_LOOPS.get()
 }
 
+/// Result of post-write smoke (never lie "OK" on a failed gen).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SmokeOutcome {
+    /// Gen + cargo check actually passed.
+    Clean,
+    /// Nothing to smoke (layer-only, no rust target).
+    Skipped(String),
+    /// Write kept (greenfield / non-fatal) but this is **not** a green check.
+    Kept(String),
+}
+
 /// Entry point for agent / MCP after a source write.
 /// Ensures a DevLoop exists, then gen+check affected Rust targets; rolls back on fail.
 pub fn smoke_agent_write(
     project_root: &Path,
     active_file_path: &str,
     project_name: Option<&str>,
-) -> Result<(), String> {
+) -> Result<SmokeOutcome, String> {
     if !smoke_enabled() {
-        return Ok(());
+        return Ok(SmokeOutcome::Skipped("VEIL_AGENT_SMOKE=0".into()));
     }
     let Some(loops) = global_dev_loops() else {
         // Server built without registering loops — skip rather than fail open loudly.
         tracing::warn!("smoke_agent_write: no global DevLoop map; skip smoke");
-        return Ok(());
+        return Ok(SmokeOutcome::Skipped("no DevLoop map".into()));
     };
     let name = project_name
         .map(|s| s.to_string())
@@ -57,7 +68,7 @@ pub fn smoke_agent_write(
     if let Err(e) = get_or_create_dev_loop(loops, &name, project_root) {
         if e.contains("no [[targets]]") {
             tracing::info!(project = %name, "smoke skipped — no [[targets]] in veil.toml yet");
-            return Ok(());
+            return Ok(SmokeOutcome::Skipped("no [[targets]] in veil.toml".into()));
         }
         return Err(e);
     }
@@ -458,9 +469,9 @@ impl DevLoop {
 
     /// After an agent (or API) write to a package/layer: gen every affected Rust
     /// target and cargo-check. On failure, restore last-good sources + gen tree.
-    pub fn smoke_after_source_change(&mut self, changed_rel: &str) -> Result<(), String> {
+    pub fn smoke_after_source_change(&mut self, changed_rel: &str) -> Result<SmokeOutcome, String> {
         if !smoke_enabled() {
-            return Ok(());
+            return Ok(SmokeOutcome::Skipped("VEIL_AGENT_SMOKE=0".into()));
         }
         self.smoke_in_progress = true;
         let result = self.smoke_after_source_change_inner(changed_rel);
@@ -468,8 +479,13 @@ impl DevLoop {
         result
     }
 
-    fn smoke_after_source_change_inner(&mut self, changed_rel: &str) -> Result<(), String> {
+    fn smoke_after_source_change_inner(&mut self, changed_rel: &str) -> Result<SmokeOutcome, String> {
         let rel = changed_rel.replace('\\', "/");
+        if rel.ends_with(".layer") {
+            return Ok(SmokeOutcome::Skipped(
+                "layer file; veil_check is the gate (no cargo run)".into(),
+            ));
+        }
         let affected: Vec<String> = self
             .targets
             .iter()
@@ -479,7 +495,6 @@ impl DevLoop {
                 }
                 rel == t.package
                     || rel.ends_with(&t.package)
-                    || rel.ends_with(".layer")
                     || self.dev_packages.as_ref().map(|pkgs| {
                         pkgs.iter().any(|p| {
                             if Path::new(p).is_absolute() {
@@ -494,8 +509,9 @@ impl DevLoop {
             .collect();
 
         if affected.is_empty() {
-            // No rust backend target — nothing to smoke.
-            return Ok(());
+            return Ok(SmokeOutcome::Skipped(
+                "no rust target for this file".into(),
+            ));
         }
 
         let mut errors = Vec::new();
@@ -505,19 +521,18 @@ impl DevLoop {
             }
         }
         if errors.is_empty() {
-            return Ok(());
+            return Ok(SmokeOutcome::Clean);
         }
 
-        // Greenfield: no successful baseline yet. Do not reject the agent write —
-        // there is nothing good to protect, and rolling back to scaffold blocks
-        // domain bootstrap. Advisory only until first green smoke.
+        // Greenfield: keep the write (nothing to roll back) but do **not**
+        // report success — AddrInUse / veil gen fail is not a green check.
         if self.last_good_sources.is_empty() {
             tracing::warn!(
                 project = %self.project_root.display(),
                 "greenfield smoke failed — keeping agent write (no baseline)\n{}",
                 errors.join("\n")
             );
-            return Ok(());
+            return Ok(SmokeOutcome::Kept(errors.join("\n")));
         }
 
         // Roll back sources to last good snapshot, then re-gen so disk matches.

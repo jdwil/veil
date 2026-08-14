@@ -21,15 +21,20 @@ be represented in VEIL and lowered with preserved semantics. That is
 *expressiveness* parity — not keyword-for-keyword clones of each host
 language.
 
+Authorship is **visible**. The inner agent is the sole primary author of
+changes inside the VEIL runtime. Humans observe, guide in natural language,
+and sign off — they do not reconstruct what happened from git history, logs,
+or extra panes.
+
 ## Product Intent
 
 | Role | Responsibility |
 |------|----------------|
-| **Agents** (primary authors) | Write `.veil` quickly and cheaply in tokens |
-| **Humans** (primary reviewers) | Approve structure and critical bodies without line-by-line LoC review |
+| **Agents** (primary authors) | Write `.veil` quickly and cheaply in tokens; drive the runtime through the same surfaces the human sees |
+| **Humans** (primary reviewers) | Observe, guide in natural language, and **sign off** on topology + critical bodies — never line-by-line LoC or forensic reconstruction |
 | **Engine** | Parse, check, lower — with **zero domain knowledge** |
 | **Layers** | Domain/platform vocabulary, visuals, prompts, codegen opinions |
-| **Runtime** | Wire generated artifacts (Bus, adapters, deploy topology) |
+| **Runtime** | Living canvas: wire generated artifacts; make every agent mutation visible, reviewable, and sign-offable |
 
 ### Default daily driver (RT-020)
 
@@ -48,10 +53,12 @@ gate. App harnesses are VEIL-authored (`@main`); see `docs/HARNESS.md` and
 | Loop | Actor | Must be fast and honest |
 |------|-------|-------------------------|
 | **Machine** | Agent | `parse → check (types, constraints, target capabilities) → codegen → (optional) target compile` |
-| **Human** | Reviewer | Topology graph + critical expression bodies (guards, saga steps, adapters, risky paths) |
+| **Human** | Reviewer | Topology + critical bodies, presented as an **outstanding change set**, closed by **explicit sign-off** |
 
 Graphics alone do not speed agents. **Diagnostics and deterministic codegen**
-are half the product. Canvas review is the other half.
+are half the product. Canvas review plus recorded sign-off is the other half.
+Sign-off is the human half of the dual loop for any mutation that affects the
+system of record.
 
 ### Human review depth
 
@@ -68,6 +75,133 @@ for routine approval. Generated code remains available when drilling down
 Viewer UX prioritizes **read, navigate, restructure, and diff** of topology
 and critical bodies. Dense expression editing may stay text or hybrid;
 full click-to-build of every expression kind is not the primary human path.
+
+Topology diffs, critical-body diffs, file-level diffs, and the agent’s
+rationale must be one click or one agent utterance away. Generated target
+code remains available for deep inspection but is **not** the default review
+surface.
+
+## Agent-Driven Runtime UX (Visible Agency)
+
+**Invariant:** The inner agent is the sole primary author of changes inside
+the VEIL runtime. Humans observe, guide via natural language, and sign off.
+They do not dig through git history, logs, or multiple panes to understand
+what happened.
+
+The **agent pane** is the primary conversation surface. The rest of the
+runtime is the living canvas the agent paints on in real time.
+
+### Core principles
+
+**All mutations are agent-driven.** Creating a project, editing files,
+opening the IDE, bouncing between projects, generating code, creating PRs —
+the inner agent performs these through the same surfaces and APIs the UI
+itself uses, or through first-class agent tools that the UI then reflects.
+There is no parallel “agent backend” that mutates state invisibly.
+
+**Actions are visible as they happen.** Every significant agent action must
+produce live, understandable UI feedback so a human watching the runtime can
+follow the work without cognitive overhead. The pace must be fast enough to
+feel productive yet slow enough that a human can parse intent and outcome in
+real time.
+
+**Human-speed simulation is required** for form and control interactions —
+a product requirement, not polish. When the agent fills a form, types into
+an input, selects options, or presses a button, the UI animates as if a
+careful human were performing the same actions:
+
+- Simulated typing (character-by-character or word-by-word with realistic cadence)
+- Focus movement and hover states
+- Button press feedback (brief scale/flash/pulse + disabled state while the request is in flight)
+- Progress indicators on multi-step flows
+
+Default to a cadence a human can comfortably track. A “fast-forward / skip
+animation” escape exists only for power users and automated tests.
+
+**IDE auto-open and live reflection.** The moment the agent begins editing
+files that belong to a project, the corresponding IDE surface (viewer /
+structural editor) must open or come to the foreground. Subsequent edits
+appear live so the human sees topology and critical bodies change in real
+time. Outstanding (unreviewed) diffs must be visually distinct.
+
+**Multi-project awareness is first-class.** VEIL makes small libraries,
+layers, and micro-services cheap to create, so a single coding session
+frequently touches several projects. The agent must switch context fluidly.
+The Projects page (and any project-list surface) surfaces at a glance:
+
+- Which projects have been touched in the current session / by the current agent turn
+- Which projects have outstanding unreviewed changes
+- A lightweight “needs sign-off” indicator
+
+### Implementation law (agents and implementers)
+
+- Prefer the real UI contracts (`data-veil-agent` / surface metadata,
+  structured edit APIs, the `/api/repos` family, Focus + Intent + Present)
+  over inventing parallel mutation paths.
+- Every mutating tool must emit a corresponding UI event **or** call the
+  same endpoints the UI uses, so the visual surface stays the single source
+  of truth for *what the human sees*.
+- Git remains the source of truth for *history* (commits, branches, merge).
+  Do not reinvent a second commit graph, a second status model, or a
+  GitHub facsimile. Leverage git; put product energy into visibility and
+  sign-off, which git does not provide.
+- The agent **announces intent before acting** (“I am going to create a new
+  project called X and then open its IDE”) and then performs the visible
+  sequence.
+
+## Change Surfacing & Human Sign-Off
+
+**Goal:** A human must never reverse-engineer what the agent did. The
+system (and the agent) must surface exactly what changed, why, and request
+explicit sign-off.
+
+**Outstanding changes are a product surface**, not an afterthought of
+`git status`. Git answers history. Review state answers “has a human signed
+this off?”
+
+Every unreviewed mutation (file edits, new projects, layer changes,
+generated artifacts, PR creation, …) produces a durable, queryable
+**outstanding change set**, visible on:
+
+- The Projects list (badges / indicators per project)
+- The project detail / IDE surface
+- A dedicated review / sign-off surface the agent can navigate the user to
+
+**The agent itself presents the change set.** After a coherent unit of work
+the agent says and renders the equivalent of:
+
+> Here is exactly what I did and why.
+>
+> - Created project *foo*
+> - Added layer *bar* and three constructs
+> - Edited `src/main.veil` (diff + rationale)
+> - Generated Rust for the new service
+>
+> I need you to sign off on this set before I proceed / merge / deploy.
+
+**Sign-off is explicit and recorded.** Approval is a first-class action
+(button, command, or agent-mediated confirmation) that clears
+outstanding-change markers and writes an audit record suitable for SOC 2.
+Rejection and **partial approval** are supported; remaining items stay
+marked outstanding.
+
+**Session and multi-project roll-up.** At the end of a session (or on
+demand) the agent can produce a consolidated “everything I touched” view
+across projects, with a single sign-off path or per-project sign-offs.
+
+## Inner Agent Capabilities
+
+The inner agent must possess (or be able to acquire via tools / context):
+
+- Full awareness of the current Projects list, open IDEs, outstanding
+  change sets, and the agent-surface contracts published by the UI
+- Tools that correspond **1:1** with user-visible actions (create project,
+  open IDE, edit file, run check/gen, create PR, …) and that trigger the
+  visible simulation above
+- The ability to bounce between projects without losing context, updating
+  Projects-page indicators as it goes
+- Enough domain knowledge (via layers, stubs, and the existing dual-loop
+  feedback) to perform **real work**, not just UI puppetry
 
 ## Expressiveness Parity
 
@@ -350,7 +484,8 @@ Statements stack (`notify` → `dispatch` → `call`).
 1. **Zero domain knowledge in the engine** — permanent.
 2. **Agents author; humans review topology + critical bodies.**
 3. **Dual loops** — machine check and human structure are both product
-   requirements.
+   requirements. Sign-off is the human half for any mutation that affects
+   the system of record.
 4. **Expressiveness parity** — semantic, not keyword cloning.
 5. **Token efficiency** — terse forms are the standard; verbose forms are
    compatibility only.
@@ -362,6 +497,14 @@ Statements stack (`notify` → `dispatch` → `call`).
 9. **Blessed paths ≠ core** — `ddd`/`di` are defaults for service apps, not
    the only legal architecture.
 10. **No silent miscompile** — unsupported target features fail at check.
+11. **Agents author; the runtime makes authorship visible and reviewable.**
+    No invisible parallel mutation path. Announce intent, then act on the
+    living canvas at human-parseable speed.
+12. **Outstanding changes are a product surface**, not an afterthought of
+    `git status`. Git is history; sign-off is review state.
+13. **Leverage git; do not reinvent it.** Commits, branches, merge, log,
+    and diff are git’s job. Product energy goes to visibility, multi-project
+    awareness, and recorded human sign-off — not a second VCS.
 
 ## File Structure
 
@@ -396,7 +539,7 @@ system grows. Example workspaces generate Rust that compiles cleanly.
 TypeScript generation and a Svelte 5 layer exist; full UI/structure parity
 and additional backends are incomplete.
 
-**File types:** top-level unit is `pkg` (`sol` is a deprecated alias).
+**File types:** top-level unit is `pkg` only. Never author `sol`.
 Deployment topology is manifest + runtime, not a separate “solution” kind.
 
 Implementation map (summary):
@@ -441,8 +584,10 @@ Implementation map (summary):
 Not a sprint plan — product order of operations:
 
 1. **Dual-loop excellence on the current surface** — world-class `check` +
-   deterministic codegen; topology and critical-body review UX; Rust primary,
-   TS/Svelte secondary with honest capabilities.
+   deterministic codegen; topology and critical-body review UX; **visible
+   agency** (human-speed simulation, IDE auto-open, multi-project indicators)
+   and first-class outstanding-change **sign-off**; Rust primary, TS/Svelte
+   secondary with honest capabilities.
 2. **Semantic IR hardening** — effects, errors, async, ownership
    capabilities; purge engine domain heuristics into layers.
 3. **Parity by program class** — portable application logic → services/
@@ -456,6 +601,15 @@ Not a sprint plan — product order of operations:
 - Agent tokens (or steps) per feature vs raw target languages
 - Human time-to-approve a structural change without opening generated LoC
 - Share of reviews completed at topology + critical bodies only
+- Time for a human to understand “what just happened” after an agent turn
+  (target: **seconds**, not minutes of investigation)
+- Percentage of agent-driven changes signed off **without** the human opening
+  raw generated files or git blame
+- Presence of clear outstanding-change indicators on the Projects page after
+  any multi-project session
+- Agent can complete a realistic multi-project coding session while the human
+  watches forms fill, the IDE open, diffs appear, and the sign-off prompt
+  surface — without leaving the runtime UX or digging
 - Agent fix-cycle time under `veil check` / compile feedback
 - Compile/success rate of agent-authored VEIL
 - Escape-hatch surface area trend (should fall over time)

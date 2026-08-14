@@ -67,12 +67,95 @@ pub async fn get_repo(deps: &Deps, id: String) -> Result<Repo, DomainError> {
     return Ok(repo);
 }
 
+/// Resolve UUID, slug, or display name → Repo.
+pub async fn resolve_repo(deps: &Deps, id_or_slug: &str) -> Result<Repo, DomainError> {
+    let needle = id_or_slug.trim();
+    if needle.is_empty() {
+        return Err(DomainError::Validation("project id/slug required".into()));
+    }
+    if let Ok(repo) = get_repo(deps, needle.to_string()).await {
+        return Ok(repo);
+    }
+    let repos = list_repos(deps).await?;
+    let lower = needle.to_lowercase();
+    repos
+        .into_iter()
+        .find(|r| {
+            r.id.value.eq_ignore_ascii_case(needle)
+                || r.slug.eq_ignore_ascii_case(&lower)
+                || r.name.eq_ignore_ascii_case(&lower)
+        })
+        .ok_or(DomainError::NotFound)
+}
+
+/// DomainService: UpdateRepo (display name / slug / description).
+///
+/// S3 keys stay `repos/{repo_id}/…` — slug is metadata + URL only.
+#[tracing::instrument(skip_all)]
+pub async fn update_repo(
+    deps: &Deps,
+    id: String,
+    name: Option<String>,
+    slug: Option<String>,
+    description: Option<String>,
+    clear_description: bool,
+) -> Result<Repo, DomainError> {
+    let mut repo = resolve_repo(deps, &id).await?;
+    if let Some(n) = name {
+        let n = n.trim().to_string();
+        if n.is_empty() {
+            return Err(DomainError::Validation("name must not be empty".into()));
+        }
+        repo.name = n;
+    }
+    if let Some(s) = slug {
+        let s = s
+            .trim()
+            .to_lowercase()
+            .replace(' ', "-")
+            .replace('_', "-");
+        if s.is_empty() {
+            return Err(DomainError::Validation("slug must not be empty".into()));
+        }
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return Err(DomainError::Validation(
+                "slug must be lowercase alphanumeric plus hyphens".into(),
+            ));
+        }
+        if s != repo.slug {
+            let existing = list_repos(deps).await?;
+            if existing
+                .iter()
+                .any(|r| r.slug.eq_ignore_ascii_case(&s) && r.id.value != repo.id.value)
+            {
+                return Err(DomainError::Validation(format!(
+                    "slug `{s}` is already used by another project"
+                )));
+            }
+            repo.slug = s;
+        }
+    }
+    if clear_description {
+        repo.description = None;
+    } else if let Some(d) = description {
+        repo.description = Some(d);
+    }
+    repo.updated_at = Utc::now();
+    deps.metadata_store.update_repo(repo.clone()).await?;
+    Ok(repo)
+}
+
 /// DomainService: DeleteRepo
 #[tracing::instrument(skip_all)]
 pub async fn delete_repo(deps: &Deps, id: String) -> Result<(), DomainError> {
-    // step: execute
-    let rid = RepoId { value: id.clone() };
-    deps.metadata_store.delete_repo(rid.clone()).await?;
+    // Accept UUID or slug — DDB PK is REPO#{uuid} only.
+    let repo = resolve_repo(deps, &id).await?;
+    deps.metadata_store
+        .delete_repo(repo.id.clone())
+        .await?;
 
     Ok(())
 }

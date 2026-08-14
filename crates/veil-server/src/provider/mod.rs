@@ -140,6 +140,14 @@ pub trait SourceProvider: Send + Sync + 'static {
     ) {
     }
 
+    /// True when the hub already has a live coding-session provider for `slug`.
+    ///
+    /// MCP must **not** rematerialize S3 on every unscoped tool call — that
+    /// takes seconds and (historically) deadlocked ACP via `reset_acp`.
+    fn has_coding_session(&self, _slug: &str) -> bool {
+        false
+    }
+
     /// Active IDE project root (single-project session). Default: unknown.
     fn project_root(&self) -> Option<std::path::PathBuf> {
         None

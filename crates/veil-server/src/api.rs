@@ -593,8 +593,21 @@ async fn active_file_path<P: SourceProvider>(state: &P) -> Option<std::path::Pat
         .map(|f| std::path::PathBuf::from(f.path))
 }
 
-async fn get_source<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
-    match state.read_source("").await {
+#[derive(serde::Deserialize, Default)]
+struct SourceQuery {
+    file: Option<String>,
+    path: Option<String>,
+}
+
+async fn get_source<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+    Query(q): Query<SourceQuery>,
+) -> axum::response::Response {
+    let file = q
+        .file
+        .or(q.path)
+        .unwrap_or_default();
+    match state.read_source(&file).await {
         Ok(source) => ([(header::CONTENT_TYPE, "text/plain")], source).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -832,6 +845,11 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
         obj.insert("uncommitted".into(), serde_json::json!(uncommitted));
         if !session_id.is_empty() {
             obj.insert("session_id".into(), serde_json::json!(session_id));
+            if let Ok(h) = crate::session::SessionManager::global().attach(&session_id) {
+                obj.insert("git_patch".into(), serde_json::json!(h.git_working_diff()));
+                obj.insert("git_status".into(), serde_json::to_value(h.git_status_files()).unwrap_or_default());
+                obj.insert("via".into(), serde_json::json!("git"));
+            }
         }
         // Phantom full-package walk: empty/missing baseline used to mark every
         // construct Added. Surface explicitly so the IDE can refuse a 100-step review.

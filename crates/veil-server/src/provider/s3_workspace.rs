@@ -5,7 +5,7 @@
 //! 2. Materialize `s3://$BUCKET/repos/{id}/{branch}/` → `$TMP/veil-s3-ws/{slug}/`
 //! 3. Serve via [`FilesystemProvider`] with **write-through** back to S3
 //!
-//! Source of truth is S3 — not `VEIL_PROJECTS_DIR`. ACP should use MCP
+//! Source of truth is git origin on S3 (`git/{repo_id}/`) — not `VEIL_PROJECTS_DIR`. ACP should use MCP
 //! `write_source` / structured edits; raw FS tools under monorepo CWD are wrong.
 
 use std::path::{Path, PathBuf};
@@ -467,6 +467,27 @@ pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, 
         guard.insert(name.to_string(), repo_id.to_string());
         guard.insert(slug.clone(), repo_id.to_string());
     }
+    if crate::git_origin::origin_enabled() {
+        let tmp = std::env::temp_dir().join(format!("veil-git-seed-{repo_id}"));
+        let _ = std::fs::remove_dir_all(&tmp);
+        if let Err(e) = (|| -> Result<(), String> {
+            for (rel, content) in crate::project_layout::scaffold_file_contents(name)? {
+                let p = tmp.join(&rel);
+                if let Some(parent) = p.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("mkdir seed {}: {e}", parent.display()))?;
+                }
+                std::fs::write(&p, content)
+                    .map_err(|e| format!("write seed {}: {e}", p.display()))?;
+            }
+            crate::git_origin::GitOrigin::new(repo_id)
+                .ensure_from_workdir(&tmp, &branch())?;
+            Ok(())
+        })() {
+            tracing::warn!(%repo_id, error = %e, "git origin init after scaffold failed");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
     tracing::info!(%repo_id, %slug, display = %name, "seed_new_repo_scaffold ok");
     Ok(written)
 }
@@ -497,7 +518,9 @@ pub fn list_s3_projects() -> Result<Vec<crate::project_layout::ProjectInfo>, Str
         .map(|(name, id)| crate::project_layout::ProjectInfo {
             name,
             path: format!("s3://{b}/repos/{id}/{br}/"),
-            is_git: false,
+            // Origin existence is probed on open/commit, not on every project list
+            // (each exists() is two S3 GETs via aws CLI).
+            is_git: true,
             package_count: 0,
         })
         .collect())
@@ -587,6 +610,21 @@ pub fn materialize_repo_incremental(repo_id: &str, work: &Path) -> Result<(), St
 }
 
 fn materialize_repo_with(repo_id: &str, work: &Path, delete: bool) -> Result<(), String> {
+    if crate::git_origin::origin_enabled() {
+        let origin = crate::git_origin::GitOrigin::new(repo_id);
+        let br = branch();
+        let mode = if delete {
+            crate::git_origin::CheckoutMode::ResetHard
+        } else {
+            crate::git_origin::CheckoutMode::FetchKeepDirty
+        };
+        if origin.exists() {
+            return origin.checkout(work, &br, mode).map(|_| ());
+        }
+        if let Ok(Some(_)) = origin.import_legacy_tree(&br) {
+            return origin.checkout(work, &br, mode).map(|_| ());
+        }
+    }
     let b = bucket();
     let prefix = s3_prefix(repo_id);
     let src = format!("s3://{b}/{prefix}");

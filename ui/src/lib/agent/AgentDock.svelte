@@ -58,13 +58,13 @@
 	const WIDTH_KEY = 'veil.agent.dockWidth';
 	const MIN_WIDTH = 320;
 	const DEFAULT_WIDTH = 420;
+	/** Sidebar (~240) + a usable IDE column. Dock may take the rest. */
+	const SHELL_RESERVED = 720;
 
-	/** Cap so the IDE keeps a usable column (sidebar ~200 + IDE ≥480). */
+	/** Cap so the IDE keeps a usable column; no 42vw/560 hard ceiling. */
 	function maxWidth(): number {
-		if (typeof window === 'undefined') return 520;
-		const w = window.innerWidth;
-		const room = Math.max(MIN_WIDTH, w - 680);
-		return Math.min(room, Math.floor(w * 0.42), 560);
+		if (typeof window === 'undefined') return 720;
+		return Math.max(MIN_WIDTH, window.innerWidth - SHELL_RESERVED);
 	}
 
 	function clampWidth(n: number): number {
@@ -161,7 +161,8 @@
 	}
 
 	function startResize(e: PointerEvent) {
-		// Pointer capture + body class so the IDE iframe cannot steal moves mid-drag.
+		// Primary button only (ignore right-click / extra buttons).
+		if (e.pointerType === 'mouse' && e.button !== 0) return;
 		e.preventDefault();
 		e.stopPropagation();
 		const handle = e.currentTarget as HTMLElement;
@@ -169,23 +170,30 @@
 		try {
 			handle.setPointerCapture(pointerId);
 		} catch {
-			/* ignore */
+			/* optional — window capture-phase listeners are the source of truth */
 		}
 		isResizing = true;
 		document.body.classList.add('agent-dock-resizing');
 		const startX = e.clientX;
 		const startWidth = panelWidth;
-		const cap = maxWidth();
 		let latest = startWidth;
+		let finished = false;
 
-		function onMove(ev: PointerEvent) {
+		// Window + capture:true so the native IDE (same document, not an iframe)
+		// cannot eat pointermove once the cursor leaves the 12px handle.
+		const onMove = (ev: PointerEvent) => {
 			if (ev.pointerId !== pointerId) return;
+			ev.preventDefault();
+			ev.stopPropagation();
+			const cap = maxWidth();
 			const delta = startX - ev.clientX; // drag left → wider dock
 			latest = Math.max(MIN_WIDTH, Math.min(cap, startWidth + delta));
 			panelWidth = latest;
-		}
-		function onUp(ev: PointerEvent) {
-			if (ev.pointerId !== pointerId) return;
+		};
+		const finish = (ev: Event) => {
+			if (ev instanceof PointerEvent && ev.pointerId !== pointerId) return;
+			if (finished) return;
+			finished = true;
 			isResizing = false;
 			document.body.classList.remove('agent-dock-resizing');
 			try {
@@ -193,16 +201,15 @@
 			} catch {
 				/* ignore */
 			}
-			handle.removeEventListener('pointermove', onMove);
-			handle.removeEventListener('pointerup', onUp);
-			handle.removeEventListener('pointercancel', onUp);
-			// Persist the final drag width (use local latest — avoids stale $state in closure).
+			window.removeEventListener('pointermove', onMove, true);
+			window.removeEventListener('pointerup', finish, true);
+			window.removeEventListener('pointercancel', finish, true);
 			panelWidth = latest;
 			saveWidth(latest);
-		}
-		handle.addEventListener('pointermove', onMove);
-		handle.addEventListener('pointerup', onUp);
-		handle.addEventListener('pointercancel', onUp);
+		};
+		window.addEventListener('pointermove', onMove, { capture: true });
+		window.addEventListener('pointerup', finish, { capture: true });
+		window.addEventListener('pointercancel', finish, { capture: true });
 	}
 
 	function togglePanel() {
@@ -399,7 +406,7 @@
 				<span>Drop documents to attach</span>
 			</div>
 		{/if}
-		<!-- Resize handle (pointer events — survives drag over IDE iframe) -->
+		<!-- Resize handle: window capture + shield so the native IDE cannot steal moves. -->
 		<div
 			class="resize-handle"
 			role="separator"
@@ -546,6 +553,9 @@
 	</aside>
 	{/if}
 {/if}
+{#if isResizing}
+	<div class="resize-shield" aria-hidden="true"></div>
+{/if}
 
 <style>
 	.agent-dock {
@@ -558,8 +568,8 @@
 		flex: 0 0 auto;
 		flex-shrink: 0;
 		min-width: 0;
-		max-width: min(560px, 42vw);
-		overflow: hidden;
+		/* visible so the seam handle (left: -6px) stays hittable; panes clip themselves */
+		overflow: visible;
 		/* width set inline; grow/shrink only via resize handle */
 		background: var(--dk-surface, #1a1a1a);
 		border-left: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
@@ -693,28 +703,40 @@
 		color: #fca5a5;
 	}
 
-	/* While resizing, kill iframe hit-testing so the IDE cannot eat pointermoves. */
+	/* While resizing, kill hit-testing on the native IDE (not an iframe). */
 	:global(body.agent-dock-resizing) {
 		cursor: col-resize !important;
 		user-select: none !important;
 	}
-	:global(body.agent-dock-resizing iframe) {
+	:global(body.agent-dock-resizing iframe),
+	:global(body.agent-dock-resizing .native-ide),
+	:global(body.agent-dock-resizing .viewer-container),
+	:global(body.agent-dock-resizing .content) {
 		pointer-events: none !important;
 	}
 	:global(body.agent-dock-resizing *) {
 		cursor: col-resize !important;
 	}
 
+	/* Full-viewport interceptor: sits above the IDE so moves never hit the editor. */
+	.resize-shield {
+		position: fixed;
+		inset: 0;
+		z-index: 2147483646;
+		cursor: col-resize;
+		touch-action: none;
+	}
+
 	/* No slide-in translate — that painted over the IDE and felt like a cover */
 
 	.resize-handle {
 		position: absolute;
-		left: -5px;
+		left: -6px;
 		top: 0;
 		bottom: 0;
-		width: 10px;
+		width: 12px;
 		cursor: col-resize;
-		z-index: 20;
+		z-index: 40;
 		touch-action: none;
 		transition: background 140ms ease;
 	}

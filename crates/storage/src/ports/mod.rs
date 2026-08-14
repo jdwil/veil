@@ -26,6 +26,7 @@ pub trait MetadataStore: Send + Sync {
     async fn create_repo(&self, metadata: Repo) -> Result<(), DomainError>;
     async fn get_repo(&self, id: RepoId) -> Result<Repo, DomainError>;
     async fn list_repos(&self) -> Result<Vec<Repo>, DomainError>;
+    async fn update_repo(&self, metadata: Repo) -> Result<(), DomainError>;
     async fn delete_repo(&self, id: RepoId) -> Result<(), DomainError>;
     async fn put_branch(&self, repo_id: RepoId, branch: BranchInfo) -> Result<(), DomainError>;
     async fn get_branch(&self, repo_id: RepoId, name: String) -> Result<BranchInfo, DomainError>;

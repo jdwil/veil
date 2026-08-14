@@ -31,6 +31,8 @@ export VEIL_SOURCE_BRANCH="${VEIL_SOURCE_BRANCH:-main}"
 export VEIL_LAYERS_DIR="${VEIL_LAYERS_DIR:-$ROOT/layers}"
 # Durable coding sessions (session workdirs + DDB META + agent turns).
 export VEIL_SESSIONS="${VEIL_SESSIONS:-1}"
+# Real git origin on S3 (see docs/ADR_GIT_ORIGIN_S3.md). auto = on with sessions.
+export VEIL_GIT_ORIGIN="${VEIL_GIT_ORIGIN:-auto}"
 export VEIL_WS_ROOT="${VEIL_WS_ROOT:-${TMPDIR:-/tmp}/veil-ws}"
 export VEIL_DEV_USER="${VEIL_DEV_USER:-${USER:-local-dev}}"
 # Optional slug→repo_id map (DDB scan is primary). Known dev seeds:

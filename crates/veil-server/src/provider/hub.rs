@@ -255,6 +255,10 @@ impl SourceProvider for MultiProjectProvider {
         self.hub.bind_session_provider(slug, provider);
     }
 
+    fn has_coding_session(&self, slug: &str) -> bool {
+        self.hub.has_open(slug)
+    }
+
     async fn list_files(&self) -> Vec<FileInfo> {
         match self.session() {
             Ok(p) => p.list_files().await,

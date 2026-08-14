@@ -145,6 +145,11 @@ impl MetadataStore for DdbMetadataStore {
         Ok(())
     }
 
+    async fn update_repo(&self, metadata: Repo) -> Result<(), DomainError> {
+        // Same PK/SK as create — overwrite the META JSON blob.
+        self.create_repo(metadata).await
+    }
+
     async fn delete_branch(&self, repo_id: RepoId, name: String) -> Result<(), DomainError> {
         self.client
             .delete_item()

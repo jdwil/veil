@@ -25,7 +25,7 @@ VEIL source comes in three related formats, chosen by the first keyword:
 
 | Extension | Top keyword | Purpose |
 |-----------|-------------|---------|
-| `.veil`   | `sol` or `pkg` | An application (`sol`) or a reusable package (`pkg`). |
+| `.veil`   | `pkg` | Application or reusable package. **Never write `sol`** (removed; lexer may still accept it). |
 | `.veil`   | `use` (first token) | A *composition* — imports and wires other packages. |
 | `.layer`  | `pkg` | A layer: defines domain vocabulary (see §7). |
 | `.stub`   | `stub` | Declares an external Rust crate's public API (see §8). |
@@ -39,7 +39,7 @@ comment to end of line.
 
 ### `pkg` — Package
 The root of an application. `pkg <Name>` followed by an indented body.
-(`sol` is accepted as a deprecated alias and produces identical output.)
+Do **not** write `sol` — that keyword is gone. Old files that still say `sol` parse as `pkg`.
 ```
 pkg CustomerOnboarding
   use ddd
@@ -52,7 +52,7 @@ The body accepts `use`, `link`, `adapt`, `lang`, `type`, `const`, `flow`,
 See [`ADAPT.md`](ADAPT.md) for product specialization.
 
 ### `pkg` — Package
-A reusable, versioned unit: `pkg <Name> [<version>]`. Same body as `sol` plus
+A reusable, versioned unit: `pkg <Name> [<version>]`. Same body as an application `pkg` plus
 metadata lines and an `expose` block. Layer files are themselves packages.
 ```
 pkg ddd v1
@@ -786,7 +786,7 @@ The definitive list of words the **lexer** reserves (everything else is an
 identifier / layer vocabulary):
 
 `struct` `enum` `fn` `trait` `let`* `mod` `if` `else` `match` `ret` `true`
-`false` `impl` `sol` `pkg` `use` `link` `adapt` `lang` `expose` `node` `flow` `alt`* `loop`
+`false` `impl` `pkg` `use` `link` `adapt` `lang` `expose` `node` `flow` `alt`* `loop`
 `err` `call` `input` `fallback` `for` `while` `mut` `type` `const` `await`
 `break` `continue` `static` `boundary` `as` `desc` `output` `cst`
 `group` `allow` `deny` `export` `ins` `rfn` `rpl` `omit` `ren` `stock`

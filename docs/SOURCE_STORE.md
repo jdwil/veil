@@ -4,8 +4,9 @@ Local dual-loop against the **dev** account should mirror production:
 
 | Data | Store |
 |------|--------|
-| Repo metadata (id, slug, branches) | DynamoDB `VEIL_DDB_TABLE` |
-| Source files + `veil.toml` | S3 `BUCKET` / `VEIL_S3_BUCKET` keys `repos/{repo_id}/{branch}/{path}` |
+| Repo metadata (id, slug, default branch) | DynamoDB `VEIL_DDB_TABLE` |
+| **Git origin** (truth) | S3 `git/{repo_id}/` — bundle engine (see [`ADR_GIT_ORIGIN_S3.md`](./ADR_GIT_ORIGIN_S3.md)) |
+| Checkout cache (compile / HTTP) | S3 `repos/{repo_id}/{branch}/{path}` — updated on push/merge |
 | Deploy state (CURRENT / versions) | DynamoDB `DEPLOY#…` rows |
 
 ## Env (local server)
@@ -53,7 +54,7 @@ Agent **must not** shell-write or `mkdir` under `~/dev/veil-projects` when remot
 
 - `ProjectsHub` honors `VEIL_SOURCE_MODE` via `provider/s3_workspace.rs`.
 - `GET /api/projects` returns remote slugs when mode is `s3` / `prefer_s3`.
-- Writes: `write_source` → local materialization **and** `aws s3 cp` to `repos/{id}/{branch}/{path}` (**fail closed** — no success without durable put).
+- Writes: `write_source` → session working tree (real git checkout). Durable history is `session_commit` (git commit + push bundle to `git/{id}/`). Checkout cache `repos/{id}/{branch}/` is refreshed on push.
 - Optional `VEIL_REPO_MAP=slug=uuid,…` skips DDB for id resolve; DDB META scan is primary.
 
 ### Durable sessions

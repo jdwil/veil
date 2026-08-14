@@ -85,23 +85,45 @@ async fn get_repo(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     // Accept repo UUID or slug (agent open_project / open_ide use slugs).
-    match storage::application::get_repo(&st.deps, id.clone()).await {
+    match storage::application::resolve_repo(&st.deps, &id).await {
         Ok(repo) => Ok(Json(json!(repo))),
-        Err(_) => {
-            let repos = storage::application::list_repos(&st.deps)
-                .await
-                .map_err(domain_status)?;
-            let needle = id.to_lowercase();
-            if let Some(repo) = repos.into_iter().find(|r| {
-                r.id.value.eq_ignore_ascii_case(&id)
-                    || r.slug.eq_ignore_ascii_case(&needle)
-                    || r.name.eq_ignore_ascii_case(&needle)
-            }) {
-                Ok(Json(json!(repo)))
-            } else {
-                Err(StatusCode::NOT_FOUND)
-            }
-        }
+        Err(e) => Err(domain_status(e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateRepoBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    clear_description: bool,
+}
+
+async fn update_repo(
+    State(st): State<StorageState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateRepoBody>,
+) -> Result<Json<Value>, StatusCode> {
+    if body.name.is_none() && body.slug.is_none() && body.description.is_none() && !body.clear_description
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    match storage::application::update_repo(
+        &st.deps,
+        id,
+        body.name,
+        body.slug,
+        body.description,
+        body.clear_description,
+    )
+    .await
+    {
+        Ok(repo) => Ok(Json(json!(repo))),
+        Err(e) => Err(domain_status(e)),
     }
 }
 
@@ -833,8 +855,30 @@ so a `cr/…` branch is created and the session is published, then Merge."
     let _ = ensure_ci_passed(&st.deps, id, "merge").await;
     match change_management::application::merge_pr(&st.deps, id, merger, slug.clone()).await {
         Ok(mut v) => {
-            // Domain merge only advances the git ref pointer. Product source lives
-            // under repos/{id|slug}/{branch}/ — promote trees so main actually updates.
+            if veil_server::git_origin::origin_enabled() {
+                let origin = veil_server::git_origin::GitOrigin::new(pr.repo_id.to_string());
+                if origin.exists() {
+                    let tmp = std::env::temp_dir().join(format!("veil-git-merge-{}", pr.repo_id));
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    match origin.merge_and_push(&tmp, &source, &target) {
+                        Ok(sha) => {
+                            if let Some(obj) = v.as_object_mut() {
+                                obj.insert("merge_commit".into(), serde_json::json!(sha));
+                                obj.insert("via".into(), serde_json::json!("git"));
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(obj) = v.as_object_mut() {
+                                obj.insert("git_merge_error".into(), serde_json::json!(e));
+                            }
+                            tracing::error!(error = %e, "git origin merge failed");
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    return Ok(Json(v));
+                }
+            }
+            // Legacy: tree copy when no git origin exists yet.
             let promoted = promote_branch_trees(&slug, &pr.repo_id.to_string(), &source, &target).await;
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("file_promote".into(), promoted);
@@ -1134,12 +1178,179 @@ fn diff_item_to_product(item: &veil_ir::DiffItem) -> Value {
     }
 }
 
+fn collect_veil_rels(root: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+    fn rec(root: &std::path::Path, dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                if matches!(name.as_str(), ".git" | "target" | "generated" | "node_modules") {
+                    continue;
+                }
+                rec(root, &p, out);
+            } else if name.ends_with(".veil") || name.ends_with(".layer") {
+                if let Ok(rel) = p.strip_prefix(root) {
+                    out.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    rec(root, root, out);
+}
+
+fn compute_diff_from_git_origin(
+    origin: &veil_server::git_origin::GitOrigin,
+    base_branch: &str,
+    head_branch: &str,
+) -> Result<Value, String> {
+    let base_dir = origin.checkout_tmp(base_branch)?;
+    let head_dir = origin.checkout_tmp(head_branch)?;
+    let patch = origin
+        .unified_diff_refs(base_branch, head_branch)
+        .unwrap_or_default();
+    let mut all = std::collections::BTreeSet::new();
+    collect_veil_rels(&base_dir, &mut all);
+    collect_veil_rels(&head_dir, &mut all);
+    let mut file_diffs = Vec::new();
+    let mut product_changes = Vec::new();
+    let mut merged_items: Vec<veil_ir::DiffItem> = Vec::new();
+    let mut merged_base = veil_ir::IrGraph::new();
+    let mut merged_head = veil_ir::IrGraph::new();
+    let mut used_layers = std::collections::BTreeSet::new();
+    let mut parse_notes = Vec::new();
+    let mut files_touched = 0i64;
+    for path in all {
+        let base_src = std::fs::read_to_string(base_dir.join(&path)).unwrap_or_default();
+        let head_src = std::fs::read_to_string(head_dir.join(&path)).unwrap_or_default();
+        if base_src == head_src {
+            continue;
+        }
+        files_touched += 1;
+        let status = if base_src.is_empty() {
+            "added"
+        } else if head_src.is_empty() {
+            "removed"
+        } else {
+            "modified"
+        };
+        file_diffs.push(json!({
+            "path": path,
+            "status": status,
+            "hunks": unified_hunks(&base_src, &head_src, 3),
+            "base_lines": base_src.lines().count(),
+            "head_lines": head_src.lines().count(),
+        }));
+        for line in head_src.lines().chain(base_src.lines()) {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("use ") {
+                let dep = rest.split_whitespace().next().unwrap_or("").trim();
+                if !dep.is_empty() {
+                    used_layers.insert(dep.to_string());
+                }
+            }
+        }
+        let base_ir = if base_src.is_empty() {
+            veil_ir::IrGraph::new()
+        } else {
+            match ir_from_veil_source(&base_src) {
+                Ok(g) => g,
+                Err(e) => {
+                    parse_notes.push(format!("{path} (base): {e}"));
+                    veil_ir::IrGraph::new()
+                }
+            }
+        };
+        let head_ir = if head_src.is_empty() {
+            veil_ir::IrGraph::new()
+        } else {
+            match ir_from_veil_source(&head_src) {
+                Ok(g) => g,
+                Err(e) => {
+                    parse_notes.push(format!("{path} (head): {e}"));
+                    veil_ir::IrGraph::new()
+                }
+            }
+        };
+        merge_ir_graph(&mut merged_base, &base_ir);
+        merge_ir_graph(&mut merged_head, &head_ir);
+        let d = veil_ir::structural_diff(&base_ir, &head_ir, base_branch, head_branch);
+        for item in &d.items {
+            product_changes.push(diff_item_to_product(item));
+        }
+        merged_items.extend(d.items);
+    }
+    let _ = std::fs::remove_dir_all(&base_dir);
+    let _ = std::fs::remove_dir_all(&head_dir);
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut changed = 0usize;
+    for item in &merged_items {
+        match item {
+            veil_ir::DiffItem::Added { .. } => added += 1,
+            veil_ir::DiffItem::Removed { .. } => removed += 1,
+            _ => changed += 1,
+        }
+    }
+    let mut tmp = veil_ir::StructDiff {
+        base_label: base_branch.to_string(),
+        head_label: head_branch.to_string(),
+        items: std::mem::take(&mut merged_items),
+        added,
+        removed,
+        changed,
+        item_annotations: None,
+        item_peeks: None,
+        item_peeks_base: None,
+        item_impact: None,
+    };
+    veil_ir::enrich_diff_peeks(&mut tmp, &merged_base, &merged_head);
+    veil_ir::enrich_diff_impact(&mut tmp, &merged_head, &merged_base);
+    veil_ir::sort_diff_for_review(&mut tmp);
+    let review_policies = resolve_review_policies_for_layers(
+        used_layers.iter().map(|s| s.as_str()).collect(),
+    );
+    Ok(json!({
+        "via": "git",
+        "git_patch": patch,
+        "base_label": base_branch,
+        "head_label": head_branch,
+        "items": tmp.items,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "changes": product_changes,
+        "file_diffs": file_diffs,
+        "files_changed": files_touched,
+        "description": format!(
+            "git diff {base_branch}...{head_branch} · +{added} −{removed} ~{changed} · {files_touched} files"
+        ),
+        "parse_notes": parse_notes,
+        "review_policies": review_policies,
+        "item_peeks": tmp.item_peeks,
+        "item_impact": tmp.item_impact,
+    }))
+}
+
 async fn compute_branch_structural_diff(
     deps: &change_management::application::Deps,
     slug: &str,
     base_branch: &str,
     head_branch: &str,
 ) -> Result<Value, String> {
+    if veil_server::git_origin::origin_enabled() {
+        if let Ok(rid) = veil_server::provider::s3_workspace::resolve_repo_id(slug) {
+            let origin = veil_server::git_origin::GitOrigin::new(&rid);
+            if origin.exists() {
+                match compute_diff_from_git_origin(&origin, base_branch, head_branch) {
+                    Ok(v) => return Ok(v),
+                    Err(e) => {
+                        tracing::warn!(error = %e, %slug, "git origin PR diff failed; falling back");
+                    }
+                }
+            }
+        }
+    }
     let base_files = deps
         .git
         .list_files(slug.to_string(), base_branch.to_string())
@@ -2317,7 +2528,7 @@ pub async fn build_platform_router(
         )
         .route(
             "/api/repos/{id}",
-            get(get_repo).delete(delete_repo),
+            get(get_repo).patch(update_repo).delete(delete_repo),
         )
         .route(
             "/api/repos/{id}/mission",

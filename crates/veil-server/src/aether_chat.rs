@@ -764,6 +764,19 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
         "list_prs" | "open_prs" => Some("/pulls".into()),
         "create_pr" | "open_create_pr" => Some("/pulls/new".into()),
         "list_projects" | "open_projects" | "delete_project" => Some("/projects".into()),
+        "rename_project" | "update_project" => {
+            let project = detail
+                .get("slug")
+                .or_else(|| detail.get("project"))
+                .or_else(|| detail.pointer("/project/slug"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if project.is_empty() {
+                Some("/projects".into())
+            } else {
+                Some(format!("/projects/{project}"))
+            }
+        }
         "create_project" | "create_repo" => {
             let project = detail
                 .get("slug")
@@ -873,6 +886,8 @@ fn navigation_for_platform_tool(name: &str, detail: &serde_json::Value) -> Optio
                 | "list_files"
                 | "create_project"
                 | "create_repo"
+                | "rename_project"
+                | "update_project"
         );
         let action = if name == "open_ide"
             || is_ide_path

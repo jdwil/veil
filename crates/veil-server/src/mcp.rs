@@ -726,11 +726,13 @@ async fn dispatch_tool<P: SourceProvider>(
                 | "switch_project"
                 | "create_project"
                 | "create_repo"
+                | "rename_project"
+                | "update_project"
         ) {
             if let Some(slug) =
                 crate::agent_scope::slug_from_tool(tool_name, arguments, &result)
             {
-                match crate::agent_scope::prepare_project(&slug, Some(provider.as_ref())) {
+                match crate::agent_scope::ensure_bound(&slug, Some(provider.as_ref())) {
                     Ok(info) => {
                         // Merge bind info into tool result for the model
                         if let Ok(mut v) = serde_json::from_str::<Value>(&result) {
@@ -763,8 +765,9 @@ async fn dispatch_tool<P: SourceProvider>(
                     .and_then(crate::agent_scope::normalize_slug)
             });
         if let Some(name) = fallback {
-            // Ensure hub has a live session provider for this slug (not empty)
-            let _ = crate::agent_scope::prepare_project(&name, Some(provider.as_ref()));
+            // Hot bind only — full prepare_project rematerializes S3 and
+            // historically deadlocked ACP via reset_acp mid-turn.
+            let _ = crate::agent_scope::ensure_bound(&name, Some(provider.as_ref()));
             return crate::provider::hub::CURRENT_PROJECT
                 .scope(name, dispatch_tool_scoped(provider, tool_name, arguments))
                 .await;
@@ -1014,6 +1017,7 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .map_err(|e| format!("write failed: {e}"))?;
             // Backend smoke (gen + cargo check). Can take minutes on cold cargo;
             // chat WS heartbeats keep the agent dock alive meanwhile.
+            let mut smoke_line = "Smoke: skipped (no project root).".to_string();
             if let Some(root) = provider.project_root() {
                 let proj = crate::provider::hub::CURRENT_PROJECT
                     .try_with(|n| n.clone())
@@ -1024,32 +1028,50 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                     "write_source: starting dual-loop smoke (may take a while)"
                 );
                 let smoke_start = std::time::Instant::now();
-                if let Err(smoke_err) =
-                    crate::devloop::smoke_agent_write(&root, &active_path, proj.as_deref())
-                {
-                    tracing::warn!(
-                        secs = smoke_start.elapsed().as_secs(),
-                        "write_source: smoke FAILED"
-                    );
-                    if let Some(prev) = prev {
-                        let _ = provider.write_source("", &prev).await;
-                        let _ = crate::devloop::smoke_agent_write(
-                            &root,
-                            &active_path,
-                            proj.as_deref(),
+                smoke_line = match crate::devloop::smoke_agent_write(
+                    &root,
+                    &active_path,
+                    proj.as_deref(),
+                ) {
+                    Err(smoke_err) => {
+                        tracing::warn!(
+                            secs = smoke_start.elapsed().as_secs(),
+                            "write_source: smoke FAILED"
                         );
+                        if let Some(prev) = prev {
+                            let _ = provider.write_source("", &prev).await;
+                            let _ = crate::devloop::smoke_agent_write(
+                                &root,
+                                &active_path,
+                                proj.as_deref(),
+                            );
+                        }
+                        return Ok(format!(
+                            "WRITE REJECTED — backend smoke test failed (file restored).\n\
+                             Active file: {active_name}\n\n{smoke_err}\n\n\
+                             Next: call dev_logs / smoke_status, fix the VEIL, retry write_source.\n\
+                             After success: list_routes → dev_restart → http_request."
+                        ));
                     }
-                    return Ok(format!(
-                        "WRITE REJECTED — backend smoke test failed (file restored).\n\
-                         Active file: {active_name}\n\n{smoke_err}\n\n\
-                         Next: call dev_logs / smoke_status, fix the VEIL, retry write_source.\n\
-                         After success: list_routes → dev_restart → http_request."
-                    ));
-                }
-                tracing::info!(
-                    secs = smoke_start.elapsed().as_secs(),
-                    "write_source: smoke OK"
-                );
+                    Ok(crate::devloop::SmokeOutcome::Clean) => {
+                        tracing::info!(
+                            secs = smoke_start.elapsed().as_secs(),
+                            "write_source: smoke OK"
+                        );
+                        "Smoke: backend gen + cargo check OK.".to_string()
+                    }
+                    Ok(crate::devloop::SmokeOutcome::Skipped(why)) => {
+                        tracing::info!(reason = %why, "write_source: smoke skipped");
+                        format!("Smoke: skipped ({why}).")
+                    }
+                    Ok(crate::devloop::SmokeOutcome::Kept(why)) => {
+                        tracing::warn!(reason = %why, "write_source: smoke not green (write kept)");
+                        format!(
+                            "Smoke: NOT green — write kept.\n{why}\n\
+                             Do not treat this as compile-success. Call veil_check."
+                        )
+                    }
+                };
             }
             let check = rig_tools::run_check(content, &registry);
             // MultiProjectProvider::write_source records revision/uncommitted.
@@ -1072,7 +1094,7 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             let must_fix = host.severity == "errors" || host.error_count > 0;
             Ok(format!(
                 "Wrote {} bytes to active file ({active_name}). revision={rev} (uncommitted until session_commit)\n\
-                 Smoke: backend gen + cargo check OK.\n\
+                 {smoke_line}\n\
                  Host check: severity={} errors={} warnings={}\n\
                  Next (same turn): review diagnostics below — if you introduced new errors/warnings, fix them NOW before any other task claim.\n\
                  Then session_commit with a short message (include why). When the whole task is done: open PR via create_pr + submit_pr — do NOT merge_branch.\n\
@@ -1294,6 +1316,9 @@ fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Val
         "writes_since_commit": meta.writes_since_commit,
         "work_dir": h.work_dir.to_string_lossy(),
         "active_pr_id": meta.active_pr_id,
+        "git_origin": crate::git_origin::origin_enabled(),
+        "git_workdir": h.work_dir.join(".git").is_dir(),
+        "git_status": h.git_status_files(),
         "host_check": crate::coding_gates::host_check_value(&meta),
     })
 }
@@ -1379,6 +1404,15 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
         }
         "list_commits" => {
             let h = resolve_session_for_ws(arguments).await?;
+            if crate::git_origin::origin_enabled() && h.work_dir.join(".git").is_dir() {
+                let log = h.git_log(50)?;
+                return Ok(serde_json::to_string_pretty(&json!({
+                    "session_id": h.session_id(),
+                    "via": "git",
+                    "commits": log,
+                }))
+                .unwrap_or_default());
+            }
             let commits = crate::session::list_session_commits(&h.session_id())?;
             Ok(serde_json::to_string_pretty(&json!({
                 "session_id": h.session_id(),

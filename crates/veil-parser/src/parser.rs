@@ -227,9 +227,9 @@ fn parse_file_with_guidance(
             // Emit guidance diagnostic for verbose form
             let span = parser.current().span;
             parser.guidance.push(veil_ir::ast::GuidanceDiagnostic {
-                code: "prefer_terse".to_string(),
-                message: "Use `pkg` instead of `sol` — `sol` is the deprecated verbose form".to_string(),
-                hint: "Replace `sol` with `pkg` for canonical terse syntax".to_string(),
+                code: "sol_removed".to_string(),
+                message: "`sol` is removed — use `pkg`".to_string(),
+                hint: "Replace `sol` with `pkg` at the file root. Never emit `sol`.".to_string(),
                 span,
             });
             parser.parse_package().map(VeilFile::Package)
