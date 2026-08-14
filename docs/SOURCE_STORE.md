@@ -9,6 +9,9 @@ Local dual-loop against the **dev** account should mirror production:
 | Checkout cache (compile / HTTP) | S3 `repos/{repo_id}/{branch}/{path}` — updated on push/merge |
 | Deploy state (CURRENT / versions) | DynamoDB `DEPLOY#…` rows |
 
+Leftover named prefixes (`repos/relay`, `git/{slug}/` SHA stubs) are not origin.
+Clean a messy dev bucket with `scripts/ops-cleanup-dev-store.sh` (dry-run) then `--apply`.
+
 ## Env (local ProductHost)
 
 `scripts/dev-stack.sh` sets these. Override only when you mean to.

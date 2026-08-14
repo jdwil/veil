@@ -1,4 +1,4 @@
-pkg dlx_core
+pkg example_core
   use ddd
   use di
   use sqlx

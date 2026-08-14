@@ -84,7 +84,7 @@ New top-level constructs: **ordinary syntax** (no `add` keyword).
 - [x] Package body accepts `adapt <name>` (optional `as` only if needed — default no)
 - [x] Resolver finds base `.veil` package sources (search paths: same dir, project, hub, examples, config)
 - [x] Error if base missing or is a layer/stub only
-- [x] Error if adapting denylisted platform packages (`dlx_core` at minimum)
+- [x] Error if adapting denylisted platform packages (`example_core` at minimum)
 - [x] AST field e.g. `Package.adapts: Vec<AdaptDecl>`
 - [x] Serialize/round-trip `adapt` lines
 

@@ -1,19 +1,19 @@
 # Wear Test product family — stock application (first draft).
-# Layer vocabulary: wear_test.layer · Platform data: dlx_core (IAAA).
+# Layer vocabulary: wear_test.layer · Platform data: example_core (IAAA).
 #
 # Shape:
 #   Wear Test Application  → many Initiatives + Dashboard
 #   Create Initiative      → wizard steps 1–5 (simple surface; step 3 can deepen)
 #
-# Note: `use dlx_core` is a package dependency (expose: GetCohort, …). When opened
-# as a hub project with dlx_core.veil alongside, resolution is complete; alone in
+# Note: `use example_core` is a package dependency (expose: GetCohort, …). When opened
+# as a hub project with example_core.veil alongside, resolution is complete; alone in
 # examples/, import is deferred — guards below stay honest without hard DTO types.
 
 pkg WearTestApp
   use ddd
   use di
   use wear_test
-  use dlx_core
+  use example_core
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Wear Test Application — tenant-scoped product
@@ -29,7 +29,7 @@ pkg WearTestApp
           name: Str
           description: Str
           status: InitiativeStatus
-          # Enrollment (who participates) — ids point into dlx_core appliances
+          # Enrollment (who participates) — ids point into example_core appliances
           enrollment_mode: EnrollmentMode
           cohort_id: Opt<Id>
           list_id: Opt<Id>
@@ -47,7 +47,7 @@ pkg WearTestApp
         Completed
         Archived
 
-      # Step 1 — maps to dlx_core cohort / list / segment / roster
+      # Step 1 — maps to example_core cohort / list / segment / roster
       enum EnrollmentMode
         EntireCohort
         List
@@ -104,7 +104,7 @@ pkg WearTestApp
 
       # ── Wizard: create a new initiative (steps 1–5 as ordered work) ───────
       # Expert surface stays simple; Step 3 body can grow without changing shape.
-      # Full GetCohort validation wires when dlx_core package is on the bus.
+      # Full GetCohort validation wires when example_core package is on the bus.
 
       svc CreateInitiative
         input
@@ -124,7 +124,7 @@ pkg WearTestApp
           start_date: Opt<Dt>
           end_date: Opt<Dt>
         step step1_choose_cohort
-          # Enrollment mode selects which dlx_core appliance ids must be present.
+          # Enrollment mode selects which example_core appliance ids must be present.
           # EntireCohort / List / Segment / Roster / Custom — deep checks via Bus later.
           guard name != "", "initiative name required"
         step step2_configure

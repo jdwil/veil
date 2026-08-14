@@ -11,7 +11,7 @@ use crate::span::Span;
 /// Platform / library packages that must not be specialized via `adapt` (use only).
 /// `reaction` is the graph language + IR types package: `use reaction` loads
 /// vocabulary (layer) and types, not an inlined stock product on the canvas.
-pub const ADAPT_DENYLIST: &[&str] = &["dlx_core", "reaction"];
+pub const ADAPT_DENYLIST: &[&str] = &["example_core", "reaction"];
 
 /// Error from adapt resolve / merge.
 #[derive(Debug, Clone)]
@@ -1687,8 +1687,8 @@ mod tests {
     }
 
     #[test]
-    fn denylist_dlx_core() {
-        assert!(is_adapt_denied("dlx_core"));
+    fn denylist_example_core() {
+        assert!(is_adapt_denied("example_core"));
         assert!(is_adapt_denied("reaction"));
         assert!(!is_adapt_denied("wear_test"));
     }
@@ -1756,7 +1756,7 @@ mod tests {
     fn chain_denylist_errors() {
         let mut leaf = empty_pkg("bad");
         leaf.adapts.push(AdaptDecl {
-            package_name: "dlx_core".into(),
+            package_name: "example_core".into(),
             span: sp(),
         });
         let err = build_adapt_chain(&leaf, |_| unreachable!()).unwrap_err();

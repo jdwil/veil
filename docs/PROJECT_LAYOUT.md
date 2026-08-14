@@ -95,7 +95,7 @@ When the **platform runtime** runs locally, it is configured with a single
     stubs/
   billing/                       # independent git repo
     …
-  dlx_core/                      # independent git repo
+  example_core/                      # independent git repo
     …
 ```
 
@@ -118,7 +118,7 @@ When the **platform runtime** runs locally, it is configured with a single
 ```text
 ┌─ Runtime UX (VEIL) ──── embeds veil-server ──────────────┐
 │  config: ~/.veil/config.json  projects_dir=…             │
-│  [onboarding] [billing] [dlx_core]  [+ New]              │
+│  [onboarding] [billing] [example_core]  [+ New]              │
 │       │                                                  │
 │       └─ Open IDE view ──► same host :port               │
 │            /api/p/billing/ir  (request-scoped project)   │

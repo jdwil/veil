@@ -269,7 +269,7 @@ handwritten Rust. That stays. Customer apps declare `compose` + `endpoint`.
 │  - Config loading                           │
 │                                             │
 │  VEIL-generated crates (domain code)        │
-│  - dlx_core (IAAA context)                  │
+│  - example_core (IAAA context)                  │
 │  - wear_test (WearTesting context)          │
 │  - veil_shared (Bus trait, DomainError)     │
 └─────────────────────────────────────────────┘

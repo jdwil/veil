@@ -2,7 +2,7 @@
 
 Product-family languages (wear test, loyalty, …) live as `.layer` files.
 Client products are **packages** that `use` those layers plus platform packages
-(`dlx_core`, providers, signals). Soft knobs stay data; control flow stays in packages.
+(`example_core`, providers, signals). Soft knobs stay data; control flow stays in packages.
 
 ## Project layout
 

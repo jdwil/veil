@@ -606,9 +606,24 @@ impl SessionManager {
             .or_else(|| resolve_repo_id(project_key).ok());
 
         let mut rev = 0u64;
-        // Prefer the task-local session, then active work line.
-        let writer = writing_session_id
-            .map(|s| s.to_string())
+        // Prefer the active feature work line over a stale mainline CURRENT_SESSION
+        // (IDE still sending the old session header after create_branch).
+        let active_feature = ident
+            .as_ref()
+            .and_then(|i| self.active_for_project(&i.slug))
+            .or_else(|| self.active_for_project(project_key))
+            .and_then(|sid| {
+                self.attach(&sid).ok().and_then(|h| {
+                    if h.snapshot_meta().draft_mode {
+                        Some(h.session_id())
+                    } else {
+                        None
+                    }
+                })
+            });
+
+        let writer = active_feature
+            .or_else(|| writing_session_id.map(|s| s.to_string()))
             .or_else(current_session_id)
             .or_else(|| {
                 ident
@@ -621,7 +636,10 @@ impl SessionManager {
             if let Ok(h) = self.attach(sid) {
                 rev = h.record_write(path);
                 if let Some(ref id) = ident {
-                    write_sticky_aliases(&current_user_id(), id, sid);
+                    // Never rewrite sticky mainline pointer to a feature branch.
+                    if !h.snapshot_meta().draft_mode {
+                        write_sticky_aliases(&current_user_id(), id, sid);
+                    }
                     self.set_active_for_identity(id, sid);
                 }
             }

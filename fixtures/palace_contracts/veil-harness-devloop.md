@@ -111,7 +111,7 @@ dev_port = 5174
 
 [dev]
 # Additional packages for multi-package local harness
-packages = ["/path/to/dlx_core/dlx_core.veil"]
+packages = ["/path/to/example_core/example_core.veil"]
 ```
 
 DevToolbar: per-target play/stop or **All targets**.

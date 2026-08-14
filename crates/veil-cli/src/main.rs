@@ -2526,7 +2526,7 @@ fn main() {
 
             // Single-file gen must not leave crates from a prior multi-package
             // or different package gen (e.g. stale `crates/iaaa` after removing
-            // dlx_core). Prune crates/ entries not present in this gen's files.
+            // example_core). Prune crates/ entries not present in this gen's files.
             // Multi-package devloop passes --no-prune so sibling packages survive
             // intermediate gens; it prunes once after gen-harness.
             if !no_prune {

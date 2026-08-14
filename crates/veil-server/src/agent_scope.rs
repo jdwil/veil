@@ -70,28 +70,41 @@ pub fn prepare_project(
 
     let mgr = SessionManager::global();
 
-    // Drop warm mainline handles so attach re-syncs S3 (merge promotions, etc.)
-    if let Ok(list) = session::list_sessions_for_user(&session::current_user_id()) {
-        for m in list
-            .into_iter()
-            .filter(|m| m.repo_id == ident.repo_id && !m.draft_mode)
-        {
-            mgr.drop_handle(&m.session_id);
-        }
-    }
-    // Also clear active for slug + repo id aliases (will re-set)
-    for key in [&slug, &ident.repo_id, slug_raw] {
-        if let Some(sid) = mgr.active_for_project(key) {
-            mgr.drop_handle(&sid);
+    // Rematerialize mainline only. Never drop an active feature-branch workdir —
+    // that wiped agent commits and forced writes back onto main (empty PR diffs).
+    let active_is_feature = [&slug, &ident.repo_id, slug_raw]
+        .iter()
+        .find_map(|key| {
+            let sid = mgr.active_for_project(key)?;
+            let h = mgr.attach(&sid).ok()?;
+            if h.snapshot_meta().draft_mode {
+                Some(true)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false);
+
+    if !active_is_feature {
+        if let Ok(list) = session::list_sessions_for_user(&session::current_user_id()) {
+            for m in list
+                .into_iter()
+                .filter(|m| m.repo_id == ident.repo_id && !m.draft_mode)
+            {
+                mgr.drop_handle(&m.session_id);
+            }
         }
     }
 
     let h = mgr.resolve_for_project(&slug)?;
-    // Extra pull + rebuild provider so in-memory source matches S3
     let sid = h.session_id();
-    let _ = h.pull_remote();
-    mgr.drop_handle(&sid);
-    let h = mgr.attach(&sid).or_else(|_| mgr.resolve_for_project(&slug))?;
+    if !h.snapshot_meta().draft_mode {
+        let _ = h.pull_remote();
+        mgr.drop_handle(&sid);
+    }
+    let h = mgr
+        .attach(&sid)
+        .or_else(|_| mgr.resolve_for_project(&slug))?;
     mgr.set_active_for_project(&slug, &h.session_id());
     mgr.set_active_for_project(&ident.repo_id, &h.session_id());
 
@@ -129,12 +142,16 @@ pub fn prepare_project(
         "repo_id": h.snapshot_meta().repo_id,
         "draft_mode": h.snapshot_meta().draft_mode,
         "branch_name": h.snapshot_meta().branch_name,
+        "on_feature_branch": h.snapshot_meta().draft_mode,
         "files": files,
         "file_count": files.len(),
         "active_file": if active.is_empty() { Value::Null } else { json!(active) },
         "message": format!(
-            "Bound project `{slug}` ({} files). Use write_source / read_source / veil_check — scope is set.",
-            files.len()
+            "Bound project `{slug}` ({} files, branch={}, draft={}). \
+             Use write_source / read_source / veil_check — scope is set.",
+            files.len(),
+            h.snapshot_meta().branch_name.as_deref().unwrap_or("main"),
+            h.snapshot_meta().draft_mode,
         ),
     }))
 }

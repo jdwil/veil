@@ -595,6 +595,38 @@ fn list_s3_slug_ids() -> Result<Vec<(String, String)>, String> {
     Ok(pairs)
 }
 
+/// Import `repos/{id}/{branch}/` into git origin for catalog repos that have
+/// no `git/{id}/` yet. Best-effort; logs and continues on individual failures.
+pub fn backfill_git_origins() -> Vec<(String, String, Result<String, String>)> {
+    if !crate::git_origin::origin_enabled() {
+        return Vec::new();
+    }
+    let Ok(pairs) = list_s3_slug_ids() else {
+        return Vec::new();
+    };
+    let br = branch();
+    let mut out = Vec::new();
+    for (slug, repo_id) in pairs {
+        let origin = crate::git_origin::GitOrigin::new(&repo_id);
+        if origin.exists() {
+            out.push((slug, repo_id, Ok("already".into())));
+            continue;
+        }
+        let r = origin
+            .import_legacy_tree(&br)
+            .and_then(|sha| match sha {
+                Some(s) => Ok(s),
+                None => Err("no legacy tree".into()),
+            });
+        match &r {
+            Ok(sha) => tracing::info!(%slug, %repo_id, %sha, "backfilled git origin"),
+            Err(e) => tracing::warn!(%slug, %repo_id, error = %e, "git origin backfill skipped"),
+        }
+        out.push((slug, repo_id, r));
+    }
+    out
+}
+
 fn s3_prefix(repo_id: &str) -> String {
     format!("repos/{}/{}/", repo_id, branch())
 }

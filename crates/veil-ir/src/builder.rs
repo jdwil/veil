@@ -20,6 +20,8 @@ pub fn build_ir_with_registry(solution: &Solution, registry: Option<&LayerRegist
     let mut builder = IrBuilder::new(registry);
     builder.build_solution(solution);
     builder.resolve_impl_bindings();
+    // Adapter `impl method(args)` omits types/returns — inherit from the port/trait method.
+    builder.inherit_impl_method_signatures();
     builder.resolve_references();
     builder.graph
 }
@@ -31,6 +33,35 @@ fn field_is_dep(field: &Field, registry: Option<&LayerRegistry>) -> bool {
     }
     // Without a registry, treat no field as a special dependency (no magic "dep").
     false
+}
+
+/// Port/trait method signature pieces used to flesh out adapter `impl` nodes.
+#[derive(Debug, Clone, Default)]
+struct PortMethodSig {
+    /// Parameter list without surrounding parens, e.g. `team_id: Str`.
+    params_inner: String,
+    /// Return type display, e.g. `List<Agent>` (empty = void / unit).
+    returns: String,
+}
+
+fn strip_method_bang(name: &str) -> String {
+    name.trim_end_matches('!').to_string()
+}
+
+fn prop_get(node: &IrNode, key: &str) -> Option<String> {
+    node.metadata
+        .properties
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+fn prop_set(node: &mut IrNode, key: &str, value: String) {
+    if let Some((_, v)) = node.metadata.properties.iter_mut().find(|(k, _)| k == key) {
+        *v = value;
+    } else {
+        node.metadata.properties.push((key.to_string(), value));
+    }
 }
 
 pub fn type_to_display(ty: &TypeExpr) -> String {
@@ -582,8 +613,19 @@ impl<'a> IrBuilder<'a> {
                     }
                 }
                 // Emit each implemented method as a child node.
+                // Port/trait signatures are applied when already built; a full
+                // order-independent pass runs in `inherit_impl_method_signatures`.
                 for imp in &c.impls {
-                    let params_str = imp.params.join(", ");
+                    let port = c
+                        .target
+                        .as_ref()
+                        .and_then(|t| self.lookup_port_method_sig(t, &imp.method_name));
+                    let params_str = port
+                        .as_ref()
+                        .map(|p| p.params_inner.clone())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| imp.params.join(", "));
+                    let returns_str = port.as_ref().map(|p| p.returns.clone()).unwrap_or_default();
                     let method_id = self.graph.add_node(
                         NodeKind::InterfaceMethod,
                         imp.method_name.clone(),
@@ -591,6 +633,15 @@ impl<'a> IrBuilder<'a> {
                     );
                     self.set_parent(method_id, id);
                     self.set_property(method_id, "params", &format!("({})", params_str));
+                    if !returns_str.is_empty() {
+                        self.set_property(method_id, "returns", &returns_str);
+                    }
+                    let sig = if returns_str.is_empty() {
+                        format!("({})", params_str)
+                    } else {
+                        format!("({}) -> {}", params_str, returns_str)
+                    };
+                    self.set_property(method_id, "signature", &sig);
                     if imp.body.is_empty() {
                         self.set_property(method_id, "abstract", "true");
                     } else {
@@ -599,7 +650,7 @@ impl<'a> IrBuilder<'a> {
                     self.graph.add_edge(id, method_id, EdgeKind::Contains);
 
                     // Emit Inputs child node for the method parameters.
-                    if !imp.params.is_empty() {
+                    if !imp.params.is_empty() || !params_str.is_empty() {
                         let inputs_id = self.graph.add_node(NodeKind::Inputs, "Inputs".to_string(), imp.span);
                         self.set_parent(inputs_id, method_id);
                         self.set_property(inputs_id, "params", &params_str);
@@ -611,7 +662,7 @@ impl<'a> IrBuilder<'a> {
                         self.build_step_body(&imp.body, method_id);
                     }
 
-                    // Emit Return node — scan body for ret expressions.
+                    // Return node: prefer explicit `ret` expr, else port return type.
                     let mut ret_expr_str = String::new();
                     for expr in &imp.body {
                         if let Expr::Return(inner) = expr {
@@ -620,6 +671,8 @@ impl<'a> IrBuilder<'a> {
                     }
                     let ret_display = if !ret_expr_str.is_empty() {
                         format!("→ {}", ret_expr_str)
+                    } else if !returns_str.is_empty() {
+                        format!("→ {}", returns_str)
                     } else {
                         "→ void".to_string()
                     };
@@ -627,6 +680,9 @@ impl<'a> IrBuilder<'a> {
                     self.set_parent(ret_id, method_id);
                     if !ret_expr_str.is_empty() {
                         self.set_property(ret_id, "expr", &ret_expr_str);
+                    }
+                    if !returns_str.is_empty() {
+                        self.set_property(ret_id, "type", &returns_str);
                     }
                     self.graph.add_edge(method_id, ret_id, EdgeKind::Contains);
                 }
@@ -1002,17 +1058,20 @@ impl<'a> IrBuilder<'a> {
     ) {
         match expr {
             Expr::Call(call) => {
-                let label = if call.method.is_empty() {
-                    format!("call {}", call.target)
+                let full = expr_to_display(expr);
+                let label = if full.chars().count() > 80 {
+                    let mut s: String = full.chars().take(77).collect();
+                    s.push('…');
+                    s
                 } else {
-                    format!("call {}.{}", call.target, call.method)
+                    full.clone()
                 };
                 let id = self.push_action(
                     parent_id,
                     label,
                     "call",
                     call.span,
-                    Some(&expr_to_display(expr)),
+                    Some(&full),
                     depth,
                     seq,
                 );
@@ -1424,6 +1483,163 @@ impl<'a> IrBuilder<'a> {
                     node.metadata
                         .properties
                         .push(("via".to_string(), impl_name.clone()));
+                }
+            }
+        }
+    }
+
+    /// Look up typed params + return type for a port/trait method already in the graph.
+    fn lookup_port_method_sig(&self, port_name: &str, method_name: &str) -> Option<PortMethodSig> {
+        let want = strip_method_bang(method_name);
+        let iface = self
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Interface && n.name == port_name)?;
+        let method = self.graph.nodes.iter().find(|n| {
+            n.kind == NodeKind::InterfaceMethod
+                && n.metadata.parent == Some(iface.id)
+                && strip_method_bang(&n.name) == want
+        })?;
+        let params_raw = prop_get(method, "params").unwrap_or_default();
+        let params_inner = params_raw
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .to_string();
+        let returns = prop_get(method, "returns").unwrap_or_default();
+        Some(PortMethodSig {
+            params_inner,
+            returns,
+        })
+    }
+
+    /// Adapter `impl foo(a, b)` bodies omit types/returns. Copy them from the
+    /// matching port/trait InterfaceMethod so the IDE does not show `→ void`.
+    fn inherit_impl_method_signatures(&mut self) {
+        let mut port_index: std::collections::HashMap<(String, String), PortMethodSig> =
+            std::collections::HashMap::new();
+
+        let interfaces: Vec<(NodeId, String)> = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Interface)
+            .map(|n| (n.id, n.name.clone()))
+            .collect();
+
+        for (iface_id, iface_name) in &interfaces {
+            for n in &self.graph.nodes {
+                if n.kind != NodeKind::InterfaceMethod || n.metadata.parent != Some(*iface_id) {
+                    continue;
+                }
+                let params_raw = prop_get(n, "params").unwrap_or_default();
+                let params_inner = params_raw
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')')
+                    .to_string();
+                let returns = prop_get(n, "returns").unwrap_or_default();
+                port_index.insert(
+                    (iface_name.clone(), strip_method_bang(&n.name)),
+                    PortMethodSig {
+                        params_inner,
+                        returns,
+                    },
+                );
+            }
+        }
+
+        let mut method_updates: Vec<(NodeId, PortMethodSig)> = Vec::new();
+        let mut return_updates: Vec<(NodeId, String, bool)> = Vec::new();
+
+        let impls: Vec<(NodeId, String)> = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Implementation)
+            .filter_map(|n| prop_get(n, "implements").map(|t| (n.id, t)))
+            .collect();
+
+        for (impl_id, target) in impls {
+            for n in &self.graph.nodes {
+                if n.kind != NodeKind::InterfaceMethod || n.metadata.parent != Some(impl_id) {
+                    continue;
+                }
+                let Some(sig) = port_index.get(&(target.clone(), strip_method_bang(&n.name)))
+                else {
+                    continue;
+                };
+                method_updates.push((n.id, sig.clone()));
+
+                for child in &self.graph.nodes {
+                    if child.kind != NodeKind::Return || child.metadata.parent != Some(n.id) {
+                        continue;
+                    }
+                    let has_expr = prop_get(child, "expr").map(|e| !e.is_empty()).unwrap_or(false);
+                    return_updates.push((child.id, sig.returns.clone(), has_expr));
+                }
+            }
+        }
+
+        for (method_id, sig) in method_updates {
+            if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == method_id) {
+                let typed_params = format!("({})", sig.params_inner);
+                let cur_params = prop_get(node, "params").unwrap_or_default();
+                let cur_inner = cur_params
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')')
+                    .to_string();
+                let use_port_params = !sig.params_inner.is_empty()
+                    && (cur_inner.is_empty()
+                        || (!cur_inner.contains(':') && sig.params_inner.contains(':')));
+                if use_port_params {
+                    prop_set(node, "params", typed_params.clone());
+                }
+                if !sig.returns.is_empty() {
+                    prop_set(node, "returns", sig.returns.clone());
+                }
+                let params_for_sig = if use_port_params {
+                    sig.params_inner.clone()
+                } else {
+                    cur_inner
+                };
+                let signature = if sig.returns.is_empty() {
+                    format!("({})", params_for_sig)
+                } else {
+                    format!("({}) -> {}", params_for_sig, sig.returns)
+                };
+                prop_set(node, "signature", signature);
+            }
+
+            if !sig.params_inner.is_empty() {
+                let inputs: Vec<NodeId> = self
+                    .graph
+                    .nodes
+                    .iter()
+                    .filter(|n| n.kind == NodeKind::Inputs && n.metadata.parent == Some(method_id))
+                    .map(|n| n.id)
+                    .collect();
+                for iid in inputs {
+                    if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == iid) {
+                        prop_set(node, "params", sig.params_inner.clone());
+                    }
+                }
+            }
+        }
+
+        for (ret_id, returns, has_expr) in return_updates {
+            if let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == ret_id) {
+                if !returns.is_empty() {
+                    prop_set(node, "type", returns.clone());
+                }
+                if !has_expr {
+                    if !returns.is_empty() {
+                        node.name = format!("→ {}", returns);
+                    } else if node.name == "→ void" || node.name.is_empty() {
+                        node.name = "→ void".to_string();
+                    }
                 }
             }
         }

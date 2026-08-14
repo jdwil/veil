@@ -1081,17 +1081,38 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .ok()
                 .or_else(crate::acp::get_acp_project);
             crate::coding_gates::record_host_check_for_project(project.as_deref(), &check);
-            let rev = project
+            let sess = project.as_ref().and_then(|p| {
+                crate::session::SessionManager::global()
+                    .resolve_for_project(p)
+                    .ok()
+            });
+            let rev = sess.as_ref().map(|h| h.revision()).unwrap_or(0);
+            let branch = sess
                 .as_ref()
-                .and_then(|p| {
-                    crate::session::SessionManager::global()
-                        .resolve_for_project(p)
-                        .ok()
-                        .map(|h| h.revision())
+                .map(|h| {
+                    let m = h.snapshot_meta();
+                    m.branch_name.clone().unwrap_or_else(|| {
+                        if m.draft_mode {
+                            "work".into()
+                        } else {
+                            "main".into()
+                        }
+                    })
                 })
-                .unwrap_or(0);
+                .unwrap_or_else(|| "main".into());
+            let draft = sess
+                .as_ref()
+                .map(|h| h.snapshot_meta().draft_mode)
+                .unwrap_or(false);
             let host = crate::coding_gates::parse_check_output(&check);
             let must_fix = host.severity == "errors" || host.error_count > 0;
+            let branch_note = if draft {
+                format!("branch={branch} (feature)")
+            } else {
+                format!(
+                    "branch={branch} (MAIN — call create_branch before multi-step work or PR will be empty)"
+                )
+            };
             let slug = project.clone().unwrap_or_default();
             let rationale = rats.get("*").cloned().or_else(|| {
                 rats.values().next().cloned()
@@ -1122,7 +1143,7 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 None
             };
             let summary = format!(
-                "Wrote {} bytes to active file ({active_name}). revision={rev} (uncommitted until session_commit)\n\
+                "Wrote {} bytes to active file ({active_name}). revision={rev} {branch_note} (uncommitted until session_commit)\n\
                  {smoke_line}\n\
                  Host check: severity={} errors={} warnings={}\n\
                  Next (same turn): review diagnostics below — if you introduced new errors/warnings, fix them NOW before any other task claim.\n\
@@ -1332,24 +1353,35 @@ async fn resolve_session_for_ws(
     arguments: &Value,
 ) -> Result<std::sync::Arc<crate::session::SessionHandle>, String> {
     use crate::session::SessionManager;
+    let mgr = SessionManager::global();
     if let Some(sid) = arguments
         .get("session_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
     {
-        let h = SessionManager::global().attach(sid)?;
-        SessionManager::global().set_active_for_project(&h.slug(), &h.session_id());
+        let h = mgr.attach(sid)?;
+        mgr.set_active_for_project(&h.slug(), &h.session_id());
         return Ok(h);
     }
-    if let Ok(sid) = crate::session::CURRENT_SESSION.try_with(|s| s.clone()) {
-        return SessionManager::global().attach(&sid);
-    }
+    // Prefer active feature branch over a stale mainline CURRENT_SESSION.
     let slug = crate::provider::hub::CURRENT_PROJECT
         .try_with(|n| n.clone())
-        .map_err(|_| {
-            "ws_* tools need session_id, X-Veil-Session-Id, or project scope".to_string()
-        })?;
-    SessionManager::global().resolve_for_project(&slug)
+        .ok()
+        .or_else(crate::acp::get_acp_project);
+    if let Some(ref slug) = slug {
+        if let Ok(active) = mgr.resolve_for_project(slug) {
+            if active.snapshot_meta().draft_mode {
+                return Ok(active);
+            }
+        }
+    }
+    if let Ok(sid) = crate::session::CURRENT_SESSION.try_with(|s| s.clone()) {
+        return mgr.attach(&sid);
+    }
+    let slug = slug.ok_or_else(|| {
+        "ws_* tools need session_id, X-Veil-Session-Id, or project scope".to_string()
+    })?;
+    mgr.resolve_for_project(&slug)
 }
 
 fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Value {

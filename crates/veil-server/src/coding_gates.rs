@@ -146,6 +146,16 @@ pub fn gate_session_commit(h: &SessionHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// True when this session is a feature work line (not main sticky).
+pub fn is_feature_branch(h: &SessionHandle) -> bool {
+    let m = h.snapshot_meta();
+    m.draft_mode
+        || m.branch_name
+            .as_deref()
+            .map(|b| b != "main" && b != "master" && !b.is_empty())
+            .unwrap_or(false)
+}
+
 /// Soft gate notes for opening a PR (`create_pr`).
 /// Does not block; returns warnings the caller must include in the tool result.
 pub fn gate_open_pr_notes(h: Option<&SessionHandle>, commit_count: usize) -> Vec<String> {
@@ -185,9 +195,16 @@ pub fn gate_open_pr_notes(h: Option<&SessionHandle>, commit_count: usize) -> Vec
             }
             if let Some(id) = meta.active_pr_id.as_ref().filter(|s| !s.is_empty()) {
                 notes.push(format!(
-                    "HINT: session already bound to open PR id `{id}` — prefer reuse \
-                     (update/submit that PR) when scope matches; avoid a second PR."
+                    "HINT: session active_pr_id=`{id}` — host will reuse only if still open \
+                     (Merged PRs are cleared automatically)."
                 ));
+            }
+            if !is_feature_branch(handle) {
+                notes.push(
+                    "WARN: session is on main — create_branch before create_pr so the \
+                     PR Wizard has a branch diff to review."
+                        .into(),
+                );
             }
         }
     }

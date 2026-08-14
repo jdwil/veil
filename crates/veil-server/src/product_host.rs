@@ -154,6 +154,26 @@ impl ProductHost {
         tracing::info!("  ide API:      http://127.0.0.1:{port}/api/p/{{name}}/ir");
         tracing::info!("  viewer:       {viewer}/?project=<name>&api=http://127.0.0.1:{port}");
 
+        if crate::git_origin::origin_enabled() {
+            tokio::spawn(async {
+                let n = tokio::task::spawn_blocking(|| {
+                    crate::provider::s3_workspace::backfill_git_origins()
+                })
+                .await;
+                match n {
+                    Ok(rows) => {
+                        let ok = rows.iter().filter(|r| r.2.is_ok()).count();
+                        tracing::info!(
+                            catalog = rows.len(),
+                            with_origin = ok,
+                            "git origin catalog backfill finished"
+                        );
+                    }
+                    Err(e) => tracing::warn!(error = %e, "git origin backfill task failed"),
+                }
+            });
+        }
+
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())

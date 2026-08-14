@@ -12,7 +12,7 @@
 #   Wear Test Application. Inside it, ops create multiple Initiatives
 #   (each initiative is one wear-test run). Creating an initiative is guided
 #   by a Wizard with five simple steps. Participant lists come from the
-#   platform (dlx_core): Cohort, List, Segment, Roster — not reinvented here.
+#   platform (example_core): Cohort, List, Segment, Roster — not reinvented here.
 #
 # WHO TOUCHES WHAT
 #   · Language designers  → this file (wear_test.layer)
@@ -26,7 +26,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 pkg wear_test v1
-  desc "Wear testing product-family DSL: Application, Initiative, wizard, dashboard. Built on dlx_core (cohorts, tenants)."
+  desc "Wear testing product-family DSL: Application, Initiative, wizard, dashboard. Built on example_core (cohorts, tenants)."
   author "VEIL"
   use ddd
 
@@ -91,7 +91,7 @@ pkg wear_test v1
   construct Enrollment
     kw enrollment
     mt struct
-    desc "STEP 1 of the wizard — who participates. Options map to dlx_core: entire Cohort, a List, a Segment, a Roster, or Custom rules. Does not store the people themselves; it stores which platform appliance to use."
+    desc "STEP 1 of the wizard — who participates. Options map to example_core: entire Cohort, a List, a Segment, a Roster, or Custom rules. Does not store the people themselves; it stores which platform appliance to use."
     visual
       icon "✅"
       color "#10b981"
@@ -197,7 +197,7 @@ pkg wear_test v1
     group application
 
   prompt
-    You author wear-test product packages that `use wear_test` and `use dlx_core`.
+    You author wear-test product packages that `use wear_test` and `use example_core`.
 
     ## Domain model (read this first)
     Tenant → Wear Test Application (one deploy) → many Initiatives (each is a wear-test run).
@@ -205,14 +205,14 @@ pkg wear_test v1
     Wizard creates an Initiative in five simple steps; Step 3 (data prep) may contain deep logic.
 
     ## Default wizard steps
-    1. Enrollment — who participates (cohort / list / segment / roster via dlx_core)
+    1. Enrollment — who participates (cohort / list / segment / roster via example_core)
     2. Configure — name, dates, signal bindings
     3. Data prep — input_data + transform (complex work still lives under this shape)
     4. Activations — what fires when
     5. Feedback channels — how we collect feedback
 
     ## Platform boundary
-    - Cohort, List, Segment, Roster, Tenant, User are dlx_core — never redefine them here.
+    - Cohort, List, Segment, Roster, Tenant, User are example_core — never redefine them here.
     - Client-specific extras go in a client package (e.g. brooks_wear_test.veil).
     - Prefer initiative / enrollment / signal_binding / data_prep / activation /
       feedback_channel / wizard / wizard_step over ad-hoc names (no "TestPlan").

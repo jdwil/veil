@@ -156,7 +156,7 @@ before codegen (one function body, no parent frames).
 ```veil
 pkg AcmeWearTest
   use ddd
-  use dlx_core
+  use example_core
   adapt wear_test
 
   ren ListInitiatives ListPrograms
@@ -185,7 +185,7 @@ pkg AcmeWearTest
     ...
 ```
 
-Platform packages (e.g. `dlx_core`) must not be adapted — only `use`d.
+Platform packages (e.g. `example_core`) must not be adapted — only `use`d.
 
 ### `lang` — Glossary
 A block of `term: definition` lines documenting domain terms. Metadata only;

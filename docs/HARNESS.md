@@ -84,7 +84,7 @@ platform hosts; local gen emits concrete impls so `cargo run -p veil_bin` works.
 ## Multi-package local harness (`[dev].packages`)
 
 Local dual-loop often needs **several product packages in one process** so they
-can share an HTTP surface (e.g. `wear_test` + `dlx_core` / IAAA). Production
+can share an HTTP surface (e.g. `wear_test` + `example_core` / IAAA). Production
 still deploys packages independently.
 
 ### `veil.toml`
@@ -92,8 +92,8 @@ still deploys packages independently.
 ```toml
 [dev]
 # Absolute or project-relative paths to additional .veil packages
-packages = ["/path/to/dlx_core/dlx_core.veil"]
-# packages = ["../dlx_core/dlx_core.veil"]
+packages = ["/path/to/example_core/example_core.veil"]
+# packages = ["../example_core/example_core.veil"]
 ```
 
 When `packages` is **non-empty** and the backend target is `rust`, dual-loop:
@@ -110,8 +110,8 @@ crates from prior multi gens).
 
 ```bash
 veil gen wear_test.veil -o generated/backend --no-prune
-veil gen /path/to/dlx_core/dlx_core.veil -o generated/backend --no-prune
-veil gen-harness wear_test.veil /path/to/dlx_core/dlx_core.veil -o generated/backend
+veil gen /path/to/example_core/example_core.veil -o generated/backend --no-prune
+veil gen-harness wear_test.veil /path/to/example_core/example_core.veil -o generated/backend
 cd generated/backend && cargo run -p veil_bin
 ```
 

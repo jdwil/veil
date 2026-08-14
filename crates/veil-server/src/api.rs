@@ -326,6 +326,63 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     with_auth(router)
 }
 
+/// Resolve the coding session for a project-scoped request.
+///
+/// Agent `create_branch` sets `active_by_project` to a draft feature session.
+/// The IDE keeps sending the older mainline `X-Veil-Session-Id` on every poll —
+/// that must not demote the work line, or writes land on main and PRs are empty.
+fn resolve_scoped_session(
+    mgr: &crate::session::SessionManager,
+    project: &str,
+    session_hdr: Option<&str>,
+) -> Result<std::sync::Arc<crate::session::SessionHandle>, String> {
+    if let Ok(active) = mgr.resolve_for_project(project) {
+        let am = active.snapshot_meta();
+        if am.draft_mode {
+            if let Some(hdr) = session_hdr {
+                if hdr == active.session_id() {
+                    return Ok(active);
+                }
+                if let Ok(hdr_h) = mgr.attach(hdr) {
+                    let hm = hdr_h.snapshot_meta();
+                    let same_repo = hm.repo_id == am.repo_id
+                        || hm.slug == am.slug
+                        || hm.slug == project;
+                    if same_repo && hm.draft_mode {
+                        mgr.set_active_for_project(project, &hdr_h.session_id());
+                        mgr.set_active_for_project(&hdr_h.slug(), &hdr_h.session_id());
+                        return Ok(hdr_h);
+                    }
+                    tracing::debug!(
+                        project = %project,
+                        active = %active.session_id(),
+                        header = %hdr,
+                        active_branch = ?am.branch_name,
+                        "keeping active feature branch over mainline session header"
+                    );
+                    return Ok(active);
+                }
+            }
+            return Ok(active);
+        }
+    }
+
+    if let Some(sid) = session_hdr {
+        match mgr.attach(sid) {
+            Ok(h) => {
+                mgr.set_active_for_project(project, &h.session_id());
+                mgr.set_active_for_project(&h.slug(), &h.session_id());
+                return Ok(h);
+            }
+            Err(e) => {
+                tracing::warn!(%sid, error = %e, "session header attach failed; resolving project");
+            }
+        }
+    }
+
+    mgr.resolve_for_project(project)
+}
+
 /// Validate project exists, then set [`CURRENT_PROJECT`] (RTU-006).
 /// Also binds durable coding session from `X-Veil-Session-Id` when present.
 async fn project_scope_middleware(
@@ -354,20 +411,11 @@ async fn project_scope_middleware(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    // Prefer durable session workspace when sessions are enabled.
-    // Always resolve the git-shaped work line (explicit header → active feature
-    // branch → sticky main) and rebind the hub so write_source hits the right tree.
+    // Work-line order: active feature branch wins over a stale mainline
+    // X-Veil-Session-Id from IDE polls (otherwise every write lands on main).
     if crate::session::sessions_enabled() {
         let mgr = crate::session::SessionManager::global();
-        let handle = if let Some(ref sid) = session_hdr {
-            let r = mgr.attach(sid);
-            if let Ok(ref h) = r {
-                mgr.set_active_for_project(&project, &h.session_id());
-            }
-            r
-        } else {
-            mgr.resolve_for_project(&project)
-        };
+        let handle = resolve_scoped_session(&mgr, &project, session_hdr.as_deref());
         match handle {
             Ok(h) => {
                 // Accept product slug **or** repo UUID for the same repo. Reject only

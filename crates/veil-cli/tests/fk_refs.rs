@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use veil_ir::{build_ir_with_registry, EdgeKind, LayerRegistry};
 
 #[test]
-fn dlx_core_fk_references() {
+fn example_core_fk_references() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = root.join("examples/dlx_core.veil");
+    let path = root.join("examples/example_core.veil");
     let reg = LayerRegistry::for_veil_file(&path).expect("registry");
     assert_eq!(
         reg.identity_policy.ref_suffix.as_deref(),

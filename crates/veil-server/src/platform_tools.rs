@@ -1029,7 +1029,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             };
             let force_new = arg_bool(arguments, "force_new", false);
 
-            // Reuse open PR bound on session (resolve_coding_target / prior work)
+            // Reuse **open** PR bound on session (never Merged / Closed).
             if !force_new {
                 let project = arg_str(arguments, &["slug", "project", "repo", "repo_id"]).or_else(
                     crate::coding_gates::current_project_slug,
@@ -1042,26 +1042,52 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                             .clone()
                             .filter(|s| !s.is_empty())
                         {
-                            let path = format!("/pulls/{aid}");
-                            let host_check =
-                                crate::coding_gates::host_check_value(&h.snapshot_meta());
-                            return Ok(json!({
-                                "ok": true,
-                                "reused": true,
-                                "summary": format!(
-                                    "Reusing open pull request {aid} (session active_pr_id). \
-                                     Pass force_new=true to open another PR. Call submit_pr when ready."
-                                ),
-                                "pull_request": { "id": aid },
-                                "pull_request": { "id": aid },
-                                "host_check": host_check,
-                                "gate_notes": [
-                                    "HINT: scope already bound — prefer submit_pr over a second create_pr"
-                                ],
-                                "navigation": { "action": "goto", "path": path },
-                                "execution": { "domain": "server", "present": "illustrate" }
-                            })
-                            .to_string());
+                            let path = format!("/api/pull_requests/{}", urlencoding_path(&aid));
+                            let (st, data) =
+                                http_json("GET", &path, None).await.unwrap_or((0, json!({})));
+                            let status = data
+                                .pointer("/pull_request/status")
+                                .or_else(|| data.get("status"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let still_open =
+                                ok_status(st) && crate::coding_resolve::is_open_status(status);
+                            if still_open {
+                                let ui_path = format!("/pulls/{aid}");
+                                let host_check =
+                                    crate::coding_gates::host_check_value(&h.snapshot_meta());
+                                let branch = h
+                                    .snapshot_meta()
+                                    .branch_name
+                                    .clone()
+                                    .filter(|s| !s.is_empty() && s != "main" && s != "master");
+                                let mut publish = json!(null);
+                                if let Some(ref b) = branch {
+                                    if let Ok(v) = crate::pr_writeback::publish_session_for_change(
+                                        slug, b, &aid,
+                                    ) {
+                                        publish = v;
+                                    }
+                                }
+                                return Ok(json!({
+                                    "ok": true,
+                                    "reused": true,
+                                    "summary": format!(
+                                        "Reusing open pull request {aid} (session active_pr_id). \
+                                         Pass force_new=true to open another PR. Call submit_pr when ready."
+                                    ),
+                                    "pull_request": { "id": aid, "status": status },
+                                    "host_check": host_check,
+                                    "publish": publish,
+                                    "gate_notes": [
+                                        "HINT: scope already bound — prefer submit_pr over a second create_pr"
+                                    ],
+                                    "navigation": { "action": "goto", "path": ui_path },
+                                    "execution": { "domain": "server", "present": "illustrate" }
+                                })
+                                .to_string());
+                            }
+                            let _ = h.set_active_pr_id(None);
                         }
                     }
                 }

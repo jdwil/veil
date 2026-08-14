@@ -9,7 +9,7 @@ reload — so language work is not second-class to application packages.
 
 | Ring | Artifact | Example |
 |------|----------|---------|
-| Platform capability | `.veil` package | `examples/dlx_core` (IAAA), providers, signals |
+| Platform capability | `.veil` package | `examples/example_core` (IAAA), providers, signals |
 | Product-family language | `.layer` | `wear_test`, `loyalty` — vocabulary + rails |
 | Client product program | `.veil` package | initiative-specific logic |
 | Soft knobs | data | dates, segment ids, copy, thresholds |

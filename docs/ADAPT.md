@@ -29,7 +29,7 @@ VEIL is a **transpiler**: specialization should produce **one flattened IR** and
 | Patch existing symbols | **`ins`**, **`rfn`**, **`rpl`**, **`omit`**, **`ren`** |
 | Parent behavior | **`stock`** — **transpile-time splice** of ancestor body (not runtime call) |
 | Multi-level adapt | Fully **inline / flatten** root → leaf before codegen |
-| Platform packages | **`adapt dlx_core` forbidden** (or hard error); platform stays `use` only |
+| Platform packages | **`adapt example_core` forbidden** (or hard error); platform stays `use` only |
 | Diamond adapts | Forbidden unless explicit `order` clause (see ADP-003); default **linear chain** |
 
 ---
@@ -42,7 +42,7 @@ VEIL is a **transpiler**: specialization should produce **one flattened IR** and
 pkg AcmeWearTest
   use ddd
   use application
-  use dlx_core
+  use example_core
   adapt wear_test
 ```
 
@@ -112,7 +112,7 @@ Clauses: `before <step>`, `after <step>`, `at start`, `at end` (default `at end`
 ```veil
 pkg AcmeWearTest
   use ddd
-  use dlx_core
+  use example_core
   adapt wear_test
 
   # New top-level — ordinary syntax
@@ -197,7 +197,7 @@ Final `CreateInitiative` is one flat function.
 | ID | Rule |
 |----|------|
 | ADP-C1 | `adapt X` resolves to package sources |
-| ADP-C2 | Cannot `adapt` platform packages (`dlx_core`, engine crates) — allowlist or denylist |
+| ADP-C2 | Cannot `adapt` platform packages (`example_core`, engine crates) — allowlist or denylist |
 | ADP-C3 | `ins`/`rfn`/`rpl`/`omit`/`ren` path must exist on base (after prior patches in this file) |
 | ADP-C4 | `stock` only inside `rfn` body |
 | ADP-C5 | `rpl` body must not contain `stock` |
