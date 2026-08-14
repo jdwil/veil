@@ -28,7 +28,7 @@ static PLATFORM_STUBS_DIR: OnceLock<PathBuf> = OnceLock::new();
 ///
 /// Order:
 /// 1. Already-set `VEIL_STUBS_DIR`
-/// 2. Monorepo `runtime/src/stubs` (if found)
+/// 2. Monorepo `stubs/` (if found)
 /// 3. Materialize from DDB META + S3 (`stubs/platform/…`) → `$TMP/veil-platform-stubs`
 pub fn ensure_platform_stub_cache() {
     let _ = platform_stubs_dir();
@@ -112,7 +112,7 @@ pub fn platform_stub_s3_key(name: &str, version: &str) -> String {
 fn find_monorepo_stubs_dir() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         for anc in cwd.ancestors() {
-            let p = anc.join("runtime/src/stubs");
+            let p = anc.join("stubs");
             if p.is_dir() {
                 return Some(p);
             }
@@ -120,7 +120,7 @@ fn find_monorepo_stubs_dir() -> Option<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for rel in ["../runtime/src/stubs", "../../runtime/src/stubs"] {
+            for rel in ["../stubs", "../../stubs"] {
                 let p = dir.join(rel);
                 if p.is_dir() {
                     return Some(p);

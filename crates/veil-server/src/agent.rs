@@ -21,6 +21,9 @@ pub struct AgentTurnRequest {
     /// AGT-014: propose edits without applying (also `VEIL_AGENT_PLAN_ONLY=1`).
     #[serde(default)]
     pub plan_only: bool,
+    /// Raster diagrams dropped on the agent chat (ACP vision blocks).
+    #[serde(default)]
+    pub images: Vec<crate::chat_attachments::AgentImage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,9 +317,22 @@ pub async fn run_turn<P: SourceProvider>(
             .ok();
         crate::acp::set_acp_project(project_name.clone());
         // ACP is sync (stdio) — run on blocking pool so we don't stall the runtime.
-        let acp_result = tokio::task::spawn_blocking(move || crate::acp::prompt_acp(&composed))
-            .await
-            .map_err(|e| e.to_string());
+        let media = crate::acp::AcpMedia {
+            images: req
+                .images
+                .iter()
+                .filter(|i| !i.data_base64.is_empty())
+                .map(|i| crate::acp::AcpImagePart {
+                    mime_type: i.mime_type.clone(),
+                    data_base64: i.data_base64.clone(),
+                })
+                .collect(),
+        };
+        let acp_result = tokio::task::spawn_blocking(move || {
+            crate::acp::prompt_acp_streaming_media(&composed, &media, |_| {})
+        })
+        .await
+        .map_err(|e| e.to_string());
         match acp_result {
             Ok(Ok(turn)) => {
                 // External agent may have written workspace files — reload cache.

@@ -45,9 +45,13 @@ struct ChatRequest {
     #[serde(default)]
     session_id: Option<String>,
     /// Continuous SessionFocus from the shell/IDE (route, construct, form, …).
-    /// See `runtime/docs/ADR_FOCUS_INTENT_PRESENT.md` and `crate::focus`.
+    /// See `docs/ADR_FOCUS_INTENT_PRESENT.md` and `crate::focus`.
     #[serde(default)]
     focus: Option<serde_json::Value>,
+    /// Files dropped / picked in the agent composer (text already inlined
+    /// into `messages` by the client; images/pdf ride here for ACP + disk).
+    #[serde(default)]
+    attachments: Vec<crate::chat_attachments::ChatAttachment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,6 +110,15 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
     };
 
     let mut prompt = extract_prompt(&req);
+    let applied = crate::chat_attachments::apply_attachments(&prompt, &req.attachments);
+    prompt = applied.prompt;
+    let turn_images = applied.images.clone();
+    if !applied.saved_paths.is_empty() {
+        tracing::info!(
+            files = applied.saved_paths.len(),
+            "agent turn: persisted chat attachments"
+        );
+    }
     if prompt.is_empty() {
         let _ = send_event(
             &mut sender,
@@ -268,6 +281,7 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
         prompt,
         turn_id: Some(message_id.clone()),
         plan_only: false,
+        images: turn_images,
     };
     let provider_run = provider.clone();
     // Project scope from request (or middleware) — task-locals do not inherit across spawn.

@@ -286,7 +286,7 @@ pub fn resolve_static_dir(manifest_dir: Option<&Path>) -> PathBuf {
         candidates.push(m.join("static"));
     }
     candidates.push(PathBuf::from("static"));
-    candidates.push(PathBuf::from("runtime/bootstrap/static"));
+    candidates.push(PathBuf::from("crates/veil-runtime/static"));
     for c in candidates {
         if c.is_dir() {
             return c;

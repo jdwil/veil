@@ -3,7 +3,7 @@
 //! Client publishes focus on each agent turn (ChatRequest.focus). Stored
 //! in-process by session id so `get_current_context` and preambles can read it.
 //!
-//! See `runtime/docs/ADR_FOCUS_INTENT_PRESENT.md`.
+//! See `docs/ADR_FOCUS_INTENT_PRESENT.md`.
 
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};

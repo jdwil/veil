@@ -1,6 +1,6 @@
 //! SER-004: parse → emit → parse → emit suite over real fixtures.
 //!
-//! For every `.veil` under `examples/` and `runtime/src/`:
+//! For every `.veil` under `examples/`:
 //! 1. Parse with `LayerRegistry::for_veil_file`
 //! 2. Serialize
 //! 3. Re-parse with the same registry
@@ -45,7 +45,7 @@ const KNOWN_UNPARSEABLE: &[&str] = &[
 
 fn collect_veil_files(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    for rel in ["examples", "runtime/src"] {
+    for rel in ["examples"] {
         let dir = root.join(rel);
         if !dir.is_dir() {
             continue;
@@ -131,7 +131,7 @@ fn ser004_roundtrip_all_fixtures() {
     let files = collect_veil_files(&root);
     assert!(
         !files.is_empty(),
-        "no .veil fixtures under examples/ or runtime/src/"
+        "no .veil fixtures under examples/"
     );
 
     let mut failures: Vec<String> = Vec::new();
@@ -227,49 +227,6 @@ fn ser004_customer_onboarding_no_placeholders() {
         emit.contains("step ") || emit.contains("svc "),
         "expected service steps in emit:\n{}",
         &emit[..emit.len().min(400)]
-    );
-}
-
-/// SER-003/004: runtime.veil must be emit-idempotent (enum variants, typed assigns, …).
-#[test]
-fn ser004_runtime_veil_idempotent() {
-    let root = workspace_root();
-    ensure_layers_env(&root);
-    let path = root.join("runtime/src/runtime.veil");
-    let emit = roundtrip_emit(&path).expect("runtime.veil roundtrip");
-    assert!(
-        emit.contains("OutgoingMessage.AgentResponse")
-            || !emit.contains("AgentResponse{"),
-        "enum variant form should use Enum.Variant:\n{}",
-        emit.lines()
-            .filter(|l| l.contains("AgentResponse"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    // Check that :: pathsep is not used outside of string literals/f-strings
-    let bad_pathsep_lines: Vec<&str> = emit.lines()
-        .filter(|l| {
-            // Skip lines where :: only appears inside a string (between quotes or in f-string)
-            if !l.contains("::") { return false; }
-            // Strip quoted content and check if :: remains
-            let mut stripped = String::new();
-            let mut in_str = false;
-            let chars: Vec<char> = l.chars().collect();
-            let mut i = 0;
-            while i < chars.len() {
-                if chars[i] == '\\' && in_str { i += 2; continue; }
-                if chars[i] == '"' { in_str = !in_str; i += 1; continue; }
-                if !in_str { stripped.push(chars[i]); }
-                i += 1;
-            }
-            stripped.contains("::")
-        })
-        .take(5)
-        .collect();
-    assert!(
-        bad_pathsep_lines.is_empty(),
-        "canonical emit must not use `::` pathsep outside strings:\n{}",
-        bad_pathsep_lines.join("\n")
     );
 }
 

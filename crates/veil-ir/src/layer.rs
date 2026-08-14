@@ -1477,19 +1477,19 @@ impl LayerRegistry {
         if let Some(p) = try_dir(&std::env::temp_dir().join("veil-platform-stubs")) {
             return Some(p);
         }
-        // Next to system layers: VEIL_LAYERS_DIR/../runtime/src/stubs
+        // Next to system layers: VEIL_LAYERS_DIR/../stubs
         if let Ok(layers) = std::env::var("VEIL_LAYERS_DIR") {
-            if let Some(p) = try_dir(&Path::new(&layers).join("../runtime/src/stubs")) {
+            if let Some(p) = try_dir(&Path::new(&layers).join("../stubs")) {
                 return Some(p);
             }
             if let Some(p) = try_dir(&Path::new(&layers).join("../examples")) {
                 return Some(p);
             }
         }
-        // Walk CWD ancestors for runtime/src/stubs and examples/
+        // Walk CWD ancestors for stubs/ and examples/
         if let Ok(cwd) = std::env::current_dir() {
             for anc in cwd.ancestors() {
-                for rel in ["runtime/src/stubs", "examples"] {
+                for rel in ["stubs", "examples"] {
                     if let Some(p) = try_dir(&anc.join(rel)) {
                         return Some(p);
                     }
@@ -1499,7 +1499,7 @@ impl LayerRegistry {
         // Relative to executable (installed layout)
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {
-                for rel in ["../runtime/src/stubs", "stubs", "../stubs"] {
+                for rel in ["stubs", "../stubs"] {
                     if let Some(p) = try_dir(&exe_dir.join(rel)) {
                         return Some(p);
                     }

@@ -4,7 +4,7 @@ dist/
 /generated/
 node_modules/
 output/
-runtime/bootstrap/static/viewer/
+crates/veil-runtime/static/viewer/
 .svelte-kit/
 *.swo
 *.swp
@@ -13,6 +13,7 @@ runtime/bootstrap/static/viewer/
 
 # Agent scratch / palace draft notes (not durable docs — see tmp/README.md)
 /tmp/
+.veil-chat-attachments/
 
 # Git checkouts of sibling repos (see scripts/sync-git-deps.sh)
 vendor/

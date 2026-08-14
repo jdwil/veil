@@ -386,8 +386,19 @@ async fn stream_acp_turn<P: SourceProvider>(
     // (and so soft ACP errors still finalize cleanly without a second full turn).
     let mut streamed_text = String::new();
     let mut streamed_tools: Vec<String> = Vec::new();
+    let media = crate::acp::AcpMedia {
+        images: req
+            .images
+            .iter()
+            .filter(|i| !i.data_base64.is_empty())
+            .map(|i| crate::acp::AcpImagePart {
+                mime_type: i.mime_type.clone(),
+                data_base64: i.data_base64.clone(),
+            })
+            .collect(),
+    };
     let mut join = tokio::task::spawn_blocking(move || {
-        crate::acp::prompt_acp_streaming(&composed, |s| {
+        crate::acp::prompt_acp_streaming_media(&composed, &media, |s| {
             let _ = chunk_tx.send(s.to_string());
         })
     });

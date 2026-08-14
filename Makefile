@@ -17,12 +17,10 @@
 # Multi-project one-process host: docs/IDE_RUNTIME.md
 
 VEIL_BIN    := target/release/veil
-RUNTIME_SRC := runtime/src/runtime.veil
-RUNTIME_OUT := runtime/generated
-STUB_DIR    := runtime/src/stubs
+STUB_DIR    := stubs
 EXAMPLES    := examples
-# IDE UI lives under runtime (single ProductHost — no separate multi veil serve).
-VIEWER_DIR  := runtime/ide-ui
+# Optional same-origin /viewer SPA (product IDE is native in ui/).
+VIEWER_DIR  := ide-ui
 # Backend API (viewer hardcodes localhost:3001 — change both if you override)
 PORT        ?= 3001
 # Vite / SvelteKit dev server
@@ -248,42 +246,25 @@ runtime-serve: pure-runtime-build
 	@echo "  (optional) make serve-ui VIEWER_PORT=$(VIEWER_PORT)"
 	@echo ""
 	@CI=1 VEIL_NONINTERACTIVE=1 VEIL_PORT=$(RUNTIME_PORT) VEIL_BIN=$(CURDIR)/$(VEIL_BIN) \
-		./runtime/bootstrap/target/release/veil-runtime
+		./target/release/veil-runtime
 
-# PVR-031 / CAP-005: gen SPA (dist/) + gen runtime crates + build host trampoline
+# Product host binary (Rust). Shell UI is ui/ (Vite). Optional /viewer from ide-ui.
 pure-runtime-build: veil
-	@echo "==> gen runtime.veil → runtime/generated (PVR-011 storage crates)"
-	@$(VEIL_BIN) gen $(RUNTIME_SRC) -o $(RUNTIME_OUT) -t rust || true
-	@echo "==> gen runtime-ui.veil → static/app (SPA dist CAP-005)"
-	@$(VEIL_BIN) check runtime/src/runtime-ui.veil || true
-	@$(VEIL_BIN) gen runtime/src/runtime-ui.veil -o runtime/bootstrap/static/app -t typescript
-	@# Primary product shell: static/dist (ProductHost serves this first)
-	@test -f runtime/bootstrap/static/app/dist/index.html || \
-		(echo "error: SPA dist/index.html not generated from runtime-ui.veil" >&2; exit 1)
-	@mkdir -p runtime/bootstrap/static/dist
-	@cp -f runtime/bootstrap/static/app/dist/index.html runtime/bootstrap/static/dist/
-	@cp -f runtime/bootstrap/static/app/dist/spa.js runtime/bootstrap/static/dist/ 2>/dev/null \
-		|| cp -f runtime/bootstrap/static/app/src/spa.js runtime/bootstrap/static/dist/spa.js
-	@test -f runtime/bootstrap/static/dist/spa.js || \
-		(echo "error: SPA spa.js missing after gen" >&2; exit 1)
-	@echo "==> build runtime/ide-ui → static/viewer (same-origin IDE, ProductHost)"
+	@echo "==> build veil-runtime (ProductHost)"
 	@if [ -d $(VIEWER_DIR)/node_modules ]; then \
 		(cd $(VIEWER_DIR) && VEIL_VIEWER_BASE=/viewer npm run build) || \
 			echo "  ⚠ IDE UI build failed — run: cd $(VIEWER_DIR) && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
-		rm -rf runtime/bootstrap/static/viewer; \
+		rm -rf crates/veil-runtime/static/viewer; \
 		if [ -d $(VIEWER_DIR)/build ]; then \
-			mkdir -p runtime/bootstrap/static/viewer; \
-			cp -a $(VIEWER_DIR)/build/. runtime/bootstrap/static/viewer/; \
-			echo "  ✓ ide-ui → runtime/bootstrap/static/viewer"; \
+			mkdir -p crates/veil-runtime/static/viewer; \
+			cp -a $(VIEWER_DIR)/build/. crates/veil-runtime/static/viewer/; \
+			echo "  ✓ ide-ui → crates/veil-runtime/static/viewer"; \
 		fi; \
 	else \
-		echo "  ⚠ $(VIEWER_DIR)/node_modules missing — run: cd $(VIEWER_DIR) && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
+		echo "  ⚠ $(VIEWER_DIR)/node_modules missing — skip /viewer rebuild"; \
 	fi
-	@echo "==> gen host.veil (CAP-002/006 product host bin)"
-	@$(VEIL_BIN) gen runtime/src/host.veil -o runtime/generated-host -t rust || true
-	@echo "==> build veil-runtime trampoline (links generated storage)"
-	@cargo build --release --manifest-path runtime/bootstrap/Cargo.toml
-	@echo "✓ pure-runtime build ready (shell: static/dist, IDE: /viewer, bus: storage::application)"
+	@cargo build --release -p veil-runtime
+	@echo "✓ veil-runtime ready (UI: ui/ Vite :5180, API: :8080)"
 
 # PVR-031 smoke: build + curl health/projects/config/SPA (no long-lived server)
 pure-runtime-smoke:
@@ -357,6 +338,6 @@ fixture-ladder-l3: veil
 fixture-ladder: fixture-ladder-l0 fixture-ladder-l1 fixture-ladder-l2 fixture-ladder-l3
 	@echo "✓ ladder L0–L3 all green"
 
-# Round-trip suite only (examples/** + runtime/src/**)
+# Round-trip suite only (examples/**)
 test-roundtrip:
 	cargo test -p veil-parser --test roundtrip_suite

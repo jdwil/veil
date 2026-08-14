@@ -6,7 +6,7 @@
 //! - `VEIL_ACP_ARGS` (default `acp --trust-all-tools`)
 //! - `VEIL_ACP_CWD` (optional fallback cwd)
 //! - `VEIL_ACP_AGENT` — Kiro agent name (default: `veil` when
-//!   `~/.kiro/agents/veil.json` exists; see `runtime/config/kiro-agent-veil.json`)
+//!   `~/.kiro/agents/veil.json` exists; see `config/kiro-agent-veil.json`)
 //! - `VEIL_ACP_TIMEOUT_SECS` (default 300)
 //!
 //! VEIL does **not** rewrite `~/.kiro/agents/hive.json`. Use a dedicated
@@ -28,6 +28,18 @@ pub struct AcpTurnResult {
     pub session_id: String,
     pub stop_reason: Option<String>,
     pub tool_hints: Vec<String>,
+}
+
+/// Extra `session/prompt` content blocks (raster diagrams from the chat pane).
+#[derive(Debug, Clone, Default)]
+pub struct AcpMedia {
+    pub images: Vec<AcpImagePart>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcpImagePart {
+    pub mime_type: String,
+    pub data_base64: String,
 }
 
 struct AcpProcess {
@@ -310,21 +322,33 @@ impl AcpProcess {
     }
 
     fn prompt(&mut self, text: &str, timeout: Duration) -> Result<AcpTurnResult, String> {
-        self.prompt_streaming(text, timeout, None)
+        self.prompt_streaming(text, &AcpMedia::default(), timeout, None)
     }
 
     fn prompt_streaming(
         &mut self,
         text: &str,
+        media: &AcpMedia,
         timeout: Duration,
         on_text: Option<&mut dyn FnMut(&str)>,
     ) -> Result<AcpTurnResult, String> {
         let sid = self.ensure_session(timeout)?;
+        let mut prompt_blocks = vec![json!({ "type": "text", "text": text })];
+        for img in &media.images {
+            if img.data_base64.is_empty() {
+                continue;
+            }
+            prompt_blocks.push(json!({
+                "type": "image",
+                "mimeType": img.mime_type,
+                "data": img.data_base64,
+            }));
+        }
         let result = self.request_streaming(
             "session/prompt",
             json!({
                 "sessionId": sid,
-                "prompt": [{ "type": "text", "text": text }]
+                "prompt": prompt_blocks
             }),
             timeout,
             on_text,
@@ -704,6 +728,16 @@ pub fn prompt_acp(text: &str) -> Result<AcpTurnResult, String> {
 /// Like [`prompt_acp`], but `on_chunk` is called for each text delta as Kiro streams.
 pub fn prompt_acp_streaming(
     text: &str,
+    on_chunk: impl FnMut(&str),
+) -> Result<AcpTurnResult, String> {
+    prompt_acp_streaming_media(text, &AcpMedia::default(), on_chunk)
+}
+
+/// Like [`prompt_acp_streaming`], plus raster images as ACP content blocks
+/// (diagrams dropped on the runtime agent chat).
+pub fn prompt_acp_streaming_media(
+    text: &str,
+    media: &AcpMedia,
     mut on_chunk: impl FnMut(&str),
 ) -> Result<AcpTurnResult, String> {
     let timeout = Duration::from_secs(timeout_secs());
@@ -720,7 +754,7 @@ pub fn prompt_acp_streaming(
     }
     let proc = guard.as_mut().unwrap();
     let mut cb = |s: &str| on_chunk(s);
-    match proc.prompt_streaming(text, timeout, Some(&mut cb)) {
+    match proc.prompt_streaming(text, media, timeout, Some(&mut cb)) {
         Ok(r) => Ok(r),
         Err(e) => {
             // Drop broken process so next call respawns

@@ -1823,7 +1823,7 @@ async fn run_agent_connect(command: &str, runtime_url: Option<String>, token: Op
             eprintln!("error: Failed to connect to runtime at {ws_url}: {e}");
             eprintln!();
             eprintln!("Is the runtime running? Try:");
-            eprintln!("  cd runtime/bootstrap && cargo run");
+            eprintln!("  cargo run -p veil-runtime");
             std::process::exit(1);
         }
     };

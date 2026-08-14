@@ -6,14 +6,14 @@ members = [
     "crates/veil-server",
     "crates/veil-cli",
     "crates/veil-local",
-]
-# Path crates for generated runtime (referenced via .stub path:…, not engine members)
-exclude = [
-    "runtime/local_fs",
-    "runtime/ext_store",
-    "runtime/generated",
-    "runtime/bootstrap",
-    "runtime/generated-host",
+    "crates/veil-runtime",
+    "crates/storage",
+    "crates/change_management",
+    "crates/deploy",
+    "crates/extensions",
+    "crates/veil_shared",
+    "crates/veil_local_fs",
+    "crates/veil_ext_store",
 ]
 resolver = "2"
 
@@ -60,3 +60,23 @@ veil-parser = { path = "crates/veil-parser" }
 veil-ir = { path = "crates/veil-ir" }
 veil-codegen = { path = "crates/veil-codegen" }
 veil-server = { path = "crates/veil-server" }
+veil_local_fs = { path = "crates/veil_local_fs" }
+veil_ext_store = { path = "crates/veil_ext_store" }
+veil_shared = { path = "crates/veil_shared" }
+
+# Host / platform crates
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+gix = { version = "0.70.0", features = ["tree-editor"] }
+schemars = "1.2.1"
+sha2 = "0.10.9"
+zip = "2.4.2"
+aws-config = "1"
+aws-sdk-s3 = "1"
+aws-sdk-dynamodb = "1"
+aws-sdk-lambda = "1"
+aws-sdk-sqs = "1"
+aws-sdk-sns = "1"
+aws-sdk-apigatewayv2 = "1"

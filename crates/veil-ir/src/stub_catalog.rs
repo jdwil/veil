@@ -1,7 +1,7 @@
 //! Stub resolution catalog: project-local → platform (`VEIL_STUBS_DIR` / monorepo).
 //!
 //! Ownership model:
-//! - **Platform catalog** — shared common SDKs (runtime/src/stubs, VEIL_STUBS_DIR, DDB seed).
+//! - **Platform catalog** — shared common SDKs (`stubs/`, VEIL_STUBS_DIR, DDB seed).
 //! - **Project `stubs/`** — pins, overrides, product-specific crates (wins on conflict).
 
 use std::path::{Path, PathBuf};
@@ -114,7 +114,7 @@ pub fn platform_stub_dirs() -> Vec<PathBuf> {
         dirs.push(cache);
     }
     if let Ok(layers) = std::env::var("VEIL_LAYERS_DIR") {
-        let p = Path::new(&layers).join("../runtime/src/stubs");
+        let p = Path::new(&layers).join("../stubs");
         if p.is_dir() {
             dirs.push(p);
         }
@@ -125,7 +125,7 @@ pub fn platform_stub_dirs() -> Vec<PathBuf> {
     }
     if let Ok(cwd) = std::env::current_dir() {
         for anc in cwd.ancestors() {
-            for rel in ["runtime/src/stubs", "examples", "stubs"] {
+            for rel in ["stubs", "examples"] {
                 let p = anc.join(rel);
                 if p.is_dir() && !dirs.iter().any(|d| d == &p) {
                     dirs.push(p);
@@ -135,7 +135,7 @@ pub fn platform_stub_dirs() -> Vec<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            for rel in ["../runtime/src/stubs", "stubs", "../stubs"] {
+            for rel in ["stubs", "../stubs"] {
                 let p = exe_dir.join(rel);
                 if p.is_dir() && !dirs.iter().any(|d| d == &p) {
                     dirs.push(p);
@@ -245,7 +245,7 @@ pub fn list_project_stubs(project_root: &Path) -> Vec<StubCatalogEntry> {
     out
 }
 
-/// List platform catalog stubs (may include monorepo `runtime/src/stubs`).
+/// List platform catalog stubs (may include monorepo `stubs/`).
 pub fn list_platform_stubs() -> Vec<StubCatalogEntry> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();

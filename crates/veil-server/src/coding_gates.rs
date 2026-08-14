@@ -346,6 +346,7 @@ mod tests {
             active_pr_id: None,
             writes_since_commit: 0,
             last_host_check: None,
+            rationales: Default::default(),
         };
         let v = host_check_value(&meta);
         assert_eq!(v["severity"], "unknown");

@@ -21,6 +21,7 @@ pub mod protocol;
 pub mod agent;
 pub mod agent_stream;
 pub mod aether_chat;
+pub mod chat_attachments;
 pub mod mind_palace_tools;
 pub mod model;
 pub mod agent_context;

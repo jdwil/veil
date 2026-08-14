@@ -307,7 +307,7 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
         .with_state(multi);
 
     // Embed dual-loop viewer SPA at /viewer (same-origin as multi API).
-    // Static dir: VEIL_VIEWER_STATIC or runtime/bootstrap/static/viewer.
+    // Static dir: VEIL_VIEWER_STATIC or crates/veil-runtime/static/viewer.
     let viewer_dir = std::env::var("VEIL_VIEWER_STATIC")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {

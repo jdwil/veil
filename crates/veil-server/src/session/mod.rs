@@ -1,6 +1,6 @@
 //! Durable coding sessions: DDB META + session-keyed workdirs + S3 write-through.
 //!
-//! See `runtime/docs/DURABLE_SESSIONS.md`.
+//! See `docs/DURABLE_SESSIONS.md`.
 //!
 //! - **L1** Source bytes → S3
 //! - **L2** Session META → DDB `SESSION#{id}/META`
