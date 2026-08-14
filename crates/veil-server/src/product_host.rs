@@ -118,6 +118,8 @@ impl ProductHost {
             .route("/agents", get(shell_index))
             .route("/config", get(shell_index))
             .route("/dashboard", get(shell_index))
+            .route("/review", get(shell_index))
+            .route("/review/{*rest}", get(shell_index))
             // Optional deep link: bare dual-loop viewer (standalone agent chrome).
             .route("/ide/{name}", get(ide_embed))
             // SPA assets under /static/dist/ (index references absolute paths)

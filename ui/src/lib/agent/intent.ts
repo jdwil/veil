@@ -31,6 +31,8 @@ export type PresentStep =
 	  }
 	| { kind: 'wait'; ms: number }
 	| { kind: 'announce'; message: string }
+	| { kind: 'hover'; target?: string; selector?: string; ms?: number }
+	| { kind: 'highlight'; selector?: string; ms?: number }
 	| {
 			kind: 'commit';
 			formId?: string;
@@ -286,8 +288,31 @@ function emitStatus(s: IntentStatus) {
 	}
 }
 
+const FF_KEY = 'veil.present.fastForward';
+let skipThisPresent = false;
+
+export function presentFastForward(): boolean {
+	if (skipThisPresent) return true;
+	if (typeof localStorage === 'undefined') return false;
+	try {
+		return localStorage.getItem(FF_KEY) === '1';
+	} catch {
+		return false;
+	}
+}
+
+export function setPresentFastForward(on: boolean) {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(FF_KEY, on ? '1' : '0');
+	} catch {
+		/* ignore */
+	}
+}
+
 function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, Math.max(0, ms)));
+	const n = presentFastForward() ? Math.min(ms, 40) : ms;
+	return new Promise((r) => setTimeout(r, Math.max(0, n)));
 }
 
 function easeOutCubic(t: number): number {
@@ -341,6 +366,22 @@ function ensurePulseStyles() {
 .veil-intent-announce.veil-intent-announce--show {
   opacity: 1;
   transform: translateX(-50%) translateY(-4px);
+}
+.veil-intent-hover {
+  outline: 2px dashed color-mix(in srgb, var(--dk-accent, #818cf8) 65%, transparent) !important;
+  outline-offset: 3px;
+}
+.veil-intent-highlight {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dk-accent, #818cf8) 45%, transparent);
+  transition: box-shadow 0.25s ease;
+}
+.veil-intent-press {
+  transform: scale(0.97);
+  filter: brightness(1.15);
+}
+button.veil-intent-inflight, .btn-primary.veil-intent-inflight {
+  pointer-events: none;
+  opacity: 0.72;
 }
 `;
 	document.head.appendChild(style);
@@ -481,12 +522,12 @@ async function fillFields(
 		el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 		el.classList.add('veil-intent-field-flash');
 		el.focus();
-		if (mode === 'snap' || value.length > 48) {
+		if (mode === 'snap' || presentFastForward() || value.length > 96) {
 			setNativeValue(el, value);
 			await sleep(180);
 		} else {
 			setNativeValue(el, '');
-			const duration = Math.min(420, 80 + value.length * 28);
+			const duration = Math.min(1600, 160 + value.length * 42);
 			const start = performance.now();
 			await new Promise<void>((resolve) => {
 				const tick = (now: number) => {
@@ -511,11 +552,14 @@ async function pulseEl(el: HTMLElement | null, ms = 550): Promise<void> {
 	}
 	ensurePulseStyles();
 	el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-	el.classList.add('veil-intent-pulse');
+	el.classList.add('veil-intent-hover');
+	await sleep(Math.min(180, ms));
+	el.classList.remove('veil-intent-hover');
+	el.classList.add('veil-intent-pulse', 'veil-intent-press');
 	await sleep(ms);
 	// keep class a bit longer for second pulse cycle
 	await sleep(Math.min(400, ms));
-	el.classList.remove('veil-intent-pulse');
+	el.classList.remove('veil-intent-pulse', 'veil-intent-press');
 }
 
 function showAnnounce(message: string, ms = 1600) {
@@ -561,6 +605,13 @@ export async function executeIntent(intent: Intent): Promise<IntentStatus> {
 		return { intentId: intent.id, ok: true, step: -1 };
 	}
 	executing = true;
+	skipThisPresent = false;
+	const onKey = (e: KeyboardEvent) => {
+		if (e.key === 'Escape') skipThisPresent = true;
+	};
+	if (typeof window !== 'undefined') {
+		window.addEventListener('keydown', onKey);
+	}
 	let last: IntentStatus = { intentId: intent.id, ok: true };
 
 	try {
@@ -571,6 +622,10 @@ export async function executeIntent(intent: Intent): Promise<IntentStatus> {
 		}
 	} finally {
 		executing = false;
+		skipThisPresent = false;
+		if (typeof window !== 'undefined') {
+			window.removeEventListener('keydown', onKey);
+		}
 	}
 	return last;
 }
@@ -686,11 +741,20 @@ async function runCommit(
 		...(intent.payload || {}),
 		...(step.body || {})
 	};
-	const res = await fetch(step.path, {
-		method,
-		headers: { 'Content-Type': 'application/json' },
-		body: method === 'GET' || method === 'HEAD' ? undefined : JSON.stringify(body)
-	});
+	const submit = resolvePulseEl({ kind: 'pulse', target: 'submit' });
+	submit?.classList.add('veil-intent-inflight');
+	if (submit instanceof HTMLButtonElement) submit.disabled = true;
+	let res: Response;
+	try {
+		res = await fetch(step.path, {
+			method,
+			headers: { 'Content-Type': 'application/json' },
+			body: method === 'GET' || method === 'HEAD' ? undefined : JSON.stringify(body)
+		});
+	} finally {
+		submit?.classList.remove('veil-intent-inflight');
+		if (submit instanceof HTMLButtonElement) submit.disabled = false;
+	}
 	const text = await res.text();
 	let data: Record<string, unknown> = {};
 	try {
@@ -803,6 +867,36 @@ async function runOne(intent: Intent): Promise<IntentStatus> {
 				case 'pulse':
 					await pulseEl(resolvePulseEl(step), step.ms ?? 550);
 					break;
+				case 'hover': {
+					const el =
+						(step.selector &&
+							(document.querySelector(step.selector) as HTMLElement | null)) ||
+						resolvePulseEl({ kind: 'pulse', target: step.target, selector: step.selector });
+					if (el) {
+						ensurePulseStyles();
+						el.classList.add('veil-intent-hover');
+						el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+						await sleep(step.ms ?? 280);
+						el.classList.remove('veil-intent-hover');
+					} else {
+						await sleep(step.ms ?? 120);
+					}
+					break;
+				}
+				case 'highlight': {
+					ensurePulseStyles();
+					const el = step.selector
+						? (document.querySelector(step.selector) as HTMLElement | null)
+						: (document.querySelector('.graph-wrapper, .ide-app, [data-veil-shell]') as HTMLElement | null);
+					if (el) {
+						el.classList.add('veil-intent-highlight');
+						await sleep(step.ms ?? 480);
+						el.classList.remove('veil-intent-highlight');
+					} else {
+						await sleep(step.ms ?? 160);
+					}
+					break;
+				}
 				case 'wait':
 					await sleep(step.ms);
 					break;
@@ -915,6 +1009,56 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 				steps: [{ kind: 'goto', path, ms: 280, project: slug || undefined }]
 			},
 			navigation: nav || { action: 'goto', path, project: slug || undefined }
+		};
+	}
+
+	if (toolName === 'write_source' || toolName === 'create_file' || toolName === 'ws_write') {
+		const project = String(root.slug || root.project || root.name || '');
+		const path = String(root.path || root.file || '');
+		if (!project && !path) return null;
+		const ide = project ? `/projects/${encodeURIComponent(project)}/ide` : '';
+		return {
+			type: 'WriteSource',
+			id: `intent_write_${Date.now()}`,
+			actor: 'agent',
+			payload: { project, path },
+			domain: { mode: 'server', done: true },
+			navigation: project
+				? { action: 'open-ide', path: ide, project }
+				: undefined,
+			present: {
+				announce: path ? `Editing ${path}` : 'Editing source',
+				steps: ide
+					? [
+							{ kind: 'goto', path: ide, ms: 300, project },
+							{ kind: 'wait', ms: 200 },
+							{ kind: 'highlight', selector: '.graph-wrapper, .ide-app, [data-veil-shell]', ms: 420 }
+						]
+					: []
+			}
+		};
+	}
+
+	if (toolName === 'request_sign_off' || toolName === 'sign_off' || toolName === 'list_outstanding') {
+		const nav = root.navigation as Intent['navigation'] | undefined;
+		const path = nav?.path || '/review';
+		return {
+			type: toolName === 'sign_off' ? 'SignOff' : 'RequestSignOff',
+			id: `intent_${toolName}_${Date.now()}`,
+			actor: 'agent',
+			domain: { mode: toolName === 'sign_off' ? 'ux' : 'none' },
+			navigation: nav || { action: 'goto', path },
+			present: {
+				announce:
+					toolName === 'list_outstanding'
+						? 'Reviewing outstanding changes'
+						: 'Here is what I did — please sign off',
+				steps: [
+					{ kind: 'goto', path, ms: 280 },
+					{ kind: 'wait', ms: 180 },
+					{ kind: 'pulse', target: 'text:Sign off', ms: 500 }
+				]
+			}
 		};
 	}
 
@@ -1083,7 +1227,11 @@ export const STAGED_PRESENT_TOOLS = new Set([
 	'create_repo',
 	'create_pr',
 	'open_create_pr',
-	'resolve_coding_target'
+	'resolve_coding_target',
+	'write_source',
+	'create_file',
+	'request_sign_off',
+	'sign_off'
 ]);
 
 export function isIntentExecuting(): boolean {

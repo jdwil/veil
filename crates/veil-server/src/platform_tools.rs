@@ -133,6 +133,9 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "wait_intent_ack"
             | "resolve_coding_target"
             | "run_coding_plan"
+            | "list_outstanding"
+            | "request_sign_off"
+            | "sign_off"
     )
 }
 
@@ -208,15 +211,26 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             } else {
                 (status, data)
             };
+            let review = crate::review::snapshot_json(crate::review::ListFilter {
+                status: Some(crate::review::ItemStatus::Outstanding),
+                ..Default::default()
+            });
             let mut out = json!({
                 "ok": ok_status(status),
                 "summary": if ok_status(status) {
-                    "Listed projects".to_string()
+                    let n = review.get("outstanding").and_then(|v| v.as_u64()).unwrap_or(0);
+                    if n > 0 {
+                        format!("Listed projects — {n} outstanding change(s) need sign-off")
+                    } else {
+                        "Listed projects".to_string()
+                    }
                 } else {
                     format!("list_projects failed (HTTP {status})")
                 },
                 "http_status": status,
                 "projects": data,
+                "outstanding": review.get("outstanding"),
+                "review": review.get("by_project"),
                 "api": format!("{base}/api/repos"),
             });
             if navigate {
@@ -344,6 +358,15 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "domain": "server",
                     "ts": chrono_ms(),
                 }));
+                let repo_id = result
+                    .get("id")
+                    .or_else(|| result.pointer("/project/id"))
+                    .and_then(|v| v.as_str());
+                let _ = crate::review::record_project_created(
+                    &slug,
+                    Some(&name),
+                    repo_id,
+                );
             }
             let mut out = result;
             out["navigation"] = json!({ "action": action, "path": path, "project": slug });
@@ -435,6 +458,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "domain": "server",
                     "ts": chrono_ms(),
                 }));
+                let _ = crate::review::record_project_renamed(&slug, &display);
             }
             Ok(json!({
                 "ok": ok_status(status),
@@ -1198,6 +1222,13 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         "domain": "server",
                         "ts": chrono_ms(),
                     }));
+                    if let Some(slug) = project.as_deref() {
+                        let _ = crate::review::record_pr(
+                            slug,
+                            &title,
+                            if pr_id.is_empty() { None } else { Some(pr_id.as_str()) },
+                        );
+                    }
                 }
                 Ok(json!({
                     "ok": ok_status(status),
@@ -1931,6 +1962,150 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             }
         }
 
+        "list_outstanding" => {
+            let slug = arg_str(arguments, &["project", "slug", "id"]);
+            let snap = crate::review::snapshot_json(crate::review::ListFilter {
+                slug: slug.clone(),
+                session_id: None,
+                status: Some(crate::review::ItemStatus::Outstanding),
+            });
+            let count = snap
+                .get("outstanding")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let path = match slug.as_deref() {
+                Some(s) if !s.is_empty() => format!("/review/{s}"),
+                _ => "/review".to_string(),
+            };
+            Ok(json!({
+                "ok": true,
+                "summary": if count == 0 {
+                    "No outstanding unreviewed changes.".to_string()
+                } else {
+                    format!("{count} outstanding change(s) need sign-off. Present this set to the human; call request_sign_off.")
+                },
+                "outstanding": count,
+                "items": snap.get("items"),
+                "by_project": snap.get("by_project"),
+                "navigation": { "action": "goto", "path": path },
+            })
+            .to_string())
+        }
+
+        "request_sign_off" => {
+            let slug = arg_str(arguments, &["project", "slug", "id"]);
+            let items = crate::review::list_items(crate::review::ListFilter {
+                slug: slug.clone(),
+                session_id: None,
+                status: Some(crate::review::ItemStatus::Outstanding),
+            });
+            let count = items.len();
+            let intent = crate::review::request_sign_off_intent(slug.as_deref(), count);
+            let intent_id = intent
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            crate::focus::register_pending_intent(
+                &intent_id,
+                json!({ "tool": "request_sign_off", "count": count }),
+            );
+            let bullets: Vec<String> = items
+                .iter()
+                .take(24)
+                .map(|it| {
+                    let why = it
+                        .rationale
+                        .as_deref()
+                        .map(|r| format!(" — {r}"))
+                        .unwrap_or_default();
+                    format!("- [{}] {}{why}", it.slug, it.summary)
+                })
+                .collect();
+            Ok(json!({
+                "ok": true,
+                "summary": if count == 0 {
+                    "Nothing outstanding to sign off.".to_string()
+                } else {
+                    format!(
+                        "Here is exactly what I did and why ({count} items). I need you to sign off before I proceed / merge / deploy.\n{}",
+                        bullets.join("\n")
+                    )
+                },
+                "outstanding": count,
+                "items": items,
+                "intent_id": intent_id,
+                "intent": intent,
+                "navigation": intent.get("navigation"),
+                "execution": { "domain": "none", "present": "goto" }
+            })
+            .to_string())
+        }
+
+        "sign_off" => {
+            let slug = arg_str(arguments, &["project", "slug", "id"]);
+            let decision = arg_str(arguments, &["decision"])
+                .unwrap_or_else(|| "approve".into());
+            let note = arg_str(arguments, &["note", "message"]);
+            let ids = arguments
+                .get("ids")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let via = arg_str(arguments, &["via"]).unwrap_or_default();
+            if via == "ux" || crate::focus::client_present() {
+                let intent = crate::review::sign_off_intent(slug.as_deref(), &decision);
+                let intent_id = intent
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                crate::focus::register_pending_intent(
+                    &intent_id,
+                    json!({ "tool": "sign_off", "pending_ux": true }),
+                );
+                return Ok(json!({
+                    "ok": true,
+                    "summary": "Scheduled sign-off — UX will pulse the Sign off button then commit.",
+                    "pending_ux": true,
+                    "intent_id": intent_id,
+                    "intent": intent,
+                    "execution": { "domain": "ux", "present": "ux_commit" }
+                })
+                .to_string());
+            }
+            match crate::review::sign_off(crate::review::SignOffRequest {
+                ids,
+                slug: slug.clone(),
+                all: slug.is_none(),
+                decision: decision.clone(),
+                actor: arg_str(arguments, &["actor"]).unwrap_or_else(|| "agent".into()),
+                note,
+            }) {
+                Ok((items, audit)) => Ok(json!({
+                    "ok": true,
+                    "summary": format!(
+                        "Recorded {} sign-off on {} item(s). Remaining outstanding: {}.",
+                        audit.decision,
+                        items.len(),
+                        crate::review::outstanding().len()
+                    ),
+                    "items": items,
+                    "audit": audit,
+                    "navigation": {
+                        "action": "goto",
+                        "path": slug.as_deref().map(|s| format!("/review/{s}")).unwrap_or_else(|| "/review".into())
+                    }
+                })
+                .to_string()),
+                Err(e) => Err(e),
+            }
+        }
+
         other => Err(format!("unknown platform tool: {other}")),
     }
 }
@@ -2176,7 +2351,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "navigate_to",
-            "description": "Navigate the VEIL runtime dashboard SPA to a path. Use for any UI destination: /dashboard, /projects, /projects/{id}, /pulls, /pulls/new, /deploy, /registry, /config, /agents.",
+            "description": "Navigate the VEIL runtime dashboard SPA to a path. Use for any UI destination: /dashboard, /projects, /projects/{id}, /pulls, /pulls/new, /review, /deploy, /registry, /config, /agents.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2278,6 +2453,46 @@ pub fn tool_definitions() -> Vec<Value> {
                     "project": { "type": "string" },
                     "slug": { "type": "string" },
                     "id": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "list_outstanding",
+            "description": "List unreviewed mutations (outstanding change set) across projects or for one slug. Review state — not git status. Use before request_sign_off. Surfaces what the human must sign off.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "request_sign_off",
+            "description": "Present the outstanding change set to the human and navigate to the review / sign-off surface. Call after a coherent unit of work. Says what changed and why. Does not merge.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "sign_off",
+            "description": "Record explicit human sign-off (approve or reject) on outstanding items. Prefer via=ux so the Sign off button pulses. Partial: pass ids or a slug. Writes a SOC 2 audit record. Does not merge git.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" },
+                    "ids": { "type": "array", "items": { "type": "string" } },
+                    "decision": { "type": "string", "enum": ["approve", "reject"] },
+                    "note": { "type": "string" },
+                    "via": { "type": "string", "enum": ["ux", "server"] }
                 },
                 "required": []
             }
@@ -3137,6 +3352,9 @@ pub fn rig_platform_tool_names() -> &'static [&'static str] {
         "provision_project",
         "deploy_status",
         "get_config",
+        "list_outstanding",
+        "request_sign_off",
+        "sign_off",
     ]
 }
 
@@ -3147,6 +3365,9 @@ mod tests {
     #[test]
     fn create_project_is_platform_tool() {
         assert!(is_platform_tool("create_project"));
+        assert!(is_platform_tool("list_outstanding"));
+        assert!(is_platform_tool("request_sign_off"));
+        assert!(is_platform_tool("sign_off"));
         assert!(is_platform_tool("create_repo"));
         assert!(is_platform_tool("rename_project"));
         assert!(is_platform_tool("update_project"));
@@ -3204,6 +3425,9 @@ mod tests {
             "{create_desc}"
         );
         assert!(names.contains(&"rename_project"));
+        assert!(names.contains(&"list_outstanding"));
+        assert!(names.contains(&"request_sign_off"));
+        assert!(names.contains(&"sign_off"));
         assert!(names.contains(&"update_project"));
         assert!(names.contains(&"list_projects"));
         assert!(names.contains(&"list_prs"));

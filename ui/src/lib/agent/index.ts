@@ -55,6 +55,8 @@ export {
 	executeIntent,
 	intentFromToolResult,
 	STAGED_PRESENT_TOOLS,
+	presentFastForward,
+	setPresentFastForward,
 	recordIntent,
 	recentIntents,
 	formatIntentLogForAgent,

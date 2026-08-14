@@ -7,7 +7,14 @@
 		toggleShellTheme,
 	} from '$lib/shellLayout';
 
+	import { reviewOutstandingCount, startReviewPoll } from '$lib/review/store';
+
 	let open_cr_count: number = $state(0);
+
+	$effect(() => {
+		const stop = startReviewPoll(6000);
+		return () => stop();
+	});
 
 	$effect(() => {
 		void (async () => {
@@ -30,7 +37,8 @@
 	const links = [
 		{ href: '/dashboard', label: 'Dashboard', icon: '⌂' },
 		{ href: '/projects', label: 'Projects', icon: '▣' },
-		{ href: '/pulls', label: 'Changes', icon: '⇄', badge: true },
+		{ href: '/review', label: 'Sign-off', icon: '✓', badge: 'review' as const },
+		{ href: '/pulls', label: 'Changes', icon: '⇄', badge: 'prs' as const },
 		{ href: '/deploy', label: 'Deploy', icon: '☁' },
 		{ href: '/registry', label: 'Registry', icon: '⧉' },
 		{ href: '/bus', label: 'Bus', icon: '⚡' },
@@ -42,6 +50,7 @@
 		const path = $page.url.pathname;
 		if (href === '/dashboard') return path === '/' || path.startsWith('/dashboard');
 		if (href === '/projects') return path.startsWith('/projects');
+		if (href === '/review') return path.startsWith('/review');
 		if (href === '/pulls') return path.startsWith('/pulls') || path.startsWith('/changecreate') || path.startsWith('/changedetail');
 		return path === href || path.startsWith(href + '/');
 	}
@@ -75,7 +84,7 @@
 		{#each links as link}
 			<a
 				href={link.href}
-				class:nav-badge-link={link.badge}
+				class:nav-badge-link={!!link.badge}
 				class:active={isActive(link.href)}
 				aria-current={isActive(link.href) ? 'page' : undefined}
 				title={link.label}
@@ -83,11 +92,15 @@
 				<span class="nav-icon" aria-hidden="true">{link.icon}</span>
 				{#if !$sidebarCollapsed}
 					<span class="nav-label">{link.label}</span>
-					{#if link.badge && open_cr_count > 0}
+					{#if link.badge === 'prs' && open_cr_count > 0}
 						<span class="nav-badge">{open_cr_count}</span>
+					{:else if link.badge === 'review' && $reviewOutstandingCount > 0}
+						<span class="nav-badge">{$reviewOutstandingCount}</span>
 					{/if}
-				{:else if link.badge && open_cr_count > 0}
+				{:else if link.badge === 'prs' && open_cr_count > 0}
 					<span class="nav-badge nav-badge--dot" aria-label="{open_cr_count} open changes"></span>
+				{:else if link.badge === 'review' && $reviewOutstandingCount > 0}
+					<span class="nav-badge nav-badge--dot" aria-label="{$reviewOutstandingCount} need sign-off"></span>
 				{/if}
 			</a>
 		{/each}

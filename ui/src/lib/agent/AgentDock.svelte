@@ -5,6 +5,7 @@
 	 * Resizable via drag handle on the left edge.
 	 */
 	import { MessageList, ChatInput, ToolCallBlock } from '@aether-ui/core';
+	import { reviewOutstandingCount, refreshReview } from '$lib/review/store';
 	import {
 		agentMessages,
 		agentIsStreaming,
@@ -458,6 +459,14 @@
 			</div>
 		</header>
 
+		{#if $reviewOutstandingCount > 0}
+			<a class="outstanding-strip" href="/review">
+				{$reviewOutstandingCount} unreviewed
+				{#if $reviewOutstandingCount === 1}change{:else}changes{/if}
+				— sign off
+			</a>
+		{/if}
+
 		<!-- Error bar -->
 		{#if $agentError}
 			<div class="error-bar" role="alert">{$agentError}</div>
@@ -831,6 +840,19 @@
 		background: rgba(255, 255, 255, 0.06);
 	}
 
+	.outstanding-strip {
+		display: block;
+		padding: 0.4rem 0.85rem;
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--dk-text, #f4f4f5);
+		background: color-mix(in srgb, var(--dk-amber, #f59e0b) 18%, transparent);
+		border-bottom: 1px solid color-mix(in srgb, var(--dk-amber, #f59e0b) 40%, transparent);
+		text-decoration: none;
+	}
+	.outstanding-strip:hover {
+		filter: brightness(1.08);
+	}
 	.error-bar {
 		padding: 0.4rem 0.85rem;
 		background: rgba(239, 68, 68, 0.12);

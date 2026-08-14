@@ -980,7 +980,7 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 }
             }
             if !rats.is_empty() {
-                crate::api::record_rationales(rats);
+                crate::api::record_rationales(rats.clone());
             }
             // Guardrail: verify the new content parses before persisting.
             // If it has parse errors, reject the write and return the errors.
@@ -1092,7 +1092,36 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .unwrap_or(0);
             let host = crate::coding_gates::parse_check_output(&check);
             let must_fix = host.severity == "errors" || host.error_count > 0;
-            Ok(format!(
+            let slug = project.clone().unwrap_or_default();
+            let rationale = rats.get("*").cloned().or_else(|| {
+                rats.values().next().cloned()
+            });
+            let outstanding = if !slug.is_empty() {
+                Some(crate::review::record_file_edit(
+                    &slug,
+                    if active_path.is_empty() {
+                        &active_name
+                    } else {
+                        &active_path
+                    },
+                    rationale.as_deref(),
+                ))
+            } else {
+                None
+            };
+            let intent = if !slug.is_empty() {
+                Some(crate::review::write_source_intent(
+                    &slug,
+                    if active_path.is_empty() {
+                        &active_name
+                    } else {
+                        &active_path
+                    },
+                ))
+            } else {
+                None
+            };
+            let summary = format!(
                 "Wrote {} bytes to active file ({active_name}). revision={rev} (uncommitted until session_commit)\n\
                  {smoke_line}\n\
                  Host check: severity={} errors={} warnings={}\n\
@@ -1105,7 +1134,23 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 host.error_count,
                 host.warning_count,
                 host.severity,
-            ))
+            );
+            Ok(serde_json::to_string_pretty(&json!({
+                "ok": true,
+                "summary": summary,
+                "project": slug,
+                "slug": slug,
+                "path": if active_path.is_empty() { active_name.clone() } else { active_path.clone() },
+                "revision": rev,
+                "outstanding": outstanding,
+                "intent": intent,
+                "navigation": slug.is_empty().then_some(json!(null)).unwrap_or(json!({
+                    "action": "open-ide",
+                    "path": format!("/projects/{slug}/ide"),
+                    "project": slug
+                })),
+            }))
+            .unwrap_or(summary))
         }
 
         "rename_construct" => {
@@ -1196,6 +1241,17 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             )
             .await
             .map_err(|e| e.message().to_string())?;
+            let slug = crate::coding_gates::current_project_slug()
+                .or_else(|| {
+                    crate::provider::hub::CURRENT_PROJECT
+                        .try_with(|n| n.clone())
+                        .ok()
+                })
+                .or_else(crate::acp::get_acp_project)
+                .unwrap_or_default();
+            if !slug.is_empty() {
+                let _ = crate::review::record_file_created(&slug, &created.path);
+            }
             Ok(format!(
                 "Created {} ({}) at {} — now active. Use write_source to set content, then veil_check.",
                 created.name,
@@ -1386,6 +1442,8 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
             let h = resolve_session_for_ws(arguments).await?;
             crate::coding_gates::gate_session_commit(&h)?;
             let c = h.commit(message)?;
+            let slug = h.snapshot_meta().slug;
+            let outstanding = crate::review::record_commit(&slug, &c.commit_id, message);
             Ok(serde_json::to_string_pretty(&json!({
                 "ok": true,
                 "commit": {
@@ -1398,6 +1456,7 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                 },
                 "session": session_status_json(&h),
                 "host_check": crate::coding_gates::host_check_value(&h.snapshot_meta()),
+                "outstanding": outstanding,
                 "hint": "Slice committed. Continue edits or when task done open PR: create_pr + submit_pr (do NOT merge).",
             }))
             .unwrap_or_default())

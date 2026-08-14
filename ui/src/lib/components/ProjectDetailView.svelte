@@ -7,6 +7,7 @@
   import FormSection from './FormSection.svelte';
   import DetailField from './DetailField.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import { reviewProjects, refreshReview, reviewForSlug, reviewItems } from '$lib/review/store';
 
   let id: string = $state('');
   let name: string = $state('');
@@ -62,6 +63,7 @@
   let mission_error: string = $state('');
 
     $effect(() => { // init
+      void refreshReview();
       error = "";
       loading = true;
       loaded = false;
@@ -556,6 +558,7 @@
       >
         Open in IDE
       </a>
+      <a class="btn-outline" href={`/review/${encodeURIComponent(slug || id)}`}>Sign off</a>
     {/if}
     {#if has_deploy}
       <label class="env-select-wrap">
@@ -593,8 +596,16 @@
     <button type="button" class="btn-outline" onclick={() => { delete_open = true; }}>Delete</button>
   {/snippet}
   {#snippet summary()}
+    {@const rev = reviewForSlug(slug || id, $reviewProjects)}
     <div class="summary card">
       <EntityIdentity name={name || '—'} subtitle={default_branch} show_avatar={true} />
+      {#if rev?.needs_sign_off}
+        <div class="signoff-banner">
+          <StatusPill label="Needs sign-off" variant="warning" />
+          <span>{$reviewItems.filter((i) => i.slug === slug || i.repo_id === id).length} unreviewed change(s).</span>
+          <a class="btn-primary" href={`/review/${encodeURIComponent(slug || id)}`}>Review &amp; sign off</a>
+        </div>
+      {/if}
       {#if has_deploy}
         <div class="summary-meta">
           <StatusPill label={infra_status} variant={infra_status_variant} />
@@ -912,6 +923,13 @@
 
 
 <style>
+.signoff-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dk-amber, #f59e0b) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dk-amber, #f59e0b) 35%, transparent);
+}
 .summary { padding: 1rem 1.15rem; margin-bottom: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem; }
 .summary-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .chip {

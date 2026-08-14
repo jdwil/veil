@@ -531,6 +531,18 @@ function handleEvent(event: StreamEvent) {
 			);
 			// Git-shaped tools may switch the active coding session (branch/main)
 			maybeApplyCodingSessionSwitch(toolName, output);
+			if (
+				!event.data.isError &&
+				(CODE_EDIT_TOOLS.has(toolName) ||
+					toolName === 'create_project' ||
+					toolName === 'create_repo' ||
+					toolName === 'create_pr' ||
+					toolName === 'rename_project' ||
+					toolName === 'sign_off' ||
+					toolName === 'request_sign_off')
+			) {
+				void import('$lib/review/store').then((m) => m.refreshReview());
+			}
 			// Track coding project for end-of-turn landing
 			const proj = projectFromUnknown(output);
 			if (toolName === 'create_project' || toolName === 'create_repo' || CODING_TOOLS.has(toolName)) {
@@ -538,6 +550,7 @@ function handleEvent(event: StreamEvent) {
 			}
 			if (CODE_EDIT_TOOLS.has(toolName) && !event.data.isError) {
 				turnDidCodeEdit = true;
+				void import('$lib/review/store').then((m) => m.refreshReview());
 				// Ensure IDE is open *before* refresh so SSE/reload is visible
 				const p = turnCodingProject || proj || getFocus().project;
 				if (p) {

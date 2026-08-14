@@ -129,6 +129,7 @@ You are the VEIL IDE built-in agent (Rig tools).
 - `wait_intent_ack` blocks until browser Present ACK — never call it before the create tool result has streamed.
 - Recent human intents + UX acks appear in the preamble / get_current_context — if the operator just created a project in the UI, do not create it again.
 - Product-visible ops: operator watches Present. Domain coding tools (write_source, veil_check) hit the server and refresh the IDE.
+- **Visible agency:** announce intent, then act. Forms type at human speed. IDE opens when you edit. After a coherent unit of work call `request_sign_off` and present what/why. `list_outstanding` / `sign_off` are first-class. Do not ask the human to reconstruct from git.
 
 ## Stubs (external crates) — mandatory
 - **NEVER invent or hand-write full SDK `.stub` files.** Use tools:
@@ -200,11 +201,13 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
   - rename_project({name, project?}) / update_project — rename a product. NEVER PATCH /api/repos or Bitbucket.
   - list_projects / open_project / open_ide / navigate_to
   - list_prs / create_pr / get_pr / submit_pr / add_comment
+  - list_outstanding / request_sign_off / sign_off — outstanding change sets (review state, not git)
   - approve_pr / request_pr_changes / merge_pr — human gates unless operator says otherwise
   - provision_project / deploy_status / search_registry / get_config / get_mission
 - **Remote (VEIL_SOURCE_MODE=s3):** create_project = DDB+S3 only. Edits via write_source/create_file/ws_* only. NEVER mkdir/write under VEIL_PROJECTS_DIR or invent local hub paths.
 - **VISIBLE UX:** Never curl ProductHost APIs. Only MCP tools. Host may pre-run create_project — continue with write_source, do not re-curl create.
 - **Focus:** Session focus (route/project/construct) is authoritative for "this component". `get_current_context` returns it. Tool `intent.present` drives visible UX choreography — do not re-create after Present.
+- **Sign-off:** After a coherent unit of work, `request_sign_off` and present what/why. Humans must not reconstruct from git. `list_outstanding` / `sign_off` are first-class.
 
 ## Mind Palace (when wiki tools work)
 - wiki_search for **platform contracts** (bang, harness, git-shaped, dual-loop) when you need mechanics.
@@ -298,6 +301,11 @@ fn assemble_preamble_inner(
     // (name, body, critical) — critical sections refuse silent drop
 
     sections_raw.push(("tier0", tier0_text.to_string(), true));
+
+    let outstanding_md = crate::review::preamble_block();
+    if !outstanding_md.is_empty() {
+        sections_raw.push(("outstanding", outstanding_md, false));
+    }
 
     // Product intent (optional — short MISSION.md; droppable under tight budget)
     if let Some(root) = project_root {

@@ -1,6 +1,6 @@
 //! HTTP API for durable coding sessions and workspace tools.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -49,6 +49,10 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/ux/intent_log", post(ux_intent_log).get(ux_intent_log_list))
         .route("/api/ux/intent_ack", post(ux_intent_ack))
         .route("/api/ux/intent_ack/{id}", get(ux_intent_ack_get))
+        .route("/api/ux/sign_off", post(ux_sign_off))
+        .route("/api/review/outstanding", get(review_outstanding))
+        .route("/api/review/summary", get(review_summary))
+        .route("/api/review/sign_off", post(review_sign_off))
 }
 
 fn json_ok(v: serde_json::Value) -> axum::response::Response {
@@ -674,6 +678,9 @@ async fn ux_create_project(Json(body): Json<UxCreateProjectBody>) -> axum::respo
                     .unwrap_or(0),
             }));
             if ok {
+                let _ = crate::review::record_project_created(&slug, Some(&body.name), None);
+            }
+            if ok {
                 json_ok(v)
             } else {
                 (
@@ -805,4 +812,86 @@ async fn ux_intent_ack_get(Path(id): Path<String>) -> axum::response::Response {
         Some(v) => json_ok(json!({ "ok": true, "ack": v })),
         None => json_ok(json!({ "ok": false, "pending": true, "intent_id": id })),
     }
+}
+
+#[derive(Deserialize)]
+struct ReviewQuery {
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+fn parse_status(raw: Option<&str>) -> Option<crate::review::ItemStatus> {
+    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("outstanding") | Some("open") => Some(crate::review::ItemStatus::Outstanding),
+        Some("approved") | Some("approve") => Some(crate::review::ItemStatus::Approved),
+        Some("rejected") | Some("reject") => Some(crate::review::ItemStatus::Rejected),
+        _ => None,
+    }
+}
+
+async fn review_outstanding(Query(q): Query<ReviewQuery>) -> axum::response::Response {
+    let filter = crate::review::ListFilter {
+        slug: q.slug.filter(|s| !s.is_empty()),
+        session_id: q.session.filter(|s| !s.is_empty()),
+        status: parse_status(q.status.as_deref()).or(Some(crate::review::ItemStatus::Outstanding)),
+    };
+    json_ok(crate::review::snapshot_json(filter))
+}
+
+async fn review_summary() -> axum::response::Response {
+    let mut by: Vec<_> = crate::review::summary_by_slug().into_values().collect();
+    by.sort_by(|a, b| b.outstanding.cmp(&a.outstanding));
+    json_ok(json!({
+        "ok": true,
+        "outstanding": crate::review::outstanding().len(),
+        "projects": by,
+    }))
+}
+
+#[derive(Deserialize)]
+struct SignOffBody {
+    #[serde(default)]
+    ids: Vec<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    all: bool,
+    #[serde(default)]
+    decision: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+fn apply_sign_off(body: SignOffBody) -> axum::response::Response {
+    match crate::review::sign_off(crate::review::SignOffRequest {
+        ids: body.ids,
+        slug: body.slug.filter(|s| !s.is_empty()),
+        all: body.all,
+        decision: body.decision.unwrap_or_else(|| "approve".into()),
+        actor: body.actor.unwrap_or_else(|| "human".into()),
+        note: body.note,
+    }) {
+        Ok((items, audit)) => json_ok(json!({
+            "ok": true,
+            "signed": items.len(),
+            "items": items,
+            "audit": audit,
+            "outstanding": crate::review::outstanding().len(),
+        })),
+        Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn review_sign_off(Json(body): Json<SignOffBody>) -> axum::response::Response {
+    apply_sign_off(body)
+}
+
+async fn ux_sign_off(Json(body): Json<SignOffBody>) -> axum::response::Response {
+    apply_sign_off(body)
 }

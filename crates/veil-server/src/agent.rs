@@ -505,6 +505,17 @@ pub async fn run_turn<P: SourceProvider>(
                                 ));
                             }
                         }
+                        if let Some(slug) = proj_for_smoke.as_deref() {
+                            let _ = crate::review::record_file_edit(
+                                slug,
+                                if active_path.is_empty() {
+                                    &active_name
+                                } else {
+                                    &active_path
+                                },
+                                None,
+                            );
+                        }
                         Ok(())
                     };
                     if let Some(name) = proj {

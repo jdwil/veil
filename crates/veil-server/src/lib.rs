@@ -48,6 +48,7 @@ pub mod chat_log;
 pub mod session;
 pub mod session_api;
 pub mod git_origin;
+pub mod review;
 pub mod pr_writeback;
 pub mod stub_ops;
 pub mod layer_ops;

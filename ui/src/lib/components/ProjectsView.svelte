@@ -5,6 +5,9 @@
   import ContextMenu from './ContextMenu.svelte';
   import EntityIdentity from './EntityIdentity.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import StatusPill from './StatusPill.svelte';
+  import { onMount } from 'svelte';
+  import { reviewProjects, refreshReview, reviewForSlug } from '$lib/review/store';
 
   let repos: Record<string, unknown>[] = $state([]);
   let loading: boolean = $state(false);
@@ -15,11 +18,16 @@
   let delete_name: string = $state('');
   let delete_busy: boolean = $state(false);
 
+  onMount(() => {
+    void refreshReview();
+  });
+
    $effect(() => { // load_on_mount
   void (async () => {
         loading = true;
         error = "";
         repos = await (async () => { const __u = new URL("/api/repos", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
+        void refreshReview();
         loading = false;
   })();
     });
@@ -63,6 +71,7 @@
       { key: 'default_branch', label: 'Branch' },
       { key: 'updated_at', label: 'Updated' },
       { key: 'slug', label: 'Slug' },
+      { key: 'review', label: 'Review' },
       { key: '_actions', label: '' },
     ]}
     agent={{
@@ -90,6 +99,7 @@
     {#snippet tile(item)}
       {@const repo = /** @type {Record<string, unknown>} */ (item)}
       {@const rid = repo?.id != null && typeof repo.id === 'object' && repo.id.value != null ? String(repo.id.value) : String(repo?.id ?? repo?.slug ?? '')}
+      {@const rev = reviewForSlug(rid || String(repo?.slug ?? ''), $reviewProjects)}
       <div class="dk-tile__actions">
         <ContextMenu
           agent={{
@@ -123,6 +133,16 @@
           show_avatar={true}
         />
       </div>
+      {#if rev?.needs_sign_off}
+        <div class="review-badges">
+          <StatusPill label="Needs sign-off" variant="warning" />
+          <span class="review-count">{rev.outstanding} unreviewed</span>
+        </div>
+      {:else if rev?.touched}
+        <div class="review-badges">
+          <StatusPill label="Touched" variant="info" />
+        </div>
+      {/if}
     {/snippet}
     {#snippet row(item)}
       {@const repo = /** @type {Record<string, unknown>} */ (item)}
@@ -133,6 +153,16 @@
       <td><span class="dk-tile__meta">{repo?.default_branch ? String(repo.default_branch) : 'main'}</span></td>
       <td><span class="dk-tile__meta">{repo?.updated_at ? String(repo.updated_at).slice(0, 10) : '—'}</span></td>
       <td><span class="dk-tile__meta">{repo?.slug ? String(repo.slug) : '—'}</span></td>
+      <td>
+        {@const rev = reviewForSlug(rid || String(repo?.slug ?? ''), $reviewProjects)}
+        {#if rev?.needs_sign_off}
+          <StatusPill label={`Sign-off · ${rev.outstanding}`} variant="warning" />
+        {:else if rev?.touched}
+          <StatusPill label="Touched" variant="info" />
+        {:else}
+          <span class="dk-tile__meta">—</span>
+        {/if}
+      </td>
       <td class="dk-table__actions">
         <ContextMenu
           agent={{
@@ -176,5 +206,7 @@
 
 <style>
 .projects { max-width: 1120px; }
+.review-badges { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.35rem; }
+.review-count { font-size: 0.75rem; opacity: 0.7; }
 
 </style>
