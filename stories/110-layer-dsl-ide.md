@@ -5,13 +5,13 @@ iterate many `.layer` files with the **same dual-loop product surface** as
 packages — open, graph/outline, source, diagnostics, restructure, agent, live
 reload — so language work is not second-class to application packages.
 
-**Domain framing (DashLX / product stack)**
+**Domain framing (platform / product stack)**
 
 | Ring | Artifact | Example |
 |------|----------|---------|
-| Platform capability | `.veil` package | `dlx_core` (IAAA), providers, signals |
+| Platform capability | `.veil` package | `examples/dlx_core` (IAAA), providers, signals |
 | Product-family language | `.layer` | `wear_test`, `loyalty` — vocabulary + rails |
-| Client product program | `.veil` package | `brooks_wear_spring`, initiative-specific logic |
+| Client product program | `.veil` package | initiative-specific logic |
 | Soft knobs | data | dates, segment ids, copy, thresholds |
 
 Layers are **not** a configurable workflow engine and **not** where client

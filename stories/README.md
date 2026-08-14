@@ -13,7 +13,7 @@ Living backlog derived from codebase review against [`MISSION.md`](../MISSION.md
 | **Daily driver** | `veil serve` in a **project root**; product path embeds IDE in **runtime UX** |
 | **Projects (runtime local)** | `~/.veil/config.json` + projects dir; first-run prompt; `veil init` / hub create; multi-project = **one** `veil-server` process ([120](120-projects-config-init.md), [IDE_RUNTIME.md](../docs/IDE_RUNTIME.md)) |
 | **In-IDE agent** | Prompt → tools edit sources → IDE live-refresh; models + ACP/MCP pluggable ([100-ide-agent.md](100-ide-agent.md)) |
-| **App harness** | **VEIL-authored** via `@main` / composition — not eternal handwritten bootstrap |
+| **App harness** | Customer apps: VEIL `@main`. ProductHost itself is handwritten (`crates/veil-runtime`) |
 | **Local platform runtime** | Optional; **source on disk**, **metadata in sqlite**; cloud uses object store + meta DB |
 | **Cloud** | Pluggable adapters per provider; LocalStack/AWS only for AWS path testing |
 | **Source preview** | Multi-target, navigable, **secondary** to VEIL topology/body review |

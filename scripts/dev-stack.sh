@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage the single ProductHost backend + runtime UI Vite for local dashlx_dev.
+# Manage the single ProductHost backend + Vite UI.
 #
 # Usage:
 #   scripts/dev-stack.sh start|stop|restart|status|smoke
@@ -7,18 +7,23 @@
 # Backend:  http://127.0.0.1:8080  (ProductHost — IDE + agent + platform APIs)
 # Frontend: http://127.0.0.1:5180  (Vite → proxies /api to :8080)
 #
-# Env overrides: VEIL_PORT, VEIL_RUNTIME_PROXY, VEIL_DDB_TABLE, BUCKET, AWS_PROFILE
+# Env: copy .env.example → .env, or export AWS_PROFILE / VEIL_DDB_TABLE / BUCKET.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 BACKEND_BIN="${BACKEND_BIN:-$ROOT/target/release/veil-runtime}"
 BACKEND_PORT="${VEIL_PORT:-8080}"
 UI_PORT="${UI_PORT:-5180}"
 BACKEND_LOG="${BACKEND_LOG:-/tmp/veil-product-host.log}"
 UI_LOG="${UI_LOG:-/tmp/veil-ui.log}"
 
-export AWS_PROFILE="${AWS_PROFILE:-dashlx_dev}"
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export VEIL_DDB_TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
 export BUCKET="${BUCKET:-veil-runtime-dev}"
@@ -35,8 +40,10 @@ export VEIL_SESSIONS="${VEIL_SESSIONS:-1}"
 export VEIL_GIT_ORIGIN="${VEIL_GIT_ORIGIN:-auto}"
 export VEIL_WS_ROOT="${VEIL_WS_ROOT:-${TMPDIR:-/tmp}/veil-ws}"
 export VEIL_DEV_USER="${VEIL_DEV_USER:-${USER:-local-dev}}"
-# Optional slug→repo_id map (DDB scan is primary). Known dev seeds:
-export VEIL_REPO_MAP="${VEIL_REPO_MAP:-relay=cfb3bc05-0436-47b8-9fd1-9b54b75f6d44,agentic-workflows=b603a7dc-2d3d-4f0a-a405-fc61d81fa440,dlx-auth=a4184638-ccb3-47f9-a06c-af17ed778300,wear-test=7b4a20ee-b559-4706-9d57-ac9142d65289}"
+# Optional slug→repo_id map. DDB META scan is primary; do not ship tenant UUIDs.
+if [[ -n "${VEIL_REPO_MAP:-}" ]]; then
+  export VEIL_REPO_MAP
+fi
 export VEIL_DEV="${VEIL_DEV:-1}"
 export VEIL_PORT="$BACKEND_PORT"
 export VEIL_NONINTERACTIVE=1

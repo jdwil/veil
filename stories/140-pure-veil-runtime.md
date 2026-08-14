@@ -1,5 +1,9 @@
 # Pure VEIL runtime — front and back, full product
 
+> **Superseded 2026-08-14.** The live host is handwritten
+> (`crates/veil-runtime` + `ui/`). This story is kept as a historical epic.
+> Do not resurrect `runtime.veil`. Customer products remain VEIL-authored.
+
 **Goal (definition of done):** A developer runs **one** runtime binary built
 from **VEIL sources** for product domain **and** shell UI. All **intended
 platform functionality** works end-to-end on local defaults. Dual-loop IDE for

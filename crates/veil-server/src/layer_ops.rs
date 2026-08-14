@@ -63,10 +63,20 @@ pub fn platform_layers_dir() -> Option<PathBuf> {
 }
 
 fn aws_env() -> (String, String, String) {
-    let profile = std::env::var("AWS_PROFILE").unwrap_or_else(|_| "dashlx_dev".into());
+    let profile = std::env::var("AWS_PROFILE").unwrap_or_default();
     let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-west-2".into());
     let table = std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "veil-runtime-dev".into());
     (profile, region, table)
+}
+
+fn aws_cli() -> Command {
+    let mut cmd = Command::new("aws");
+    let (profile, region, _) = aws_env();
+    if !profile.is_empty() {
+        cmd.env("AWS_PROFILE", profile);
+    }
+    cmd.env("AWS_REGION", region);
+    cmd
 }
 
 fn s3_bucket() -> Option<String> {
@@ -131,9 +141,7 @@ pub fn materialize_platform_layers(dest: &Path) -> Result<usize, String> {
     };
     let bucket = s3_bucket();
     std::fs::create_dir_all(dest).map_err(|e| format!("mkdir {}: {e}", dest.display()))?;
-    let (profile, region, _) = aws_env();
-
-    let out = Command::new("aws")
+    let out = aws_cli()
         .args([
             "dynamodb",
             "scan",
@@ -146,8 +154,6 @@ pub fn materialize_platform_layers(dest: &Path) -> Result<usize, String> {
             "--output",
             "json",
         ])
-        .env("AWS_PROFILE", &profile)
-        .env("AWS_REGION", &region)
         .output()
         .map_err(|e| format!("aws dynamodb scan: {e}"))?;
     if !out.status.success() {
@@ -201,10 +207,8 @@ pub fn materialize_platform_layers(dest: &Path) -> Result<usize, String> {
 
         if let (Some(bucket), Some(key)) = (bucket.as_ref(), s3_key.as_ref()) {
             let uri = format!("s3://{bucket}/{key}");
-            let cp = Command::new("aws")
+            let cp = aws_cli()
                 .args(["s3", "cp", &uri, dest_path.to_str().unwrap_or("")])
-                .env("AWS_PROFILE", &profile)
-                .env("AWS_REGION", &region)
                 .output()
                 .map_err(|e| format!("aws s3 cp: {e}"))?;
             if cp.status.success() {

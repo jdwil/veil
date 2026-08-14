@@ -1,8 +1,10 @@
 # IDE API + runtime: one kernel, multi-project
 
-How the **dev server**, **runtime** (authored in VEIL), and **viewer** share one
-API surface without forking processes per product and without duplicating
-handlers.
+How the **dev server**, **ProductHost** (`crates/veil-runtime`, handwritten),
+and **in-shell IDE** (`ui/src/lib/ide`) share one API surface without forking
+processes per product and without duplicating handlers.
+
+> **2026-08-14:** The host is **not** authored in VEIL. Customer products are.
 
 Related: [`PROJECT_LAYOUT.md`](PROJECT_LAYOUT.md), [`SERVER.md`](SERVER.md),
 [`STORAGE.md`](STORAGE.md).
@@ -17,11 +19,11 @@ Related: [`PROJECT_LAYOUT.md`](PROJECT_LAYOUT.md), [`SERVER.md`](SERVER.md),
 | Projects dir | `config.projects_dir` (env `VEIL_PROJECTS_DIR` overrides for a session) |
 | First launch | Interactive prompt (CLI/runtime); non-interactive → defaults |
 | HTTP API | **One implementation**: `veil-server` (`build_router` + providers) |
-| Runtime | **VEIL-authored** platform that **embeds / links** `veil-server` — does not reimplement IR/edit/agent |
+| Runtime | Handwritten ProductHost that **embeds / links** `veil-server` — does not reimplement IR/edit/agent |
 | Multi-project | **Single process** (`ProductHost`), request-scoped project id — **not** a second `veil serve --multi` for the dashboard |
-| IDE UI | **`runtime/ide-ui`** (was `veil-viewer`), served at `/viewer` same-origin |
+| IDE UI | **`ui/src/lib/ide`**, native at `/projects/{slug}/ide` |
 | CLI `veil serve <path>` | Thin **single-project** mode of the same kernel (package authors only) |
-| Product UX | See [`runtime/docs/ADR_SINGLE_PRODUCT_HOST.md`](../runtime/docs/ADR_SINGLE_PRODUCT_HOST.md) |
+| Product UX | See [`ADR_SINGLE_PRODUCT_HOST.md`](ADR_SINGLE_PRODUCT_HOST.md) |
 
 ---
 

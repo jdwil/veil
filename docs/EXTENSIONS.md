@@ -18,9 +18,8 @@ Product domains store only an **`ExtensionRef`** (`extension_id` + **integer ver
 
 Full design (domain + runtime + authoring + catalogs):
 
-> **Product / application doc (canonical):**  
-> `/home/jd/dev/veil-projects/application/docs/veil-extensions.md`  
-> (sibling hub project `application` under `VEIL_PROJECTS_DIR`)
+> Application-level extension design lives with the product that uses it
+> (out of this tree). This page is the platform index.
 
 Related platform docs:
 
@@ -56,10 +55,11 @@ When implementation lands in-tree, link concrete packages and APIs from this pag
 
 | Location | Role |
 |----------|------|
-| `/home/jd/dev/veil-projects/application/docs/veil-extensions-stories.md` | Full EXT-01–12 acceptance criteria |
-| [`stories/180-veil-extensions.md`](../stories/180-veil-extensions.md) | Platform tracking + **MUST** pure VEIL + ports/adapters |
+| Product extension stories (out of tree) | Full EXT-01–12 acceptance criteria |
+| [`stories/180-veil-extensions.md`](../stories/180-veil-extensions.md) | Platform tracking |
 
-**veil-runtime work MUST be VEIL-authored** (`runtime/src/runtime.veil`):
+**Customer extension packages** are VEIL-authored. The ProductHost that
+loads them is handwritten (`crates/veil-runtime`):
 
 | In VEIL | Outside the engine |
 |---------|-------------------|

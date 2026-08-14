@@ -3,7 +3,9 @@
 ## Purpose
 
 VEIL is a **token-efficient, indentation-based intermediate language** for
-software that agents author and humans oversee. It compiles to real target
+software that agents author and humans oversee. Licensed **AGPL-3.0-only**
+(copyright JD Williams, jd@unsung-operators.com). Hosted ProductHost and
+commercial licenses: same address. It compiles to real target
 languages (Rust today; TypeScript/Svelte and others on the roadmap) and
 presents as an interactive structural viewer/editor.
 
@@ -528,7 +530,6 @@ crates/
   veil-runtime/          — ProductHost binary (platform HTTP + git origin)
 
 ui/                      — ProductHost SPA (projects, review/sign-off, in-shell IDE)
-ide-ui/                  — Optional standalone /viewer embed
 ```
 
 ## Current State

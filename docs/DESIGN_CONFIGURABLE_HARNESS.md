@@ -1046,7 +1046,7 @@ This **is** bit-compatible with today’s single-package `veil_bin`, including p
 | Threat: forgotten endpoint | After flip, only declared endpoints. Compat still hosts today’s implicit set. |
 | Threat: toml wire override to a weaker adapter | Typecheck still requires port match. Review `[harness.wire]` in PRs. |
 
-No new PII stores. No change to runtime AWS credentials (`AWS_PROFILE=dashlx_dev` local).
+No new PII stores. No change to runtime AWS credentials (operator `.env` / default chain).
 
 ---
 

@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
   "name": "veil",
   "description": "VEIL ProductHost agent: mind-palace + jira/bitbucket + veil-ide-tools. Install: ~/.kiro/agents/veil.json. Switch: VEIL_ACP_AGENT=veil",
-  "prompt": "file:///home/jd/.kiro/agents/hive-agent-prompt.md",
+  "prompt": "VEIL ProductHost agent. Prefer veil-ide-tools MCP. Do not invent a second git.",
   "tools": [
     "*"
   ],
@@ -13,21 +13,20 @@
     "mind-palace": {
       "command": "mind-palace-mcp",
       "env": {
-        "MIND_PALACE_S3_BUCKET": "mind-palace-pages-dev-086261225885",
+        "MIND_PALACE_S3_BUCKET": "mind-palace-pages-dev",
         "MIND_PALACE_S3_PREFIX": "v1",
         "MIND_PALACE_DYNAMO_TABLE": "mind-palace-graph-dev",
-        "MIND_PALACE_VECTORS_BUCKET": "mind-palace-vectors-dev-086261225885",
+        "MIND_PALACE_VECTORS_BUCKET": "mind-palace-vectors-dev",
         "MIND_PALACE_VECTORS_INDEX": "wiki-pages",
         "MIND_PALACE_BEDROCK_MODEL": "amazon.titan-embed-text-v2:0",
         "MIND_PALACE_REGION": "us-west-2",
-        "MIND_PALACE_USER_ID": "YOU@example.com",
-        "MIND_PALACE_USER_NAME": "Your Name",
-        "AWS_PROFILE": "dashlx_dev"
+        "MIND_PALACE_USER_ID": "you@example.com",
+        "MIND_PALACE_USER_NAME": "Your Name"
       }
     },
     "rustBrowser": {
       "disabled": false,
-      "command": "/home/jd/dev/utils/rust-browser-mcp",
+      "command": "rust-browser-mcp",
       "args": [
         "--transport",
         "stdio",

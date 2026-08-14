@@ -555,8 +555,7 @@ impl DeployExec for LocalDeployExec {
             if u2 != "".to_string() {
                 unit_count = 3;
             };
-            let role = std::env::var("VEIL_LAMBDA_ROLE".to_string())
-                .unwrap_or_else(|_| "arn:aws:iam::086261225885:role/dlx-lambda-dev".to_string());
+            let role = std::env::var("VEIL_LAMBDA_ROLE".to_string()).unwrap_or_default();
             let mut detail = "ok".to_string();
             let mut next_cursor = "done".to_string();
             let mut status = "running".to_string();
@@ -772,9 +771,8 @@ impl DeployExec for LocalDeployExec {
                             if arn0 != "".to_string() {
                                 let mut region = std::env::var("AWS_REGION".to_string())
                                     .unwrap_or_else(|_| "us-west-2".to_string());
-                                let mut api_id =
-                                    std::env::var("VEIL_GW_DASHLX_SERVICES".to_string())
-                                        .unwrap_or_else(|_| "".to_string());
+                                let mut api_id = std::env::var("VEIL_GW_HTTP_API".to_string())
+                                    .unwrap_or_else(|_| "".to_string());
                                 let mut api_name = "".to_string();
                                 if api_id == "".to_string() {
                                     let apis = self
@@ -787,9 +785,9 @@ impl DeployExec for LocalDeployExec {
                                         let pt = item.protocol_type();
                                         if pt.is_some() {
                                             let n = item.name().unwrap_or("").to_string();
-                                            if n.contains("dlx-rust")
+                                            if n.contains("http-api")
                                                 || n.contains("service-api")
-                                                || n == "dashlx-services".to_string()
+                                                || n == "http-api".to_string()
                                             {
                                                 if api_id == "".to_string() {
                                                     api_id =
@@ -877,8 +875,8 @@ impl DeployExec for LocalDeployExec {
                                     if !has2 {
                                         self.apigw.create_route().api_id(api_id.clone()).route_key(rk2.clone()).target(format!("integrations/{}", integ_id)).authorization_type(aws_sdk_apigatewayv2::types::AuthorizationType::None).send().await.map_err(|e| DomainError::External(format!("{e:?}")))?;
                                     };
-                                    let mut acct = std::env::var("AWS_ACCOUNT_ID".to_string())
-                                        .unwrap_or_else(|_| "086261225885".to_string());
+                                    let mut acct =
+                                        std::env::var("AWS_ACCOUNT_ID".to_string()).unwrap_or_default();
                                     let source_arn = format!(
                                         "arn:aws:execute-api:{}:{}:{}/*/*",
                                         region, acct, api_id
@@ -907,7 +905,7 @@ impl DeployExec for LocalDeployExec {
                                     };
                                 } else {
                                     detail = format!(
-                                        "{}; no existing HTTP API for dashlx-services (set VEIL_GW_DASHLX_SERVICES)",
+                                        "{}; no existing HTTP API (set VEIL_GW_HTTP_API)",
                                         detail
                                     );
                                 };
@@ -1029,8 +1027,8 @@ impl DeployExec for LocalDeployExec {
                         if t1 == "lambda-consumer".to_string() {
                             let mut region = std::env::var("AWS_REGION".to_string())
                                 .unwrap_or_else(|_| "us-west-2".to_string());
-                            let mut acct = std::env::var("AWS_ACCOUNT_ID".to_string())
-                                .unwrap_or_else(|_| "086261225885".to_string());
+                            let mut acct =
+                                std::env::var("AWS_ACCOUNT_ID".to_string()).unwrap_or_default();
                             let qarn = format!("arn:aws:sqs:{}:{}:{}", region, acct, sqs_name);
                             let mut esm_uuid = "".to_string();
                             let maps = self
@@ -1738,7 +1736,16 @@ impl DeployExec for LocalDeployExec {
                 .map_err(|e| DomainError::External(e.to_string()))?;
             return Ok(raw2);
         };
-        return Ok("{\"default\":\"dev\",\"environments\":[{\"name\":\"dev\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":\"arn:aws:iam::086261225885:role/dlx-lambda-dev\",\"gateways\":[{\"logical\":\"dashlx-services\",\"patterns\":[\"dlx-rust-*\",\"*-dev-service-api\",\"dashlx-services\"]}]},{\"name\":\"staging\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"dashlx-services\",\"patterns\":[\"dlx-rust-*\",\"*-staging-service-api\",\"dashlx-services\"]}]},{\"name\":\"prod\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"dashlx-services\",\"patterns\":[\"dlx-rust-*\",\"*-prod-service-api\",\"dashlx-services\"]}]}],\"config_path\":\"runtime/config/deploy.toml\"}".to_string());
+        let cwd_cfg = std::env::current_dir()
+            .ok()
+            .map(|p| p.join("config/deploy.toml"))
+            .filter(|p| p.is_file());
+        if let Some(p) = cwd_cfg {
+            if let Ok(raw) = veil_local_fs::LocalFs::read_toml_json(p.display().to_string()) {
+                return Ok(raw);
+            }
+        }
+        return Ok("{\"default\":\"dev\",\"environments\":[{\"name\":\"dev\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"http-api\",\"patterns\":[\"*-http-api\",\"*-dev-service-api\"]}]},{\"name\":\"staging\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"http-api\",\"patterns\":[\"*-staging-service-api\"]}]},{\"name\":\"prod\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"http-api\",\"patterns\":[\"*-prod-service-api\"]}]}],\"config_path\":\"config/deploy.toml\"}".to_string());
     }
 
     async fn plan_provision(
@@ -2070,8 +2077,7 @@ impl DeployExec for LocalDeployExec {
                 &serde_json::json!({ "success": true, "already": true, "unit_name": unit_name.clone(), "environment": environment.clone(), "message": "already provisioned".to_string(), "summary": format!("{} already provisioned in {}", unit_name, environment), "resources": serde_json::json!({ "lambda_name": fn_name.clone() }), "duration_ms": 0 }),
             )?);
         };
-        let role = std::env::var("VEIL_LAMBDA_ROLE".to_string())
-            .unwrap_or_else(|_| "arn:aws:iam::086261225885:role/dlx-lambda-dev".to_string());
+        let role = std::env::var("VEIL_LAMBDA_ROLE".to_string()).unwrap_or_default();
         return Ok(serde_json::to_string(
             &serde_json::json!({ "success": false, "unit_name": unit_name.clone(), "environment": environment.clone(), "message": "function missing - use ProvisionProject job for stack ensure + CreateFunction".to_string(), "summary": format!("Unit {} -> '{}' not found; role={}", unit_name, fn_name, role), "resources": serde_json::json!({ "lambda_name": fn_name.clone(), "role_arn": role.clone() }), "duration_ms": 0 }),
         )?);

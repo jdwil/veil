@@ -5,17 +5,22 @@
 #   DDB PK=STUB#{name} SK=META  data={ name, version, s3_key, bytes, fingerprint, … }
 #
 # Usage:
-#   AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
+#   AWS_PROFILE=… VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
 #     ./scripts/seed-stubs-platform.sh [stubs_dir]
 #
 # Default stubs_dir: stubs/
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 STUBS_DIR="${1:-$ROOT/stubs}"
 TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
 BUCKET="${BUCKET:-${VEIL_S3_BUCKET:-veil-runtime-dev}}"
-export AWS_PROFILE="${AWS_PROFILE:-dashlx_dev}"
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 
 if [[ ! -d "$STUBS_DIR" ]]; then

@@ -18,6 +18,6 @@
 
 - Discard `File[]` from ChatInput (`text-only for now` is forbidden).
 - Require the operator to re-type or paste document contents.
-- Hand-edit generated Svelte product views for this — AgentDock lives in `runtime/ui/src/lib/agent/` (allowed exception).
+- Hand-edit generated customer Svelte for this — AgentDock lives in `ui/src/lib/agent/` (host, handwritten).
 
-**Source of truth:** `runtime/ui/src/lib/agent/attachments.ts`, `crates/veil-server/src/chat_attachments.rs`
+**Source of truth:** `ui/src/lib/agent/attachments.ts`, `crates/veil-server/src/chat_attachments.rs`

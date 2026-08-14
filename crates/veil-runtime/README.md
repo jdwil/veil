@@ -9,4 +9,3 @@ scripts/dev-stack.sh restart
 
 - API: `http://127.0.0.1:8080`
 - UI: `ui/` Vite on `:5180`
-- Optional `/viewer` static from `ide-ui` → `crates/veil-runtime/static/viewer`

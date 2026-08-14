@@ -1,7 +1,7 @@
 //! Optional Mind Palace (wiki) tools for Rig agents.
 //!
 //! Enabled when `MIND_PALACE=1` (or `true`) and AWS resources are configured.
-//! Uses the default AWS credential chain (`AWS_PROFILE=dashlx_dev`, etc.).
+//! Uses the default AWS credential chain (`AWS_PROFILE`, etc.).
 //!
 //! Env (required when enabled):
 //! - `MIND_PALACE_S3_BUCKET`
@@ -70,7 +70,7 @@ You have access to a persistent wiki-style knowledge base that stores synthesize
 |------|---------|---------|
 | `Index` | Lightweight hub linking to related pages | "deployment-index" linking to all deploy-related pages |
 | `Concept` | Mid-level synthesis of a topic | "rust-error-handling", "multi-tenancy-design" |
-| `Entity` | Specific thing: person, project, service | "dashlx-ecs-cluster", "client-acme-corp" |
+| `Entity` | Specific thing: person, project, service | "prod-ecs-cluster", "client-acme-corp" |
 | `Decision` | Record of a decision + rationale | "decision-use-s3-vectors-over-pinecone" |
 | `Leaf` | Deep reference material | "aws-sdk-dynamodb-single-table-patterns" |
 | `Sop` | Step-by-step procedure any agent can follow | "sop-deploy-to-production" |
@@ -129,7 +129,7 @@ pub async fn try_palace() -> Option<Arc<MindPalace>> {
             match build_from_env().await {
                 Ok(p) => {
                     let _ = PALACE.set(Some(Arc::new(p)));
-                    tracing::info!("Mind Palace tools enabled (dashlx AWS credentials)");
+                    tracing::info!("Mind Palace tools enabled (AWS credentials)");
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Mind Palace init failed — tools unavailable");

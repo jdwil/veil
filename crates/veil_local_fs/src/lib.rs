@@ -478,7 +478,7 @@ billing = "pay_per_request"
 [deploy.stack.lambda_api]
 [deploy.stack.lambda_consumer]
 [deploy.network]
-vpc = "dashlx"
+vpc = "default"
 [[deploy.units]]
 name = "relay-api"
 type = "lambda-api"
@@ -489,7 +489,7 @@ stack_role = "lambda_api"
 memory_mb = 1024
 timeout_seconds = 30
 [deploy.units.api_gateway]
-gateway = "dashlx-services"
+gateway = "http-api"
 path_prefix = "/relay"
 [[deploy.units]]
 name = "relay-consumer"

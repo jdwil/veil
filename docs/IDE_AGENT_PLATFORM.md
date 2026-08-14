@@ -162,7 +162,7 @@ mind-palace = { git = "https://github.com/jdwil/mind-palace" }
 mind-palace-rig = { git = "https://github.com/jdwil/mind-palace" }
 ```
 
-**Region must match stack** (dashlx_dev: `us-west-2`). Seed via agent:
+**Region must match the palace stack** (`MIND_PALACE_REGION`). Seed via agent:
 `seed mind palace` or `./scripts/seed_mind_palace.sh`.
 
 Full env: [MIND_PALACE.md](./MIND_PALACE.md).

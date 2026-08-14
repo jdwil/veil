@@ -744,7 +744,7 @@ stub reqwest 0.13.4
 **Where stubs live (resolve order):**
 
 1. Project `name.stub` or `stubs/name.stub` (pin / override)
-2. Platform catalog: `VEIL_STUBS_DIR`, monorepo `runtime/src/stubs`, or S3
+2. Platform catalog: `VEIL_STUBS_DIR`, monorepo `stubs/`, or S3
    `stubs/platform/{name}/{ver}.stub` via DDB `STUB#/META` (materialized to `$TMP/veil-platform-stubs`)
 3. Fail → `veil stub-gen` / `POST /api/…/stubs/generate` / agent `stub_gen`
 

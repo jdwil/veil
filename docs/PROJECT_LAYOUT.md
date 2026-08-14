@@ -5,7 +5,7 @@ IDE** opens multiple products without treating the language monorepo or
 `examples/` as the product workspace.
 
 Related: [`VCS_MODEL.md`](VCS_MODEL.md), [`STORAGE.md`](STORAGE.md),
-[`SERVER.md`](SERVER.md), [`runtime/README.md`](../runtime/README.md).
+[`SERVER.md`](SERVER.md), [`crates/veil-runtime/README.md`](../crates/veil-runtime/README.md).
 
 ---
 
@@ -20,7 +20,7 @@ Related: [`VCS_MODEL.md`](VCS_MODEL.md), [`STORAGE.md`](STORAGE.md),
 | **`examples/`** | Syntax demos + CI only — **not** the IDE default workspace |
 | **Runtime local** | Configured **projects directory**; each product is an **independent git repo** |
 | **Config** | `~/.veil/config.json` (`projects_dir`, …); first-run prompt; env overrides |
-| **IDE + runtime API** | **One kernel** (`veil-server`); runtime (VEIL) embeds it — see [`IDE_RUNTIME.md`](IDE_RUNTIME.md) |
+| **IDE + runtime API** | **One kernel** (`veil-server`); ProductHost (`crates/veil-runtime`) embeds it — see [`IDE_RUNTIME.md`](IDE_RUNTIME.md) |
 | **Multi-project** | **Single server process**, request-scoped `/api/p/{project}/…` (not N× processes) |
 
 ---
@@ -166,7 +166,7 @@ Same pattern as platform stubs:
 | DDB | `PK=LAYER#{name}` `SK=META` |
 
 ```bash
-AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
+VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
   ./scripts/seed-layers-platform.sh
 ```
 

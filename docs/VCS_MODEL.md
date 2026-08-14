@@ -7,7 +7,7 @@ gix-compatible bundle engine). Coding sessions are **local checkouts**.
 `session_commit` is `git commit` + push. PRs merge git branches.
 
 `VEIL_SOURCE_MODE=disk` still uses a project folder (and may `git init` there).
-That path is not the live dashlx_dev runtime.
+That path is not the live ProductHost (`VEIL_SOURCE_MODE=s3`) runtime.
 
 **Not chosen:** DDB-only source trees; SHA-pointer stubs under `git/{slug}/refs`
 without objects; S3 workdir snapshots as “commits”.

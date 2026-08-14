@@ -4,7 +4,7 @@
 
 1. **Mind Palace first** for any project work: `mind-palace__wiki_search` → `mind-palace__wiki_read` **before** monorepo `grep` / `read_file` / exploratory shell.
 2. Full policy: [`.grok/rules/mind-palace.md`](.grok/rules/mind-palace.md)
-3. Local AWS (jd@dashlx.com): palace `local-veil-runtime-dev-jd` and [`docs/SOURCE_STORE.md`](docs/SOURCE_STORE.md) — `AWS_PROFILE=dashlx_dev`, `VEIL_DDB_TABLE=veil-runtime-dev`, `BUCKET=veil-runtime-dev`.
+3. Local AWS: palace `local-veil-runtime-dev-jd` (operator-specific) and [`docs/SOURCE_STORE.md`](docs/SOURCE_STORE.md). Copy `.env.example` → `.env`. Never commit account IDs or profile names.
 
 ## Agent control model
 
@@ -13,9 +13,8 @@ The runtime agent must be able to drive the full UX (navigate, IDE, SDLC, deploy
 ## Single ProductHost (no dual veil serve)
 
 Product UX is **one process**: `crates/veil-runtime` (ProductHost) links
-`crates/veil-server` (IDE kernel) and serves the shell from `ui/` (Vite :5180)
-plus optional `/viewer` from `ide-ui`. Do **not** run a separate
-`veil serve --multi` just for the dashboard agent.
+`crates/veil-server` (IDE kernel) and serves the shell from `ui/` (Vite :5180).
+Do **not** run a separate `veil serve --multi` just for the dashboard agent.
 Details: [`docs/ADR_SINGLE_PRODUCT_HOST.md`](docs/ADR_SINGLE_PRODUCT_HOST.md).
 
 ### Local stack (agents manage this)
@@ -32,7 +31,7 @@ scripts/dev-stack.sh ui
 ```
 
 Logs: `/tmp/veil-product-host.log`, `/tmp/veil-ui.log`.
-Env: `AWS_PROFILE=dashlx_dev`, `VEIL_DDB_TABLE=veil-runtime-dev`, `BUCKET=veil-runtime-dev`.
+Env: `.env` (see `.env.example`). Typical keys: `AWS_PROFILE`, `VEIL_DDB_TABLE`, `BUCKET`.
 
 ## Where code lives
 

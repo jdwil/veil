@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Trigger Mind Palace seeding via the VEIL IDE agent (ACP or Rig).
 #
-# Requires: veil serve running with MIND_PALACE=1 + AWS_PROFILE=dashlx_dev
+# Requires: ProductHost or veil serve running with MIND_PALACE=1 and AWS credentials
 #
 # Usage:
 #   # single-project serve (make serve PROJECT=/path/to/wear_test):

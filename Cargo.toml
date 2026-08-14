@@ -20,8 +20,8 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
-authors = ["JD Williams"]
+license = "AGPL-3.0-only"
+authors = ["JD Williams <jd@unsung-operators.com>"]
 
 [workspace.dependencies]
 # Parser

@@ -1280,7 +1280,7 @@ async fn dispatch_wiki_tool(tool_name: &str, arguments: &Value) -> Result<String
     let palace = crate::mind_palace_tools::try_palace()
         .await
         .ok_or_else(|| {
-            "Mind Palace failed to initialize — check MIND_PALACE_* env and AWS_PROFILE=dashlx_dev"
+            "Mind Palace failed to initialize — check MIND_PALACE_* env and AWS credentials"
                 .to_string()
         })?;
     let (search, read, traverse, create, update, list) =

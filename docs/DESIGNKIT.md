@@ -88,7 +88,7 @@ Stagger lists: set `--dk-i: {index}` on each child.
 
 Designkit’s global `main { max-width: 1120px; margin: 0 auto; … }` suits
 content pages. For app shells that fill a flex pane, give main a local class
-and reset (see `runtime/src/runtime-ui.veil`):
+and reset (see `ui/src/lib/components/`):
 
 ```css
 main.shell-main {

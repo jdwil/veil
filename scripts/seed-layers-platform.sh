@@ -5,7 +5,7 @@
 #   DDB PK=LAYER#{name} SK=META  data={ name, version, s3_key, bytes, fingerprint, visibility }
 #
 # Usage:
-#   AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
+#   AWS_PROFILE=… VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
 #     ./scripts/seed-layers-platform.sh [layers_dir]
 #
 # Default layers_dir: monorepo layers/
@@ -15,10 +15,15 @@
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 LAYERS_DIR="${1:-$ROOT/layers}"
 TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
 BUCKET="${BUCKET:-${VEIL_S3_BUCKET:-veil-runtime-dev}}"
-export AWS_PROFILE="${AWS_PROFILE:-dashlx_dev}"
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 VERSION="${VEIL_PLATFORM_LAYER_VERSION:-1.0.0}"
 

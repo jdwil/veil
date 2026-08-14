@@ -2,11 +2,11 @@
 #
 # Targets:
 #   make veil           — build the VEIL compiler
-#   make serve          — IDE for one PROJECT root + viewer
-#   make serve-examples — demo: veil serve examples/ + viewer
-#   make serve-stop     — stop backend + frontend on default ports
-#   make serve-api      — API only (no viewer)
-#   make serve-ui       — viewer only (expects API already on PORT)
+#   make serve          — single-project veil serve API
+#   make serve-examples — demo: veil serve examples/
+#   make serve-stop     — stop veil serve on default port
+#   make serve-api      — alias of serve
+#   make serve-ui       — points at scripts/dev-stack.sh (ProductHost UI)
 #   make projects       — list products under VEIL_PROJECTS_DIR
 #   make runtime        — transpile + compile the runtime
 #
@@ -19,11 +19,9 @@
 VEIL_BIN    := target/release/veil
 STUB_DIR    := stubs
 EXAMPLES    := examples
-# Optional same-origin /viewer SPA (product IDE is native in ui/).
-VIEWER_DIR  := ide-ui
-# Backend API (viewer hardcodes localhost:3001 — change both if you override)
+# Backend API for `make serve` (single-project veil serve).
 PORT        ?= 3001
-# Vite / SvelteKit dev server
+# Vite / SvelteKit (single-project viewer, if used)
 VIEWER_PORT ?= 5173
 PID_DIR     := .veil-dev
 API_PID     := $(PID_DIR)/api.pid
@@ -80,7 +78,7 @@ STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sq
                aws-config gix rig-core axum tokio-tungstenite tower-http \
                sha2 zip tempfile schemars
 
-.PHONY: veil serve serve-examples serve-stop serve-api serve-ui viewer-install \
+.PHONY: veil serve serve-examples serve-stop serve-api serve-ui \
 	projects runtime runtime-serve pure-runtime pure-runtime-build pure-runtime-smoke gen-runtime build-runtime \
 	clean-runtime stubs check test test-roundtrip
 
@@ -89,106 +87,21 @@ STUB_CRATES := aws-sdk-s3 aws-sdk-dynamodb aws-sdk-lambda aws-sdk-sns aws-sdk-sq
 veil:
 	cargo build -p veil-cli --release
 
-# ─── Dev stack: API + viewer ────────────────────────────────────────────────
-
-# Install viewer deps if needed
-viewer-install:
-	@if [ ! -d "$(VIEWER_DIR)/node_modules" ]; then \
-		echo "Installing $(VIEWER_DIR) dependencies…"; \
-		cd $(VIEWER_DIR) && npm install; \
-	fi
+# ─── Dev stack: single-project API (`veil serve`) ────────────────────────────
+# Product UX (projects, agent, sign-off) is scripts/dev-stack.sh + ui/.
 
 # List products in the projects hub (not the IDE).
 projects: veil
 	@$(VEIL_BIN) projects list
 
-# Full stack: single-project IDE API + viewer.
-# Requires PROJECT= path to a product root (git repo under VEIL_PROJECTS_DIR).
-# Stop: Ctrl-C  or  make serve-stop
-serve: veil viewer-install
-	@if [ -z "$(strip $(PROJECT))" ]; then \
-		echo "error: set PROJECT to a product root."; \
-		echo "  export VEIL_PROJECTS_DIR=$$HOME/dev/veil-projects"; \
-		echo "  make projects"; \
-		echo "  veil projects create my-app"; \
-		echo "  make serve PROJECT=$$VEIL_PROJECTS_DIR/my-app"; \
-		echo ""; \
-		echo "Demo sandbox: make serve-examples"; \
-		exit 1; \
-	fi
-	@mkdir -p $(PID_DIR)
-	@if ss -tln 2>/dev/null | grep -qE ":$(PORT)\\b" || \
-	   netstat -tln 2>/dev/null | grep -qE ":$(PORT)\\b"; then \
-		echo "error: API port $(PORT) is already in use."; \
-		echo "  make serve-stop   or   make serve PORT=…"; \
-		ss -tlnp 2>/dev/null | grep -E ":$(PORT)\\b" || true; \
-		exit 1; \
-	fi
-	@if ss -tln 2>/dev/null | grep -qE ":$(VIEWER_PORT)\\b" || \
-	   netstat -tln 2>/dev/null | grep -qE ":$(VIEWER_PORT)\\b"; then \
-		echo "error: viewer port $(VIEWER_PORT) is already in use."; \
-		echo "  make serve-stop   or   make serve VIEWER_PORT=…"; \
-		ss -tlnp 2>/dev/null | grep -E ":$(VIEWER_PORT)\\b" || true; \
-		exit 1; \
-	fi
-	@echo "Starting VEIL IDE (single project)…"
-	@echo "  Project:  $(PROJECT)"
-	@echo "  Hub:      VEIL_PROJECTS_DIR=$(VEIL_PROJECTS_DIR)"
-	@echo "  Backend:  http://localhost:$(PORT)   (veil serve $(PROJECT))"
-	@echo "  Frontend: http://localhost:$(VIEWER_PORT)  (veil-viewer)"
-	@echo "  Open:     http://localhost:$(VIEWER_PORT)"
-	@echo "  Agent:    VEIL_MODEL_PROVIDER=$(VEIL_MODEL_PROVIDER)$(if $(VEIL_MODEL_NAME),  model=$(VEIL_MODEL_NAME),)"
-	@if [ "$(VEIL_MODEL_PROVIDER)" = "acp" ] || [ "$(VEIL_MODEL_PROVIDER)" = "kiro" ]; then \
-		echo "  ACP:      $(VEIL_ACP_COMMAND) $(VEIL_ACP_ARGS)"; \
-		echo "  ACP cwd:  $(VEIL_ACP_CWD)"; \
-		if [ -n "$(VEIL_ACP_MODEL)" ]; then echo "  ACP model: $(VEIL_ACP_MODEL)"; else echo "  ACP model: (kiro default / auto — set VEIL_ACP_MODEL to pin)"; fi; \
-		if command -v $(VEIL_ACP_COMMAND) >/dev/null 2>&1; then \
-			echo "  ACP bin:  ok ($$(command -v $(VEIL_ACP_COMMAND)))"; \
-		else \
-			echo "  ACP bin:  WARN $(VEIL_ACP_COMMAND) not on PATH — install Kiro CLI + kiro-cli login"; \
-		fi; \
-	fi
-	@if [ "$(VEIL_MODEL_PROVIDER)" = "ollama" ]; then \
-		if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then \
-			echo "  Ollama:   up at :11434"; \
-		else \
-			echo "  Ollama:   WARN not reachable at :11434 (start ollama or use VEIL_MODEL_PROVIDER=acp)"; \
-		fi; \
-	fi
-	@echo "  Stop:     Ctrl-C  or  make serve-stop"
-	@echo ""
-	@# VEIL_BIN so dev-loop `veil gen` works even if binary isn't on PATH
-	@VEIL_BIN="$(CURDIR)/$(VEIL_BIN)" $(VEIL_BIN) serve $(PROJECT) -p $(PORT) & echo $$! > $(API_PID); \
-	API_PID_VAL=$$(cat $(API_PID)); \
-	cleanup() { \
-		echo ""; \
-		echo "Stopping dev stack…"; \
-		kill $$API_PID_VAL 2>/dev/null || true; \
-		fuser -k $(PORT)/tcp 2>/dev/null || true; \
-		fuser -k $(VIEWER_PORT)/tcp 2>/dev/null || true; \
-		rm -f $(API_PID) $(UI_PID); \
-	}; \
-	trap cleanup EXIT INT TERM; \
-	i=0; \
-	while [ $$i -lt 30 ]; do \
-		if curl -sf "http://127.0.0.1:$(PORT)/api/files" >/dev/null 2>&1; then break; fi; \
-		if ! kill -0 $$API_PID_VAL 2>/dev/null; then \
-			echo "error: veil serve exited early"; exit 1; \
-		fi; \
-		i=$$((i+1)); sleep 0.5; \
-	done; \
-	if ! curl -sf "http://127.0.0.1:$(PORT)/api/files" >/dev/null 2>&1; then \
-		echo "error: API did not become ready on port $(PORT)"; \
-		exit 1; \
-	fi; \
-	echo "API ready — starting viewer…"; \
-	cd $(VIEWER_DIR) && npm run dev -- --host 127.0.0.1 --port $(VIEWER_PORT)
+# Single-project IDE API. Product UX is scripts/dev-stack.sh + ui/.
+serve: serve-api
 
 # Demo / CI: serve monorepo examples/ (not the product default)
-serve-examples: veil viewer-install
-	@$(MAKE) serve PROJECT=$(EXAMPLES) PORT=$(PORT) VIEWER_PORT=$(VIEWER_PORT)
+serve-examples: veil
+	@$(MAKE) serve-api PROJECT=$(EXAMPLES) PORT=$(PORT)
 
-# API only (no viewer) — requires PROJECT=
+# API only — requires PROJECT=
 serve-api: veil
 	@if [ -z "$(strip $(PROJECT))" ]; then \
 		echo "error: set PROJECT=…  (or make serve-api PROJECT=examples)"; \
@@ -206,10 +119,10 @@ serve-api: veil
 	fi
 	$(VEIL_BIN) serve $(PROJECT) -p $(PORT)
 
-# Viewer only (expects veil serve already on PORT)
-serve-ui: viewer-install
-	@echo "Viewer: http://localhost:$(VIEWER_PORT)  (API expected at :$(PORT))"
-	cd $(VIEWER_DIR) && npm run dev -- --host 127.0.0.1 --port $(VIEWER_PORT)
+# ProductHost UI (Vite). Backend is scripts/dev-stack.sh, not veil serve.
+serve-ui:
+	@echo "Product UI is ui/ via scripts/dev-stack.sh (Vite :5180 → API :8080)"
+	@echo "  scripts/dev-stack.sh ui"
 
 # Stop API + viewer (default ports) and any recorded PIDs.
 serve-stop:
@@ -248,21 +161,9 @@ runtime-serve: pure-runtime-build
 	@CI=1 VEIL_NONINTERACTIVE=1 VEIL_PORT=$(RUNTIME_PORT) VEIL_BIN=$(CURDIR)/$(VEIL_BIN) \
 		./target/release/veil-runtime
 
-# Product host binary (Rust). Shell UI is ui/ (Vite). Optional /viewer from ide-ui.
+# Product host binary (Rust). Shell UI is ui/ (Vite).
 pure-runtime-build: veil
 	@echo "==> build veil-runtime (ProductHost)"
-	@if [ -d $(VIEWER_DIR)/node_modules ]; then \
-		(cd $(VIEWER_DIR) && VEIL_VIEWER_BASE=/viewer npm run build) || \
-			echo "  ⚠ IDE UI build failed — run: cd $(VIEWER_DIR) && npm i && VEIL_VIEWER_BASE=/viewer npm run build"; \
-		rm -rf crates/veil-runtime/static/viewer; \
-		if [ -d $(VIEWER_DIR)/build ]; then \
-			mkdir -p crates/veil-runtime/static/viewer; \
-			cp -a $(VIEWER_DIR)/build/. crates/veil-runtime/static/viewer/; \
-			echo "  ✓ ide-ui → crates/veil-runtime/static/viewer"; \
-		fi; \
-	else \
-		echo "  ⚠ $(VIEWER_DIR)/node_modules missing — skip /viewer rebuild"; \
-	fi
 	@cargo build --release -p veil-runtime
 	@echo "✓ veil-runtime ready (UI: ui/ Vite :5180, API: :8080)"
 

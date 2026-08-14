@@ -1,6 +1,10 @@
-# Pure VEIL runtime (release goal)
+# Pure VEIL runtime (historical goal)
 
-Canonical story epic: [`stories/140-pure-veil-runtime.md`](../stories/140-pure-veil-runtime.md).
+**Superseded 2026-08-14.** ProductHost is handwritten Rust + Svelte
+(`crates/veil-runtime` + `ui/`). Customer products remain VEIL-authored.
+The old `runtime.veil` / `runtime-ui.veil` dogfood tree was deleted.
+
+Canonical (historical) epic: [`stories/140-pure-veil-runtime.md`](../stories/140-pure-veil-runtime.md).
 
 ## Residual non-VEIL (allowed)
 

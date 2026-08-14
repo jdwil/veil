@@ -6,12 +6,12 @@ custom authoring. Domain products store only `ExtensionRef(id, version, params)`
 
 **Status:** Done (platform dual-loop + ExtStore AWS path) · 2026-07-17  
 **Priority band:** P1 (domain + local runtime path), P2 (AWS adapters, UI mount)  
-**Canonical design:** `/home/jd/dev/veil-projects/application/docs/veil-extensions.md`  
+**Canonical design:** application-level extension doc (out of this tree).  
 **Canonical stories (full acceptance text):**  
-`/home/jd/dev/veil-projects/application/docs/veil-extensions-stories.md`  
+application extension stories (out of this tree)  
 **Platform pointer:** [`docs/EXTENSIONS.md`](../docs/EXTENSIONS.md)  
 **Related:** [140 pure VEIL runtime](140-pure-veil-runtime.md), [80 runtime platform](80-runtime-platform.md),
-[RuleEngine design](file:///home/jd/dev/veil-projects/application/docs/rule-engine-signal-trigger-reaction.md)
+RuleEngine design (application repo, out of this tree)
 
 This file is the **platform tracking surface** for the epic. Story bodies live
 in the application doc so product + runtime share one checklist; **runtime MUST
@@ -57,12 +57,12 @@ Violating R1–R3 fails the story even if the feature “works” in a demo.
 
 | ID | Title | Owner | Pri | Stage |
 |----|--------|-------|-----|-------|
-| [EXT-01](file:///home/jd/dev/veil-projects/application/docs/veil-extensions-stories.md#ext-01-domain-extensionref-on-reaction) | Domain `ExtensionRef` on Reaction | application | P1 | E0 |
+| EXT-01 | Domain `ExtensionRef` on Reaction | application | P1 | E0 |
 | [EXT-02](#ext-02) | Registry create/list/get version | **veil-runtime** | P1 | E1 |
 | [EXT-03](#ext-03) | Publish + invoke ABI | **veil-runtime** | P1 | E2 |
-| [EXT-04](file:///home/jd/dev/veil-projects/application/docs/veil-extensions-stories.md#ext-04-fire-path-resolves-extensionref--invoke) | Fire path → invoke | application + runtime | P1 | E2 |
-| [EXT-05](file:///home/jd/dev/veil-projects/application/docs/veil-extensions-stories.md#ext-05-reactionlayer-palette-constructs) | `reaction.layer` palette | application / layers | P1 | E3 |
-| [EXT-06](file:///home/jd/dev/veil-projects/application/docs/veil-extensions-stories.md#ext-06-embedded-ide-shell-palette--canvas--inspector) | Embedded IDE shell | wear_test + designkit | P1 | E3 |
+| EXT-04 | Fire path → invoke | application + runtime | P1 | E2 |
+| EXT-05 | `reaction.layer` palette | application / layers | P1 | E3 |
+| EXT-06 | Embedded IDE shell | wear_test + designkit | P1 | E3 |
 | [EXT-07](#ext-07) | Agent palette gate | **veil-runtime** + product | P1 | E3 |
 | [EXT-08](#ext-08) | Stock catalog + params | **veil-runtime** + wear_test | P1 | E4 |
 | [EXT-09](#ext-09) | Duplicate stock → custom | **veil-runtime** + wear_test | P1 | E4 |

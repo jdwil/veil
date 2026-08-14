@@ -1,5 +1,8 @@
 # Runtime-Level Omnipresent Agent — Architecture Design
 
+> **2026-08-14:** Paths below that say `runtime/ui` or `veil-viewer` mean `ui/`
+> today. ProductHost is handwritten; AgentDock lives in `ui/src/lib/agent/`.
+
 ## Overview
 
 Lift the `@aether-ui/core` agent from its current IDE-only scope to the
@@ -159,7 +162,7 @@ The IDE is embedded at `/projects/{name}/ide` as an iframe to
 postMessage (`registerIdeFrame` / IDE bridge):
 
 ```
-Runtime AgentDock ←→ postMessage ←→ IDE iframe (runtime/ide-ui, agent rail off)
+Runtime AgentDock ←→ native in-shell IDE (`ui/src/lib/ide`)
 ```
 
 | Direction | Message | Purpose |

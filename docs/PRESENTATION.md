@@ -5,7 +5,7 @@
 
 - **LAY-002:** layer loader + **`GET /api/presentation`**
 - **LAY-003:** viewer fetches presentation IR, view switcher, `projectView()`
-  in `runtime/ide-ui/src/lib/presentation.ts` (tabs / tree / flat / flow)
+  in `ui/src/lib/ide/presentation.ts` (tabs / tree / flat / flow)
 - **Layout policy (2026-08):** SvelteFlow **only** for hosts with control-flow
   bodies (`isLogicFlowHost`: Steps / SequenceFlow / Flow+Actions). Package root,
   modules/BCs, groups, and domain model use **native Tree** (`TreeLayout` +

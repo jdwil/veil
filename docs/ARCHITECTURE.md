@@ -286,7 +286,7 @@ The VEIL code is identical in all cases. Only the Bus implementation changes.
 
 ## Source Control and Storage (Future)
 
-When deployed to DashLX:
+When deployed on the hosted or self-hosted ProductHost:
 - .veil/.layer/.stub files stored in git repos on S3
 - Git metadata (diffs, tags, branches) cached in PostgreSQL/DynamoDB for fast access
 - The visual editor reads from DB cache, writes trigger git commits

@@ -4,25 +4,34 @@
 # Fast path: `aws s3 sync` with directory prunes (never walks target/generated/.git).
 #
 # Usage:
-#   BUCKET=veil-runtime-dev AWS_PROFILE=dashlx_dev \
+#   BUCKET=veil-runtime-dev AWS_PROFILE=… \
 #     ./scripts/seed-repo-s3.sh <repo_id> <slug> [branch]
 #
-# Example (Relay):
-#   ./scripts/seed-repo-s3.sh cfb3bc05-0436-47b8-9fd1-9b54b75f6d44 relay main
+# Example:
+#   ./scripts/seed-repo-s3.sh <repo-uuid> my-app main
 #
 # API (server with BUCKET set):
-#   curl -sS -X POST http://127.0.0.1:3000/api/sync-repo-to-object-store \
+#   curl -sS -X POST http://127.0.0.1:8080/api/sync-repo-to-object-store \
 #     -H 'Content-Type: application/json' \
 #     -d '{"id":"<repo_id>","branch":"main"}'
 
 set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 REPO_ID="${1:?repo_id required}"
 SLUG="${2:?slug required}"
 BRANCH="${3:-main}"
 BUCKET="${BUCKET:-${VEIL_S3_BUCKET:-veil-runtime-dev}}"
 PROJECTS_DIR="${VEIL_PROJECTS_DIR:-}"
-AWS_PROFILE="${AWS_PROFILE:-${AWS_PROFILE:-dashlx_dev}}"
-export AWS_PROFILE AWS_REGION="${AWS_REGION:-us-west-2}"
+export AWS_REGION="${AWS_REGION:-us-west-2}"
+if [[ -n "${AWS_PROFILE:-}" ]]; then
+  export AWS_PROFILE
+fi
 
 if [[ -z "$PROJECTS_DIR" && -f "$HOME/.veil/config.json" ]]; then
   PROJECTS_DIR=$(python3 -c "import json;print(json.load(open('$HOME/.veil/config.json')).get('projects_dir',''))")

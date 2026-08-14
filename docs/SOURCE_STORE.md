@@ -14,7 +14,8 @@ Local dual-loop against the **dev** account should mirror production:
 `scripts/dev-stack.sh` sets these. Override only when you mean to.
 
 ```bash
-export AWS_PROFILE=dashlx_dev AWS_REGION=us-west-2
+# Copy .env.example → .env and fill in AWS_PROFILE / table / bucket.
+export AWS_REGION=us-west-2
 export VEIL_DDB_TABLE=veil-runtime-dev
 export BUCKET=veil-runtime-dev          # or VEIL_S3_BUCKET
 export VEIL_SOURCE_MODE=s3              # s3 | prefer_s3 | disk
@@ -26,7 +27,7 @@ scripts/dev-stack.sh restart            # API :8080 + UI :5180
 ```
 
 UI (Vite `:5180`) proxies `/api` → ProductHost `:8080`.
-Confirm identity: `AWS_PROFILE=dashlx_dev aws sts get-caller-identity`.
+Confirm identity: `aws sts get-caller-identity`.
 
 | Mode | Behavior |
 |------|----------|
@@ -67,7 +68,7 @@ See [`DURABLE_SESSIONS.md`](./DURABLE_SESSIONS.md).
 ./scripts/seed-repo-s3.sh <repo_id> <slug> main
 
 # or API (server running with BUCKET set)
-curl -sS -X POST http://127.0.0.1:3000/api/sync-repo-to-object-store \
+curl -sS -X POST http://127.0.0.1:8080/api/sync-repo-to-object-store \
   -H 'Content-Type: application/json' \
   -d '{"id":"<repo_id>","branch":"main"}'
 ```
@@ -83,8 +84,8 @@ they live in **S3**; DDB only stores META.
 | Meta | `PK=STUB#<name>` `SK=META` — `{ name, version, s3_key, bytes, fingerprint, surface, generated }` |
 
 ```bash
-# Seed monorepo runtime/src/stubs → S3 + DDB META
-AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
+# Seed monorepo stubs/ → S3 + DDB META
+VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
   ./scripts/seed-stubs-platform.sh
 
 # IDE / agent
@@ -109,7 +110,7 @@ coders — customize by forking under a new name (`acme-ddd.layer` + `use acme-d
 
 ```bash
 # Seed monorepo layers/ → S3 + DDB META
-AWS_PROFILE=dashlx_dev VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
+VEIL_DDB_TABLE=veil-runtime-dev BUCKET=veil-runtime-dev \
   ./scripts/seed-layers-platform.sh
 
 # Local / ProductHost

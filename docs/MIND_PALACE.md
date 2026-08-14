@@ -19,34 +19,29 @@ mind-palace = { path = "../../../mind-palace/crates/mind-palace" }
 mind-palace-rig = { path = "../../../mind-palace/crates/mind-palace-rig" }
 ```
 
-## Enable (local IDE → dashlx_dev AWS)
+## Enable (local IDE → your palace AWS)
+
+Set these in `.env` (see `.env.example`). Bucket **names** only — no `s3://`.
 
 ```bash
-export AWS_PROFILE=dashlx_dev   # aws sso login --profile dashlx_dev
 export MIND_PALACE=1
-
-# Region MUST match where SAM deployed the stack.
-# dashlx_dev (account 086261225885): us-west-2  ← NOT us-east-1
-export MIND_PALACE_REGION=us-west-2
-
-# Bucket names only — no s3:// prefix (engine strips s3:// if present)
-export MIND_PALACE_S3_BUCKET=mind-palace-pages-dev-086261225885
+export MIND_PALACE_REGION=us-west-2          # must match the palace stack region
+export MIND_PALACE_S3_BUCKET=mind-palace-pages-dev
 export MIND_PALACE_DYNAMO_TABLE=mind-palace-graph-dev
-export MIND_PALACE_S3VECTORS_BUCKET=mind-palace-vectors-dev-086261225885
+export MIND_PALACE_S3VECTORS_BUCKET=mind-palace-vectors-dev
 export MIND_PALACE_S3VECTORS_INDEX=wiki-pages
-export VEIL_PORT=3001
 
 # Prefer ACP so the agent already has VEIL teaching context (Tier 0/1):
 export VEIL_MODEL_PROVIDER=acp
-# Or Rig: ollama / openai (also gets wiki_* tools)
 
-make serve PROJECT=/path/to/wear_test
+scripts/dev-stack.sh restart                 # ProductHost :8080 + UI :5180
+# or single-project: make serve PROJECT=/path/to/your-app
 ```
 
 When init succeeds, the log line is:
 
 ```text
-Mind Palace tools enabled (dashlx AWS credentials)
+Mind Palace tools enabled (AWS credentials)
 ```
 
 ### “store error: service error”
@@ -55,7 +50,7 @@ Almost always **wrong region** or **bad bucket name**:
 
 | Symptom | Fix |
 |---------|-----|
-| `store error: service error` | Set `MIND_PALACE_REGION` to the stack region (`us-west-2` for dashlx_dev) |
+| `store error: service error` | Set `MIND_PALACE_REGION` to the stack region |
 | Table not found | Same — Dynamo is regional |
 | Empty vector buckets | Same — S3 Vectors is regional |
 | `s3://…` in env | Use bare name (or rely on strip) |
@@ -63,9 +58,8 @@ Almost always **wrong region** or **bad bucket name**:
 Verify:
 
 ```bash
-export AWS_PROFILE=dashlx_dev
-aws dynamodb describe-table --table-name mind-palace-graph-dev --region us-west-2
-aws s3vectors list-indexes --vector-bucket-name mind-palace-vectors-dev-086261225885 --region us-west-2
+aws dynamodb describe-table --table-name "$MIND_PALACE_DYNAMO_TABLE" --region "$MIND_PALACE_REGION"
+aws s3vectors list-indexes --vector-bucket-name "$MIND_PALACE_S3VECTORS_BUCKET" --region "$MIND_PALACE_REGION"
 ```
 
 ## Who gets wiki tools?
@@ -111,7 +105,7 @@ Tier-0 tells agents to `wiki_search` these when `MIND_PALACE=1`.
 
 ## Environment promotion
 
-Dev (`dashlx_dev`) is the training environment for now. S3 Vectors are not
+A single AWS account is the training environment for now. S3 Vectors are not
 easily exportable — promoting palace data across staging/prod is later ops.
 
 ## Aether UI
@@ -127,16 +121,16 @@ ws://{host}/api/p/{name}/chat
 Install / refresh from GitHub (source exports — no vendor clone or `svelte-package`):
 
 ```bash
-cd veil-viewer && npm install github:jdwil/aether-ui
+cd ui && npm install github:jdwil/aether-ui
 ```
 
-`veil-viewer` depends on:
+`ui/` depends on:
 
 ```json
 "@aether-ui/core": "github:jdwil/aether-ui"
 ```
 
-Tailwind v4 must `@source` the package (see `veil-viewer/src/app.css`):
+Tailwind v4 must `@source` the package (see `ui/src/app.css`):
 
 ```css
 @source "../node_modules/@aether-ui/core/packages/aether-ui/src/lib";

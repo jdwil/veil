@@ -373,7 +373,7 @@
   add('IAM Role', role, `Execution role · ${u.name}`, u.provisioned ? 'attached' : 'pending', aws.role_arn);
   }
   if (ty === 'lambda-api') {
-  const gw = u.gateway && u.gateway !== '—' ? String(u.gateway) : 'dashlx-services';
+  const gw = u.gateway && u.gateway !== '—' ? String(u.gateway) : 'http-api';
   const path = u.path_prefix && u.path_prefix !== '—' ? String(u.path_prefix) : '/';
   add('API Gateway', gw, `HTTP API attach · path ${path}`, aws.api_gw_id ? `id ${aws.api_gw_id}` : 'fuzzy match on provision', aws.api_gw_id || '');
   }

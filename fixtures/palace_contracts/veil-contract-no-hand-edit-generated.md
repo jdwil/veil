@@ -10,29 +10,27 @@
 
 **MUST** change:
 
-- Product/runtime shell UI → `runtime/src/runtime-ui.veil`
-- Product packages → `.veil` / `.layer` / `.stub`
+- **Customer products** → `.veil` / `.layer` / `.stub`, then `veil gen`
 - Broken emit → `crates/veil-codegen` or VEIL source
+- **ProductHost shell** (`ui/`, `crates/veil-runtime`) is handwritten — edit it
 
 Then:
 
 ```bash
 veil check path.veil
-veil gen runtime/src/runtime-ui.veil -o /tmp/veil-ui-gen -t typescript
-# copy only the regenerated product components into runtime/ui when IDE overlays exist
+veil gen path.veil -t rust      # or -t typescript
 ```
 
 ## Forbidden examples
 
-- Opening `ProjectDetailView.svelte` to add a FormSection
-- Editing `runtime/ui/src/types.ts` component state by hand instead of regenerating
-- Fixing “just this one button” in generated Svelte
+- Editing files under `generated/` for a customer product
+- Fixing “just this one button” in VEIL-generated Svelte and leaving `.veil` stale
 
 ## Allowed exceptions
 
-- `runtime/ui/src/lib/ide/**` — dual-loop IDE (hand-authored)
-- `runtime/ui/src/lib/agent/**` — AgentDock / session
-- `crates/**`, `runtime/bootstrap/src/**` — engine / ProductHost
+- `ui/src/lib/ide/**` — dual-loop IDE (hand-authored host)
+- `ui/src/lib/agent/**` — AgentDock / session
+- `crates/**` — engine / ProductHost
 
 ## Why
 
