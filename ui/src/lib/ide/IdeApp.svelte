@@ -85,6 +85,7 @@
   } from '$lib/ide/store';
   import SessionStatus from '$lib/ide/SessionStatus.svelte';
   import GitWorkflowBar from '$lib/ide/GitWorkflowBar.svelte';
+  import { reviewProjects, reviewForSlug, refreshReview } from '$lib/review/store';
   import { NODE_STYLES, type IrNode, type IrGraph, type NodeKind, type PaletteEntry } from '$lib/ide/types';
   import {
     projectView,
@@ -597,6 +598,7 @@
     // Apply saved theme on mount (veil tokens + Aether dark: class)
     applyTheme(theme);
     restorePrWizardWidth();
+    void refreshReview();
     const onWinResize = () => {
       setPrWizardWidth(clampPrWizardWidth(get(prWizardWidth)));
     };
@@ -1466,6 +1468,13 @@
   class:viewer-container--flow={shell.mode === 'flow'}
   data-veil-shell={shell.mode}
 >
+  {@const reviewSlug = currentProjectParam() ?? $activeProject?.name ?? ''}
+  {@const ideReview = reviewSlug ? reviewForSlug(reviewSlug, $reviewProjects) : null}
+  {#if ideReview?.needs_sign_off}
+    <a class="outstanding-ide-banner" href={`/review/${encodeURIComponent(reviewSlug)}`}>
+      {ideReview.outstanding} unreviewed change{ideReview.outstanding === 1 ? '' : 's'} — sign off
+    </a>
+  {/if}
   {#if shell.showTopBar}
     <!-- Full dual-loop top bar (hidden in flow/reaction composer mode) -->
     <div class="top-bar">
@@ -2189,6 +2198,17 @@
 </div>
 
 <style>
+  .outstanding-ide-banner {
+    display: block;
+    flex: 0 0 auto;
+    padding: 0.35rem 0.85rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-decoration: none;
+    color: inherit;
+    background: color-mix(in srgb, var(--dk-amber, #f59e0b) 16%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--dk-amber, #f59e0b) 40%, transparent);
+  }
   .pr-wizard-overlay {
     position: absolute;
     top: 0;

@@ -1681,16 +1681,21 @@ pub fn host_platform_prefix_steps(prompt: &str) -> Vec<HostPlatformStep> {
                 summary: "Navigate to projects (visible UX)".into(),
             });
             // 2) Real create via platform tool (DDB+S3) — not curl, not disk.
-            // Force via=server: multi-step turns need the project before write_source.
+            // Browser watching → via=ux (click the form). Headless → via=server.
+            let via = if crate::focus::client_present() {
+                "ux"
+            } else {
+                "server"
+            };
             steps.push(HostPlatformStep {
                 tool: "create_project".into(),
                 args: serde_json::json!({
                     "name": name,
                     "open": true,
                     "open_ide": true,
-                    "via": "server",
+                    "via": via,
                 }),
-                summary: format!("create_project `{name}` (host — domain first, Present illustrate)"),
+                summary: format!("create_project `{name}` (host — via={via})"),
             });
         }
     }

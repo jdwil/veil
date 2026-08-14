@@ -6,6 +6,7 @@
 	 */
 	import { MessageList, ChatInput, ToolCallBlock } from '@aether-ui/core';
 	import { reviewOutstandingCount, refreshReview } from '$lib/review/store';
+	import { presentFastForward, setPresentFastForward } from '$lib/agent/intent';
 	import {
 		agentMessages,
 		agentIsStreaming,
@@ -211,6 +212,15 @@
 		window.addEventListener('pointermove', onMove, { capture: true });
 		window.addEventListener('pointerup', finish, { capture: true });
 		window.addEventListener('pointercancel', finish, { capture: true });
+	}
+
+	let skipAnim = $state(
+		typeof localStorage !== 'undefined' && presentFastForward()
+	);
+
+	function toggleSkipAnim() {
+		skipAnim = !skipAnim;
+		setPresentFastForward(skipAnim);
 	}
 
 	function togglePanel() {
@@ -432,6 +442,16 @@
 				{#if $agentStatusLine}
 					<span class="status-line" title={$agentStatusLine}>{$agentStatusLine}</span>
 				{/if}
+				<button
+					class="btn-icon"
+					class:ff-on={skipAnim}
+					title={skipAnim ? 'Play Present at human speed' : 'Skip Present animation (power user)'}
+					onclick={toggleSkipAnim}
+					aria-label="Toggle Present fast-forward"
+					aria-pressed={skipAnim}
+				>
+					{skipAnim ? '»' : '▸'}
+				</button>
 				<button
 					class="btn-icon"
 					title="Clear conversation"
@@ -840,6 +860,9 @@
 		background: rgba(255, 255, 255, 0.06);
 	}
 
+	.btn-icon.ff-on {
+		color: var(--dk-accent, #818cf8);
+	}
 	.outstanding-strip {
 		display: block;
 		padding: 0.4rem 0.85rem;

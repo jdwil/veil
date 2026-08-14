@@ -28,6 +28,14 @@ export type PresentStep =
 			target?: string;
 			selector?: string;
 			ms?: number;
+			/** After the pulse, click the real control (same surface as a human). */
+			activate?: boolean;
+	  }
+	| {
+			kind: 'click';
+			target?: string;
+			selector?: string;
+			ms?: number;
 	  }
 	| { kind: 'wait'; ms: number }
 	| { kind: 'announce'; message: string }
@@ -545,6 +553,16 @@ async function fillFields(
 	}
 }
 
+async function activateEl(el: HTMLElement | null): Promise<void> {
+	if (!el) return;
+	ensurePulseStyles();
+	el.classList.add('veil-intent-press', 'veil-intent-inflight');
+	if (el instanceof HTMLButtonElement) el.disabled = false;
+	el.click();
+	await sleep(80);
+	el.classList.remove('veil-intent-press');
+}
+
 async function pulseEl(el: HTMLElement | null, ms = 550): Promise<void> {
 	if (!el) {
 		await sleep(ms);
@@ -864,9 +882,24 @@ async function runOne(intent: Intent): Promise<IntentStatus> {
 						});
 					}
 					break;
-				case 'pulse':
-					await pulseEl(resolvePulseEl(step), step.ms ?? 550);
+				case 'pulse': {
+					const el = resolvePulseEl(step);
+					await pulseEl(el, step.ms ?? 550);
+					if (step.activate) {
+						await activateEl(el);
+					}
 					break;
+				}
+				case 'click': {
+					const el = resolvePulseEl({
+						kind: 'pulse',
+						target: step.target,
+						selector: step.selector
+					});
+					await pulseEl(el, Math.min(step.ms ?? 280, 320));
+					await activateEl(el);
+					break;
+				}
 				case 'hover': {
 					const el =
 						(step.selector &&
@@ -1231,7 +1264,16 @@ export const STAGED_PRESENT_TOOLS = new Set([
 	'write_source',
 	'create_file',
 	'request_sign_off',
-	'sign_off'
+	'sign_off',
+	'rename_project',
+	'update_project',
+	'submit_pr',
+	'approve_pr',
+	'merge_pr',
+	'request_pr_changes',
+	'open_ide',
+	'provision_project',
+	'plan_provision'
 ]);
 
 export function isIntentExecuting(): boolean {

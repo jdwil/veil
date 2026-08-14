@@ -260,8 +260,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 crate::focus::DomainMode::Ux
             } else if via == "server" {
                 crate::focus::DomainMode::Server
+            } else if crate::focus::client_present() {
+                // Browser is watching — same surfaces as the human (Present → click → UX).
+                crate::focus::DomainMode::Ux
             } else {
-                // Default server for ACP/MCP mid-turn safety (follow-on write_source).
+                // Headless ACP / no UI: domain first so follow-on write_source can bind.
                 crate::focus::DomainMode::Server
             };
             // Path/id segment is always the slug; display name may contain spaces.
@@ -1016,6 +1019,10 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 .map(|s| s.to_lowercase())
                 .unwrap_or_default();
             let domain_mode = if via == "ux" {
+                crate::focus::DomainMode::Ux
+            } else if via == "server" {
+                crate::focus::DomainMode::Server
+            } else if crate::focus::client_present() {
                 crate::focus::DomainMode::Ux
             } else {
                 crate::focus::DomainMode::Server

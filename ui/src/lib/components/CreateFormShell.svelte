@@ -22,8 +22,9 @@
     header_actions?: Snippet | null;
     footer?: Snippet | null;
     agent?: Record<string, unknown>;
+    form_id?: string;
   }
-  let { title, subtitle = "", back_href = "..", back_behavior = "href", mode = "create", submit_label = "Create", saving_label = "Creating…", saving = false, show_submit = true, required_values = [], on_submit, loading = false, loading_label = "Loading…", error = "", children, header_actions, footer, agent = {  } }: Props = $props();
+  let { title, subtitle = "", back_href = "..", back_behavior = "href", mode = "create", submit_label = "Create", saving_label = "Creating…", saving = false, show_submit = true, required_values = [], on_submit, loading = false, loading_label = "Loading…", error = "", children, header_actions, footer, agent = {  }, form_id = "create-project" }: Props = $props();
 
   let veil_agent = $derived({ version: 1, role: "create-form", product: agent, runtime: { saving, loading, error, submit_label, back_href, back_behavior, mode, show_submit } });
 
@@ -37,6 +38,7 @@
 </script>
 
 <div
+  id={form_id}
   class="dk-page-shell dk-create-shell"
   data-veil-role={mode === "edit" ? "edit-form" : "create-form"}
   data-veil-agent={JSON.stringify(veil_agent)}

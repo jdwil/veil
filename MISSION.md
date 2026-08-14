@@ -45,8 +45,8 @@ veil gen path.veil    # lower to target project
 ```
 
 Optional local platform (fs+sqlite / cloud adapters) is power tooling — not a
-gate. App harnesses are VEIL-authored (`@main`); see `docs/HARNESS.md` and
-`runtime/README.md`.
+gate. App harnesses are VEIL-authored (`@main`); see `docs/HARNESS.md`.
+ProductHost: `scripts/dev-stack.sh` (`ui/` + `crates/veil-runtime`).
 
 ### Dual feedback loops (both first-class)
 
@@ -524,11 +524,11 @@ crates/
   veil-ir/               — AST, IR, builder, serializer, validator, layers, stubs
   veil-codegen/          — Multi-target generation (rust, typescript, templates)
   veil-cli/              — lex, parse, check, gen, emit, stub-gen, serve
-  veil-server/           — Editor/API server
+  veil-server/           — Editor/API + ProductHost IDE kernel
+  veil-runtime/          — ProductHost binary (platform HTTP + git origin)
 
-runtime/ide-ui/          — IDE dual-loop UI (was veil-viewer; ProductHost /viewer)
-
-runtime/                 — Runtime harness and larger self-hosted examples
+ui/                      — ProductHost SPA (projects, review/sign-off, in-shell IDE)
+ide-ui/                  — Optional standalone /viewer embed
 ```
 
 ## Current State

@@ -489,6 +489,10 @@ async fn ws_write(Path(id): Path<String>, Json(body): Json<WriteBody>) -> axum::
         Ok(r) => {
             let rev = h.bump_revision(&body.path, r.etag.clone());
             crate::revision::bus().publish(r.bytes, &body.path, "ws_write");
+            let slug = h.snapshot_meta().slug;
+            if !slug.is_empty() {
+                let _ = crate::review::record_file_edit(&slug, &body.path, None);
+            }
             json_ok(json!({
                 "ok": true,
                 "path": r.path,

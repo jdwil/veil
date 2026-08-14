@@ -635,14 +635,7 @@ pub fn sign_off_intent(slug: Option<&str>, decision: &str) -> Value {
             "steps": [
                 { "kind": "goto", "path": path, "ms": 280 },
                 { "kind": "wait", "ms": 180 },
-                { "kind": "pulse", "target": format!("text:{label}"), "ms": 500 },
-                {
-                    "kind": "commit",
-                    "method": "POST",
-                    "path": "/api/ux/sign_off",
-                    "body": { "slug": slug, "decision": decision, "actor": "agent" },
-                    "ms": 240
-                }
+                { "kind": "pulse", "target": format!("text:{label}"), "selector": "[data-veil-action='sign-off'], [data-veil-action='reject-sign-off']", "ms": 500, "activate": true }
             ]
         }
     })

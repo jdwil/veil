@@ -209,28 +209,12 @@ pub fn create_project_intent(
             "mode": "type"
         }),
         json!({ "kind": "wait", "ms": 180 }),
-        json!({ "kind": "pulse", "target": "submit", "ms": 600 }),
-        json!({ "kind": "wait", "ms": 220 }),
+        json!({ "kind": "pulse", "target": "submit", "ms": 600, "activate": true }),
+        json!({ "kind": "wait", "ms": 280 }),
     ];
     match domain_mode {
         DomainMode::Ux => {
-            steps.push(json!({
-                "kind": "commit",
-                "formId": "create-project",
-                "method": "POST",
-                "path": "/api/ux/create_project",
-                "body": {
-                    "name": name,
-                    "description": description,
-                    "open": true,
-                    "open_ide": open_ide,
-                },
-                "resultPathTemplate": if open_ide {
-                    "/projects/{slug}/ide"
-                } else {
-                    "/projects/{slug}"
-                },
-            }));
+            // Click the real Create button — ProjectCreateView POSTs /api/ux/create_project.
             steps.push(json!({ "kind": "wait", "ms": 200 }));
         }
         DomainMode::Server => {
@@ -243,7 +227,7 @@ pub fn create_project_intent(
         }
     }
     let (domain, present_kind) = match domain_mode {
-        DomainMode::Ux => (json!({ "mode": "ux", "done": false }), "ux_commit"),
+        DomainMode::Ux => (json!({ "mode": "ux", "done": false }), "ux_click"),
         DomainMode::Server => (json!({ "mode": "server", "done": true }), "illustrate"),
     };
     json!({
@@ -299,24 +283,12 @@ pub fn create_pr_intent(
             "mode": "type"
         }));
         steps.push(json!({ "kind": "wait", "ms": 160 }));
-        steps.push(json!({ "kind": "pulse", "target": "submit", "ms": 550 }));
+        steps.push(json!({ "kind": "pulse", "target": "submit", "ms": 550, "activate": true }));
         steps.push(json!({ "kind": "wait", "ms": 180 }));
     }
     match domain_mode {
         DomainMode::Ux if title.is_some() => {
-            steps.push(json!({
-                "kind": "commit",
-                "formId": "create-change",
-                "method": "POST",
-                "path": "/api/ux/create_pr",
-                "body": {
-                    "title": title,
-                    "description": description,
-                    "slug": project,
-                    "project": project,
-                },
-                "resultPathTemplate": "/pulls/{id}",
-            }));
+            // Click Create — the form POSTs /api/pull_requests (same as a human).
         }
         DomainMode::Server => {
             steps.push(json!({
@@ -541,10 +513,10 @@ pub fn change_action_intent(action: &str, change_id: &str, summary: &str) -> Val
     let path = format!("/pulls/{change_id}");
     // Prefer stable data-veil-action; fall back to button text labels.
     let (action_attr, btn_text) = match action {
-        "submit" => ("submit-change", "Submit for Review"),
-        "approve" => ("approve-change", "Approve"),
-        "merge" => ("merge-change", "Merge"),
-        "request_pr_changes" => ("request-changes", "Request Changes"),
+        "submit" => ("submit-pr", "Submit for Review"),
+        "approve" => ("approve-pr", "Approve"),
+        "merge" => ("merge-pr", "Merge"),
+        "request_pr_changes" => ("request-pr-changes", "Request Changes"),
         "comment" => ("add-comment", "Post Comment"),
         _ => ("primary", "btn-primary"),
     };
@@ -693,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn create_intent_ux_has_commit() {
+    fn create_intent_ux_clicks_submit() {
         let i = create_project_intent(
             "demo",
             None,
@@ -703,9 +675,9 @@ mod tests {
         );
         assert_eq!(i["domain"]["mode"], "ux");
         let steps = i["present"]["steps"].as_array().unwrap();
-        assert!(steps.iter().any(|s| s["kind"] == "commit"));
-        let commit = steps.iter().find(|s| s["kind"] == "commit").unwrap();
-        assert_eq!(commit["path"], "/api/ux/create_project");
+        assert!(!steps.iter().any(|s| s["kind"] == "commit"));
+        let pulse = steps.iter().find(|s| s["kind"] == "pulse").unwrap();
+        assert_eq!(pulse["activate"], true);
     }
 
     #[test]

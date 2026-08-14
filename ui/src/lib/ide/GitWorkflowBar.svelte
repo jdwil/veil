@@ -223,6 +223,13 @@
   >
     Review
   </button>
+  <a
+    class="action"
+    href={`/review/${encodeURIComponent(currentProjectParam() || '')}`}
+    title="Outstanding change set — human sign-off (not git status)"
+  >
+    Sign off
+  </a>
 
   <!-- Session merge to main is disabled — use PR Wizard → Approve → Merge -->
 
@@ -413,6 +420,9 @@
     font-weight: 600;
     padding: 4px 8px;
     cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
   }
 
   .action.primary {
