@@ -59,10 +59,12 @@
 	const MIN_WIDTH = 320;
 	const DEFAULT_WIDTH = 420;
 
-	/** Allow the agent to claim most of the viewport so the IDE can shrink. */
+	/** Cap so the IDE keeps a usable column (sidebar ~200 + IDE ≥480). */
 	function maxWidth(): number {
-		if (typeof window === 'undefined') return 900;
-		return Math.max(MIN_WIDTH, Math.min(1100, Math.floor(window.innerWidth * 0.72)));
+		if (typeof window === 'undefined') return 520;
+		const w = window.innerWidth;
+		const room = Math.max(MIN_WIDTH, w - 680);
+		return Math.min(room, Math.floor(w * 0.42), 560);
 	}
 
 	function clampWidth(n: number): number {
@@ -556,6 +558,8 @@
 		flex: 0 0 auto;
 		flex-shrink: 0;
 		min-width: 0;
+		max-width: min(560px, 42vw);
+		overflow: hidden;
 		/* width set inline; grow/shrink only via resize handle */
 		background: var(--dk-surface, #1a1a1a);
 		border-left: 1px solid var(--dk-border-soft, rgba(46, 46, 46, 0.65));
@@ -854,6 +858,13 @@
 	.msg-list :global(> *) {
 		flex: 1;
 		min-height: 0;
+	}
+
+	/* MessageList is Tailwind-only — keep scroll if @source misses a rebuild */
+	.msg-list :global([role='log']) {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
 	}
 
 	/* Breathing room between stacked tool-use cards */

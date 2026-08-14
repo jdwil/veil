@@ -1,5 +1,7 @@
 @import "tailwindcss";
-@source "../../../vendor/aether-ui/packages/aether-ui/src/lib/components/**/*.svelte";
+/* ui/src → repo vendor (was ../../../ when this file lived under runtime/ui/src) */
+@source "../../vendor/aether-ui/packages/aether-ui/src/lib/components/**/*.svelte";
+@source "../../vendor/aether-ui/packages/aether-ui/dist/components/**/*.svelte";
 
 @theme {
   /* Grayscale aether scale — match IDE (no teal / indigo) */
