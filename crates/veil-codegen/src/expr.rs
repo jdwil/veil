@@ -1253,6 +1253,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_rust(expr, ctx), ty),
         Expr::Try(expr) => format!("{}?", expr_to_rust(expr, ctx)),
+        Expr::Require(inner) => {
+            let s = expr_to_rust(inner, ctx);
+            format!("{s}.ok_or(DomainError::NotFound)?")
+        },
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)) }
         Expr::IfLet { pattern, expr, then_body, else_body } => {
             let e = expr_to_rust(expr, ctx);
@@ -2011,6 +2015,7 @@ fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
             // The routing reference and Copy scalars are passed as-is.
             Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
+            Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
             // sqlx Executor is implemented for `&Pool`, not `Pool`.
             Expr::Ident(n) if n == "pool" => "&self.pool".to_string(),
             Expr::Ident(n) if ctx.is_local(n) => format!("{}.clone()", n),
@@ -2159,6 +2164,17 @@ fn is_copy_local(name: &str, ctx: &GenCtx) -> bool {
         Some("i64") | Some("i32") | Some("u64") | Some("u32")
             | Some("usize") | Some("isize") | Some("f64") | Some("f32") | Some("bool")
     )
+}
+
+/// Locals that are already references / trait objects / slices — `.clone()` is a no-op.
+fn is_ref_local(name: &str, ctx: &GenCtx) -> bool {
+    let Some(ty) = ctx.local_type(name) else {
+        return false;
+    };
+    ty.starts_with('&')
+        || ty.contains("dyn ")
+        || ty.starts_with('[')
+        || ty.contains("&[")
 }
 
 /// Translate a Call expression with shape-aware name resolution.
@@ -4182,6 +4198,7 @@ fn walk_mut_needs(expr: &Expr, needs: &mut HashSet<String>, bound: &mut HashSet<
         Expr::Return(inner)
         | Expr::Await(inner)
         | Expr::Try(inner)
+        | Expr::Require(inner)
         | Expr::Cast(inner, _)
         | Expr::FieldAccess(inner, _) => {
             walk_mut_needs(inner, needs, bound);
@@ -4547,6 +4564,16 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
         Expr::StringLit(_) => Some("String".to_string()),
         // Layer actions (invoke, request, etc.) return serde_json::Value
         Expr::Action(_) => Some("serde_json::Value".to_string()),
+        Expr::Require(inner) => infer_expr_type(inner, ctx).map(|t| {
+            if let Some(inner) = t
+                .strip_prefix("Option<")
+                .and_then(|s| s.strip_suffix('>'))
+            {
+                inner.to_string()
+            } else {
+                t
+            }
+        }),
         _ => None,
     }
 }

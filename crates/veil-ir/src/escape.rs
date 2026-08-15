@@ -512,7 +512,7 @@ fn check_expr_escape(
             check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
             locals.insert(name.clone());
         }
-        Expr::Return(e) | Expr::Await(e) | Expr::Try(e) | Expr::FieldAccess(e, _)
+        Expr::Return(e) | Expr::Await(e) | Expr::Try(e) | Expr::Require(e) | Expr::FieldAccess(e, _)
         | Expr::Cast(e, _) | Expr::UnaryOp(UnaryOpExpr { expr: e, .. }) => {
             check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
         }

@@ -692,7 +692,7 @@ fn collect_actions_from_expr(expr: &Expr, location: &str, out: &mut Vec<(String,
             }
         }
         Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs)
-        | Expr::Await(rhs) | Expr::Try(rhs) | Expr::FieldAccess(rhs, _) => {
+        | Expr::Await(rhs) | Expr::Try(rhs) | Expr::Require(rhs) | Expr::FieldAccess(rhs, _) => {
             collect_actions_from_expr(rhs, location, out);
         }
         Expr::BinaryOp(op) => {
@@ -807,7 +807,7 @@ fn collect_call_targets_from_expr(expr: &Expr, location: &str, targets: &mut Vec
             }
         }
         Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs)
-        | Expr::Await(rhs) | Expr::Try(rhs) => {
+        | Expr::Await(rhs) | Expr::Try(rhs) | Expr::Require(rhs) => {
             collect_call_targets_from_expr(rhs, location, targets);
         }
         Expr::BinaryOp(op) => {

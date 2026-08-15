@@ -1388,6 +1388,7 @@ fn expr_to_veil(expr: &Expr) -> String {
         }
         Expr::Cast(expr, ty) => format!("{} as {}", expr_to_veil(expr), ty),
         Expr::Try(expr) => format!("{}?", expr_to_veil(expr)),
+        Expr::Require(expr) => format!("require {}", expr_to_veil(expr)),
         Expr::StructUpdate { name, fields, base } => {
             let fs = fields
                 .iter()

@@ -74,9 +74,12 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
     // Parser-emitted notes. `sol` is removed — treat as a hard error so agents
     // cannot flip-flop Sol vs Pkg. Other guidance stays non-blocking.
     for g in &sol.guidance {
-        let sol_dead = g.code == "sol_removed" || g.code == "prefer_terse";
+        let hard_guidance = g.code == "sol_removed"
+            || g.code == "prefer_terse"
+            || g.code == "pkg_body_unindented"
+            || g.code == "unattached_source";
         diagnostics.push(Diagnostic {
-            severity: if sol_dead {
+            severity: if hard_guidance {
                 Severity::Error
             } else {
                 Severity::Guidance
@@ -84,7 +87,7 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
             message: g.message.clone(),
             node_id: None,
             node_name: None,
-            code: if sol_dead {
+            code: if g.code == "prefer_terse" {
                 "sol_removed".into()
             } else {
                 g.code.clone()
@@ -406,6 +409,35 @@ items: vec![TopLevelItem::Construct(root)],
         let pe = parse_error_diagnostic("unexpected token", 5, 6);
         assert_eq!(pe.code, "parse_error");
         assert_eq!(pe.span_start, Some(5));
+    }
+
+    #[test]
+    fn unindented_pkg_guidance_is_error() {
+        let sol = Solution {
+            name: "Empty".into(),
+            span: Span::new(0, 0),
+            uses: vec![],
+            links: vec![],
+            items: vec![],
+            expose: None,
+            guidance: vec![crate::ast::GuidanceDiagnostic {
+                code: "pkg_body_unindented".into(),
+                message: "Package body is not indented under `pkg`".into(),
+                hint: "Indent by 2 spaces".into(),
+                span: Span::new(0, 4),
+            }],
+        };
+        let result = check_solution(&sol, &LayerRegistry::builtin());
+        assert!(result.has_errors(), "{:?}", result.diagnostics);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "pkg_body_unindented"
+                    && matches!(d.severity, Severity::Error)),
+            "{:?}",
+            result.diagnostics
+        );
     }
 
     #[test]

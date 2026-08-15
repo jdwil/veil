@@ -57,6 +57,83 @@ fn branch() -> String {
     std::env::var("VEIL_SOURCE_BRANCH").unwrap_or_else(|_| "main".into())
 }
 
+/// Delete S3 checkout + git origin and leftover DDB `REPO#{id}` items.
+/// Call after catalog META delete so the store does not accumulate e2e junk.
+pub fn purge_repo_store(repo_id: &str) -> Result<(), String> {
+    if repo_id.is_empty() || repo_id.contains('/') || repo_id.contains("..") {
+        return Err("invalid repo_id".into());
+    }
+    let b = bucket();
+    let table = ddb_table();
+    let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-west-2".into());
+    for prefix in [
+        format!("s3://{b}/repos/{repo_id}/"),
+        format!("s3://{b}/git/{repo_id}/"),
+    ] {
+        let status = aws_base()
+            .args(["s3", "rm", &prefix, "--recursive", "--region", &region])
+            .status()
+            .map_err(|e| format!("s3 rm {prefix}: {e}"))?;
+        if !status.success() {
+            tracing::warn!(%prefix, %status, "purge_repo_store s3 rm non-zero (may already be gone)");
+        }
+    }
+    // Remaining SKs under REPO#{id} (BRANCH#, …) after META delete.
+    let q = aws_base()
+        .args([
+            "dynamodb",
+            "query",
+            "--table-name",
+            &table,
+            "--region",
+            &region,
+            "--key-condition-expression",
+            "PK = :p",
+            "--expression-attribute-values",
+            &format!("{{\":p\":{{\"S\":\"REPO#{repo_id}\"}}}}"),
+            "--projection-expression",
+            "PK,SK",
+            "--output",
+            "json",
+        ])
+        .output()
+        .map_err(|e| format!("ddb query REPO#: {e}"))?;
+    if q.status.success() {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&q.stdout) {
+            if let Some(items) = v.get("Items").and_then(|i| i.as_array()) {
+                for it in items {
+                    let pk = it
+                        .pointer("/PK/S")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
+                    let sk = it
+                        .pointer("/SK/S")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
+                    if pk.is_empty() || sk.is_empty() {
+                        continue;
+                    }
+                    let _ = aws_base()
+                        .args([
+                            "dynamodb",
+                            "delete-item",
+                            "--table-name",
+                            &table,
+                            "--region",
+                            &region,
+                            "--key",
+                            &format!(
+                                "{{\"PK\":{{\"S\":\"{pk}\"}},\"SK\":{{\"S\":\"{sk}\"}}}}"
+                            ),
+                        ])
+                        .status();
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn aws_base() -> Command {
     let mut c = Command::new("aws");
     if let Ok(p) = std::env::var("AWS_PROFILE") {

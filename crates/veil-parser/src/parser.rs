@@ -238,6 +238,49 @@ fn parse_file_with_guidance(
         _ => parser.parse_solution().map(VeilFile::Solution),
     };
 
+    // Unindented `pkg` body (or leftover tokens) is a hard check error —
+    // otherwise veil_check is a false green and codegen emits only layer infra.
+    if result.is_ok() && parser.errors.is_empty() {
+        if let Some(tok) = parser.first_remaining_content() {
+            let is_pkg = matches!(result, Ok(VeilFile::Package(_)));
+            let looks_like_body = matches!(
+                tok.kind,
+                TokenKind::Use
+                    | TokenKind::Ident
+                    | TokenKind::Fn
+                    | TokenKind::Struct
+                    | TokenKind::Enum
+                    | TokenKind::Trait
+                    | TokenKind::Mod
+                    | TokenKind::Impl
+                    | TokenKind::Group
+                    | TokenKind::Flow
+                    | TokenKind::Lang
+                    | TokenKind::Expose
+                    | TokenKind::Link
+            );
+            let (code, message, hint) = if is_pkg && looks_like_body {
+                (
+                    "pkg_body_unindented",
+                    "Package body is not indented under `pkg` — constructs were dropped",
+                    "Indent every `use` / `ctx` / `handler` / … line under `pkg` by 2 spaces (see hello_world.veil).",
+                )
+            } else {
+                (
+                    "unattached_source",
+                    "Source after the package/solution was not parsed",
+                    "Check indentation: VEIL is indent-sensitive. Orphan tokens never reach check/codegen.",
+                )
+            };
+            parser.guidance.push(veil_ir::ast::GuidanceDiagnostic {
+                code: code.to_string(),
+                message: message.to_string(),
+                hint: hint.to_string(),
+                span: tok.span,
+            });
+        }
+    }
+
     match result {
         Ok(mut file) if parser.errors.is_empty() => {
             // Inject layer declarations (Bus, SagaStep, etc.)
@@ -428,6 +471,22 @@ impl<'a> Parser<'a> {
             span: self.current().span,
             hint: Some(hint),
         }
+    }
+
+    /// First non-trivia token not consumed by the parse (indent-dropped siblings).
+    fn first_remaining_content(&self) -> Option<&Token> {
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match self.tokens[i].kind {
+                TokenKind::Newline
+                | TokenKind::Comment
+                | TokenKind::Indent
+                | TokenKind::Dedent => i += 1,
+                TokenKind::Eof => return None,
+                _ => return Some(&self.tokens[i]),
+            }
+        }
+        None
     }
 
     /// Check if we're at the start of a block (INDENT follows).
@@ -3209,6 +3268,28 @@ impl<'a> Parser<'a> {
                 // infinite-loop expression when followed by a block, otherwise
                 // it's a plain identifier (field name, enum variant, etc.).
                 let word = self.current().text.clone();
+                // ACS-010 force-present: `require repo.find!(id)` → T (NotFound).
+                if word == "require" {
+                    let next_kind = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+                    let is_prefix = !matches!(
+                        next_kind,
+                        Some(TokenKind::Eq)
+                            | Some(TokenKind::Colon)
+                            | Some(TokenKind::Comma)
+                            | Some(TokenKind::RParen)
+                            | Some(TokenKind::RBracket)
+                            | Some(TokenKind::Dot)
+                            | Some(TokenKind::LParen)
+                            | Some(TokenKind::Newline)
+                            | Some(TokenKind::Eof)
+                            | Some(TokenKind::Dedent)
+                    );
+                    if is_prefix {
+                        self.advance();
+                        let inner = self.parse_expr()?;
+                        return Ok(Expr::Require(Box::new(inner)));
+                    }
+                }
                 if word == "loop" && self.tokens.get(self.pos + 1).map(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Indent)).unwrap_or(false) {
                     self.advance();
                     let mut body = Vec::new();
@@ -5413,3 +5494,51 @@ fn expr_to_string_basic(expr: &Expr) -> String {
 #[cfg(test)]
 #[path = "parser_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod e2e_regressions {
+    use super::*;
+    use crate::lexer::lex;
+    use veil_ir::layer::LayerRegistry;
+
+    fn ddd_registry() -> LayerRegistry {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd layer should resolve");
+        reg
+    }
+
+    #[test]
+    fn unindented_pkg_body_emits_guidance() {
+        let src = "pkg LumenCatalog v1\n\nuse ddd\n\nctx Catalog\n  group domain\n    agg Book\n      root\n        id: Id\n";
+        let tokens = lex(src);
+        let sol = parse_with_registry(&tokens, ddd_registry()).expect("parse still succeeds");
+        assert!(
+            sol.guidance.iter().any(|g| g.code == "pkg_body_unindented"),
+            "expected pkg_body_unindented, got {:?}",
+            sol.guidance
+        );
+        assert!(
+            !sol.items
+                .iter()
+                .any(|i| matches!(i, veil_ir::ast::TopLevelItem::Construct(c) if c.name == "Catalog")),
+            "unindented ctx must not attach"
+        );
+    }
+
+    #[test]
+    fn require_prefix_parses() {
+        let expr = parse_expr_str("loan = require repo.find!(id)", &ddd_registry())
+            .expect("parse require assign");
+        match expr {
+            veil_ir::ast::Expr::Assign(name, rhs, _) => {
+                assert_eq!(name, "loan");
+                assert!(
+                    matches!(rhs.as_ref(), veil_ir::ast::Expr::Require(_)),
+                    "rhs={rhs:?}"
+                );
+            }
+            other => panic!("expected assign, got {other:?}"),
+        }
+    }
+}

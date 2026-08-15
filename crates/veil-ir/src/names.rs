@@ -603,7 +603,7 @@ fn check_expr(
                 check_expr(e, location, &mut c_scope, index, self_type, diagnostics);
             }
         }
-        Expr::Return(e) | Expr::Await(e) | Expr::Try(e) | Expr::Index(e, _) => {
+        Expr::Return(e) | Expr::Await(e) | Expr::Try(e) | Expr::Require(e) | Expr::Index(e, _) => {
             check_expr(e, location, scope, index, self_type, diagnostics);
             if let Expr::Index(_, ix) = expr {
                 check_expr(ix, location, scope, index, self_type, diagnostics);
@@ -774,6 +774,11 @@ fn check_call(
 
     // Free function
     if call.method.is_empty() && index.free_fns.contains(target) {
+        return;
+    }
+
+    // Builtin types: `Id.new()`, `UUID.new()`, `Dt.now()` — not unresolved.
+    if BUILTIN_TYPES.contains(&target) {
         return;
     }
 
@@ -1352,8 +1357,25 @@ mod tests {
         );
         assert!(
             !diags.iter().any(|d| d.code == "unresolved_name" || d.code == "unresolved_method"),
-            "{:?}",
-            diags
+        );
+    }
+
+    #[test]
+    fn id_new_is_known_builtin() {
+        let reg = LayerRegistry::builtin();
+        let mut svc = Construct::new("svc", "Service", Shape::Fn, "Make".into(), Span::new(0, 0));
+        svc.steps.push(FlowStep::Step(step_with_body(vec![Expr::Call(CallExpr {
+            target: "Id".into(),
+            method: "new".into(),
+            args: Vec::new(),
+            receiver: None,
+            sugar: None,
+            span: Span::new(0, 0),
+        })])));
+        let diags = check_names(&sol(vec![TopLevelItem::Construct(svc)]), &reg);
+        assert!(
+            !diags.iter().any(|d| d.code == "unresolved_name"),
+            "{diags:?}"
         );
     }
 

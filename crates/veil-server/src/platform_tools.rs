@@ -1910,9 +1910,16 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 .ok_or_else(|| "update_mission requires project".to_string())?;
             let content = arg_str(arguments, &["content", "mission", "body"])
                 .ok_or_else(|| "update_mission requires content".to_string())?;
+            let branch = arg_str(arguments, &["branch"]).unwrap_or_else(|| {
+                crate::session::current_session_id()
+                    .and_then(|sid| crate::session::get_session_meta(&sid).ok())
+                    .map(|m| m.branch)
+                    .filter(|b| !b.is_empty())
+                    .unwrap_or_else(|| "main".into())
+            });
             let body = json!({
                 "content": content,
-                "branch": arg_str(arguments, &["branch"]).unwrap_or_else(|| "main".into()),
+                "branch": branch,
             });
             let (status, data) = http_json(
                 "PUT",

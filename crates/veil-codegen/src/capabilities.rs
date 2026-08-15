@@ -593,6 +593,9 @@ fn collect_expr(expr: &Expr, location: &str, uses: &mut Vec<FeatureUse>) {
             });
             collect_expr(e, location, uses);
         }
+        Expr::Require(e) => {
+            collect_expr(e, location, uses);
+        }
         Expr::Await(e) => {
             uses.push(FeatureUse {
                 feature: Feature::AwaitExpr,

@@ -850,7 +850,7 @@ fn rewrite_name_in_expr(e: &mut Expr, old: &str, new: &str) {
             }
         }
         Expr::Assign(_, v, _) | Expr::MutAssign(_, v, _) => rewrite_name_in_expr(v, old, new),
-        Expr::Return(inner) | Expr::Await(inner) | Expr::Try(inner) => {
+        Expr::Return(inner) | Expr::Await(inner) | Expr::Try(inner) | Expr::Require(inner) => {
             rewrite_name_in_expr(inner, old, new)
         }
         Expr::StructLit(name, fields) => {
@@ -1402,7 +1402,7 @@ fn expr_contains_stock(e: &Expr) -> bool {
                     .unwrap_or(false)
         }
         Expr::Assign(_, v, _) | Expr::MutAssign(_, v, _) => expr_contains_stock(v),
-        Expr::Return(i) | Expr::Await(i) | Expr::Try(i) => expr_contains_stock(i),
+        Expr::Return(i) | Expr::Await(i) | Expr::Try(i) | Expr::Require(i) => expr_contains_stock(i),
         Expr::StructLit(_, fields) => fields.iter().any(|(_, v)| expr_contains_stock(v)),
         Expr::ArrayLit(xs) | Expr::Tuple(xs) | Expr::Loop(xs) => {
             xs.iter().any(expr_contains_stock)

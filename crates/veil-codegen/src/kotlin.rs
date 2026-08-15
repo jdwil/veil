@@ -192,6 +192,10 @@ fn expr_to_kotlin(e: &Expr) -> String {
             s
         }
         Expr::Try(inner) => format!("{}.getOrThrow()", expr_to_kotlin(inner)),
+        Expr::Require(inner) => format!(
+            "{}.getOrElse {{ throw IllegalStateException(\"NotFound\") }}",
+            expr_to_kotlin(inner)
+        ),
         Expr::Await(inner) => expr_to_kotlin(inner),
         Expr::Call(c) => {
             let args: Vec<String> = c.args.iter().map(expr_to_kotlin).collect();

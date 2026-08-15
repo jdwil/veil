@@ -12,6 +12,22 @@ use veil_ir::layer::{Shape, LayerRegistry, StatementSpec};
 thread_local! {
     /// Statement specs active during a `generate_ts` pass (for `lowers_to` templates).
     static TS_STATEMENT_SPECS: RefCell<HashMap<String, StatementSpec>> = RefCell::new(HashMap::new());
+    /// Backend services emit camelCase idents; Svelte/UI keeps authored snake_case.
+    static TS_CAMEL_IDENTS: RefCell<bool> = RefCell::new(false);
+}
+
+fn ts_camel_idents() -> bool {
+    TS_CAMEL_IDENTS.with(|c| *c.borrow())
+}
+
+fn with_ts_camel_idents<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    TS_CAMEL_IDENTS.with(|c| {
+        let prev = *c.borrow();
+        *c.borrow_mut() = on;
+        let out = f();
+        *c.borrow_mut() = prev;
+        out
+    })
 }
 
 fn with_ts_statement_specs<R>(registry: &LayerRegistry, f: impl FnOnce() -> R) -> R {
@@ -232,6 +248,26 @@ fn interpolate_ts_action_template(
 }
 
 fn translate_action_ts_default(a: &ActionExpr, indent: usize) -> String {
+    if a.keyword == "guard" {
+        let cond = a
+            .condition
+            .as_ref()
+            .map(|c| expr_to_ts(c, indent))
+            .or_else(|| a.args.first().map(|c| expr_to_ts(c, indent)))
+            .unwrap_or_else(|| "true".into());
+        let msg = a
+            .message
+            .clone()
+            .or_else(|| {
+                a.args.get(1).and_then(|e| match e {
+                    Expr::StringLit(s) => Some(s.clone()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_else(|| "precondition failed".into());
+        let msg = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        return format!("if (!({cond})) throw new Error(\"{msg}\")");
+    }
     let target = if a.target.is_empty() {
         String::new()
     } else {
@@ -278,11 +314,25 @@ fn translate_action_ts_default(a: &ActionExpr, indent: usize) -> String {
 pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
     let pad = "  ".repeat(indent);
     match expr {
-        // Keep VEIL idents as authored (snake_case matches state + templates + JSON APIs).
+        // Keep VEIL idents as authored (snake_case matches state + templates + JSON APIs)
+        // unless a backend-services pass requested camelCase.
         Expr::Ident(name) if name == "null" || name == "None" => "null".to_string(),
         Expr::Ident(name) if name == "Ok" => "undefined /* Ok */".to_string(),
-        Expr::Ident(name) => name.clone(),
-        Expr::FieldAccess(base, field) => format!("{}.{}", expr_to_ts(base, indent), field),
+        Expr::Ident(name) => {
+            if ts_camel_idents() {
+                to_camel(name)
+            } else {
+                name.clone()
+            }
+        }
+        Expr::FieldAccess(base, field) => {
+            let f = if ts_camel_idents() {
+                to_camel(field)
+            } else {
+                field.clone()
+            };
+            format!("{}.{}", expr_to_ts(base, indent), f)
+        }
         Expr::StringLit(s) => format!("\"{}\"", s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
@@ -309,14 +359,25 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
         Expr::Call(call) => translate_call_ts(call, indent),
 
         Expr::Assign(name, value, ty_ann) => {
+            let rhs = expr_to_ts(value, indent);
+            // Field write: `loan.returned = true` — not a new binding.
+            if name.contains('.') {
+                let path = name
+                    .split('.')
+                    .enumerate()
+                    .map(|(i, seg)| if i == 0 { to_camel(seg) } else { to_camel(seg) })
+                    .collect::<Vec<_>>()
+                    .join(".");
+                return format!("{} = {}", path, rhs);
+            }
             match ty_ann {
                 Some(ty) => format!(
                     "const {}: {} = {}",
-                    name,
+                    to_camel(name),
                     type_to_ts(ty),
-                    expr_to_ts(value, indent)
+                    rhs
                 ),
-                None => format!("{} = {}", name, expr_to_ts(value, indent)),
+                None => format!("const {} = {}", to_camel(name), rhs),
             }
         }
         Expr::MutAssign(name, value, ty_ann) => {
@@ -341,6 +402,10 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
         Expr::Try(inner) => {
             // expr? → await expr (errors throw in TS)
             format!("await {}", expr_to_ts(inner, indent))
+        }
+        Expr::Require(inner) => {
+            let v = expr_to_ts(inner, indent);
+            format!("(({v}) ?? (() => {{ throw new Error(\"NotFound\"); }})())")
         }
 
         Expr::IfExpr(data) => {
@@ -427,11 +492,11 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
                 .iter()
                 .map(|(k, v)| {
                     let val = expr_to_ts(v, indent);
-                    // Keep VEIL field names (snake_case) for JSON / state binding.
-                    if k == &val {
-                        k.clone()
+                    let key = if ts_camel_idents() { to_camel(k) } else { k.clone() };
+                    if key == val {
+                        key
                     } else {
-                        format!("{}: {}", k, val)
+                        format!("{}: {}", key, val)
                     }
                 })
                 .collect::<Vec<_>>()
@@ -637,14 +702,42 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
 
     // target.method(args)
     let target = to_camel(&call.target);
-    let method = to_camel(&call.method);
+    let bare_method = call.method.trim_end_matches('!');
+    let method = to_camel(bare_method);
 
-    // new() → constructor
-    if call.method == "new" {
+    if call.target == "guard" && call.method.is_empty() {
+        let cond = args_list.first().cloned().unwrap_or_else(|| "true".into());
+        let msg = args_list.get(1).cloned().unwrap_or_else(|| "\"precondition failed\"".into());
+        return format!("if (!({cond})) throw new Error({msg})");
+    }
+
+    // new() → constructor. Id/UUID are opaque strings in TS.
+    if bare_method == "new" {
+        if matches!(call.target.as_str(), "Id" | "UUID" | "Uuid") {
+            return "crypto.randomUUID()".to_string();
+        }
         return format!("new {}({})", call.target, args);
     }
 
-    format!("{}.{}({})", target, method, args)
+    if bare_method == "is_none" {
+        return format!("({} == null)", target);
+    }
+    if bare_method == "is_some" {
+        return format!("({} != null)", target);
+    }
+
+    // Port / repo methods are async; bang is ACS-010 (not a TS identifier).
+    let awaited = call.method.ends_with('!');
+    let call_s = if method.is_empty() {
+        format!("{}({})", target, args)
+    } else {
+        format!("{}.{}({})", target, method, args)
+    };
+    if awaited {
+        format!("await {}", call_s)
+    } else {
+        call_s
+    }
 }
 
 /// Translate a block of statements.
@@ -670,7 +763,7 @@ fn effect_body_needs_await(body: &[Expr]) -> bool {
                 c.args.iter().any(walk)
                     || c.receiver.as_ref().map(|r| walk(r)).unwrap_or(false)
             }
-            Expr::Await(_) | Expr::Try(_) => true,
+            Expr::Await(_) | Expr::Try(_) | Expr::Require(_) => true,
             Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => walk(rhs),
             Expr::Return(inner) => walk(inner),
             Expr::BinaryOp(op) => walk(&op.left) || walk(&op.right),
@@ -1294,6 +1387,9 @@ fn gen_types(modules: &[&Construct]) -> TsFile {
 
         for s in &structs {
             if s.layer_provided { continue; }
+            if matches!(s.keyword.as_str(), "deps" | "compose" | "endpoint") {
+                continue;
+            }
             let generics = generic_params_ts(&s.type_params);
             out.push_str(&format!("export interface {}{} {{\n", s.name, generics));
             // Fields from root block or direct fields
@@ -1357,19 +1453,17 @@ fn gen_types(modules: &[&Construct]) -> TsFile {
 /// Generate interfaces.ts — interfaces for all trait-shaped constructs (ports).
 fn gen_interfaces(modules: &[&Construct], solution: &Solution) -> TsFile {
     let mut out = String::from("// Generated by VEIL — do not edit\n\n");
+    out.push_str("import type * as T from './types';\n\n");
+    let (type_names, _iface_names) = collect_export_names(modules, solution);
 
-    // Collect all traits
+    // Collect product traits only — layer Bus/HttpHost/… pull in undeclared types.
     let mut all_traits: Vec<&Construct> = Vec::new();
     for module in modules {
-        all_traits.extend(collect_shape(module, Shape::Trait));
-    }
-    // Also include top-level layer-provided traits
-    for item in &solution.items {
-        if let TopLevelItem::Construct(c) = item {
-            if c.shape == Shape::Trait && c.layer_provided {
-                all_traits.push(c);
-            }
-        }
+        all_traits.extend(
+            collect_shape(module, Shape::Trait)
+                .into_iter()
+                .filter(|t| !t.layer_provided),
+        );
     }
 
     for t in &all_traits {
@@ -1377,10 +1471,19 @@ fn gen_interfaces(modules: &[&Construct], solution: &Solution) -> TsFile {
         out.push_str(&format!("export interface {}{} {{\n", t.name, generics));
         for method in &t.methods {
             let params = method.params.iter()
-                .map(|p| format!("{}: {}", to_camel(&p.name), type_to_ts(&p.type_expr)))
+                .map(|p| {
+                    format!(
+                        "{}: {}",
+                        to_camel(&p.name),
+                        type_to_ts_qualified(&p.type_expr, &type_names, &std::collections::HashSet::new())
+                    )
+                })
                 .collect::<Vec<_>>().join(", ");
             let ret = match &method.return_type {
-                Some(ty) => type_to_ts(ty),
+                Some(ty) => {
+                    let inner = type_to_ts_qualified(ty, &type_names, &std::collections::HashSet::new());
+                    if inner.starts_with("Promise<") { inner } else { format!("Promise<{}>", inner) }
+                }
                 None => "Promise<void>".to_string(),
             };
             out.push_str(&format!("  {}({}): {};\n", to_camel(&method.name), params, ret));
@@ -1391,12 +1494,106 @@ fn gen_interfaces(modules: &[&Construct], solution: &Solution) -> TsFile {
     TsFile { path: "src/interfaces.ts".to_string(), content: out }
 }
 
+/// Qualify a named type as T.Book / I.BookRepo when it is a generated export.
+fn type_to_ts_qualified(ty: &TypeExpr, type_names: &std::collections::HashSet<String>, iface_names: &std::collections::HashSet<String>) -> String {
+    match ty {
+        TypeExpr::Named(name) => {
+            if iface_names.contains(name) {
+                format!("I.{}", name)
+            } else if type_names.contains(name) {
+                format!("T.{}", name)
+            } else {
+                type_to_ts(ty)
+            }
+        }
+        TypeExpr::Optional(inner) => format!(
+            "{} | null",
+            type_to_ts_qualified(inner, type_names, iface_names)
+        ),
+        TypeExpr::List(inner) => format!(
+            "{}[]",
+            type_to_ts_qualified(inner, type_names, iface_names)
+        ),
+        TypeExpr::Result(Some(inner)) => format!(
+            "Promise<{}>",
+            type_to_ts_qualified(inner, type_names, iface_names)
+        ),
+        TypeExpr::Result(None) => "Promise<void>".to_string(),
+        _ => type_to_ts(ty),
+    }
+}
+
+fn collect_export_names(modules: &[&Construct], solution: &Solution) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+    let mut types = std::collections::HashSet::new();
+    let mut ifaces = std::collections::HashSet::new();
+    for module in modules {
+        for s in collect_shape(module, Shape::Struct) {
+            if !s.layer_provided {
+                types.insert(s.name.clone());
+            }
+        }
+        for e in collect_shape(module, Shape::Enum) {
+            if !e.layer_provided {
+                types.insert(e.name.clone());
+            }
+        }
+        for t in collect_shape(module, Shape::Trait) {
+            ifaces.insert(t.name.clone());
+        }
+    }
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            if c.shape == Shape::Trait {
+                ifaces.insert(c.name.clone());
+            }
+        }
+    }
+    (types, ifaces)
+}
+
+fn infer_ts_handler_return(f: &Construct, type_names: &std::collections::HashSet<String>) -> String {
+    let mut last_struct: Option<String> = None;
+    let mut last_ret: Option<&Expr> = None;
+    for step in &f.steps {
+        if let FlowStep::Step(s) = step {
+            for expr in &s.body {
+                if let Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) = expr {
+                    if let Expr::StructLit(name, _) = rhs.as_ref() {
+                        last_struct = Some(name.clone());
+                    }
+                }
+                if let Expr::Return(inner) = expr {
+                    last_ret = Some(inner.as_ref());
+                }
+            }
+        }
+    }
+    match last_ret {
+        None => "Promise<void>".into(),
+        Some(Expr::Ident(n)) if n == "Ok" => "Promise<void>".into(),
+        Some(Expr::Ident(n)) if n == "null" || n == "None" => "Promise<null>".into(),
+        Some(Expr::StructLit(name, _)) if type_names.contains(name) => {
+            format!("Promise<T.{}>", name)
+        }
+        Some(Expr::Ident(_)) => {
+            if let Some(name) = last_struct.filter(|n| type_names.contains(n)) {
+                format!("Promise<T.{}>", name)
+            } else {
+                "Promise<unknown>".into()
+            }
+        }
+        Some(_) => "Promise<unknown>".into(),
+    }
+}
+
 /// Generate services.ts — async functions for all fn-shaped constructs.
 fn gen_services(modules: &[&Construct], solution: &Solution) -> TsFile {
     let mut out = String::from("// Generated by VEIL — do not edit\n\n");
     out.push_str("import type * as T from './types';\n");
     out.push_str("import type * as I from './interfaces';\n\n");
+    let (type_names, iface_names) = collect_export_names(modules, solution);
 
+    with_ts_camel_idents(true, || {
     for module in modules {
         let fns = collect_shape(module, Shape::Fn);
         for f in &fns {
@@ -1404,11 +1601,18 @@ fn gen_services(modules: &[&Construct], solution: &Solution) -> TsFile {
             // Generate as async function
             let fn_name = to_camel(&f.name);
             let params = f.inputs.iter()
-                .map(|p| format!("{}: {}", to_camel(&p.name), type_to_ts(&p.type_expr)))
+                .map(|p| format!("{}: {}", to_camel(&p.name), type_to_ts_qualified(&p.type_expr, &type_names, &iface_names)))
                 .collect::<Vec<_>>().join(", ");
             let ret = f.return_type.as_ref()
-                .map(|t| type_to_ts(t))
-                .unwrap_or_else(|| "Promise<void>".to_string());
+                .map(|t| {
+                    let inner = type_to_ts_qualified(t, &type_names, &iface_names);
+                    if inner.starts_with("Promise<") {
+                        inner
+                    } else {
+                        format!("Promise<{}>", inner)
+                    }
+                })
+                .unwrap_or_else(|| infer_ts_handler_return(f, &type_names));
 
             out.push_str(&format!("export async function {}({}): {} {{\n", fn_name, params, ret));
 
@@ -1451,6 +1655,7 @@ fn gen_services(modules: &[&Construct], solution: &Solution) -> TsFile {
             out.push_str("}\n\n");
         }
     }
+    });
 
     TsFile { path: "src/services.ts".to_string(), content: out }
 }

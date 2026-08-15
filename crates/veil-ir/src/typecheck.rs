@@ -470,10 +470,18 @@ pub fn check_types(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
     }
 
     // Cross-context invoke/request must name a real service/tool in this solution.
+    // `dispatch Evt` is fire-and-forget: events do not need a handler.
     let handlers = collect_bus_handler_names(sol, registry);
+    let events = collect_event_names(sol, registry);
     for item in &sol.items {
         if let TopLevelItem::Construct(c) = item {
-            walk_construct_for_missing_handlers(c, &handlers, registry, &mut diagnostics);
+            walk_construct_for_missing_handlers(
+                c,
+                &handlers,
+                &events,
+                registry,
+                &mut diagnostics,
+            );
         }
     }
 
@@ -513,26 +521,50 @@ fn collect_bus_handler_names(sol: &Solution, registry: &LayerRegistry) -> HashSe
     names
 }
 
+fn collect_event_names(sol: &Solution, registry: &LayerRegistry) -> HashSet<String> {
+    let mut names = HashSet::new();
+    fn visit(c: &Construct, registry: &LayerRegistry, names: &mut HashSet<String>) {
+        if c.keyword == "evt"
+            || c.subkind.eq_ignore_ascii_case("Event")
+            || registry.is_a(&c.keyword, "Event")
+            || registry.is_a(&c.subkind, "Event")
+        {
+            names.insert(c.name.clone());
+            names.insert(registry.bus_message_name(&c.name));
+        }
+        for child in &c.children {
+            visit(child, registry, names);
+        }
+    }
+    for item in &sol.items {
+        if let TopLevelItem::Construct(c) = item {
+            visit(c, registry, &mut names);
+        }
+    }
+    names
+}
+
 fn walk_construct_for_missing_handlers(
     c: &Construct,
     handlers: &HashSet<String>,
+    events: &HashSet<String>,
     registry: &LayerRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for step in &c.steps {
         if let FlowStep::Step(s) = step {
             for e in &s.body {
-                walk_expr_for_missing_handlers(e, &c.name, handlers, registry, diagnostics);
+                walk_expr_for_missing_handlers(e, &c.name, handlers, events, registry, diagnostics);
             }
         }
     }
     for f in &c.fns {
         for e in &f.body {
-            walk_expr_for_missing_handlers(e, &f.name, handlers, registry, diagnostics);
+            walk_expr_for_missing_handlers(e, &f.name, handlers, events, registry, diagnostics);
         }
     }
     for child in &c.children {
-        walk_construct_for_missing_handlers(child, handlers, registry, diagnostics);
+        walk_construct_for_missing_handlers(child, handlers, events, registry, diagnostics);
     }
 }
 
@@ -540,6 +572,7 @@ fn walk_expr_for_missing_handlers(
     expr: &Expr,
     location: &str,
     handlers: &HashSet<String>,
+    events: &HashSet<String>,
     registry: &LayerRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -556,7 +589,12 @@ fn walk_expr_for_missing_handlers(
             {
                 if let Some(msg) = bus_message_from_call_args(&call.args) {
                     let canonical = registry.bus_message_name(&msg);
-                    if !handlers.contains(&msg) && !handlers.contains(&canonical) {
+                    let is_dispatch = sugar == "dispatch"
+                        || call.method.trim_end_matches(['!', '?']) == "dispatch";
+                    let is_event = events.contains(&msg) || events.contains(&canonical);
+                    if is_dispatch && is_event {
+                        // Domain event fire-and-forget — no application handler required.
+                    } else if !handlers.contains(&msg) && !handlers.contains(&canonical) {
                         diagnostics.push(diag(
                             Severity::Error,
                             "missing_handler",
@@ -574,35 +612,39 @@ fn walk_expr_for_missing_handlers(
                 }
             }
             for a in &call.args {
-                walk_expr_for_missing_handlers(a, location, handlers, registry, diagnostics);
+                walk_expr_for_missing_handlers(a, location, handlers, events, registry, diagnostics);
             }
         }
         Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) | Expr::Return(rhs) => {
-            walk_expr_for_missing_handlers(rhs, location, handlers, registry, diagnostics);
+            walk_expr_for_missing_handlers(rhs, location, handlers, events, registry, diagnostics);
         }
         Expr::IfExpr(ie) => {
-            walk_expr_for_missing_handlers(&ie.condition, location, handlers, registry, diagnostics);
+            walk_expr_for_missing_handlers(&ie.condition, location, handlers, events, registry, diagnostics);
             for e in &ie.then_body {
-                walk_expr_for_missing_handlers(e, location, handlers, registry, diagnostics);
+                walk_expr_for_missing_handlers(e, location, handlers, events, registry, diagnostics);
             }
             if let Some(eb) = &ie.else_body {
                 for e in eb {
-                    walk_expr_for_missing_handlers(e, location, handlers, registry, diagnostics);
+                    walk_expr_for_missing_handlers(e, location, handlers, events, registry, diagnostics);
                 }
             }
         }
         Expr::Match(scrut, arms) => {
-            walk_expr_for_missing_handlers(scrut, location, handlers, registry, diagnostics);
+            walk_expr_for_missing_handlers(scrut, location, handlers, events, registry, diagnostics);
             for arm in arms {
                 for e in &arm.body {
-                    walk_expr_for_missing_handlers(e, location, handlers, registry, diagnostics);
+                    walk_expr_for_missing_handlers(e, location, handlers, events, registry, diagnostics);
                 }
             }
         }
         Expr::Action(a) => {
             // Non-desugared invoke (no port_target) still carries the message name.
+            let is_dispatch = a.keyword == "dispatch";
+            let is_event = events.contains(&a.target)
+                || events.contains(&registry.bus_message_name(&a.target));
             if matches!(a.keyword.as_str(), "invoke" | "request" | "dispatch")
                 && !a.target.is_empty()
+                && !(is_dispatch && is_event)
                 && !handlers.contains(&a.target)
                 && !handlers.contains(&registry.bus_message_name(&a.target))
             {
@@ -1038,6 +1080,14 @@ fn infer_expr(
             match t {
                 Ty::Res(Some(inner)) => *inner,
                 Ty::Res(None) => Ty::Unit,
+                other => other,
+            }
+        }
+        Expr::Require(e) => {
+            let t = infer_expr(e, scope, env, self_type, location, diagnostics);
+            // require Opt<T> / Option<T> → T; already-T is left as-is.
+            match t {
+                Ty::Opt(inner) => *inner,
                 other => other,
             }
         }

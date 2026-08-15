@@ -131,8 +131,22 @@ async fn delete_repo(
     State(st): State<StorageState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
+    let resolved = storage::application::get_repo(&st.deps, id.clone())
+        .await
+        .ok();
     match storage::application::delete_repo(&st.deps, id).await {
-        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Ok(()) => {
+            if let Some(repo) = resolved {
+                let rid = repo.id.value.clone();
+                let slug = repo.slug.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = veil_server::provider::s3_workspace::purge_repo_store(&rid) {
+                        tracing::warn!(repo_id = %rid, slug = %slug, error = %e, "purge_repo_store failed");
+                    }
+                });
+            }
+            Ok(Json(json!({ "ok": true })))
+        }
         Err(e) => Err(domain_status(e)),
     }
 }

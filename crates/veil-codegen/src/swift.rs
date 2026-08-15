@@ -192,6 +192,10 @@ fn expr_to_swift(e: &Expr) -> String {
             s
         }
         Expr::Try(inner) => format!("try {}", expr_to_swift(inner)),
+        Expr::Require(inner) => format!(
+            "try {} ?? {{ throw NotFound() }}()",
+            expr_to_swift(inner)
+        ),
         Expr::Await(inner) => expr_to_swift(inner), // sync subset
         Expr::Call(c) => {
             let args: Vec<String> = c.args.iter().map(expr_to_swift).collect();

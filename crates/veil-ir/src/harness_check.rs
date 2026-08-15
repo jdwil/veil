@@ -366,14 +366,18 @@ fn check_compose(
 
     for df in &bundle.fields {
         if !wires.iter().any(|w| w.name == df.name) {
-            diags.push(Diagnostic::error(
+            let mut d = Diagnostic::warning(
                 "harness_compose_missing_field",
                 format!(
-                    "compose '{}' is missing wire for deps field '{}'",
+                    "compose '{}' has no wire for deps field '{}' — local InMemory adapter will be used",
                     compose.name, df.name
                 ),
                 Some(compose.name.clone()),
-            ));
+            );
+            d.hint = Some(
+                "wire an adapter, or omit the wire to use generated InMemory{Trait}".into(),
+            );
+            diags.push(d);
         }
     }
 

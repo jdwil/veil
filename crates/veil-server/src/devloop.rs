@@ -1218,7 +1218,24 @@ fn resolve_veil_bin() -> PathBuf {
     }
     if let Ok(exe) = std::env::current_exe() {
         if exe.is_file() {
-            return exe;
+            let name = exe
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            // ProductHost is veil-runtime — `current_exe() gen` rebinds :8080 (AddrInUse).
+            if name == "veil" || name == "veil.exe" {
+                return exe;
+            }
+            if let Some(dir) = exe.parent() {
+                let sibling = if name.ends_with(".exe") {
+                    dir.join("veil.exe")
+                } else {
+                    dir.join("veil")
+                };
+                if sibling.is_file() {
+                    return sibling;
+                }
+            }
         }
     }
     PathBuf::from("veil")

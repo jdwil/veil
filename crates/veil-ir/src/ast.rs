@@ -749,6 +749,8 @@ pub enum Expr {
     Cast(Box<Expr>, String),
     /// Try/question-mark: `expr?`
     Try(Box<Expr>),
+    /// Force-present: `require expr` → inner `T` (absence is NotFound). ACS-010.
+    Require(Box<Expr>),
     /// Struct update: `Name { field: val, ..base }`
     StructUpdate { name: String, fields: Vec<(String, Expr)>, base: Box<Expr> },
     /// If let: `if let pattern = expr { body } else { body }`

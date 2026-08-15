@@ -142,11 +142,12 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         || harness_ir.profile == "product_host";
     let emit_blocked = harness_ir.emit_bin == veil_ir::EmitBin::Never && !wants_product_host;
     let has_compose = harness_ir.contexts.iter().any(|c| c.compose.is_some());
+    let has_declared_endpoints = package_has_declared_endpoints(solution, registry);
     let has_entry = crate::template::compose_main_section(&template_output, "rust").is_some()
         || package_has_main_annotation(solution, registry)
         || wants_product_host
         || has_compose
-        || (harness_ir.compat == veil_ir::CompatMode::Auto && !modules.is_empty());
+        || has_declared_endpoints;
     let has_main = !emit_blocked && has_entry;
     if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| module_crate_name(m, solution)).collect();
@@ -285,7 +286,7 @@ fn expr_mentions_port_call(expr: &Expr) -> bool {
             call.args.iter().any(expr_mentions_port_call)
         }
         Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => expr_mentions_port_call(rhs),
-        Expr::Return(inner) | Expr::Try(inner) | Expr::Await(inner) | Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) => {
+        Expr::Return(inner) | Expr::Try(inner) | Expr::Require(inner) | Expr::Await(inner) | Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) => {
             expr_mentions_port_call(inner)
         }
         Expr::BinaryOp(b) => {
@@ -342,6 +343,19 @@ fn expr_mentions_self_field(expr: &Expr, field_name: &str) -> bool {
         Expr::Return(inner) => expr_mentions_self_field(inner, field_name),
         _ => false,
     }
+}
+
+fn package_has_declared_endpoints(sol: &Solution, registry: &LayerRegistry) -> bool {
+    fn walk(c: &Construct, registry: &LayerRegistry) -> bool {
+        if registry.construct_has_role(c, "http_endpoint") {
+            return true;
+        }
+        c.children.iter().any(|ch| walk(ch, registry))
+    }
+    sol.items.iter().any(|i| match i {
+        TopLevelItem::Construct(c) => walk(c, registry),
+        _ => false,
+    })
 }
 
 fn package_has_main_annotation(sol: &Solution, registry: &LayerRegistry) -> bool {
@@ -920,10 +934,22 @@ fn gen_local_harness_main(
                 }
             }
             if !missing.is_empty() {
-                out.push_str(&format!(
-                    "    compile_error!(\"Deps requires adapter(s) for: {} — add `adapter … for <Trait>` in the package\");\n\n",
-                    missing.join(", ")
-                ));
+                // Greenfield / local smoke: wire generated InMemory{Trait} instead of failing.
+                for f in &deps.fields {
+                    if wired_fields.contains(&f.name)
+                        || provided_fields.iter().any(|p| p == &f.name)
+                    {
+                        continue;
+                    }
+                    let inmem = format!("InMemory{}", f.trait_name);
+                    let sn = to_snake(&inmem);
+                    out.push_str(&format!(
+                        "    let {sn}_inst: Arc<dyn {crate_name}::ports::{trait_ty} + Send + Sync> = Arc::new({crate_name}::adapters::{inmem}::new());\n",
+                        trait_ty = f.trait_name,
+                    ));
+                    wired.push((f.name.clone(), sn, module));
+                    wired_fields.insert(f.name.clone());
+                }
             }
         }
         let has_deps = declared_deps
@@ -4509,6 +4535,9 @@ fn gen_impls(
         }
     }
 
+    // Local/dev fallback: HashMap adapters for product ports with no authored impl.
+    out.push_str(&gen_in_memory_adapters(traits, impls, solution));
+
     // Product free functions (non-layer) live next to adapters so they can use
     // domain types. Layer free fns stay in veil_shared.
     let product_fns: Vec<&FnDef> = solution
@@ -4569,6 +4598,231 @@ fn gen_impls(
     }
 }
 
+fn rust_entity_fields<'a>(sol: &'a Solution, entity: &str) -> Vec<&'a Field> {
+    fn walk<'a>(c: &'a Construct, entity: &str, out: &mut Vec<&'a Field>) {
+        if c.name == entity && !c.fields.is_empty() {
+            out.extend(c.fields.iter());
+        }
+        for b in &c.blocks {
+            if c.name == entity {
+                out.extend(b.fields.iter());
+            }
+        }
+        for ch in &c.children {
+            walk(ch, entity, out);
+        }
+    }
+    let mut out = Vec::new();
+    for item in &sol.items {
+        if let TopLevelItem::Construct(c) = item {
+            walk(c, entity, &mut out);
+        }
+    }
+    out
+}
+
+fn infer_repo_entity(t: &Construct) -> Option<String> {
+    for m in &t.methods {
+        let name = m.name.trim_end_matches('!');
+        if name == "save" || name == "put" || name == "insert" {
+            if let Some(p) = m.params.first() {
+                if let TypeExpr::Named(n) = &p.type_expr {
+                    if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                        return Some(n.clone());
+                    }
+                }
+            }
+        }
+        if let Some(TypeExpr::Optional(inner)) = &m.return_type {
+            if let TypeExpr::Named(n) = inner.as_ref() {
+                if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    return Some(n.clone());
+                }
+            }
+        }
+        if let Some(TypeExpr::List(inner)) = &m.return_type {
+            if let TypeExpr::Named(n) = inner.as_ref() {
+                if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    return Some(n.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn filter_field_for_method(method: &str, fields: &[&Field]) -> Option<String> {
+    let m = method.trim_end_matches('!');
+    let mut rest = m
+        .strip_prefix("find_")
+        .or_else(|| m.strip_prefix("list_"))
+        .or_else(|| m.strip_prefix("get_"))
+        .unwrap_or(m);
+    rest = rest
+        .strip_prefix("open_by_")
+        .or_else(|| rest.strip_prefix("by_"))
+        .unwrap_or(rest);
+    if rest.is_empty() || matches!(rest, "find" | "list" | "get" | "save" | "delete" | "all") {
+        return None;
+    }
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    if names.contains(&rest) {
+        return Some(rest.to_string());
+    }
+    let with_id = format!("{rest}_id");
+    if names.iter().any(|n| *n == with_id) {
+        return Some(with_id);
+    }
+    None
+}
+
+fn gen_in_memory_adapters(
+    traits: &[&Construct],
+    impls: &[&Construct],
+    sol: &Solution,
+) -> String {
+    let mut out = String::new();
+    for t in traits {
+        if t.layer_provided {
+            continue;
+        }
+        if impls.iter().any(|i| i.target.as_deref() == Some(&t.name)) {
+            continue;
+        }
+        if t.methods.is_empty() {
+            continue;
+        }
+        let Some(entity) = infer_repo_entity(t) else {
+            continue;
+        };
+        let fields = rust_entity_fields(sol, &entity);
+        let name = format!("InMemory{}", t.name);
+        out.push_str(&format!(
+            "/// Generated in-memory {0} for local smoke / greenfield runs.\n\
+             #[derive(Default)]\n\
+             pub struct {name} {{\n\
+                 rows: tokio::sync::RwLock<std::collections::HashMap<String, {entity}>>,\n\
+             }}\n\n\
+             impl {name} {{\n\
+                 pub fn new() -> Self {{ Self::default() }}\n\
+                 fn key(id: impl std::fmt::Display) -> String {{ id.to_string() }}\n\
+             }}\n\n\
+             #[async_trait]\n\
+             impl {trait_name} for {name} {{\n",
+            t.name,
+            trait_name = t.name,
+        ));
+        for m in &t.methods {
+            let mname = to_snake(m.name.trim_end_matches('!'));
+            let params = m
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret = m
+                .return_type
+                .as_ref()
+                .map(type_to_rust)
+                .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+            let sep = if params.is_empty() { "" } else { ", " };
+            let body = in_memory_method_body(&mname, m, &entity, &fields, &ret);
+            out.push_str(&format!(
+                "    async fn {mname}(&self{sep}{params}) -> {ret} {{\n{body}    }}\n\n"
+            ));
+        }
+        out.push_str("}\n\n");
+    }
+    out
+}
+
+fn in_memory_method_body(
+    mname: &str,
+    m: &Method,
+    entity: &str,
+    fields: &[&Field],
+    ret: &str,
+) -> String {
+    let first = m.params.first().map(|p| to_snake(&p.name));
+    if matches!(mname, "save" | "put" | "insert") {
+        if let Some(arg) = first.as_deref() {
+            let id_field = if fields.iter().any(|f| f.name == "id") {
+                "id"
+            } else {
+                fields.first().map(|f| f.name.as_str()).unwrap_or("id")
+            };
+            return format!(
+                "        let mut g = self.rows.write().await;\n\
+                        g.insert(Self::key({arg}.{id_field}.clone()), {arg});\n\
+                        Ok(())\n"
+            );
+        }
+    }
+    if matches!(mname, "delete" | "remove") {
+        if let Some(arg) = first.as_deref() {
+            return format!(
+                "        self.rows.write().await.remove(&Self::key({arg}.clone()));\n\
+                        Ok(())\n"
+            );
+        }
+    }
+    if matches!(mname, "find" | "get") && m.params.len() == 1 {
+        if let Some(arg) = first.as_deref() {
+            if ret.contains("Option<") {
+                if arg != "id" {
+                    if let Some(field) = filter_field_for_method(&format!("by_{arg}"), fields)
+                        .or_else(|| Some(arg.to_string()))
+                    {
+                        let field_s = to_snake(&field);
+                        return format!(
+                            "        Ok(self.rows.read().await.values().find(|e| e.{field_s} == {arg}).cloned())\n"
+                        );
+                    }
+                }
+                return format!(
+                    "        Ok(self.rows.read().await.get(&Self::key({arg}.clone())).cloned())\n"
+                );
+            }
+        }
+    }
+    if matches!(mname, "list" | "list_all" | "all") && m.params.is_empty() {
+        return "        Ok(self.rows.read().await.values().cloned().collect())\n".into();
+    }
+    if let Some(field) = filter_field_for_method(mname, fields) {
+        if let Some(arg) = first.as_deref() {
+            let field_s = to_snake(&field);
+            let open = mname.contains("open");
+            let extra = if open && fields.iter().any(|f| f.name == "returned") {
+                " && !e.returned"
+            } else if open && fields.iter().any(|f| f.name == "available") {
+                " && e.available"
+            } else {
+                ""
+            };
+            if ret.contains("Option<") {
+                return format!(
+                    "        Ok(self.rows.read().await.values().find(|e| e.{field_s} == {arg}{extra}).cloned())\n"
+                );
+            }
+            if ret.contains("Vec<") {
+                return format!(
+                    "        Ok(self.rows.read().await.values().filter(|e| e.{field_s} == {arg}{extra}).cloned().collect())\n"
+                );
+            }
+        }
+    }
+    if ret.contains("Option<") {
+        return "        Ok(None)\n".into();
+    }
+    if ret.contains("Vec<") {
+        return "        Ok(Vec::new())\n".into();
+    }
+    if ret.contains("Result<(),") {
+        return "        Ok(())\n".into();
+    }
+    format!("        unimplemented!(\"in-memory {entity}.{mname}\")\n")
+}
+
 /// Recursively check if an expression contains a Return (ret) at any depth
 /// (including inside match arms, if bodies, etc.).
 fn expr_contains_return(expr: &Expr) -> bool {
@@ -4618,7 +4872,7 @@ fn expr_calls_async_fn(expr: &Expr, ctx: &crate::expr::GenCtx) -> bool {
         Expr::BinaryOp(b) => {
             expr_calls_async_fn(&b.left, ctx) || expr_calls_async_fn(&b.right, ctx)
         }
-        Expr::FieldAccess(base, _) | Expr::Try(base) | Expr::Await(base) => {
+        Expr::FieldAccess(base, _) | Expr::Try(base) | Expr::Require(base) | Expr::Await(base) => {
             expr_calls_async_fn(base, ctx)
         }
         _ => false,
@@ -5222,7 +5476,7 @@ fn expr_refs_stub_type(
                 .map(|r| expr_refs_stub_type(r, stubs))
                 .unwrap_or(false)
         }
-        Expr::FieldAccess(base, _) | Expr::Await(base) | Expr::Try(base) | Expr::Return(base) => {
+        Expr::FieldAccess(base, _) | Expr::Await(base) | Expr::Try(base) | Expr::Require(base) | Expr::Return(base) => {
             expr_refs_stub_type(base, stubs)
         }
         Expr::UnaryOp(u) => expr_refs_stub_type(&u.expr, stubs),

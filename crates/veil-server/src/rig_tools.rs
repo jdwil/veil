@@ -1405,10 +1405,14 @@ mod rename_hello {
         let src = std::fs::read_to_string(&path).expect("read hello_world");
         let reg = LayerRegistry::for_veil_file(&path).unwrap_or_else(|_| LayerRegistry::builtin());
         let (out, sum) = apply_rename(&src, &reg, "User", "AppUser").expect("rename");
-        assert!(out.contains("# Hello World"), "comment lost: {out}");
+        assert!(out.contains("pkg HelloWorld"), "package header lost: {out}");
         assert!(out.contains("agg AppUser"), "{out}");
         assert!(!out.contains("agg User\n"), "{out}");
-        assert!(out.contains("AppUser.new") || out.contains("AppUser)"), "{out}");
+        assert!(
+            out.contains("AppUser.new") || out.contains("AppUser)"),
+            "{out}"
+        );
+        assert!(out.contains("lang"), "lang block lost: {out}");
         eprintln!("{sum}");
     }
 }

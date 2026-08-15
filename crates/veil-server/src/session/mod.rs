@@ -342,14 +342,9 @@ impl SessionManager {
                 }
             });
         }
-        let inherit_pr = list_sessions_for_user(&user).ok().and_then(|list| {
-            list.into_iter()
-                .find_map(|m| m.active_pr_id.filter(|s| !s.is_empty()))
-        });
+        // New repo: never inherit another product's PR (that leaked agent-core PRs
+        // onto lumen-* sessions during the 2026-08-14 e2e).
         let h = self.create(&ident.slug, None)?;
-        if let Some(pr) = inherit_pr {
-            let _ = h.set_active_pr_id(Some(&pr));
-        }
         write_sticky_aliases(&user, &ident, &h.session_id());
         self.set_active_for_identity(&ident, &h.session_id());
         tracing::info!(
