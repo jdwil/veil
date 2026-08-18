@@ -501,6 +501,9 @@ s     = bytes.to_str()         # or Str.from_bytes(bytes)
 blob  = Blob.new(s)            # Str or Bytes (utf-8)
 s     = blob.to_str()          # or blob.as_ref() in a Str slot (utf-8)
 now   = Str.now_iso8601()      # current UTC instant as ISO-8601 text
+unix  = Int.now_unix()         # current UTC unix seconds (Int)
+n     = s.parse_int()          # Str → Int
+n     = av.as_n()              # AttributeValue N → Int
 ```
 
 **Opt in adapters:** `ret value` is Some; `ret null` or `ret ()` is None.

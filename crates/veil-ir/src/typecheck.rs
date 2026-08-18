@@ -1852,6 +1852,8 @@ fn conversion_result(recv: &Ty, method: &str) -> Option<Ty> {
         }
         // Blob.as_ref() is a bytes view in Rust; VEIL Str context decodes utf-8.
         "as_ref" if is_blob_ty(recv) => Some(Ty::Named("Str".into())),
+        "parse_int" if is_str_ty(recv) => Some(Ty::Named("Int".into())),
+        "as_n" => Some(Ty::Named("Int".into())),
         _ => None,
     }
 }
@@ -2110,6 +2112,7 @@ fn infer_call(
             || call.target == "Str"
             || call.target == "Dt"
             || call.target == "DateTime"
+            || call.target == "Int"
         {
             match (call.target.as_str(), method) {
                 ("Bytes", "from_str") | ("Bytes", "new") if arg_tys.len() == 1 => {
@@ -2124,6 +2127,9 @@ fn infer_call(
                     if arg_tys.is_empty() =>
                 {
                     return Ty::Named("Str".into());
+                }
+                ("Int", "now_unix") | ("Int", "now") if arg_tys.is_empty() => {
+                    return Ty::Named("Int".into());
                 }
                 _ => {}
             }

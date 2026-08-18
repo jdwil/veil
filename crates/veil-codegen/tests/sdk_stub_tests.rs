@@ -1466,3 +1466,40 @@ pkg SdkApp
         "both put_item uses of message_name must clone:\n{put_fn}"
     );
 }
+
+#[test]
+fn int_now_unix_and_parse_int_and_as_n_are_i64() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port Clock
+        age!(raw: Str) -> Int
+    group infrastructure
+      adapter SysClock for Clock
+        impl age(raw)
+          now = Int.now_unix()
+          n = raw.parse_int()
+          ret now - n
+"#;
+    let out = generate_with_stub(AV_STUB, app);
+    assert!(
+        out.contains("Utc::now().timestamp()"),
+        "Int.now_unix must be a unix timestamp:\n{}",
+        out.lines()
+            .filter(|l| l.contains("now") || l.contains("unix") || l.contains("compile_error"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("parse::<i64>()"),
+        "parse_int must parse i64:\n{out}"
+    );
+    assert!(
+        !out.contains("unstubbed external"),
+        "must not treat Int.now_unix as an external stub:\n{out}"
+    );
+}

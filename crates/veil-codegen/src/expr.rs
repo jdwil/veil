@@ -837,6 +837,10 @@ fn is_str_like_return(ty: &str) -> bool {
 /// maps, lists, bools, bytes.
 fn should_own_str_result(ctx: &GenCtx, recv_ty: Option<&str>, method: &str) -> bool {
     let bare = method_bare(method);
+    // `as_n` is a number in VEIL even when the stub says Res!<Str>.
+    if bare == "as_n" {
+        return false;
+    }
     if let Some(ty) = recv_ty {
         let leaf = lang_type_leaf(ty);
         for key in [ty, leaf] {
@@ -845,7 +849,11 @@ fn should_own_str_result(ctx: &GenCtx, recv_ty: Option<&str>, method: &str) -> b
             }
         }
     }
-    matches!(bare, "as_s" | "as_n")
+    matches!(bare, "as_s")
+}
+
+fn parse_i64_suffix() -> &'static str {
+    r#".parse::<i64>().map_err(|e| DomainError::External(format!("{e:?}")))?"#
 }
 
 fn peel_option_rust(ty: &str) -> Option<&str> {
@@ -1434,7 +1442,19 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 } else { cond }
             } else { cond };
             // Single-expression if/else: emit as value expression (no semicolons)
-            if ie.then_body.len() == 1 && ie.else_body.as_ref().map_or(false, |b| b.len() == 1) {
+            // Assign / `let _ = …` is a statement — do not drop the semicolon.
+            let then_is_stmt = matches!(
+                ie.then_body.first(),
+                Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _))
+            );
+            let else_is_stmt = ie.else_body.as_ref().is_some_and(|b| {
+                matches!(b.first(), Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _)))
+            });
+            if ie.then_body.len() == 1
+                && ie.else_body.as_ref().map_or(false, |b| b.len() == 1)
+                && !then_is_stmt
+                && !else_is_stmt
+            {
                 let then_expr = expr_to_rust(&ie.then_body[0], ctx);
                 let else_expr = expr_to_rust(&ie.else_body.as_ref().unwrap()[0], ctx);
                 return format!("if {} {{ {} }} else {{ {} }}", cond, then_expr, else_expr);
@@ -3138,8 +3158,19 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if call.method == "as_str" && call.args.is_empty() {
             return format!("{}.as_str().map(|s| s.to_string())", recv_str);
         }
-        // Stub `Res!<Str>` getters (`as_s` / `as_n` / typed as_*): Rust is
+        // Stub `Res!<Str>` getters (`as_s` / typed as_*): Rust is
         // usually `Result<&str, E>` with E: Debug + !Display. Own a String.
+        // `as_n` is the numeric extractor — parse to i64.
+        if call.args.is_empty() && method_bare(&call.method) == "as_n" {
+            return format!(
+                "{recv_str}.as_n(){}{}",
+                map_err_domain_own_str(),
+                parse_i64_suffix()
+            );
+        }
+        if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
+            return format!("{recv_str}{}", parse_i64_suffix());
+        }
         if call.args.is_empty() {
             let recv_ty = infer_expr_type(recv, ctx);
             if should_own_str_result(ctx, recv_ty.as_deref(), &call.method) {
@@ -3333,7 +3364,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // they are calling methods on data, not cross-boundary invocations.
     let is_lang_target = matches!(
         call.target.as_str(),
-        "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "UUID"
+        "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Int" | "UUID"
     );
     let is_typed_local = ctx.is_local(&call.target) && ctx.local_type(&call.target).is_some();
     if ctx.envelope_routing && !is_lang_target && !is_typed_local
@@ -3361,6 +3392,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             ("Dt", "now") => Some("Utc::now()".to_string()),
             ("Str", "now_iso8601") | ("Dt", "now_iso8601") | ("DateTime", "now_iso8601")
                 => Some(now_iso8601_rust()),
+            ("Int", "now_unix") | ("Int", "now") => Some("Utc::now().timestamp()".to_string()),
             ("Json", "parse") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
                 Some(format!("serde_json::from_str::<_>(&{})?", arg))
@@ -3387,7 +3419,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         let lang_leaf = lang_type_leaf(&call.target);
         let is_lang_primitive = matches!(
             lang_leaf,
-            "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Process"
+            "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Int"
+                | "Process"
                 | "Blob" | "Bytes"
         );
         if is_lang_primitive || !ctx.is_struct_target(&call.target) {
@@ -3398,6 +3431,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     if call.args.is_empty() =>
                 {
                     Some(now_iso8601_rust())
+                }
+                ("Int", "now_unix") | ("Int", "now") if call.args.is_empty() => {
+                    Some("Utc::now().timestamp()".to_string())
                 }
                 ("Uuid", "new_v4") | ("Id", "new_v4") => Some("Uuid::new_v4()".to_string()),
                 ("Map", "new") => Some("HashMap::new()".to_string()),
@@ -3845,6 +3881,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if ctx.self_fields.contains(field)
             || call.target.starts_with("self.")
         {
+            if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
+                return format!(
+                    "self.{}{}",
+                    to_snake(field),
+                    parse_i64_suffix()
+                );
+            }
             let method = rust_method_name(&call.method);
             let suffix = receiver_call_suffix(
                 &Expr::Ident(field.to_string()),
@@ -3968,6 +4011,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     call.target
                 );
             }
+        }
+        if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
+            return format!("{}{}", call.target, parse_i64_suffix());
+        }
+        if call.args.is_empty() && method_bare(&call.method) == "as_n" {
+            return format!(
+                "{}.as_n(){}{}",
+                call.target,
+                map_err_domain_own_str(),
+                parse_i64_suffix()
+            );
         }
 
         // HashMap/DynamoDB item .get("key") — never panic (review Issue 6).
@@ -4391,7 +4445,18 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 // This handles cases where the closure param was already unwrapped by the chain
                 return call.target.clone();
             }
-            // Phase 2: as_s / as_n on closure params (DDB AttributeValue)
+            if call.args.is_empty() && m_clean == "as_n" {
+                return format!(
+                    "{}.as_n(){}{}",
+                    call.target,
+                    map_err_domain_own_str(),
+                    parse_i64_suffix()
+                );
+            }
+            if call.args.is_empty() && m_clean == "parse_int" {
+                return format!("{}{}", call.target, parse_i64_suffix());
+            }
+            // Phase 2: as_s on closure params (DDB AttributeValue)
             if call.args.is_empty()
                 && should_own_str_result(ctx, ctx.local_type(&call.target), &call.method)
             {
@@ -5377,6 +5442,15 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                 ) {
                     return Some("String".to_string());
                 }
+                if matches!((leaf, method), ("Int", "now_unix") | ("Int", "now")) {
+                    return Some("i64".to_string());
+                }
+            }
+            if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
+                return Some("i64".to_string());
+            }
+            if call.args.is_empty() && method_bare(&call.method) == "as_n" {
+                return Some("i64".to_string());
             }
             // Envelope routing: cross-boundary calls yield `serde_json::Value`
             // (unless the target is a direct trait dep).

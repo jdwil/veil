@@ -41,6 +41,8 @@ If a fix reintroduces “emit `true` so it typechecks,” it is a regression.
 | **SL-014** | `Str.now_iso8601()` / `Dt.now_iso8601()` is the current UTC instant as an ISO-8601 `Str` (`Utc::now().to_rfc3339()`). Not an unstubbed external | rust codegen + typecheck |
 | **SL-015** | Bytes-view `as_ref` in a `Str` slot (`stub → Str`, Blob/Bytes return, or enclosing `Str`) decodes utf-8. Never emit raw `&[u8]` as `String`. `Option`/`Result`/`String` `.as_ref()` is unchanged | rust codegen + typecheck |
 | **SL-016** | VEIL field reads are reusable. Non-Copy `x.field` clones; do not move a field into the first call and fail the second | rust codegen |
+| **SL-017** | `Int.now_unix()` is the current UTC unix timestamp (`i64`). `s.parse_int()` parses a `Str` to `Int` | rust codegen + typecheck |
+| **SL-018** | `as_n` is the numeric extractor: Debug-map_err, own the text, then `parse::<i64>()`. `as_s` stays `Str` | rust codegen |
 
 ---
 
