@@ -3579,6 +3579,7 @@ fn run_tests_once(
 ) -> i32 {
     let mut all_items: Vec<veil_ir::TopLevelItem> = Vec::new();
     let mut all_solutions: Vec<veil_ir::Solution> = Vec::new();
+    let mut all_registries: Vec<LayerRegistry> = Vec::new();
     let mut total_tests = 0usize;
     let mut total_filtered = 0usize;
 
@@ -3590,7 +3591,7 @@ fn run_tests_once(
                 return 1;
             }
         };
-        let (sol, _registry) = parse_solution_or_exit(&source, path);
+        let (sol, registry) = parse_solution_or_exit(&source, path);
 
         // Collect test blocks and filter.
         let mut test_cases: Vec<(&str, &veil_ir::TestCase)> = Vec::new();
@@ -3640,6 +3641,7 @@ fn run_tests_once(
 
         all_items.extend(sol.items.clone());
         all_solutions.push(sol);
+        all_registries.push(registry);
     }
 
     // ─── Coverage report ────────────────────────────────────────────────
@@ -3677,20 +3679,7 @@ fn run_tests_once(
     }
 
     // ─── Codegen + runner invocation ────────────────────────────────────
-    let test_files = match codegen_target {
-        veil_codegen::CodegenTarget::Rust => {
-            veil_codegen::testing::generate_rust_tests(&all_items)
-        }
-        veil_codegen::CodegenTarget::TypeScript => {
-            veil_codegen::testing::generate_ts_tests(&all_items)
-        }
-        _ => {
-            eprintln!("Unsupported test target: {}", target_str);
-            return 2;
-        }
-    };
-
-    if test_files.is_empty() {
+    if total_tests == 0 {
         if !json {
             println!("\nNo test code generated (0 test blocks found).");
         }
@@ -3709,34 +3698,24 @@ fn run_tests_once(
 
     match codegen_target {
         veil_codegen::CodegenTarget::Rust => {
-            // Write minimal Cargo.toml
-            let cargo_toml = r#"[package]
-name = "veil_tests"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-tokio = { version = "1", features = ["full"] }
-
-[[test]]
-name = "tests"
-path = "src/tests.rs"
-"#;
-            std::fs::create_dir_all(tmp_path.join("src")).ok();
-            std::fs::write(tmp_path.join("Cargo.toml"), cargo_toml).ok();
-            std::fs::write(tmp_path.join("src/lib.rs"), "").ok();
-
-            for gen_file in &test_files {
+            // SL-022: emit the real product crate (tests.rs calls handlers).
+            let sol = &all_solutions[0];
+            let registry = &all_registries[0];
+            let project = veil_codegen::generate(sol, registry);
+            for gen_file in &project.files {
                 let dest = tmp_path.join(&gen_file.path);
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
-                std::fs::write(&dest, &gen_file.content).ok();
+                if let Err(e) = std::fs::write(&dest, &gen_file.content) {
+                    eprintln!("error: write {}: {e}", dest.display());
+                    return 1;
+                }
             }
 
             // Invoke cargo test
             let mut cmd = std::process::Command::new("cargo");
-            cmd.arg("test").current_dir(tmp_path);
+            cmd.arg("test").arg("--lib").current_dir(tmp_path);
             if let Some(f) = filter {
                 cmd.arg("--").arg(f);
             }
@@ -3768,6 +3747,7 @@ path = "src/tests.rs"
             }
         }
         veil_codegen::CodegenTarget::TypeScript => {
+            let test_files = veil_codegen::testing::generate_ts_tests(&all_items);
             // Write package.json + vitest config
             let package_json = r#"{"name":"veil-tests","private":true,"scripts":{"test":"vitest run"},"devDependencies":{"vitest":"^1"}}"#;
             let vitest_config = "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ test: { globals: true } });\n";

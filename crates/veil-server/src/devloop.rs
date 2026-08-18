@@ -319,7 +319,7 @@ impl DevLoop {
                 )
             })
             .collect();
-        Self {
+        let mut slf = Self {
             project_root,
             veil_bin,
             targets,
@@ -329,7 +329,11 @@ impl DevLoop {
             dev_packages,
             last_good_sources: HashMap::new(),
             smoke_in_progress: false,
-        }
+        };
+        // Host restart must not treat an established project as greenfield
+        // (empty last_good → keep a failed write). Snapshot whatever is on disk.
+        slf.remember_good_sources();
+        slf
     }
 
     /// Snapshot primary package (+ layers that matter) after a successful smoke.
@@ -743,6 +747,7 @@ impl DevLoop {
     ) -> bool {
         let mut cmd = Command::new("cargo");
         cmd.arg("check");
+        cmd.arg("--tests");
         for p in packages {
             cmd.arg("-p").arg(p);
         }
@@ -1286,6 +1291,23 @@ fn resolve_veil_bin() -> PathBuf {
                     dir.join("veil")
                 };
                 if sibling.is_file() {
+                    if let (Ok(host_meta), Ok(cli_meta)) =
+                        (std::fs::metadata(&exe), std::fs::metadata(&sibling))
+                    {
+                        if let (Ok(host_t), Ok(cli_t)) =
+                            (host_meta.modified(), cli_meta.modified())
+                        {
+                            if host_t > cli_t {
+                                tracing::warn!(
+                                    host = %exe.display(),
+                                    cli = %sibling.display(),
+                                    "sibling `veil` is older than this host — \
+                                     smoke/gen will use a stale compiler. \
+                                     Rebuild with `cargo build --release -p veil-cli`"
+                                );
+                            }
+                        }
+                    }
                     return sibling;
                 }
             }

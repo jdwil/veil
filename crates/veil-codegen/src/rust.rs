@@ -2301,13 +2301,30 @@ uuid.workspace = true"#);
         },
     });
 
+    let crate_tests = crate::testing::generate_crate_tests(
+        solution,
+        registry,
+        &crate_name,
+        module,
+        &contents.traits,
+        &contents.fns,
+        &contents.enums,
+        &contents.structs,
+    );
+    let mut lib_rs = format!(
+        "//! {} — {}.\n\npub mod domain;\npub mod ports;\npub mod adapters;\npub mod application;\n",
+        module.name, module.subkind
+    );
+    if crate_tests.is_some() {
+        lib_rs.push_str("\n#[cfg(test)]\nmod tests;\n");
+    }
     files.push(GeneratedFile {
         path: format!("crates/{}/src/lib.rs", crate_name),
-        content: format!(
-            "//! {} — {}.\n\npub mod domain;\npub mod ports;\npub mod adapters;\npub mod application;\n",
-            module.name, module.subkind
-        ),
+        content: lib_rs,
     });
+    if let Some(tests) = crate_tests {
+        files.push(tests);
+    }
 
     files.push(gen_types(&contents, &crate_name, registry, solution));
     files.push(gen_child_types(&contents, &crate_name));

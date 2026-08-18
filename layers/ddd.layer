@@ -405,7 +405,8 @@ pkg ddd v1
          `@field(sns: aws_sdk_sns.Client)`, never bare `Client` when more than
          one stub exports it. Field names: `sns`, `sqs`, `ddb`, not generic `client`.
       4. Call that field's methods **exactly as the stub shows**. `stub_search`
-         the method before writing the call.
+         the method before writing the call. Single-letter params (`U`, `T`, `B`)
+         are rust generics — pass `Str`, do not construct a `U`.
       The transpiler adds the Cargo crate and imports from the stub.
 
     ## Stub value types (required for a compiling adapter)
@@ -427,8 +428,12 @@ pkg ddd v1
       `blob.as_ref()` in a `Str` slot is the same utf-8 decode.
       Port `-> Str` cannot return a Blob — decode first:
       `ret (require result.payload).to_str()`.
-    - Current time as text (language, not a stub): `now = Str.now_iso8601()`.
-      That is ISO-8601 UTC. `Dt.now()` is a `DateTime`, not a `Str`.
+    - Clock / parse (language, not a stub — do not invent other clock methods):
+      `now = Str.now_iso8601()` is ISO-8601 UTC text.
+      `unix = Int.now_unix()` is unix seconds (`Int`) for elapsed / TTL.
+      `n = s.parse_int()` is Str → Int. `av.as_n!()` is the numeric extractor (`Int`).
+      `av.as_s!()` is text. `Dt.now()` is a `DateTime`, not a `Str`.
+      There is no `Dt.parse`, `seconds_since`, or `Str.seconds_since`.
     - Opt returns from adapters:
       `ret value` is Some. `ret null` or `ret ()` is None.
       `if item.is_some` / `item.is_some()` is Bool.
@@ -436,6 +441,11 @@ pkg ddd v1
       `map = require result.item()` then `endpoint = require map.get("endpoint").as_s()`
       (or `map["endpoint"].as_s()`) and fill the value object. `get`/`[]` yield
       the map value (AttributeValue); `as_s()` is the Str.
+    - Prefer `ret expr` when you would bind once and immediately return.
+      `response = call!()` then `ret response` is valid; do not write `mut`.
+    - Unit tests: `tests HandleX` / `it "name"` / `stub Port.method -> value`
+      / `given` / `then result == …`. They compile to cargo tests. Do not
+      hand-write tests in generated/.
     - `match` arms must produce one type. A fire-and-forget arm of an
       `Opt<T>` method ends with `null` after the side-effect. Wrap a `Str`
       in the domain value (`Token { id: s }`), do not leave a bare `Str`

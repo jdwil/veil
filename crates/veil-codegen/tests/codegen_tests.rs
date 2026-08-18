@@ -312,6 +312,140 @@ pkg mini v1
 }
 
 #[test]
+fn match_arm_sibling_first_binds_are_immutable() {
+    // SL-020: the same name first-bound in two match arms is not a reassignment.
+    let layer = "\
+pkg mini v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in top
+  declare
+    fn pick(kind: Str) -> Res!<Str>
+      match kind
+        \"a\" ->
+          response = \"alpha\"
+          ret response
+        _ ->
+          response = \"other\"
+          ret response
+    fn bump(kind: Str) -> Res!<Int>
+      n = 0
+      match kind
+        \"a\" ->
+          n = 1
+        _ ->
+          n = 2
+      ret n";
+    let app = "sol MiniApp\n  use mini\n  widget Gadget\n    size: Int";
+    let out = generate_with_layer("mini", layer, app);
+    assert!(
+        out.contains("let response = ") && !out.contains("let mut response"),
+        "sibling match-arm first binds must be immutable let:\n{}",
+        out
+    );
+    assert!(
+        out.contains("let mut n = ") || out.contains("let mut n:"),
+        "pre-bound name reassigned in arms still needs mut:\n{}",
+        out
+    );
+}
+
+#[test]
+fn veil_tests_emit_handler_call_and_port_double() {
+    // SL-022: tests HandleEcho + stub EchoPort.say lower to a compiling tokio test.
+    let layer = "\
+pkg mini v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in top
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct Port
+    keyword port
+    maps_to trait
+    allowed_in Context
+  construct Handler
+    keyword handler
+    maps_to fn
+    allowed_in Context";
+    let app = r#"sol MiniApp
+  use mini
+  ctx App
+    port EchoPort
+      say!(msg: Str) -> Str
+    handler HandleEcho
+      input
+        msg: Str
+        @dep echo: EchoPort
+      step go
+        ret echo.say!(msg)
+  tests HandleEcho
+    it "echoes the stub"
+      stub EchoPort.say -> "pong"
+      given
+        msg = "ping"
+      then
+        result == "pong"
+"#;
+    let out = generate_with_layer("mini", layer, app);
+    assert!(
+        out.contains("mod tests") && out.contains("src/tests.rs"),
+        "lib.rs must declare tests module:\n{}",
+        out
+    );
+    assert!(
+        out.contains("struct TestDoubleEchoPort") && out.contains("impl EchoPort for TestDoubleEchoPort"),
+        "port test-double missing:\n{}",
+        out
+    );
+    assert!(
+        out.contains("handle_echo(") && out.contains("let result = handle_echo"),
+        "handler call missing:\n{}",
+        out
+    );
+    assert!(
+        out.contains("assert_eq!(result, Ok(") && out.contains("pong"),
+        "result assertion missing:\n{}",
+        out
+    );
+    assert!(
+        !out.contains("assert_eq!(result,") || out.contains("let result ="),
+        "result must be bound before assert:\n{}",
+        out
+    );
+}
+
+#[test]
+fn string_concat_chain_is_one_format() {
+    // SL-021: a + b + c → one format!, not nested format!("{}{}", format!(…)).
+    let layer = "\
+pkg mini v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in top
+  declare
+    fn label(svc: Str, handler: Str) -> Res!<Str>
+      ret \"LISTENER#\" + svc + \"#\" + handler";
+    let app = "sol MiniApp\n  use mini\n  widget Gadget\n    size: Int";
+    let out = generate_with_layer("mini", layer, app);
+    assert!(
+        out.contains(r#"format!("{}{}{}{}""#) || out.contains("format!(\"{}{}{}{}\""),
+        "concat chain should be one format! with four holes:\n{}",
+        out
+    );
+    assert!(
+        !out.contains(r#"format!("{}{}", format!"#),
+        "concat chain must not nest format!:\n{}",
+        out
+    );
+}
+
+#[test]
 fn guard_enforces_validation() {
     let out = customer_onboarding();
     // The `guard call Email.validate(email), "invalid email"` must propagate an

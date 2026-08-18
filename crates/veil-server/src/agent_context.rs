@@ -67,11 +67,15 @@ You are the VEIL IDE built-in agent (Rig tools).
 - Packages with declared `compose`/`endpoint` (or `@main` / `link veil_server`) get crates/veil_bin.
 - Write first-class `endpoint` (method/path/handle/bind). Do **not** put `@route` on svc/handler — that role was removed from ddd. Svelte page `@route` stays.
 - Do not invent paths — call list_routes. `veil migrate harness` rewrites leftover API `@route`. Name-derived List/Get only when `[harness] compat = "auto"`. New projects are `compat = "off"`.
-- After write_source: host runs gen + cargo check (smoke). Failure → WRITE REJECTED + file restored.
+- After write_source: host runs gen + `cargo check --tests` (smoke). Failure → WRITE REJECTED + file restored. Always call veil_check after write (JSON diagnostics) even when smoke is green.
 - **On WRITE REJECTED:** call dev_logs / smoke_status before rewriting the whole file.
 - **Closed loop after HTTP/backend edits:** smoke → list_routes (or read_generated what=routes) → dev_restart (or auto-restart) → http_request target=backend path=/health then the real route. Do not claim success without http_request.
 - Frontend: relative /api + Vite @proxy. Bus is server-side only.
 - **Bang / Opt / Res (BANG_CONTRACT, ACS-010 portable):** `wt = repo.find!(id)` → Opt<T> (bang = Res try only). Soft absence after bang is valid (.is_some/.is_none). Need T? `require repo.find!(id)` or .unwrap() (NotFound). Never assume bang forces Opt→T.
+- **Language primitives (not stubs — do not invent others):** `Str.now_iso8601()` is ISO-8601 UTC text. `Int.now_unix()` is unix seconds (`Int`) for elapsed/TTL. `s.parse_int()` is Str→Int. `x.as_s!()` is text. `x.as_n!()` is Int. `Dt.now()` is a DateTime, not a Str. There is no `Dt.parse`, `seconds_since`, or `Str.seconds_since`. If a method is not in this list and `stub_search` does not show it, do not call it.
+- **`impl` parameter names must match the port** (`put_heartbeat!(heartbeat: …)` → `impl put_heartbeat(heartbeat)`). Generated Rust uses the port names.
+- **Bodies:** Prefer `ret expr` when you would bind once and immediately return. A first `x = e` is a bind (not `mut`) unless you later reassign `x`. Do not write `mut x =` unless you reassign.
+- **VEIL tests (SL-022):** Package scope (sibling of `ctx`) or inside `ctx`. `tests HandleX` / `it "name"` / `stub Port.method -> value` or `stub Port.method -> err "msg"` / `given` / `then result == …` / `then ok` / `then fails` (also `then err`, `then result.is_err()`). Same-line `then` is legal. Smoke is `cargo check --tests`. Do **not** hand-write cargo tests in `generated/`.
 - **Git-shaped sessions (host-enforced):** Prefer **`run_coding_plan`** (`coding.fix_diagnostics` / `coding.slice` / `coding.finish_task`) or **`resolve_coding_target`** at the start of coding work. Product name is **pull request (PR)**, not ticket/CR.
   1. Resolve open unmerged PR by scope (auto / Present modal / new) — never reuse Merged PRs
   2. Multi-step? `create_branch` — do **not** thrash main
@@ -145,6 +149,7 @@ You are the VEIL IDE built-in agent (Rig tools).
   - `stub_gen` — rustdoc-based generation when missing/sparse
 - **Adapter recipe:** `use <stub-name>` → `@field(sns: aws_sdk_sns.Client)` (crate-qualified type; field named after the crate — `sns` / `sqs` / `ddb`, never a generic `client` when several stubs export `Client`) → call **that field's methods** exactly: `self.sns.publish().topic_arn(arn).message(body).send!()`.
 - **Stub value types:** `stub_search` the method. Incremental setters take `(key, StubValue)` (`.item("id", AttributeValue.S(s))`, `.message_attributes("k", attr)`). Whole-map setters take `Map<Str, StubValue>`, never `Map<Str, Str>`. Bare `{ k: v }` is not AttributeValue / MessageAttributeValue. Builders: `aws_sdk_sns.MessageAttributeValue.builder().data_type("String").string_value(s).build()`. Binary: `Blob.new(body)` or `aws_sdk_lambda.Blob.new(s)` (never a module `blob()` fn). Dynamo reads: `map = require result.item()` then `endpoint = require map.get("endpoint").as_s()` — do not return the map or empty strings.
+- Single-letter stub params (`U`, `T`, `B`) are rustdoc generics (`impl IntoUrl`), not types. Pass `Str`. Do not construct a `U`.
 - **@env:** `@env(TABLE_NAME)` → `self.table_name` (full lowercased var). `DATABASE_URL` → `self.pool`.
 - After infrastructure writes: `veil_check` (must be 0 errors) and `read_generated` on the adapter — you must see the crate types, not `unstubbed external` / empty hooks.
 - Stubs are versioned (`stub name 0.12.0`) with provenance (`@generated`, surface, fingerprint).
@@ -189,7 +194,7 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 ## Local HTTP harness (dual-loop backend) — ACS-002 mandatory
 - Declared compose/endpoint (or @main / link veil_server) → veil_bin. No API `@route` on svc/handler.
 - Write `endpoint`. Never invent paths — list_routes first. Name-derived only with compat=auto.
-- After write_source: smoke gen+check. Fail → WRITE REJECTED + restore.
+- After write_source: smoke gen + cargo check --tests. Fail → WRITE REJECTED + restore. Always veil_check after write.
 - **On WRITE REJECTED:** dev_logs / smoke_status before large rewrites.
 - **Closed loop:** smoke → list_routes → dev_restart → http_request (/health then real route). No success claim without http_request.
 - Frontend: relative /api + Vite proxy. Bus is not browser transport.
@@ -226,7 +231,12 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - Stubs: `stub_list` / `stub_search` / `stub_get` / `stub_install` / `stub_gen` only. `ws_grep` is for product `.veil`/`.layer` in the session, not for SDK stubs.
 - **VISIBLE UX:** Never curl ProductHost APIs. Only MCP tools. Host may pre-run create_project — continue with write_source, do not re-curl create.
 - **Focus:** Session focus (route/project/construct) is authoritative for "this component". `get_current_context` returns it. Tool `intent.present` drives visible UX choreography — do not re-create after Present.
-- **Review:** After a coherent unit (and after submit_pr / finish_task), `request_sign_off` and **stop**. The human walks the change hierarchy on `/review` and presses Approve. That record unlocks merge and ship.
+- **Review:** After a coherent unit (and after submit_pr / finish_task), `request_sign_off` **once** and **stop**. If the PR is already submitted or Approved, do not request_sign_off again unless you just pushed new commits. The human walks `/review` and presses Approve.
+- **Language primitives (not stubs — do not invent others):** `Str.now_iso8601()` ISO-8601 UTC text. `Int.now_unix()` unix seconds (`Int`) for elapsed/TTL. `s.parse_int()` Str→Int. `x.as_s!()` text. `x.as_n!()` Int. `Dt.now()` is DateTime, not Str. No `Dt.parse` / `seconds_since` / `Str.seconds_since`. If it is not in this list and `stub_search` does not show it, do not call it.
+- **`impl` param names match the port.** Generated Rust uses those names (`heartbeat`, not `hb`).
+- **DDD vocabulary (mandatory when `use ddd` is loaded):** Use layer keywords only — `agg`/`val`/`ent`/`repo`/`port`/`handler`/`svc`/`ctx`. Do **not** remodel DDD as `struct`+`trait`+cosmetic `group Aggregates`. `enum` stays base. If using `flow`, use **block** form (fields + `-> Ret`), not paren form.
+- **Bodies:** Prefer `ret expr` when you would bind once and immediately return. A first `x = e` is a bind (not `mut`) unless you later reassign `x`.
+- **VEIL tests (SL-022):** Package scope (sibling of `ctx`) or inside `ctx`. `tests HandleX` / `it "name"` / `stub Port.method -> value` or `stub Port.method -> err "msg"` / `given` / `then result == …` / `then ok` / `then fails` (also `then err`, `then result.is_err()`). Same-line `then` is legal. Smoke is `cargo check --tests`. Do **not** hand-write cargo tests in `generated/`.
 
 ## Mind Palace (when wiki tools work)
 - wiki_search for **platform contracts** (bang, harness, git-shaped, dual-loop) when you need mechanics.
@@ -243,6 +253,7 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - Tools: `stub_list` / `stub_search({query, name?})` / `stub_get` / `stub_install` / `stub_gen`.
 - Recipe: `use <stub>` + `@field(sns: aws_sdk_sns.Client)` + `self.sns.publish().topic_arn(arn).send!()`. Never bare `Client` when more than one stub defines it.
 - Stub values: `stub_search` first. `.item(k, AttributeValue.S(s))` / `.message_attributes(k, MessageAttributeValue.builder()…)`. Never `Map<Str, Str>` for those. `Blob.new(body)` for binary. `@env(TABLE_NAME)` → `self.table_name`.
+- Single-letter stub params (`U`, `T`, `B`) are rustdoc generics (`impl IntoUrl`), not types you construct. Pass `Str`. Do not `stub_search 'U'`.
 - After adapter writes: veil_check 0 errors; read_generated must show crate types, not `unstubbed external`.
 
 ## Messaging is user-land
@@ -615,6 +626,27 @@ mod tests {
         assert!(
             p.text.contains("AttributeValue") && p.text.contains("Blob.new"),
             "stub value-type recipe missing from preamble"
+        );
+        assert!(
+            p.text.contains("Int.now_unix") && p.text.contains("parse_int") && p.text.contains("as_n"),
+            "clock/parse primitives missing from preamble: {}",
+            &p.text[..p.text.len().min(800)]
+        );
+        assert!(
+            p.text.contains("parameter names must match the port")
+                || p.text.contains("param names match the port"),
+            "impl/port param-name law missing from preamble"
+        );
+        assert!(
+            p.text.contains("Prefer `ret expr`") && p.text.contains("VEIL tests (SL-022)"),
+            "body/test teaching missing from preamble"
+        );
+        assert!(
+            TIER0_ACP.contains("agg")
+                && TIER0_ACP.contains("Prefer `ret expr`")
+                && TIER0_ACP.contains("VEIL tests (SL-022)")
+                && TIER0_ACP.contains("param names match the port"),
+            "ACP preamble missing DDD/body/test/param teaching"
         );
         assert!(p.tokens_used > 0);
         // Builtin-only package: no layer prompts is OK and not truncation

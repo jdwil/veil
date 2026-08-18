@@ -76,11 +76,25 @@ stop_stack() {
   sleep 1
 }
 
-start_backend() {
-  if [[ ! -x "$BACKEND_BIN" ]]; then
-    echo "==> building veil-runtime (release)…"
-    cargo build --release -p veil-runtime
+# Smoke shells out to sibling `target/release/veil` (not in-process codegen).
+# A newer veil-runtime with a stale CLI reintroduces `unstubbed` / rustc fails.
+ensure_host_bins() {
+  local veil_cli="$ROOT/target/release/veil"
+  local need=0
+  if [[ ! -x "$BACKEND_BIN" ]]; then need=1; fi
+  if [[ ! -x "$veil_cli" ]]; then need=1; fi
+  if [[ -x "$BACKEND_BIN" && -x "$veil_cli" && "$BACKEND_BIN" -nt "$veil_cli" ]]; then
+    echo "==> veil CLI older than veil-runtime — rebuilding both (write_source smoke uses the CLI)"
+    need=1
   fi
+  if [[ "$need" -eq 1 ]]; then
+    echo "==> building veil-runtime + veil-cli (release)…"
+    (cd "$ROOT" && cargo build --release -p veil-runtime -p veil-cli)
+  fi
+}
+
+start_backend() {
+  ensure_host_bins
   echo "==> start ProductHost :$BACKEND_PORT  (log $BACKEND_LOG)"
   nohup "$BACKEND_BIN" >"$BACKEND_LOG" 2>&1 &
   echo "    pid $!"

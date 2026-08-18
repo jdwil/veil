@@ -1004,6 +1004,18 @@ fn expr_is_numeric(expr: &Expr, ctx: &GenCtx) -> bool {
     }
 }
 
+/// Flatten `a + b + c` into leaf operands so one `format!` can own the chain.
+fn flatten_str_add_chain(expr: &Expr) -> Vec<&Expr> {
+    match expr {
+        Expr::BinaryOp(op) if matches!(op.op, veil_ir::ast::BinOp::Add) => {
+            let mut out = flatten_str_add_chain(&op.left);
+            out.extend(flatten_str_add_chain(&op.right));
+            out
+        }
+        _ => vec![expr],
+    }
+}
+
 /// `format!("{}{}", ident, field)` must not move locals reused later.
 fn clone_if_named_value(expr: &Expr, rust: String) -> String {
     if rust.ends_with(".clone()") || rust.starts_with('"') || rust.starts_with("format!(") {
@@ -1416,11 +1428,24 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             }
             // String concat: Rust `String` has no `+ &String` / `+ &str` mix that
             // typechecks for every operand shape. `format!` is the portable
-            // lowering for VEIL `Str + Str` (and `"lit" + field`).
+            // lowering for VEIL `Str + Str` (and `"lit" + field`). Flatten a
+            // chain (`a + b + c`) into one `format!` (SL-021).
             if matches!(op.op, veil_ir::ast::BinOp::Add)
                 && (expr_is_stringish(&op.left, &l, ctx) || expr_is_stringish(&op.right, &r, ctx))
                 && !(expr_is_numeric(&op.left, ctx) && expr_is_numeric(&op.right, ctx))
             {
+                let parts = flatten_str_add_chain(expr);
+                if parts.len() >= 2 {
+                    let rendered: Vec<String> = parts
+                        .into_iter()
+                        .map(|p| {
+                            let s = expr_to_rust(p, ctx);
+                            clone_if_named_value(p, s)
+                        })
+                        .collect();
+                    let holes = vec!["{}"; rendered.len()].join("");
+                    return format!("format!(\"{holes}\", {})", rendered.join(", "));
+                }
                 let l = clone_if_named_value(&op.left, l);
                 let r = clone_if_named_value(&op.right, r);
                 return format!("format!(\"{{}}{{}}\", {l}, {r})");
@@ -5048,14 +5073,23 @@ pub fn analyze_mut_locals_in_steps(steps: &[FlowStep]) -> HashSet<String> {
             FlowStep::Match(m) => {
                 walk_mut_needs(&m.expr, &mut needs, &mut bound);
                 for arm in &m.arms {
-                    for e in &arm.body {
-                        walk_mut_needs(e, &mut needs, &mut bound);
-                    }
+                    walk_mut_needs_forked(&arm.body, &mut needs, &bound);
                 }
             }
         }
     }
     needs
+}
+
+/// Walk a control-flow branch with its own bind set (SL-020).
+///
+/// Sibling match/if arms that first-bind the same name must not look like
+/// reassignment of one local — that over-marks `let mut` (`unused_mut`).
+fn walk_mut_needs_forked(body: &[Expr], needs: &mut HashSet<String>, bound: &HashSet<String>) {
+    let mut branch_bound = bound.clone();
+    for e in body {
+        walk_mut_needs(e, needs, &mut branch_bound);
+    }
 }
 
 /// Collection / builder methods that require `&mut self` in Rust.
@@ -5119,13 +5153,9 @@ fn walk_mut_needs(expr: &Expr, needs: &mut HashSet<String>, bound: &mut HashSet<
         }
         Expr::IfExpr(ie) => {
             walk_mut_needs(&ie.condition, needs, bound);
-            for e in &ie.then_body {
-                walk_mut_needs(e, needs, bound);
-            }
+            walk_mut_needs_forked(&ie.then_body, needs, bound);
             if let Some(eb) = &ie.else_body {
-                for e in eb {
-                    walk_mut_needs(e, needs, bound);
-                }
+                walk_mut_needs_forked(eb, needs, bound);
             }
         }
         Expr::IfLet {
@@ -5135,13 +5165,9 @@ fn walk_mut_needs(expr: &Expr, needs: &mut HashSet<String>, bound: &mut HashSet<
             ..
         } => {
             walk_mut_needs(scrut, needs, bound);
-            for e in then_body {
-                walk_mut_needs(e, needs, bound);
-            }
+            walk_mut_needs_forked(then_body, needs, bound);
             if let Some(eb) = else_body {
-                for e in eb {
-                    walk_mut_needs(e, needs, bound);
-                }
+                walk_mut_needs_forked(eb, needs, bound);
             }
         }
         Expr::ForLoop { iterable, body, .. } => {
@@ -5175,11 +5201,12 @@ fn walk_mut_needs(expr: &Expr, needs: &mut HashSet<String>, bound: &mut HashSet<
         Expr::Match(scrut, arms) => {
             walk_mut_needs(scrut, needs, bound);
             for arm in arms {
+                let mut arm_bound = bound.clone();
                 if let Some(g) = &arm.guard {
-                    walk_mut_needs(g, needs, bound);
+                    walk_mut_needs(g, needs, &mut arm_bound);
                 }
                 for e in &arm.body {
-                    walk_mut_needs(e, needs, bound);
+                    walk_mut_needs(e, needs, &mut arm_bound);
                 }
             }
         }

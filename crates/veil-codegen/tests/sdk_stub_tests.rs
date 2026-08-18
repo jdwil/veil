@@ -1468,6 +1468,45 @@ pkg SdkApp
 }
 
 #[test]
+fn rustdoc_type_param_url_accepts_str() {
+    let stub = r#"
+stub example-http 1.0.0
+  struct Client
+    fn post(url: U) -> RequestBuilder
+  struct RequestBuilder
+    fn body(body: T) -> Self
+    fn send() -> Res!<Response>
+  struct Response
+    fn text() -> Res!<Str>
+"#;
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_http
+
+  ctx Store
+    group domain
+      port Http
+        post!(url: Str, body: Str) -> Str
+    group infrastructure
+      adapter Req for Http
+        @field(http: example_http.Client)
+        impl post(url, body)
+          resp = self.http.post(url).body(body).send!()
+          ret resp.text!()
+"#;
+    let out = generate_with_stub(stub, app);
+    assert!(
+        !out.contains("unstubbed external"),
+        "generic U/T params must lower: {out}"
+    );
+    assert!(
+        out.contains(".post(") && out.contains(".body("),
+        "must emit reqwest-style chain:\n{out}"
+    );
+}
+
+#[test]
 fn int_now_unix_and_parse_int_and_as_n_are_i64() {
     let app = r#"
 pkg SdkApp

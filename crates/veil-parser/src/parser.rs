@@ -1891,6 +1891,14 @@ impl<'a> Parser<'a> {
                     c.deployment_unit = true;
                     continue;
                 }
+                if annotations.is_empty() {
+                    if let Some(test_item) = self.try_parse_test_item()? {
+                        if let TopLevelItem::TestBlock(tb) = test_item {
+                            c.test_blocks.push(tb);
+                            continue;
+                        }
+                    }
+                }
                 match self.parse_any_construct(annotations) {
                     Ok(Some(child)) => c.children.push(child),
                     Ok(None) => {} // error already recorded inside parse_any_construct
@@ -1923,6 +1931,14 @@ impl<'a> Parser<'a> {
                 let annotations = self.parse_annotations();
                 if self.at_block_end() {
                     break;
+                }
+                if annotations.is_empty() {
+                    if let Some(test_item) = self.try_parse_test_item()? {
+                        if let TopLevelItem::TestBlock(tb) = test_item {
+                            c.test_blocks.push(tb);
+                            continue;
+                        }
+                    }
                 }
                 match self.parse_any_construct(annotations) {
                     Ok(Some(child)) => c.children.push(child),
@@ -4876,6 +4892,9 @@ impl<'a> Parser<'a> {
                                 then.push(self.parse_assertion()?);
                             }
                             self.exit_block();
+                        } else {
+                            // `then result == "x"` / `then ok` / `then fails` on one line
+                            then.push(self.parse_assertion()?);
                         }
                     }
                     "each" => {
@@ -4967,7 +4986,10 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::Arrow) {
             self.advance();
             // Check for `error "message"` or `err "message"`
-            if self.at(&TokenKind::Ident) && (self.current().text == "error" || self.current().text == "err") {
+            if self.at(&TokenKind::Err)
+                || (self.at(&TokenKind::Ident)
+                    && (self.current().text == "error" || self.current().text == "err"))
+            {
                 self.advance();
                 let msg = if self.at(&TokenKind::StringLit) {
                     let text = self.advance().text;
@@ -5159,6 +5181,19 @@ impl<'a> Parser<'a> {
 
     /// Parse an assertion in a `then` block.
     fn parse_assertion(&mut self) -> Result<Assertion, ParseError> {
+        if self.at(&TokenKind::Err) {
+            self.advance();
+            if self.at(&TokenKind::Colon) {
+                self.advance();
+            }
+            let msg = if self.at(&TokenKind::StringLit) {
+                let text = self.advance().text;
+                Self::extract_string_content(&text)
+            } else {
+                String::new()
+            };
+            return Ok(Assertion::Fails(msg));
+        }
         let word = match self.current_word() {
             Some(w) => w.to_string(),
             None => return Ok(Assertion::Expr(self.parse_expr()?)),
@@ -5176,7 +5211,15 @@ impl<'a> Parser<'a> {
                     if self.at(&TokenKind::Ident) {
                         let field_pos = self.pos;
                         let field_name = self.advance().text; // consume ident
-                        if self.at(&TokenKind::EqEq) {
+                        if field_name == "is_err" || field_name == "is_error" {
+                            if self.at(&TokenKind::LParen) {
+                                self.advance();
+                                if self.at(&TokenKind::RParen) {
+                                    self.advance();
+                                }
+                            }
+                            Ok(Assertion::Fails(String::new()))
+                        } else if self.at(&TokenKind::EqEq) {
                             // Simple case: result.field == value
                             self.advance(); // consume "=="
                             let val = self.parse_expr()?;
@@ -5200,9 +5243,9 @@ impl<'a> Parser<'a> {
                     Ok(Assertion::Expr(self.parse_expr()?))
                 }
             }
-            "fails" => {
+            "fails" | "err" | "error" => {
                 self.advance();
-                // fails: "message"
+                // fails: "message" / err "message"
                 if self.at(&TokenKind::Colon) { self.advance(); }
                 let msg = if self.at(&TokenKind::StringLit) {
                     let text = self.advance().text;

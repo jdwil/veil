@@ -23,8 +23,9 @@ Details: [`docs/ADR_SINGLE_PRODUCT_HOST.md`](docs/ADR_SINGLE_PRODUCT_HOST.md).
 scripts/dev-stack.sh restart   # backend :8080 + UI :5180
 scripts/dev-stack.sh status
 scripts/dev-stack.sh smoke
-# After backend code changes: rebuild then
-cargo build --release -p veil-runtime
+# After backend/compiler changes: rebuild host AND the veil CLI
+# (write_source smoke execs sibling target/release/veil, not in-process codegen).
+cargo build --release -p veil-runtime -p veil-cli
 scripts/dev-stack.sh backend
 # UI-only reload:
 scripts/dev-stack.sh ui

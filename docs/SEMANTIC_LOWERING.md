@@ -43,6 +43,10 @@ If a fix reintroduces “emit `true` so it typechecks,” it is a regression.
 | **SL-016** | VEIL field reads are reusable. Non-Copy `x.field` clones; do not move a field into the first call and fail the second | rust codegen |
 | **SL-017** | `Int.now_unix()` is the current UTC unix timestamp (`i64`). `s.parse_int()` parses a `Str` to `Int` | rust codegen + typecheck |
 | **SL-018** | `as_n` is the numeric extractor: Debug-map_err, own the text, then `parse::<i64>()`. `as_s` stays `Str` | rust codegen |
+| **SL-019** | rustdoc stub params named with a single uppercase letter (`U`, `T`, `B`) are type parameters (`impl IntoUrl`), not constructable types. They accept any VEIL value (typically `Str`) | typecheck |
+| **SL-020** | Sibling `match` / `if` arms each get their own first-bind set. The same name bound independently in two arms is `let`, not `let mut`. A name bound *before* the fork and reassigned in an arm is still `mut` | rust codegen `analyze_mut_locals` |
+| **SL-021** | `Str + Str + …` flattens to one `format!("{}{}…", …)`, not nested `format!("{}{}", format!(…), …)` | rust codegen |
+| **SL-022** | `tests Target` / `it` / `stub Port.method` / `given` / `then` emit `crates/{crate}/src/tests.rs` that calls `application::{target}` with port test-doubles. Smoke is `cargo check --tests` | rust codegen + host smoke |
 
 ---
 

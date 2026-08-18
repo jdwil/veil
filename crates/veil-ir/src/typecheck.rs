@@ -232,9 +232,20 @@ fn is_conventional_only_via_codegen_default(_n: &str) -> bool {
     false
 }
 
+/// rustdoc `.stub` files collapse `impl IntoUrl` / type parameters to a
+/// single uppercase letter (`U`, `T`, `B`). Those are not constructable
+/// types — any VEIL value is a legal argument.
+fn is_stub_type_param(name: &str) -> bool {
+    let n = name.trim();
+    n.len() == 1 && n.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+}
+
 /// Are two types compatible for assignment / arg passing?
 fn compatible(expected: &Ty, actual: &Ty) -> bool {
     if expected.is_unknown() || actual.is_unknown() {
+        return true;
+    }
+    if matches!(expected, Ty::Named(n) if is_stub_type_param(n)) {
         return true;
     }
     // Json / Any accept structured domain values (Bus payloads, etc.)
@@ -2216,6 +2227,9 @@ fn check_args(
                     "stub maps use {} values — construct them (Type.Variant(x) or Type.builder()…build()), not Map<Str, Str>",
                     ev.display()
                 )),
+                (Ty::Named(n), _) if is_stub_type_param(n) => Some(format!(
+                    "`{n}` is a rustdoc type parameter (impl Trait), not a stub type — pass Str / the value you have"
+                )),
                 (Ty::Named(n), _) if !is_veil_primitive_name(n) => Some(format!(
                     "stub_search '{n}' and construct it (e.g. {n}.S(s), {n}.builder()…build(), Blob.new(bytes))"
                 )),
@@ -3779,6 +3793,85 @@ stub example-sdk 1.0.0
         assert!(
             !diags.iter().any(|d| d.code == "type_mismatch"),
             "blob.to_str() must satisfy Str: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn rustdoc_type_param_accepts_str() {
+        let src = r#"
+stub example-http 1.0.0
+  struct Client
+    fn post(url: U) -> RequestBuilder
+  struct RequestBuilder
+    fn body(body: T) -> Self
+    fn send() -> Res!<Response>
+  struct Response
+    fn text() -> Res!<Str>
+"#;
+        let mut r = LayerRegistry::builtin();
+        r.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        r.stubs.push(crate::layer::parse_stub_file(src).expect("stub"));
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Http".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "post!".into(),
+            span: Span::new(0, 0),
+            params: vec![
+                Param {
+                    name: "url".into(),
+                    type_expr: TypeExpr::Named("Str".into()),
+                    span: Span::new(0, 0),
+                },
+                Param {
+                    name: "body".into(),
+                    type_expr: TypeExpr::Named("Str".into()),
+                    span: Span::new(0, 0),
+                },
+            ],
+            return_type: Some(TypeExpr::Named("Str".into())),
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "Req".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Http".into());
+        ad.annotations.push(Annotation {
+            name: "field".into(),
+            args: vec!["http: example-http.Client".into()],
+            span: Span::new(0, 0),
+        });
+        ad.impls.push(MethodImpl {
+            method_name: "post".into(),
+            params: vec!["url".into(), "body".into()],
+            span: Span::new(0, 0),
+            body: vec![
+                Expr::Call(CallExpr {
+                    target: String::new(),
+                    method: "post".into(),
+                    args: vec![Expr::Ident("url".into())],
+                    receiver: Some(Box::new(Expr::FieldAccess(
+                        Box::new(Expr::Ident("self".into())),
+                        "http".into(),
+                    ))),
+                    sugar: None,
+                    span: Span::new(0, 0),
+                }),
+                Expr::Return(Box::new(Expr::Ident("body".into()))),
+            ],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &r,
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "reqwest-style U/T params must accept Str: {diags:?}"
         );
     }
 
