@@ -771,21 +771,34 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         .unwrap_or_else(|_| json!({ "raw": sub_raw }));
                 }
                 crate::coding_orchestrator::clear_run(project.as_deref(), plan_id);
+                let sign_count = crate::review::list_items(crate::review::ListFilter {
+                    slug: project.clone(),
+                    status: Some(crate::review::ItemStatus::Outstanding),
+                    ..Default::default()
+                })
+                .len();
+                let sign_intent =
+                    crate::review::request_sign_off_intent(project.as_deref(), sign_count);
+                let review_path = project
+                    .as_deref()
+                    .map(|s| format!("/review/{s}"))
+                    .unwrap_or_else(|| "/review".into());
                 return Ok(json!({
                     "ok": create_val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
                     "plan": plan_id.as_str(),
                     "phase": "done",
-                    "summary": "finish_task: open/reuse PR + submit for PR Wizard (no auto-merge)",
+                    "summary": "finish_task: PR submitted — human Sign-off is next (no auto-merge)",
                     "resolve": resolve_val,
                     "create_pr": create_val,
-                    "create_pr": create_val,
                     "submit_pr": submit_val,
-                    "submit_pr": submit_val,
+                    "navigation": { "action": "goto", "path": review_path },
+                    "intent": sign_intent,
                     "plan_spec": crate::coding_orchestrator::plan_json(plan_id),
                     "host_check": submit_val.get("host_check").cloned()
                         .or_else(|| create_val.get("host_check").cloned()),
                     "gate_notes": submit_val.get("gate_notes").cloned()
                         .or_else(|| create_val.get("gate_notes").cloned()),
+                    "audit_env": crate::review::audit_env_json(),
                 })
                 .to_string());
             }
@@ -1494,6 +1507,19 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 intent.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                 json!({ "tool": "submit_pr", "id": id }),
             );
+            let sign_slug = slug.clone();
+            let sign_count = crate::review::list_items(crate::review::ListFilter {
+                slug: sign_slug.clone(),
+                status: Some(crate::review::ItemStatus::Outstanding),
+                ..Default::default()
+            })
+            .len();
+            let sign_intent = crate::review::request_sign_off_intent(sign_slug.as_deref(), sign_count);
+            let review_path = sign_slug
+                .as_deref()
+                .map(|s| format!("/review/{s}"))
+                .unwrap_or_else(|| "/review".into());
+            summary.push_str(" Present the set on Sign-off — do not merge.");
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
@@ -1502,9 +1528,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "publish": publish,
                 "host_check": host_check,
                 "gate_notes": gate_notes,
-                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
-                "intent": intent,
-                "execution": { "domain": "server", "present": "illustrate" }
+                "navigation": { "action": "goto", "path": review_path },
+                "intent": sign_intent,
+                "submit_intent": intent,
+                "execution": { "domain": "server", "present": "goto" },
+                "audit_env": crate::review::audit_env_json(),
             })
             .to_string())
         }
@@ -1566,6 +1594,19 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "merge_pr" => {
             let id = arg_str(arguments, &["id", "pr_id"])
                 .ok_or_else(|| "merge_pr requires id".to_string())?;
+            let slug_gate = arg_str(arguments, &["slug", "project"]);
+            if let Some(ref s) = slug_gate {
+                if let Err(e) = crate::review::may_ship(s, None) {
+                    return Ok(json!({
+                        "ok": false,
+                        "error": "sign_off_required",
+                        "summary": e,
+                        "hint": "Call request_sign_off and wait for the human. Do not merge.",
+                        "navigation": { "action": "goto", "path": format!("/review/{s}") },
+                    })
+                    .to_string());
+                }
+            }
             let body = json!({
                 "merger": arg_str(arguments, &["merger"]).unwrap_or_default(),
                 "slug": arg_str(arguments, &["slug"]).unwrap_or_default(),
@@ -1717,6 +1758,16 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "provision_project" => {
             let project_slug = arg_str(arguments, &["project_slug", "project", "slug", "name"])
                 .ok_or_else(|| "provision_project requires project_slug".to_string())?;
+            if let Err(e) = crate::review::may_ship(&project_slug, None) {
+                return Ok(json!({
+                    "ok": false,
+                    "error": "sign_off_required",
+                    "summary": e,
+                    "hint": "Call request_sign_off and wait. Do not ship unsigned work.",
+                    "navigation": { "action": "goto", "path": format!("/review/{project_slug}") },
+                })
+                .to_string());
+            }
             let environment = arg_str(arguments, &["environment", "env"])
                 .unwrap_or_else(|| "dev".into());
             let repo_id = arg_str(arguments, &["repo_id", "repo"])
@@ -2086,19 +2137,18 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             let slug = arg_str(arguments, &["project", "slug", "id"]);
             let decision = arg_str(arguments, &["decision"])
                 .unwrap_or_else(|| "approve".into());
-            let note = arg_str(arguments, &["note", "message"]);
-            let ids = arguments
-                .get("ids")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
             let via = arg_str(arguments, &["via"]).unwrap_or_default();
+            // Agent may navigate + highlight. It must not press Sign off.
             if via == "ux" || crate::focus::client_present() {
-                let intent = crate::review::sign_off_intent(slug.as_deref(), &decision);
+                let intent = crate::review::request_sign_off_intent(
+                    slug.as_deref(),
+                    crate::review::list_items(crate::review::ListFilter {
+                        slug: slug.clone(),
+                        status: Some(crate::review::ItemStatus::Outstanding),
+                        ..Default::default()
+                    })
+                    .len(),
+                );
                 let intent_id = intent
                     .get("id")
                     .and_then(|v| v.as_str())
@@ -2106,25 +2156,47 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     .to_string();
                 crate::focus::register_pending_intent(
                     &intent_id,
-                    json!({ "tool": "sign_off", "pending_ux": true }),
+                    json!({ "tool": "sign_off", "present_only": true }),
                 );
                 return Ok(json!({
                     "ok": true,
-                    "summary": "Scheduled sign-off — UX will pulse the Sign off button then commit.",
+                    "summary": "Opened Sign-off for the human. Do not approve this set yourself.",
                     "pending_ux": true,
                     "intent_id": intent_id,
                     "intent": intent,
-                    "execution": { "domain": "ux", "present": "ux_commit" }
+                    "execution": { "domain": "none", "present": "goto" }
+                })
+                .to_string());
+            }
+            if !crate::review::veil_dev_enabled() {
+                return Ok(json!({
+                    "ok": false,
+                    "error": "human_sign_off_required",
+                    "summary": "sign_off via=server is forbidden. Call request_sign_off and wait.",
+                    "navigation": {
+                        "action": "goto",
+                        "path": slug.as_deref().map(|s| format!("/review/{s}")).unwrap_or_else(|| "/review".into())
+                    }
                 })
                 .to_string());
             }
             match crate::review::sign_off(crate::review::SignOffRequest {
-                ids,
+                ids: arguments
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
                 slug: slug.clone(),
                 all: slug.is_none(),
                 decision: decision.clone(),
                 actor: arg_str(arguments, &["actor"]).unwrap_or_else(|| "agent".into()),
-                note,
+                note: arg_str(arguments, &["note", "message"]),
+                via: Some("server".into()),
+                ..Default::default()
             }) {
                 Ok((items, audit)) => Ok(json!({
                     "ok": true,
@@ -2523,7 +2595,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "sign_off",
-            "description": "Record explicit human sign-off (approve or reject) on outstanding items. Prefer via=ux so the Sign off button pulses. Partial: pass ids or a slug. Writes a SOC 2 audit record. Does not merge git.",
+            "description": "Do NOT approve as the agent. Navigates the human to Sign-off (highlight only). via=server is forbidden unless VEIL_DEV. The human button writes the audit and unlocks merge/deploy.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

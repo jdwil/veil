@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
-   * PR Wizard — kick-ass structural code review.
-   * Walk each DiffItem: agent rationale, before/after, approve or feedback
-   * (send now vs queue). History + finalize approve/merge or request changes.
+   * Guided structural review (legacy IDE rail).
+   * Official ship-gate walk lives on /review — ReviewSignOffView.
+   * This file is the original wizard: intent + construct steps, file diffs secondary.
    */
   import { onMount } from 'svelte';
   import {

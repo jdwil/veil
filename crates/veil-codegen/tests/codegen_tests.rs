@@ -108,22 +108,26 @@ fn test_action_template_interpolation() {
 
 #[test]
 fn test_action_fallback_no_template() {
-    // dispatch without lowers_to still desugars to Bus call path
+    // Product-defined Bus: no DDD keyword, just a port call.
     let out = generate_example(
         r#"
 sol App
   use ddd
   ctx C
+    group domain
+      port Bus
+        dispatch(evt: Json) -> Res!
     group application
       svc Notify
+        input
+          @dep bus: Bus
         step go
-          dispatch UserCreated{id}
+          bus.dispatch(UserCreated{id})
 "#,
     );
-    // Envelope / bus routing path
     assert!(
         out.contains("dispatch") || out.contains("Bus") || out.contains("bus"),
-        "fallback Port.method path missing:\n{}",
+        "product Bus call missing:\n{}",
         out
     );
 }
@@ -347,8 +351,16 @@ fn adapter_impls_are_real_not_todo_comments() {
         !out.contains("// TODO: Implement Notifier"),
         "adapter still emits the commented-out stub"
     );
-    // External-effect call routed to a generated runtime hook.
-    assert!(out.contains("fn http_post("), "external-effect hook not generated");
+    // Unstubbed third-party calls fail closed (no empty hook functions).
+    assert!(
+        out.contains("unstubbed external") || out.contains("compile_error!"),
+        "unstubbed http.post must fail closed, not emit a no-op hook:\n{}",
+        grep(&out, "http")
+    );
+    assert!(
+        !out.contains("fn http_post("),
+        "must not emit empty external-effect hooks"
+    );
     // The impl must cover ALL trait methods (send_email too), else it won't compile.
     assert!(out.contains("async fn send_email"), "unimplemented trait method not stubbed");
 }
@@ -358,10 +370,18 @@ fn saga_lowers_to_step_impls_and_delegates_to_coordinator() {
     let out = customer_onboarding();
     // Each step becomes a generated struct + `impl SagaStep` (action/compensate).
     assert!(out.contains("impl SagaStep for OnboardStep0"), "step 0 impl missing:\n{}", grep(&out, "impl SagaStep"));
-    assert!(out.contains("async fn action(&self, bus:"), "action method missing");
-    assert!(out.contains("async fn compensate(&self, bus:"), "compensate method missing");
+    assert!(out.contains("async fn action(&self"), "action method missing");
+    assert!(out.contains("async fn compensate(&self"), "compensate method missing");
+    assert!(
+        !out.contains("async fn action(&self, bus:"),
+        "saga steps must not take a platform Bus"
+    );
     // The saga fn just builds the step list and calls the layer coordinator.
-    assert!(out.contains("run_saga(deps.bus.as_ref(), &steps).await"), "coordinator call missing:\n{}", grep(&out, "run_saga"));
+    assert!(
+        out.contains("run_saga(&steps).await") || out.contains("run_saga(steps).await"),
+        "coordinator call missing:\n{}",
+        grep(&out, "run_saga")
+    );
     assert!(out.contains("Vec<Box<dyn SagaStep + Send + Sync>>"), "boxed step list missing");
     // Cross-step results thread through shared JSON state (step 0 writes it,
     // later steps read it) — no engine-side unwind machinery.
@@ -381,17 +401,15 @@ fn saga_knowledge_is_not_in_the_engine() {
 #[test]
 fn orchestrator_bus_calls_use_real_json_not_placeholders() {
     let out = customer_onboarding();
-    // Cross-context calls carry a typed JSON envelope (now inside step impls,
-    // routed through the injected `bus` param).
+    // Product Bus: typed port call, not a platform JSON envelope.
     assert!(
-        out.contains("bus.invoke(serde_json::json!({ \"target\": \"CustomerRepo\""),
-        "bus call not a JSON envelope:\n{}",
+        out.contains("bus.invoke(CreateTrial") || out.contains("bus.invoke("),
+        "product bus.invoke missing:\n{}",
         grep(&out, "bus.invoke")
     );
-    // Events dispatch with a typed JSON message.
     assert!(
-        out.contains("\"type\": \"CustomerCreated\""),
-        "event not a typed JSON message"
+        out.contains("bus.dispatch(") || out.contains("CustomerCreated"),
+        "product bus.dispatch / event missing"
     );
     // The old junk placeholders must be gone.
     assert!(!out.contains("{}:id"), "symbolic-placeholder junk still present");
@@ -406,17 +424,32 @@ fn orchestrator_bus_calls_use_real_json_not_placeholders() {
 #[test]
 fn bus_port_generated_from_layer_declaration() {
     let out = customer_onboarding();
-    // The injected Bus port becomes a trait with the declared methods.
-    assert!(out.contains("trait Bus"), "declared Bus port not generated");
+    // Product-defined Bus (not injected by DDD).
+    assert!(out.contains("trait Bus"), "product Bus port not generated");
     assert!(out.contains("async fn dispatch"), "Bus.dispatch missing");
+    let shared = out
+        .split("// ==== crates/veil_shared/src/lib.rs ====")
+        .nth(1)
+        .unwrap_or("")
+        .split("// ====")
+        .next()
+        .unwrap_or("");
+    assert!(
+        !shared.contains("pub trait Bus"),
+        "DDD must not inject Bus into veil_shared:\n{}",
+        shared.lines().take(40).collect::<Vec<_>>().join("\n")
+    );
 }
 
 #[test]
 fn bus_and_errors_defined_once_in_shared_crate() {
     let out = customer_onboarding();
-    // Exactly one `pub trait Bus` definition, in veil_shared.
+    // Product Bus lives in the context crate; veil_shared has no Bus.
     let bus_defs = out.matches("pub trait Bus").count();
-    assert_eq!(bus_defs, 1, "Bus trait should be defined exactly once, found {}", bus_defs);
+    assert_eq!(
+        bus_defs, 1,
+        "product Bus trait should be defined exactly once, found {bus_defs}"
+    );
     assert!(
         out.contains("// ==== crates/veil_shared/src/lib.rs ===="),
         "shared crate not generated"

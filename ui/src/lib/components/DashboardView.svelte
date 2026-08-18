@@ -1,5 +1,6 @@
 <script lang="ts">
 
+  import { onMount } from 'svelte';
   import PageHeader from './PageHeader.svelte';
   import StatCard from './StatCard.svelte';
   import CollectionView from './CollectionView.svelte';
@@ -9,14 +10,22 @@
   let error: string = $state('');
   let project_href_tpl: string = $state("/projects/{id}");
 
-   $effect(() => { // load_on_mount
-  void (async () => {
-        loading = true;
-        error = "";
-        repos = await (async () => { const __u = new URL("/api/repos", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
+  onMount(() => {
+    void (async () => {
+      loading = true;
+      error = '';
+      try {
+        const r = await fetch('/api/repos', { signal: AbortSignal.timeout(20000) });
+        if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+        const data = await r.json();
+        repos = Array.isArray(data) ? data : data.repos || data.items || [];
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
         loading = false;
-  })();
-    });
+      }
+    })();
+  });
 </script>
 
 <div class="dashboard">

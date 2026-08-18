@@ -151,6 +151,30 @@ impl FilesystemProvider {
         self.project_root.clone()
     }
 
+    /// Re-read a cached file from disk (ws_write updates the workdir, not this cache).
+    pub fn reload_from_disk(&self, hint: &str) -> Result<(), String> {
+        let hint = hint.replace('\\', "/");
+        let leaf = hint.rsplit('/').next().unwrap_or(hint.as_str());
+        let files = self.files.lock().unwrap();
+        for entry in files.iter() {
+            let name = entry.name.as_str();
+            let path = entry.path.to_string_lossy().replace('\\', "/");
+            if name != hint
+                && name != leaf
+                && !path.ends_with(&hint)
+                && !path.ends_with(leaf)
+            {
+                continue;
+            }
+            let disk = std::fs::read_to_string(&entry.path)
+                .map_err(|e| format!("reload {}: {e}", entry.path.display()))?;
+            *entry.source.lock().unwrap() = disk.clone();
+            *entry.registry.lock().unwrap() = registry_for_entry(&entry.path, &disk);
+            return Ok(());
+        }
+        Ok(())
+    }
+
     pub fn active_index(&self) -> usize {
         *self.active.lock().unwrap()
     }

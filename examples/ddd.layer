@@ -93,7 +93,6 @@ pkg ddd v1
     desc "Entity — domain object with identity"
     cst
       has_identity id
-      deny_calls Bus
     visual
       icon "🔑"
       color "#f43f5e"
@@ -270,33 +269,6 @@ pkg ddd v1
       color "#f59e0b"
       label "Emit"
 
-  statement dispatch
-    mt Bus.dispatch
-    desc "Fire event through event bus (fire-and-forget, multiple handlers)"
-    sem event_bus_fire_and_forget
-    visual
-      icon "📡"
-      color "#f59e0b"
-      label "Dispatch"
-
-  statement invoke
-    mt Bus.invoke
-    desc "Execute command through command bus (single handler)"
-    sem command_bus_handler
-    visual
-      icon "⚙️"
-      color "#3b82f6"
-      label "Invoke"
-
-  statement request
-    mt Bus.request
-    desc "Query data from another context (inter-context communication)"
-    sem inter_context_query
-    visual
-      icon "🔌"
-      color "#10b981"
-      label "Request"
-
   statement guard
     mt if
     desc "Precondition check — fails the step if condition is false"
@@ -307,15 +279,8 @@ pkg ddd v1
       label "Guard"
 
   # ─── Declared constructs (injected into every solution using this layer) ─────
-  # The Bus is a JSON message bus: cross-context payloads/results are `Json`
-  # (serde_json::Value) so orchestrators can build commands and index results
-  # without depending on another context's concrete types.
+  # No Bus. Messaging is a product port + adapters.
   declare
-    trait Bus
-      dispatch(evt: Json) -> Res!
-      invoke(cmd: Json) -> Res!<Json>
-      request(qry: Json) -> Res!<Json>
-
     # ─── Auth service (runtime-injected authentication & authorization) ─────
     # The runtime provides the concrete implementation: Cognito, Auth0, custom
     # RBAC, or a BusAuthAdapter that delegates to a VEIL-authored auth context.
@@ -333,34 +298,28 @@ pkg ddd v1
 
     # ─── Saga runtime (the transactional coordinator), written in VEIL ─────
     # A saga step is a unit of work with a compensating action. Steps share a
-    # JSON `state`: each `action` reads prior results from it and returns the
-    # updated state, so later steps see earlier results. `run_saga` threads the
-    # state forward and, on the first failure, replays the completed steps'
-    # compensations in reverse. All ordinary VEIL over the Bus — the engine has
-    # no saga knowledge.
+    # JSON `state`. Messaging is a product port, not this coordinator.
     trait SagaStep
-      action(bus: Bus, state: Json) -> Res!<Json>
-      compensate(bus: Bus, state: Json) -> Res!
+      action(state: Json) -> Res!<Json>
+      compensate(state: Json) -> Res!
 
-    # Replay compensations for the first `upto` steps, most-recent first.
-    fn unwind(bus: Bus, steps: List<SagaStep>, upto: Int, state: Json) -> Res!
+    fn unwind(steps: List<SagaStep>, upto: Int, state: Json) -> Res!
       mut i = upto
       while i > 0
         i = i - 1
-        call steps.get(i).compensate(bus, state)
+        call steps.get(i).compensate(state)
       ret Ok
 
-    # Run steps forward, threading state; on failure, unwind and propagate.
-    fn run_saga(bus: Bus, steps: List<SagaStep>) -> Res!
+    fn run_saga(steps: List<SagaStep>) -> Res!
       mut state = {}
       mut i = 0
       while i < steps.len()
-        match call steps.get(i).action(bus, state)
+        match call steps.get(i).action(state)
           Ok next ->
             state = next
             i = i + 1
           Err e ->
-            call unwind(bus, steps, i, state)
+            call unwind(steps, i, state)
             ret Err(e)
       ret Ok
 

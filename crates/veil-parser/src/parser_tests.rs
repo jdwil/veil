@@ -14,9 +14,35 @@ mod tests {
         reg
     }
 
+    /// Product-style verb pack. DDD no longer ships dispatch/invoke/request.
+    const BUS_VERBS: &str = r#"
+pkg bus_verbs v1
+  statement dispatch
+    mt Bus.dispatch
+    requires_dep Bus
+  statement invoke
+    mt Bus.invoke
+    requires_dep Bus
+  statement request
+    mt Bus.request
+    requires_dep Bus
+"#;
+
+    fn ddd_with_bus_verbs() -> LayerRegistry {
+        let mut reg = ddd_registry();
+        reg.load_content("bus_verbs", BUS_VERBS)
+            .expect("bus_verbs");
+        reg
+    }
+
     fn parse_src(src: &str) -> Solution {
         let tokens = lex(src);
         parse_with_registry(&tokens, ddd_registry()).expect("parse failed")
+    }
+
+    fn parse_src_bus(src: &str) -> Solution {
+        let tokens = lex(src);
+        parse_with_registry(&tokens, ddd_with_bus_verbs()).expect("parse failed")
     }
 
     fn find_construct<'a>(items: &'a [TopLevelItem], name: &str) -> &'a Construct {
@@ -208,6 +234,51 @@ sol App
     }
 
     #[test]
+    fn test_parse_adapter_dep_fields() {
+        let src = "\
+sol App
+  adapter DdbTable for RoutingTable
+    @env ROUTING_TABLE_NAME
+    @dep dynamo_client: DynamoClient
+    impl get_route(message_name)
+      dynamo_client.get_item!(ROUTING_TABLE_NAME, { pk: message_name })";
+        let sol = parse_src(src);
+        let adapter = find_construct(&sol.items, "DdbTable");
+        assert_eq!(
+            adapter.fields.len(),
+            1,
+            "injected @dep field was dropped: {:?}",
+            adapter.fields
+        );
+        assert_eq!(adapter.fields[0].name, "dynamo_client");
+        assert!(
+            adapter.fields[0]
+                .annotations
+                .iter()
+                .any(|a| a.name == "dep"),
+            "missing @dep on field: {:?}",
+            adapter.fields[0].annotations
+        );
+        assert!(
+            adapter.annotations.iter().any(|a| a.name == "env"),
+            "@env should stay construct-level: {:?}",
+            adapter.annotations
+        );
+        let env = adapter
+            .annotations
+            .iter()
+            .find(|a| a.name == "env")
+            .unwrap();
+        assert_eq!(
+            env.args,
+            vec!["ROUTING_TABLE_NAME"],
+            "@env VAR (no parens) must capture the name: {:?}",
+            env.args
+        );
+        assert_eq!(adapter.impls.len(), 1);
+    }
+
+    #[test]
     fn test_parse_lang_block() {
         let src = "\
 sol App
@@ -258,7 +329,7 @@ sol App
       step go
         dispatch UserCreated{id, email}
         guard x == 1, \"must be one\"";
-        let sol = parse_src(src);
+        let sol = parse_src_bus(src);
         let ctx = find_construct(&sol.items, "C");
         let svc = &ctx.children[0];
         assert_eq!(svc.subkind, "DomainService");
@@ -287,7 +358,7 @@ sol App
     svc S
       step go
         dispatch OrderPlaced{order_id}";
-        let sol = parse_src(src);
+        let sol = parse_src_bus(src);
         let ctx = find_construct(&sol.items, "C");
         let svc = &ctx.children[0];
         let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
@@ -306,7 +377,7 @@ sol App
     svc S
       step go
         result = invoke ProcessOrder{order_id: id}";
-        let sol = parse_src(src);
+        let sol = parse_src_bus(src);
         let ctx = find_construct(&sol.items, "C");
         let svc = &ctx.children[0];
         let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
@@ -372,7 +443,7 @@ sol App
       method do_it()
         dispatch UserCreated{id}
         guard true, \"ok\"";
-        let sol = parse_src(src);
+        let sol = parse_src_bus(src);
         let ctx = find_construct(&sol.items, "C");
         // Find adapter child
         let adapter = ctx
@@ -406,7 +477,7 @@ sol App
       step analyze
         dispatch Started{id}
         guard ready, \"not ready\"";
-        let sol = parse_src(src);
+        let sol = parse_src_bus(src);
         let ctx = find_construct(&sol.items, "C");
         let svc = &ctx.children[0];
         let FlowStep::Step(step) = &svc.steps[0] else { panic!("step") };
@@ -507,13 +578,13 @@ sol Sales
         assert_eq!(integration.subkind, "Integration");
         assert_eq!(integration.shape, Shape::Trait); // integration -> port -> trait
 
-        // notify -> dispatch -> Bus.dispatch statement chain (desugared)
+        // notify -> emit (no Bus). Stays as Action, not a platform bus call.
         let svc = &group.children[2];
         let FlowStep::Step(step) = &svc.steps[0] else { panic!("expected step") };
-        let Expr::Call(notify) = &step.body[0] else { panic!("expected Call (desugared notify)") };
-        assert_eq!(notify.target, "Bus");
-        assert_eq!(notify.method, "dispatch");
-        assert_eq!(notify.sugar.as_deref(), Some("notify"));
+        let Expr::Action(notify) = &step.body[0] else {
+            panic!("expected Action (notify→emit), got {:?}", step.body[0])
+        };
+        assert_eq!(notify.keyword, "notify");
     }
 
     /// Extract the body expressions of the first step of `svc S` in a minimal
@@ -607,7 +678,7 @@ sol S
     }
 
     #[test]
-    fn test_roundtrip_preserves_statement_sugar_and_hides_bus() {
+    fn test_roundtrip_product_bus_is_user_land() {
         use veil_ir::serialize::serialize_solution;
         let src = include_str!("../../../examples/customer_onboarding.veil");
         let sol = {
@@ -615,12 +686,44 @@ sol S
             parse_with_registry(&tokens, ddd_registry()).expect("parse failed")
         };
         let emitted = serialize_solution(&sol);
-        // Statement sugar survives: `dispatch Evt{...}`, not `call Bus.dispatch(...)`.
-        assert!(emitted.contains("dispatch CustomerCreated"), "sugar lost:\n{}", emitted);
-        assert!(!emitted.contains("call Bus.dispatch"), "sugar was desugared in output");
-        // The injected Bus port is layer-provided and must not be written back.
-        assert!(!emitted.contains("trait Bus"), "injected Bus leaked into source");
-        assert!(!emitted.contains("port Bus"), "injected Bus leaked into source");
+        assert!(
+            emitted.contains("port Bus") && emitted.contains("bus.dispatch"),
+            "product Bus + call must survive:\n{}",
+            emitted
+        );
+        assert!(
+            !emitted.contains("trait Bus"),
+            "DDD must not inject trait Bus:\n{}",
+            emitted
+        );
+        assert!(
+            !emitted.contains("dispatch CustomerCreated"),
+            "DDD must not treat dispatch as a keyword:\n{}",
+            emitted
+        );
+    }
+
+    #[test]
+    fn ctx_named_authservice_does_not_starve_layer_trait() {
+        let src = r#"
+pkg Shop
+  use ddd
+  ctx AuthService
+    group domain
+      val Ticket
+        id: Str
+"#;
+        let sol = parse_src(src);
+        let has_layer = sol.items.iter().any(|i| match i {
+            TopLevelItem::Construct(c) => {
+                c.name == "AuthService" && c.shape == Shape::Trait && c.layer_provided
+            }
+            _ => false,
+        });
+        assert!(
+            has_layer,
+            "layer trait AuthService must still be injected when ctx reuses the name"
+        );
     }
 
     #[test]
@@ -766,6 +869,59 @@ pkg App
         )
         .expect("parse if");
         assert!(matches!(e, Expr::IfExpr(_)), "got {:?}", e);
+    }
+
+    #[test]
+    fn empty_parens_are_unit_tuple() {
+        let e = crate::parse_expr_str("()", &ddd_registry()).expect("parse ()");
+        assert!(
+            matches!(e, Expr::Tuple(ref ts) if ts.is_empty()),
+            "() must be unit, got {:?}",
+            e
+        );
+        let src = r#"
+pkg P
+  use ddd
+  ctx C
+    group domain
+      port R
+        find!(id: Str) -> Opt<Str>
+    group infrastructure
+      adapter M for R
+        impl find(id)
+          if true
+            ret id
+          ret ()
+"#;
+        let sol = parse_src(src);
+        let ad = sol
+            .items
+            .iter()
+            .find_map(|i| match i {
+                TopLevelItem::Construct(c) if c.name == "M" => Some(c),
+                _ => None,
+            })
+            .or_else(|| {
+                sol.items.iter().find_map(|i| match i {
+                    TopLevelItem::Construct(c) => c
+                        .children
+                        .iter()
+                        .find(|ch| ch.name == "M")
+                        .or_else(|| {
+                            c.children.iter().find_map(|g| {
+                                g.children.iter().find(|ch| ch.name == "M")
+                            })
+                        }),
+                    _ => None,
+                })
+            });
+        let ad = ad.expect("adapter M");
+        let body = &ad.impls[0].body;
+        assert!(
+            body.iter().any(|e| matches!(e, Expr::Return(inner) if matches!(inner.as_ref(), Expr::Tuple(t) if t.is_empty()))),
+            "ret () must stay in the impl body: {:?}",
+            body
+        );
     }
 
     /// SER-006: delete construct persists through re-serialize.
@@ -1034,8 +1190,8 @@ pkg T
   use ddd
   svc S
     step s
-      cohort: CohortDTO = request GetCohort{id: x}
-      members: List<M> = request GetMembers{id: y}
+      cohort: CohortDTO = repo.find(x)
+      members: List<M> = repo.list(y)
 "#;
         let once = {
             let sol = parse_with_registry(&lex(src), ddd_registry()).expect("parse");

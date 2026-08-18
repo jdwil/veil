@@ -4,7 +4,9 @@
 //! - `VEIL_MODEL_PROVIDER=acp`
 //! - `VEIL_ACP_COMMAND` (default `kiro-cli`)
 //! - `VEIL_ACP_ARGS` (default `acp --trust-all-tools`)
-//! - `VEIL_ACP_CWD` (optional fallback cwd)
+//! - `VEIL_ACP_CWD` — disk-mode fallback only. **Ignored when
+//!   `VEIL_SOURCE_MODE` is s3/prefer_s3** so Kiro cannot grep staged
+//!   checkouts under `$TMP/veil-ws` / `$TMP/veil-s3-ws`.
 //! - `VEIL_ACP_AGENT` — Kiro agent name (default: `veil` when
 //!   `~/.kiro/agents/veil.json` exists; see `config/kiro-agent-veil.json`)
 //! - `VEIL_ACP_TIMEOUT_SECS` (default 300)
@@ -223,23 +225,21 @@ impl AcpProcess {
                         }
                     }
                 }
-                // Agent may send requests (fs read/write, tool approval, etc.).
-                // With MCP tools registered, Kiro routes tool calls through MCP.
-                // For any remaining host requests, return method-not-found gracefully.
+                // Agent may send host requests (fs/terminal/permissions).
+                // Product source is MCP-only — never implement ACP filesystem
+                // against the staged checkout.
                 if let Some(req_id) = msg.get("id").cloned() {
                     if msg.get("method").is_some() && msg.get("result").is_none() {
                         let req_method = msg
                             .get("method")
                             .and_then(|m| m.as_str())
                             .unwrap_or("unknown");
-                        // Log for debugging but don't break the session.
-                        eprintln!(
-                            "[veil-acp] unhandled agent request: {req_method} (responding method_not_found)"
-                        );
+                        let message = acp_host_method_refusal(req_method);
+                        eprintln!("[veil-acp] refuse agent request: {req_method}");
                         let _ = self.write_msg(&json!({
                             "jsonrpc": "2.0",
                             "id": req_id,
-                            "error": { "code": -32601, "message": format!("method not supported by VEIL host: {req_method}") }
+                            "error": { "code": -32601, "message": message }
                         }));
                     }
                 }
@@ -290,8 +290,8 @@ impl AcpProcess {
             json!({
                 "protocolVersion": 1,
                 "clientCapabilities": {
-                    "fs": { "readTextFile": true, "writeTextFile": true },
-                    "terminal": true
+                    "fs": { "readTextFile": false, "writeTextFile": false },
+                    "terminal": false
                 },
                 "clientInfo": { "name": "veil", "version": "0.1.0" }
             }),
@@ -306,7 +306,7 @@ impl AcpProcess {
         }
         // Agent mcpServers (hive + veil-ide-tools merge) are the primary tool source.
         // session/new must pass mcpServers: [] — non-empty array crashes Kiro 2.12.
-        // Workspace mcp.json is still written for agents with empty mcpServers.
+        // Cwd is a sandbox in remote source mode — not the S3/session checkout.
         let session_cwd = resolve_acp_cwd();
         write_workspace_mcp_json(&session_cwd);
         let result = self.request(
@@ -515,6 +515,7 @@ fn veil_ide_tool_names() -> Vec<&'static str> {
         "stub_get",
         "stub_gen",
         "stub_install",
+        "stub_search",
         "dev_status",
         "dev_logs",
         "dev_restart",
@@ -600,34 +601,57 @@ fn veil_ide_mcp_server_entry(mcp_url: &str) -> Value {
     })
 }
 
-/// Resolve the cwd for ACP sessions — active product project root.
+fn acp_host_method_refusal(method: &str) -> String {
+    if method.starts_with("fs/") || method.starts_with("terminal/") {
+        return format!(
+            "VEIL host does not expose the product checkout over ACP {method}. \
+             Use veil-ide-tools MCP (read_source, write_source, stub_search, stub_get, \
+             stub_install, ws_*). Do not grep/sed/cat $TMP/veil-ws or $TMP/veil-s3-ws."
+        );
+    }
+    format!("method not supported by VEIL host: {method}")
+}
+
+/// Remote ProductHost (DDB/S3) must not seat Kiro inside a staged checkout.
+fn acp_should_sandbox() -> bool {
+    !matches!(
+        crate::provider::s3_workspace::ide_source_mode(),
+        crate::provider::s3_workspace::IdeSourceMode::Disk
+    )
+}
+
+/// Empty ACP working directory — not a product tree.
+fn ensure_acp_sandbox() -> PathBuf {
+    let dir = std::env::temp_dir().join("veil-acp-cwd");
+    let _ = std::fs::create_dir_all(&dir);
+    let readme = dir.join("README.txt");
+    if !readme.is_file() {
+        let _ = std::fs::write(
+            readme,
+            "VEIL ACP sandbox. Product source is not here.\n\
+             Use veil-ide-tools MCP: read_source, write_source, stub_search, stub_get.\n\
+             Never inspect $TMP/veil-ws or $TMP/veil-s3-ws.\n",
+        );
+    }
+    dir
+}
+
+/// Resolve the cwd for ACP sessions.
 ///
-/// Prefer S3 materialize (`$TMP/veil-s3-ws/{slug}`) when remote; disk hub when
-/// present; else `VEIL_ACP_CWD` / process cwd.
+/// **Remote (s3 / prefer_s3):** always the sandbox (`$TMP/veil-acp-cwd`).
+/// The daemon still materializes S3 → `$TMP/veil-ws` / `$TMP/veil-s3-ws` for
+/// itself; the inner agent must not see those trees.
+///
+/// **Disk serve:** project hub / `VEIL_ACP_CWD` / process cwd (local `veil serve`).
 fn resolve_acp_cwd() -> String {
+    resolve_acp_cwd_inner(acp_should_sandbox())
+}
+
+fn resolve_acp_cwd_inner(sandbox: bool) -> String {
+    if sandbox {
+        return ensure_acp_sandbox().to_string_lossy().to_string();
+    }
     if let Some(project) = ACP_PROJECT.lock().ok().and_then(|g| g.clone()) {
-        // Remote materialize (VEIL_SOURCE_MODE=s3)
-        let s3_ws = crate::provider::s3_workspace::workspace_root(&project);
-        if s3_ws.is_dir()
-            && (s3_ws.join("veil.toml").is_file()
-                || s3_ws.join("main.veil").is_file()
-                || crate::project_layout::has_package_sources(&s3_ws))
-        {
-            return s3_ws.to_string_lossy().to_string();
-        }
-        // Try open/materialize from S3 so cwd exists for the session
-        if !matches!(
-            crate::provider::s3_workspace::ide_source_mode(),
-            crate::provider::s3_workspace::IdeSourceMode::Disk
-        ) {
-            if crate::provider::s3_workspace::open_s3_project(&project, false).is_ok() {
-                let p = crate::provider::s3_workspace::workspace_root(&project);
-                if p.is_dir() {
-                    return p.to_string_lossy().to_string();
-                }
-            }
-        }
-        // Disk hub
         let projects_dir = crate::config::resolve_projects_dir();
         let project_path = projects_dir.join(&project);
         if project_path.is_dir() {
@@ -957,13 +981,13 @@ mod tests {
         });
         thread::sleep(Duration::from_millis(20));
         let start = Instant::now();
-        ensure_acp_project_scope(Some("dlx-bus".into()));
+        ensure_acp_project_scope(Some("shop".into()));
         let elapsed = start.elapsed();
         assert!(
             elapsed < Duration::from_millis(150),
             "ensure_acp_project_scope blocked {elapsed:?}"
         );
-        assert_eq!(get_acp_project().as_deref(), Some("dlx-bus"));
+        assert_eq!(get_acp_project().as_deref(), Some("shop"));
         assert!(
             !ACP_DEFER_RESET.load(Ordering::SeqCst),
             "mid-turn bind must not schedule a Kiro kill"
@@ -976,5 +1000,38 @@ mod tests {
         if let Ok(mut g) = ACP_SPAWN_PROJECT.lock() {
             *g = None;
         }
+    }
+
+    #[test]
+    fn sandbox_dir_is_not_a_source_checkout() {
+        let dir = ensure_acp_sandbox();
+        let s = dir.to_string_lossy();
+        assert!(s.contains("veil-acp-cwd"), "sandbox={s}");
+        assert!(!s.contains("veil-ws/"), "sandbox must not be session checkout: {s}");
+        assert!(!s.contains("veil-s3-ws"), "sandbox must not be S3 materialize: {s}");
+        assert!(dir.join("README.txt").is_file());
+        assert!(!dir.join("veil.toml").is_file());
+        assert!(!dir.join("main.veil").is_file());
+    }
+
+    #[test]
+    fn fs_and_terminal_acp_methods_are_refused() {
+        let fs = acp_host_method_refusal("fs/readTextFile");
+        assert!(fs.contains("veil-ide-tools"), "{fs}");
+        assert!(fs.contains("stub_search"), "{fs}");
+        let term = acp_host_method_refusal("terminal/create");
+        assert!(term.contains("Do not grep/sed"), "{term}");
+        let other = acp_host_method_refusal("session/foo");
+        assert!(other.contains("not supported"), "{other}");
+    }
+
+    #[test]
+    fn remote_source_mode_seats_kiro_in_sandbox() {
+        let cwd = resolve_acp_cwd_inner(true);
+        assert!(
+            cwd.contains("veil-acp-cwd"),
+            "s3 mode cwd must be sandbox, got {cwd}"
+        );
+        assert!(!cwd.contains("veil-s3-ws"), "got {cwd}");
     }
 }

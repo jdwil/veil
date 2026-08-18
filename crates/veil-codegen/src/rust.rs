@@ -42,38 +42,55 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
 
     files.push(gen_workspace_toml(solution, registry, &resolved_links));
 
-    // Shared crate: owns the common error types and the layer-provided
-    // top-level traits (the injected Bus), so they are defined ONCE and every
-    // context crate re-exports the same type — enabling a real shared bus.
-    let shared_traits: Vec<&Construct> = solution
-        .items
+    // Shared crate owns common errors plus every layer `declare` construct/fn.
+    // Parsed from the layer source (not from product items) so a product
+    // construct with the same name cannot starve veil_shared.
+    let layer_decl_items = parse_layer_declare_items(registry);
+    let mut shared_traits: Vec<&Construct> = layer_decl_items
         .iter()
         .filter_map(|i| match i {
-            TopLevelItem::Construct(c) if c.shape == Shape::Trait && c.layer_provided => Some(c),
+            TopLevelItem::Construct(c) if c.shape == Shape::Trait => Some(c),
             _ => None,
         })
         .collect();
-    // Layer-provided structs (e.g. Principal) also live in the shared crate
-    // so traits can reference them.
-    let shared_structs: Vec<&Construct> = solution
-        .items
+    let mut shared_structs: Vec<&Construct> = layer_decl_items
         .iter()
         .filter_map(|i| match i {
-            TopLevelItem::Construct(c) if c.shape == Shape::Struct && c.layer_provided => Some(c),
+            TopLevelItem::Construct(c) if c.shape == Shape::Struct => Some(c),
             _ => None,
         })
         .collect();
-    // Layer-declared free functions (e.g. the saga coordinator) live in the
-    // shared crate so every context can call them. Product free fns that touch
-    // domain types are emitted in the product crate (see gen_impls).
-    let shared_fns: Vec<&FnDef> = solution
-        .items
+    let mut shared_fns: Vec<&FnDef> = layer_decl_items
         .iter()
         .filter_map(|i| match i {
-            TopLevelItem::Function(f) if f.layer_provided => Some(f),
+            TopLevelItem::Function(f) => Some(f),
             _ => None,
         })
         .collect();
+    for item in &solution.items {
+        match item {
+            TopLevelItem::Construct(c)
+                if c.shape == Shape::Trait
+                    && c.layer_provided
+                    && !shared_traits.iter().any(|t| t.name == c.name) =>
+            {
+                shared_traits.push(c);
+            }
+            TopLevelItem::Construct(c)
+                if c.shape == Shape::Struct
+                    && c.layer_provided
+                    && !shared_structs.iter().any(|s| s.name == c.name) =>
+            {
+                shared_structs.push(c);
+            }
+            TopLevelItem::Function(f)
+                if f.layer_provided && !shared_fns.iter().any(|x| x.name == f.name) =>
+            {
+                shared_fns.push(f);
+            }
+            _ => {}
+        }
+    }
     // Each top-level mod-shaped construct becomes a crate.
     let modules: Vec<&Construct> = solution
         .items
@@ -445,28 +462,77 @@ fn stub_is_active_cargo(stub: &veil_ir::StubCrate) -> bool {
 }
 
 /// Resolve a stub type to `(crate_name, path_under_crate)` (e.g. Pool → sqlx, PgPool path).
+fn split_stub_type_qual(type_name: &str) -> (Option<String>, String) {
+    let t = type_name.replace("::", ".");
+    if let Some((crate_hint, ty)) = t.rsplit_once('.') {
+        (Some(crate_hint.replace('-', "_")), ty.to_string())
+    } else {
+        (None, t)
+    }
+}
+
+fn stub_defines_type(stub: &veil_ir::StubCrate, type_name: &str) -> bool {
+    stub.structs.iter().any(|s| s.name == type_name) || stub.harness_fields.contains_key(type_name)
+}
+
 fn stub_type_path(registry: &LayerRegistry, type_name: &str) -> Option<(String, String)> {
-    for stub in &registry.stubs {
-        if stub.structs.iter().any(|s| s.name == type_name) {
-            let crate_name = stub.name.replace('-', "_");
-            return Some((crate_name, stub.rust_type_path(type_name)));
+    let (crate_hint, ty) = split_stub_type_qual(type_name);
+    if let Some(hint) = crate_hint {
+        for stub in &registry.stubs {
+            let cn = stub.name.replace('-', "_");
+            if (cn == hint || stub.alias.as_deref().map(|a| a.replace('-', "_")) == Some(hint.clone()))
+                && stub_defines_type(stub, &ty)
+            {
+                return Some((cn, stub.rust_type_path(&ty)));
+            }
         }
+        return None;
+    }
+    let mut hits = Vec::new();
+    for stub in &registry.stubs {
+        if stub_defines_type(stub, &ty) {
+            hits.push((stub.name.replace('-', "_"), stub.rust_type_path(&ty)));
+        }
+    }
+    if hits.len() == 1 {
+        return Some(hits.remove(0));
     }
     None
 }
 
 /// Look up a stub `harness_field Type` recipe. Returns (local_let_name, rust_expr).
 ///
-/// Matches bare names (`Client`) and use-aliases (`use reqwest as rw` → `RwClient`
-/// matches that stub's `harness_field Client`).
+/// Matches crate-qualified names (`aws_sdk_sns.Client`), unique bare names
+/// (`Client` only when a single stub exports it), and use-aliases
+/// (`use reqwest as rw` → `RwClient` matches that stub's `harness_field Client`).
 fn stub_harness_field_expr(
     registry: &LayerRegistry,
     type_name: &str,
 ) -> Option<(String, String)> {
+    let (crate_hint, ty) = split_stub_type_qual(type_name);
+    if let Some(hint) = crate_hint {
+        for stub in &registry.stubs {
+            let cn = stub.name.replace('-', "_");
+            let alias_ok = stub
+                .alias
+                .as_deref()
+                .map(|a| a.replace('-', "_") == hint)
+                .unwrap_or(false);
+            if (cn == hint || alias_ok) && stub.harness_fields.contains_key(&ty) {
+                let expr = stub.harness_fields.get(&ty).unwrap();
+                let let_name = format!("_stub_{}_{}", hint, to_snake(&ty));
+                return Some((let_name, expr.trim().to_string()));
+            }
+        }
+        return None;
+    }
+    let mut hits: Vec<(String, String)> = Vec::new();
     for stub in &registry.stubs {
         if let Some(expr) = stub.harness_fields.get(type_name) {
-            let let_name = format!("_stub_{}", to_snake(type_name));
-            return Some((let_name, expr.trim().to_string()));
+            hits.push((
+                format!("_stub_{}", to_snake(type_name)),
+                expr.trim().to_string(),
+            ));
         }
         if let Some(alias) = &stub.alias {
             let cap = alias
@@ -477,13 +543,89 @@ fn stub_harness_field_expr(
                 + alias.get(1..).unwrap_or("");
             for (key, expr) in &stub.harness_fields {
                 if type_name == format!("{cap}{key}") {
-                    let let_name = format!("_stub_{}", to_snake(type_name));
-                    return Some((let_name, expr.trim().to_string()));
+                    hits.push((
+                        format!("_stub_{}", to_snake(type_name)),
+                        expr.trim().to_string(),
+                    ));
                 }
             }
         }
     }
+    if hits.len() == 1 {
+        return Some(hits.remove(0));
+    }
     None
+}
+
+/// Trait / struct names injected by layer `declare` blocks (`Bus`, `SagaStep`, …).
+fn layer_declared_type_names(registry: &LayerRegistry) -> std::collections::HashSet<String> {
+    registry.declared_type_names()
+}
+
+/// Rust field for `@env(VAR)`. `DATABASE*` stays `pool`; everything else is
+/// the full lowercased name (`TABLE_NAME` → `table_name`).
+pub(crate) fn env_var_field_name(var: &str) -> String {
+    if var.contains("DATABASE") {
+        "pool".into()
+    } else {
+        var.to_ascii_lowercase()
+    }
+}
+
+/// Parse every layer `declare` block into IR. Used so veil_shared always
+/// emits layer-declared types/fns even when a product construct reused a name.
+fn parse_layer_declare_items(registry: &LayerRegistry) -> Vec<TopLevelItem> {
+    let mut items = Vec::new();
+    for decl_source in &registry.declarations {
+        let indented: String = decl_source
+            .lines()
+            .map(|l| {
+                if l.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {l}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let wrapped = format!("sol __decl__\n{indented}");
+        let tokens = veil_parser::lex(&wrapped);
+        let Ok(file) = veil_parser::parse_file_with_registry(&tokens, registry.clone()) else {
+            continue;
+        };
+        let parsed = match file {
+            veil_ir::ast::VeilFile::Solution(s) => s.items,
+            veil_ir::ast::VeilFile::Package(p) => p.items,
+            _ => continue,
+        };
+        for mut item in parsed {
+            match &mut item {
+                TopLevelItem::Construct(c) => c.layer_provided = true,
+                TopLevelItem::Function(f) => f.layer_provided = true,
+                _ => {}
+            }
+            items.push(item);
+        }
+    }
+    items
+}
+
+fn layer_declared_fn_names(registry: &LayerRegistry) -> Vec<String> {
+    registry.declared_fn_names()
+}
+
+fn adapter_field_rust_type(
+    type_name: &str,
+    name_to_shape: &std::collections::HashMap<String, Shape>,
+    registry: &LayerRegistry,
+) -> String {
+    if name_to_shape.get(type_name) == Some(&Shape::Trait) {
+        return format!("std::sync::Arc<dyn {type_name} + Send + Sync>");
+    }
+    if let Some((crate_name, path)) = stub_type_path(registry, type_name) {
+        return format!("{crate_name}::{path}");
+    }
+    veil_field_type_to_rust(type_name)
 }
 
 fn harness_ctx<'a>(
@@ -818,7 +960,14 @@ fn gen_local_harness_main(
             }
         }
 
-        for ad in adapters {
+        // Leaf adapters (stub/env fields only) before orchestrators that @dep on ports.
+        let mut adapters_ordered: Vec<&Construct> = adapters.to_vec();
+        adapters_ordered.sort_by_key(|ad| {
+            ad.fields.iter().any(|f| {
+                matches!(&f.type_expr, TypeExpr::Named(n) if n.chars().next().is_some_and(|c| c.is_uppercase()))
+            }) as u8
+        });
+        for ad in adapters_ordered {
             if !wired_adapter_names.contains(&ad.name) {
                 continue;
             }
@@ -847,7 +996,6 @@ fn gen_local_harness_main(
             }
             if let Some(env_a) = ad.annotations.iter().find(|a| registry.is_adapter_env_annotation(&a.name)) {
                 for arg in &env_a.args {
-                    let full = arg.to_lowercase();
                     if arg.contains("DATABASE") {
                         field_inits.entry("pool".to_string()).or_insert_with(|| {
                             if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
@@ -859,8 +1007,7 @@ fn gen_local_harness_main(
                             }
                         });
                     } else {
-                        let field_name =
-                            full.rsplit('_').next().unwrap_or(&full).to_string();
+                        let field_name = env_var_field_name(arg);
                         field_inits.entry(field_name).or_insert_with(|| {
                             format!(
                                 "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
@@ -879,16 +1026,35 @@ fn gen_local_harness_main(
                         .entry("client".to_string())
                         .or_insert_with(|| format!("{let_name}.clone()"));
                 }
-            } else if !ad.fields.is_empty() {
-                for f in &ad.fields {
-                    let field_name = to_snake(&f.name);
-                    let env_key = f.name.to_uppercase();
-                    field_inits.entry(field_name).or_insert_with(|| {
-                        format!(
-                            "std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into())"
-                        )
-                    });
+            }
+            for f in &ad.fields {
+                let field_name = to_snake(&f.name);
+                if field_inits.contains_key(&field_name) {
+                    continue;
                 }
+                if let TypeExpr::Named(tn) = &f.type_expr {
+                    if let Some(impl_ad) = adapters
+                        .iter()
+                        .find(|a| a.target.as_deref() == Some(tn.as_str()))
+                    {
+                        field_inits.insert(
+                            field_name,
+                            format!("{}_inst.clone()", to_snake(&impl_ad.name)),
+                        );
+                        continue;
+                    }
+                    if let Some((let_name, _)) = stub_harness_field_expr(registry, tn) {
+                        field_inits.insert(field_name, format!("{let_name}.clone()"));
+                        continue;
+                    }
+                }
+                let env_key = f.name.to_uppercase();
+                field_inits.insert(
+                    field_name,
+                    format!(
+                        "std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into())"
+                    ),
+                );
             }
             let mut fields_init = String::new();
             for (fname, init) in &field_inits {
@@ -2088,9 +2254,10 @@ fn gen_module_crate(
     let mut files = Vec::new();
     let mut contents = flatten_module(module, registry);
 
-    // Solution-level layer-provided traits (the injected Bus) live in the
-    // shared crate and are re-exported by gen_traits — do NOT duplicate them
-    // here. Any non-layer top-level trait is still emitted locally.
+    // Solution-level layer-provided traits live in the shared crate and are
+    // re-exported by gen_traits — do NOT duplicate them here. A product
+    // construct that reuses a declared name is emitted locally; gen_traits
+    // then avoids `pub use veil_shared::*` so the names do not collide.
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
             if c.shape == Shape::Trait && !c.layer_provided {
@@ -2120,15 +2287,11 @@ uuid.workspace = true"#);
             // Shared error types + Bus trait, defined once.
             cargo.push_str("veil_shared = { path = \"../veil_shared\" }\n");
             // Stub crate dependencies (active only — same policy as veil_bin / workspace)
-            let mut has_ddb_or_s3 = false;
             for stub in &registry.stubs {
                 if !stub_is_active_cargo(stub) {
                     continue;
                 }
                 cargo.push_str(&format!("{}.workspace = true\n", stub.name));
-                if stub.name == "aws-sdk-dynamodb" || stub.name == "aws-sdk-s3" {
-                    has_ddb_or_s3 = true;
-                }
             }
             // CAP-001: external crate links
             for link in links {
@@ -2155,7 +2318,7 @@ uuid.workspace = true"#);
 
     // For modules that reference siblings, re-export ports from the first sibling
     // instead of generating duplicate DomainError / shared traits.
-    files.push(gen_traits(&contents, &crate_name, solution));
+    files.push(gen_traits(&contents, &crate_name, solution, registry));
 
     // Impls targeting traits defined in this module (from anywhere in the tree),
     // or layer-provided generic ports (e.g. EntityRepo) implemented by product adapters.
@@ -2429,7 +2592,11 @@ fn gen_types(
         let mut sorted = undefined;
         sorted.sort();
         for t in &sorted {
-            out.push_str(&format!("pub type {} = String;\n", t));
+            if let Some((crate_name, path)) = stub_type_path(registry, t) {
+                out.push_str(&format!("pub type {t} = {crate_name}::{path};\n"));
+            } else {
+                out.push_str(&format!("pub type {t} = String;\n"));
+            }
         }
         out.push('\n');
     }
@@ -3891,17 +4058,44 @@ fn gen_traits(
     contents: &ModuleContents,
     crate_name: &str,
     solution: &Solution,
+    registry: &LayerRegistry,
 ) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Trait definitions (async traits).\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
     out.push_str("use crate::domain::types::*;\n");
-    // Common error types and the shared Bus live in veil_shared — re-export
-    // them so this crate's `crate::ports::{DomainError, Bus, ...}` still resolve
-    // and every crate refers to the SAME type.
+    // Common error types live in veil_shared. Layer-declared names are
+    // re-exported unless the product defined the same name locally.
     out.push_str("pub use veil_shared::{DomainError, ValidationError};\n");
-    out.push_str("pub use veil_shared::*;\n\n");
+    let product_trait_names: std::collections::HashSet<&str> =
+        contents.traits.iter().map(|t| t.name.as_str()).collect();
+    let declared_types = layer_declared_type_names(registry);
+    // A product construct that reuses a layer-declared name must not collide
+    // with `pub use veil_shared::*`. Re-export the rest by name.
+    let conflicts_shared = contents
+        .traits
+        .iter()
+        .any(|t| declared_types.contains(&t.name));
+    if conflicts_shared {
+        for name in &declared_types {
+            if !product_trait_names.contains(name.as_str()) {
+                out.push_str(&format!("pub use veil_shared::{name};\n"));
+            }
+        }
+        for fn_name in layer_declared_fn_names(registry) {
+            let rust = to_snake(&fn_name);
+            out.push_str(&format!("pub use veil_shared::{rust};\n"));
+        }
+        if !registry.routing_traits().is_empty() {
+            out.push_str("pub use veil_shared::InProcessBus;\n");
+        }
+        out.push_str(
+            "pub use veil_shared::{register_all, handler_count, HANDLER_NAMES};\n\n",
+        );
+    } else {
+        out.push_str("pub use veil_shared::*;\n\n");
+    }
 
     for t in &contents.traits {
         let tp = generic_params_rust(&t.type_params);
@@ -4045,20 +4239,10 @@ fn gen_impls(
             }
         }
     }
-    if !hooks.is_empty() {
-        out.push_str("// External-effect runtime hooks (stubs). Replace with real\n");
-        out.push_str("// integrations; generated so adapter bodies compile.\n");
-        for (name, arity) in &hooks {
-            let params = (0..*arity)
-                .map(|i| format!("_arg{}: impl std::fmt::Debug", i))
-                .collect::<Vec<_>>().join(", ");
-            out.push_str(&format!(
-                "fn {}({}) {{ /* stub — replace with real integration */ }}\n",
-                name, params
-            ));
-        }
-        out.push('\n');
-    }
+    // Unknown `target.method` calls emit `compile_error!("unstubbed external…")`
+    // in expr lowering. We do not generate no-op hook functions — a missing
+    // .stub must fail closed for every third-party crate.
+    let _ = hooks;
 
     if impls.is_empty() {
         out.push_str("// No implementations target traits in this module.\n");
@@ -4150,13 +4334,39 @@ fn gen_impls(
                                 }
                             });
                         } else {
-                            let full = arg.to_lowercase();
-                            let field_name =
-                                full.rsplit('_').next().unwrap_or(&full).to_string();
+                            let field_name = env_var_field_name(arg);
                             adapter_fields
                                 .entry(field_name)
                                 .or_insert_with(|| "String".to_string());
                         }
+                    }
+                }
+            }
+            // @dep / injected port fields on the adapter (`@dep sns_client: SnsClient`).
+            for f in &c.fields {
+                let fname = to_snake(&f.name);
+                if adapter_fields.contains_key(&fname) {
+                    continue;
+                }
+                let rust_ty = match &f.type_expr {
+                    TypeExpr::Named(n) => {
+                        adapter_field_rust_type(n, &name_to_shape, registry)
+                    }
+                    other => type_to_rust(other),
+                };
+                adapter_fields.insert(fname, rust_ty);
+            }
+            for ann in &c.annotations {
+                if !registry.is_dependency_annotation(&ann.name) {
+                    continue;
+                }
+                for arg in &ann.args {
+                    if let Some((n, t)) = arg.split_once(':') {
+                        let fname = to_snake(n.trim());
+                        let t = t.trim();
+                        adapter_fields.entry(fname).or_insert_with(|| {
+                            adapter_field_rust_type(t, &name_to_shape, registry)
+                        });
                     }
                 }
             }
@@ -4356,16 +4566,17 @@ fn gen_impls(
                 for ann in &c.annotations {
                     if registry.is_adapter_env_annotation(&ann.name) {
                         for arg in &ann.args {
-                            let full = arg.to_lowercase();
-                            ctx.self_fields.insert(full.clone());
-                            // Also add the short suffix (after last underscore)
-                            // so `DDB_TABLE` makes `table` available as self.table
-                            if let Some(short) = full.rsplit('_').next() {
-                                if short != full {
+                            let primary = env_var_field_name(arg);
+                            ctx.self_fields.insert(primary.clone());
+                            ctx.self_fields.insert(arg.to_ascii_lowercase());
+                            ctx.self_fields.insert(arg.to_string());
+                            // Last-segment alias (`TABLE_NAME` → `name`) still resolves
+                            // at the use site to the full snake field.
+                            if let Some(short) = arg.to_ascii_lowercase().rsplit('_').next() {
+                                if short != primary {
                                     ctx.self_fields.insert(short.to_string());
                                 }
                             }
-                            // DATABASE_URL → make `pool` available as self.pool
                             if arg.contains("DATABASE") {
                                 ctx.self_fields.insert("pool".to_string());
                             }
@@ -4381,14 +4592,42 @@ fn gen_impls(
                         }
                     }
                 }
+                // @dep / parsed fields (sns_client: SnsClient) are self.fields too.
+                for f in &c.fields {
+                    ctx.self_fields.insert(to_snake(&f.name));
+                    ctx.self_fields.insert(f.name.clone());
+                }
+                for ann in &c.annotations {
+                    if registry.is_dependency_annotation(&ann.name) {
+                        for arg in &ann.args {
+                            let fname = arg.split(':').next().unwrap_or(arg).trim();
+                            ctx.self_fields.insert(to_snake(fname));
+                            ctx.self_fields.insert(fname.to_string());
+                        }
+                    }
+                }
                 // Populate self_field_types so the expression translator can detect
-                // Map/HashMap fields that need RwLock lock acquisition + &key args.
+                // Map/HashMap fields that need RwLock lock acquisition + &key args,
+                // and so @dep port fields get trait `.await` / `.await?`.
                 for (fname, fty) in &adapter_fields {
+                    ctx.self_fields.insert(fname.clone());
                     ctx.self_field_types.insert(fname.clone(), fty.clone());
+                }
+                for ann in &c.annotations {
+                    if registry.is_dependency_annotation(&ann.name) {
+                        for arg in &ann.args {
+                            if let Some((n, t)) = arg.split_once(':') {
+                                let field = to_snake(n.trim());
+                                let trait_name = t.trim().to_string();
+                                ctx.dep_fields.insert(trait_name, field);
+                            }
+                        }
+                    }
                 }
                 // Seed name→shape and method returns from stubs too.
                 let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
                 ctx.method_returns = seeded.method_returns;
+                ctx.method_params = seeded.method_params;
                 ctx.struct_fields = seeded.struct_fields;
                 ctx.stub_type_crate = seeded.stub_type_crate;
                 ctx.fallible_methods = seeded.fallible_methods;
@@ -4399,6 +4638,8 @@ fn gen_impls(
                 ctx.stub_free_fns = seeded.stub_free_fns;
                 ctx.async_fns = seeded.async_fns;
                 ctx.ref_params = seeded.ref_params;
+                ctx.name_to_shape = seeded.name_to_shape;
+                ctx.enum_variants = seeded.enum_variants;
                 ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
@@ -4443,7 +4684,11 @@ fn gen_impls(
                         } else {
                             expr.clone()
                         };
+                        if is_last && ret_rust.contains("Option<") {
+                            ctx.option_value_wrap = true;
+                        }
                         let rust_expr = expr_to_rust(&expr, &ctx);
+                        ctx.option_value_wrap = false;
                         // Track local assignments AFTER translation so first use gets 'let mut'
                         if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = &expr {
                             if !name.contains('.') {
@@ -4464,6 +4709,9 @@ fn gen_impls(
                             let is_return = rust_expr.trim_start().starts_with("return ")
                                 || rust_expr.contains("return Ok(")
                                 || rust_expr.contains("return Err(");
+                            let is_ctrl = rust_expr.trim_start().starts_with("match ")
+                                || rust_expr.trim_start().starts_with("if ")
+                                || rust_expr.trim_start().starts_with('{');
                             if is_return || rust_expr.contains("todo!") {
                                 out.push_str(&format!("        {rust_expr}\n"));
                             } else if ret_rust == "Result<(), DomainError>" {
@@ -4475,7 +4723,7 @@ fn gen_impls(
                                 } else if rust_expr.ends_with('?') {
                                     // `?` unwraps the inner Result — value is now T, needs Ok(T)
                                     out.push_str(&format!("        Ok({rust_expr})\n"));
-                                } else if rust_expr.contains(".await") {
+                                } else if rust_expr.contains(".await") && !is_ctrl {
                                     out.push_str(&format!(
                                         "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
                                     ));
@@ -5723,9 +5971,8 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
             index_children(c, &mut name_to_shape);
         }
     }
-    // Ensure layer-provided traits (Bus, SagaStep) are ALWAYS in the map.
-    // Layer `declare` blocks inject traits/structs into solutions but they
-    // don't appear in registry.constructs — scan declarations for trait names.
+    // Layer `declare` traits/structs don't appear in registry.constructs —
+    // scan declaration source so name→shape still sees them.
     for decl in &registry.declarations {
         for line in decl.lines() {
             let t = line.trim();
@@ -6304,16 +6551,16 @@ fn emit_runtime_delegated(
         out.push_str(&format!("        Box::new({} {{ {} }}),\n", type_name, ctor_args));
     }
     out.push_str("    ];\n");
-    // Call the coordinator with the primary routing-trait dep and the step list.
-    let routing_dep = ctx
-        .primary_routing_trait()
-        .map(|t| format!("deps.{}.as_ref()", to_snake(t)))
-        .unwrap_or_else(|| "/* no routing trait */".to_string());
-    out.push_str(&format!(
-        "    {}({}, &steps).await\n",
-        to_snake(&rt.coordinator),
-        routing_dep
-    ));
+    // Coordinator args follow the layer-declared fn. A routing-trait first
+    // argument is only passed when a loaded layer actually declared one.
+    let coord = to_snake(&rt.coordinator);
+    match ctx.primary_routing_trait() {
+        Some(t) => out.push_str(&format!(
+            "    {coord}(deps.{}.as_ref(), &steps).await\n",
+            to_snake(t)
+        )),
+        None => out.push_str(&format!("    {coord}(&steps).await\n")),
+    }
     out.push_str("}\n\n");
 }
 
@@ -6931,7 +7178,6 @@ pub fn generate_multi_package_harness(
             }
             if let Some(env_a) = ad.annotations.iter().find(|a| registry.is_adapter_env_annotation(&a.name)) {
                 for arg in &env_a.args {
-                    let full = arg.to_lowercase();
                     if arg.contains("DATABASE") {
                         field_inits.entry("pool".to_string()).or_insert_with(|| {
                             if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
@@ -6943,8 +7189,7 @@ pub fn generate_multi_package_harness(
                             }
                         });
                     } else {
-                        let field_name =
-                            full.rsplit('_').next().unwrap_or(&full).to_string();
+                        let field_name = env_var_field_name(arg);
                         field_inits.entry(field_name).or_insert_with(|| {
                             format!(
                                 "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
@@ -6963,6 +7208,35 @@ pub fn generate_multi_package_harness(
                         .entry("client".to_string())
                         .or_insert_with(|| format!("{let_name}.clone()"));
                 }
+            }
+            for f in &ad.fields {
+                let field_name = to_snake(&f.name);
+                if field_inits.contains_key(&field_name) {
+                    continue;
+                }
+                if let TypeExpr::Named(tn) = &f.type_expr {
+                    if let Some(impl_ad) = adapters
+                        .iter()
+                        .find(|a| a.target.as_deref() == Some(tn.as_str()))
+                    {
+                        field_inits.insert(
+                            field_name,
+                            format!("{}_inst.clone()", to_snake(&impl_ad.name)),
+                        );
+                        continue;
+                    }
+                    if let Some((let_name, _)) = stub_harness_field_expr(registry, tn) {
+                        field_inits.insert(field_name, format!("{let_name}.clone()"));
+                        continue;
+                    }
+                }
+                let env_key = f.name.to_uppercase();
+                field_inits.insert(
+                    field_name,
+                    format!(
+                        "std::env::var(\"{env_key}\").unwrap_or_else(|_| \"default\".into())"
+                    ),
+                );
             }
             let mut fields_init = String::new();
             for (fname, init) in &field_inits {
@@ -7244,7 +7518,6 @@ pub fn generate_multi_package_harness(
 
     // Stub crates from the packages being harnessed — Cargo keys use published names (hyphens).
     let mut seen_stub = std::collections::BTreeSet::new();
-    let mut bin_has_ddb_or_s3 = false;
     for (_, reg) in packages {
         for stub in &reg.stubs {
             if !seen_stub.insert(stub.name.clone()) {
@@ -7252,9 +7525,6 @@ pub fn generate_multi_package_harness(
             }
             if !stub_is_active_cargo(stub) {
                 continue;
-            }
-            if stub.name == "aws-sdk-dynamodb" || stub.name == "aws-sdk-s3" {
-                bin_has_ddb_or_s3 = true;
             }
             // `name.workspace = true` is invalid; use `name = { workspace = true }`.
             let key = &stub.name;

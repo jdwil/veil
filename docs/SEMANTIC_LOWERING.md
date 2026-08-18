@@ -33,6 +33,11 @@ If a fix reintroduces “emit `true` so it typechecks,” it is a regression.
 | **SL-006** | `invoke`/`request` target must name a svc/tool in the package | typecheck `missing_handler` |
 | **SL-007** | REST paths unique across multi-context harness (collision → `/api/{crate}/…`) | bin codegen |
 | **SL-008** | `is_some`/`is_none` on non-`Opt` → error | typecheck `opt_method_on_non_opt` |
+| **SL-009** | `require` force-presents one Opt **and** one Res. Bang already tries Res; leftover `Opt` still unwraps | rust codegen `Expr::Require` |
+| **SL-010** | `Res!<Str>` getters (`as_s` / stub-typed) own a `String` and `map_err` via Debug, never Display | rust codegen |
+| **SL-011** | String-pattern `match` keeps the try-unwrap, then `.as_str()` — never `.as_str()` on `Result` | rust codegen |
+| **SL-012** | `Str + Str` / `"lit" + field` → `format!("{}{}", …)`, not Rust `+` | rust codegen |
+| **SL-013** | `pkg.Type` uses stub `rust_type_path` (`types_module` / per-struct `path`). Product stubs inherit unset policy from the system stub | rust codegen + `fill_stub_gaps_from_system` |
 
 ---
 

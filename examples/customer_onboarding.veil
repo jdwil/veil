@@ -72,16 +72,22 @@ pkg CustomerOnboarding
         find(id: UUID) -> Res!<Opt<Customer>>
         delete(id: UUID) -> Res!
 
+      port Bus
+        dispatch(evt: Json) -> Res!
+        invoke(cmd: Json) -> Res!<Json>
+        request(qry: Json) -> Res!<Json>
+
       svc CreateCustomerService
         input
           email: Email
           phone: Phone
+          @dep bus: Bus
         step validate
           guard call Email.validate(email), "invalid email"
         step persist
           c = Customer.new(email, phone)
           CustomerRepo.save(c)
-          dispatch CustomerCreated{c.id, email, c.created}
+          bus.dispatch(CustomerCreated{c.id, email, c.created})
         ret c.id
 
     group infrastructure
@@ -137,12 +143,13 @@ pkg CustomerOnboarding
           email: Email
           phone: Phone
           name: Str
+          @dep bus: Bus
 
         step create_customer
           ctx Identity
           c = Customer.new(email, phone)
           CustomerRepo.save(c)
-          dispatch CustomerCreated{c.id, email, c.created}
+          bus.dispatch(CustomerCreated{c.id, email, c.created})
           compensate
             CustomerRepo.delete(c.id)
 
@@ -156,6 +163,6 @@ pkg CustomerOnboarding
         step setup_billing
           ctx Billing
           PaymentGateway.create_customer(email.addr)
-          invoke Billing.CreateTrial{customer_id: c.id, plan: FreeTier}
+          bus.invoke(CreateTrial{customer_id: c.id, plan: FreeTier})
           compensate
-            invoke Billing.CancelTrial{customer_id: c.id}
+            bus.invoke(CancelTrial{customer_id: c.id})

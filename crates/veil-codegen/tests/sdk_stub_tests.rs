@@ -68,7 +68,7 @@ pkg SdkApp
         @env(TABLE_NAME)
 
         impl save(id, name)
-          self.client.put_item().table_name(self.table).item("id", AttributeValue.S(id.to_string())).item("name", AttributeValue.S(name)).send()
+          self.client.put_item().table_name(self.table_name).item("id", AttributeValue.S(id.to_string())).item("name", AttributeValue.S(name)).send()
           ret Ok
 "#;
     let out = generate_with_stub(MINI_SDK_STUB, app);
@@ -92,6 +92,14 @@ pkg SdkApp
     assert!(
         out.contains("pub client: example_sdk::Client"),
         "Client stays at crate root via root_types"
+    );
+    assert!(
+        out.contains("pub table_name:") || out.contains("self.table_name"),
+        "@env(TABLE_NAME) must be the full snake field table_name:\n{}",
+        out.lines()
+            .filter(|l| l.contains("table") || l.contains("env"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
     assert!(!out.contains("not configured"));
 }
@@ -124,7 +132,7 @@ pkg SdkApp
         @env(TABLE_NAME)
 
         impl save(id)
-          self.client.put_item().table_name(self.table).item("id", AttributeValue.S(id.to_string())).send()
+          self.client.put_item().table_name(self.table_name).item("id", AttributeValue.S(id.to_string())).send()
           ret Ok
 "#;
     let out = generate_with_stub(MINI_SDK_STUB, app);
@@ -331,5 +339,1001 @@ pkg Collide
             .any(|l| l.contains("Facade::package_root") && l.contains(".await")),
         "Facade::package_root must not await:\n{}",
         pkg_lines.join("\n")
+    );
+}
+
+#[test]
+fn invented_crate_name_is_unstubbed_not_empty_hook() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port ThingRepo
+        save!(id: Id)
+
+    group infrastructure
+      impl SdkThingRepo for ThingRepo
+        @dep
+        impl save(id)
+          aws_sns.publish!({ topic: "t" })
+          ret Ok
+"#;
+    let out = generate_with_stub(MINI_SDK_STUB, app);
+    assert!(
+        out.contains("unstubbed external") && out.contains("compile_error!"),
+        "invented aws_sns must fail closed:\n{}",
+        out.lines()
+            .filter(|l| l.contains("aws") || l.contains("unstubbed") || l.contains("hook"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("fn aws_sns_publish("),
+        "must not emit no-op hook:\n{}",
+        out
+    );
+}
+
+fn generate_with_stubs(stubs: &[&str], app_src: &str) -> String {
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .expect("ddd");
+    for stub_src in stubs {
+        if let Some(stub) = veil_ir::parse_stub_file(stub_src) {
+            reg.stubs.push(stub);
+        }
+    }
+    let tokens = veil_parser::lex(app_src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate(&sol, &reg);
+    project
+        .files
+        .iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const SNS_STUB: &str = r#"
+stub aws-sdk-sns 1.0.0
+root_types Client
+harness_field Client """
+{ aws_sdk_sns::Client::from_env() }
+"""
+
+  struct Client
+    fn publish() -> PublishFluentBuilder
+
+  struct PublishFluentBuilder
+    fn topic_arn(input: Str) -> Self
+    fn message(input: Str) -> Self
+    fn send() -> Res!
+"#;
+
+const DDB_STUB: &str = r#"
+stub aws-sdk-dynamodb 1.0.0
+root_types Client
+harness_field Client """
+{ aws_sdk_dynamodb::Client::from_env() }
+"""
+
+  struct Client
+    fn put_item() -> PutItemFluentBuilder
+
+  struct PutItemFluentBuilder
+    fn table_name(input: Str) -> Self
+    fn send() -> Res!
+"#;
+
+#[test]
+fn qualified_client_fields_do_not_collapse_to_last_stub() {
+    let app = r#"
+pkg BusApp
+  use ddd
+  use aws_sdk_sns
+  use aws_sdk_dynamodb
+
+  ctx Store
+    group domain
+      port SnsPort
+        publish!(topic: Str, body: Str)
+      port DdbPort
+        put!(id: Str)
+
+    group infrastructure
+      impl SnsAd for SnsPort
+        @field(sns: aws_sdk_sns.Client)
+        impl publish(topic, body)
+          self.sns.publish().topic_arn(topic).message(body).send!()
+          ret Ok
+      impl DdbAd for DdbPort
+        @field(ddb: aws_sdk_dynamodb.Client)
+        impl put(id)
+          self.ddb.put_item().table_name(id).send!()
+          ret Ok
+"#;
+    let out = generate_with_stubs(&[SNS_STUB, DDB_STUB], app);
+    assert!(
+        out.contains("pub sns: aws_sdk_sns::Client"),
+        "SNS field must be sns crate Client:\n{}",
+        out.lines()
+            .filter(|l| l.contains("sns") || l.contains("Client"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("pub ddb: aws_sdk_dynamodb::Client"),
+        "DDB field must be dynamodb crate Client:\n{}",
+        out.lines()
+            .filter(|l| l.contains("ddb") || l.contains("Client"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("pub sns: aws_sdk_dynamodb::Client"),
+        "SNS must not steal DynamoDB Client"
+    );
+    assert!(
+        out.contains("self.sns.publish()") && out.contains("self.ddb.put_item()"),
+        "fields must keep crate-specific names:\n{}",
+        out
+    );
+}
+
+#[test]
+fn adapter_dep_port_field_lowers_to_arc_dyn_and_self_call() {
+    let app = r#"
+pkg OrchApp
+  use ddd
+  use aws_sdk_sns
+
+  ctx Store
+    group domain
+      port SnsClient
+        publish!(topic: Str, body: Str)
+      port EventListener
+        on_event!(topic: Str, body: Str)
+
+    group infrastructure
+      impl SnsAd for SnsClient
+        @field(sns: aws_sdk_sns.Client)
+        impl publish(topic, body)
+          self.sns.publish().topic_arn(topic).message(body).send!()
+          ret Ok
+      impl EventOrch for EventListener
+        @dep sns_client: SnsClient
+        impl on_event(topic, body)
+          sns_client.publish!(topic, body)
+          ret Ok
+"#;
+    let out = generate_with_stubs(&[SNS_STUB], app);
+    assert!(
+        out.contains("pub sns_client: std::sync::Arc<dyn SnsClient + Send + Sync>"),
+        "@dep field must be Arc<dyn Port>:\n{}",
+        out.lines()
+            .filter(|l| l.contains("sns_client") || l.contains("struct EventOrch"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("self.sns_client.publish(") && out.contains(".await?"),
+        "port field call must lower to self.field.method().await?:\n{}",
+        out.lines()
+            .filter(|l| l.contains("sns_client") || l.contains("publish"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("unstubbed external `sns_client"),
+        "must not treat injected port as unstubbed:\n{}",
+        out
+    );
+}
+
+#[test]
+fn product_port_reusing_layer_declare_name_does_not_starve_shared() {
+    let app = r#"
+pkg AuthShadow
+  use ddd
+
+  ctx Store
+    group domain
+      port AuthService
+        validate_token(token: Str) -> Res!<Principal>
+      port ThingRepo
+        save!(id: Id)
+
+    group infrastructure
+      impl NoopThing for ThingRepo
+        impl save(id)
+          ret Ok
+"#;
+    let out = generate_with_stubs(&[], app);
+    let shared = out
+        .split("// ==== crates/veil_shared/src/lib.rs ====")
+        .nth(1)
+        .unwrap_or("");
+    assert!(
+        shared.contains("pub trait AuthService") && shared.contains("async fn validate_token"),
+        "veil_shared must emit layer AuthService even when product defines port AuthService:\n{}",
+        shared.lines().take(80).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        !shared.contains("pub trait Bus"),
+        "DDD must not inject Bus into veil_shared:\n{}",
+        shared.lines().take(40).collect::<Vec<_>>().join("\n")
+    );
+    let ports = out
+        .split("crates/")
+        .filter(|s| s.contains("/src/ports/mod.rs"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        ports.contains("pub trait AuthService"),
+        "product port AuthService stays in the product crate:\n{}",
+        ports.lines().take(50).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        !ports.contains("pub use veil_shared::*;"),
+        "must not glob-import veil_shared when product also defines AuthService:\n{}",
+        ports.lines().take(30).collect::<Vec<_>>().join("\n")
+    );
+}
+
+#[test]
+fn bare_enum_variant_is_qualified() {
+    let app = r#"
+pkg Shop
+  use ddd
+
+  ctx Store
+    group domain
+      enum StockState
+        Ready
+        SoldOut
+      port StockRepo
+        mark!(state: StockState)
+    group application
+      handler MarkReady
+        input
+          @dep stock_repo: StockRepo
+        step go
+          stock_repo.mark!(Ready)
+          ret Ok
+    group infrastructure
+      impl MemStock for StockRepo
+        impl mark(state)
+          label = match state
+            Ready -> "ready"
+            SoldOut -> "sold"
+          ret Ok
+"#;
+    let out = generate_with_stubs(&[], app);
+    assert!(
+        out.contains("StockState::Ready"),
+        "bare variant Ready must qualify as StockState::Ready:\n{}",
+        out.lines()
+            .filter(|l| l.contains("Ready") || l.contains("mark") || l.contains("match"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("StockState::SoldOut"),
+        "match arms must qualify SoldOut:\n{}",
+        out.lines()
+            .filter(|l| l.contains("Sold") || l.contains("match") || l.contains("Ready"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.lines().any(|l| l.trim_start().starts_with("Ready =>")),
+        "bare Ready => must not appear in match:\n{out}"
+    );
+}
+
+#[test]
+fn check_flags_bang_in_unit_from_source() {
+    let app = r#"
+pkg P
+  use ddd
+  ctx C
+    group domain
+      port Bus
+        dispatch(envelope: Str) -> ()
+      port Sns
+        publish!(msg: Str)
+    group infrastructure
+      adapter AwsBus for Bus
+        impl dispatch(envelope)
+          Sns.publish!(envelope)
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .expect("ddd");
+    let tokens = veil_parser::lex(app);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let result = veil_ir::check::check_solution(&sol, &reg);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "bang_in_unit_fn"),
+        "{:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("{}: {}", d.code, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn env_space_form_and_map_lit_and_stub_alias() {
+    let app = r#"
+pkg StoreApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port ThingRepo
+        save!(name: Str, attrs: Map<Str, Str>)
+        put_raw!(item: Map<Str, AttributeValue>)
+
+    group infrastructure
+      adapter SdkThing for ThingRepo
+        @field(client: Client)
+        @env TABLE_NAME
+        impl save(name, attrs)
+          self.client.put_item().table_name(self.table_name).item("name", AttributeValue.S(name)).send!()
+          ret Ok
+        impl put_raw(item)
+          self.client.put_item().table_name(self.table_name).set_item(item).send!()
+          ret Ok
+"#;
+    let out = generate_with_stub(MINI_SDK_STUB, app);
+    assert!(
+        out.contains("pub table_name:") && out.contains("self.table_name"),
+        "@env TABLE_NAME (no parens) must become self.table_name:\n{}",
+        out.lines()
+            .filter(|l| l.contains("table") || l.contains("env"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("pub type AttributeValue = example_sdk::types::AttributeValue"),
+        "stub AttributeValue must alias the crate type, not String:\n{}",
+        out.lines()
+            .filter(|l| l.contains("AttributeValue") || l.contains("pub type"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn map_literal_lowers_to_hashmap_not_json() {
+    let app = r#"
+pkg BusApp
+  use ddd
+
+  ctx Store
+    group domain
+      port SnsClient
+        publish!(topic: Str, message: Str, attributes: Map<Str, Str>)
+      port Broadcaster
+        fanout!(name: Str)
+
+    group infrastructure
+      adapter Fan for Broadcaster
+        @dep sns_client: SnsClient
+        impl fanout(name)
+          sns_client.publish!("t", name, { event_name: name })
+          ret Ok
+"#;
+    let out = generate_with_stubs(&[], app);
+    assert!(
+        out.contains("HashMap::new()") && out.contains("__m.insert(\"event_name\""),
+        "Map<Str,Str> literal must be HashMap, not json!:\n{}",
+        out.lines()
+            .filter(|l| l.contains("event_name") || l.contains("json!") || l.contains("HashMap"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("serde_json::json!({ \"event_name\""),
+        "must not emit json! for a Map param:\n{out}"
+    );
+}
+
+#[test]
+fn unit_port_without_bang_does_not_question_mark() {
+    let app = r#"
+pkg UnitApp
+  use ddd
+
+  ctx Store
+    group domain
+      port Bus
+        dispatch(envelope: Str) -> ()
+      handler HandleIt
+        input
+          envelope: Str
+          @dep bus: Bus
+        step go
+          bus.dispatch(envelope)
+"#;
+    let out = generate_with_stubs(&[], app);
+    let dispatch_lines: Vec<_> = out
+        .lines()
+        .filter(|l| l.contains("dispatch"))
+        .collect();
+    assert!(
+        dispatch_lines.iter().any(|l| l.contains(".await") && !l.contains(".await?")),
+        "unit dispatch without ! must be .await, not .await?:\n{}",
+        dispatch_lines.join("\n")
+    );
+}
+
+const NOISE_PUBLISH_STUB: &str = r#"
+stub noise-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Client
+    fn publish() -> PublishFluentBuilder
+
+  struct PublishFluentBuilder
+    fn send() -> Res!<PublishOutput>
+
+  struct PublishOutput
+"#;
+
+#[test]
+fn map_literal_on_port_stays_hashmap_when_stub_also_has_publish() {
+    let app = r#"
+pkg Shop
+  use ddd
+  use noise_sdk
+
+  ctx Store
+    group domain
+      port Publisher
+        publish!(topic: Str, message: Str, attributes: Map<Str, Str>)
+      port Broadcaster
+        fanout!(name: Str)
+
+    group infrastructure
+      adapter Fan for Broadcaster
+        @dep publisher: Publisher
+        impl fanout(name)
+          publisher.publish!("t", name, { event_name: name })
+          ret Ok
+"#;
+    let out = generate_with_stubs(&[NOISE_PUBLISH_STUB], app);
+    assert!(
+        out.contains("HashMap::new()") && out.contains("__m.insert(\"event_name\""),
+        "port Map param must stay HashMap even when a stub also has publish():\n{}",
+        out.lines()
+            .filter(|l| l.contains("event_name") || l.contains("json!") || l.contains("HashMap") || l.contains("publish"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("serde_json::json!({ \"event_name\""),
+        "must not emit json! for a port Map param:\n{out}"
+    );
+}
+
+#[test]
+fn blob_new_uses_stub_type_path_not_vec_u8() {
+    let stub = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Blob
+    path primitives
+    fn new(data: Bytes) -> Self
+
+  struct Client
+    fn invoke() -> InvokeFluentBuilder
+
+  struct InvokeFluentBuilder
+    fn payload(input: Blob) -> Self
+    fn send() -> Res!<InvokeOutput>
+
+  struct InvokeOutput
+    fn payload() -> Opt<Blob>
+"#;
+    let app = r#"
+pkg FnApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port Runner
+        run!(body: Str) -> Str
+
+    group infrastructure
+      adapter SdkRunner for Runner
+        @field(client: example_sdk.Client)
+        impl run(body)
+          result = self.client.invoke().payload(Blob.new(body)).send!()
+          ret "ok"
+"#;
+    let out = generate_with_stub(stub, app);
+    assert!(
+        out.contains("example_sdk::primitives::Blob::new("),
+        "Blob.new must use the stub path, not Vec<u8>:\n{}",
+        out.lines()
+            .filter(|l| l.contains("Blob") || l.contains("into_bytes") || l.contains("payload"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("__s.into_bytes()\n                    })"),
+        "must not emit a bare Vec<u8> as the payload:\n{out}"
+    );
+}
+
+#[test]
+fn blob_to_str_and_ret_unit_as_none() {
+    let stub = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Blob
+    path primitives
+    fn new(data: Bytes) -> Self
+
+  struct Client
+    fn invoke() -> InvokeFluentBuilder
+
+  struct InvokeFluentBuilder
+    fn payload(input: Blob) -> Self
+    fn send() -> Res!<InvokeOutput>
+
+  struct InvokeOutput
+    fn payload() -> Opt<Blob>
+"#;
+    let app = r#"
+pkg FnApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      val Token
+        id: Str
+      port Runner
+        run!(body: Str) -> Str
+        find!(id: Str) -> Opt<Token>
+    group infrastructure
+      adapter SdkRunner for Runner
+        @field(client: example_sdk.Client)
+        impl run(body)
+          result = self.client.invoke().payload(Blob.new(body)).send!()
+          blob = require result.payload
+          ret blob.to_str()
+        impl find(id)
+          result = self.client.invoke().payload(Blob.new(id)).send!()
+          item = result.payload
+          if item.is_some
+            ret Token { id: id }
+          ret ()
+"#;
+    let out = generate_with_stub(stub, app);
+    assert!(
+        out.contains("from_utf8_lossy") && out.contains(".as_ref()"),
+        "blob.to_str() must decode utf-8:\n{}",
+        out.lines()
+            .filter(|l| l.contains("payload") || l.contains("utf8") || l.contains("to_str"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let find_fn: String = {
+        let lines: Vec<&str> = out.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains("async fn find(") && l.contains("Token"))
+            .expect("find fn");
+        lines[start..start.saturating_add(40).min(lines.len())].join("\n")
+    };
+    assert!(
+        find_fn.contains("return Ok(None)") || out.contains("return Ok(None)"),
+        "ret () on Opt port must be Ok(None):\n{find_fn}"
+    );
+}
+
+#[test]
+fn crate_qualified_blob_new_is_type_new_not_module_fn() {
+    let stub = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Blob
+    path primitives
+    fn new(data: Bytes) -> Self
+
+  struct Client
+    fn invoke() -> InvokeFluentBuilder
+
+  struct InvokeFluentBuilder
+    fn payload(input: Blob) -> Self
+    fn send() -> Res!<InvokeOutput>
+
+  struct InvokeOutput
+    fn payload() -> Opt<Blob>
+"#;
+    let app = r#"
+pkg FnApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port Runner
+        run!(body: Str) -> Str
+    group infrastructure
+      adapter SdkRunner for Runner
+        @field(client: example_sdk.Client)
+        impl run(body)
+          result = self.client.invoke().payload(example_sdk.Blob.new(body)).send!()
+          ret (require result.payload()).to_str()
+"#;
+    let out = generate_with_stub(stub, app);
+    assert!(
+        out.contains("example_sdk::primitives::Blob::new("),
+        "crate.Blob.new must be Type::new, not crate::blob():\n{}",
+        out.lines()
+            .filter(|l| l.contains("blob") || l.contains("Blob") || l.contains("payload"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("example_sdk::blob("),
+        "sqlx Query.new free-fn heuristic must not steal Blob.new:\n{out}"
+    );
+}
+
+#[test]
+fn opt_match_last_expr_wraps_some_and_none_value() {
+    let stub = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Client
+    fn send() -> Res!
+"#;
+    let app = r#"
+pkg FnApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      enum Mode
+        Sync
+        Async
+      val Token
+        id: Str
+      port Runner
+        go!(mode: Mode, id: Str) -> Opt<Token>
+    group infrastructure
+      adapter SdkRunner for Runner
+        @field(client: example_sdk.Client)
+        impl go(mode, id)
+          match mode
+            Sync -> Token { id: id }
+            Async ->
+              self.client.send!()
+              null
+"#;
+    let out = generate_with_stub(stub, app);
+    let go_fn: String = {
+        let lines: Vec<&str> = out.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains("async fn go("))
+            .expect("go fn");
+        lines[start..start.saturating_add(50).min(lines.len())].join("\n")
+    };
+    assert!(
+        go_fn.contains("match mode") && !go_fn.contains("match Some(mode)"),
+        "scrutinee must not be Some-wrapped:\n{go_fn}"
+    );
+    assert!(
+        go_fn.contains("Some(Token") || go_fn.contains("Some( Token"),
+        "Sync arm of Opt method must wrap Some:\n{go_fn}"
+    );
+    assert!(
+        go_fn.contains("None") && !go_fn.contains("None;"),
+        "Async arm last null must be value None, not None;:\n{go_fn}"
+    );
+    assert!(
+        !go_fn.contains("}.map_err"),
+        "match last-expr must not get Result map_err just because arms await:\n{go_fn}"
+    );
+}
+
+#[test]
+fn check_flags_stub_getter_returned_as_domain() {
+    let stub = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Client
+    fn get_item() -> GetItemFluentBuilder
+
+  struct GetItemFluentBuilder
+    fn send() -> Res!<GetItemOutput>
+
+  struct GetItemOutput
+    fn item() -> Opt<HashMap<Str, AttributeValue>>
+
+  enum AttributeValue
+    S(Str)
+"#;
+    let app = r#"
+pkg Shop
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      val Record
+        name: Str
+      port Routes
+        get_route!(name: Str) -> Opt<Record>
+    group infrastructure
+      adapter SdkRoutes for Routes
+        @field(client: example_sdk.Client)
+        impl get_route(name)
+          result = self.client.get_item().send!()
+          ret result.item
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .expect("ddd");
+    if let Some(s) = veil_ir::parse_stub_file(stub) {
+        reg.stubs.push(s);
+    }
+    let tokens = veil_parser::lex(app);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let result = veil_ir::check::check_solution(&sol, &reg);
+    assert!(
+        result.diagnostics.iter().any(|d| d.code == "type_mismatch"
+            && d.message.contains("Record")
+            && (d.message.contains("Map") || d.message.contains("HashMap"))),
+        "{:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| format!("{}: {}", d.code, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+const AV_STUB: &str = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Client
+    fn get_item() -> GetItemFluentBuilder
+
+  struct GetItemFluentBuilder
+    fn send() -> Res!<GetItemOutput>
+
+  struct GetItemOutput
+    fn item() -> Opt<HashMap<Str, AttributeValue>>
+
+  enum AttributeValue
+    S(Str)
+    fn as_s() -> Res!<Str>
+    fn as_n() -> Res!<Str>
+
+  struct MessageAttributeValue
+    fn builder() -> MessageAttributeValueBuilder
+
+  struct MessageAttributeValueBuilder
+    fn data_type(input: Str) -> Self
+    fn string_value(input: Str) -> Self
+    fn build() -> Res!<MessageAttributeValue>
+"#;
+
+#[test]
+fn res_str_getter_owns_string_and_debug_map_err() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      val Record
+        name: Str
+      port Routes
+        load!(id: Str) -> Opt<Record>
+    group infrastructure
+      adapter SdkRoutes for Routes
+        @field(client: example_sdk.Client)
+        impl load(id)
+          result = self.client.get_item().send!()
+          item = require result.item()
+          name = require item.get("name").as_s!()
+          ret Record { name: name }
+"#;
+    let out = generate_with_stub(AV_STUB, app);
+    let as_s_lines: String = out
+        .lines()
+        .filter(|l| l.contains("as_s") || l.contains("{e:?}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        out.contains(".as_s()") && out.contains("s.to_string()") && out.contains("{e:?}"),
+        "Res!<Str> getter must own String and Debug-map_err:\n{as_s_lines}"
+    );
+    assert!(
+        !as_s_lines.contains("e.to_string()"),
+        "must not Display-map_err stub errors:\n{as_s_lines}"
+    );
+    assert!(
+        !out.contains(".as_s!()"),
+        "bang is VEIL sugar, not a Rust method:\n{out}"
+    );
+}
+
+#[test]
+fn match_string_patterns_on_res_str_keeps_try() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      enum Kind
+        Healthy
+        Dead
+      val Record
+        kind: Kind
+      port Routes
+        load!(id: Str) -> Opt<Record>
+    group infrastructure
+      adapter SdkRoutes for Routes
+        @field(client: example_sdk.Client)
+        impl load(id)
+          result = self.client.get_item().send!()
+          item = require result.item()
+          status_str = require item.get("status")
+          kind = match status_str.as_s!()
+            "Healthy" -> Kind.Healthy
+            _ -> Kind.Dead
+          ret Record { kind: kind }
+"#;
+    let out = generate_with_stub(AV_STUB, app);
+    let has_try_then_as_str = out.contains("?.as_str()")
+        || (out.contains("s.to_string()") && out.contains(".as_str()"));
+    assert!(
+        has_try_then_as_str,
+        "string-pattern match must unwrap Res then as_str, not as_str on Result:\n{}",
+        out.lines()
+            .filter(|l| l.contains("as_s") || l.contains("as_str") || l.contains("match"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn require_bang_port_unwraps_remaining_option() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      val Record
+        endpoint: Str
+      port Routes
+        get_route!(name: Str) -> Opt<Record>
+      port Bus
+        invoke!(name: Str) -> Str
+    group infrastructure
+      adapter SdkBus for Bus
+        @dep routing_table: Routes
+        impl invoke(name)
+          route = require routing_table.get_route!(name)
+          ret route.endpoint
+      adapter SdkRoutes for Routes
+        @field(client: example_sdk.Client)
+        impl get_route(name)
+          ret null
+"#;
+    let out = generate_with_stub(AV_STUB, app);
+    assert!(
+        out.contains("get_route(") && out.contains(".ok_or(DomainError::NotFound)?"),
+        "require on bang port that returns Opt must unwrap Option after Res:\n{}",
+        out.lines()
+            .filter(|l| {
+                l.contains("get_route") || l.contains("ok_or") || l.contains("endpoint")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn string_concat_uses_format() {
+    let app = r###"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port Routes
+        put!(svc: Str, handler: Str)
+    group infrastructure
+      adapter SdkRoutes for Routes
+        @field(client: example_sdk.Client)
+        impl put(svc, handler)
+          key = "LISTENER#" + svc + "#" + handler
+          ret Ok
+"###;
+    let out = generate_with_stub(AV_STUB, app);
+    assert!(
+        out.contains("format!(\"{}{}\""),
+        "Str + Str must lower to format!, not Rust +:\n{}",
+        out.lines()
+            .filter(|l| l.contains("LISTENER") || l.contains("format") || l.contains('+'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("\"LISTENER#\".to_string() +") && !out.contains("\"LISTENER#\" +"),
+        "must not emit String + String:\n{out}"
+    );
+}
+
+#[test]
+fn pkg_qualified_type_uses_rust_type_path() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port Svc
+        publish!(name: Str)
+    group infrastructure
+      adapter SdkSvc for Svc
+        @field(client: example_sdk.Client)
+        impl publish(name)
+          attr = example_sdk.MessageAttributeValue.builder().data_type("String").string_value(name).build!()
+          ret Ok
+"#;
+    let out = generate_with_stub(AV_STUB, app);
+    assert!(
+        out.contains("example_sdk::types::MessageAttributeValue::builder()"),
+        "pkg.Type must use rust_type_path (types_module):\n{}",
+        out.lines()
+            .filter(|l| l.contains("MessageAttribute") || l.contains("builder"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("example_sdk::MessageAttributeValue::builder()"),
+        "must not drop types_module:\n{out}"
     );
 }

@@ -492,6 +492,34 @@ Types are written with a compact syntax. Built-in names map to Rust:
 | `Str` | `String` | | `UUID` | `Uuid` |
 | `Int` | `i64` | | `DateTime` | `DateTime<Utc>` |
 | `F64` | `f64` | | `Bytes` | `Vec<u8>` |
+
+**Text / binary conversions (language primitives, any crate):**
+
+```
+bytes = Bytes.from_str(s)      # or s.as_bytes()
+s     = bytes.to_str()         # or Str.from_bytes(bytes)
+blob  = Blob.new(s)            # Str or Bytes (utf-8)
+s     = blob.to_str()
+```
+
+**Opt in adapters:** `ret value` is Some; `ret null` or `ret ()` is None.
+`if item.is_some` (or `item.is_some()`) is a Bool. Match arms must share one
+type — a fire-and-forget arm of an `Opt<T>` method ends with `null`.
+
+**Maps (Dynamo item, etc.):** `get("k")` / `item["k"]` is the value type
+(`AttributeValue`). Decode with `as_s()` / `as_n()`:
+
+```
+map = require result.item()
+endpoint = require map.get("endpoint").as_s()
+```
+
+`crate.Blob.new(s)` is `crate::primitives::Blob::new(...)`, never `crate::blob()`.
+`pkg.Type` follows the stub's `types_module` / `path` (e.g. `aws_sdk_sns.MessageAttributeValue` → `aws_sdk_sns::types::MessageAttributeValue`).
+
+`require port.find!(id)` unwraps **both** `Res!` (the bang) and leftover `Opt`.
+
+`"LISTENER#" + svc + "#" + handler` concatenates strings (`format!` in Rust).
 | `Bool` | `bool` | | `Json` | `serde_json::Value` |
 
 Type constructors:
@@ -525,7 +553,7 @@ trait EntityRepo<T>
   delete!(id: Id)
 
 adapter DynamoJsonRepo<T> for EntityRepo<T>
-  @field(client: Client)
+  @field(ddb: aws_sdk_dynamodb.Client)
   @env(DYNAMO_TABLE)
   impl find(id)
     # … VEIL body; T is a type parameter
@@ -539,7 +567,7 @@ type WearTestRepo = EntityRepo<WearTest>
 # Empty monomorphized adapter: codegen copies VEIL bodies from DynamoJsonRepo<T>
 # substituting T → WearTest (works for any generic class, not Dynamo-specific).
 adapter DynamoWearTestRepo for EntityRepo<WearTest>
-  @field(client: Client)
+  @field(ddb: aws_sdk_dynamodb.Client)
   @env(DYNAMO_TABLE)
 ```
 
@@ -777,6 +805,20 @@ struct Query
 - Codegen adds the crate to `Cargo.toml` dependencies
 - The `veil stub-gen` command creates a temp project, runs `cargo +nightly rustdoc
   --output-format json`, and converts the JSON to `.stub` format automatically
+
+**Writing adapters against a stub (any crate):**
+- Qualify types (`@field(sns: aws_sdk_sns.Client)`). Bare `Client` is an error
+  when two loaded stubs export it (`ambiguous_stub_type`).
+- Call methods exactly as the stub shows. `stub_search` first.
+- Incremental map setters take `(key, stubValue)` — e.g.
+  `.item("id", AttributeValue.S(id.to_string()))`,
+  `.message_attributes("k", MessageAttributeValue.builder()…)`.
+  `Map<Str, Str>` and bare `{ k: v }` are **not** those value types.
+- `@env(TABLE_NAME)` is `self.table_name`. `DATABASE_URL` is `self.pool`.
+- Layer `declare` types (DDD `SagaStep`, `EntityRepo`, `AuthService`, …) are
+  already injected — do not redefine those names.
+- A message bus is **not** injected. Define a product `port` and adapters;
+  `dispatch`/`invoke`/`request` keywords belong in a product layer if wanted.
 
 ---
 

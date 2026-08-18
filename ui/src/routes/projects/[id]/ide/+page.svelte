@@ -15,6 +15,10 @@
 	import '$lib/ide/ide-app.css';
 
 	const projectId = $derived(($page.params.id ?? '').trim());
+	const focusFile = $derived($page.url.searchParams.get('file') || '');
+	const focusConstruct = $derived($page.url.searchParams.get('construct') || '');
+	const focusSession = $derived($page.url.searchParams.get('session') || '');
+	const focusBranch = $derived($page.url.searchParams.get('branch') || '');
 
 	$effect(() => {
 		const p = projectId;
@@ -32,7 +36,11 @@
 	onMount(() => {
 		const p = projectId;
 		if (!p) return;
-		void ensureCodingSession(p);
+		const u = new URL(window.location.href);
+		void ensureCodingSession(p, {
+			sessionId: u.searchParams.get('session') || focusSession,
+			branchName: u.searchParams.get('branch') || focusBranch
+		});
 		const stop = startIdeFocusBridge(p);
 		return () => {
 			stop();
@@ -43,7 +51,7 @@
 
 {#if projectId}
 	<div class="native-ide" data-veil-role="native-ide" data-project={projectId}>
-		<IdeApp project={projectId} />
+		<IdeApp project={projectId} {focusFile} {focusConstruct} {focusSession} {focusBranch} />
 	</div>
 {:else}
 	<p class="native-ide-missing">Missing project id.</p>

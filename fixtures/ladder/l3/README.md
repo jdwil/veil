@@ -6,7 +6,7 @@
 
 - Colocate `reqwest.stub` (or any crate stub) next to the package
 - `use reqwest` (stub name) in the package
-- Adapter: `@field(client: Client)` + `@env(API_BASE)` (or similar)
+- Adapter: `@field(http: reqwest.Client)` + `@env(API_BASE)` (crate-qualify `Client`; name the field after the crate)
 - Put construction recipe on the stub: `harness_field Client """…"""`
 - Keep a memory path for domain ports so HTTP list still works offline
 

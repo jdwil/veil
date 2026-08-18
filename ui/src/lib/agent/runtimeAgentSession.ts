@@ -39,6 +39,9 @@ import {
 	prepareAttachments,
 	type WireAttachment
 } from './attachments';
+import { getCodingSessionId, setCodingSessionId } from '$lib/session/codingSession';
+
+export { getCodingSessionId, setCodingSessionId };
 
 // ─── State Stores ───────────────────────────────────────────────────────────
 
@@ -886,10 +889,17 @@ function maybeApplyCodingSessionSwitch(toolName: string, output: unknown) {
 			(obj.session as { session_id: string }).session_id) ||
 		null;
 	if (sid && (obj.switched === true || toolName === 'create_branch' || toolName === 'switch_main')) {
-		setCodingSessionId(sid);
+		const slug =
+			(obj.session &&
+				typeof obj.session === 'object' &&
+				typeof (obj.session as { slug?: string }).slug === 'string' &&
+				(obj.session as { slug: string }).slug) ||
+			(typeof obj.slug === 'string' && obj.slug) ||
+			undefined;
+		setCodingSessionId(sid, slug);
 		// Best-effort refresh IDE meta (dynamic import avoids circular deps)
 		void import('$lib/ide/store').then((store) => {
-			store.setCodingSessionId(sid);
+			store.setCodingSessionId(sid, slug);
 			if (obj.session && typeof obj.session === 'object') {
 				const s = obj.session as {
 					session_id?: string;
@@ -976,7 +986,7 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'',
 		'Deictic references ("this component", "this method", "this change", "here", "the wizard"):',
 		'- Use Session Focus + Visible panes below. Do not ask the user to restate what is selected.',
-		'- Prefer the pane marked ★ primary. If PR Wizard is primary, "this" = that wizard step (name, signature, rationale).',
+		'- Prefer the pane marked ★ primary. If the operator is on /review, "this" is the selected change (name, rationale, hunks).',
 		'- If Focus.construct is set, operate on that construct unless panes point at a more specific review item.',
 		'',
 		'When the user asks to open/show/list something in the UI:',
@@ -999,26 +1009,6 @@ function buildSystemPrompt(ctx: AgentContext): string {
 // ─── Session Persistence (sessionStorage + durable coding session_id) ───────
 
 const SESSION_KEY = 'veil.agent.session';
-const CODING_SESSION_KEY = 'veil.coding.sessionId';
-
-export function getCodingSessionId(): string | null {
-	if (typeof localStorage === 'undefined') return null;
-	try {
-		return localStorage.getItem(CODING_SESSION_KEY);
-	} catch {
-		return null;
-	}
-}
-
-export function setCodingSessionId(id: string | null) {
-	if (typeof localStorage === 'undefined') return;
-	try {
-		if (id) localStorage.setItem(CODING_SESSION_KEY, id);
-		else localStorage.removeItem(CODING_SESSION_KEY);
-	} catch {
-		/* ignore */
-	}
-}
 
 /** Apply durable session META focus/intent_log into local Focus + intent log. */
 function hydrateFocusFromSession(session: Record<string, unknown> | undefined | null) {
@@ -1048,7 +1038,7 @@ function hydrateFocusFromSession(session: Record<string, unknown> | undefined | 
 /** Create or attach durable coding session for a project slug **or** repo UUID. */
 export async function ensureCodingSession(slug: string | null): Promise<string | null> {
 	if (!slug || typeof window === 'undefined') return getCodingSessionId();
-	const existing = getCodingSessionId();
+	const existing = getCodingSessionId(slug);
 	if (existing) {
 		try {
 			const res = await fetch(`/api/sessions/${encodeURIComponent(existing)}`);
@@ -1056,16 +1046,9 @@ export async function ensureCodingSession(slug: string | null): Promise<string |
 				const data = await res.json();
 				const s = data?.session as Record<string, unknown> | undefined;
 				// Same product if slug matches **or** route used repo UUID (id).
-				// Without this, /projects/{uuid}/ide creates a second sticky session
-				// while an old-slug sticky holds agent writes — IDE looks unchanged.
 				const sessionSlug = typeof s?.slug === 'string' ? s.slug : '';
 				const sessionRepo = typeof s?.repo_id === 'string' ? s.repo_id : '';
-				if (
-					sessionSlug === slug ||
-					sessionRepo === slug ||
-					// server may canonicalize UUID → product slug on create
-					(sessionSlug && sessionRepo && (slug === sessionSlug || slug === sessionRepo))
-				) {
+				if (sessionSlug === slug || sessionRepo === slug) {
 					hydrateFocusFromSession(s as Record<string, unknown>);
 					return existing;
 				}
@@ -1075,21 +1058,19 @@ export async function ensureCodingSession(slug: string | null): Promise<string |
 		}
 	}
 	try {
-		// Always POST — server get_or_create_default canonicalizes slug↔repo_id
-		// and reuses the single mainline sticky for the product.
 		const res = await fetch('/api/sessions', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ slug })
 		});
-		if (!res.ok) return getCodingSessionId();
+		if (!res.ok) return null;
 		const data = await res.json();
 		hydrateFocusFromSession(data?.session as Record<string, unknown>);
 		const id = data?.session?.session_id as string | undefined;
-		if (id) setCodingSessionId(id);
+		if (id) setCodingSessionId(id, slug);
 		return id ?? null;
 	} catch {
-		return getCodingSessionId();
+		return null;
 	}
 }
 

@@ -139,6 +139,14 @@ async fn delete_repo(
             if let Some(repo) = resolved {
                 let rid = repo.id.value.clone();
                 let slug = repo.slug.clone();
+                let n = veil_server::review::close_for_deleted_project(&slug, Some(&rid));
+                if n > 0 {
+                    tracing::info!(%slug, repo_id = %rid, closed = n, "closed outstanding review items after delete");
+                }
+                veil_server::provider::s3_workspace::invalidate_identity(
+                    Some(&slug),
+                    Some(&rid),
+                );
                 tokio::task::spawn_blocking(move || {
                     if let Err(e) = veil_server::provider::s3_workspace::purge_repo_store(&rid) {
                         tracing::warn!(repo_id = %rid, slug = %slug, error = %e, "purge_repo_store failed");
@@ -504,12 +512,17 @@ async fn create_pull_request_flat(
         })
         .map(|s| s.to_string());
 
+    let mut description = body.description.clone();
+    if extract_slug_from_description(&description).is_none() {
+        description.push_str(&format!("\nslug: {slug}\n"));
+    }
+
     match change_management::application::create_pull_request_flat(
         &st.deps,
         repo_id,
         slug.clone(),
         body.title.clone(),
-        body.description.clone(),
+        description.clone(),
         jira.clone(),
         author.clone(),
     )
@@ -525,7 +538,8 @@ async fn create_pull_request_flat(
                     }
                 }
             }
-            let _ = ensure_ci_passed(&st.deps, cr.id, "pending").await;
+            let _ = ensure_ci_passed(&st.deps, cr.id, "pending", Some(slug.as_str())).await;
+            let _ = veil_server::review::record_pr(&slug, &cr.title, Some(&cr.id.to_string()));
             Ok(Json(json!({
                 "pull_request": cr,
                 "slug": slug,
@@ -549,7 +563,7 @@ async fn create_pull_request_flat(
                 id: pr_id,
                 repo_id,
                 title: body.title,
-                description: body.description,
+                description,
                 jira_ticket: jira,
                 source_branch: source,
                 target_branch: "main".into(),
@@ -566,7 +580,7 @@ async fn create_pull_request_flat(
                 .save(cr.clone())
                 .await
                 .map_err(domain_status)?;
-            let _ = ensure_ci_passed(&st.deps, cr.id, "pending").await;
+            let _ = ensure_ci_passed(&st.deps, cr.id, "pending", Some(slug.as_str())).await;
             Ok(Json(json!({
                 "pull_request": cr,
                 "slug": slug,
@@ -577,35 +591,78 @@ async fn create_pull_request_flat(
     }
 }
 
-/// Soft-gate helper: record a Passed CI run when none exists (local/dev PR Wizard).
+/// Record CI for a PR.
+///
+/// - `VEIL_DEV=1`: invent a Passed run if none exists (local toy).
+/// - Production-shaped: write a run from the last host check (errors → Failed).
+///   Opening a draft (`pending`) does not invent a run.
 async fn ensure_ci_passed(
     deps: &change_management::application::Deps,
     pr_id: Uuid,
     commit_hash: &str,
+    slug: Option<&str>,
 ) -> Result<(), StatusCode> {
     use change_management::domain::types::{CiRun, CiStatus};
-    match deps.ci_repo.latest_for_pr(pr_id).await {
-        Ok(Some(run)) if matches!(run.status, CiStatus::Passed) => Ok(()),
-        Ok(_) | Err(_) => {
-            let now = chrono::Utc::now();
-            let run = CiRun {
-                id: Uuid::new_v4(),
-                pr_id,
-                commit_hash: commit_hash.to_string(),
-                status: CiStatus::Passed,
-                started_at: now,
-                completed_at: Some(now),
-                duration_ms: Some(0),
-                logs_key: Some("local/auto-pass".into()),
-                error_summary: None,
-            };
-            deps.ci_repo
-                .save(run)
-                .await
-                .map_err(domain_status)?;
-            Ok(())
+    if let Ok(Some(run)) = deps.ci_repo.latest_for_pr(pr_id).await {
+        if matches!(run.status, CiStatus::Passed) {
+            return Ok(());
         }
     }
+    if veil_server::review::veil_dev_enabled() {
+        let now = chrono::Utc::now();
+        let run = CiRun {
+            id: Uuid::new_v4(),
+            pr_id,
+            commit_hash: commit_hash.to_string(),
+            status: CiStatus::Passed,
+            started_at: now,
+            completed_at: Some(now),
+            duration_ms: Some(0),
+            logs_key: Some("local/auto-pass".into()),
+            error_summary: None,
+        };
+        deps.ci_repo.save(run).await.map_err(domain_status)?;
+        return Ok(());
+    }
+    if commit_hash == "pending" {
+        return Ok(());
+    }
+    let check = slug
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| veil_server::coding_gates::peek_project_session(Some(s)))
+        .and_then(|h| h.snapshot_meta().last_host_check);
+    let now = chrono::Utc::now();
+    let (status, logs_key, error_summary) = match check {
+        Some(h) if h.error_count > 0 || h.severity == "errors" => (
+            CiStatus::Failed,
+            Some("host-check".into()),
+            Some(h.summary),
+        ),
+        Some(h) => (
+            CiStatus::Passed,
+            Some(format!("host-check:{}", h.severity)),
+            None,
+        ),
+        None => (
+            CiStatus::Failed,
+            Some("host-check".into()),
+            Some("no host check recorded".into()),
+        ),
+    };
+    let run = CiRun {
+        id: Uuid::new_v4(),
+        pr_id,
+        commit_hash: commit_hash.to_string(),
+        status,
+        started_at: now,
+        completed_at: Some(now),
+        duration_ms: Some(0),
+        logs_key,
+        error_summary,
+    };
+    deps.ci_repo.save(run).await.map_err(domain_status)?;
+    Ok(())
 }
 
 async fn get_pull_request(
@@ -732,12 +789,20 @@ Publish the coding session to the PR branch before submit, or pass force=1 to ov
     }
     match change_management::application::submit_for_review(&st.deps, id).await {
         Ok(()) => {
-            // Local PR Wizard: ensure merge isn't blocked by missing CI runner.
-            let _ = ensure_ci_passed(&st.deps, id, "submitted").await;
+            let slug = st
+                .deps
+                .pr_repo
+                .find(id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|p| extract_slug_from_description(&p.description));
+            let _ = ensure_ci_passed(&st.deps, id, "submitted", slug.as_deref()).await;
             Ok(Json(json!({
                 "ok": true,
                 "status": "ReadyForReview",
-                "hint": "Open the PR Wizard in the IDE to walk each structural change."
+                "hint": "Open Review to walk the change set. Approve is the ship gate.",
+                "audit_env": veil_server::review::audit_env_json(),
             })))
         }
         Err(e) => Err(domain_status(e)),
@@ -764,16 +829,22 @@ async fn approve_pr(
     } else {
         body.reviewer
     };
+    let mut approve_slug = None;
     if let Ok(Some(pr)) = st.deps.pr_repo.find(id).await {
         if reviewer == pr.author {
             reviewer = format!("{reviewer}-reviewer");
         }
+        approve_slug = extract_slug_from_description(&pr.description);
     }
-    let _ = ensure_ci_passed(&st.deps, id, "approved").await;
+    let _ = ensure_ci_passed(&st.deps, id, "approved", approve_slug.as_deref()).await;
     match change_management::application::approve_pr(&st.deps, id, reviewer, body.comment)
         .await
     {
-        Ok(()) => Ok(Json(json!({ "ok": true, "status": "Approved" }))),
+        Ok(()) => Ok(Json(json!({
+            "ok": true,
+            "status": "Approved",
+            "audit_env": veil_server::review::audit_env_json(),
+        }))),
         Err(e) => Err(domain_status(e)),
     }
 }
@@ -866,7 +937,16 @@ so a `cr/…` branch is created and the session is published, then Merge."
             "hint": "create_pr + publish-branch to a non-main source, then merge.",
         })));
     }
-    let _ = ensure_ci_passed(&st.deps, id, "merge").await;
+    if let Err(e) = veil_server::review::may_ship(&slug, None) {
+        return Ok(Json(json!({
+            "ok": false,
+            "error": "sign_off_required",
+            "message": e,
+            "hint": "Open Review, walk the change set, and press Approve. That record is the ship gate.",
+            "audit_env": veil_server::review::audit_env_json(),
+        })));
+    }
+    let _ = ensure_ci_passed(&st.deps, id, "merge", Some(slug.as_str())).await;
     match change_management::application::merge_pr(&st.deps, id, merger, slug.clone()).await {
         Ok(mut v) => {
             if veil_server::git_origin::origin_enabled() {
@@ -1354,13 +1434,25 @@ async fn compute_branch_structural_diff(
 ) -> Result<Value, String> {
     if veil_server::git_origin::origin_enabled() {
         if let Ok(rid) = veil_server::provider::s3_workspace::resolve_repo_id(slug) {
-            let origin = veil_server::git_origin::GitOrigin::new(&rid);
-            if origin.exists() {
-                match compute_diff_from_git_origin(&origin, base_branch, head_branch) {
-                    Ok(v) => return Ok(v),
-                    Err(e) => {
-                        tracing::warn!(error = %e, %slug, "git origin PR diff failed; falling back");
-                    }
+            let rid_b = rid.clone();
+            let base_b = base_branch.to_string();
+            let head_b = head_branch.to_string();
+            match tokio::task::spawn_blocking(move || {
+                let origin = veil_server::git_origin::GitOrigin::new(&rid_b);
+                if !origin.exists() {
+                    return None;
+                }
+                Some(compute_diff_from_git_origin(&origin, &base_b, &head_b))
+            })
+            .await
+            {
+                Ok(Some(Ok(v))) => return Ok(v),
+                Ok(Some(Err(e))) => {
+                    tracing::warn!(error = %e, %slug, "git origin PR diff failed; falling back");
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, %slug, "git origin PR diff join failed; falling back");
                 }
             }
         }
@@ -1874,7 +1966,15 @@ async fn finalize_wizard(
             let _ = change_management::application::submit_for_review(&st.deps, id).await;
         }
     }
-    let _ = ensure_ci_passed(&st.deps, id, "wizard").await;
+    let wizard_slug = st
+        .deps
+        .pr_repo
+        .find(id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| extract_slug_from_description(&p.description));
+    let _ = ensure_ci_passed(&st.deps, id, "wizard", wizard_slug.as_deref()).await;
 
     if outcome == "all_approved" {
         let comment = if body.summary.is_empty() {
@@ -2015,6 +2115,11 @@ async fn plan_provision(
     .await
     {
         Ok(v) => Ok(Json(v)),
+        Err(veil_shared::DomainError::NotFound) => Ok(Json(json!({
+            "ok": false,
+            "error": "nothing_to_provision",
+            "message": "No deployable stack for this project yet (no HTTP/compose units to place in the data center).",
+        }))),
         Err(e) => Err(domain_status(e)),
     }
 }
@@ -2023,6 +2128,15 @@ async fn provision_project(
     State(st): State<DeployState>,
     Json(body): Json<PlanBody>,
 ) -> Result<Json<Value>, StatusCode> {
+    if let Err(e) = veil_server::review::may_ship(&body.project_slug, None) {
+        return Ok(Json(json!({
+            "ok": false,
+            "error": "sign_off_required",
+            "message": e,
+            "hint": "Approve the change set on /review before shipping this SHA.",
+            "audit_env": veil_server::review::audit_env_json(),
+        })));
+    }
     let branch = body.branch.unwrap_or_else(|| "main".into());
     match deploy::application::provision_project(
         &st.deps,
@@ -2034,6 +2148,11 @@ async fn provision_project(
     .await
     {
         Ok(v) => Ok(Json(v)),
+        Err(veil_shared::DomainError::NotFound) => Ok(Json(json!({
+            "ok": false,
+            "error": "nothing_to_provision",
+            "message": "No deployable stack for this project yet (no HTTP/compose units to place in the data center).",
+        }))),
         Err(e) => Err(domain_status(e)),
     }
 }

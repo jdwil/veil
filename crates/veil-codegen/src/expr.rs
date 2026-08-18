@@ -77,6 +77,10 @@ pub struct GenCtx {
     /// Expected Rust return type of the enclosing fn (e.g. `Result<Option<T>, DomainError>`).
     /// Used to wrap `ret x` as `Ok(Some(x))` when returning Option.
     pub expected_return_rust: Option<String>,
+    /// When true, this expression is the value of an `Opt<T>` method (last
+    /// expr or match/if arm). Wrap domain values in `Some`, `null`/`()` in
+    /// `None`. Control-flow nodes apply the wrap to their arm values only.
+    pub option_value_wrap: bool,
     /// Struct types whose smart ctor is zero-arg (every field fillable from
     /// INV-002 / collection / nested defaults) and thus implement `Default`.
     /// `Type.new(a, b)` on these lowers to a positional struct update + `..Default`.
@@ -108,6 +112,8 @@ pub struct GenCtx {
     pub self_field_types: HashMap<String, String>,
     /// Layer statement specs by keyword — used for `lowers_to` template emission.
     pub statement_specs: HashMap<String, veil_ir::layer::StatementSpec>,
+    /// Bare enum variant → enum type (`Healthy` → `DaemonStatus`).
+    pub enum_variants: HashMap<String, String>,
 }
 
 impl GenCtx {
@@ -134,6 +140,7 @@ impl GenCtx {
             type_fallible_methods: HashSet::new(),
             async_fallible_methods: HashSet::new(),
             expected_return_rust: None,
+            option_value_wrap: false,
             defaultable_types: HashSet::new(),
             dep_fields: HashMap::new(),
             mut_locals: HashSet::new(),
@@ -143,6 +150,7 @@ impl GenCtx {
             local_domain_types: HashSet::new(),
             self_field_types: HashMap::new(),
             statement_specs: HashMap::new(),
+            enum_variants: HashMap::new(),
         }
     }
 
@@ -277,17 +285,33 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 let ret_type = method.return_type.as_ref()
                     .map(|t| extract_inner_type(t))
                     .unwrap_or_else(|| "()".to_string());
+                let bare_method = method.name.trim_end_matches(['!', '?']).to_string();
+                // Res! / Result, or a bang on the signature, is fallible.
+                // Unit methods without bang must not get `.await?`.
+                let is_result = matches!(method.return_type, Some(TypeExpr::Result(_)));
+                if is_result || method.name.ends_with('!') {
+                    ctx.type_fallible_methods
+                        .insert((c.name.clone(), bare_method.clone()));
+                    ctx.type_fallible_methods
+                        .insert((to_snake(&c.name), bare_method.clone()));
+                    ctx.type_fallible_methods
+                        .insert((c.name.clone(), method.name.clone()));
+                }
                 // Register under PascalCase trait name (e.g. "CohortRepo", "find")
                 ctx.method_returns.insert(
                     (c.name.clone(), method.name.clone()),
                     ret_type.clone(),
                 );
+                ctx.method_returns
+                    .insert((c.name.clone(), bare_method.clone()), ret_type.clone());
                 // Also register under snake_case dep name (e.g. "cohort_repo", "find")
                 // so lookups from @dep variable names resolve without conversion
                 ctx.method_returns.insert(
                     (to_snake(&c.name), method.name.clone()),
                     ret_type.clone(),
                 );
+                ctx.method_returns
+                    .insert((to_snake(&c.name), bare_method.clone()), ret_type.clone());
                 // Record parameter types for each method so call-site arg coercion
                 // can check whether a port expects Option<T> vs T.
                 let param_types: Vec<String> = method.params.iter()
@@ -299,10 +323,39 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 );
                 ctx.method_params.insert(
                     (to_snake(&c.name), method.name.clone()),
+                    param_types.clone(),
+                );
+                ctx.method_params.insert(
+                    (c.name.clone(), bare_method.clone()),
+                    param_types.clone(),
+                );
+                ctx.method_params.insert(
+                    (to_snake(&c.name), bare_method),
                     param_types,
                 );
                 // Type aliases (WearTestRepo = EntityRepo<WearTest>) share methods —
                 // also register under any alias that monomorphizes this trait.
+            }
+        }
+
+        // Bare enum variants (`Healthy`) → `DaemonStatus::Healthy`.
+        if c.shape == Shape::Enum {
+            for v in &c.variants {
+                register_enum_variant(ctx, v, &c.name);
+            }
+            for v in &c.rich_variants {
+                register_enum_variant(ctx, v.name(), &c.name);
+            }
+        }
+        for block in &c.blocks {
+            if block.shape == Shape::Enum {
+                let enum_name = block
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("{}State", c.name));
+                for v in &block.variants {
+                    register_enum_variant(ctx, v, &enum_name);
+                }
             }
         }
 
@@ -483,6 +536,16 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     (type_name.clone(), method.name.clone()),
                     inner.to_string(),
                 );
+                let param_types: Vec<String> = method
+                    .params
+                    .iter()
+                    .map(|(_, ty, _)| {
+                        let te = veil_ir::edit::parse_type_str(ty);
+                        type_name_simple(&te)
+                    })
+                    .collect();
+                ctx.method_params
+                    .insert((type_name.clone(), method.name.clone()), param_types);
                 // Track ref-pass parameters for this method
                 let has_any_ref = method.params.iter().any(|p| p.2);
                 if has_any_ref {
@@ -500,9 +563,36 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             let path_type = stub.rust_type_path(&s.name);
             ctx.stub_type_crate
                 .insert(type_name.clone(), (crate_name.clone(), path_type.clone()));
+            // Crate-qualified keys so `aws_sdk_sns.Client` is not confused with
+            // `aws_sdk_dynamodb.Client`.
+            ctx.stub_type_crate.insert(
+                format!("{crate_name}.{}", s.name),
+                (crate_name.clone(), path_type.clone()),
+            );
+            ctx.stub_type_crate.insert(
+                format!("{}::{}", crate_name, s.name),
+                (crate_name.clone(), path_type.clone()),
+            );
+            ctx.name_to_shape
+                .insert(format!("{crate_name}.{}", s.name), Shape::Struct);
+            // Bare name only if unique — last-write-wins is how all four AWS
+            // `Client` types collapsed to DynamoDB.
+            let bare_hits = registry
+                .stubs
+                .iter()
+                .filter(|st| {
+                    st.structs.iter().any(|x| x.name == s.name)
+                        || st.harness_fields.contains_key(&s.name)
+                })
+                .count();
+            if bare_hits <= 1 {
+                ctx.stub_type_crate
+                    .entry(s.name.clone())
+                    .or_insert_with(|| (crate_name.clone(), path_type.clone()));
+            }
             // Also register under the bare (unaliased) name so VEIL source can use
             // `AttributeValue.S(pk)` even when the stub is aliased (e.g. `use ... as ddb`).
-            if stub.alias.is_some() && s.name != type_name {
+            if stub.alias.is_some() && s.name != type_name && bare_hits <= 1 {
                 ctx.name_to_shape.entry(s.name.clone()).or_insert(Shape::Struct);
                 ctx.stub_type_crate
                     .entry(s.name.clone())
@@ -642,6 +732,251 @@ fn rust_field_is_defaultable(
     false
 }
 
+/// Record a unit variant → enum type. Ambiguous names (two enums, same variant)
+/// are dropped so we never invent the wrong qualifier.
+fn register_enum_variant(ctx: &mut GenCtx, variant: &str, enum_name: &str) {
+    if variant.is_empty()
+        || matches!(
+            variant,
+            "Ok" | "Err" | "Some" | "None" | "true" | "false" | "_" | "null" | "noop"
+        )
+    {
+        return;
+    }
+    match ctx.enum_variants.get(variant) {
+        Some(existing) if existing != enum_name => {
+            ctx.enum_variants.remove(variant);
+        }
+        Some(_) => {}
+        None => {
+            ctx.enum_variants
+                .insert(variant.to_string(), enum_name.to_string());
+        }
+    }
+}
+
+/// Qualified constructor for a stub type (`example_sdk::primitives::Blob`).
+/// Accepts a bare name (`Blob`) or a crate-qualified VEIL path
+/// (`aws_sdk_lambda.Blob` / `aws_sdk_lambda::Blob`). Falls back to the
+/// leaf name so rustc names the missing type instead of emitting `Vec<u8>`.
+fn stub_ctor_path(ctx: &GenCtx, type_name: &str) -> String {
+    if let Some((c, p)) = stub_type_parts(ctx, type_name) {
+        return format!("{c}::{p}");
+    }
+    lang_type_leaf(type_name).to_string()
+}
+
+/// `(crate, rust_type_path)` for a stub type. Tries the written name, then
+/// `crate.Leaf` / `crate::Leaf`, then a unique bare leaf. Never invents a
+/// module — `rust_type_path` on the stub is the only source of `types::` /
+/// `primitives::`.
+fn stub_type_parts<'a>(ctx: &'a GenCtx, type_name: &str) -> Option<(&'a str, &'a str)> {
+    if let Some((c, p)) = ctx.stub_type_crate.get(type_name) {
+        return Some((c.as_str(), p.as_str()));
+    }
+    let leaf = lang_type_leaf(type_name);
+    let crate_guess = type_name
+        .split(['.', ':'])
+        .next()
+        .unwrap_or("")
+        .replace('-', "_");
+    if !crate_guess.is_empty() && leaf != type_name {
+        for key in [
+            format!("{crate_guess}.{leaf}"),
+            format!("{crate_guess}::{leaf}"),
+        ] {
+            if let Some((c, p)) = ctx.stub_type_crate.get(&key) {
+                return Some((c.as_str(), p.as_str()));
+            }
+        }
+    }
+    if leaf != type_name {
+        if let Some((c, p)) = ctx.stub_type_crate.get(leaf) {
+            return Some((c.as_str(), p.as_str()));
+        }
+    }
+    None
+}
+
+/// Last path segment of a VEIL type (`aws_sdk_lambda.Blob` → `Blob`).
+fn lang_type_leaf(target: &str) -> &str {
+    target
+        .rsplit(['.', ':'])
+        .find(|s| !s.is_empty())
+        .unwrap_or(target)
+}
+
+fn method_bare(method: &str) -> &str {
+    method.trim_end_matches(['!', '?'])
+}
+
+/// SDK / stub `Res!` errors are often `&T` or types with Debug but not Display.
+/// Never use `e.to_string()` for unknown E.
+fn map_err_domain() -> &'static str {
+    r#".map_err(|e| DomainError::External(format!("{e:?}")))?"#
+}
+
+/// `Res!<Str>` on the Rust side is usually `Result<&str, E>`. VEIL `Str` is
+/// owned `String`, so own the payload and map the error via Debug.
+fn map_err_domain_own_str() -> &'static str {
+    r#".map(|s| s.to_string()).map_err(|e| DomainError::External(format!("{e:?}")))?"#
+}
+
+fn is_str_like_return(ty: &str) -> bool {
+    let t = ty.trim();
+    matches!(
+        t,
+        "Str" | "String" | "&str" | "&String" | "Res!<Str>" | "Opt<Str>"
+    ) || t.starts_with("Result<String")
+        || t.starts_with("Result<&str")
+        || t.starts_with("Result<&String")
+}
+
+/// True when a stub method's success type is VEIL `Str` (own a `String`).
+/// Name fallback is only `as_s` / `as_n` — other `as_*` extractors return
+/// maps, lists, bools, bytes.
+fn should_own_str_result(ctx: &GenCtx, recv_ty: Option<&str>, method: &str) -> bool {
+    let bare = method_bare(method);
+    if let Some(ty) = recv_ty {
+        let leaf = lang_type_leaf(ty);
+        for key in [ty, leaf] {
+            if let Some(ret) = ctx.return_type_of(key, bare) {
+                return is_str_like_return(ret);
+            }
+        }
+    }
+    matches!(bare, "as_s" | "as_n")
+}
+
+fn peel_option_rust(ty: &str) -> Option<&str> {
+    let t = ty.trim();
+    t.strip_prefix("Option<")
+        .and_then(|s| s.strip_suffix('>'))
+        .or_else(|| t.strip_prefix("Opt<").and_then(|s| s.strip_suffix('>')))
+}
+
+fn rust_ty_is_stringish(ty: &str) -> bool {
+    matches!(
+        ty.trim(),
+        "String" | "Str" | "&str" | "&String" | "&'static str"
+    )
+}
+
+fn rust_ty_is_numeric(ty: &str) -> bool {
+    matches!(
+        ty.trim(),
+        "i64" | "i32" | "u64" | "u32" | "usize" | "isize" | "f64" | "f32" | "Int" | "F64"
+    )
+}
+
+fn expr_is_stringish(expr: &Expr, rust: &str, ctx: &GenCtx) -> bool {
+    match expr {
+        Expr::StringLit(_) => true,
+        Expr::Ident(n) => ctx.local_type(n).is_some_and(rust_ty_is_stringish),
+        _ => infer_expr_type(expr, ctx)
+            .as_deref()
+            .is_some_and(rust_ty_is_stringish)
+            || rust.contains(".to_string()")
+            || rust.trim_start().starts_with('"'),
+    }
+}
+
+fn expr_is_numeric(expr: &Expr, ctx: &GenCtx) -> bool {
+    match expr {
+        Expr::IntLit(_) | Expr::FloatLit(_) => true,
+        Expr::Ident(n) => ctx.local_type(n).is_some_and(rust_ty_is_numeric),
+        _ => infer_expr_type(expr, ctx)
+            .as_deref()
+            .is_some_and(rust_ty_is_numeric),
+    }
+}
+
+/// `format!("{}{}", ident, field)` must not move locals reused later.
+fn clone_if_named_value(expr: &Expr, rust: String) -> String {
+    if rust.ends_with(".clone()") || rust.starts_with('"') || rust.starts_with("format!(") {
+        return rust;
+    }
+    match expr {
+        Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{rust}.clone()"),
+        _ => rust,
+    }
+}
+
+/// Drop a trailing try-suffix so a `match` can consume a `Result` directly.
+/// String-pattern matches must **not** use this — they need the unwrapped value.
+fn strip_try_suffix(raw: String) -> String {
+    raw.strip_suffix(".await.map_err(|e| DomainError::External(format!(\"{e:?}\")))?")
+        .or_else(|| {
+            raw.strip_suffix(".await.map_err(|e| DomainError::External(format!(\"{:?}\", e)))?")
+        })
+        .map(|s| format!("{s}.await"))
+        .or_else(|| {
+            raw.strip_suffix(".await.map_err(|e| DomainError::External(e.to_string()))?")
+                .map(|s| format!("{s}.await"))
+        })
+        .or_else(|| raw.strip_suffix(".await?").map(|s| format!("{s}.await")))
+        .or_else(|| {
+            raw.strip_suffix(".map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{e:?}\")))?")
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            raw.strip_suffix(map_err_domain())
+                .or_else(|| raw.strip_suffix(".map_err(|e| DomainError::External(e.to_string()))?"))
+                .map(|s| s.to_string())
+        })
+        .or_else(|| raw.strip_suffix('?').map(|s| s.to_string()))
+        .unwrap_or(raw)
+}
+
+fn expr_handles_option_wrap(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Match(_, _) | Expr::IfExpr(_) | Expr::Return(_) | Expr::IfLet { .. }
+    )
+}
+
+/// `null` / `()` → `None`; already-Option locals stay as-is; else `Some(val)`.
+fn wrap_as_option_value(expr: &Expr, rust: String, ctx: &GenCtx) -> String {
+    let t = rust.trim();
+    if t == "None" || t == "()" {
+        return "None".to_string();
+    }
+    if t.starts_with("Some(") || t.starts_with("return ") {
+        return rust;
+    }
+    if let Expr::Ident(n) = expr {
+        if ctx
+            .local_type(n)
+            .is_some_and(|ty| ty.starts_with("Option<"))
+        {
+            return rust;
+        }
+    }
+    format!("Some({rust})")
+}
+
+/// True when `Type.new` is a module free-fn (`sqlx::query`), not `Type::new`.
+/// Stub metadata only — never a type-name special case (`Query` is also a
+/// DynamoDB rustdoc type with `fn new()`).
+fn stub_new_is_module_free_fn(ctx: &GenCtx, effective_target: &str, type_leaf: &str) -> bool {
+    ctx.stub_typed_ctors.contains_key(effective_target)
+        || ctx.stub_typed_ctors.contains_key(type_leaf)
+        || ctx
+            .stub_type_crate
+            .contains_key(&format!("{type_leaf}As"))
+        || ctx.name_to_shape.contains_key(&format!("{type_leaf}As"))
+}
+
+fn bytes_from_str_expr(arg: &str) -> String {
+    format!("{{ let __s = ({arg}).to_string(); __s.into_bytes() }}")
+}
+
+fn bytes_from_hex_expr(hex_expr: &str) -> String {
+    format!(
+        "{{ let __h: String = ({hex_expr}).to_string(); let __h = __h.as_str(); let mut __b = Vec::with_capacity(__h.len() / 2); let mut __i = 0usize; while __i + 1 < __h.len() {{ if let Ok(__v) = u8::from_str_radix(&__h[__i..__i + 2], 16) {{ __b.push(__v); }} __i += 2; }} __b }}"
+    )
+}
+
 /// Extract the inner type from a TypeExpr (unwrapping Result/Optional).
 fn extract_inner_type(ty: &TypeExpr) -> String {
     match ty {
@@ -745,6 +1080,12 @@ fn type_name_simple(ty: &TypeExpr) -> String {
 
 /// Translate a VEIL expression to a Rust expression string (no trailing semicolon).
 pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
+    if ctx.option_value_wrap && !expr_handles_option_wrap(expr) {
+        let mut inner_ctx = ctx.clone_for_inference();
+        inner_ctx.option_value_wrap = false;
+        let inner = expr_to_rust(expr, &inner_ctx);
+        return wrap_as_option_value(expr, inner, ctx);
+    }
     match expr {
         Expr::Ident(name) => {
             // VEIL null → Rust None
@@ -771,13 +1112,48 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             if ctx.state_locals.contains(name.as_str()) {
                 // Threaded step state: read from the shared JSON bag.
                 format!("state[\"{}\"]", name)
-            } else if ctx.in_method && ctx.self_fields.contains(name.as_str()) && !ctx.locals.contains(name.as_str()) {
-                format!("&self.{}", to_snake(name))
+            } else if ctx.in_method && !ctx.locals.contains(name.as_str()) {
+                if let Some(rf) = resolve_self_field_name(ctx, name) {
+                    if rf == "pool" {
+                        "&self.pool".to_string()
+                    } else {
+                        format!("self.{rf}.clone()")
+                    }
+                } else if name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                {
+                    if let Some(enum_ty) = ctx.enum_variants.get(name) {
+                        format!("{enum_ty}::{name}")
+                    } else {
+                        name.clone()
+                    }
+                } else {
+                    name.clone()
+                }
+            } else if !ctx.locals.contains(name)
+                && name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+            {
+                if let Some(enum_ty) = ctx.enum_variants.get(name) {
+                    format!("{enum_ty}::{name}")
+                } else {
+                    name.clone()
+                }
             } else {
                 name.clone()
             }
         }
         Expr::FieldAccess(base, field) => {
+            // `opt.is_some` (no call) is the same predicate as `opt.is_some()`.
+            if field == "is_some" || field == "is_none" {
+                return format!("{}.{field}()", expr_to_rust(base, ctx));
+            }
             // A field of a state-local: index into the threaded JSON state.
             if let Expr::Ident(name) = base.as_ref() {
                 if ctx.state_locals.contains(name.as_str()) {
@@ -786,12 +1162,13 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 // Method body: `self.table` → clone so `&self` methods compile.
                 // `self.pool` stays uncloned — sqlx `Executor` is for `&Pool`.
                 if name == "self" && ctx.in_method {
-                    let f = to_snake(field);
+                    let f = resolve_self_field_name(ctx, field).unwrap_or_else(|| to_snake(field));
                     if f == "pool" {
                         return "&self.pool".to_string();
                     }
                     if ctx.self_fields.contains(field.as_str())
                         || ctx.self_fields.contains(&f)
+                        || ctx.self_field_types.contains_key(&f)
                     {
                         return format!("self.{}.clone()", f);
                     }
@@ -918,6 +1295,17 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     "{{ let mut __v = {l}; __v.extend({r}); __v }}"
                 );
             }
+            // String concat: Rust `String` has no `+ &String` / `+ &str` mix that
+            // typechecks for every operand shape. `format!` is the portable
+            // lowering for VEIL `Str + Str` (and `"lit" + field`).
+            if matches!(op.op, veil_ir::ast::BinOp::Add)
+                && (expr_is_stringish(&op.left, &l, ctx) || expr_is_stringish(&op.right, &r, ctx))
+                && !(expr_is_numeric(&op.left, ctx) && expr_is_numeric(&op.right, ctx))
+            {
+                let l = clone_if_named_value(&op.left, l);
+                let r = clone_if_named_value(&op.right, r);
+                return format!("format!(\"{{}}{{}}\", {l}, {r})");
+            }
             format!("{} {} {}", l, binop_to_rust(&op.op), r)
         }
         Expr::UnaryOp(op) => {
@@ -925,7 +1313,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             format!("{}{}", unaryop_to_rust(&op.op), inner)
         }
         Expr::IfExpr(ie) => {
-            let cond = expr_to_rust(&ie.condition, ctx);
+            let mut cond_ctx = ctx.clone_for_inference();
+            cond_ctx.option_value_wrap = false;
+            let cond = expr_to_rust(&ie.condition, &cond_ctx);
             // Auto-coerce serde_json::Value → bool for if conditions
             let cond = if let Expr::Ident(name) = ie.condition.as_ref() {
                 if ctx.local_type(name) == Some("serde_json::Value") {
@@ -937,6 +1327,17 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 let then_expr = expr_to_rust(&ie.then_body[0], ctx);
                 let else_expr = expr_to_rust(&ie.else_body.as_ref().unwrap()[0], ctx);
                 return format!("if {} {{ {} }} else {{ {} }}", cond, then_expr, else_expr);
+            }
+            if ctx.option_value_wrap {
+                let then_body = emit_value_block(&ie.then_body, ctx, "    ");
+                if let Some(else_body) = &ie.else_body {
+                    let else_stmts = emit_value_block(else_body, ctx, "    ");
+                    return format!(
+                        "if {} {{\n{}\n}} else {{\n{}\n}}",
+                        cond, then_body, else_stmts
+                    );
+                }
+                return format!("if {} {{\n{}\n}} else {{\n    None\n}}", cond, then_body);
             }
             let then_body = emit_tracked_block(&ie.then_body, ctx, "    ");
             if let Some(else_body) = &ie.else_body {
@@ -1147,10 +1548,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         } else {
                             format!("return {}", val)
                         }
-                    } else if val == "None" {
-                        // `ret null`: Option APIs → Ok(None); otherwise NotFound.
+                    } else if val == "None" || val == "()" {
+                        // `ret null` / `ret ()`: Option APIs → Ok(None); otherwise NotFound / unit Ok.
                         if returns_option {
                             "return Ok(None)".to_string()
+                        } else if val == "()" {
+                            "return Ok(())".to_string()
                         } else {
                             "return Err(DomainError::NotFound)".to_string()
                         }
@@ -1255,7 +1658,20 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::Try(expr) => format!("{}?", expr_to_rust(expr, ctx)),
         Expr::Require(inner) => {
             let s = expr_to_rust(inner, ctx);
-            format!("{s}.ok_or(DomainError::NotFound)?")
+            // ACS-010: require force-presents one Opt layer *and* one Res layer.
+            // Bang already emits try (`?` / `.await?`) for Res. If the success
+            // type is still Option, we must unwrap that too — do not treat a
+            // trailing `?` as "already fully present".
+            let still_option = infer_expr_type(inner, ctx)
+                .as_deref()
+                .is_some_and(|t| peel_option_rust(t).is_some());
+            if still_option {
+                format!("{s}.ok_or(DomainError::NotFound)?")
+            } else if s.trim_end().ends_with('?') {
+                s
+            } else {
+                format!("{s}.ok_or(DomainError::NotFound)?")
+            }
         },
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)) }
         Expr::IfLet { pattern, expr, then_body, else_body } => {
@@ -1349,22 +1765,19 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::Match(scrutinee, arms) => {
             // The match consumes the scrutinee's Result directly, so a fallible
             // call scrutinee must NOT auto-propagate with `?`.
-            let raw = expr_to_rust(scrutinee, ctx);
-            let scrutinee_str = raw
-                .strip_suffix(".await.map_err(|e| DomainError::External(format!(\"{e:?}\")))?")
-                .or_else(|| {
-                    raw.strip_suffix(".await.map_err(|e| DomainError::External(e.to_string()))?")
-                })
-                .map(|s| format!("{}.await", s))
-                .or_else(|| {
-                    raw.strip_suffix(".await?")
-                        .map(|s| format!("{}.await", s))
-                })
-                .unwrap_or_else(|| {
-                    raw.strip_suffix('?')
-                        .map(|s| s.to_string())
-                        .unwrap_or(raw)
-                });
+            // Never Some-wrap the scrutinee — only arm values.
+            let mut scrut_ctx = ctx.clone_for_inference();
+            scrut_ctx.option_value_wrap = false;
+            let raw = expr_to_rust(scrutinee, &scrut_ctx);
+            // String-literal arms match `&str`. Keep the try-unwrap so we do
+            // not call `.as_str()` on a `Result`. Result/enum arms strip `?`
+            // so the match can consume Ok/Err or the domain value.
+            let has_string_patterns = arms.iter().any(|a| a.pattern.starts_with('"'));
+            let scrutinee_str = if has_string_patterns {
+                raw.clone()
+            } else {
+                strip_try_suffix(raw)
+            };
             // If the scrutinee is a serde_json::Value local but arms use typed
             // enum/struct patterns, deserialize first.
             let scrutinee_str = if let Expr::Ident(name) = scrutinee.as_ref() {
@@ -1390,10 +1803,15 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             } else {
                 scrutinee_str
             };
-            // If arms contain string literal patterns, add .as_str() for String scrutinees
-            let has_string_patterns = arms.iter().any(|a| a.pattern.starts_with('"'));
+            // String-literal arms need `&str`. Scrutinee is already unwrapped
+            // (see above) so this is String / &str, never Result.
             let scrutinee_final = if has_string_patterns {
-                format!("{}.as_str()", scrutinee_str)
+                let t = scrutinee_str.trim();
+                if t.ends_with(".as_str()") || t.ends_with(".as_str().trim()") {
+                    scrutinee_str
+                } else {
+                    format!("{scrutinee_str}.as_str()")
+                }
             } else {
                 scrutinee_str
             };
@@ -1416,12 +1834,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             for arm in arms {
                 // Use structured pattern if available, fall back to string normalization
                 let pattern = if let Some(rich) = &arm.rich_pattern {
-                    pattern_to_rust(rich)
+                    pattern_to_rust_qualified(rich, Some(&ctx.enum_variants))
                 } else {
-                    normalize_match_pattern(&arm.pattern)
+                    normalize_match_pattern(&arm.pattern, ctx)
                 };
                 let guard_str = match &arm.guard {
-                    Some(g) => format!(" if {}", expr_to_rust(g, ctx)),
+                    Some(g) => format!(" if {}", expr_to_rust(g, &scrut_ctx)),
                     None => String::new(),
                 };
                 // Match arm bodies get their own local set (bindings + assigns).
@@ -1434,20 +1852,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 let body_str = if arm.body.len() == 1 {
                     expr_to_rust(&arm.body[0], &arm_ctx)
                 } else {
-                    let mut stmts = Vec::new();
-                    for e in &arm.body {
-                        let line = expr_to_rust(e, &arm_ctx);
-                        if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
-                            if !name.contains('.') {
-                                arm_ctx.locals.insert(name.clone());
-                                if let Some(t) = infer_expr_type(rhs, &arm_ctx) {
-                                    arm_ctx.local_types.insert(name.clone(), t);
-                                }
-                            }
-                        }
-                        stmts.push(format!("        {};", line));
-                    }
-                    format!("{{\n{}\n    }}", stmts.join("\n"))
+                    format!(
+                        "{{\n{}\n    }}",
+                        emit_value_block(&arm.body, &arm_ctx, "        ")
+                    )
                 };
                 out.push_str(&format!("        {}{} => {},\n", pattern, guard_str, body_str));
             }
@@ -1797,6 +2205,15 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                 Some(name.clone())
             } else if let Some(t) = ctx.local_type(name) {
                 Some(t.to_string())
+            } else if let Some(t) = ctx
+                .self_field_types
+                .get(name)
+                .or_else(|| ctx.self_field_types.get(&to_snake(name)))
+            {
+                Some(
+                    peel_dyn_trait_name(t)
+                        .unwrap_or_else(|| t.clone()),
+                )
             } else if ctx.stub_type_crate.contains_key(name) {
                 Some(name.clone())
             } else {
@@ -1854,14 +2271,19 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                 }
             }
             if ctx.fallible_methods.contains(method) {
+                let suffix = if should_own_str_result(ctx, Some(ty.as_str()), method) {
+                    map_err_domain_own_str()
+                } else {
+                    map_err_domain()
+                };
                 // Only apply fallible suffix if this specific type has the method as fallible.
                 // Use type_fallible_methods: (Type, method) set for precision.
                 if ctx.type_fallible_methods.contains(&(bare.clone(), method.to_string())) {
-                    return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+                    return suffix.to_string();
                 }
                 // If the method is ONLY fallible (not ambiguous), apply it.
                 if !ctx.non_fallible_methods.contains(method) {
-                    return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+                    return suffix.to_string();
                 }
                 // Ambiguous and not confirmed fallible on this type: no suffix.
             }
@@ -1870,7 +2292,18 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
         if ctx.name_to_shape.get(bare.as_str()) == Some(&Shape::Trait)
             || ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Trait)
         {
-            return ".await?".to_string();
+            let fallible = has_bang
+                || ctx
+                    .type_fallible_methods
+                    .contains(&(bare.clone(), method.to_string()))
+                || ctx
+                    .type_fallible_methods
+                    .contains(&(ty.clone(), method.to_string()));
+            return if fallible {
+                ".await?".to_string()
+            } else {
+                ".await".to_string()
+            };
         }
     }
 
@@ -1899,7 +2332,11 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                 || ctx.name_to_shape.get(ty) == Some(&Shape::Struct))
     });
     if is_trait_method && !is_stub_or_struct_method {
-        return ".await?".to_string();
+        return if has_bang {
+            ".await?".to_string()
+        } else {
+            ".await".to_string()
+        };
     }
     // Sync Res! stub methods: map any Error into DomainError.
     // Only apply when the receiver is NOT a chained Call — intermediate methods
@@ -1912,11 +2349,17 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     let recv_is_chain = matches!(recv, Expr::Call(_));
     let is_ambiguous = ctx.non_fallible_methods.contains(method);
     if ctx.fallible_methods.contains(method) && !recv_is_chain && !is_ambiguous {
-        return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+        let own = should_own_str_result(ctx, recv_type_name.as_deref(), method);
+        return if own {
+            map_err_domain_own_str()
+        } else {
+            map_err_domain()
+        }
+        .to_string();
     }
     // Terminal builder `.build!()` is fallible (BuildError) even on chains.
     if has_bang && method == "build" {
-        return ".map_err(|e| DomainError::External(e.to_string()))?".to_string();
+        return map_err_domain().to_string();
     }
     // Fallback: if the method has a bang (!) and nothing else matched,
     // treat it as an async fallible call (common for SDK methods like collect!,
@@ -1927,22 +2370,59 @@ fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     String::new()
 }
 
-/// `Box<dyn SagaStep + Send + Sync>` → `SagaStep`
+/// `Box<dyn SagaStep + Send + Sync>` / `Arc<dyn SnsClient + Send + Sync>` → trait name
 fn peel_dyn_trait_name(ty: &str) -> Option<String> {
     let t = ty.trim();
-    if let Some(rest) = t.strip_prefix("Box<dyn ") {
-        let name = rest.split(|c: char| c == '+' || c == '>' || c == ' ').next()?;
-        if !name.is_empty() {
-            return Some(name.to_string());
-        }
+    let after_dyn = if let Some(rest) = t.strip_prefix("Box<dyn ") {
+        rest
+    } else if let Some(rest) = t.strip_prefix("Arc<dyn ") {
+        rest
+    } else if let Some(rest) = t.strip_prefix("std::sync::Arc<dyn ") {
+        rest
+    } else if let Some(rest) = t.strip_prefix("dyn ") {
+        rest
+    } else {
+        return None;
+    };
+    let name = after_dyn.split(|c: char| c == '+' || c == '>' || c == ' ').next()?;
+    if !name.is_empty() {
+        Some(name.to_string())
+    } else {
+        None
     }
-    if let Some(rest) = t.strip_prefix("dyn ") {
-        let name = rest.split(|c: char| c == '+' || c == ' ').next()?;
-        if !name.is_empty() {
-            return Some(name.to_string());
-        }
+}
+
+/// Map a VEIL `self.X` / bare env ident onto the rust adapter field name.
+/// `@env(TABLE_NAME)` is `table_name`; last-segment (`table` / `name`) and
+/// the original `TABLE_NAME` still resolve to that field.
+fn resolve_self_field_name(ctx: &GenCtx, field: &str) -> Option<String> {
+    let snake = to_snake(field);
+    let lower = field.to_ascii_lowercase();
+    if ctx.self_field_types.contains_key(&snake) {
+        return Some(snake);
     }
-    None
+    if ctx.self_field_types.contains_key(&lower) {
+        return Some(lower);
+    }
+    let mut best: Option<String> = None;
+    let consider = |known: &str, needle: &str, best: &mut Option<String>| {
+        if known == needle || known.rsplit('_').next() == Some(needle) {
+            match best {
+                None => *best = Some(known.to_string()),
+                Some(b) if known.len() > b.len() => *best = Some(known.to_string()),
+                _ => {}
+            }
+        }
+    };
+    for known in ctx
+        .self_field_types
+        .keys()
+        .chain(ctx.self_fields.iter())
+    {
+        consider(known, &snake, &mut best);
+        consider(known, &lower, &mut best);
+    }
+    best.filter(|b| ctx.self_fields.contains(b) || ctx.self_field_types.contains_key(b))
 }
 
 /// `Vec<Box<dyn T + …>>` / `&[Box<dyn T + …>]` → element type string
@@ -2142,7 +2622,12 @@ fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: &[Ex
             }
         }
     }
-    clone_args(args, ctx)
+    let param_tys = param_types_for(recv_type, method, ctx);
+    args.iter()
+        .enumerate()
+        .map(|(i, a)| arg_to_rust(a, param_tys.get(i).map(|s| s.as_str()), ctx))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Check if an expression is rooted in a local whose type is serde_json::Value.
@@ -2177,11 +2662,210 @@ fn is_ref_local(name: &str, ctx: &GenCtx) -> bool {
         || ty.contains("&[")
 }
 
+fn is_hashmap_param(ty: &str) -> bool {
+    ty.contains("HashMap") || ty.starts_with("Map<")
+}
+
+fn is_option_param(ty: &str) -> bool {
+    ty.starts_with("Option<") || ty.starts_with("Opt<")
+}
+
+/// Peel `Arc<dyn Port + Send + Sync>` / `Option<Foo>` down to the type name
+/// used as a `method_params` key.
+fn peel_type_key(s: &str) -> String {
+    let s = s.trim();
+    if let Some(rest) = s.split("dyn ").nth(1) {
+        return rest
+            .split(|c: char| c == '+' || c == '<' || c == '>' || c == ',')
+            .next()
+            .unwrap_or(rest)
+            .trim()
+            .to_string();
+    }
+    s.split('<')
+        .next()
+        .unwrap_or(s)
+        .trim()
+        .trim_start_matches('&')
+        .to_string()
+}
+
+fn param_types_for(recv: Option<&str>, method: &str, ctx: &GenCtx) -> Vec<String> {
+    let bare = method.trim_end_matches(['!', '?']).to_string();
+    let mut keys: Vec<(String, String)> = match recv {
+        Some(r) => {
+            let snake = to_snake(r);
+            vec![
+                (r.to_string(), method.to_string()),
+                (r.to_string(), bare.clone()),
+                (snake.clone(), method.to_string()),
+                (snake, bare.clone()),
+            ]
+        }
+        None => Vec::new(),
+    };
+    if let Some(r) = recv {
+        // @dep field → trait (`sns_client` → `SnsClient`)
+        if let Some((trait_name, _)) = ctx
+            .dep_fields
+            .iter()
+            .find(|(_, f)| f.as_str() == r || f.as_str() == to_snake(r))
+        {
+            keys.push((trait_name.clone(), method.to_string()));
+            keys.push((trait_name.clone(), bare.clone()));
+            keys.push((to_snake(trait_name), method.to_string()));
+            keys.push((to_snake(trait_name), bare.clone()));
+        }
+        // Adapter field rust type (`Arc<dyn SnsClient + …>`) → trait key
+        if let Some(fty) = ctx
+            .self_field_types
+            .get(r)
+            .or_else(|| ctx.self_field_types.get(&to_snake(r)))
+        {
+            let peeled = peel_type_key(fty);
+            if !peeled.is_empty() {
+                keys.push((peeled.clone(), method.to_string()));
+                keys.push((peeled.clone(), bare.clone()));
+                keys.push((to_snake(&peeled), method.to_string()));
+                keys.push((to_snake(&peeled), bare.clone()));
+            }
+        }
+    }
+    for k in &keys {
+        if let Some(p) = ctx.method_params.get(k) {
+            return p.clone();
+        }
+    }
+    // Prefer a unique Map-bearing signature for this method when the
+    // receiver key missed (dep field vs stub fluent of the same name).
+    let map_hits: Vec<&Vec<String>> = ctx
+        .method_params
+        .iter()
+        .filter(|((_, m), tys)| {
+            (*m == method || *m == bare)
+                && tys
+                    .iter()
+                    .any(|t| is_hashmap_param(t))
+        })
+        .map(|(_, v)| v)
+        .collect();
+    if map_hits.len() == 1 {
+        return map_hits[0].clone();
+    }
+    if let Some(first) = map_hits.first() {
+        if map_hits.iter().all(|h| *h == *first) {
+            return (*first).clone();
+        }
+    }
+    let hits: Vec<&Vec<String>> = ctx
+        .method_params
+        .iter()
+        .filter(|((_, m), _)| *m == method || *m == bare)
+        .map(|(_, v)| v)
+        .collect();
+    if hits.len() == 1 {
+        return hits[0].clone();
+    }
+    if let Some(first) = hits.first() {
+        if hits.iter().all(|h| *h == *first) {
+            return (*first).clone();
+        }
+    }
+    Vec::new()
+}
+
+fn map_literal_to_hashmap(fields: &[(String, Expr)], ctx: &GenCtx) -> String {
+    if fields.is_empty() {
+        return "std::collections::HashMap::new()".to_string();
+    }
+    let inserts: Vec<String> = fields
+        .iter()
+        .map(|(k, v)| {
+            let val = expr_to_rust(v, ctx);
+            format!("__m.insert(\"{k}\".to_string(), {val})")
+        })
+        .collect();
+    format!(
+        "{{ let mut __m = std::collections::HashMap::new(); {}; __m }}",
+        inserts.join("; ")
+    )
+}
+
+fn arg_looks_optional(arg: &Expr, rust: &str, ctx: &GenCtx) -> bool {
+    rust.starts_with("Some(")
+        || rust == "None"
+        || rust.starts_with("None::<")
+        || match arg {
+            Expr::Ident(n) => ctx
+                .local_type(n)
+                .map(|t| t.starts_with("Option<") || t.starts_with("Opt<"))
+                .unwrap_or(false),
+            _ => false,
+        }
+}
+
+fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
+    let mut rust = if let (Some(ty), Expr::StructLit(name, fields)) = (param_ty, arg) {
+        if name.is_empty() && is_hashmap_param(ty) {
+            map_literal_to_hashmap(fields, ctx)
+        } else {
+            expr_to_rust(arg, ctx)
+        }
+    } else {
+        match arg {
+            Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => {
+                format!("state[\"{n}\"].clone()")
+            }
+            Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
+            Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
+            Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
+            Expr::Ident(n) if n == "pool" => "&self.pool".to_string(),
+            Expr::Ident(n) if ctx.is_local(n) => format!("{n}.clone()"),
+            Expr::FieldAccess(base, field)
+                if field == "pool" && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
+            {
+                "&self.pool".to_string()
+            }
+            _ => expr_to_rust(arg, ctx),
+        }
+    };
+    if let Some(ty) = param_ty {
+        if is_option_param(ty) && !arg_looks_optional(arg, &rust, ctx) {
+            rust = format!("Some({rust})");
+        }
+    }
+    rust
+}
+
+/// Receiver name used to look up port/stub param types.
+/// Ident and `self.field` / `deps.field` last segments all count.
+fn call_recv_lookup_name(call: &CallExpr) -> Option<String> {
+    if !call.target.is_empty() {
+        return Some(call.target.clone());
+    }
+    match call.receiver.as_deref() {
+        Some(Expr::Ident(n)) => Some(n.clone()),
+        Some(Expr::FieldAccess(_, field)) => Some(field.clone()),
+        Some(Expr::Call(inner)) => call_recv_lookup_name(inner),
+        _ => None,
+    }
+}
+
+fn call_args_to_rust(call: &CallExpr, ctx: &GenCtx) -> String {
+    let recv_owned = call_recv_lookup_name(call);
+    let recv = recv_owned.as_deref();
+    let tys = param_types_for(recv, &call.method, ctx);
+    call.args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| arg_to_rust(a, tys.get(i).map(|s| s.as_str()), ctx))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Translate a Call expression with shape-aware name resolution.
 fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
-    let args_str = call.args.iter()
-        .map(|a| expr_to_rust(a, ctx))
-        .collect::<Vec<_>>().join(", ");
+    let args_str = call_args_to_rust(call, ctx);
 
     // Built-in List methods: `.get(i)` → indexing (`[i as usize]`), `.len()` →
     // `.len() as i64`. The receiver/target is the list expression.
@@ -2287,6 +2971,17 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             }
         }
 
+        let bare_conv = call.method.trim_end_matches(['!', '?']);
+        if matches!(bare_conv, "to_str" | "as_str" | "to_string") && call.args.is_empty() {
+            let recv_is_string = matches!(recv.as_ref(), Expr::Ident(n) if ctx.local_type(n) == Some("String"));
+            if !recv_is_string {
+                return format!("String::from_utf8_lossy({recv_str}.as_ref()).to_string()");
+            }
+        }
+        if matches!(bare_conv, "as_bytes" | "to_bytes" | "into_bytes") && call.args.is_empty() {
+            return format!("{recv_str}.as_ref().to_vec()");
+        }
+
         // Phase 2, Issue 1: Redundant .unwrap() elision.
         // When the receiver is itself a Call whose codegen already unwraps the value
         // (as_s, as_n → .map_err()?  /  get("lit") → .ok_or_else()?), a following
@@ -2327,23 +3022,14 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if call.method == "as_str" && call.args.is_empty() {
             return format!("{}.as_str().map(|s| s.to_string())", recv_str);
         }
-        // DynamoDB AttributeValue .as_s() / .as_n() returns Result<&str, &AttributeValue>
-        // which doesn't implement From for DomainError — use map_err.
-        if (call.method == "as_s" || call.method == "as_n" || call.method.starts_with("as_"))
-            && call.args.is_empty()
-            && call.method != "as_str"
-        {
-            // Keep as_s / as_n (not snake-cased away) — AWS AttributeValue API.
-            let m = if call.method.starts_with("as_") {
-                call.method.clone()
-            } else {
-                to_snake(&call.method)
-            };
-            return format!(
-                "{}.{}().map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{{:?}}\", e)))?",
-                recv_str,
-                m
-            );
+        // Stub `Res!<Str>` getters (`as_s` / `as_n` / typed as_*): Rust is
+        // usually `Result<&str, E>` with E: Debug + !Display. Own a String.
+        if call.args.is_empty() {
+            let recv_ty = infer_expr_type(recv, ctx);
+            if should_own_str_result(ctx, recv_ty.as_deref(), &call.method) {
+                let m = method_bare(&call.method);
+                return format!("{recv_str}.{m}(){}", map_err_domain_own_str());
+            }
         }
         // A trait method invoked on a chained receiver is async + fallible.
         let suffix = receiver_call_suffix(recv, &call.method, ctx);
@@ -2392,17 +3078,20 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!("{}.limit(({}) as i32){}", recv_str, arg, suffix);
             }
         }
-        // Resolve receiver type for ref-param passing
-        let recv_type_for_args: Option<&str> = if let Expr::Ident(name) = recv.as_ref() {
-            ctx.local_type(name)
-        } else {
-            None
+        // Look up param types by receiver *name* (port/dep field), not the
+        // inferred Rust local type. `local_type("sns_client")` is None; the
+        // port is registered as `(sns_client, publish)`. Falling back to
+        // "any method named publish" collides with stub fluent `publish()`.
+        let recv_lookup = match recv.as_ref() {
+            Expr::Ident(name) => Some(name.as_str()),
+            Expr::FieldAccess(_, field) => Some(field.as_str()),
+            _ => None,
         };
         return format!(
             "{}.{}({}){}",
             recv_str,
             m,
-            clone_args_for_typed_method(recv_type_for_args, &call.method, &call.args, ctx),
+            clone_args_for_typed_method(recv_lookup, &call.method, &call.args, ctx),
             suffix
         );
     }
@@ -2424,21 +3113,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             // Direct routing-trait call — clone args to avoid move issues.
             // Auto-unwrap Option<T> only when the port param is T (not Option<T>).
             let method_key = method.trim_end_matches(['!', '?']);
-            let param_tys: Vec<String> = ctx
-                .method_params
-                .get(&(call.target.clone(), method_key.to_string()))
-                .cloned()
-                .or_else(|| {
-                    ctx.method_params
-                        .get(&(call.target.clone(), to_snake(method_key)))
-                        .cloned()
-                })
-                .unwrap_or_default();
+            let param_tys = param_types_for(Some(call.target.as_str()), method_key, ctx);
             call.args
                 .iter()
                 .enumerate()
                 .map(|(i, a)| {
-                    let s = expr_to_rust(a, ctx);
+                    let expected = param_tys.get(i).map(|s| s.as_str());
+                    let s = arg_to_rust(a, expected, ctx);
                     match a {
                         Expr::Ident(name) if ctx.local_type(name) == Some("serde_json::Value") => {
                             format!("{}.clone()", name)
@@ -2449,18 +3130,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                                 .map(|t| t.starts_with("Option<"))
                                 .unwrap_or(false) =>
                         {
-                            let expects_opt = param_tys
-                                .get(i)
+                            let expects_opt = expected
                                 .map(|t| t.starts_with("Option<") || t.starts_with("Opt<"))
                                 .unwrap_or(false);
                             if expects_opt {
-                                // Port takes Option — pass through (e.g. list_commits branch).
-                                format!("{}.clone()", s)
+                                format!("{}.clone()", name)
                             } else {
-                                format!("{}.clone().ok_or(DomainError::NotFound)?", s)
+                                format!("{}.clone().ok_or(DomainError::NotFound)?", name)
                             }
                         }
-                        Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{}.clone()", s),
                         _ => s,
                     }
                 })
@@ -2516,8 +3194,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         } else {
             match ret_type {
                 Some("bool") | Some("Bool") | Some("i64") | Some("f64")
-                | Some("String") => false,
-                _ => true, // Default to fallible for unknown/unit return types
+                | Some("String") | Some("()") | Some("") => false,
+                Some(t) if t.starts_with("Option<") || t.starts_with("Opt<") => false,
+                _ => true,
             }
         };
         let suffix = if is_fallible { ".await?" } else { ".await" };
@@ -2587,14 +3266,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // to Rust idioms. Language primitives always win over stub types that
     // happen to share a name (e.g. sqlx's `Map` must not steal `Map.new()`).
     if !call.method.is_empty() {
+        let lang_leaf = lang_type_leaf(&call.target);
         let is_lang_primitive = matches!(
-            call.target.as_str(),
+            lang_leaf,
             "Dt" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Process"
-                | "Blob"
+                | "Blob" | "Bytes"
         );
         if is_lang_primitive || !ctx.is_struct_target(&call.target) {
             let method_key = call.method.trim_end_matches(['!', '?']);
-            let translated = match (call.target.as_str(), method_key) {
+            let translated = match (lang_leaf, method_key) {
                 ("Dt", "now") => Some("Utc::now()".to_string()),
                 ("Uuid", "new_v4") | ("Id", "new_v4") => Some("Uuid::new_v4()".to_string()),
                 ("Map", "new") => Some("HashMap::new()".to_string()),
@@ -2659,17 +3339,41 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                         ))
                     }
                 }
-                // Binary blob helpers (language primitive for AWS payloads).
+                // Binary payload: use the loaded stub type path, never a bare Vec<u8>.
+                ("Blob", "new") if call.args.len() == 1 => {
+                    let arg = expr_to_rust(&call.args[0], ctx);
+                    Some(format!(
+                        "{}::new({})",
+                        stub_ctor_path(ctx, &call.target),
+                        bytes_from_str_expr(&arg)
+                    ))
+                }
+                ("Bytes", "from_str") | ("Bytes", "new") if call.args.len() == 1 => {
+                    let arg = expr_to_rust(&call.args[0], ctx);
+                    Some(bytes_from_str_expr(&arg))
+                }
+                ("Str", "from_bytes") | ("Str", "from_utf8") if call.args.len() == 1 => {
+                    let arg = expr_to_rust(&call.args[0], ctx);
+                    Some(format!("String::from_utf8_lossy(&{arg}).to_string()"))
+                }
+                ("Blob", "to_str") | ("Blob", "as_str") | ("Blob", "to_string")
+                    if call.args.is_empty() =>
+                {
+                    None // handled as receiver method below
+                }
                 ("Blob", "from_hex") if call.args.len() == 1 => {
                     let hex_expr = expr_to_rust(&call.args[0], ctx);
                     Some(format!(
-                        "aws_sdk_lambda::primitives::Blob::new({{ let __h: String = ({hex_expr}).to_string(); let __h = __h.as_str(); let mut __b = Vec::with_capacity(__h.len() / 2); let mut __i = 0usize; while __i + 1 < __h.len() {{ if let Ok(__v) = u8::from_str_radix(&__h[__i..__i + 2], 16) {{ __b.push(__v); }} __i += 2; }} __b }})"
+                        "{}::new({})",
+                        stub_ctor_path(ctx, &call.target),
+                        bytes_from_hex_expr(&hex_expr)
                     ))
                 }
                 ("Blob", "from_file") if call.args.len() == 1 => {
                     let path_expr = expr_to_rust(&call.args[0], ctx);
                     Some(format!(
-                        "aws_sdk_lambda::primitives::Blob::new(std::fs::read(({path_expr}).as_str()).map_err(|e| DomainError::External(e.to_string()))?)"
+                        "{}::new(std::fs::read(({path_expr}).as_str()).map_err(|e| DomainError::External(e.to_string()))?)",
+                        stub_ctor_path(ctx, &call.target)
                     ))
                 }
                 _ => None,
@@ -2705,15 +3409,18 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         let method = if call.method.is_empty() { "new" } else { &call.method };
         // Qualify with crate path if type is from a stub — prefer prefix match.
         let qualified = if let Some(prefix) = &module_prefix {
-            // Find stub entry whose crate matches the VEIL module prefix.
-            // Never fall back to a different crate's same leaf name (e.g. AWS
-            // `Query` must not steal `sqlx.Query`).
-            let by_prefix = ctx.stub_type_crate.iter().find(|(name, (crate_name, _))| {
-                (*name == &effective_target || name.ends_with(&format!("::{effective_target}")))
-                    && (crate_name.replace('-', "_") == *prefix || crate_name.as_str() == prefix)
-            });
-            if let Some((_, (crate_name, original_name))) = by_prefix {
-                format!("{}::{}", crate_name, original_name)
+            // Prefer `prefix.Type` / `prefix::Type` keys (store rust_type_path).
+            // A leaf-name scan misses dotted keys and can steal a same-named
+            // type from another crate.
+            let dotted = format!("{prefix}.{effective_target}");
+            let colon = format!("{prefix}::{effective_target}");
+            if let Some((crate_name, path_type)) = stub_type_parts(ctx, &dotted)
+                .or_else(|| stub_type_parts(ctx, &colon))
+                .or_else(|| stub_type_parts(ctx, &effective_target).filter(|(c, _)| {
+                    c.replace('-', "_") == *prefix || *c == prefix.as_str()
+                }))
+            {
+                format!("{crate_name}::{path_type}")
             } else {
                 // Unloaded stub or no matching crate: keep author module path.
                 format!("{}::{}", prefix, effective_target)
@@ -2751,11 +3458,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             // e.g. crate::Query::new(sql) → crate::query(sql)
             // When the stub declares `typed_variant` and the enclosing method has a
             // domain return type → crate::query_as::<_, T>(sql) (params from stub).
+            // Only when the stub says so — a lowercase crate path is not enough
+            // (`aws_sdk_lambda.Blob.new` is Type::new, not crate::blob()).
             if let Some(module) = qualified.split("::").next() {
                 let is_module_fn = qualified.contains("::")
                     && module.chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
-                if is_module_fn {
-                    let type_leaf = qualified.split("::").last().unwrap_or("new");
+                let type_leaf = qualified.split("::").last().unwrap_or("new");
+                if is_module_fn
+                    && stub_new_is_module_free_fn(ctx, &effective_target, type_leaf)
+                {
                     let fn_name = to_snake(type_leaf);
                     let raw_args = call.args.iter()
                         .map(|a| match a {
@@ -2893,7 +3604,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         {
             let hex_expr = expr_to_rust(&call.args[0], ctx);
             return format!(
-                "aws_sdk_lambda::primitives::Blob::new({{ let __h: String = ({hex_expr}).to_string(); let __h = __h.as_str(); let mut __b = Vec::with_capacity(__h.len() / 2); let mut __i = 0usize; while __i + 1 < __h.len() {{ if let Ok(__v) = u8::from_str_radix(&__h[__i..__i + 2], 16) {{ __b.push(__v); }} __i += 2; }} __b }})"
+                "{}::new({})",
+                stub_ctor_path(ctx, "Blob"),
+                bytes_from_hex_expr(&hex_expr)
             );
         }
         if (effective_target == "Blob" || effective_target.ends_with("Blob"))
@@ -2902,7 +3615,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         {
             let path_expr = expr_to_rust(&call.args[0], ctx);
             return format!(
-                "aws_sdk_lambda::primitives::Blob::new(std::fs::read({path_expr}.as_str()).map_err(|e| DomainError::External(e.to_string()))?)"
+                "{}::new(std::fs::read({path_expr}.as_str()).map_err(|e| DomainError::External(e.to_string()))?)",
+                stub_ctor_path(ctx, "Blob")
             );
         }
         if effective_target == "Process" && method_bare == "run" && call.args.len() == 3 {
@@ -3107,10 +3821,20 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Always strip VEIL `!`/`?` fallible/query suffixes (typecheck sugar only).
         let method = rust_method_name(&call.method);
 
-        // Vec<u8> locals: .to_string() → String::from_utf8_lossy conversion
-        if ctx.local_type(&call.target) == Some("Vec<u8>") {
-            if call.method == "to_string" || call.method == "to_str" {
-                return format!("String::from_utf8_lossy(&{}).to_string()", call.target);
+        // Blob / Bytes / unknown locals: `.to_str()` is utf-8 decode, not a
+        // rustc method on the stub type. Leave `.to_string()` alone.
+        if call.args.is_empty()
+            && matches!(
+                call.method.trim_end_matches(['!', '?']),
+                "to_str" | "as_str"
+            )
+        {
+            let ty = ctx.local_type(&call.target).unwrap_or("");
+            if ty != "String" {
+                return format!(
+                    "String::from_utf8_lossy({}.as_ref()).to_string()",
+                    call.target
+                );
             }
         }
 
@@ -3173,10 +3897,19 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     _ => {}
                 }
             }
-            // If the local's type is a known trait, its methods are async and
-            // fallible (`#[async_trait]` + `-> Result`): emit `.await?`.
+            // If the local's type is a known trait, methods are async. Only
+            // apply `?` when the port method is fallible (Res! / bang).
             if ctx.name_to_shape.get(type_name) == Some(&Shape::Trait) {
-                return format!("{}.{}({}).await?", call.target, method, args_str);
+                let bare_ty = peel_dyn_trait_name(type_name).unwrap_or_else(|| type_name.to_string());
+                let fallible = call.method.ends_with('!')
+                    || ctx
+                        .type_fallible_methods
+                        .contains(&(bare_ty, method.clone()))
+                    || ctx
+                        .type_fallible_methods
+                        .contains(&(type_name.to_string(), method.clone()));
+                let suffix = if fallible { ".await?" } else { ".await" };
+                return format!("{}.{}({}){}", call.target, method, args_str, suffix);
             }
             // Auto-unwrap Option<T> locals when calling a method that belongs to T.
             // This handles the common pattern: `provider = repo.find!(id)` then
@@ -3241,15 +3974,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             }
         }
         // Stub getters that return Result<&str, _> (e.g. enum as_s): own a String.
-        if (call.method == "as_s" || call.method == "as_n" || call.method.starts_with("as_"))
-            && call.args.is_empty()
-            && ctx.fallible_methods.contains(&call.method)
-        {
-            return format!(
-                "{}.{}().map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{{:?}}\", e)))?",
-                call.target,
-                method
-            );
+        // Method may be written `as_s!` — lookup is on the bare name.
+        if call.args.is_empty() {
+            let recv_ty = ctx.local_type(&call.target).map(|s| s.to_string());
+            if should_own_str_result(ctx, recv_ty.as_deref(), &call.method) {
+                let m = method_bare(&call.method);
+                return format!("{}.{m}(){}", call.target, map_err_domain_own_str());
+            }
         }
         // serde_json::Value::as_str → Option<String> so assigns/unwrap are owned.
         if call.method == "as_str" && call.args.is_empty() {
@@ -3529,21 +4260,23 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return call.target.clone();
             }
             // Phase 2: as_s / as_n on closure params (DDB AttributeValue)
-            if (m_clean == "as_s" || m_clean == "as_n" || (m_clean.starts_with("as_") && m_clean != "as_str"))
-                && call.args.is_empty()
+            if call.args.is_empty()
+                && should_own_str_result(ctx, ctx.local_type(&call.target), &call.method)
             {
                 return format!(
-                    "{}.{}().map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{{:?}}\", e)))?",
-                    call.target, m_clean
+                    "{}.{}(){}",
+                    call.target,
+                    m_clean,
+                    map_err_domain_own_str()
                 );
             }
         }
-        // Emit flattened external-effect hook: `target_method(args)`.
+        // Not on a stub type / construct / local. Do not invent a crate or a
+        // no-op hook — the .stub is the only third-party contract.
         format!(
-            "{}_{}({})",
-            to_snake(&call.target),
-            to_snake(m_clean),
-            args_str
+            "{{ compile_error!(\"unstubbed external `{}.{}` — install a .stub and call its types (@field + stub methods)\"); }}",
+            call.target,
+            m_clean
         )
     }
 }
@@ -3893,40 +4626,83 @@ fn pattern_binding_names(pattern: &str) -> Vec<String> {
 
 /// Convert a structured Pattern to Rust pattern syntax.
 pub fn pattern_to_rust(pat: &Pattern) -> String {
+    pattern_to_rust_qualified(pat, None)
+}
+
+fn qualify_variant_name(name: &str, enums: Option<&HashMap<String, String>>) -> String {
+    if name.contains("::") {
+        return name.to_string();
+    }
+    if name.contains('.') && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+        return name.replace('.', "::");
+    }
+    if let Some(en) = enums.and_then(|m| m.get(name)) {
+        return format!("{en}::{name}");
+    }
+    name.to_string()
+}
+
+fn pattern_to_rust_qualified(
+    pat: &Pattern,
+    enums: Option<&HashMap<String, String>>,
+) -> String {
     match pat {
         Pattern::Ident(s) => {
-            // Convert dot-path variant notation to Rust :: syntax
             if s.contains('.') && s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                 s.replace('.', "::")
+            } else if let Some(en) = enums.and_then(|m| m.get(s)) {
+                format!("{en}::{s}")
+            } else if s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                s.clone()
             } else {
                 to_snake(s)
             }
         }
         Pattern::Tuple(parts) => {
-            let inner = parts.iter().map(pattern_to_rust).collect::<Vec<_>>().join(", ");
+            let inner = parts
+                .iter()
+                .map(|p| pattern_to_rust_qualified(p, enums))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("({})", inner)
         }
         Pattern::Struct(name, fields, has_rest) => {
-            let rust_name = if name.contains('.') { name.replace('.', "::") } else { name.clone() };
-            let mut fs: Vec<String> = fields.iter().map(|(k, v)| {
-                match v {
-                    Some(pat) => format!("{}: {}", to_snake(k), pattern_to_rust(pat)),
+            let rust_name = qualify_variant_name(name, enums);
+            let mut fs: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| match v {
+                    Some(pat) => format!(
+                        "{}: {}",
+                        to_snake(k),
+                        pattern_to_rust_qualified(pat, enums)
+                    ),
                     None => to_snake(k),
-                }
-            }).collect();
-            if *has_rest { fs.push("..".to_string()); }
+                })
+                .collect();
+            if *has_rest {
+                fs.push("..".to_string());
+            }
             format!("{} {{ {} }}", rust_name, fs.join(", "))
         }
         Pattern::Variant(name, args) => {
-            let rust_name = if name.contains('.') { name.replace('.', "::") } else { name.clone() };
-            if args.is_empty() { rust_name }
-            else {
-                let inner = args.iter().map(pattern_to_rust).collect::<Vec<_>>().join(", ");
+            let rust_name = qualify_variant_name(name, enums);
+            if args.is_empty() {
+                rust_name
+            } else {
+                let inner = args
+                    .iter()
+                    .map(|p| pattern_to_rust_qualified(p, enums))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{}({})", rust_name, inner)
             }
         }
         Pattern::Literal(s) => s.clone(),
-        Pattern::Or(alts) => alts.iter().map(pattern_to_rust).collect::<Vec<_>>().join(" | "),
+        Pattern::Or(alts) => alts
+            .iter()
+            .map(|p| pattern_to_rust_qualified(p, enums))
+            .collect::<Vec<_>>()
+            .join(" | "),
         Pattern::Wildcard => "_".to_string(),
         Pattern::Rest => "..".to_string(),
     }
@@ -3958,6 +4734,7 @@ impl GenCtx {
             type_fallible_methods: self.type_fallible_methods.clone(),
             async_fallible_methods: self.async_fallible_methods.clone(),
             expected_return_rust: self.expected_return_rust.clone(),
+            option_value_wrap: self.option_value_wrap,
             defaultable_types: self.defaultable_types.clone(),
             dep_fields: self.dep_fields.clone(),
             mut_locals: self.mut_locals.clone(),
@@ -3967,6 +4744,7 @@ impl GenCtx {
             local_domain_types: self.local_domain_types.clone(),
             self_field_types: self.self_field_types.clone(),
             statement_specs: self.statement_specs.clone(),
+            enum_variants: self.enum_variants.clone(),
         }
     }
 }
@@ -4004,26 +4782,39 @@ fn from_str_turbofish_type(ctx: &GenCtx) -> Option<String> {
 /// Emit a block of statements, tracking locals so later lines see earlier binds
 /// (needed for if/while/for bodies: `mut req = …` then `req = req.header(…)`).
 fn emit_tracked_block(body: &[Expr], ctx: &GenCtx, indent: &str) -> String {
+    emit_block_lines(body, ctx, indent, false)
+}
+
+/// Block used as a value: last expression has no semicolon (and may
+/// `Some`-wrap when `ctx.option_value_wrap`).
+fn emit_value_block(body: &[Expr], ctx: &GenCtx, indent: &str) -> String {
+    emit_block_lines(body, ctx, indent, true)
+}
+
+fn emit_block_lines(body: &[Expr], ctx: &GenCtx, indent: &str, last_is_value: bool) -> String {
     let mut body_ctx = ctx.clone_for_inference();
+    body_ctx.option_value_wrap = false;
     body_ctx.mut_locals.extend(analyze_mut_locals(body));
     let mut lines = Vec::new();
-    for e in body {
+    for (i, e) in body.iter().enumerate() {
+        let is_last = i + 1 == body.len();
+        if is_last && last_is_value {
+            body_ctx.option_value_wrap = ctx.option_value_wrap;
+        }
         let line = expr_to_rust(e, &body_ctx);
-        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
+        if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
             if !name.contains('.') {
                 body_ctx.locals.insert(name.clone());
-                if let Some(t) = infer_expr_type(
-                    match e {
-                        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => rhs,
-                        _ => unreachable!(),
-                    },
-                    &body_ctx,
-                ) {
+                if let Some(t) = infer_expr_type(rhs, &body_ctx) {
                     body_ctx.local_types.insert(name.clone(), t);
                 }
             }
         }
-        lines.push(format!("{indent}{};", line));
+        if is_last && last_is_value {
+            lines.push(format!("{indent}{line}"));
+        } else {
+            lines.push(format!("{indent}{line};"));
+        }
     }
     lines.join("\n")
 }
@@ -4360,7 +5151,7 @@ pub fn infer_return_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
 /// Normalize a VEIL match pattern into Rust form. VEIL writes `Ok _` / `Err e`
 /// (space-separated binding); Rust needs `Ok(_)` / `Err(e)`. A bare word or
 /// already-parenthesized pattern is left as-is.
-fn normalize_match_pattern(pattern: &str) -> String {
+fn normalize_match_pattern(pattern: &str, ctx: &GenCtx) -> String {
     let p = pattern.trim();
     // Convert dot-separated variant paths to Rust :: syntax
     // e.g. "DeployUnitType.LambdaApi" → "DeployUnitType::LambdaApi"
@@ -4381,11 +5172,12 @@ fn normalize_match_pattern(pattern: &str) -> String {
         if !rest.is_empty() && !rest.starts_with('(') {
             // Only treat capitalized heads as variants (Ok, Err, Some, custom).
             if head.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                let head = qualify_variant_name(head, Some(&ctx.enum_variants));
                 return format!("{}({})", head, rest);
             }
         }
     }
-    p.to_string()
+    qualify_variant_name(p, Some(&ctx.enum_variants))
 }
 
 /// Map a VEIL simple type name (as stored in struct_fields) to its Rust form.
@@ -4498,6 +5290,21 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                     }
                 }
             }
+            // Adapter `@dep` / `@field` used as a bare ident (`routing_table.get_route!`).
+            if let Some(fty) = ctx
+                .self_field_types
+                .get(&call.target)
+                .or_else(|| ctx.self_field_types.get(&to_snake(&call.target)))
+            {
+                let method = call.method.trim_end_matches(['!', '?']);
+                let bare_ty = peel_dyn_trait_name(fty).unwrap_or_else(|| fty.clone());
+                if let Some(t) = ctx.return_type_of(&bare_ty, method) {
+                    return Some(t.to_string());
+                }
+                if let Some(t) = ctx.return_type_of(fty, method) {
+                    return Some(t.to_string());
+                }
+            }
             // Stub package free functions: `gix.init_bare(path)` → target is "gix",
             // method is "init_bare". Look up (stub_name, method) in method_returns.
             if ctx.stub_pkg_crate.contains_key(&call.target) {
@@ -4520,6 +5327,17 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                     if let Some(local_ty) = ctx.local_type(recv_name) {
                         let method = call.method.trim_end_matches(['!', '?']);
                         if let Some(t) = ctx.return_type_of(local_ty, method) {
+                            return Some(t.to_string());
+                        }
+                    }
+                    if let Some(fty) = ctx
+                        .self_field_types
+                        .get(recv_name)
+                        .or_else(|| ctx.self_field_types.get(&to_snake(recv_name)))
+                    {
+                        let method = call.method.trim_end_matches(['!', '?']);
+                        let bare_ty = peel_dyn_trait_name(fty).unwrap_or_else(|| fty.clone());
+                        if let Some(t) = ctx.return_type_of(&bare_ty, method) {
                             return Some(t.to_string());
                         }
                     }
@@ -4553,6 +5371,13 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                 (Some("Vec<()>"), Some(r)) if r.starts_with("Vec<") => right,
                 (Some(l), _) if l.starts_with("Vec<") && l != "Vec<()>" => left,
                 (_, Some(r)) if r.starts_with("Vec<") => right,
+                (Some(l), _) if rust_ty_is_stringish(l) => Some("String".into()),
+                (_, Some(r)) if rust_ty_is_stringish(r) => Some("String".into()),
+                _ if matches!(&*bin.left, Expr::StringLit(_))
+                    || matches!(&*bin.right, Expr::StringLit(_)) =>
+                {
+                    Some("String".into())
+                }
                 _ => left.or(right),
             }
         }

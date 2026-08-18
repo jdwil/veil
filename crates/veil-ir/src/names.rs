@@ -16,7 +16,7 @@ use crate::layer::{LayerRegistry, Shape};
 /// Built-in VEIL type names (target-agnostic).
 const BUILTIN_TYPES: &[&str] = &[
     "Str", "String", "Int", "F64", "Bool", "Bytes", "UUID", "Id", "DateTime", "Dt",
-    "List", "Map", "Set", "Opt", "Res", "Json", "Any", "Unit", "Self",
+    "List", "Map", "Set", "Opt", "Res", "Json", "Any", "Unit", "Self", "Blob",
 ];
 
 /// Built-in free functions / intrinsics (no construct definition required).
@@ -56,8 +56,13 @@ pub fn check_names(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
 
     // use lines: unknown layer/stub/package → warning (cross-package deferred)
     for u in &sol.uses {
+        let use_key = u.package_name.replace('-', "_");
         let known = registry.layers.iter().any(|l| l == &u.package_name)
-            || registry.stubs.iter().any(|s| s.name == u.package_name || s.alias.as_deref() == Some(&u.package_name))
+            || registry.stubs.iter().any(|s| {
+                s.name == u.package_name
+                    || s.name.replace('-', "_") == use_key
+                    || s.alias.as_deref() == Some(&u.package_name)
+            })
             || index.constructs.contains_key(&u.package_name);
         if !known {
             // Layers load into registry.layers; if use succeeded at parse, layer is known.
@@ -119,6 +124,140 @@ pub fn check_names(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
     diagnostics
 }
 
+/// Stubs often share short type names (`Client`). Bare `Client` with two
+/// crates loaded is ambiguous — require `aws_sdk_sns.Client`.
+pub fn check_stub_type_refs(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    fn walk(c: &Construct, registry: &LayerRegistry, diagnostics: &mut Vec<Diagnostic>) {
+        for ann in &c.annotations {
+            if !registry.is_adapter_field_annotation(&ann.name) {
+                continue;
+            }
+            for arg in &ann.args {
+                let ty = arg
+                    .split_once(':')
+                    .map(|(_, t)| t.trim())
+                    .unwrap_or(arg.trim());
+                flag_ambiguous_stub_type(ty, &c.name, registry, diagnostics);
+            }
+        }
+        for f in &c.fields {
+            if let TypeExpr::Named(n) = &f.type_expr {
+                flag_ambiguous_stub_type(n, &c.name, registry, diagnostics);
+            }
+        }
+        for child in &c.children {
+            walk(child, registry, diagnostics);
+        }
+    }
+    for item in &sol.items {
+        if let TopLevelItem::Construct(c) = item {
+            walk(c, registry, &mut diagnostics);
+        }
+    }
+    diagnostics
+}
+
+fn stubs_defining(registry: &LayerRegistry, type_name: &str) -> Vec<String> {
+    if type_name.contains('.') || type_name.contains("::") {
+        return Vec::new();
+    }
+    registry
+        .stubs
+        .iter()
+        .filter(|s| {
+            s.structs.iter().any(|st| st.name == type_name)
+                || s.harness_fields.contains_key(type_name)
+        })
+        .map(|s| s.name.clone())
+        .collect()
+}
+
+fn flag_ambiguous_stub_type(
+    type_name: &str,
+    location: &str,
+    registry: &LayerRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let hits = stubs_defining(registry, type_name);
+    if hits.len() < 2 {
+        return;
+    }
+    let examples: Vec<String> = hits
+        .iter()
+        .map(|n| format!("{}.{type_name}", n.replace('-', "_")))
+        .collect();
+    diagnostics.push(Diagnostic {
+        severity: Severity::Error,
+        message: format!(
+            "stub type '{type_name}' is defined by {} crates — qualify it (e.g. {})",
+            hits.join(", "),
+            examples.join(" or ")
+        ),
+        node_id: None,
+        node_name: Some(location.to_string()),
+        code: "ambiguous_stub_type".into(),
+        constraint: "ambiguous_stub_type".into(),
+        parent: None,
+        hint: Some(format!(
+            "@field(sns: {}) — never bare `{type_name}` when several stubs export it",
+            examples.first().cloned().unwrap_or_default()
+        )),
+        span_start: None,
+        span_end: None,
+    });
+}
+
+/// Product trait/struct/enum that reuses a layer `declare` name (e.g. `port Bus`)
+/// shadows the injected type. The layer type is already in the package — pick
+/// a unique product name.
+pub fn check_layer_declare_shadows(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> {
+    let declared = registry.declared_type_names();
+    if declared.is_empty() {
+        return Vec::new();
+    }
+    let mut diagnostics = Vec::new();
+    fn walk(
+        c: &Construct,
+        declared: &HashSet<String>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let shadows = !c.layer_provided
+            && declared.contains(&c.name)
+            && matches!(c.shape, Shape::Trait | Shape::Struct | Shape::Enum);
+        if shadows {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                message: format!(
+                    "construct '{}' reuses a type declared by a loaded layer — it is already injected",
+                    c.name
+                ),
+                node_id: None,
+                node_name: Some(c.name.clone()),
+                code: "shadows_layer_declare".into(),
+                constraint: "shadows_layer_declare".into(),
+                parent: None,
+                hint: Some(format!(
+                    "use the injected layer type '{0}'. If you need a different contract, \
+                     pick a unique name — do not write `port {0}`",
+                    c.name
+                )),
+                span_start: Some(c.span.start),
+                span_end: Some(c.span.end),
+            });
+        }
+        for child in &c.children {
+            walk(child, declared, diagnostics);
+        }
+    }
+    for item in &sol.items {
+        if let TopLevelItem::Construct(c) = item {
+            walk(c, &declared, &mut diagnostics);
+        }
+    }
+    diagnostics
+}
+
 fn build_index(sol: &Solution, registry: &LayerRegistry) -> NameIndex {
     let mut index = NameIndex::default();
 
@@ -139,6 +278,7 @@ fn build_index(sol: &Solution, registry: &LayerRegistry) -> NameIndex {
 
     for stub in &registry.stubs {
         let crate_keys: Vec<String> = std::iter::once(stub.name.clone())
+            .chain(std::iter::once(stub.name.replace('-', "_")))
             .chain(stub.alias.iter().cloned())
             .collect();
         // Crate root is a known external namespace (`sqlx.…`)
@@ -823,11 +963,11 @@ fn check_call(
             diagnostics,
         );
     } else {
-        // lowercase external (http, sqlx, …) without stub — warning
+        // lowercase external without a stub — not a contract (any third-party crate)
         diagnostics.push(Diagnostic {
-            severity: Severity::Warning,
+            severity: Severity::Error,
             message: format!(
-                "call target '{}' is not a known construct, local, or stub — treat as external",
+                "call target '{}' is not a known construct, local, or stub",
                 target
             ),
             node_id: None,
@@ -836,7 +976,8 @@ fn check_call(
             constraint: "unresolved_external".to_string(),
             parent: None,
             hint: Some(format!(
-                "add a .stub for '{}' or a construct/port with that name",
+                "install a .stub (`stub_search` / stub_install) and call its types \
+                 (`use <crate>` + `@field(x: Type)` + x.method()) — do not invent `{}`",
                 target
             )),
             span_start: None,
@@ -1711,6 +1852,130 @@ mod tests {
             !diags.iter().any(|d| d.severity == Severity::Error),
             "{:?}",
             diags
+        );
+    }
+
+    fn stub_with_client(name: &str) -> crate::layer::StubCrate {
+        use crate::layer::{StubCrate, StubStruct};
+        let mut stub = StubCrate {
+            name: name.into(),
+            version: "1.0.0".into(),
+            ..Default::default()
+        };
+        stub.root_types.push("Client".into());
+        stub.structs.push(StubStruct {
+            name: "Client".into(),
+            module_path: None,
+            methods: Vec::new(),
+            typed_variant: None,
+            typed_type_params: None,
+        });
+        stub.harness_fields
+            .insert("Client".into(), format!("{name}::Client::new()"));
+        stub
+    }
+
+    #[test]
+    fn bare_client_with_two_stubs_is_ambiguous() {
+        let mut reg = LayerRegistry::builtin();
+        reg.stubs.push(stub_with_client("aws-sdk-sns"));
+        reg.stubs.push(stub_with_client("aws-sdk-dynamodb"));
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SnsAd".into(),
+            Span::new(0, 0),
+        );
+        adapter.fields.push(Field {
+            annotations: Vec::new(),
+            name: "client".into(),
+            type_expr: TypeExpr::Named("Client".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let diags = check_stub_type_refs(&sol(vec![TopLevelItem::Construct(adapter)]), &reg);
+        assert!(
+            diags.iter().any(|d| d.code == "ambiguous_stub_type"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn qualified_client_is_not_ambiguous() {
+        let mut reg = LayerRegistry::builtin();
+        reg.stubs.push(stub_with_client("aws-sdk-sns"));
+        reg.stubs.push(stub_with_client("aws-sdk-dynamodb"));
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SnsAd".into(),
+            Span::new(0, 0),
+        );
+        adapter.fields.push(Field {
+            annotations: Vec::new(),
+            name: "sns".into(),
+            type_expr: TypeExpr::Named("aws_sdk_sns.Client".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let diags = check_stub_type_refs(&sol(vec![TopLevelItem::Construct(adapter)]), &reg);
+        assert!(
+            !diags.iter().any(|d| d.code == "ambiguous_stub_type"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn product_port_shadowing_layer_declare_is_error() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        let mut port = Construct::new(
+            "port",
+            "Port",
+            Shape::Trait,
+            "AuthService".into(),
+            Span::new(0, 0),
+        );
+        port.layer_provided = false;
+        let diags = check_layer_declare_shadows(&sol(vec![TopLevelItem::Construct(port)]), &reg);
+        assert!(
+            diags.iter().any(|d| d.code == "shadows_layer_declare"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn product_port_bus_is_not_a_layer_shadow() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        let port = Construct::new("port", "Port", Shape::Trait, "Bus".into(), Span::new(0, 0));
+        let diags = check_layer_declare_shadows(&sol(vec![TopLevelItem::Construct(port)]), &reg);
+        assert!(
+            !diags.iter().any(|d| d.code == "shadows_layer_declare"),
+            "Bus is user-land — product port Bus must be allowed: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ctx_with_same_name_as_layer_declare_is_not_a_shadow() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        let ctx = Construct::new(
+            "ctx",
+            "Context",
+            Shape::Mod,
+            "AuthService".into(),
+            Span::new(0, 0),
+        );
+        let diags = check_layer_declare_shadows(&sol(vec![TopLevelItem::Construct(ctx)]), &reg);
+        assert!(
+            !diags.iter().any(|d| d.code == "shadows_layer_declare"),
+            "{diags:?}"
         );
     }
 }

@@ -27,6 +27,12 @@
 
       /** Full-bleed main when IDE is embedded (no page padding/scroll chrome). */
       const ideEmbedMode = $derived(/\/projects\/[^/]+\/ide\/?$/.test($page.url.pathname));
+      const reviewMode = $derived($page.url.pathname.startsWith('/review'));
+
+      /** Review needs the column; keep the agent as a strip unless the operator expands it. */
+      $effect(() => {
+        if (reviewMode) agentPanelMinimized.set(true);
+      });
 
       /** Keep SessionFocus.route in sync with SPA navigation. */
       $effect(() => {
@@ -56,8 +62,13 @@
         restoreIntentLog();
         publishRouteFocus($page.url.pathname);
         const unsubHuman = installHumanIntentCapture();
-        // Open agent panel by default (expanded)
-        openAgentPanel();
+        // Open the dock; Review keeps it as a strip so the walk has the column.
+        if (reviewMode) {
+          agentPanelOpen.set(true);
+          agentPanelMinimized.set(true);
+        } else {
+          openAgentPanel();
+        }
         // Agent tools (navigate_to / open-ide) → SPA routes (stay in shell)
         // IntentExecutor also calls goto() for Present steps; this handles coarse navigation events.
         const unsubNav = onAgentNavigation((nav) => {
@@ -122,7 +133,7 @@
     <div class="shell" class:shell--ide={ideEmbedMode}>
       <Sidebar />
       <div class="content">
-        <main class="shell-main" class:shell-main--ide={ideEmbedMode}>
+        <main class="shell-main" class:shell-main--ide={ideEmbedMode} class:shell-main--review={reviewMode}>
           <AgentSurface />
           {@render children()}
         </main>
@@ -172,5 +183,17 @@
         min-width: 0;
         /* flex child IdeApp fills — avoid absolute overlay that ignores sibling dock */
         position: relative;
+      }
+      main.shell-main--review {
+        overflow: hidden;
+        padding: 1rem 1.25rem 0.85rem;
+        display: flex;
+        flex-direction: column;
+      }
+      main.shell-main--review > :global(*) {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
       }
     </style>

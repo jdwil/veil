@@ -14,6 +14,11 @@ stub aws-sdk-lambda 1.131.0
 }
 """
 
+  # Binary payload (`aws_sdk_lambda::primitives::Blob`). invoke().payload takes this.
+  struct Blob
+    path primitives
+    fn new(data: Bytes) -> Self
+
   struct Runtime
 
   struct Architecture

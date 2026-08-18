@@ -94,8 +94,8 @@ pkg crm v1
     in Orchestrator
 
   statement notify
-    mt dispatch
-    desc "Notify the team through the signal bus"
+    mt emit
+    desc "Notify the team of a buying signal"
     sem signal_bus_notify
     visual
       icon "🔔"

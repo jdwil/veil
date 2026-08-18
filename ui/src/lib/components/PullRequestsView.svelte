@@ -1,34 +1,39 @@
 <script lang="ts">
 
+  import { onMount } from 'svelte';
   import CollectionView from './CollectionView.svelte';
   import StatusPill from './StatusPill.svelte';
 
   let pull_requests: Record<string, unknown>[] = $state([]);
   let loading: boolean = $state(false);
   let error: string = $state('');
-  let active_filter: string = $state('');
+  let active_filter: string = $state('All');
   let pr_href_tpl: string = $state("/pulls/{id}");
 
-   $effect(() => { // load_on_mount
-  void (async () => {
-        loading = true;
-        error = "";
-        active_filter = "All";
-        pull_requests = await (async () => { const __u = new URL("/api/pull_requests", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-        loading = false;
-  })();
-    });
+  async function loadPulls(filter: string) {
+    loading = true;
+    error = '';
+    try {
+      const u = new URL('/api/pull_requests', window.location.origin);
+      if (filter && filter !== 'All') u.searchParams.set('status', filter);
+      const r = await fetch(u.toString(), { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+      const data = await r.json();
+      pull_requests = Array.isArray(data) ? data : data.pull_requests || data.items || [];
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  onMount(() => {
+    void loadPulls(active_filter);
+  });
 
   async function set_filter(filter: string) {
     active_filter = filter;
-    loading = true;
-    error = "";
-    if (filter === "All") {
-      pull_requests = await (async () => { const __u = new URL("/api/pull_requests", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-    } else {
-      pull_requests = await (async () => { const __u = new URL(`/api/pull_requests?status=${filter}`, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-    };
-    loading = false;
+    await loadPulls(filter);
   }
 </script>
 

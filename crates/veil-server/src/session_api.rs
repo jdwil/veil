@@ -53,6 +53,9 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/review/outstanding", get(review_outstanding))
         .route("/api/review/summary", get(review_summary))
         .route("/api/review/sign_off", post(review_sign_off))
+        .route("/api/review/changeset", get(review_changeset))
+        .route("/api/review/reconcile", post(review_reconcile))
+        .route("/api/review/export", get(review_export))
 }
 
 fn json_ok(v: serde_json::Value) -> axum::response::Response {
@@ -119,7 +122,15 @@ async fn create_session(Json(body): Json<CreateBody>) -> axum::response::Respons
                 "reused": reused,
             }))
         }
-        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => {
+            let kind = crate::provider::hub::ProjectsHub::open_error_kind(&e);
+            let status = match kind {
+                crate::provider::hub::OpenErrorKind::NotFound => StatusCode::NOT_FOUND,
+                crate::provider::hub::OpenErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            err_resp(status, e)
+        }
     }
 }
 
@@ -176,12 +187,22 @@ async fn create_commit(
         Ok(h) => h,
         Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
     };
+    if let Err(e) = crate::coding_gates::gate_session_commit(&h) {
+        return err_resp(StatusCode::BAD_REQUEST, e);
+    }
     match h.commit(&body.message) {
-        Ok(c) => json_ok(json!({
-            "ok": true,
-            "commit": c,
-            "session": session_json(&h),
-        })),
+        Ok(c) => {
+            let slug = h.snapshot_meta().slug;
+            let outstanding = crate::session::CURRENT_SESSION.sync_scope(id.clone(), || {
+                crate::review::record_commit(&slug, &c.commit_id, &body.message)
+            });
+            json_ok(json!({
+                "ok": true,
+                "commit": c,
+                "session": session_json(&h),
+                "outstanding": outstanding,
+            }))
+        }
         Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
     }
 }
@@ -489,9 +510,12 @@ async fn ws_write(Path(id): Path<String>, Json(body): Json<WriteBody>) -> axum::
         Ok(r) => {
             let rev = h.bump_revision(&body.path, r.etag.clone());
             crate::revision::bus().publish(r.bytes, &body.path, "ws_write");
+            h.reload_provider_file(&body.path);
             let slug = h.snapshot_meta().slug;
             if !slug.is_empty() {
-                let _ = crate::review::record_file_edit(&slug, &body.path, None);
+                crate::session::CURRENT_SESSION.sync_scope(id.clone(), || {
+                    let _ = crate::review::record_file_edit(&slug, &body.path, None);
+                });
             }
             json_ok(json!({
                 "ok": true,
@@ -870,16 +894,41 @@ struct SignOffBody {
     actor: Option<String>,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    git_sha: Option<String>,
+    #[serde(default)]
+    structural_diff_hash: Option<String>,
+    #[serde(default)]
+    host_check: Option<serde_json::Value>,
+    #[serde(default)]
+    pr_id: Option<String>,
+    #[serde(default)]
+    via: Option<String>,
 }
 
 fn apply_sign_off(body: SignOffBody) -> axum::response::Response {
+    let via = body.via.clone().unwrap_or_else(|| "ui".into());
+    if via.eq_ignore_ascii_case("server") && !crate::review::veil_dev_enabled() {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "sign_off via=server is forbidden; a human must use the Approve button on /review",
+        );
+    }
     match crate::review::sign_off(crate::review::SignOffRequest {
         ids: body.ids,
         slug: body.slug.filter(|s| !s.is_empty()),
         all: body.all,
         decision: body.decision.unwrap_or_else(|| "approve".into()),
-        actor: body.actor.unwrap_or_else(|| "human".into()),
+        actor: body
+            .actor
+            .filter(|s| !s.trim().is_empty() && !s.eq_ignore_ascii_case("human"))
+            .unwrap_or_else(current_user_id),
         note: body.note,
+        git_sha: body.git_sha.filter(|s| !s.is_empty()),
+        structural_diff_hash: body.structural_diff_hash.filter(|s| !s.is_empty()),
+        host_check: body.host_check,
+        pr_id: body.pr_id.filter(|s| !s.is_empty()),
+        via: Some(via),
     }) {
         Ok((items, audit)) => json_ok(json!({
             "ok": true,
@@ -887,9 +936,39 @@ fn apply_sign_off(body: SignOffBody) -> axum::response::Response {
             "items": items,
             "audit": audit,
             "outstanding": crate::review::outstanding().len(),
+            "audit_env": crate::review::audit_env_json(),
+            "approve_pr": audit.pr_id,
         })),
         Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
     }
+}
+
+#[derive(Deserialize)]
+struct ReconcileBody {
+    #[serde(default)]
+    live_slugs: Vec<String>,
+}
+
+async fn review_reconcile(Json(body): Json<ReconcileBody>) -> axum::response::Response {
+    let closed = crate::review::close_unknown_projects(&body.live_slugs);
+    json_ok(json!({
+        "ok": true,
+        "closed": closed,
+        "outstanding": crate::review::outstanding().len(),
+    }))
+}
+
+async fn review_changeset(Query(q): Query<ReviewQuery>) -> axum::response::Response {
+    let slug = q.slug.filter(|s| !s.is_empty());
+    json_ok(json!({
+        "ok": true,
+        "change_sets": crate::review::change_sets(slug.as_deref()),
+        "audit_env": crate::review::audit_env_json(),
+    }))
+}
+
+async fn review_export() -> axum::response::Response {
+    json_ok(crate::review::export_json())
 }
 
 async fn review_sign_off(Json(body): Json<SignOffBody>) -> axum::response::Response {

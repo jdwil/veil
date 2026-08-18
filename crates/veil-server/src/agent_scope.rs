@@ -346,13 +346,13 @@ mod tests {
     fn slug_from_create_project_result() {
         let result = json!({
             "ok": true,
-            "slug": "dlx-bus",
-            "name": "DLX Bus"
+            "slug": "shop",
+            "name": "Shop"
         })
         .to_string();
         assert_eq!(
             slug_from_tool("create_project", &json!({}), &result).as_deref(),
-            Some("dlx-bus")
+            Some("shop")
         );
     }
 }

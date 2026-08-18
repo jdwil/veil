@@ -135,7 +135,7 @@ pub fn parse_with_registry(
     // Attach parser-emitted guidance diagnostics
     sol.guidance = guidance;
 
-    // Inject layer declarations (e.g. `port Bus` from ddd.layer's declare section)
+    // Inject layer declarations (e.g. `trait AuthService` from ddd.layer declare)
     inject_declarations(&mut sol, &registry);
 
     Ok(sol)
@@ -143,15 +143,17 @@ pub fn parse_with_registry(
 
 /// Parse raw declaration blocks from the layer registry and inject them into the solution.
 /// Declarations are parsed using the same registry so they can use layer keywords.
-/// Duplicate constructs (by name) are not injected.
+/// Duplicate constructs (same name **and** shape) are not injected. A product
+/// `ctx AuthService` (mod) must not starve the layer `trait AuthService`.
 fn inject_declarations(sol: &mut Solution, registry: &LayerRegistry) {
     use crate::lexer::lex;
+    use veil_ir::layer::Shape;
 
-    // Collect existing top-level names (constructs + functions) to avoid dupes.
-    let existing_names: Vec<String> = sol.items.iter().filter_map(|item| {
+    // (name, shape) for constructs; (name, None) for free fns.
+    let existing: Vec<(String, Option<Shape>)> = sol.items.iter().filter_map(|item| {
         match item {
-            TopLevelItem::Construct(c) => Some(c.name.clone()),
-            TopLevelItem::Function(f) => Some(f.name.clone()),
+            TopLevelItem::Construct(c) => Some((c.name.clone(), Some(c.shape))),
+            TopLevelItem::Function(f) => Some((f.name.clone(), None)),
             _ => None,
         }
     }).collect();
@@ -169,15 +171,15 @@ fn inject_declarations(sol: &mut Solution, registry: &LayerRegistry) {
             for mut item in items {
                 match &mut item {
                     TopLevelItem::Construct(c) => {
-                        if existing_names.contains(&c.name) {
-                            continue; // already exists
+                        if existing.iter().any(|(n, s)| n == &c.name && *s == Some(c.shape)) {
+                            continue; // same name + shape already exists
                         }
                         // Mark provenance so the serializer skips it and the
                         // viewer can distinguish layer-provided infrastructure.
                         c.layer_provided = true;
                     }
                     TopLevelItem::Function(f) => {
-                        if existing_names.contains(&f.name) {
+                        if existing.iter().any(|(n, s)| n == &f.name && s.is_none()) {
                             continue;
                         }
                         f.layer_provided = true;
@@ -700,7 +702,17 @@ impl<'a> Parser<'a> {
         let mut annotations = Vec::new();
         while self.at(&TokenKind::Annotation) {
             let tok = self.advance();
-            let (name, args) = parse_annotation_text(&tok.text);
+            let (name, mut args) = parse_annotation_text(&tok.text);
+            // `@env VAR` / `@env VAR OTHER` (no parens). Do not consume
+            // `name: Type` — that is a field (`@dep client: Port`).
+            if args.is_empty() && self.at(&TokenKind::Ident) && !self.is_field_line() {
+                while self.at(&TokenKind::Ident) && !self.is_field_line() {
+                    args.push(self.advance().text);
+                    if self.at(&TokenKind::Comma) {
+                        self.advance();
+                    }
+                }
+            }
             annotations.push(Annotation {
                 name,
                 args,
@@ -2547,11 +2559,34 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 if self.at(&TokenKind::Annotation) {
-                    c.annotations.extend(self.parse_annotations());
+                    let anns = self.parse_annotations();
+                    // `@dep client: Port` is a field, same as on structs.
+                    // Previously annotations were always construct-level and
+                    // the following `name: Type` line was skipped — so
+                    // adapters never received injected ports and check
+                    // flagged `client.method!` as unresolved_external.
+                    if self.at(&TokenKind::Ident) && self.is_field_line() {
+                        // `@env VAR` then `@dep name: Type` are parsed as one
+                        // annotation batch. Keep env/field on the adapter;
+                        // only dep-style anns attach to the following field.
+                        let mut field_anns = Vec::new();
+                        for a in anns {
+                            if self.registry.is_dependency_annotation(&a.name) {
+                                field_anns.push(a);
+                            } else {
+                                c.annotations.push(a);
+                            }
+                        }
+                        self.parse_field_or_shorthand_line(&mut c.fields, field_anns)?;
+                        continue;
+                    }
+                    c.annotations.extend(anns);
                     continue;
                 }
                 if self.at(&TokenKind::Impl) {
                     c.impls.push(self.parse_method_impl()?);
+                } else if self.at(&TokenKind::Ident) && self.is_field_line() {
+                    self.parse_field_or_shorthand_line(&mut c.fields, Vec::new())?;
                 } else {
                     self.advance();
                 }
@@ -3855,7 +3890,26 @@ impl<'a> Parser<'a> {
             TokenKind::LParen => {
                 let start_span = self.current().span;
                 self.advance();
+                // `()` is unit (empty tuple). Needed for `ret ()` = None on Opt.
+                if self.at(&TokenKind::RParen) {
+                    self.advance();
+                    return Ok(Expr::Tuple(Vec::new()));
+                }
                 let expr = self.parse_expr()?;
+                if self.at(&TokenKind::Comma) {
+                    let mut items = vec![expr];
+                    while self.at(&TokenKind::Comma) {
+                        self.advance();
+                        if self.at(&TokenKind::RParen) {
+                            break;
+                        }
+                        items.push(self.parse_expr()?);
+                    }
+                    if self.at(&TokenKind::RParen) {
+                        self.advance();
+                    }
+                    return Ok(Expr::Tuple(items));
+                }
                 if self.at(&TokenKind::RParen) {
                     self.advance();
                 }

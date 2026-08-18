@@ -70,7 +70,8 @@ pkg harness v1
       log(repo: Str, limit: Int) -> Res!<List<Str>>
 
   # No domain vocabulary. App authors `use harness` for local wiring patterns.
-  # InProcessBus is generated into veil_shared when Bus is declared (ddd).
+  # InProcessBus is generated only when a loaded layer declares routing
+  # statements (`mt SomePort.method`). DDD does not declare a Bus.
   # HttpHost is implemented by veil_server::ProductHost (link veil_server).
 
   prompt
@@ -81,8 +82,8 @@ pkg harness v1
     for local dual-loop even **without** `@main`. Use `@main` (di.layer) when
     you need Bus composition roots or ProductHost.
 
-    The engine generates `InProcessBus` into `veil_shared` when the package uses
-    a layer that declares `trait Bus` (e.g. ddd).
+    The engine generates `InProcessBus` into `veil_shared` only when a loaded
+    layer declares routing statements (`mt SomePort.method`). DDD does not.
 
     For the product host: `link veil_server` + `@main` emits ProductHost listen
     (CAP-002/006). FileSystem / GitRepo are provided_by runtime (CAP-004).
@@ -100,10 +101,11 @@ pkg harness v1
     - Opt out of a generated bin: `[harness] emit_bin = "never"`.
 
     ## Patterns
-    - Construct `InProcessBus.new()` in `@main` when you need multi-context
+    - Construct `InProcessBus.new()` in `@main` only if a product layer declared
+      a routing port (the platform does not ship a Bus)
     - Wire `@dep` / `@pvd` for adapters
     - Prefer calling generated application `fn`s for local demos
-    - Cross-context: `bus.invoke({ type: "HandlerName", ... })`
+    - Cross-context: inject a product port and call it
     - Product shell: `link veil_server` then `@main` bootstrap
 
     ## Constraints

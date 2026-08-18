@@ -1,4 +1,6 @@
 stub aws-sdk-sns 1.104.0
+  types_module types
+  root_types Client
   harness_field Client """
 {
     let conf = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;

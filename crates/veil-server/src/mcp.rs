@@ -132,7 +132,7 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "write_source",
-            "description": "Replace the entire active file source. Always call veil_check afterward. Pass rationales: map of construct name → short why (one line each) so the PR Wizard shows agent intent next to each structural change.",
+            "description": "Replace the entire active file source. Always call veil_check afterward. Pass rationales: map of construct name → short why (one line each) so Review shows agent intent next to each structural change.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -142,7 +142,7 @@ fn mcp_tools() -> Vec<Value> {
                     },
                     "rationales": {
                         "type": "object",
-                        "description": "Optional map constructName → short intent/why (e.g. {\"Order\": \"Agg holding line items and status\"}). Shown in PR Wizard.",
+                        "description": "Optional map constructName → short intent/why (e.g. {\"Order\": \"Agg holding line items and status\"}). Shown on Review.",
                         "additionalProperties": { "type": "string" }
                     },
                     "rationale": {
@@ -243,6 +243,19 @@ fn mcp_tools() -> Vec<Value> {
                 "required": ["name"]
             }
         }),
+        json!({
+            "name": "stub_search",
+            "description": "Search any .stub contract for types/methods without dumping the full file. The stub is the only third-party API — call those names via @field, never invent aws_sns / http.post.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Method or type substring (publish, Client, send_message)" },
+                    "name": { "type": "string", "description": "Optional crate/stub name to restrict (aws-sdk-sns, reqwest)" },
+                    "limit": { "type": "integer", "description": "Max hits (default 24)" }
+                },
+                "required": ["query"]
+            }
+        }),
         // Durable session workspace tools (path-jailed, S3 write-through)
         json!({
             "name": "ws_list",
@@ -286,7 +299,7 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "ws_str_replace",
-            "description": "Replace a unique string in a workspace file (agent-friendly sed). Fails if not unique. Write-through to S3.",
+            "description": "Replace a unique string in a product workspace file (.veil/.layer/MISSION). Fails if not unique. Write-through to S3. Do not use this on .stub files — use stub_*.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -301,7 +314,7 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "ws_grep",
-            "description": "Regex search across the session workspace (local only; efficient).",
+            "description": "Regex search across product session files (.veil/.layer). Not for SDK stubs — use stub_search. Do not shell-grep host /tmp checkouts.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -393,7 +406,7 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "merge_branch",
-            "description": "DISABLED by default. Lands session work on main without PR review. Prefer create_pr + submit_pr; human uses PR Wizard → Approve → Merge. Only call if operator explicitly said merge AND pass force:true (or host VEIL_ALLOW_SESSION_MERGE=1).",
+            "description": "DISABLED by default. Lands session work on main without PR review. Prefer create_pr + submit_pr; human uses Review → Approve → Merge. Only call if operator explicitly said merge AND pass force:true (or host VEIL_ALLOW_SESSION_MERGE=1).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -849,7 +862,8 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "stub_get requires 'name'".to_string())?;
             let root = provider.project_root();
-            let r = crate::stub_ops::get_stub(root.as_deref(), name)?;
+            let mut r = crate::stub_ops::get_stub(root.as_deref(), name)?;
+            r.entry.path = Some(crate::stub_ops::agent_visible_stub_ref(&r.entry));
             return serde_json::to_string_pretty(&r).map_err(|e| e.to_string());
         }
         "stub_gen" => {
@@ -873,10 +887,10 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             let root = provider.project_root();
             let r = crate::stub_ops::generate_stub(root.as_deref(), crate_name, &features, write)?;
             return Ok(format!(
-                "Generated {} @ {} → {:?}\n{}",
+                "Generated {} @ {} → {}\n{}",
                 r.entry.name,
                 r.entry.version,
-                r.entry.path,
+                crate::stub_ops::agent_visible_stub_ref(&r.entry),
                 r.entry.notes.join("; ")
             ));
         }
@@ -890,8 +904,28 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .ok_or_else(|| "no project root — open a project first".to_string())?;
             let r = crate::stub_ops::install_stub_to_project(&root, name)?;
             return Ok(format!(
-                "Installed {} @ {} → {:?}",
-                r.entry.name, r.entry.version, r.entry.path
+                "Installed {} @ {} → {} (use stub_search / stub_get; do not open host disk)",
+                r.entry.name,
+                r.entry.version,
+                crate::stub_ops::agent_visible_stub_ref(&r.entry)
+            ));
+        }
+        "stub_search" => {
+            let query = arguments
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "stub_search requires 'query'".to_string())?;
+            let name = arguments.get("name").and_then(|v| v.as_str());
+            let limit = arguments
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(24) as usize;
+            let root = provider.project_root();
+            return Ok(crate::stub_ops::tool_search_text(
+                root.as_deref(),
+                name,
+                query,
+                limit,
             ));
         }
         _ => {}
@@ -920,7 +954,11 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
 
     match tool_name {
         "veil_check" => {
-            let check = rig_tools::run_check(&source, &registry);
+            let check = rig_tools::run_check_kind(
+                &source,
+                &registry,
+                Some(provider.file_kind("")),
+            );
             let project = crate::provider::hub::CURRENT_PROJECT
                 .try_with(|n| n.clone())
                 .ok()
@@ -933,7 +971,11 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             ))
         }
 
-        "veil_outline" => Ok(rig_tools::run_outline(&source, &registry)),
+        "veil_outline" => Ok(rig_tools::run_outline_kind(
+            &source,
+            &registry,
+            Some(provider.file_kind("")),
+        )),
 
         "read_source" => {
             let max = arguments
@@ -1073,7 +1115,11 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                     }
                 };
             }
-            let check = rig_tools::run_check(content, &registry);
+            let check = rig_tools::run_check_kind(
+                content,
+                &registry,
+                Some(provider.file_kind("")),
+            );
             // MultiProjectProvider::write_source records revision/uncommitted.
             // Surface status so the model is nudged to session_commit (History tab).
             let project = crate::provider::hub::CURRENT_PROJECT
@@ -1189,7 +1235,11 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                         .write_source("", &new_src)
                         .await
                         .map_err(|e| format!("write after rename failed: {e}"))?;
-                    let check = rig_tools::run_check(&new_src, &registry);
+                    let check = rig_tools::run_check_kind(
+                        &new_src,
+                        &registry,
+                        Some(provider.file_kind("")),
+                    );
                     Ok(format!("{summary}\n\n{check}"))
                 }
                 Err(e) => Err(e),
@@ -1402,7 +1452,6 @@ fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Val
         "uncommitted": uncommitted,
         "dirty_files": meta.dirty,
         "writes_since_commit": meta.writes_since_commit,
-        "work_dir": h.work_dir.to_string_lossy(),
         "active_pr_id": meta.active_pr_id,
         "git_origin": crate::git_origin::origin_enabled(),
         "git_workdir": h.work_dir.join(".git").is_dir(),

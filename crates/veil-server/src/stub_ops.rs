@@ -17,8 +17,8 @@ use std::sync::OnceLock;
 use serde::Serialize;
 use veil_ir::{
     content_fingerprint, list_catalog, list_platform_stubs, list_project_stubs, parse_stub_file,
-    project_stub_write_path, resolve_stub, stub_file_stems, ResolvedStub, StubCatalogEntry,
-    StubOrigin,
+    project_stub_write_path, resolve_stub, search_stub_catalog, stub_file_stems, ResolvedStub,
+    StubCatalogEntry, StubOrigin,
 };
 
 /// Resolved platform stubs directory for this process (avoids unsafe set_var).
@@ -526,10 +526,12 @@ pub fn install_stub_to_project(project_root: &Path, name: &str) -> Result<Resolv
         .map(|p| p.freshness_notes())
         .unwrap_or_default();
     if !src_path.is_empty() {
-        notes.push(format!("installed from platform path {src_path}"));
+        notes.push(format!("installed from platform catalog '{name}'"));
     }
     notes.push(
-        "Stub is auto-loaded from project stubs/ on next check (no `use` line required). Run veil_check to verify escape_external_call clears."
+        "Stub is auto-loaded from project stubs/ on next check. `use` the crate, \
+         `@field(x: Type)` a stub type, and call Type methods (`stub_search`). \
+         Invented names (aws_sns, http.post) stay errors."
             .into(),
     );
     Ok(ResolvedStub {
@@ -715,8 +717,7 @@ fn try_cargo_stub_gen(args: &[String]) -> Result<(), String> {
 pub fn tool_list_text(project_root: Option<&Path>) -> String {
     let cat = catalog_json(project_root);
     let mut lines = vec![
-        "Stub catalog (project overrides platform)".into(),
-        format!("platform dir: {:?}", cat.stubs_dir),
+        "Stub catalog (project overrides platform). Read with stub_get / stub_search — do not grep host disk.".into(),
         String::new(),
         "## Project".into(),
     ];
@@ -746,6 +747,46 @@ pub fn tool_list_text(project_root: Option<&Path>) -> String {
     lines.join("\n")
 }
 
+/// Search stub surfaces (any crate) without dumping the full rustdoc file.
+pub fn tool_search_text(
+    project_root: Option<&Path>,
+    name: Option<&str>,
+    query: &str,
+    limit: usize,
+) -> String {
+    let hits = search_stub_catalog(project_root, name, query, limit);
+    if hits.is_empty() {
+        return format!(
+            "No stub hits for query={query:?} name={name:?}. \
+             stub_list then stub_install / stub_gen. Call stub types (@field), never invent names."
+        );
+    }
+    let mut lines = vec![
+        format!("Stub contract search ({} hit(s))", hits.len()),
+        "Use: `use <stub>` + `@field(x: Type)` + x.method()…send!()".into(),
+        String::new(),
+    ];
+    for h in hits {
+        let meth = h.method.as_deref().unwrap_or("-");
+        lines.push(format!(
+            "- [{}] {} {} :: {} — {}",
+            h.kind, h.stub, h.type_name, meth, h.signature
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Logical stub location for agents — never a host `$TMP/…` checkout path.
+pub fn agent_visible_stub_ref(e: &StubCatalogEntry) -> String {
+    match e.origin {
+        StubOrigin::ProjectStubsDir | StubOrigin::ProjectAdjacent => {
+            format!("stubs/{}.stub", e.name)
+        }
+        StubOrigin::Platform => format!("platform:{}", e.name),
+        StubOrigin::RemoteCatalog => format!("catalog:{}", e.name),
+    }
+}
+
 fn format_entry(e: &StubCatalogEntry) -> String {
     let flags = [
         if e.sparse { "sparse" } else { "" },
@@ -766,6 +807,31 @@ fn format_entry(e: &StubCatalogEntry) -> String {
         } else {
             format!("({flags}) ")
         },
-        e.path.as_deref().unwrap_or("")
+        agent_visible_stub_ref(e)
     )
+}
+
+#[cfg(test)]
+mod agent_path_tests {
+    use super::*;
+
+    #[test]
+    fn agent_stub_ref_is_logical_not_tmp() {
+        let e = StubCatalogEntry {
+            name: "aws_sdk_lambda".into(),
+            version: "1.0.0".into(),
+            origin: StubOrigin::ProjectStubsDir,
+            path: Some("/tmp/veil-ws/jd/sess/dlx-bus/stubs/aws_sdk_lambda.stub".into()),
+            sparse: false,
+            version_unpinned: false,
+            notes: vec![],
+            surface: None,
+            generated_at: None,
+            generated: true,
+        };
+        assert_eq!(agent_visible_stub_ref(&e), "stubs/aws_sdk_lambda.stub");
+        let text = format_entry(&e);
+        assert!(!text.contains("/tmp/"), "{text}");
+        assert!(text.contains("stubs/aws_sdk_lambda.stub"), "{text}");
+    }
 }

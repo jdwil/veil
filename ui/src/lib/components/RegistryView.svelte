@@ -1,5 +1,6 @@
 <script lang="ts">
 
+  import { onMount } from 'svelte';
   import PageHeader from './PageHeader.svelte';
   import CollectionView from './CollectionView.svelte';
 
@@ -8,15 +9,28 @@
   let loading: boolean = $state(false);
   let error: string = $state('');
 
-   $effect(() => { // load_on_mount
-  void (async () => {
-        loading = true;
-        error = "";
-        layers = await (async () => { const __u = new URL("/api/registry/layers", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-        stubs = await (async () => { const __u = new URL("/api/registry/stubs", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
+  onMount(() => {
+    void (async () => {
+      loading = true;
+      error = '';
+      try {
+        const [lr, sr] = await Promise.all([
+          fetch('/api/registry/layers', { signal: AbortSignal.timeout(20000) }),
+          fetch('/api/registry/stubs', { signal: AbortSignal.timeout(20000) }),
+        ]);
+        if (!lr.ok) throw new Error((await lr.text()) || `layers HTTP ${lr.status}`);
+        if (!sr.ok) throw new Error((await sr.text()) || `stubs HTTP ${sr.status}`);
+        const ld = await lr.json();
+        const sd = await sr.json();
+        layers = Array.isArray(ld) ? ld : ld.layers || ld.items || [];
+        stubs = Array.isArray(sd) ? sd : sd.stubs || sd.items || [];
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
         loading = false;
-  })();
-    });
+      }
+    })();
+  });
 </script>
 
 <div class="registry">

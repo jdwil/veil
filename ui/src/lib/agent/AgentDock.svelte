@@ -481,9 +481,9 @@
 
 		{#if $reviewOutstandingCount > 0}
 			<a class="outstanding-strip" href="/review">
-				{$reviewOutstandingCount} unreviewed
+				{$reviewOutstandingCount}
 				{#if $reviewOutstandingCount === 1}change{:else}changes{/if}
-				— sign off
+				 to review
 			</a>
 		{/if}
 

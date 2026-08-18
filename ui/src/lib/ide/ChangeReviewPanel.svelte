@@ -81,8 +81,8 @@
         Not the same as the change list size.
       </li>
       <li>
-        <strong>PR Wizard</strong> — top-bar <em>Review</em> or Changes → <em>PR Wizard</em>.
-        Walk each structural change with agent rationale; approve or send feedback.
+        <strong>Review</strong> — top-bar <em>Review</em> opens <code>/review</code>.
+        Walk the change hierarchy, read hunks, then Approve or Request changes.
         Agents open PRs; humans merge after review.
       </li>
     </ul>

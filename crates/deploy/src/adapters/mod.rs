@@ -207,37 +207,50 @@ impl DeploymentStateStore for DdbDeploymentStore {
     }
 
     async fn list_deployments(&self) -> Result<Vec<DeploymentState>, DomainError> {
-        let resp = self
-            .client
-            .scan()
-            .table_name(&self.table)
-            .filter_expression("begins_with(PK, :prefix) AND SK = :sk".to_string())
-            .expression_attribute_values(
-                ":prefix".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S("DEPLOY#".to_string()),
-            )
-            .expression_attribute_values(
-                ":sk".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S("CURRENT".to_string()),
-            )
-            .send()
-            .await
-            .map_err(|e| DomainError::External(format!("{e:?}")))?;
-        return Ok(resp
-            .items()
-            .iter()
-            .map(|i| {
-                serde_json::from_str::<_>(
-                    &i.get("data")
-                        .ok_or_else(|| DomainError::External("missing data".into()))
-                        .unwrap()
-                        .as_s()
-                        .map(|s| s.to_string())
-                        .unwrap(),
+        // FilterExpression is applied after each 1MB scan page. Follow
+        // LastEvaluatedKey so CURRENT rows on later pages are not dropped.
+        let mut items = Vec::new();
+        let mut exclusive_start_key = None;
+        loop {
+            let mut req = self
+                .client
+                .scan()
+                .table_name(&self.table)
+                .filter_expression("begins_with(PK, :prefix) AND SK = :sk".to_string())
+                .expression_attribute_values(
+                    ":prefix".to_string(),
+                    aws_sdk_dynamodb::types::AttributeValue::S("DEPLOY#".to_string()),
                 )
-                .unwrap()
-            })
-            .collect());
+                .expression_attribute_values(
+                    ":sk".to_string(),
+                    aws_sdk_dynamodb::types::AttributeValue::S("CURRENT".to_string()),
+                );
+            if let Some(key) = exclusive_start_key {
+                req = req.set_exclusive_start_key(Some(key));
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| DomainError::External(format!("{e:?}")))?;
+            items.extend(resp.items().iter().cloned());
+            match resp.last_evaluated_key() {
+                Some(key) if !key.is_empty() => exclusive_start_key = Some(key.clone()),
+                _ => break,
+            }
+        }
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let data = item
+                .get("data")
+                .ok_or_else(|| DomainError::External("missing data".into()))?
+                .as_s()
+                .map_err(|e| DomainError::External(format!("{e:?}")))?;
+            out.push(
+                serde_json::from_str::<DeploymentState>(data)
+                    .map_err(|e| DomainError::External(format!("deploy CURRENT: {e}")))?,
+            );
+        }
+        Ok(out)
     }
 
     async fn list_versions(

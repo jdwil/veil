@@ -149,6 +149,7 @@ provides generic annotation interpolation (`template.rs`).
 | Provider | `VEIL_MODEL_PROVIDER=acp` (Makefile default for local serve often ACP) |
 | Process | One process-wide child (`static ACP`); `session/new` once per process |
 | MCP | Workspace `.kiro/settings/mcp.json` with **url only**; `session/new` gets `mcpServers: []` (non-empty array crashes Kiro 2.12) |
+| Cwd (s3) | Sandbox `$TMP/veil-acp-cwd` — **not** `$TMP/veil-ws` / `$TMP/veil-s3-ws`. Agent uses MCP; host stages checkouts privately. |
 | After turn | Reload project from disk; IDE SSE refresh |
 
 See [AGENT.md](./AGENT.md) env table and [ACP_SPIKE.md](./ACP_SPIKE.md).

@@ -16,7 +16,7 @@ use veil_ir::{check_solution, build_ir_with_registry, LayerRegistry};
 use veil_parser::TokenKind;
 
 use crate::agent::AgentToolCall;
-use crate::provider::FileInfo;
+use crate::provider::{FileInfo, FileKind};
 
 /// Callback to persist source mid-turn (async, host-owned).
 pub type LiveWriter = Arc<
@@ -1015,7 +1015,8 @@ impl Tool for StubGetTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         self.ws.log("stub_get", &args.name);
         let root = self.ws.host.as_ref().and_then(|h| h.project_root());
-        let r = crate::stub_ops::get_stub(root.as_deref(), &args.name).map_err(ToolErr)?;
+        let mut r = crate::stub_ops::get_stub(root.as_deref(), &args.name).map_err(ToolErr)?;
+        r.entry.path = Some(crate::stub_ops::agent_visible_stub_ref(&r.entry));
         serde_json::to_string_pretty(&r).map_err(|e| ToolErr(e.to_string()))
     }
 }
@@ -1070,10 +1071,10 @@ impl Tool for StubGenTool {
         )
         .map_err(ToolErr)?;
         Ok(format!(
-            "Generated stub {} @ {} → {:?}\nnotes: {}\n\n{}",
+            "Generated stub {} @ {} → {}\nnotes: {}\n\n{}",
             r.entry.name,
             r.entry.version,
-            r.entry.path,
+            crate::stub_ops::agent_visible_stub_ref(&r.entry),
             r.entry.notes.join("; "),
             if r.content.len() > 4000 {
                 format!("{}…\n[truncated {} chars]", &r.content[..4000], r.content.len())
@@ -1117,8 +1118,56 @@ impl Tool for StubInstallTool {
             .ok_or_else(|| ToolErr("no project root".into()))?;
         let r = crate::stub_ops::install_stub_to_project(&root, &args.name).map_err(ToolErr)?;
         Ok(format!(
-            "Installed {} @ {} → {:?}",
-            r.entry.name, r.entry.version, r.entry.path
+            "Installed {} @ {} → {} (use stub_search / stub_get; do not open host disk)",
+            r.entry.name,
+            r.entry.version,
+            crate::stub_ops::agent_visible_stub_ref(&r.entry)
+        ))
+    }
+}
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct StubSearchArgs {
+    pub query: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone)]
+pub struct StubSearchTool {
+    pub ws: Workspace,
+}
+
+impl Tool for StubSearchTool {
+    const NAME: &'static str = "stub_search";
+    type Error = ToolErr;
+    type Args = StubSearchArgs;
+    type Output = String;
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.into(),
+            description: "Search any .stub contract for types/methods without dumping the full file. Call those names via @field — never invent aws_sns / http.post.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Method or type substring" },
+                    "name": { "type": "string", "description": "Optional crate/stub name" },
+                    "limit": { "type": "integer" }
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.ws.log("stub_search", &args.query);
+        let root = self.ws.host.as_ref().and_then(|h| h.project_root());
+        Ok(crate::stub_ops::tool_search_text(
+            root.as_deref(),
+            args.name.as_deref(),
+            &args.query,
+            args.limit.unwrap_or(24) as usize,
         ))
     }
 }
@@ -1132,14 +1181,30 @@ fn looks_like_layer(source: &str) -> bool {
     }) && !source.contains("\n  ctx ") && !source.contains("\n    group ")
 }
 
+/// Decide layer vs package check the same way the IDE does (`FileKind` from
+/// the path). Never use `parse_layer_file(src).is_ok()` — that parser is
+/// permissive and returns Ok for ordinary `.veil` packages, which made
+/// `veil_check` report 0/0 while GET /api/check still showed warnings.
+fn check_as_layer(source: &str, kind: Option<FileKind>) -> bool {
+    match kind {
+        Some(FileKind::Layer) => true,
+        Some(FileKind::Package) | Some(FileKind::Stub) => false,
+        None => looks_like_layer(source),
+    }
+}
+
 /// Run check and return **structured JSON** diagnostics (ACS-008).
 ///
 /// Agents should parse the JSON body: `{ ok, error_count, warning_count, diagnostics[] }`
 /// where each diagnostic is `{ code, severity, message, span?, hint?, node_name? }`.
 /// Prefer fixing by `code` + `span` rather than rewriting whole files.
 pub fn run_check(source: &str, registry: &LayerRegistry) -> String {
-    // Layer files (DSL-003 / DSL-011)
-    if looks_like_layer(source) || veil_ir::parse_layer_file(source, "active").is_ok() {
+    run_check_kind(source, registry, None)
+}
+
+/// Same as [`run_check`], but honor the active file kind (IDE / MCP).
+pub fn run_check_kind(source: &str, registry: &LayerRegistry, kind: Option<FileKind>) -> String {
+    if check_as_layer(source, kind) {
         let name = source
             .lines()
             .find_map(|l| {
@@ -1187,10 +1252,12 @@ fn format_structured_check(kind: &str, report: &veil_ir::StructuredCheckReport) 
 }
 
 pub fn run_outline(source: &str, registry: &LayerRegistry) -> String {
-    if let Ok(graph) = veil_ir::build_layer_ir(source, "active") {
-        if graph.nodes.iter().any(|n| n.metadata.subkind.as_deref() == Some("Layer"))
-            || veil_ir::parse_layer_file(source, "active").is_ok()
-        {
+    run_outline_kind(source, registry, None)
+}
+
+pub fn run_outline_kind(source: &str, registry: &LayerRegistry, kind: Option<FileKind>) -> String {
+    if check_as_layer(source, kind) {
+        if let Ok(graph) = veil_ir::build_layer_ir(source, "active") {
             let mut lines = vec!["layer outline:".to_string()];
             for n in graph.nodes.iter().filter(|n| {
                 matches!(
@@ -1414,5 +1481,44 @@ mod rename_hello {
         );
         assert!(out.contains("lang"), "lang block lost: {out}");
         eprintln!("{sum}");
+    }
+}
+
+#[cfg(test)]
+mod check_kind_tests {
+    use super::*;
+    use veil_ir::LayerRegistry;
+
+    #[test]
+    fn package_with_ctx_is_not_layer_checked() {
+        let src = "\
+pkg Demo
+  use ddd
+  ctx App
+    group infrastructure
+      adapter AwsSns for Sns
+        impl publish
+          aws_sns.publish!({ topic: \"t\" })
+";
+        // Trap: the layer parser is permissive and accepts ordinary packages.
+        assert!(
+            veil_ir::parse_layer_file(src, "active").is_ok(),
+            "document the trap: parse_layer_file must not gate veil_check"
+        );
+        let out = run_check(src, &LayerRegistry::builtin());
+        assert!(
+            out.starts_with("package "),
+            "veil_check must use the package pipeline, got: {out}"
+        );
+        let as_layer = run_check_kind(src, &LayerRegistry::builtin(), Some(FileKind::Layer));
+        assert!(as_layer.starts_with("layer "), "{as_layer}");
+        let as_pkg = run_check_kind(src, &LayerRegistry::builtin(), Some(FileKind::Package));
+        assert!(as_pkg.starts_with("package "), "{as_pkg}");
+        assert!(
+            as_pkg.contains("escape_external_call")
+                || as_pkg.contains("unresolved_external")
+                || as_pkg.contains("parse_error"),
+            "package check must surface the aws_sns call, got: {as_pkg}"
+        );
     }
 }

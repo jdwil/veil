@@ -79,7 +79,7 @@ impl Ty {
 /// Convert AST type expr → Ty.
 fn ty_from_type_expr(te: &TypeExpr) -> Ty {
     match te {
-        TypeExpr::Named(n) if n.is_empty() => Ty::Unknown,
+        TypeExpr::Named(n) if n.is_empty() || n == "Unknown" || n == "_" => Ty::Unknown,
         TypeExpr::Named(n) => Ty::Named(normalize_type_name(n)),
         TypeExpr::Generic(name, args) => match name.as_str() {
             "Opt" | "Option" => Ty::Opt(Box::new(
@@ -110,6 +110,7 @@ fn ty_from_type_expr(te: &TypeExpr) -> Ty {
             Box::new(ty_from_type_expr(k)),
             Box::new(ty_from_type_expr(v)),
         ),
+        TypeExpr::Tuple(items) if items.is_empty() => Ty::Unit,
         TypeExpr::Tuple(items) => Ty::Tuple(items.iter().map(ty_from_type_expr).collect()),
         TypeExpr::Array(t, _) => Ty::List(Box::new(ty_from_type_expr(t))),
         TypeExpr::Ref(t, _) | TypeExpr::Dyn(t) | TypeExpr::ImplTrait(t) => ty_from_type_expr(t),
@@ -247,7 +248,9 @@ fn compatible(expected: &Ty, actual: &Ty) -> bool {
         (Ty::Named(a), Ty::Named(b)) => a == b,
         (Ty::Opt(e), Ty::Opt(a)) => compatible(e, a),
         // Allow T where Opt<T> expected (Some coercion) — common in agents
-        (Ty::Opt(e), a) => compatible(e, a),
+        (Ty::Opt(e), a) if !is_unit_ty(a) => compatible(e, a),
+        // `ret ()` / unit arm = None when Opt<T> is expected
+        (Ty::Opt(_), a) if is_unit_ty(a) => true,
         (Ty::List(e), Ty::List(a)) => compatible(e, a),
         (Ty::Set(e), Ty::Set(a)) => compatible(e, a),
         (Ty::Map(ek, ev), Ty::Map(ak, av)) => compatible(ek, ak) && compatible(ev, av),
@@ -261,6 +264,8 @@ fn compatible(expected: &Ty, actual: &Ty) -> bool {
             e.iter().zip(a.iter()).all(|(x, y)| compatible(x, y))
         }
         (Ty::Unit, Ty::Unit) => true,
+        (Ty::Unit, Ty::Tuple(ts)) | (Ty::Tuple(ts), Ty::Unit) if ts.is_empty() => true,
+        (Ty::Tuple(a), Ty::Tuple(b)) if a.is_empty() && b.is_empty() => true,
         // Res!<T> not assignable to T without ?
         _ => false,
     }
@@ -280,6 +285,8 @@ struct MethodSig {
 struct TypeInfo {
     fields: HashMap<String, Ty>,
     methods: HashMap<String, MethodSig>,
+    /// Zero-arg stub getters used as field access (`result.item` → `fn item()`).
+    getters: HashMap<String, Ty>,
     /// Enum variant names (unit / data)
     variants: Vec<String>,
 }
@@ -288,13 +295,16 @@ struct TypeInfo {
 struct TypeEnv {
     types: HashMap<String, TypeInfo>,
     free_fns: HashMap<String, MethodSig>,
+    /// Bare stub type names defined by two or more loaded crates.
+    ambiguous_stub_types: HashSet<String>,
 }
 
-fn build_type_env(sol: &Solution, _registry: &LayerRegistry) -> TypeEnv {
+fn build_type_env(sol: &Solution, registry: &LayerRegistry) -> TypeEnv {
     let mut env = TypeEnv::default();
+    index_stubs(registry, &mut env);
     for item in &sol.items {
         match item {
-            TopLevelItem::Construct(c) => index_construct_types(c, &mut env),
+            TopLevelItem::Construct(c) => index_construct_types(c, &mut env, registry),
             TopLevelItem::Function(f) => {
                 env.free_fns.insert(
                     f.name.clone(),
@@ -316,6 +326,150 @@ fn build_type_env(sol: &Solution, _registry: &LayerRegistry) -> TypeEnv {
     env
 }
 
+fn is_veil_primitive_name(n: &str) -> bool {
+    matches!(
+        n,
+        "Str" | "String" | "Int" | "F64" | "Bool" | "Bytes" | "UUID" | "Id"
+            | "DateTime" | "Dt" | "List" | "Map" | "Set" | "Opt" | "Res" | "Json"
+            | "Any" | "Unit" | "Self" | "T" | "E" | "O"
+    )
+}
+
+fn rewrite_stub_ty(ty: Ty, crate_key: &str, self_type: &str, def_count: &HashMap<String, usize>) -> Ty {
+    match ty {
+        Ty::Named(n) if n == "Self" => Ty::Named(self_type.to_string()),
+        Ty::Named(n) if !is_veil_primitive_name(&n) && def_count.get(&n).copied().unwrap_or(0) > 1 => {
+            Ty::Named(format!("{crate_key}.{n}"))
+        }
+        Ty::Opt(t) => Ty::Opt(Box::new(rewrite_stub_ty(*t, crate_key, self_type, def_count))),
+        Ty::List(t) => Ty::List(Box::new(rewrite_stub_ty(*t, crate_key, self_type, def_count))),
+        Ty::Set(t) => Ty::Set(Box::new(rewrite_stub_ty(*t, crate_key, self_type, def_count))),
+        Ty::Map(k, v) => Ty::Map(
+            Box::new(rewrite_stub_ty(*k, crate_key, self_type, def_count)),
+            Box::new(rewrite_stub_ty(*v, crate_key, self_type, def_count)),
+        ),
+        Ty::Res(Some(t)) => Ty::Res(Some(Box::new(rewrite_stub_ty(*t, crate_key, self_type, def_count)))),
+        Ty::Tuple(ts) => Ty::Tuple(
+            ts.into_iter()
+                .map(|t| rewrite_stub_ty(t, crate_key, self_type, def_count))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn stub_ty_from_str(
+    raw: &str,
+    crate_key: &str,
+    self_type: &str,
+    def_count: &HashMap<String, usize>,
+) -> Ty {
+    let src = if raw == "Self" { self_type } else { raw };
+    let te = crate::edit::parse_type_str(src);
+    rewrite_stub_ty(ty_from_type_expr(&te), crate_key, self_type, def_count)
+}
+
+fn stub_method_sig(
+    m: &crate::layer::StubMethod,
+    crate_key: &str,
+    self_type: &str,
+    def_count: &HashMap<String, usize>,
+) -> MethodSig {
+    MethodSig {
+        param_names: m.params.iter().map(|(n, _, _)| n.clone()).collect(),
+        params: m
+            .params
+            .iter()
+            .map(|(_, ty, _)| stub_ty_from_str(ty, crate_key, self_type, def_count))
+            .collect(),
+        ret: m
+            .return_type
+            .as_deref()
+            .map(|r| stub_ty_from_str(r, crate_key, self_type, def_count))
+            .unwrap_or(Ty::Unit),
+    }
+}
+
+/// Index stub structs/impls so fluent SDK calls can be type-checked.
+fn index_stubs(registry: &LayerRegistry, env: &mut TypeEnv) {
+    let mut def_count: HashMap<String, usize> = HashMap::new();
+    for stub in &registry.stubs {
+        let mut seen = HashSet::new();
+        for s in &stub.structs {
+            if seen.insert(s.name.clone()) {
+                *def_count.entry(s.name.clone()).or_default() += 1;
+            }
+        }
+        for imp in &stub.impls {
+            if seen.insert(imp.target.clone()) {
+                *def_count.entry(imp.target.clone()).or_default() += 1;
+            }
+        }
+    }
+    for (name, n) in &def_count {
+        if *n > 1 {
+            env.ambiguous_stub_types.insert(name.clone());
+        }
+    }
+
+    for stub in &registry.stubs {
+        let crate_key = stub.name.replace('-', "_");
+        let mut crate_keys = vec![crate_key.clone()];
+        if let Some(alias) = &stub.alias {
+            crate_keys.push(alias.replace('-', "_"));
+        }
+
+        let mut methods_by_type: HashMap<String, Vec<crate::layer::StubMethod>> = HashMap::new();
+        for s in &stub.structs {
+            methods_by_type
+                .entry(s.name.clone())
+                .or_default()
+                .extend(s.methods.iter().cloned());
+        }
+        for imp in &stub.impls {
+            methods_by_type
+                .entry(imp.target.clone())
+                .or_default()
+                .extend(imp.methods.iter().cloned());
+        }
+
+        for (type_name, methods) in methods_by_type {
+            let mut info = TypeInfo::default();
+            for m in &methods {
+                let sig = stub_method_sig(m, &crate_key, &type_name, &def_count);
+                if m.params.is_empty()
+                    && !matches!(
+                        m.return_type.as_deref(),
+                        None | Some("()") | Some("Self") | Some("self")
+                    )
+                {
+                    info.getters.insert(m.name.clone(), sig.ret.clone());
+                }
+                info.methods.insert(m.name.clone(), sig);
+                if m.name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                {
+                    info.variants.push(m.name.clone());
+                }
+            }
+            for ck in &crate_keys {
+                env.types.insert(format!("{ck}.{type_name}"), info.clone());
+            }
+            if def_count.get(&type_name).copied().unwrap_or(0) <= 1 {
+                env.types.insert(type_name, info);
+            }
+        }
+
+        for f in &stub.free_fns {
+            env.free_fns
+                .insert(f.name.clone(), stub_method_sig(f, &crate_key, "", &def_count));
+        }
+    }
+}
+
 fn method_sig_from_params(params: &[(String, TypeExpr)], ret: Option<&TypeExpr>) -> MethodSig {
     MethodSig {
         param_names: params.iter().map(|(n, _)| n.clone()).collect(),
@@ -324,7 +478,7 @@ fn method_sig_from_params(params: &[(String, TypeExpr)], ret: Option<&TypeExpr>)
     }
 }
 
-fn index_construct_types(c: &Construct, env: &mut TypeEnv) {
+fn index_construct_types(c: &Construct, env: &mut TypeEnv, registry: &LayerRegistry) {
     let mut info = TypeInfo::default();
 
     for f in &c.fields {
@@ -335,6 +489,34 @@ fn index_construct_types(c: &Construct, env: &mut TypeEnv) {
         for f in &b.fields {
             let (ty, _) = field_effective_ty(f);
             info.fields.insert(f.name.clone(), ty);
+        }
+    }
+    // Adapter wiring: @field / @dep / @env become self.fields.
+    for ann in &c.annotations {
+        if registry.is_adapter_field_annotation(&ann.name)
+            || registry.is_dependency_annotation(&ann.name)
+        {
+            for arg in &ann.args {
+                if let Some((n, t)) = arg.split_once(':') {
+                    let n = n.trim();
+                    let te = crate::edit::parse_type_str(t.trim());
+                    info.fields.insert(n.to_string(), ty_from_type_expr(&te));
+                }
+            }
+        }
+        if registry.is_adapter_env_annotation(&ann.name) {
+            for arg in &ann.args {
+                if arg.contains("DATABASE") {
+                    info.fields.insert("pool".into(), Ty::Named("Pool".into()));
+                }
+                let snake = arg.to_ascii_lowercase();
+                info.fields.insert(snake.clone(), Ty::Named("Str".into()));
+                if let Some(short) = snake.rsplit('_').next() {
+                    if short != snake {
+                        info.fields.insert(short.to_string(), Ty::Named("Str".into()));
+                    }
+                }
+            }
         }
     }
 
@@ -404,7 +586,7 @@ fn index_construct_types(c: &Construct, env: &mut TypeEnv) {
     env.types.insert(c.name.clone(), info);
 
     for child in &c.children {
-        index_construct_types(child, env);
+        index_construct_types(child, env, registry);
     }
 }
 
@@ -444,7 +626,7 @@ pub fn check_types(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
     for item in &sol.items {
         match item {
             TopLevelItem::Construct(c) => {
-                check_construct_types(c, &env, &mut diagnostics);
+                check_construct_types(c, &env, registry, &mut diagnostics);
             }
             TopLevelItem::Function(f) => {
                 let mut scope = Scope::default();
@@ -710,7 +892,125 @@ fn check_bare_fields(c: &Construct, diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
-fn check_construct_types(c: &Construct, env: &TypeEnv, diagnostics: &mut Vec<Diagnostic>) {
+fn looks_like_env_var(name: &str) -> bool {
+    name.contains('_')
+        && name.chars().any(|c| c.is_ascii_alphabetic())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_')
+}
+
+fn expr_has_bang_or_try(expr: &Expr) -> bool {
+    match expr {
+        Expr::Try(e) => {
+            let _ = e;
+            true
+        }
+        Expr::Call(c) => {
+            c.method.ends_with('!')
+                || c.target.ends_with('!')
+                || c.args.iter().any(expr_has_bang_or_try)
+                || c.receiver
+                    .as_ref()
+                    .map(|r| expr_has_bang_or_try(r))
+                    .unwrap_or(false)
+        }
+        Expr::Action(a) => {
+            a.keyword.ends_with('!')
+                || a.target.ends_with('!')
+                || a.args.iter().any(expr_has_bang_or_try)
+                || a.named_args.iter().any(|(_, e)| expr_has_bang_or_try(e))
+        }
+        Expr::Assign(_, r, _) | Expr::MutAssign(_, r, _) | Expr::Return(r) | Expr::Await(r) => {
+            expr_has_bang_or_try(r)
+        }
+        Expr::FieldAccess(b, _) | Expr::Index(b, _) => expr_has_bang_or_try(b),
+        Expr::IfExpr(ie) => {
+            expr_has_bang_or_try(&ie.condition)
+                || ie.then_body.iter().any(expr_has_bang_or_try)
+                || ie
+                    .else_body
+                    .as_ref()
+                    .map(|b| b.iter().any(expr_has_bang_or_try))
+                    .unwrap_or(false)
+        }
+        Expr::Match(s, arms) => {
+            expr_has_bang_or_try(s) || arms.iter().any(|a| a.body.iter().any(expr_has_bang_or_try))
+        }
+        Expr::BinaryOp(op) => expr_has_bang_or_try(&op.left) || expr_has_bang_or_try(&op.right),
+        Expr::StructLit(_, fields) => fields.iter().any(|(_, e)| expr_has_bang_or_try(e)),
+        Expr::ArrayLit(items) | Expr::Tuple(items) => items.iter().any(expr_has_bang_or_try),
+        _ => false,
+    }
+}
+
+fn is_unit_ty(ty: &Ty) -> bool {
+    match ty {
+        Ty::Unit => true,
+        Ty::Tuple(ts) if ts.is_empty() => true,
+        Ty::Named(n) if n == "()" || n == "Unit" => true,
+        _ => false,
+    }
+}
+
+/// Unit `Res!` / `Res!<()>`: an implicit last statement is a side-effect
+/// (`send!()`); codegen wraps `Ok(())`. An explicit `ret x` must be unit.
+/// Non-unit `Res!<T>` always requires `actual` to match `T`.
+fn return_compatible(expected: &Ty, actual: &Ty, last_was_return: bool) -> bool {
+    if compatible(expected, actual) {
+        return true;
+    }
+    match expected {
+        Ty::Res(None) => {
+            if last_was_return {
+                is_unit_ty(actual)
+                    || matches!(actual, Ty::Res(None))
+                    || matches!(actual, Ty::Res(Some(t)) if is_unit_ty(t))
+            } else {
+                true
+            }
+        }
+        Ty::Res(Some(inner)) if is_unit_ty(inner) => {
+            if last_was_return {
+                is_unit_ty(actual)
+                    || matches!(actual, Ty::Res(None))
+                    || matches!(actual, Ty::Res(Some(t)) if is_unit_ty(t))
+            } else {
+                true
+            }
+        }
+        Ty::Res(Some(inner)) => compatible(inner, actual),
+        _ => false,
+    }
+}
+
+fn check_construct_types(
+    c: &Construct,
+    env: &TypeEnv,
+    registry: &LayerRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if c.shape == Shape::Impl {
+        for ann in &c.annotations {
+            if ann.args.is_empty()
+                && (registry.is_adapter_env_annotation(&ann.name)
+                    || registry.is_adapter_field_annotation(&ann.name))
+            {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "annotation_missing_args",
+                    format!("@{0} needs arguments — write `@{0}(NAME)`", ann.name),
+                    &c.name,
+                    Some(ann.span),
+                    Some(format!(
+                        "`@{}(TABLE_NAME)` or `@{}(sns: aws_sdk_sns.Client)`",
+                        ann.name, ann.name
+                    )),
+                ));
+            }
+        }
+    }
+
     // Nested methods
     for fndef in &c.fns {
         let mut scope = Scope::default();
@@ -736,11 +1036,63 @@ fn check_construct_types(c: &Construct, env: &TypeEnv, diagnostics: &mut Vec<Dia
                 scope.bind(name, ty.clone());
             }
         }
-        for p in &imp.params {
-            scope.bind(p, Ty::Unknown);
+        let method = imp.method_name.trim_end_matches('!');
+        let trait_sig = c
+            .target
+            .as_ref()
+            .and_then(|t| env.types.get(t))
+            .and_then(|i| i.methods.get(method));
+        for (i, p) in imp.params.iter().enumerate() {
+            let ty = trait_sig
+                .and_then(|s| s.params.get(i).cloned())
+                .unwrap_or(Ty::Unknown);
+            scope.bind(p, ty);
         }
+        let mut last_ty = Ty::Unit;
+        let mut last_was_return = false;
         for e in &imp.body {
-            infer_expr(e, &mut scope, env, Some(&c.name), &c.name, diagnostics);
+            last_was_return = matches!(e, Expr::Return(_));
+            last_ty = match e {
+                Expr::Return(inner) => {
+                    infer_expr(inner, &mut scope, env, Some(&c.name), &c.name, diagnostics)
+                }
+                other => infer_expr(other, &mut scope, env, Some(&c.name), &c.name, diagnostics),
+            };
+        }
+        if let Some(sig) = trait_sig {
+            if is_unit_ty(&sig.ret) && imp.body.iter().any(expr_has_bang_or_try) {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "bang_in_unit_fn",
+                    format!(
+                        "'{}' returns () but the body uses `!` or `?` — rustc will reject `?` in a unit fn",
+                        imp.method_name
+                    ),
+                    &c.name,
+                    Some(imp.span),
+                    Some(
+                        "declare the port method with `!` (e.g. `save!(…) -> ()`) so it is Res!, or drop the bang"
+                            .into(),
+                    ),
+                ));
+            } else if !last_ty.is_unknown()
+                && !sig.ret.is_unknown()
+                && !return_compatible(&sig.ret, &last_ty, last_was_return)
+            {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "type_mismatch",
+                    format!(
+                        "'{}' returns {} but the body produces {}",
+                        imp.method_name,
+                        sig.ret.display(),
+                        last_ty.display()
+                    ),
+                    &c.name,
+                    Some(imp.span),
+                    Some(return_mismatch_hint(&sig.ret, &last_ty)),
+                ));
+            }
         }
     }
 
@@ -759,7 +1111,7 @@ fn check_construct_types(c: &Construct, env: &TypeEnv, diagnostics: &mut Vec<Dia
     }
 
     for child in &c.children {
-        check_construct_types(child, env, diagnostics);
+        check_construct_types(child, env, registry, diagnostics);
     }
 }
 
@@ -800,7 +1152,7 @@ fn check_flow_step_types(
         }
         FlowStep::Match(m) => {
             let scrut_ty = infer_expr(&m.expr, scope, env, None, location, diagnostics);
-            check_match_arms(&scrut_ty, &m.arms, scope, env, location, diagnostics);
+            check_match_arms(&scrut_ty, &m.arms, scope, env, None, location, diagnostics);
         }
     }
 }
@@ -823,12 +1175,85 @@ fn infer_expr(
         Expr::Break | Expr::Continue => Ty::Unit,
         Expr::Stock => Ty::Unit, // expanded before typecheck of merged IR
         Expr::Ident(name) => {
+            if name == "null" || name == "None" {
+                return Ty::Opt(Box::new(Ty::Unknown));
+            }
             if name == "self" {
                 return self_type
                     .map(|s| Ty::Named(s.to_string()))
                     .unwrap_or(Ty::Unknown);
             }
-            scope.get(name)
+            let t = scope.get(name);
+            if t.is_unknown() {
+                if let Some(st) = self_type {
+                    if let Some(info) = env.types.get(st) {
+                        let snake = name.to_ascii_lowercase();
+                        if looks_like_env_var(name)
+                            && (info.fields.contains_key(&snake)
+                                || info.fields.contains_key(name))
+                        {
+                            diagnostics.push(diag(
+                                Severity::Error,
+                                "env_use_self_field",
+                                format!(
+                                    "'{name}' is an @env var — write `self.{snake}` (full lowercased name)"
+                                ),
+                                location,
+                                None,
+                                Some(format!("@env({name}) is available as self.{snake}")),
+                            ));
+                            return Ty::Named("Str".into());
+                        }
+                        if looks_like_env_var(name) {
+                            diagnostics.push(diag(
+                                Severity::Error,
+                                "unknown_env_ident",
+                                format!(
+                                    "'{name}' looks like an env var but is not declared on this adapter"
+                                ),
+                                location,
+                                None,
+                                Some(format!(
+                                    "declare `@env({name})` and write `self.{snake}`"
+                                )),
+                            ));
+                            return Ty::Named("Str".into());
+                        }
+                        if let Some(fty) = info
+                            .fields
+                            .get(name)
+                            .or_else(|| info.fields.get(&snake))
+                        {
+                            diagnostics.push(diag(
+                                Severity::Warning,
+                                "adapter_field_needs_self",
+                                format!("'{name}' is an adapter field — write `self.{name}`"),
+                                location,
+                                None,
+                                Some(format!(
+                                    "codegen maps this to self.{}, but prefer the explicit form",
+                                    snake
+                                )),
+                            ));
+                            return fty.clone();
+                        }
+                    }
+                } else if looks_like_env_var(name) {
+                    diagnostics.push(diag(
+                        Severity::Error,
+                        "unknown_env_ident",
+                        format!("'{name}' looks like an env var — it is not in scope"),
+                        location,
+                        None,
+                        Some(format!(
+                            "declare `@env({name})` on the adapter and write `self.{}`",
+                            name.to_ascii_lowercase()
+                        )),
+                    ));
+                    return Ty::Named("Str".into());
+                }
+            }
+            t
         }
         Expr::FieldAccess(inner, field) => {
             let base = infer_expr(inner, scope, env, self_type, location, diagnostics);
@@ -1057,8 +1482,7 @@ fn infer_expr(
         }
         Expr::Match(scrutinee, arms) => {
             let st = infer_expr(scrutinee, scope, env, self_type, location, diagnostics);
-            check_match_arms(&st, arms, scope, env, location, diagnostics);
-            Ty::Unknown
+            check_match_arms(&st, arms, scope, env, self_type, location, diagnostics)
         }
         Expr::Return(e) => {
             infer_expr(e, scope, env, self_type, location, diagnostics);
@@ -1085,9 +1509,11 @@ fn infer_expr(
         }
         Expr::Require(e) => {
             let t = infer_expr(e, scope, env, self_type, location, diagnostics);
-            // require Opt<T> / Option<T> → T; already-T is left as-is.
+            // require force-presents Opt and Res (ACS-010). Already-T is left as-is.
             match t {
                 Ty::Opt(inner) => *inner,
+                Ty::Res(Some(inner)) => *inner,
+                Ty::Res(None) => Ty::Unit,
                 other => other,
             }
         }
@@ -1111,6 +1537,18 @@ fn infer_expr(
             }
         }
         Expr::StructLit(name, fields) => {
+            // Bare `{ k: v, … }` is a map/record literal, not a named struct.
+            // Adapters pass these as Map<Str, Str> attributes / DDB items.
+            if name.is_empty() {
+                let mut val_ty = Ty::Unknown;
+                for (_, fexpr) in fields {
+                    let ft = infer_expr(fexpr, scope, env, self_type, location, diagnostics);
+                    if val_ty.is_unknown() {
+                        val_ty = ft;
+                    }
+                }
+                return Ty::Map(Box::new(Ty::Named("Str".into())), Box::new(val_ty));
+            }
             if let Some(info) = env.types.get(name) {
                 for (fname, fexpr) in fields {
                     let ft = infer_expr(fexpr, scope, env, self_type, location, diagnostics);
@@ -1181,18 +1619,33 @@ fn infer_expr(
         Expr::Index(base, idx) => {
             let bt = infer_expr(base, scope, env, self_type, location, diagnostics);
             let it = infer_expr(idx, scope, env, self_type, location, diagnostics);
-            if !it.is_unknown() && !compatible(&Ty::Named("Int".into()), &it) {
-                diagnostics.push(diag(
-                    Severity::Error,
-                    "type_mismatch",
-                    format!("index must be Int, found {}", it.display()),
-                    location,
-                    None,
-                    None,
-                ));
-            }
             match bt {
-                Ty::List(e) => *e,
+                Ty::List(e) => {
+                    if !it.is_unknown() && !compatible(&Ty::Named("Int".into()), &it) {
+                        diagnostics.push(diag(
+                            Severity::Error,
+                            "type_mismatch",
+                            format!("index must be Int, found {}", it.display()),
+                            location,
+                            None,
+                            None,
+                        ));
+                    }
+                    *e
+                }
+                Ty::Map(k, v) => {
+                    if !it.is_unknown() && !compatible(&k, &it) {
+                        diagnostics.push(diag(
+                            Severity::Error,
+                            "type_mismatch",
+                            format!("map key must be {}, found {}", k.display(), it.display()),
+                            location,
+                            None,
+                            None,
+                        ));
+                    }
+                    *v
+                }
                 Ty::Named(n) if n == "Str" => Ty::Named("Str".into()),
                 other => other,
             }
@@ -1324,10 +1777,80 @@ fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
         Ty::Named(n) => env
             .types
             .get(n)
-            .and_then(|info| info.fields.get(field).cloned())
+            .and_then(|info| {
+                info.fields
+                    .get(field)
+                    .cloned()
+                    .or_else(|| info.getters.get(field).cloned())
+            })
             .unwrap_or(Ty::Unknown),
+        Ty::Opt(_) if field == "is_some" || field == "is_none" => Ty::Named("Bool".into()),
         Ty::Opt(inner) => field_ty_of(inner, field, env),
+        Ty::Res(Some(inner)) => field_ty_of(inner, field, env),
         _ => Ty::Unknown,
+    }
+}
+
+fn is_str_ty(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named(n) if n == "Str" || n == "String")
+}
+
+fn is_bytes_ty(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named(n) if n == "Bytes" || n == "Vec<u8>")
+}
+
+fn is_blob_name(name: &str) -> bool {
+    name == "Blob" || name.ends_with(".Blob") || name.ends_with("::Blob")
+}
+
+fn is_blob_ty(ty: &Ty) -> bool {
+    match ty {
+        Ty::Named(n) => is_blob_name(n),
+        _ => false,
+    }
+}
+
+/// List / Map / Set methods. `get` matches codegen: HashMap.get("lit") is
+/// unwrapped, so the type is `V` not `Opt<V>`.
+fn collection_method_ty(recv: &Ty, method: &str) -> Option<Ty> {
+    match recv {
+        Ty::List(elem) => match method {
+            "get" | "at" | "index" => Some(*elem.clone()),
+            "len" | "length" | "count" => Some(Ty::Named("Int".into())),
+            "is_empty" => Some(Ty::Named("Bool".into())),
+            "push" | "append" | "insert" | "extend" => Some(Ty::Unit),
+            _ => None,
+        },
+        Ty::Map(k, v) => match method {
+            "get" | "at" | "index" => Some(*v.clone()),
+            "len" | "length" | "count" => Some(Ty::Named("Int".into())),
+            "is_empty" | "contains_key" | "contains" => Some(Ty::Named("Bool".into())),
+            "insert" | "extend" => Some(Ty::Unit),
+            "remove" => Some(Ty::Opt(v.clone())),
+            "keys" => Some(Ty::List(k.clone())),
+            "values" => Some(Ty::List(v.clone())),
+            _ => None,
+        },
+        Ty::Set(_elem) => match method {
+            "len" | "length" | "count" => Some(Ty::Named("Int".into())),
+            "is_empty" | "contains" => Some(Ty::Named("Bool".into())),
+            "insert" | "remove" | "extend" => Some(Ty::Unit),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Language conversions: Str ↔ Bytes ↔ Blob. Used from receiver and Type.method.
+fn conversion_result(recv: &Ty, method: &str) -> Option<Ty> {
+    match method {
+        "as_bytes" | "to_bytes" | "into_bytes" if is_str_ty(recv) || is_blob_ty(recv) => {
+            Some(Ty::Named("Bytes".into()))
+        }
+        "to_str" | "as_str" | "to_string" if is_bytes_ty(recv) || is_blob_ty(recv) => {
+            Some(Ty::Named("Str".into()))
+        }
+        _ => None,
     }
 }
 
@@ -1382,25 +1905,20 @@ fn infer_call(
         .collect();
 
     if let Some(recv) = &call.receiver {
-        let _ = infer_expr(recv, scope, env, self_type, location, diagnostics);
-        let base = match recv.as_ref() {
-            Expr::Ident(n) if n == "self" => self_type.map(|s| s.to_string()),
-            Expr::Ident(n) => match scope.get(n) {
-                Ty::Named(t) => Some(t),
-                _ => None,
-            },
-            Expr::FieldAccess(inner, field) => {
-                let bt = infer_expr(inner, scope, env, self_type, location, diagnostics);
-                match field_ty_of(&bt, field, env) {
-                    Ty::Named(t) => Some(t),
-                    _ => None,
-                }
-            }
+        let recv_ty = infer_expr(recv, scope, env, self_type, location, diagnostics);
+        let method = call.method.trim_end_matches('!');
+        if let Some(ty) = conversion_result(&recv_ty, method) {
+            return ty;
+        }
+        if let Some(ty) = collection_method_ty(&recv_ty, method) {
+            return ty;
+        }
+        let type_name = match &recv_ty {
+            Ty::Named(t) => Some(t.clone()),
             _ => None,
         };
-        let method = call.method.trim_end_matches('!');
         let is_bang = call.method.ends_with('!');
-        if let Some(type_name) = base {
+        if let Some(type_name) = type_name {
             if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
                 check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
                 let ret = sig.ret.clone();
@@ -1409,6 +1927,18 @@ fn infer_call(
                     return unwrap_bang_return(ret);
                 }
                 return ret;
+            }
+            if env.ambiguous_stub_types.contains(&type_name) {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "ambiguous_stub_type",
+                    format!(
+                        "stub type '{type_name}' is defined by more than one crate — qualify it"
+                    ),
+                    location,
+                    Some(call.span),
+                    Some("e.g. aws_sdk_sns.Client / aws_sdk_sns.MessageAttributeValue".into()),
+                ));
             }
         }
         return Ty::Unknown;
@@ -1456,6 +1986,9 @@ fn infer_call(
         let is_bang = call.method.ends_with('!');
         match scope.get(&call.target) {
             Ty::Named(type_name) => {
+                if let Some(ty) = conversion_result(&Ty::Named(type_name.clone()), method) {
+                    return ty;
+                }
                 if let Some(sig) = env.types.get(&type_name).and_then(|i| i.methods.get(method)) {
                     check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
                     let ret = sig.ret.clone();
@@ -1466,13 +1999,9 @@ fn infer_call(
                     return ret;
                 }
             }
-            Ty::List(elem) => {
-                return match method {
-                    "get" | "at" | "index" => *elem,
-                    "len" | "length" | "count" => Ty::Named("Int".into()),
-                    "is_empty" => Ty::Named("Bool".into()),
-                    _ => Ty::Unknown,
-                };
+            Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) => {
+                return collection_method_ty(&scope.get(&call.target), method)
+                    .unwrap_or(Ty::Unknown);
             }
             Ty::Opt(inner) => {
                 return match method {
@@ -1549,11 +2078,42 @@ fn infer_call(
         let method = call.method.trim_end_matches('!');
         let is_bang = call.method.ends_with('!');
         if method == "new" {
+            // Blob.new(Str) is utf-8 sugar for Blob.new(Bytes.from_str(s)).
+            if is_blob_name(&call.target)
+                && arg_tys.len() == 1
+                && (is_str_ty(&arg_tys[0]) || is_bytes_ty(&arg_tys[0]) || arg_tys[0].is_unknown())
+            {
+                return info
+                    .methods
+                    .get("new")
+                    .map(|s| s.ret.clone())
+                    .unwrap_or_else(|| Ty::Named(call.target.clone()));
+            }
             if let Some(sig) = info.methods.get("new") {
-                // skip strict arg check for new
+                // Synthetic VEIL-struct new() has no params — skip arity.
+                // Stub constructors (`Blob.new(data: Bytes)`) must check args.
+                if !sig.params.is_empty() {
+                    check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
+                }
                 return sig.ret.clone();
             }
             return Ty::Named(call.target.clone());
+        }
+        if is_blob_name(&call.target) {
+            if let Some(ty) = conversion_result(&Ty::Named("Blob".into()), method) {
+                return ty;
+            }
+        }
+        if call.target == "Bytes" || call.target == "Str" {
+            match (call.target.as_str(), method) {
+                ("Bytes", "from_str") | ("Bytes", "new") if arg_tys.len() == 1 => {
+                    return Ty::Named("Bytes".into());
+                }
+                ("Str", "from_bytes") | ("Str", "from_utf8") if arg_tys.len() == 1 => {
+                    return Ty::Named("Str".into());
+                }
+                _ => {}
+            }
         }
         if let Some(sig) = info.methods.get(method) {
             check_args(sig, &arg_tys, location, Some(call.span), diagnostics);
@@ -1564,6 +2124,18 @@ fn infer_call(
             }
             return ret;
         }
+    } else if env.ambiguous_stub_types.contains(&call.target) {
+        diagnostics.push(diag(
+            Severity::Error,
+            "ambiguous_stub_type",
+            format!(
+                "stub type '{}' is defined by more than one crate — qualify it",
+                call.target
+            ),
+            location,
+            Some(call.span),
+            Some("e.g. aws_sdk_sns.MessageAttributeValue.builder()".into()),
+        ));
     }
 
     Ty::Unknown
@@ -1581,17 +2153,35 @@ fn check_args(
         return;
     }
     if arg_tys.len() != sig.params.len() {
+        let expected_sig = sig
+            .param_names
+            .iter()
+            .zip(sig.params.iter())
+            .map(|(n, t)| format!("{n}: {}", t.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let json_bus = sig.params.len() == 1
+            && matches!(sig.params.first(), Some(Ty::Named(n)) if n == "Json");
+        let hint = if json_bus {
+            Some("this method takes one Json argument".into())
+        } else {
+            Some(
+                "stub_search the method. Fluent setters often take (key, stubValue), \
+                 not a Map<Str, Str>. Incremental: .item(k, AttributeValue.S(v))"
+                    .into(),
+            )
+        };
         diagnostics.push(diag(
             Severity::Error,
             "arg_count_mismatch",
             format!(
-                "expected {} argument(s), found {}",
+                "expected {} argument(s), found {} ({expected_sig})",
                 sig.params.len(),
                 arg_tys.len()
             ),
             location,
             span,
-            None,
+            hint,
         ));
         return;
     }
@@ -1602,6 +2192,16 @@ fn check_args(
                 .get(i)
                 .map(|s| s.as_str())
                 .unwrap_or("?");
+            let hint = match (expected, actual) {
+                (Ty::Map(_, ev), Ty::Map(_, av)) if ev.as_ref() != av.as_ref() => Some(format!(
+                    "stub maps use {} values — construct them (Type.Variant(x) or Type.builder()…build()), not Map<Str, Str>",
+                    ev.display()
+                )),
+                (Ty::Named(n), _) if !is_veil_primitive_name(n) => Some(format!(
+                    "stub_search '{n}' and construct it (e.g. {n}.S(s), {n}.builder()…build(), Blob.new(bytes))"
+                )),
+                _ => None,
+            };
             diagnostics.push(diag(
                 Severity::Error,
                 "type_mismatch",
@@ -1613,7 +2213,7 @@ fn check_args(
                 ),
                 location,
                 span,
-                None,
+                hint,
             ));
         }
     }
@@ -1624,13 +2224,17 @@ fn check_match_arms(
     arms: &[MatchArm],
     scope: &Scope,
     env: &TypeEnv,
+    self_type: Option<&str>,
     location: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> Ty {
     let variants: Option<&[String]> = match scrut_ty {
         Ty::Named(n) => env.types.get(n).map(|i| i.variants.as_slice()),
         _ => None,
     };
+
+    let mut unified: Option<Ty> = None;
+    let mut conflict = false;
 
     for arm in arms {
         let mut arm_scope = scope.child();
@@ -1693,7 +2297,7 @@ fn check_match_arms(
         }
 
         if let Some(g) = &arm.guard {
-            let gt = infer_expr(g, &mut arm_scope, env, None, location, diagnostics);
+            let gt = infer_expr(g, &mut arm_scope, env, self_type, location, diagnostics);
             if !gt.is_unknown() && !compatible(&Ty::Named("Bool".into()), &gt) {
                 diagnostics.push(diag(
                     Severity::Error,
@@ -1705,9 +2309,54 @@ fn check_match_arms(
                 ));
             }
         }
+        let mut arm_ty = Ty::Unit;
+        let mut arm_returns = false;
         for e in &arm.body {
-            infer_expr(e, &mut arm_scope, env, None, location, diagnostics);
+            arm_returns = matches!(e, Expr::Return(_));
+            arm_ty = match e {
+                Expr::Return(inner) => {
+                    infer_expr(inner, &mut arm_scope, env, self_type, location, diagnostics)
+                }
+                other => infer_expr(other, &mut arm_scope, env, self_type, location, diagnostics),
+            };
         }
+        // `ret` leaves the match — do not unify with continuing arms
+        // (`Ok x -> i = i + 1` vs `Err e -> ret Err(e)`).
+        if arm_returns {
+            continue;
+        }
+        match unified.take() {
+            None => unified = Some(arm_ty),
+            Some(prev) if prev.is_unknown() => unified = Some(arm_ty),
+            Some(prev) if arm_ty.is_unknown() => unified = Some(prev),
+            Some(prev) if compatible(&prev, &arm_ty) => unified = Some(prev),
+            Some(prev) if compatible(&arm_ty, &prev) => unified = Some(arm_ty),
+            Some(prev) => {
+                conflict = true;
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "type_mismatch",
+                    format!(
+                        "match arms have incompatible types: {} vs {}",
+                        prev.display(),
+                        arm_ty.display()
+                    ),
+                    location,
+                    Some(arm.span),
+                    Some(
+                        "every arm must produce the same type — wrap a Str in the domain value; \
+                         a fire-and-forget arm that returns Opt<T> ends with `null` (not the unit call)"
+                            .into(),
+                    ),
+                ));
+                unified = Some(Ty::Unknown);
+            }
+        }
+    }
+    if conflict {
+        Ty::Unknown
+    } else {
+        unified.unwrap_or(Ty::Unknown)
     }
 }
 
@@ -1777,6 +2426,27 @@ fn bind_string_pattern(pattern: &str, ty: &Ty, scope: &mut Scope) {
 }
 
 // ─── Diagnostics ─────────────────────────────────────────────────────────────
+
+fn return_mismatch_hint(expected: &Ty, actual: &Ty) -> String {
+    match (expected, actual) {
+        (Ty::Res(Some(inner)), act) if matches!(inner.as_ref(), Ty::Opt(_)) && is_unit_ty(act) => {
+            "use `ret value` for Some and `ret null` (or `ret ()`) for None — then map stub fields into the domain value".into()
+        }
+        (Ty::Opt(_), act) if is_unit_ty(act) => {
+            "use `ret value` for Some and `ret null` for None".into()
+        }
+        (Ty::Res(Some(inner)), Ty::Named(n))
+            if matches!(inner.as_ref(), Ty::Named(e) if e == "Str") && is_blob_name(n) =>
+        {
+            "decode with `blob.to_str()` (utf-8) or `Str.from_bytes(blob.as_bytes())`".into()
+        }
+        (Ty::Named(e), Ty::Named(a)) if e == "Str" && is_blob_name(a) => {
+            "decode with `blob.to_str()` (utf-8)".into()
+        }
+        _ => "map the value to the port type (do not return a stub output field as a domain value)"
+            .into(),
+    }
+}
 
 fn diag(
     severity: Severity,
@@ -1895,6 +2565,59 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == "type_mismatch"),
             "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn unnamed_struct_lit_is_map() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Sns".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "publish!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "attributes".into(),
+                type_expr: TypeExpr::Map(
+                    Box::new(TypeExpr::Named("Str".into())),
+                    Box::new(TypeExpr::Named("Str".into())),
+                ),
+                span: Span::new(0, 0),
+            }],
+            return_type: None,
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "AwsSns".into(),
+            Span::new(0, 0),
+        );
+        ad.impls.push(MethodImpl {
+            method_name: "publish".into(),
+            params: Vec::new(),
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: "Sns".into(),
+                method: "publish".into(),
+                args: vec![Expr::StructLit(
+                    String::new(),
+                    vec![("event".into(), Expr::StringLit("x".into()))],
+                )],
+                receiver: None,
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &reg(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "bare {{ k: v }} must type as Map: {:?}",
             diags
         );
     }
@@ -2248,5 +2971,884 @@ mod tests {
             Some(Ty::Named("Bool".into()))
         );
         assert!(infer_field_ty_from_name("xyzzy").is_none());
+    }
+
+    fn stub_put_item() -> crate::layer::StubCrate {
+        let src = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Client
+    fn put_item() -> PutItemFluentBuilder
+
+  struct PutItemFluentBuilder
+    fn table_name(input: Str) -> Self
+    fn item(k: Str, v: AttributeValue) -> Self
+    fn set_item(input: Opt<HashMap<Str, AttributeValue>>) -> Self
+    fn send() -> Res!<PutItemOutput>
+
+  struct PutItemOutput
+
+  enum AttributeValue
+    S(Str)
+    N(Str)
+"#;
+        crate::layer::parse_stub_file(src).expect("stub")
+    }
+
+    fn ddd_reg_with_stub() -> LayerRegistry {
+        let mut r = LayerRegistry::builtin();
+        r.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        r.stubs.push(stub_put_item());
+        r
+    }
+
+    #[test]
+    fn stub_set_item_rejects_map_of_str() {
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRepo".into(),
+            Span::new(0, 0),
+        );
+        adapter.annotations.push(Annotation {
+            name: "field".into(),
+            args: vec!["ddb: example_sdk.Client".into()],
+            span: Span::new(0, 0),
+        });
+        adapter.impls.push(MethodImpl {
+            method_name: "save".into(),
+            params: vec!["id".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: String::new(),
+                method: "set_item".into(),
+                args: vec![Expr::StructLit(
+                    String::new(),
+                    vec![("pk".into(), Expr::StringLit("id-1".into()))],
+                )],
+                receiver: Some(Box::new(Expr::Call(CallExpr {
+                    target: String::new(),
+                    method: "put_item".into(),
+                    args: Vec::new(),
+                    receiver: Some(Box::new(Expr::FieldAccess(
+                        Box::new(Expr::Ident("self".into())),
+                        "ddb".into(),
+                    ))),
+                    sugar: None,
+                    span: Span::new(0, 0),
+                }))),
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        let diags = check_types(
+            &sol(vec![TopLevelItem::Construct(adapter)]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "type_mismatch"
+                && d.message.contains("AttributeValue")
+                && d.message.contains("Str")),
+            "Map<Str, Str> must not satisfy HashMap<Str, AttributeValue>: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn stub_item_pair_accepts_attribute_value_s() {
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRepo".into(),
+            Span::new(0, 0),
+        );
+        adapter.annotations.push(Annotation {
+            name: "field".into(),
+            args: vec!["ddb: example_sdk.Client".into()],
+            span: Span::new(0, 0),
+        });
+        adapter.impls.push(MethodImpl {
+            method_name: "save".into(),
+            params: vec!["id".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: String::new(),
+                method: "item".into(),
+                args: vec![
+                    Expr::StringLit("id".into()),
+                    Expr::Call(CallExpr {
+                        target: "AttributeValue".into(),
+                        method: "S".into(),
+                        args: vec![Expr::Ident("id".into())],
+                        receiver: None,
+                        sugar: None,
+                        span: Span::new(0, 0),
+                    }),
+                ],
+                receiver: Some(Box::new(Expr::Call(CallExpr {
+                    target: String::new(),
+                    method: "put_item".into(),
+                    args: Vec::new(),
+                    receiver: Some(Box::new(Expr::FieldAccess(
+                        Box::new(Expr::Ident("self".into())),
+                        "ddb".into(),
+                    ))),
+                    sugar: None,
+                    span: Span::new(0, 0),
+                }))),
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        let diags = check_types(
+            &sol(vec![TopLevelItem::Construct(adapter)]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch" || d.code == "arg_count_mismatch"),
+            "AttributeValue.S + item(k,v) must type-check: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn env_all_caps_ident_warns_to_use_self_field() {
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRepo".into(),
+            Span::new(0, 0),
+        );
+        adapter.annotations.push(Annotation {
+            name: "env".into(),
+            args: vec!["TABLE_NAME".into()],
+            span: Span::new(0, 0),
+        });
+        adapter.impls.push(MethodImpl {
+            method_name: "save".into(),
+            params: Vec::new(),
+            span: Span::new(0, 0),
+            body: vec![Expr::Ident("TABLE_NAME".into())],
+        });
+        let diags = check_types(
+            &sol(vec![TopLevelItem::Construct(adapter)]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "env_use_self_field"
+                && matches!(d.severity, Severity::Error)),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_all_caps_ident_is_error() {
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRepo".into(),
+            Span::new(0, 0),
+        );
+        adapter.impls.push(MethodImpl {
+            method_name: "save".into(),
+            params: Vec::new(),
+            span: Span::new(0, 0),
+            body: vec![Expr::Ident("SNS_TOPIC_ARN".into())],
+        });
+        let diags = check_types(
+            &sol(vec![TopLevelItem::Construct(adapter)]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "unknown_env_ident"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn empty_env_annotation_is_error() {
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRepo".into(),
+            Span::new(0, 0),
+        );
+        adapter.annotations.push(Annotation {
+            name: "env".into(),
+            args: Vec::new(),
+            span: Span::new(0, 0),
+        });
+        let diags = check_types(
+            &sol(vec![TopLevelItem::Construct(adapter)]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "annotation_missing_args"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn bang_in_unit_port_method_is_error() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Bus".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "dispatch".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "envelope".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: None,
+        });
+        port.methods.push(Method {
+            name: "publish!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "msg".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: None,
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "AwsBus".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Bus".into());
+        ad.impls.push(MethodImpl {
+            method_name: "dispatch".into(),
+            params: vec!["envelope".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: "Bus".into(),
+                method: "publish!".into(),
+                args: vec![Expr::Ident("envelope".into())],
+                receiver: None,
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "bang_in_unit_fn"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn impl_return_map_is_not_domain_type() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Routes".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "get_route".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "name".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
+                "RoutingEntry".into(),
+            )))),
+        });
+        let mut store = Construct::new("port", "Port", Shape::Trait, "Items".into(), Span::new(0, 0));
+        store.methods.push(Method {
+            name: "get_item!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "key".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Map(
+                Box::new(TypeExpr::Named("Str".into())),
+                Box::new(TypeExpr::Named("AttributeValue".into())),
+            )))),
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "DdbRoutes".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Routes".into());
+        ad.impls.push(MethodImpl {
+            method_name: "get_route".into(),
+            params: vec!["name".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: "Items".into(),
+                method: "get_item!".into(),
+                args: vec![Expr::Ident("name".into())],
+                receiver: None,
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(store),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "type_mismatch"
+                && d.message.contains("RoutingEntry")
+                && d.message.contains("Map")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn stub_new_accepts_str_as_bytes_sugar() {
+        let src = r#"
+stub example-sdk 1.0.0
+  struct Blob
+    fn new(data: Bytes) -> Self
+"#;
+        let mut r = LayerRegistry::builtin();
+        r.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        r.stubs.push(crate::layer::parse_stub_file(src).expect("stub"));
+        let mut adapter = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "Lam".into(),
+            Span::new(0, 0),
+        );
+        adapter.impls.push(MethodImpl {
+            method_name: "invoke".into(),
+            params: vec!["payload".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: "Blob".into(),
+                method: "new".into(),
+                args: vec![Expr::Ident("payload".into())],
+                receiver: None,
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        adapter.impls[0].body.insert(
+            0,
+            Expr::Assign(
+                "payload".into(),
+                Box::new(Expr::StringLit("x".into())),
+                Some(TypeExpr::Named("Str".into())),
+            ),
+        );
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(adapter)]), &r);
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "Blob.new(Str) is utf-8 sugar: {diags:?}"
+        );
+    }
+
+    fn stub_get_item() -> crate::layer::StubCrate {
+        let src = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Client
+    fn get_item() -> GetItemFluentBuilder
+
+  struct GetItemFluentBuilder
+    fn send() -> Res!<GetItemOutput>
+
+  struct GetItemOutput
+    fn item() -> Opt<HashMap<Str, AttributeValue>>
+
+  enum AttributeValue
+    S(Str)
+    fn as_s() -> Res!<Str>
+"#;
+        crate::layer::parse_stub_file(src).expect("stub")
+    }
+
+    fn ddd_reg_with_get_item() -> LayerRegistry {
+        let mut r = LayerRegistry::builtin();
+        r.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        r.stubs.push(stub_get_item());
+        r
+    }
+
+    #[test]
+    fn stub_output_getter_field_is_not_domain_type() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Routes".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "get_route!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "name".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
+                "Record".into(),
+            )))),
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRoutes".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Routes".into());
+        ad.annotations.push(Annotation {
+            name: "field".into(),
+            args: vec!["client: example_sdk.Client".into()],
+            span: Span::new(0, 0),
+        });
+        ad.impls.push(MethodImpl {
+            method_name: "get_route".into(),
+            params: vec!["name".into()],
+            span: Span::new(0, 0),
+            body: vec![
+                Expr::Assign(
+                    "result".into(),
+                    Box::new(Expr::Call(CallExpr {
+                        target: String::new(),
+                        method: "send!".into(),
+                        args: Vec::new(),
+                        receiver: Some(Box::new(Expr::Call(CallExpr {
+                            target: String::new(),
+                            method: "get_item".into(),
+                            args: Vec::new(),
+                            receiver: Some(Box::new(Expr::FieldAccess(
+                                Box::new(Expr::Ident("self".into())),
+                                "client".into(),
+                            ))),
+                            sugar: None,
+                            span: Span::new(0, 0),
+                        }))),
+                        sugar: None,
+                        span: Span::new(0, 0),
+                    })),
+                    None,
+                ),
+                Expr::Return(Box::new(Expr::FieldAccess(
+                    Box::new(Expr::Ident("result".into())),
+                    "item".into(),
+                ))),
+            ],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_get_item(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "type_mismatch"
+                && d.message.contains("Record")
+                && d.message.contains("Map")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn match_arms_incompatible_types_are_error() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Worker".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "run!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "mode".into(),
+                type_expr: TypeExpr::Named("Mode".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
+                "Token".into(),
+            )))),
+        });
+        let mut mode = Construct::new("enum", "Enum", Shape::Enum, "Mode".into(), Span::new(0, 0));
+        mode.variants = vec!["Fast".into(), "Slow".into()];
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "MemWorker".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Worker".into());
+        ad.impls.push(MethodImpl {
+            method_name: "run".into(),
+            params: vec!["mode".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Match(
+                Box::new(Expr::Ident("mode".into())),
+                vec![
+                    MatchArm {
+                        pattern: "Fast".into(),
+                        rich_pattern: None,
+                        guard: None,
+                        span: Span::new(0, 0),
+                        body: vec![Expr::StringLit("tok".into())],
+                    },
+                    MatchArm {
+                        pattern: "Slow".into(),
+                        rich_pattern: None,
+                        guard: None,
+                        span: Span::new(0, 0),
+                        body: vec![Expr::Tuple(Vec::new())],
+                    },
+                ],
+            )],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(mode),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "type_mismatch" && d.message.contains("incompatible")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn match_return_arm_does_not_conflict_with_unit_arm() {
+        let mut mode = Construct::new("enum", "Enum", Shape::Enum, "Mode".into(), Span::new(0, 0));
+        mode.variants = vec!["Fast".into(), "Slow".into()];
+        let mut fn_ = Construct::new("fn", "Fn", Shape::Fn, "go".into(), Span::new(0, 0));
+        fn_.fns.push(FnDef {
+            name: "go".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "mode".into(),
+                type_expr: TypeExpr::Named("Mode".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Result(None)),
+            annotations: Vec::new(),
+            body: vec![Expr::Match(
+                Box::new(Expr::Ident("mode".into())),
+                vec![
+                    MatchArm {
+                        pattern: "Fast".into(),
+                        rich_pattern: None,
+                        guard: None,
+                        span: Span::new(0, 0),
+                        body: vec![Expr::Assign(
+                            "i".into(),
+                            Box::new(Expr::IntLit(1)),
+                            None,
+                        )],
+                    },
+                    MatchArm {
+                        pattern: "Slow".into(),
+                        rich_pattern: None,
+                        guard: None,
+                        span: Span::new(0, 0),
+                        body: vec![Expr::Return(Box::new(Expr::Call(CallExpr {
+                            target: "Err".into(),
+                            method: String::new(),
+                            args: vec![Expr::StringLit("no".into())],
+                            receiver: None,
+                            sugar: None,
+                            span: Span::new(0, 0),
+                        })))],
+                    },
+                ],
+            )],
+            steps: Vec::new(),
+            layer_provided: false,
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(mode),
+                TopLevelItem::Construct(fn_),
+            ]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == "type_mismatch" && d.message.contains("incompatible")),
+            "ret on one match arm must not conflict with a continuing arm: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn unit_res_implicit_send_is_compatible() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Sink".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "put!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "id".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: None,
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkSink".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Sink".into());
+        ad.annotations.push(Annotation {
+            name: "field".into(),
+            args: vec!["ddb: example_sdk.Client".into()],
+            span: Span::new(0, 0),
+        });
+        ad.impls.push(MethodImpl {
+            method_name: "put".into(),
+            params: vec!["id".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: String::new(),
+                method: "send!".into(),
+                args: Vec::new(),
+                receiver: Some(Box::new(Expr::Call(CallExpr {
+                    target: String::new(),
+                    method: "put_item".into(),
+                    args: Vec::new(),
+                    receiver: Some(Box::new(Expr::FieldAccess(
+                        Box::new(Expr::Ident("self".into())),
+                        "ddb".into(),
+                    ))),
+                    sugar: None,
+                    span: Span::new(0, 0),
+                }))),
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "implicit send!() last line of put! -> () must be allowed: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn ret_unit_satisfies_opt_port() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Routes".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "get_route!".into(),
+            span: Span::new(0, 0),
+            params: Vec::new(),
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
+                "Record".into(),
+            )))),
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "MemRoutes".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Routes".into());
+        ad.impls.push(MethodImpl {
+            method_name: "get_route".into(),
+            params: Vec::new(),
+            span: Span::new(0, 0),
+            body: vec![Expr::Return(Box::new(Expr::Tuple(Vec::new())))],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "ret () must mean None for Opt<T>: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn blob_to_str_is_str() {
+        let src = r#"
+stub example-sdk 1.0.0
+  struct Blob
+    fn new(data: Bytes) -> Self
+"#;
+        let mut r = LayerRegistry::builtin();
+        r.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        r.stubs.push(crate::layer::parse_stub_file(src).expect("stub"));
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Runner".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "run!".into(),
+            span: Span::new(0, 0),
+            params: Vec::new(),
+            return_type: Some(TypeExpr::Named("Str".into())),
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRun".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Runner".into());
+        ad.impls.push(MethodImpl {
+            method_name: "run".into(),
+            params: Vec::new(),
+            span: Span::new(0, 0),
+            body: vec![
+                Expr::Assign(
+                    "blob".into(),
+                    Box::new(Expr::Call(CallExpr {
+                        target: "Blob".into(),
+                        method: "new".into(),
+                        args: vec![Expr::StringLit("x".into())],
+                        receiver: None,
+                        sugar: None,
+                        span: Span::new(0, 0),
+                    })),
+                    None,
+                ),
+                Expr::Return(Box::new(Expr::Call(CallExpr {
+                    target: String::new(),
+                    method: "to_str".into(),
+                    args: Vec::new(),
+                    receiver: Some(Box::new(Expr::Ident("blob".into()))),
+                    sugar: None,
+                    span: Span::new(0, 0),
+                }))),
+            ],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &r,
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "blob.to_str() must satisfy Str: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn map_get_and_index_are_value_type() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Routes".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "get_route!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "name".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
+                "Str".into(),
+            )))),
+        });
+        let get = |recv: Expr, method: &str, args: Vec<Expr>| {
+            Expr::Call(CallExpr {
+                target: String::new(),
+                method: method.into(),
+                args,
+                receiver: Some(Box::new(recv)),
+                sugar: None,
+                span: Span::new(0, 0),
+            })
+        };
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SdkRoutes".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Routes".into());
+        ad.annotations.push(Annotation {
+            name: "field".into(),
+            args: vec!["client: example_sdk.Client".into()],
+            span: Span::new(0, 0),
+        });
+        ad.impls.push(MethodImpl {
+            method_name: "get_route".into(),
+            params: vec!["name".into()],
+            span: Span::new(0, 0),
+            body: vec![
+                Expr::Assign(
+                    "result".into(),
+                    Box::new(get(
+                        get(
+                            Expr::FieldAccess(Box::new(Expr::Ident("self".into())), "client".into()),
+                            "get_item",
+                            Vec::new(),
+                        ),
+                        "send!",
+                        Vec::new(),
+                    )),
+                    None,
+                ),
+                Expr::Assign(
+                    "map".into(),
+                    Box::new(Expr::Require(Box::new(get(
+                        Expr::Ident("result".into()),
+                        "item",
+                        Vec::new(),
+                    )))),
+                    None,
+                ),
+                Expr::Return(Box::new(get(
+                    get(
+                        Expr::Ident("map".into()),
+                        "get",
+                        vec![Expr::StringLit("endpoint".into())],
+                    ),
+                    "as_s!",
+                    Vec::new(),
+                ))),
+            ],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_get_item(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "map.get(\"k\").as_s() must be Str: {diags:?}"
+        );
     }
 }

@@ -261,6 +261,7 @@ pub async fn prompt_with_tools(
         CheckTool, CreateFileTool, DevLogsTool, DevRestartTool, DevStatusTool, HttpRequestTool,
         ListFilesTool, ListRoutesTool, OutlineTool, ReadGeneratedTool, ReadSourceTool, RenameTool,
         SelectFileTool, SmokeStatusTool, StubGenTool, StubGetTool, StubInstallTool, StubListTool,
+        StubSearchTool,
         WriteSourceTool,
     };
 
@@ -307,6 +308,7 @@ pub async fn prompt_with_tools(
                 .tool(StubGetTool { ws: ws.clone() })
                 .tool(StubGenTool { ws: ws.clone() })
                 .tool(StubInstallTool { ws: ws.clone() })
+                .tool(StubSearchTool { ws: ws.clone() })
                 // Platform UX (create_project, SDLC, deploy, nav)
                 .tool(ListProjectsTool)
                 .tool(CreateProjectTool)
@@ -359,6 +361,7 @@ pub async fn prompt_with_tools(
                 .tool(StubGetTool { ws: ws.clone() })
                 .tool(StubGenTool { ws: ws.clone() })
                 .tool(StubInstallTool { ws: ws.clone() })
+                .tool(StubSearchTool { ws: ws.clone() })
                 .tool(ListProjectsTool)
                 .tool(CreateProjectTool)
                 .tool(RenameProjectTool)

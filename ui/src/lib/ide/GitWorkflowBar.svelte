@@ -13,7 +13,7 @@
     ideRequestHeaders,
     sessionSaveState,
   } from './store';
-  import { openPrWizard } from './prWizard';
+
 
   interface CommitRow {
     commit_id: string;
@@ -215,23 +215,15 @@
     Commit
   </button>
 
-  <button
-    type="button"
+  <a
     class="action review"
-    title="PR Wizard — walk structural changes, approve or send feedback to the agent"
-    onclick={() => openPrWizard(null)}
+    href={`/review/${encodeURIComponent(currentProjectParam() || '')}`}
+    title="Review changes — approve to unlock deploy"
   >
     Review
-  </button>
-  <a
-    class="action"
-    href={`/review/${encodeURIComponent(currentProjectParam() || '')}`}
-    title="Outstanding change set — human sign-off (not git status)"
-  >
-    Sign off
   </a>
 
-  <!-- Session merge to main is disabled — use PR Wizard → Approve → Merge -->
+  <!-- Session merge to main is disabled — Review → Approve is the ship gate -->
 
   {#if commitOpen}
     <div class="popover commit-pop">
@@ -290,16 +282,15 @@
         <button type="button" class="menu-item" onclick={() => void switchMain()}>
           Switch to {baseBranch} (mainline session)
         </button>
-        <button
-          type="button"
+        <a
           class="menu-item"
+          href={`/review/${encodeURIComponent(currentProjectParam() || '')}`}
           onclick={() => {
             open = false;
-            openPrWizard(null);
           }}
         >
-          Review / land via PR Wizard…
-        </button>
+          Review this project…
+        </a>
       {/if}
       <button
         type="button"
@@ -329,7 +320,7 @@
       {/if}
       {#if err}<p class="err">{err}</p>{/if}
       <p class="hint">
-        Branch ≈ isolated session. Commit ≈ named snapshot. Land via <strong>PR Wizard</strong> (Review), not session merge.
+        Branch ≈ isolated session. Commit ≈ named snapshot. Land via <strong>Review</strong>, not session merge.
         Save status: {$sessionSaveState}.
       </p>
     </div>
@@ -527,6 +518,8 @@
     padding: 8px 6px;
     border-radius: 6px;
     cursor: pointer;
+    text-decoration: none;
+    box-sizing: border-box;
   }
 
   .menu-item:hover {

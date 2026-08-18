@@ -297,6 +297,15 @@ pub fn project_session(slug: Option<&str>) -> Option<std::sync::Arc<SessionHandl
         .ok()
 }
 
+/// Already-open session only. Never hits DDB/S3 — safe on list endpoints.
+pub fn peek_project_session(slug: Option<&str>) -> Option<std::sync::Arc<SessionHandle>> {
+    let slug = slug.filter(|s| !s.is_empty())?;
+    if !crate::session::sessions_enabled() {
+        return None;
+    }
+    crate::session::SessionManager::global().peek_open_for_project(slug)
+}
+
 /// Current project slug from hub / ACP.
 pub fn current_project_slug() -> Option<String> {
     crate::provider::hub::CURRENT_PROJECT

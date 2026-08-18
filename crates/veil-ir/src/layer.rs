@@ -843,6 +843,49 @@ impl LayerRegistry {
         self.annotation_has_role(name, "adapter_env")
     }
 
+    /// Type names injected by layer `declare` blocks (`trait AuthService`, `struct Principal`, …).
+    /// Product constructs must not reuse these names (they already exist).
+    pub fn declared_type_names(&self) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for decl in &self.declarations {
+            for line in decl.lines() {
+                let t = line.trim();
+                for prefix in ["trait ", "struct ", "enum ", "port "] {
+                    if let Some(rest) = t.strip_prefix(prefix) {
+                        let name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !name.is_empty() {
+                            names.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Free function names injected by layer `declare` blocks (`run_saga`, …).
+    pub fn declared_fn_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for decl in &self.declarations {
+            for line in decl.lines() {
+                let t = line.trim();
+                if let Some(rest) = t.strip_prefix("fn ") {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() && !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+        names
+    }
+
     pub fn is_invariant_annotation(&self, name: &str) -> bool {
         self.annotation_has_role(name, "invariant")
     }
@@ -1378,6 +1421,7 @@ impl LayerRegistry {
         // `stub_gen` take effect for check/codegen without requiring a matching
         // `use sqlx` / `use reqwest` line. Dedupes by crate name against use-loaded stubs.
         Self::load_project_stubs_dir(&mut reg, dir);
+        Self::fill_stub_gaps_from_system(&mut reg);
         // R21: product's primary layer from veil.toml `[package].layer` (or
         // layers/main.layer default). Without this, packages only get layers
         // named in `use` lines — product vocabulary/present never loads and
@@ -1440,6 +1484,88 @@ impl LayerRegistry {
                 continue;
             }
             reg.stubs.push(stub);
+        }
+    }
+
+    /// Rustdoc dumps often mention types in signatures (`fn payload(input: Blob)`)
+    /// without declaring them. If a curated system stub for the same crate
+    /// defines that type, fold the missing struct in so check/codegen see the
+    /// real contract. Never overwrites a type the product stub already has.
+    ///
+    /// Also inherit *unset* codegen policy from the system stub: `types_module`,
+    /// `root_types`, and per-struct `path`. Product stubs that omit those
+    /// headers still get `crate::types::T` / `crate::primitives::Blob`.
+    fn fill_stub_gaps_from_system(reg: &mut LayerRegistry) {
+        let mut additions: Vec<(usize, StubStruct)> = Vec::new();
+        let mut types_module_fill: Vec<(usize, String)> = Vec::new();
+        let mut root_types_fill: Vec<(usize, Vec<String>)> = Vec::new();
+        let mut path_fill: Vec<(usize, String, String)> = Vec::new();
+        for (i, stub) in reg.stubs.iter().enumerate() {
+            let Some(path) = Self::find_system_stub(&stub.name) else {
+                continue;
+            };
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(sys) = parse_stub_file(&content) else {
+                continue;
+            };
+            if stub.types_module.is_none() {
+                if let Some(tm) = sys.types_module.clone() {
+                    types_module_fill.push((i, tm));
+                }
+            }
+            if stub.root_types.is_empty() && !sys.root_types.is_empty() {
+                root_types_fill.push((i, sys.root_types.clone()));
+            }
+            for s in &sys.structs {
+                if let Some(mp) = &s.module_path {
+                    if stub
+                        .structs
+                        .iter()
+                        .any(|p| p.name == s.name && p.module_path.is_none())
+                    {
+                        path_fill.push((i, s.name.clone(), mp.clone()));
+                    }
+                }
+            }
+            let have: HashSet<&str> = stub.structs.iter().map(|s| s.name.as_str()).collect();
+            let needed = stub_referenced_type_names(stub);
+            for s in sys.structs {
+                if !have.contains(s.name.as_str()) && needed.contains(&s.name) {
+                    additions.push((i, s));
+                }
+            }
+        }
+        for (i, tm) in types_module_fill {
+            if let Some(stub) = reg.stubs.get_mut(i) {
+                if stub.types_module.is_none() {
+                    stub.types_module = Some(tm);
+                }
+            }
+        }
+        for (i, rt) in root_types_fill {
+            if let Some(stub) = reg.stubs.get_mut(i) {
+                if stub.root_types.is_empty() {
+                    stub.root_types = rt;
+                }
+            }
+        }
+        for (i, name, mp) in path_fill {
+            if let Some(stub) = reg.stubs.get_mut(i) {
+                if let Some(s) = stub.structs.iter_mut().find(|s| s.name == name) {
+                    if s.module_path.is_none() {
+                        s.module_path = Some(mp);
+                    }
+                }
+            }
+        }
+        for (i, s) in additions {
+            if let Some(stub) = reg.stubs.get_mut(i) {
+                if !stub.structs.iter().any(|x| x.name == s.name) {
+                    stub.structs.push(s);
+                }
+            }
         }
     }
 
@@ -1957,6 +2083,52 @@ fn apply_stub_meta_line(stub: &mut StubCrate, raw: &str) {
     }
 }
 
+fn stub_referenced_type_names(stub: &StubCrate) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let scan = |raw: &str, names: &mut HashSet<String>| {
+        for tok in raw.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+            if tok.is_empty() {
+                continue;
+            }
+            let upper = tok.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+            if !upper {
+                continue;
+            }
+            if matches!(
+                tok,
+                "Str" | "String" | "Int" | "F64" | "Bool" | "Bytes" | "UUID" | "Id"
+                    | "DateTime" | "Dt" | "List" | "Map" | "Set" | "Opt" | "Res" | "Json"
+                    | "Any" | "Unit" | "Self" | "HashMap" | "Option" | "Vec" | "Result"
+            ) {
+                continue;
+            }
+            names.insert(tok.to_string());
+        }
+    };
+    let scan_method = |m: &StubMethod, names: &mut HashSet<String>| {
+        for (_, ty, _) in &m.params {
+            scan(ty, names);
+        }
+        if let Some(ret) = &m.return_type {
+            scan(ret, names);
+        }
+    };
+    for s in &stub.structs {
+        for m in &s.methods {
+            scan_method(m, &mut names);
+        }
+    }
+    for imp in &stub.impls {
+        for m in &imp.methods {
+            scan_method(m, &mut names);
+        }
+    }
+    for m in &stub.free_fns {
+        scan_method(m, &mut names);
+    }
+    names
+}
+
 /// Parse a `.stub` file into a StubCrate.
 pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
     let mut stub = StubCrate::default();
@@ -2227,6 +2399,13 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
                 }
                 continue;
             }
+            // Enum variants as constructors: `S(Str)` → `fn S(v0: Str) -> Self`.
+            if let Some(m) = parse_stub_enum_variant(trimmed) {
+                if let Some(ref mut s) = current_struct {
+                    s.methods.push(m);
+                }
+                continue;
+            }
         }
 
         // Top-level impl declaration
@@ -2292,6 +2471,50 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
 }
 
 /// Parse a method signature line like `fn get(url: Str) -> RequestBuilder`
+/// `S(Str)` / `Healthy` under an `enum` — constructor method returning Self.
+fn parse_stub_enum_variant(line: &str) -> Option<StubMethod> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let first = line.chars().next()?;
+    if !first.is_ascii_uppercase() {
+        return None;
+    }
+    let name_end = line
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .unwrap_or(line.len());
+    if name_end == 0 {
+        return None;
+    }
+    let rest = line[name_end..].trim();
+    if !rest.is_empty() && !rest.starts_with('(') {
+        return None;
+    }
+    let mut method = parse_stub_method(line);
+    if method.return_type.is_none() {
+        method.return_type = Some("Self".into());
+    }
+    // `S(Str)` has no `name: Type` — parse_stub_method stores the type as the name.
+    method.params = method
+        .params
+        .into_iter()
+        .enumerate()
+        .map(|(i, (n, t, r))| {
+            let type_only = t == "Str"
+                && (n.contains('<')
+                    || n.starts_with('[')
+                    || n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
+            if type_only {
+                (format!("v{i}"), n, r)
+            } else {
+                (n, t, r)
+            }
+        })
+        .collect();
+    Some(method)
+}
+
 fn parse_stub_method(line: &str) -> StubMethod {
     let line = line.strip_prefix("fn ").unwrap_or(line).trim();
 
@@ -2312,23 +2535,49 @@ fn parse_stub_method(line: &str) -> StubMethod {
     let params: Vec<(String, String, bool)> = if params_str.is_empty() {
         Vec::new()
     } else {
-        params_str.split(',').map(|p| {
-            let p = p.trim();
-            // Check for `ref` keyword prefix
-            let (is_ref, p) = if p.starts_with("ref ") {
-                (true, p.strip_prefix("ref ").unwrap().trim())
-            } else {
-                (false, p)
-            };
-            if let Some((name, ty)) = p.split_once(':') {
-                (name.trim().to_string(), ty.trim().to_string(), is_ref)
-            } else {
-                (p.to_string(), "Str".to_string(), is_ref)
-            }
-        }).collect()
+        split_top_level_commas(&params_str)
+            .into_iter()
+            .map(|p| {
+                let p = p.trim();
+                // Check for `ref` keyword prefix
+                let (is_ref, p) = if p.starts_with("ref ") {
+                    (true, p.strip_prefix("ref ").unwrap().trim())
+                } else {
+                    (false, p)
+                };
+                if let Some((name, ty)) = p.split_once(':') {
+                    (name.trim().to_string(), ty.trim().to_string(), is_ref)
+                } else {
+                    (p.to_string(), "Str".to_string(), is_ref)
+                }
+            })
+            .collect()
     };
 
     StubMethod { name, params, return_type: ret }
+}
+
+/// Split on commas that are not inside `<…>` or `(…)`.
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(s[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = s[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    parts
 }
 
 
@@ -3792,6 +4041,9 @@ pub fn keyword_shapes(reg: &LayerRegistry) -> HashMap<String, Shape> {
 mod tests {
     use super::*;
     use crate::presentation::presentation_from_registry;
+    use std::sync::Mutex;
+
+    static STUBS_DIR_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parse_review_policy_svelte_block() {
@@ -3880,20 +4132,17 @@ pkg wf v1
     }
 
     #[test]
-    fn ddd_statements_require_bus_dep() {
+    fn ddd_does_not_ship_bus_verbs() {
         let mut reg = LayerRegistry::builtin();
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .expect("ddd");
         for kw in ["dispatch", "invoke", "request"] {
-            let s = reg.statement(kw).unwrap_or_else(|| panic!("{kw}"));
-            assert_eq!(
-                s.requires_dep.as_deref(),
-                Some("Bus"),
-                "{kw} should require Bus"
+            assert!(
+                reg.statement(kw).is_none(),
+                "DDD must not declare {kw} — messaging is user-land"
             );
-            // Empty lowers_to keeps envelope routing fallback
-            assert!(s.lowers_to.is_empty(), "{kw} should not force lowers_to");
         }
+        assert!(reg.routing_traits().is_empty(), "DDD must not declare routing traits");
     }
 
     #[test]
@@ -4127,7 +4376,10 @@ pkg bad v1
             "declare block empty — policy lines may have broken layer parse"
         );
         let decl = reg.declarations.join("\n");
-        assert!(decl.contains("trait Bus"), "Bus missing from declare: {decl}");
+        assert!(
+            !decl.contains("trait Bus"),
+            "DDD must not inject a Bus — messaging is user-land: {decl}"
+        );
         assert!(decl.contains("run_saga"), "run_saga missing: {decl}");
     }
 
@@ -4344,6 +4596,57 @@ pkg demo v1
     }
 
     #[test]
+    fn stub_method_hashmap_param_is_one_arg() {
+        let src = r#"
+stub example-sdk 1.0.0
+  struct Builder
+    fn set_item(input: Opt<HashMap<Str, AttributeValue>>) -> Self
+    fn item(k: Str, v: AttributeValue) -> Self
+"#;
+        let stub = parse_stub_file(src).expect("stub");
+        let b = stub.structs.iter().find(|s| s.name == "Builder").unwrap();
+        let set = b.methods.iter().find(|m| m.name == "set_item").unwrap();
+        assert_eq!(set.params.len(), 1, "{:?}", set.params);
+        assert_eq!(set.params[0].1, "Opt<HashMap<Str, AttributeValue>>");
+        let item = b.methods.iter().find(|m| m.name == "item").unwrap();
+        assert_eq!(item.params.len(), 2, "{:?}", item.params);
+    }
+
+    #[test]
+    fn stub_enum_variant_becomes_constructor() {
+        let src = r#"
+stub example-sdk 1.0.0
+types_module types
+  enum AttributeValue
+    S(Str)
+    N(Str)
+"#;
+        let stub = parse_stub_file(src).expect("stub");
+        let av = stub
+            .structs
+            .iter()
+            .find(|s| s.name == "AttributeValue")
+            .unwrap();
+        let s = av.methods.iter().find(|m| m.name == "S").expect("S");
+        assert_eq!(s.params.len(), 1, "{:?}", s.params);
+        assert_eq!(s.params[0].1, "Str");
+        assert_eq!(s.return_type.as_deref(), Some("Self"));
+    }
+
+    #[test]
+    fn ddd_declare_exposes_saga_not_bus() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .unwrap();
+        assert!(
+            !reg.declared_type_names().contains("Bus"),
+            "DDD must not declare Bus"
+        );
+        assert!(reg.declared_type_names().contains("SagaStep"));
+        assert!(reg.declared_fn_names().contains(&"run_saga".to_string()));
+    }
+
+    #[test]
     fn ddd_layer_context_has_groups_and_model_views() {
         let mut reg = LayerRegistry::builtin();
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
@@ -4407,6 +4710,115 @@ pkg demo v1
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
 
-// temporary - in tests module already closed, add at end of tests:
+    #[test]
+    fn system_stub_fills_undeclared_referenced_types() {
+        let _guard = STUBS_DIR_LOCK.lock().expect("stubs dir lock");
+        let dir = std::env::temp_dir().join(format!(
+            "veil-stub-gap-{}",
+            std::process::id()
+        ));
+        let sys = std::env::temp_dir().join(format!(
+            "veil-sys-stubs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sys);
+        std::fs::create_dir_all(dir.join("stubs")).expect("mkdir project stubs");
+        std::fs::create_dir_all(&sys).expect("mkdir system stubs");
+        std::fs::write(
+            dir.join("main.veil"),
+            "pkg gap_test v1\n  use example_sdk\n",
+        )
+        .expect("write main.veil");
+        // Product rustdoc dump: uses Blob in a signature, never declares it.
+        std::fs::write(
+            dir.join("stubs").join("example_sdk.stub"),
+            "stub example-sdk 1.0.0\n  struct Client\n    fn payload(input: Blob) -> Self\n",
+        )
+        .expect("write product stub");
+        // Curated system stub declares Blob with a module path.
+        std::fs::write(
+            sys.join("example_sdk.stub"),
+            "stub example-sdk 1.0.0\n  struct Blob\n    path primitives\n    fn new(data: Bytes) -> Self\n",
+        )
+        .expect("write system stub");
+        let old = std::env::var("VEIL_STUBS_DIR").ok();
+        unsafe { std::env::set_var("VEIL_STUBS_DIR", &sys) };
+        let reg = LayerRegistry::for_veil_file(&dir.join("main.veil")).expect("registry");
+        match old {
+            Some(v) => unsafe { std::env::set_var("VEIL_STUBS_DIR", v) },
+            None => unsafe { std::env::remove_var("VEIL_STUBS_DIR") },
+        }
+        let stub = reg
+            .stubs
+            .iter()
+            .find(|s| s.name == "example-sdk" || s.name == "example_sdk")
+            .expect("example-sdk loaded");
+        assert!(
+            stub.structs.iter().any(|s| s.name == "Blob"
+                && s.module_path.as_deref() == Some("primitives")),
+            "system Blob must be folded in: {:?}",
+            stub.structs.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sys);
+    }
+
+    #[test]
+    fn system_stub_inherits_unset_codegen_policy() {
+        let _guard = STUBS_DIR_LOCK.lock().expect("stubs dir lock");
+        let nonce = format!("{}-{}", std::process::id(), {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        });
+        let dir = std::env::temp_dir().join(format!("veil-stub-policy-{nonce}"));
+        let sys = std::env::temp_dir().join(format!("veil-sys-policy-{nonce}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sys);
+        std::fs::create_dir_all(dir.join("stubs")).expect("mkdir project stubs");
+        std::fs::create_dir_all(&sys).expect("mkdir system stubs");
+        std::fs::write(
+            dir.join("main.veil"),
+            "pkg policy_test v1\n  use policy_sdk\n",
+        )
+        .expect("write main.veil");
+        // Product stub has Blob but no path / types_module.
+        std::fs::write(
+            dir.join("stubs").join("policy_sdk.stub"),
+            "stub policy-sdk 1.0.0\n  struct Blob\n    fn new(data: Str) -> Blob\n",
+        )
+        .expect("write product stub");
+        std::fs::write(
+            sys.join("policy_sdk.stub"),
+            "stub policy-sdk 1.0.0\ntypes_module types\nroot_types Client\n  struct Blob\n    path primitives\n    fn new(data: Bytes) -> Self\n  struct Client\n",
+        )
+        .expect("write system stub");
+        let old = std::env::var("VEIL_STUBS_DIR").ok();
+        unsafe { std::env::set_var("VEIL_STUBS_DIR", &sys) };
+        let reg = LayerRegistry::for_veil_file(&dir.join("main.veil")).expect("registry");
+        match old {
+            Some(v) => unsafe { std::env::set_var("VEIL_STUBS_DIR", v) },
+            None => unsafe { std::env::remove_var("VEIL_STUBS_DIR") },
+        }
+        let stub = reg
+            .stubs
+            .iter()
+            .find(|s| s.name == "policy-sdk" || s.name == "policy_sdk")
+            .expect("policy-sdk loaded");
+        assert_eq!(
+            stub.types_module.as_deref(),
+            Some("types"),
+            "types_module inherit: {:?}",
+            stub.types_module
+        );
+        assert_eq!(stub.root_types, vec!["Client".to_string()]);
+        let blob = stub.structs.iter().find(|s| s.name == "Blob").unwrap();
+        assert_eq!(blob.module_path.as_deref(), Some("primitives"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sys);
+    }
+}

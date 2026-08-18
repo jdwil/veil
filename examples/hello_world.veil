@@ -53,6 +53,9 @@ pkg HelloWorld
       port Notifier
         send_email(to: Str, subject: Str, body: Str) -> Res!
 
+      port Bus
+        dispatch(evt: Json) -> Res!
+
     group application
       svc CreateUser
         input
@@ -67,7 +70,7 @@ pkg HelloWorld
         step persist
           user = User.new(name, email)
           UserRepo.save(user)
-          dispatch UserGreeted{id: user.id, email, now: now()}
+          bus.dispatch(UserGreeted{id: user.id, email, now: now()})
         ret user.id
 
       svc GreetUser

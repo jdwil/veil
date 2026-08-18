@@ -269,6 +269,150 @@ pub fn list_platform_stubs() -> Vec<StubCatalogEntry> {
     out
 }
 
+/// One hit from [`search_stub_catalog`] — a type, method, or harness field
+/// on any third-party `.stub` (not AWS-specific).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StubSearchHit {
+    pub stub: String,
+    pub version: String,
+    pub kind: String,
+    pub type_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    pub signature: String,
+}
+
+fn stub_sig(m: &crate::layer::StubMethod) -> String {
+    let params = m
+        .params
+        .iter()
+        .map(|(n, t, r)| {
+            if *r {
+                format!("{n}: &{t}")
+            } else {
+                format!("{n}: {t}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    match &m.return_type {
+        Some(rt) => format!("{}({params}) -> {rt}", m.name),
+        None => format!("{}({params})", m.name),
+    }
+}
+
+fn q_match(hay: &str, q: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    hay.to_ascii_lowercase()
+        .contains(&q.to_ascii_lowercase())
+}
+
+/// Search project + platform stubs for types/methods matching `query`.
+///
+/// Pass `name` to restrict to one crate (`reqwest`, `aws-sdk-sns`, …).
+/// The stub file is the contract — this is how agents read it without
+/// dumping a 100k-line rustdoc surface.
+pub fn search_stub_catalog(
+    project_root: Option<&Path>,
+    name: Option<&str>,
+    query: &str,
+    limit: usize,
+) -> Vec<StubSearchHit> {
+    let limit = limit.clamp(1, 80);
+    let q = query.trim();
+    let mut hits = Vec::new();
+    let catalog = list_catalog(project_root);
+    for entry in catalog {
+        if let Some(n) = name {
+            let want = n.replace('-', "_").to_ascii_lowercase();
+            let got = entry.name.replace('-', "_").to_ascii_lowercase();
+            if got != want && !got.contains(&want) && !want.contains(&got) {
+                continue;
+            }
+        }
+        let Some(resolved) = resolve_stub(project_root, &entry.name) else {
+            continue;
+        };
+        let Some(stub) = resolved.parsed else {
+            continue;
+        };
+        if q_match(&stub.name, q) && hits.len() < limit {
+            hits.push(StubSearchHit {
+                stub: stub.name.clone(),
+                version: stub.version.clone(),
+                kind: "crate".into(),
+                type_name: stub.name.clone(),
+                method: None,
+                signature: format!(
+                    "use {}  — @field(x: Type) then call Type methods; harness_field types: {}",
+                    stub.name,
+                    stub.harness_fields
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+        for (ty, _) in &stub.harness_fields {
+            if q_match(ty, q) && hits.len() < limit {
+                hits.push(StubSearchHit {
+                    stub: stub.name.clone(),
+                    version: stub.version.clone(),
+                    kind: "harness_field".into(),
+                    type_name: ty.clone(),
+                    method: None,
+                    signature: format!("@field(name: {ty})  // constructed from stub harness_field"),
+                });
+            }
+        }
+        for st in &stub.structs {
+            if q_match(&st.name, q) && hits.len() < limit {
+                hits.push(StubSearchHit {
+                    stub: stub.name.clone(),
+                    version: stub.version.clone(),
+                    kind: "struct".into(),
+                    type_name: st.name.clone(),
+                    method: None,
+                    signature: format!("struct {}", st.name),
+                });
+            }
+            for m in &st.methods {
+                if (q_match(&m.name, q) || q_match(&st.name, q)) && hits.len() < limit {
+                    hits.push(StubSearchHit {
+                        stub: stub.name.clone(),
+                        version: stub.version.clone(),
+                        kind: "method".into(),
+                        type_name: st.name.clone(),
+                        method: Some(m.name.clone()),
+                        signature: format!("{}.{}", st.name, stub_sig(m)),
+                    });
+                }
+            }
+        }
+        for imp in &stub.impls {
+            for m in &imp.methods {
+                if (q_match(&m.name, q) || q_match(&imp.target, q)) && hits.len() < limit {
+                    hits.push(StubSearchHit {
+                        stub: stub.name.clone(),
+                        version: stub.version.clone(),
+                        kind: "method".into(),
+                        type_name: imp.target.clone(),
+                        method: Some(m.name.clone()),
+                        signature: format!("{}.{}", imp.target, stub_sig(m)),
+                    });
+                }
+            }
+        }
+        if hits.len() >= limit {
+            break;
+        }
+    }
+    hits
+}
+
 /// Combined catalog: project entries first (override), then platform-only names.
 pub fn list_catalog(project_root: Option<&Path>) -> Vec<StubCatalogEntry> {
     let mut out = Vec::new();
@@ -428,5 +572,33 @@ mod tests {
         let s = parse_stub_file(src).expect("parse");
         assert!(!s.is_sparse());
         assert_eq!(s.provenance.surface.as_deref(), Some("curated"));
+    }
+
+    #[test]
+    fn search_finds_method_on_project_stub() {
+        let dir = std::env::temp_dir().join(format!(
+            "veil-stub-search-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("stubs")).unwrap();
+        std::fs::write(
+            dir.join("stubs/example-sdk.stub"),
+            r#"stub example-sdk 1.0.0
+  harness_field Client """ { example_sdk::Client::new() } """
+  struct Client
+    fn publish() -> PublishBuilder
+  struct PublishBuilder
+    fn topic_arn(input: Str) -> Self
+    fn send() -> Res!<Str>
+"#,
+        )
+        .unwrap();
+        let hits = search_stub_catalog(Some(&dir), Some("example-sdk"), "publish", 20);
+        assert!(
+            hits.iter().any(|h| h.method.as_deref() == Some("publish")),
+            "{hits:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

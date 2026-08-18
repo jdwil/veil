@@ -183,13 +183,15 @@ make serve VEIL_MODEL_PROVIDER=acp
 # optional overrides
 export VEIL_ACP_COMMAND=kiro-cli
 export VEIL_ACP_ARGS="acp --trust-all-tools"
-export VEIL_ACP_CWD=$PWD          # workspace root for Kiro
+export VEIL_ACP_CWD=$PWD          # disk-mode only; ignored when VEIL_SOURCE_MODE=s3
 export VEIL_ACP_AGENT=veil        # ~/.kiro/agents/veil.json (mind-palace + jira + veil-ide-tools)
 export VEIL_ACP_MODEL=…          # if your Kiro plan exposes model ids
 export VEIL_ACP_TIMEOUT_SECS=300   # idle silence between ACP lines, not a total-turn cap
 ```
 
-Kiro edits files on disk; after each ACP turn the server **reloads from disk**
+On **ProductHost + DDB/S3**, Kiro's ACP cwd is a sandbox (`$TMP/veil-acp-cwd`),
+not the staged checkout. Source mutations go through MCP (`write_source`,
+`stub_*`, `ws_*`). After each ACP turn the server reloads the session tree
 and the viewer refreshes via SSE (`GET /api/events`).
 
 ### Agent context (Tier 0 + Tier 1 — not vector RAG)

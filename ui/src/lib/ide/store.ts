@@ -1,6 +1,13 @@
 import { get, writable } from 'svelte/store';
 import { setPaletteStyles, type IrGraph, type IrNode, type PaletteEntry } from './types';
 import type { PresentationModel } from './presentation';
+import {
+  getCodingSessionId,
+  setCodingSessionId,
+  sessionIdBelongsToProject,
+} from '$lib/session/codingSession';
+
+export { getCodingSessionId, setCodingSessionId } from '$lib/session/codingSession';
 
 export const irGraph = writable<IrGraph | null>(null);
 export const veilSource = writable<string>('');
@@ -423,26 +430,6 @@ export function applyIdeConstraints(
 }
 
 /** Durable coding session id (X-Veil-Session-Id) — shared with runtime agent. */
-const CODING_SESSION_KEY = 'veil.coding.sessionId';
-
-export function getCodingSessionId(): string | null {
-  if (typeof localStorage === 'undefined') return null;
-  try {
-    return localStorage.getItem(CODING_SESSION_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setCodingSessionId(id: string | null) {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    if (id) localStorage.setItem(CODING_SESSION_KEY, id);
-    else localStorage.removeItem(CODING_SESSION_KEY);
-  } catch {
-    /* ignore */
-  }
-}
 
 function applySessionPayload(data: {
   session?: {
@@ -461,7 +448,7 @@ function applySessionPayload(data: {
 }) {
   const s = data?.session;
   if (!s?.session_id) return;
-  setCodingSessionId(s.session_id);
+  setCodingSessionId(s.session_id, s.slug || currentProjectParam() || undefined);
   codingSessionRevision.set(typeof s.revision === 'number' ? s.revision : null);
   codingSessionMeta.set({
     session_id: s.session_id,
@@ -481,26 +468,57 @@ function applySessionPayload(data: {
 }
 
 /** Ensure a durable session for the current project (POST /api/sessions). */
-/** In-flight ensure — coalesce concurrent IDE + agent opens. */
-let ensureInflight: Promise<string | null> | null = null;
+/** In-flight ensure — coalesce concurrent IDE + agent opens **per slug**. */
+const ensureInflight = new Map<string, Promise<string | null>>();
 
-export async function ensureCodingSession(slug?: string | null): Promise<string | null> {
+export async function ensureCodingSession(
+  slug?: string | null,
+  opts?: { sessionId?: string | null; branchName?: string | null }
+): Promise<string | null> {
   const project = slug || currentProjectParam();
   if (!project) return getCodingSessionId();
 
-  // Fast path: already bound for this slug
-  const existing = getCodingSessionId();
+  const preferId = (opts?.sessionId || '').trim();
+  const preferBranch = (opts?.branchName || '').trim();
+  if (preferId) {
+    setCodingSessionId(preferId, project);
+  }
+
+  // Fast path: already bound for this slug (skip when we need a different branch)
+  const existing = preferId || getCodingSessionId(project);
   const meta = get(codingSessionMeta);
-  if (existing && meta?.slug === project && meta.session_id === existing) {
+  const metaBranch =
+    (meta?.branch_name as string | undefined) ||
+    (meta?.draft_mode ? 'work' : (meta?.branch as string | undefined));
+  if (
+    existing &&
+    !preferBranch &&
+    meta?.session_id === existing &&
+    sessionIdBelongsToProject(meta.slug, undefined, project)
+  ) {
+    sessionSaveState.set('ready');
+    return existing;
+  }
+  if (
+    existing &&
+    preferBranch &&
+    meta?.session_id === existing &&
+    sessionIdBelongsToProject(meta.slug, undefined, project) &&
+    (metaBranch || '') === preferBranch
+  ) {
     sessionSaveState.set('ready');
     return existing;
   }
 
-  if (ensureInflight) return ensureInflight;
+  const pending = ensureInflight.get(project);
+  if (pending) return pending;
 
-  ensureInflight = (async () => {
+  const run = (async () => {
     sessionSaveState.set('ensuring');
     try {
+      // Only attach a session already mapped to this product. Never attach the
+      // leftover agent-core id — that rematerializes the wrong repo (~30s)
+      // and used to 400 as session slug mismatch.
       if (existing) {
         try {
           const res = await fetch(
@@ -509,7 +527,17 @@ export async function ensureCodingSession(slug?: string | null): Promise<string 
           );
           if (res.ok) {
             const data = await res.json();
-            if (data?.session?.slug === project) {
+            const s = data?.session as {
+              slug?: string;
+              repo_id?: string;
+              branch_name?: string;
+              draft_mode?: boolean;
+              branch?: string;
+            } | undefined;
+            const attachedBranch =
+              s?.branch_name || (s?.draft_mode ? 'work' : s?.branch);
+            const branchOk = !preferBranch || attachedBranch === preferBranch;
+            if (sessionIdBelongsToProject(s?.slug, s?.repo_id, project) && branchOk) {
               applySessionPayload(data);
               return existing;
             }
@@ -518,16 +546,28 @@ export async function ensureCodingSession(slug?: string | null): Promise<string 
           /* create below */
         }
       }
-      // Create (server sticky may still re-use) — avoid listing full DDB when possible
+      const createBody: Record<string, string> = { slug: project };
+      if (preferBranch) createBody.branch_name = preferBranch;
       const res = await fetch(`${hubApiBase()}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug: project }),
+        body: JSON.stringify(createBody),
       });
       if (!res.ok) {
+        let detail = `session create failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) detail = String(body.error);
+        } catch {
+          /* keep status text */
+        }
+        if (res.status === 404) {
+          detail = `Project “${project}” is not in the catalog (it may have been deleted).`;
+        }
         sessionSaveState.set('error');
-        sessionSaveDetail.set(`session create failed (${res.status})`);
-        return getCodingSessionId();
+        sessionSaveDetail.set(detail);
+        error.set(detail);
+        return null;
       }
       const data = await res.json();
       applySessionPayload(data);
@@ -535,13 +575,14 @@ export async function ensureCodingSession(slug?: string | null): Promise<string 
     } catch (e) {
       sessionSaveState.set('error');
       sessionSaveDetail.set(e instanceof Error ? e.message : 'session error');
-      return getCodingSessionId();
+      return null;
     } finally {
-      ensureInflight = null;
+      ensureInflight.delete(project);
     }
   })();
 
-  return ensureInflight;
+  ensureInflight.set(project, run);
+  return run;
 }
 
 /** Headers for IDE API calls (mode + layer scope for palette / write locks). */
@@ -552,7 +593,14 @@ export function ideRequestHeaders(extra?: Record<string, string>): Record<string
   else if (isFlowComposerMode()) h['X-Veil-Mode'] = 'flow';
   const layer = flowLayerParam();
   if (layer) h['X-Veil-Layer'] = layer;
-  const sid = getCodingSessionId();
+  const project = currentProjectParam();
+  const meta = get(codingSessionMeta);
+  const sid = project
+    ? getCodingSessionId(project) ||
+      (meta && sessionIdBelongsToProject(meta.slug, undefined, project)
+        ? meta.session_id
+        : null)
+    : getCodingSessionId();
   if (sid) h['X-Veil-Session-Id'] = sid;
   return h;
 }
@@ -571,9 +619,10 @@ export function scheduleAutosave(file: string, content: string, delayMs = 1500) 
 }
 
 export async function postAutosave(file: string, content: string): Promise<boolean> {
-  let sid = getCodingSessionId();
+  const project = currentProjectParam();
+  let sid = getCodingSessionId(project);
   if (!sid) {
-    sid = await ensureCodingSession();
+    sid = await ensureCodingSession(project);
   }
   if (!sid) {
     sessionSaveState.set('error');
@@ -1552,7 +1601,7 @@ export function focusDiagnostic(diag: Diagnostic) {
 }
 
 /**
- * Jump to a construct by name for PR Wizard review.
+ * Jump to a construct by name (Review → Open in IDE).
  * Selects the node and navigates outline host to its parent so the construct is visible.
  * Returns true if the node was found.
  */
@@ -1582,6 +1631,43 @@ export function focusConstructByName(name: string): boolean {
     }
   }
   return true;
+}
+
+/** Open the matching package file, then focus a construct — used by `/review` Open in IDE. */
+export async function applyIdeReviewFocus(opts: {
+  file?: string | null;
+  construct?: string | null;
+}): Promise<boolean> {
+  const fileQ = (opts.file || '').replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  const constructQ = (opts.construct || '').trim();
+  if (!fileQ && !constructQ) return false;
+
+  if (fileQ) {
+    const files = get(availableFiles);
+    const rel = fileQ.toLowerCase();
+    const leaf = rel.split('/').pop() || rel;
+    const hit = files.find((f) => {
+      const name = (f.name || '').toLowerCase();
+      const path = (f.path || '').replace(/\\/g, '/').toLowerCase();
+      return (
+        name === rel ||
+        name === leaf ||
+        path.endsWith('/' + rel) ||
+        path.endsWith('/' + leaf) ||
+        path.endsWith(rel)
+      );
+    });
+    if (hit && !hit.active) {
+      await selectFile(hit.index);
+    }
+  }
+
+  if (!constructQ) return true;
+  for (let i = 0; i < 12; i++) {
+    if (focusConstructByName(constructQ)) return true;
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  return false;
 }
 
 /** Get children of a given parent node */
@@ -1657,7 +1743,7 @@ export async function saveEdits(
   annotations?: (EditAnnotation | null)[],
 ): Promise<boolean> {
   if (edits.length === 0) return true;
-  if (!getCodingSessionId()) {
+  if (!getCodingSessionId(currentProjectParam())) {
     await ensureCodingSession();
   }
   saving.set(true);

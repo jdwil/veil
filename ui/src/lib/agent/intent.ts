@@ -1085,11 +1085,11 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 				announce:
 					toolName === 'list_outstanding'
 						? 'Reviewing outstanding changes'
-						: 'Here is what I did — please sign off',
+						: 'Here is what I did — please review',
 				steps: [
 					{ kind: 'goto', path, ms: 280 },
 					{ kind: 'wait', ms: 180 },
-					{ kind: 'pulse', target: 'text:Sign off', ms: 500 }
+					{ kind: 'pulse', target: 'text:Approve', ms: 500 }
 				]
 			}
 		};

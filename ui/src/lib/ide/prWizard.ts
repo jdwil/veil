@@ -521,10 +521,16 @@ export async function refreshWizardRationales(opts: {
 export async function fetchOpenPullRequests(status?: string): Promise<PullRequest[]> {
   const u = new URL(`${platformRoot()}/api/pull_requests`);
   if (status) u.searchParams.set('status', status);
-  const r = await fetch(u.toString(), { headers: ideRequestHeaders() });
-  if (!r.ok) throw new Error(`list changes HTTP ${r.status}`);
-  const data = await r.json();
-  return Array.isArray(data) ? data : data.pull_requests || data.items || [];
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const r = await fetch(u.toString(), { headers: ideRequestHeaders(), signal: ctrl.signal });
+    if (!r.ok) throw new Error(`list changes HTTP ${r.status}`);
+    const data = await r.json();
+    return Array.isArray(data) ? data : data.pull_requests || data.items || [];
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export async function fetchPullRequestDetail(id: string): Promise<{
@@ -582,14 +588,15 @@ export async function loadWizardDiff(opts: {
       if (r.ok) {
         const diff = (await r.json()) as StructDiff;
         if (!Array.isArray(diff.items)) diff.items = [];
-        if (diff.items.length > 0) {
+        if (!Array.isArray(diff.file_diffs)) diff.file_diffs = [];
+        if (diff.items.length > 0 || diff.file_diffs.length > 0) {
           return { diff, source: 'pr' };
         }
         return {
           diff,
           source: 'pr-empty',
           note:
-            'This PR has no structural snapshot on its branch (often smoke/test PRs or never published). ' +
+            'This PR has no file or construct changes on its branch (often smoke/test PRs or never published). ' +
             'It is not the same as your live Agent Registry edits. Use “Review current working tree” for those.',
         };
       }
@@ -606,7 +613,10 @@ export async function loadWizardDiff(opts: {
       note: 'PR diff unavailable.',
     };
   }
-  const r = await fetch(`${ideApiBase()}/diff`, { headers: ideRequestHeaders() });
+  const wtBase = slug
+    ? `${platformRoot()}/api/p/${encodeURIComponent(slug)}`
+    : ideApiBase();
+  const r = await fetch(`${wtBase}/diff`, { headers: ideRequestHeaders() });
   if (!r.ok) throw new Error(`working-tree diff HTTP ${r.status}`);
   const diff = (await r.json()) as StructDiff;
   if (!Array.isArray(diff.items)) diff.items = [];
@@ -837,8 +847,8 @@ export function formatFeedbackPrompt(queue: QueuedFeedback[], prTitle?: string):
   const project = currentProjectParam() || 'this project';
   const lines = [
     prTitle
-      ? `Address PR Wizard feedback on \`${prTitle}\` for project \`${project}\`.`
-      : `Address PR Wizard review feedback for project \`${project}\`.`,
+      ? `Address Review feedback on \`${prTitle}\` for project \`${project}\`.`
+      : `Address Review feedback for project \`${project}\`.`,
     '',
     'Fix each item. After edits: veil_check (fix new diags same turn) → session_commit.',
     'When done: update the change description if needed — do NOT merge unless asked.',

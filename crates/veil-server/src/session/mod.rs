@@ -259,15 +259,15 @@ impl SessionManager {
     /// Resolve the coding session for a project when no header was provided:
     /// active_by_project → sticky mainline default.
     pub fn resolve_for_project(&self, slug: &str) -> Result<Arc<SessionHandle>, String> {
-        let ident = resolve_project_identity(slug).ok();
-        let keys = identity_keys(slug, ident.as_ref());
+        // Fail once if the product is gone — do not call get_or_create_default
+        // (that would scan DDB/S3 a second time and stall Sign-off → Open IDE).
+        let ident = resolve_project_identity(slug)?;
+        let keys = identity_keys(slug, Some(&ident));
         for key in &keys {
             if let Some(sid) = self.active_for_project(key) {
                 if let Ok(h) = self.attach(&sid) {
                     if session_matches_current_repo(&h, slug) {
-                        if let Some(ref id) = ident {
-                            self.set_active_for_identity(id, &h.session_id());
-                        }
+                        self.set_active_for_identity(&ident, &h.session_id());
                         return Ok(h);
                     }
                     // Stale active (e.g. orphan repo_id after re-create) — drop preference
@@ -555,6 +555,25 @@ impl SessionManager {
                 return Ok(h);
             }
         }
+        // DDB: prefer the latest draft (feature work line) over mainline.
+        // Sticky used to win first and reattach an empty main checkout after
+        // restart while the agent kept working on the feature session.
+        if let Ok(list) = list_sessions_for_user(&user) {
+            let mut mine: Vec<_> = list
+                .into_iter()
+                .filter(|m| m.repo_id == ident.repo_id)
+                .collect();
+            mine.sort_by_key(|m| {
+                let draft = if m.draft_mode { 1u8 } else { 0 };
+                std::cmp::Reverse((draft, parse_ts(&m.updated_at)))
+            });
+            if let Some(m) = mine.into_iter().next() {
+                let h = self.attach(&m.session_id)?;
+                write_sticky_aliases(&user, &ident, &m.session_id);
+                self.set_active_for_identity(&ident, &h.session_id());
+                return Ok(h);
+            }
+        }
         // Local sticky pointer (survives process restart without DDB scan cost)
         for key in &keys {
             if let Some(sid) = read_sticky_session(&user, key) {
@@ -566,17 +585,6 @@ impl SessionManager {
                     }
                     clear_sticky_session(&user, key);
                 }
-            }
-        }
-        // Try DDB list for recent non-draft session on current repo (by repo_id)
-        if let Ok(list) = list_sessions_for_user(&user) {
-            if let Some(m) = list.into_iter().find(|m| {
-                !m.draft_mode && m.repo_id == ident.repo_id
-            }) {
-                let h = self.attach(&m.session_id)?;
-                write_sticky_aliases(&user, &ident, &m.session_id);
-                self.set_active_for_identity(&ident, &h.session_id());
-                return Ok(h);
             }
         }
         let h = self.create(&ident.slug, None)?;
@@ -721,6 +729,23 @@ impl SessionManager {
         self.handles.lock().unwrap().get(session_id).cloned()
     }
 
+    /// In-memory only — no DDB/S3 identity resolve and no attach.
+    /// Review list / host-check banners must use this so leftover slugs
+    /// cannot stall first paint of Sign-off.
+    pub fn peek_open_for_project(&self, slug: &str) -> Option<Arc<SessionHandle>> {
+        let slug = slug.trim();
+        if slug.is_empty() {
+            return None;
+        }
+        let map = self.handles.lock().unwrap();
+        map.values()
+            .find(|h| {
+                let m = h.meta.lock().unwrap();
+                m.slug.eq_ignore_ascii_case(slug) || m.repo_id == slug
+            })
+            .cloned()
+    }
+
     pub fn drop_handle(&self, session_id: &str) {
         self.handles.lock().unwrap().remove(session_id);
     }
@@ -847,15 +872,43 @@ fn identity_keys(raw: &str, ident: Option<&ProjectIdentity>) -> Vec<String> {
     keys
 }
 
+/// True when this session is the **same live product** as `project`
+/// (product slug or repo UUID).
+///
+/// Unknown / deleted products only match an exact slug or repo-id string.
+/// They must **not** accept another product's sticky session — that was the
+/// Sign-off → Open IDE 400 (`session slug mismatch`: `lumen-desk` vs `agent-core`).
+pub fn session_belongs_to_project(session_slug: &str, session_repo_id: &str, project: &str) -> bool {
+    let project = project.trim();
+    if project.is_empty() {
+        return false;
+    }
+    match resolve_project_identity(project) {
+        Ok(want) => session_repo_id == want.repo_id,
+        Err(_) => session_slug == project || session_repo_id == project,
+    }
+}
+
 /// True when session.repo_id matches the live product repo for `slug`.
 fn session_matches_current_repo(h: &SessionHandle, slug: &str) -> bool {
-    match resolve_project_identity(slug) {
-        Ok(want) => h.snapshot_meta().repo_id == want.repo_id,
-        // If we cannot resolve (offline), accept the session rather than dead-end.
-        Err(_) => match resolve_repo_id(slug) {
-            Ok(want) => h.snapshot_meta().repo_id == want,
-            Err(_) => true,
-        },
+    let m = h.snapshot_meta();
+    session_belongs_to_project(&m.slug, &m.repo_id, slug)
+}
+
+#[cfg(test)]
+mod belong_tests {
+    use super::session_belongs_to_project;
+
+    #[test]
+    fn exact_slug_or_repo_matches_when_identity_unknown() {
+        // Synthetic names that are not live catalog slugs — exact string match only.
+        const GONE: &str = "zz-mp-nosuch-desk";
+        const REPO: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        assert!(session_belongs_to_project(GONE, REPO, GONE));
+        assert!(session_belongs_to_project(GONE, REPO, REPO));
+        assert!(!session_belongs_to_project("agent-core", REPO, GONE));
+        assert!(!session_belongs_to_project("agent-core", "repo-a", "zz-mp-other-product"));
+        assert!(!session_belongs_to_project("agent-core", "repo-a", ""));
     }
 }
 
@@ -1030,6 +1083,13 @@ impl SessionHandle {
 
     pub fn session_id(&self) -> String {
         self.meta.lock().unwrap().session_id.clone()
+    }
+
+    /// Keep `/source` / `/ir` in sync after workspace-fs writes.
+    pub fn reload_provider_file(&self, path: &str) {
+        if let Err(e) = self.provider.reload_from_disk(path) {
+            tracing::debug!(path, error = %e, "reload_provider_file");
+        }
     }
 
     pub fn slug(&self) -> String {

@@ -75,7 +75,7 @@
     <p class="err">{error}</p>
   {/if}
   {#if !loading && entries.length === 0}
-    <p class="muted">No journal entries yet. Approve steps in the PR Wizard to grow this record.</p>
+    <p class="muted">No journal entries yet. Approve a review to grow this record.</p>
   {:else}
     <ul class="entries">
       {#each entries as e}

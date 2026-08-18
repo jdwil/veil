@@ -105,6 +105,52 @@ pub fn smoke_enabled() -> bool {
     }
 }
 
+/// Fail closed if generated Rust still has no-op hooks or explicit unstubbed
+/// markers. The .stub is the only third-party contract — empty hooks must
+/// never look like a successful smoke.
+fn reject_unstubbed_generated_hooks(output_path: &Path) -> Result<(), String> {
+    let mut hits = Vec::new();
+    scan_unstubbed(output_path, output_path, &mut hits);
+    if hits.is_empty() {
+        return Ok(());
+    }
+    hits.truncate(8);
+    Err(format!(
+        "SMOKE TEST FAILED — generated Rust has unstubbed third-party calls.\n\
+         A .stub is the contract: `use <crate>`, `@field(x: Type)`, call Type methods.\n\
+         Do not invent names like aws_sns / http.post.\n\n{}",
+        hits.join("\n")
+    ))
+}
+
+fn scan_unstubbed(root: &Path, dir: &Path, hits: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if p.file_name().and_then(|n| n.to_str()) == Some("target") {
+                continue;
+            }
+            scan_unstubbed(root, &p, hits);
+            continue;
+        }
+        if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        if text.contains("stub — replace with real integration")
+            || text.contains("unstubbed external")
+        {
+            let rel = p.strip_prefix(root).unwrap_or(&p);
+            hits.push(format!("  {}", rel.display()));
+        }
+    }
+}
+
 /// When false (`VEIL_AGENT_AUTO_RESTART=0`), do not restart owned processes after smoke (ACS-004).
 /// Default ON so dual-loop picks up new gen after successful smoke.
 pub fn auto_restart_enabled() -> bool {
@@ -370,6 +416,13 @@ impl DevLoop {
         }
 
         if target.target == "rust" {
+            if let Err(e) = reject_unstubbed_generated_hooks(&output_path) {
+                if let Some(ref bak) = backup {
+                    let _ = restore_tree(bak, &output_path);
+                    let _ = std::fs::remove_dir_all(bak);
+                }
+                return Err(e);
+            }
             if !smoke_enabled() {
                 self.remember_good_sources();
                 if let Some(bak) = backup {

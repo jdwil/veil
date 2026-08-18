@@ -557,7 +557,7 @@
       >
         Open in IDE
       </a>
-      <a class="btn-outline" href={`/review/${encodeURIComponent(slug || id)}`}>Sign off</a>
+      <a class="btn-outline" href={`/review/${encodeURIComponent(slug || id)}`}>Review</a>
     {/if}
     {#if has_deploy}
       <label class="env-select-wrap">
@@ -600,9 +600,9 @@
       <EntityIdentity name={name || '—'} subtitle={default_branch} show_avatar={true} />
       {#if rev?.needs_sign_off}
         <div class="signoff-banner">
-          <StatusPill label="Needs sign-off" variant="warning" />
-          <span>{$reviewItems.filter((i) => i.slug === slug || i.repo_id === id).length} unreviewed change(s).</span>
-          <a class="btn-primary" href={`/review/${encodeURIComponent(slug || id)}`}>Review &amp; sign off</a>
+          <StatusPill label="Needs review" variant="warning" />
+          <span>{$reviewItems.filter((i) => i.slug === slug || i.repo_id === id).length} change(s) waiting for review.</span>
+          <a class="btn-primary" href={`/review/${encodeURIComponent(slug || id)}`}>Review</a>
         </div>
       {/if}
       {#if has_deploy}

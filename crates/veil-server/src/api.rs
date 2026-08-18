@@ -326,53 +326,77 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     with_auth(router)
 }
 
+fn session_handle_belongs(
+    h: &crate::session::SessionHandle,
+    project: &str,
+) -> bool {
+    let m = h.snapshot_meta();
+    crate::session::session_belongs_to_project(&m.slug, &m.repo_id, project)
+}
+
 /// Resolve the coding session for a project-scoped request.
 ///
 /// Agent `create_branch` sets `active_by_project` to a draft feature session.
 /// The IDE keeps sending the older mainline `X-Veil-Session-Id` on every poll —
 /// that must not demote the work line, or writes land on main and PRs are empty.
+///
+/// A header session for a **different product** is ignored (never rebound onto
+/// this project). Sign-off → Open IDE used to 400 `session slug mismatch`
+/// because localStorage still held the agent-core session.
 fn resolve_scoped_session(
     mgr: &crate::session::SessionManager,
     project: &str,
     session_hdr: Option<&str>,
 ) -> Result<std::sync::Arc<crate::session::SessionHandle>, String> {
     if let Ok(active) = mgr.resolve_for_project(project) {
-        let am = active.snapshot_meta();
-        if am.draft_mode {
-            if let Some(hdr) = session_hdr {
-                if hdr == active.session_id() {
-                    return Ok(active);
-                }
-                if let Ok(hdr_h) = mgr.attach(hdr) {
-                    let hm = hdr_h.snapshot_meta();
-                    let same_repo = hm.repo_id == am.repo_id
-                        || hm.slug == am.slug
-                        || hm.slug == project;
-                    if same_repo && hm.draft_mode {
-                        mgr.set_active_for_project(project, &hdr_h.session_id());
-                        mgr.set_active_for_project(&hdr_h.slug(), &hdr_h.session_id());
-                        return Ok(hdr_h);
+        if !session_handle_belongs(&active, project) {
+            // Stale active_by_project pointing at another product.
+            mgr.clear_active_for_project(project);
+        } else {
+            let am = active.snapshot_meta();
+            if am.draft_mode {
+                if let Some(hdr) = session_hdr {
+                    if hdr == active.session_id() {
+                        return Ok(active);
                     }
-                    tracing::debug!(
-                        project = %project,
-                        active = %active.session_id(),
-                        header = %hdr,
-                        active_branch = ?am.branch_name,
-                        "keeping active feature branch over mainline session header"
-                    );
-                    return Ok(active);
+                    if let Ok(hdr_h) = mgr.attach(hdr) {
+                        let hm = hdr_h.snapshot_meta();
+                        let same_repo = session_handle_belongs(&hdr_h, project)
+                            && (hm.repo_id == am.repo_id || hm.slug == am.slug);
+                        if same_repo && hm.draft_mode {
+                            mgr.set_active_for_project(project, &hdr_h.session_id());
+                            mgr.set_active_for_project(&hdr_h.slug(), &hdr_h.session_id());
+                            return Ok(hdr_h);
+                        }
+                        tracing::debug!(
+                            project = %project,
+                            active = %active.session_id(),
+                            header = %hdr,
+                            active_branch = ?am.branch_name,
+                            "keeping active feature branch over mainline session header"
+                        );
+                        return Ok(active);
+                    }
                 }
+                return Ok(active);
             }
-            return Ok(active);
         }
     }
 
     if let Some(sid) = session_hdr {
         match mgr.attach(sid) {
             Ok(h) => {
-                mgr.set_active_for_project(project, &h.session_id());
-                mgr.set_active_for_project(&h.slug(), &h.session_id());
-                return Ok(h);
+                if session_handle_belongs(&h, project) {
+                    mgr.set_active_for_project(project, &h.session_id());
+                    mgr.set_active_for_project(&h.slug(), &h.session_id());
+                    return Ok(h);
+                }
+                tracing::debug!(
+                    project = %project,
+                    session_slug = %h.slug(),
+                    session_repo = %h.snapshot_meta().repo_id,
+                    "ignoring X-Veil-Session-Id from a different product"
+                );
             }
             Err(e) => {
                 tracing::warn!(%sid, error = %e, "session header attach failed; resolving project");
@@ -413,50 +437,61 @@ async fn project_scope_middleware(
 
     // Work-line order: active feature branch wins over a stale mainline
     // X-Veil-Session-Id from IDE polls (otherwise every write lands on main).
+    let mut ignore_session_hdr = false;
     if crate::session::sessions_enabled() {
         let mgr = crate::session::SessionManager::global();
         let handle = resolve_scoped_session(&mgr, &project, session_hdr.as_deref());
         match handle {
             Ok(h) => {
-                // Accept product slug **or** repo UUID for the same repo. Reject only
-                // when the session is bound to a different product entirely.
-                let same_product = h.slug() == project
-                    || h.snapshot_meta().repo_id == project
-                    || crate::provider::s3_workspace::resolve_project_identity(&project)
-                        .map(|id| {
-                            id.repo_id == h.snapshot_meta().repo_id
-                                || id.slug == h.slug()
-                        })
-                        .unwrap_or(false);
-                if !same_product {
+                if !session_handle_belongs(&h, &project) {
+                    // Recover: never 400 the IDE for a leftover sticky session
+                    // from another product (Sign-off Open IDE used to do this).
+                    ignore_session_hdr = true;
+                    tracing::warn!(
+                        project = %project,
+                        session_slug = %h.slug(),
+                        session_repo = %h.snapshot_meta().repo_id,
+                        "session does not belong to project; opening this product instead"
+                    );
+                } else {
+                    // Pin under both route key and canonical slug so hub lookups hit.
+                    multi.hub().bind_session_provider(&project, h.provider.clone());
+                    if h.slug() != project {
+                        multi
+                            .hub()
+                            .bind_session_provider(&h.slug(), h.provider.clone());
+                    }
+                    mgr.set_active_for_project(&project, &h.session_id());
+                    mgr.set_active_for_project(&h.slug(), &h.session_id());
+                    let sid = h.session_id();
+                    return crate::session::CURRENT_SESSION
+                        .scope(sid, CURRENT_PROJECT.scope(project, next.run(req)))
+                        .await;
+                }
+            }
+            Err(msg) => {
+                if matches!(
+                    ProjectsHub::open_error_kind(&msg),
+                    OpenErrorKind::NotFound | OpenErrorKind::BadRequest
+                ) {
+                    let (status, code) = match ProjectsHub::open_error_kind(&msg) {
+                        OpenErrorKind::BadRequest => (StatusCode::BAD_REQUEST, "bad_request"),
+                        _ => (StatusCode::NOT_FOUND, "not_found"),
+                    };
                     return (
-                        StatusCode::BAD_REQUEST,
+                        status,
                         [(header::CONTENT_TYPE, "application/json")],
                         serde_json::json!({
-                            "error": "session slug mismatch",
-                            "session_slug": h.slug(),
-                            "session_repo_id": h.snapshot_meta().repo_id,
-                            "project": project,
+                            "error": "project not found",
+                            "detail": msg,
+                            "code": code,
+                            "name": project,
+                            "hint": "This project is not in the catalog (it may have been deleted). Open Projects, or sign off the leftover review items.",
                         })
                         .to_string(),
                     )
                         .into_response();
                 }
-                // Pin under both route key and canonical slug so hub lookups hit.
-                multi.hub().bind_session_provider(&project, h.provider.clone());
-                if h.slug() != project {
-                    multi
-                        .hub()
-                        .bind_session_provider(&h.slug(), h.provider.clone());
-                }
-                mgr.set_active_for_project(&project, &h.session_id());
-                mgr.set_active_for_project(&h.slug(), &h.session_id());
-                let sid = h.session_id();
-                return crate::session::CURRENT_SESSION
-                    .scope(sid, CURRENT_PROJECT.scope(project, next.run(req)))
-                    .await;
-            }
-            Err(msg) => {
                 // Fall through to classic hub open if session path fails in prefer mode
                 tracing::warn!(%msg, "session attach failed; trying classic hub open");
             }
@@ -465,7 +500,7 @@ async fn project_scope_middleware(
 
     match multi.hub().open(&project) {
         Ok(_) => {
-            if let Some(sid) = session_hdr {
+            if let Some(sid) = session_hdr.filter(|_| !ignore_session_hdr) {
                 crate::session::CURRENT_SESSION
                     .scope(sid, CURRENT_PROJECT.scope(project, next.run(req)))
                     .await
@@ -1382,6 +1417,10 @@ async fn get_check<P: SourceProvider>(
     match run_check_for_provider(&*state, &q).await {
         Ok(resp) => match serde_json::to_string(&resp) {
             Ok(json) => {
+                crate::coding_gates::record_host_check_for_project(
+                    crate::coding_gates::current_project_slug().as_deref(),
+                    &json,
+                );
                 let status = if resp.ok {
                     StatusCode::OK
                 } else {
@@ -1410,7 +1449,13 @@ async fn post_check<P: SourceProvider>(
     };
     match run_check_for_provider(&*state, &q).await {
         Ok(resp) => match serde_json::to_string(&resp) {
-            Ok(json) => json_response(json).into_response(),
+            Ok(json) => {
+                crate::coding_gates::record_host_check_for_project(
+                    crate::coding_gates::current_project_slug().as_deref(),
+                    &json,
+                );
+                json_response(json).into_response()
+            }
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
         Err((status, msg)) => (status, msg).into_response(),
@@ -2319,6 +2364,19 @@ async fn get_agent_tools() -> axum::response::Response {
                 "type": "object",
                 "properties": { "name": { "type": "string" } },
                 "required": ["name"]
+            }
+        },
+        {
+            "name": "stub_search",
+            "description": "Search any .stub contract for types/methods without dumping the file. Call those names via @field.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "name": { "type": "string" },
+                    "limit": { "type": "integer" }
+                },
+                "required": ["query"]
             }
         },
         {

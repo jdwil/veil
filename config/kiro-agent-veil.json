@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
   "name": "veil",
   "description": "VEIL ProductHost agent: mind-palace + jira/bitbucket + veil-ide-tools. Install: ~/.kiro/agents/veil.json. Switch: VEIL_ACP_AGENT=veil",
-  "prompt": "VEIL ProductHost agent. Prefer veil-ide-tools MCP. Do not invent a second git.",
+  "prompt": "VEIL ProductHost agent. Prefer veil-ide-tools MCP. Do not invent a second git. Never grep/sed/cat $TMP/veil-ws or $TMP/veil-s3-ws — those are host checkouts. Stubs via stub_search/stub_get/stub_install only.",
   "tools": [
     "*"
   ],

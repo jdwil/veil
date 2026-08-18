@@ -218,7 +218,9 @@ fn stub_type_and_crate_names(registry: &LayerRegistry) -> HashSet<String> {
     let mut s = HashSet::new();
     for stub in &registry.stubs {
         s.insert(stub.name.clone());
+        s.insert(stub.name.replace('-', "_"));
         let crate_keys: Vec<String> = std::iter::once(stub.name.clone())
+            .chain(std::iter::once(stub.name.replace('-', "_")))
             .chain(stub.alias.iter().cloned())
             .collect();
         if let Some(a) = &stub.alias {
@@ -339,6 +341,12 @@ fn check_construct_escape(
             let mut locals = HashSet::new();
             for p in &imp.params {
                 locals.insert(p.clone());
+            }
+            for f in &c.fields {
+                locals.insert(f.name.clone());
+            }
+            for inp in &c.inputs {
+                locals.insert(inp.name.clone());
             }
             for e in &imp.body {
                 check_expr_escape(e, &c.name, stub_names, construct_names, free_fns, &mut locals, diagnostics);
@@ -538,15 +546,34 @@ fn check_expr_escape(
         Expr::Match(s, arms) => {
             check_expr_escape(s, location, stub_names, construct_names, free_fns, locals, diagnostics);
             for arm in arms {
+                let mut arm_locals = locals.clone();
+                if let Some(rp) = &arm.rich_pattern {
+                    bind_pattern_locals(rp, &mut arm_locals);
+                } else {
+                    bind_string_pattern_locals(&arm.pattern, &mut arm_locals);
+                }
+                if let Some(g) = &arm.guard {
+                    check_expr_escape(g, location, stub_names, construct_names, free_fns, &mut arm_locals, diagnostics);
+                }
                 for e in &arm.body {
-                    check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
+                    check_expr_escape(e, location, stub_names, construct_names, free_fns, &mut arm_locals, diagnostics);
                 }
             }
         }
-        Expr::ForLoop { iterable, body, .. } => {
+        Expr::ForLoop {
+            binding,
+            index,
+            iterable,
+            body,
+        } => {
             check_expr_escape(iterable, location, stub_names, construct_names, free_fns, locals, diagnostics);
+            let mut loop_locals = locals.clone();
+            loop_locals.insert(binding.clone());
+            if let Some(i) = index {
+                loop_locals.insert(i.clone());
+            }
             for e in body {
-                check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
+                check_expr_escape(e, location, stub_names, construct_names, free_fns, &mut loop_locals, diagnostics);
             }
         }
         Expr::WhileLoop { condition, body } => {
@@ -598,14 +625,16 @@ fn check_expr_escape(
             }
         }
         Expr::IfLet {
+            pattern,
             expr: e,
             then_body,
             else_body,
-            ..
         } => {
             check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
+            let mut then_locals = locals.clone();
+            bind_string_pattern_locals(pattern, &mut then_locals);
             for x in then_body {
-                check_expr_escape(x, location, stub_names, construct_names, free_fns, locals, diagnostics);
+                check_expr_escape(x, location, stub_names, construct_names, free_fns, &mut then_locals, diagnostics);
             }
             if let Some(eb) = else_body {
                 for x in eb {
@@ -613,10 +642,17 @@ fn check_expr_escape(
                 }
             }
         }
-        Expr::WhileLet { expr: e, body, .. } => {
+        Expr::WhileLet {
+            pattern,
+            expr: e,
+            body,
+            ..
+        } => {
             check_expr_escape(e, location, stub_names, construct_names, free_fns, locals, diagnostics);
+            let mut loop_locals = locals.clone();
+            bind_string_pattern_locals(pattern, &mut loop_locals);
             for x in body {
-                check_expr_escape(x, location, stub_names, construct_names, free_fns, locals, diagnostics);
+                check_expr_escape(x, location, stub_names, construct_names, free_fns, &mut loop_locals, diagnostics);
             }
         }
         _ => {}
@@ -669,8 +705,9 @@ fn flag_external_call(
     {
         return;
     }
-    // Lowercase external without stub — escape hatch
-    diagnostics.push(debt(
+    // Lowercase external without stub — not a contract. Codegen will not
+    // invent a crate or emit a no-op hook; this is an error for any library.
+    diagnostics.push(debt_err(
         codes::EXTERNAL_CALL,
         format!(
             "external call '{}'{} — no construct or .stub; codegen cannot type this",
@@ -684,10 +721,28 @@ fn flag_external_call(
         location,
         Some(call.span),
         Some(format!(
-            "add a .stub for '{}' or wrap the call in a typed adapter",
-            target
+            "install a .stub (`stub_search` / stub_install) and call its types \
+             (`use {}` + `@field(x: Client)` + x.method().send!()) — do not invent `{}`",
+            target, target
         )),
     ));
+}
+
+/// Bind lowercase idents in a string match/if-let pattern (`Some(item)` → `item`).
+fn bind_string_pattern_locals(pattern: &str, locals: &mut HashSet<String>) {
+    for token in pattern.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if token.is_empty() || token == "_" {
+            continue;
+        }
+        if token
+            .chars()
+            .next()
+            .map(|c| c.is_lowercase() || c == '_')
+            .unwrap_or(false)
+        {
+            locals.insert(token.to_string());
+        }
+    }
 }
 
 fn bind_pattern_locals(pat: &Pattern, locals: &mut HashSet<String>) {
@@ -755,6 +810,27 @@ fn type_contains_json(ty: &TypeExpr) -> bool {
         TypeExpr::Result(None) => false,
         TypeExpr::Named(_) => false,
         TypeExpr::LitStr(_) => false,
+    }
+}
+
+fn debt_err(
+    code: &str,
+    message: String,
+    location: &str,
+    span: Option<Span>,
+    hint: Option<String>,
+) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        message,
+        node_id: None,
+        node_name: Some(location.to_string()),
+        code: code.to_string(),
+        constraint: code.to_string(),
+        parent: None,
+        hint,
+        span_start: span.map(|s| s.start),
+        span_end: span.map(|s| s.end),
     }
 }
 
@@ -894,6 +970,85 @@ mod tests {
     }
 
     #[test]
+    fn adapter_dep_field_is_not_external() {
+        let mut c = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "AwsBus".into(),
+            Span::new(0, 0),
+        );
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "sns_client".into(),
+            type_expr: TypeExpr::Named("SnsClient".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        c.impls.push(MethodImpl {
+            method_name: "dispatch".into(),
+            params: vec!["envelope".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Call(CallExpr {
+                target: "sns_client".into(),
+                method: "publish".into(),
+                args: Vec::new(),
+                receiver: None,
+                sugar: None,
+                span: Span::new(0, 0),
+            })],
+        });
+        let diags = check_escape_hatches(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == codes::EXTERNAL_CALL && d.message.contains("sns_client")),
+            "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn match_binding_is_not_external_call() {
+        let mut c = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "Ddb".into(),
+            Span::new(0, 0),
+        );
+        c.impls.push(MethodImpl {
+            method_name: "get_route".into(),
+            params: vec!["name".into()],
+            span: Span::new(0, 0),
+            body: vec![Expr::Match(
+                Box::new(Expr::Ident("result".into())),
+                vec![MatchArm {
+                    pattern: "Some(item)".into(),
+                    rich_pattern: None,
+                    guard: None,
+                    body: vec![Expr::Call(CallExpr {
+                        target: "item".into(),
+                        method: "get".into(),
+                        args: vec![Expr::StringLit("endpoint".into())],
+                        receiver: None,
+                        sugar: None,
+                        span: Span::new(0, 0),
+                    })],
+                    span: Span::new(0, 0),
+                }],
+            )],
+        });
+        let diags = check_escape_hatches(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == codes::EXTERNAL_CALL && d.message.contains("item")),
+            "Some(item) must bind item so item.get is not an invented crate: {diags:?}"
+        );
+    }
+
+    #[test]
     fn flags_external_http_call() {
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
         svc.steps.push(FlowStep::Step(StepDef {
@@ -912,7 +1067,9 @@ mod tests {
         }));
         let diags = check_escape_hatches(&sol(vec![TopLevelItem::Construct(svc)]), &reg());
         assert!(
-            diags.iter().any(|d| d.code == codes::EXTERNAL_CALL && d.message.contains("http")),
+            diags.iter().any(|d| d.code == codes::EXTERNAL_CALL
+                && d.message.contains("http")
+                && matches!(d.severity, Severity::Error)),
             "{:?}",
             diags
         );

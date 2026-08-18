@@ -50,7 +50,7 @@ export function formatIssuePrompt(
 		'3. Perform next.tool from the result (session_status / write_source / veil_check / session_commit).',
 		'4. After each successful agent step: run_coding_plan({ plan: "coding.fix_diagnostics", action: "next" }).',
 		'5. Trust host_check / HOST_CHECK_SEVERITY — never claim clean if errors. create_pr/submit_pr aliases OK.',
-		'6. Finish step opens/submits the pull request for PR Wizard. NEVER merge unless operator asks.',
+		'6. Finish step opens/submits the pull request for Review. NEVER merge unless operator asks.',
 		'',
 		'## Issues',
 		list || '(no issue details)',

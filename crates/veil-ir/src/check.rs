@@ -66,6 +66,8 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
 
     diagnostics.extend(diagnostics::analyze(&graph, registry));
     diagnostics.extend(crate::names::check_names(sol, registry));
+    diagnostics.extend(crate::names::check_stub_type_refs(sol, registry));
+    diagnostics.extend(crate::names::check_layer_declare_shadows(sol, registry));
     diagnostics.extend(crate::harness_check::check_harness(sol, registry));
     diagnostics.extend(crate::typecheck::check_types(sol, registry));
     diagnostics.extend(crate::escape::check_escape_hatches(sol, registry));

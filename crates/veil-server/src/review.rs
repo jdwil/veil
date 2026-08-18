@@ -1,14 +1,16 @@
 //! Outstanding change sets + recorded human sign-off.
 //!
 //! This is **review state**, not a second VCS. Git remains history
-//! (commit / branch / merge / log / diff). Items point at slugs, paths,
-//! and optional git SHAs so a human can sign off without reconstructing
-//! the turn from `git blame`.
+//! (commit / branch / merge / log / diff). A **change set** is the unit
+//! a human signs: topology + critical bodies + host check, bound to a
+//! git SHA. That record is the ship gate (merge / provision).
 //!
 //! Durable file: `VEIL_REVIEW_STORE` or `{veil_home}/review-state.json`.
+//! Audits are append-only (not a 200-row diary).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const MAX_ITEMS: usize = 400;
-const MAX_AUDITS: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +58,8 @@ pub struct OutstandingItem {
     pub git_sha: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub pr_id: Option<String>,
     pub created_at: String,
     pub status: ItemStatus,
     #[serde(default)]
@@ -78,6 +81,19 @@ pub struct SignOffRecord {
     pub note: Option<String>,
     #[serde(default)]
     pub slug: Option<String>,
+    #[serde(default)]
+    pub git_sha: Option<String>,
+    #[serde(default)]
+    pub structural_diff_hash: Option<String>,
+    #[serde(default)]
+    pub host_check: Option<Value>,
+    #[serde(default)]
+    pub pr_id: Option<String>,
+    #[serde(default)]
+    pub changeset_id: Option<String>,
+    /// `human` | `system` | `dev`
+    #[serde(default)]
+    pub actor_kind: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -100,6 +116,27 @@ pub struct RepoReviewSummary {
     pub last_kind: Option<String>,
 }
 
+/// One human-reviewable unit of work for a product slug.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangeSet {
+    pub id: String,
+    pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
+    pub item_ids: Vec<String>,
+    pub outstanding: usize,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_check: Option<Value>,
+    pub host_has_errors: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RecordSpec {
     pub kind: ItemKind,
@@ -111,6 +148,7 @@ pub struct RecordSpec {
     pub rationale: Option<String>,
     pub git_sha: Option<String>,
     pub session_id: Option<String>,
+    pub pr_id: Option<String>,
 }
 
 fn store() -> &'static Mutex<ReviewState> {
@@ -128,12 +166,31 @@ fn store_path() -> PathBuf {
 }
 
 fn now_rfc3339() -> String {
-    // Sortable millisecond epoch. Avoid chrono (not a veil-server dep).
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("{ms}")
+    crate::session::chrono_now()
+}
+
+pub fn veil_dev_enabled() -> bool {
+    match std::env::var("VEIL_DEV") {
+        Ok(v) => {
+            let l = v.trim().to_ascii_lowercase();
+            l == "1" || l == "true" || l == "yes" || l == "on"
+        }
+        Err(_) => false,
+    }
+}
+
+fn actor_looks_like_agent(actor: &str) -> bool {
+    let a = actor.trim().to_ascii_lowercase();
+    a == "agent" || a.starts_with("agent-") || a == "acp" || a == "inner-agent"
+}
+
+/// Hash of the structural walk the human saw (names + kinds).
+pub fn hash_diff_spec(parts: &[String]) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for p in parts {
+        p.hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
 }
 
 fn short_id() -> String {
@@ -215,6 +272,7 @@ pub fn record(spec: RecordSpec) -> OutstandingItem {
         rationale: spec.rationale,
         git_sha: spec.git_sha,
         session_id,
+        pr_id: spec.pr_id,
         created_at: now,
         status: ItemStatus::Outstanding,
         decided_at: None,
@@ -265,6 +323,7 @@ pub fn record_project_created(slug: &str, name: Option<&str>, repo_id: Option<&s
         rationale: None,
         git_sha: None,
         session_id: None,
+        pr_id: None,
     })
 }
 
@@ -279,6 +338,7 @@ pub fn record_project_renamed(slug: &str, name: &str) -> OutstandingItem {
         rationale: None,
         git_sha: None,
         session_id: None,
+        pr_id: None,
     })
 }
 
@@ -293,6 +353,7 @@ pub fn record_file_edit(slug: &str, path: &str, rationale: Option<&str>) -> Outs
         rationale: rationale.map(str::to_string),
         git_sha: None,
         session_id: None,
+        pr_id: None,
     })
 }
 
@@ -307,6 +368,7 @@ pub fn record_file_created(slug: &str, path: &str) -> OutstandingItem {
         rationale: None,
         git_sha: None,
         session_id: None,
+        pr_id: None,
     })
 }
 
@@ -335,10 +397,23 @@ pub fn record_commit(slug: &str, sha: &str, message: &str) -> OutstandingItem {
         rationale: Some(message.into()),
         git_sha: Some(sha.into()),
         session_id: None,
+        pr_id: None,
     })
 }
 
 pub fn record_pr(slug: &str, title: &str, pr_id: Option<&str>) -> OutstandingItem {
+    if let Some(id) = pr_id.filter(|s| !s.is_empty()) {
+        let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+        for it in guard.items.iter_mut() {
+            if it.status == ItemStatus::Outstanding
+                && it.slug.eq_ignore_ascii_case(slug)
+                && it.pr_id.is_none()
+            {
+                it.pr_id = Some(id.to_string());
+            }
+        }
+        persist(&guard);
+    }
     record(RecordSpec {
         kind: ItemKind::PullRequest,
         slug: Some(slug.into()),
@@ -352,6 +427,7 @@ pub fn record_pr(slug: &str, title: &str, pr_id: Option<&str>) -> OutstandingIte
         rationale: None,
         git_sha: None,
         session_id: None,
+        pr_id: pr_id.map(str::to_string),
     })
 }
 
@@ -442,7 +518,7 @@ fn kind_label(k: ItemKind) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SignOffRequest {
     pub ids: Vec<String>,
     pub slug: Option<String>,
@@ -450,6 +526,36 @@ pub struct SignOffRequest {
     pub decision: String,
     pub actor: String,
     pub note: Option<String>,
+    pub git_sha: Option<String>,
+    pub structural_diff_hash: Option<String>,
+    pub host_check: Option<Value>,
+    pub pr_id: Option<String>,
+    pub via: Option<String>,
+}
+
+fn resolve_actor(req: &SignOffRequest) -> Result<(String, String), String> {
+    let actor = if req.actor.trim().is_empty() {
+        crate::session::current_user_id()
+    } else {
+        req.actor.trim().to_string()
+    };
+    if actor.eq_ignore_ascii_case("system") {
+        return Ok((actor, "system".into()));
+    }
+    if actor_looks_like_agent(&actor) {
+        if !veil_dev_enabled() {
+            return Err(
+                "agent cannot record sign-off; a human must use the Approve button on /review".into(),
+            );
+        }
+        return Ok((actor, "dev".into()));
+    }
+    let via = req.via.as_deref().unwrap_or("");
+    if via.eq_ignore_ascii_case("server") && actor_looks_like_agent(&actor) && !veil_dev_enabled()
+    {
+        return Err("sign_off via=server is forbidden outside VEIL_DEV".into());
+    }
+    Ok((actor, "human".into()))
 }
 
 pub fn sign_off(req: SignOffRequest) -> Result<(Vec<OutstandingItem>, SignOffRecord), String> {
@@ -463,11 +569,7 @@ pub fn sign_off(req: SignOffRequest) -> Result<(Vec<OutstandingItem>, SignOffRec
             ))
         }
     };
-    let actor = if req.actor.trim().is_empty() {
-        "human".into()
-    } else {
-        req.actor.trim().to_string()
-    };
+    let (actor, actor_kind) = resolve_actor(&req)?;
     let now = now_rfc3339();
     let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
     let id_set: std::collections::HashSet<String> = req.ids.iter().cloned().collect();
@@ -495,6 +597,22 @@ pub fn sign_off(req: SignOffRequest) -> Result<(Vec<OutstandingItem>, SignOffRec
     if chosen.is_empty() {
         return Err("no outstanding items matched".into());
     }
+    let git_sha = req.git_sha.clone().or_else(|| {
+        chosen.iter().rev().find_map(|i| i.git_sha.clone())
+    });
+    let pr_id = req.pr_id.clone().or_else(|| {
+        chosen.iter().rev().find_map(|i| i.pr_id.clone())
+    });
+    let changeset_id = Some(changeset_id_for(
+        req.slug.as_deref().unwrap_or(
+            chosen
+                .first()
+                .map(|i| i.slug.as_str())
+                .unwrap_or("unknown"),
+        ),
+        git_sha.as_deref(),
+        chosen.first().and_then(|i| i.session_id.as_deref()),
+    ));
     let audit = SignOffRecord {
         id: format!("so_{}", short_id()),
         at: now,
@@ -507,14 +625,129 @@ pub fn sign_off(req: SignOffRequest) -> Result<(Vec<OutstandingItem>, SignOffRec
         item_ids: chosen.iter().map(|i| i.id.clone()).collect(),
         note: req.note,
         slug: req.slug,
+        git_sha,
+        structural_diff_hash: req.structural_diff_hash,
+        host_check: req.host_check,
+        pr_id,
+        changeset_id,
+        actor_kind,
     };
     guard.audits.push(audit.clone());
-    if guard.audits.len() > MAX_AUDITS {
-        let drain = guard.audits.len() - MAX_AUDITS;
-        guard.audits.drain(0..drain);
-    }
     persist(&guard);
     Ok((chosen, audit))
+}
+
+/// Auto-close leftover outstanding items when a product is deleted.
+/// Review state is not git — these items cannot be opened in the IDE anymore.
+pub fn close_for_deleted_project(slug: &str, repo_id: Option<&str>) -> usize {
+    let slug = slug.trim();
+    if slug.is_empty() && repo_id.map(|s| s.trim().is_empty()).unwrap_or(true) {
+        return 0;
+    }
+    let now = now_rfc3339();
+    let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    let mut ids = Vec::new();
+    for it in guard.items.iter_mut() {
+        if it.status != ItemStatus::Outstanding {
+            continue;
+        }
+        let match_slug = !slug.is_empty() && it.slug.eq_ignore_ascii_case(slug);
+        let match_repo = repo_id
+            .map(|r| !r.is_empty() && it.repo_id.as_deref() == Some(r))
+            .unwrap_or(false);
+        if !(match_slug || match_repo) {
+            continue;
+        }
+        it.status = ItemStatus::Rejected;
+        it.decided_at = Some(now.clone());
+        it.decided_by = Some("system".into());
+        it.decision_note = Some("project deleted".into());
+        ids.push(it.id.clone());
+    }
+    if ids.is_empty() {
+        return 0;
+    }
+    let n = ids.len();
+    guard.audits.push(SignOffRecord {
+        id: format!("so_{}", short_id()),
+        at: now,
+        actor: "system".into(),
+        decision: "reject".into(),
+        item_ids: ids,
+        note: Some("project deleted".into()),
+        slug: if slug.is_empty() {
+            None
+        } else {
+            Some(slug.to_string())
+        },
+        git_sha: None,
+        structural_diff_hash: None,
+        host_check: None,
+        pr_id: None,
+        changeset_id: None,
+        actor_kind: "system".into(),
+    });
+    persist(&guard);
+    n
+}
+
+/// Drop outstanding items for products that are no longer in the catalog.
+/// `live` is product slugs and/or repo UUIDs. An empty list is a no-op so a
+/// failed catalog fetch cannot wipe review state.
+pub fn close_unknown_projects(live: &[String]) -> usize {
+    let live: HashSet<String> = live
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if live.is_empty() {
+        return 0;
+    }
+    let now = now_rfc3339();
+    let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    let mut ids = Vec::new();
+    let mut slugs: HashSet<String> = HashSet::new();
+    for it in guard.items.iter_mut() {
+        if it.status != ItemStatus::Outstanding {
+            continue;
+        }
+        let slug_ok = live.contains(&it.slug.to_ascii_lowercase());
+        let repo_ok = it
+            .repo_id
+            .as_deref()
+            .map(|r| live.contains(&r.to_ascii_lowercase()))
+            .unwrap_or(false);
+        if slug_ok || repo_ok {
+            continue;
+        }
+        it.status = ItemStatus::Rejected;
+        it.decided_at = Some(now.clone());
+        it.decided_by = Some("system".into());
+        it.decision_note = Some("project no longer in catalog".into());
+        ids.push(it.id.clone());
+        slugs.insert(it.slug.clone());
+    }
+    if ids.is_empty() {
+        return 0;
+    }
+    let n = ids.len();
+    guard.audits.push(SignOffRecord {
+        id: format!("so_{}", short_id()),
+        at: now,
+        actor: "system".into(),
+        decision: "reject".into(),
+        item_ids: ids,
+        note: Some("project no longer in catalog".into()),
+        slug: slugs.into_iter().next(),
+        git_sha: None,
+        structural_diff_hash: None,
+        host_check: None,
+        pr_id: None,
+        changeset_id: None,
+        actor_kind: "system".into(),
+    });
+    persist(&guard);
+    n
 }
 
 pub fn audits(limit: usize) -> Vec<SignOffRecord> {
@@ -549,19 +782,166 @@ pub fn preamble_block() -> String {
 }
 
 pub fn snapshot_json(filter: ListFilter) -> Value {
-    let items = list_items(filter);
+    let items = list_items(filter.clone());
     let summaries: Vec<RepoReviewSummary> = {
         let map = summary_by_slug();
         let mut v: Vec<_> = map.into_values().collect();
         v.sort_by(|a, b| b.outstanding.cmp(&a.outstanding));
         v
     };
+    let sets = change_sets(filter.slug.as_deref());
     json!({
         "ok": true,
         "outstanding": items.iter().filter(|i| i.status == ItemStatus::Outstanding).count(),
         "items": items,
+        "change_sets": sets,
         "by_project": summaries,
-        "audits": audits(12),
+        "audits": audits(40),
+        "audit_env": audit_env_json(),
+    })
+}
+
+pub fn audit_env_json() -> Value {
+    let dev = veil_dev_enabled();
+    json!({
+        "veil_dev": dev,
+        "ci_auto_pass": dev,
+        "audit_environment": !dev,
+        "note": if dev {
+            "VEIL_DEV=1 — local / not an audit environment. CI auto-pass is on. Sign-off still required to merge or ship."
+        } else {
+            "Production-shaped host. Merge and deploy require a recorded human sign-off."
+        }
+    })
+}
+
+fn changeset_id_for(slug: &str, sha: Option<&str>, session: Option<&str>) -> String {
+    match (sha, session) {
+        (Some(s), _) if !s.is_empty() => format!("cs_{slug}_{}", &s[..s.len().min(12)]),
+        (_, Some(sid)) if !sid.is_empty() => format!("cs_{slug}_{}", &sid[..sid.len().min(12)]),
+        _ => format!("cs_{slug}"),
+    }
+}
+
+fn host_check_for_slug(slug: &str) -> (Option<Value>, bool) {
+    // Peek only. `project_session` would `resolve_for_project` → DDB scan
+    // per leftover slug and stall GET /api/review/outstanding (~7s cold).
+    let Some(h) = crate::coding_gates::peek_project_session(Some(slug)) else {
+        return (None, false);
+    };
+    let meta = h.snapshot_meta();
+    let v = crate::coding_gates::host_check_value(&meta);
+    let errs = crate::coding_gates::has_host_errors(&meta);
+    (Some(v), errs)
+}
+
+pub fn change_sets(slug: Option<&str>) -> Vec<ChangeSet> {
+    let items = list_items(ListFilter {
+        slug: slug.map(|s| s.to_string()),
+        status: Some(ItemStatus::Outstanding),
+        ..Default::default()
+    });
+    let mut by: HashMap<String, Vec<OutstandingItem>> = HashMap::new();
+    for it in items {
+        by.entry(it.slug.clone()).or_default().push(it);
+    }
+    let mut out = Vec::new();
+    for (slug, rows) in by {
+        let git_sha = rows.iter().rev().find_map(|i| i.git_sha.clone());
+        let pr_id = rows.iter().rev().find_map(|i| i.pr_id.clone());
+        let session_id = rows.iter().rev().find_map(|i| i.session_id.clone());
+        let repo_id = rows.iter().find_map(|i| i.repo_id.clone());
+        let (host_check, host_has_errors) = host_check_for_slug(&slug);
+        let n = rows.len();
+        let summary = format!("{n} unreviewed change(s) in {slug}");
+        out.push(ChangeSet {
+            id: changeset_id_for(&slug, git_sha.as_deref(), session_id.as_deref()),
+            slug,
+            repo_id,
+            session_id,
+            pr_id,
+            git_sha,
+            item_ids: rows.iter().map(|i| i.id.clone()).collect(),
+            outstanding: n,
+            summary,
+            host_check,
+            host_has_errors,
+        });
+    }
+    out.sort_by(|a, b| b.outstanding.cmp(&a.outstanding));
+    out
+}
+
+/// Latest approve audit that covers this product (and SHA when given).
+pub fn latest_approve(slug: &str, sha: Option<&str>) -> Option<SignOffRecord> {
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return None;
+    }
+    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    guard.audits.iter().rev().find(|a| {
+        if a.decision != "approve" {
+            return false;
+        }
+        let slug_ok = a
+            .slug
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case(slug))
+            .unwrap_or(false);
+        if !slug_ok {
+            return false;
+        }
+        match (sha, a.git_sha.as_deref()) {
+            (Some(want), Some(got)) if !got.is_empty() => {
+                want.starts_with(got) || got.starts_with(want)
+            }
+            _ => true,
+        }
+    }).cloned()
+}
+
+/// Merge / provision gate. New edits after sign-off re-open outstanding and block again.
+pub fn may_ship(slug: &str, sha: Option<&str>) -> Result<(), String> {
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return Err("slug required to ship".into());
+    }
+    let open = list_items(ListFilter {
+        slug: Some(slug.into()),
+        status: Some(ItemStatus::Outstanding),
+        ..Default::default()
+    });
+    if !open.is_empty() {
+        return Err(format!(
+            "sign off {n} outstanding change(s) for `{slug}` before merge / deploy",
+            n = open.len()
+        ));
+    }
+    if latest_approve(slug, sha).is_some() {
+        return Ok(());
+    }
+    let any = list_items(ListFilter {
+        slug: Some(slug.into()),
+        ..Default::default()
+    });
+    if any.is_empty() {
+        // Never touched by the agent — nothing to sign.
+        return Ok(());
+    }
+    Err(format!(
+        "no recorded human sign-off for `{slug}`{}",
+        sha.map(|s| format!(" (sha {s})")).unwrap_or_default()
+    ))
+}
+
+pub fn export_json() -> Value {
+    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    json!({
+        "ok": true,
+        "exported_at": now_rfc3339(),
+        "audit_env": audit_env_json(),
+        "items": guard.items,
+        "audits": guard.audits,
     })
 }
 
@@ -600,14 +980,14 @@ pub fn request_sign_off_intent(slug: Option<&str>, count: usize) -> Value {
         "navigation": { "action": "goto", "path": path },
         "present": {
             "announce": if count == 1 {
-                "Here is what I did — please sign off".to_string()
+                "Here is what I did — please review".to_string()
             } else {
-                format!("Here is exactly what I did ({count} changes) — please sign off")
+                format!("Here is exactly what I did ({count} changes) — please review")
             },
             "steps": [
                 { "kind": "goto", "path": path, "ms": 300 },
                 { "kind": "wait", "ms": 200 },
-                { "kind": "pulse", "target": "text:Sign off", "ms": 550 }
+                { "kind": "highlight", "selector": "[data-veil-role='sign-off'], [data-veil-action='sign-off']", "ms": 700 }
             ]
         }
     })
@@ -619,9 +999,9 @@ pub fn sign_off_intent(slug: Option<&str>, decision: &str) -> Value {
         _ => "/review".to_string(),
     };
     let label = if decision.eq_ignore_ascii_case("reject") {
-        "Reject"
+        "Request changes"
     } else {
-        "Sign off"
+        "Approve"
     };
     json!({
         "type": "SignOff",
@@ -635,7 +1015,7 @@ pub fn sign_off_intent(slug: Option<&str>, decision: &str) -> Value {
             "steps": [
                 { "kind": "goto", "path": path, "ms": 280 },
                 { "kind": "wait", "ms": 180 },
-                { "kind": "pulse", "target": format!("text:{label}"), "selector": "[data-veil-action='sign-off'], [data-veil-action='reject-sign-off']", "ms": 500, "activate": true }
+                { "kind": "highlight", "selector": "[data-veil-action='sign-off'], [data-veil-action='reject-sign-off']", "ms": 700 }
             ]
         }
     })
@@ -683,14 +1063,65 @@ mod tests {
             slug: Some("foo".into()),
             all: false,
             decision: "approve".into(),
-            actor: "human".into(),
+            actor: "operator".into(),
             note: Some("looks good".into()),
+            git_sha: Some("abc123def".into()),
+            structural_diff_hash: Some("deadbeef".into()),
+            ..Default::default()
         })
         .expect("sign off");
         assert_eq!(done.len(), 2);
         assert_eq!(audit.decision, "approve");
+        assert_eq!(audit.actor_kind, "human");
+        assert!(audit.at.contains('T'), "RFC3339: {}", audit.at);
+        assert_eq!(audit.git_sha.as_deref(), Some("abc123def"));
+        assert_eq!(audit.structural_diff_hash.as_deref(), Some("deadbeef"));
         assert_eq!(outstanding().len(), 1);
         assert_eq!(outstanding()[0].slug, "bar");
+        assert!(may_ship("foo", Some("abc123def")).is_ok());
+        assert!(may_ship("bar", None).is_err());
+    }
+
+    #[test]
+    fn agent_cannot_sign_off() {
+        let _g = isolated();
+        let prev = std::env::var("VEIL_DEV").ok();
+        unsafe {
+            std::env::remove_var("VEIL_DEV");
+        }
+        record_file_edit("foo", "main.veil", None);
+        let err = sign_off(SignOffRequest {
+            slug: Some("foo".into()),
+            decision: "approve".into(),
+            actor: "agent".into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(err.contains("agent cannot record sign-off"), "{err}");
+        assert_eq!(outstanding().len(), 1);
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("VEIL_DEV", v),
+                None => std::env::remove_var("VEIL_DEV"),
+            }
+        }
+    }
+
+    #[test]
+    fn change_sets_do_not_resolve_missing_projects() {
+        let _g = isolated();
+        record_file_edit("gone-project", "main.veil", Some("leftover"));
+        let started = std::time::Instant::now();
+        let sets = change_sets(None);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "change_sets must not DDB-scan leftover slugs ({:?})",
+            started.elapsed()
+        );
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].slug, "gone-project");
+        assert!(sets[0].host_check.is_none());
+        assert!(!sets[0].host_has_errors);
     }
 
     #[test]
@@ -717,5 +1148,33 @@ mod tests {
             .iter()
             .filter(|i| i.kind == ItemKind::FileEdit)
             .all(|i| i.git_sha.as_deref() == Some("abc123def")));
+    }
+
+    #[test]
+    fn delete_project_closes_outstanding() {
+        let _g = isolated();
+        record_file_edit("lumen-desk", "main.veil", Some("e2e"));
+        record_file_edit("agent-core", "main.veil", None);
+        assert_eq!(outstanding().len(), 2);
+        let n = close_for_deleted_project("lumen-desk", None);
+        assert_eq!(n, 1);
+        let left = outstanding();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].slug, "agent-core");
+    }
+
+    #[test]
+    fn unknown_catalog_slugs_are_closed() {
+        let _g = isolated();
+        record_file_edit("keep-me", "main.veil", None);
+        record_file_edit("drop-a", "main.veil", None);
+        record_file_edit("drop-b", "main.veil", None);
+        assert_eq!(close_unknown_projects(&[]), 0);
+        assert_eq!(outstanding().len(), 3);
+        let n = close_unknown_projects(&["keep-me".into(), "other".into()]);
+        assert_eq!(n, 2);
+        let left = outstanding();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].slug, "keep-me");
     }
 }

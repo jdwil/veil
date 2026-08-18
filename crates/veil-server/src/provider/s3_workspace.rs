@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::filesystem::FilesystemProvider;
 use super::{FileInfo, FileKind, SourceProvider};
@@ -131,6 +132,7 @@ pub fn purge_repo_store(repo_id: &str) -> Result<(), String> {
             }
         }
     }
+    invalidate_identity(None, Some(repo_id));
     Ok(())
 }
 
@@ -176,6 +178,43 @@ fn cache_identity(slug: &str, repo_id: &str) {
     }
     if let Ok(mut guard) = slug_by_repo_cache().lock() {
         guard.insert(repo_id.to_string(), slug.to_string());
+    }
+    forget_missing(slug);
+}
+
+fn missing_identity_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, Instant>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Instant>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+const MISSING_TTL: Duration = Duration::from_secs(45);
+
+fn remember_missing(slug: &str) {
+    if let Ok(mut g) = missing_identity_cache().lock() {
+        g.insert(slug.to_string(), Instant::now());
+    }
+}
+
+fn forget_missing(slug: &str) {
+    if let Ok(mut g) = missing_identity_cache().lock() {
+        g.remove(slug);
+    }
+}
+
+fn is_known_missing(slug: &str) -> bool {
+    let Ok(mut g) = missing_identity_cache().lock() else {
+        return false;
+    };
+    match g.get(slug) {
+        Some(t) if t.elapsed() < MISSING_TTL => true,
+        Some(_) => {
+            g.remove(slug);
+            false
+        }
+        None => false,
     }
 }
 
@@ -308,6 +347,12 @@ pub fn resolve_project_identity(raw: &str) -> Result<ProjectIdentity, String> {
                 repo_id: repo_id.clone(),
             });
         }
+    }
+
+    if is_known_missing(&key) {
+        return Err(format!(
+            "no S3/DDB repo for slug '{key}' — seed with scripts/seed-repo-s3.sh or set VEIL_REPO_MAP"
+        ));
     }
 
     // UUID path: GetItem REPO#{id}/META → product slug (avoids dual sticky).
@@ -447,6 +492,7 @@ fn resolve_repo_id_uncached(slug: &str) -> Result<String, String> {
             return Ok(slug.to_string());
         }
     }
+    remember_missing(slug);
     Err(format!(
         "no S3/DDB repo for slug '{slug}' — seed with scripts/seed-repo-s3.sh or set VEIL_REPO_MAP"
     ))
@@ -539,11 +585,9 @@ pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, 
         written.push(rel);
     }
     let slug = crate::project_layout::slugify_name(name);
-    // Prefer the new repo for this slug (overwrite any stale cache entry).
-    if let Ok(mut guard) = repo_id_cache().lock() {
-        guard.insert(name.to_string(), repo_id.to_string());
-        guard.insert(slug.clone(), repo_id.to_string());
-    }
+    // Prefer the new repo for this slug (overwrite any stale cache / missing TTL).
+    cache_identity(&slug, repo_id);
+    cache_identity(name, repo_id);
     if crate::git_origin::origin_enabled() {
         let tmp = std::env::temp_dir().join(format!("veil-git-seed-{repo_id}"));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -581,6 +625,29 @@ pub fn invalidate_repo_id_cache(slug: &str) {
             .collect();
         for k in drop_keys {
             guard.remove(&k);
+        }
+    }
+}
+
+/// Drop both slug→repo and repo→slug cache entries after delete / re-create.
+pub fn invalidate_identity(slug: Option<&str>, repo_id: Option<&str>) {
+    if let Some(s) = slug.map(str::trim).filter(|s| !s.is_empty()) {
+        invalidate_repo_id_cache(s);
+        remember_missing(s);
+    }
+    if let Some(rid) = repo_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let mapped = slug_by_repo_cache()
+            .lock()
+            .ok()
+            .and_then(|g| g.get(rid).cloned());
+        if let Ok(mut g) = slug_by_repo_cache().lock() {
+            g.remove(rid);
+        }
+        if let Ok(mut g) = repo_id_cache().lock() {
+            g.retain(|_, v| v != rid);
+        }
+        if let Some(s) = mapped {
+            invalidate_repo_id_cache(&s);
         }
     }
 }
@@ -932,6 +999,11 @@ impl S3WorkspaceProvider {
     }
     pub fn draft_mode(&self) -> bool {
         self.draft_mode
+    }
+
+    /// Refresh the in-memory serve-set after a workdir write (ws_write / git).
+    pub fn reload_from_disk(&self, hint: &str) -> Result<(), String> {
+        self.inner.reload_from_disk(hint)
     }
 
     /// Re-sync from S3 (source of truth) into the workspace and rebuild cache.

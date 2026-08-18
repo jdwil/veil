@@ -121,6 +121,45 @@ pub struct DdbMetadataStore {
     pub table: String,
 }
 
+impl DdbMetadataStore {
+    /// Full-table scan with `LastEvaluatedKey` follow-up.
+    ///
+    /// FilterExpression is applied *after* each 1MB page. A single `.send()`
+    /// therefore drops catalog rows that live on later pages (the Projects
+    /// UI uses this path).
+    async fn scan_filtered(
+        &self,
+        filter_expression: &str,
+        values: &[(&str, aws_sdk_dynamodb::types::AttributeValue)],
+    ) -> Result<Vec<HashMap<String, aws_sdk_dynamodb::types::AttributeValue>>, DomainError> {
+        let mut items = Vec::new();
+        let mut exclusive_start_key = None;
+        loop {
+            let mut req = self
+                .client
+                .scan()
+                .table_name(&self.table)
+                .filter_expression(filter_expression.to_string());
+            for (k, v) in values {
+                req = req.expression_attribute_values((*k).to_string(), v.clone());
+            }
+            if let Some(key) = exclusive_start_key {
+                req = req.set_exclusive_start_key(Some(key));
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| DomainError::External(format!("{e:?}")))?;
+            items.extend(resp.items().iter().cloned());
+            match resp.last_evaluated_key() {
+                Some(key) if !key.is_empty() => exclusive_start_key = Some(key.clone()),
+                _ => break,
+            }
+        }
+        Ok(items)
+    }
+}
+
 #[async_trait]
 impl MetadataStore for DdbMetadataStore {
     async fn create_repo(&self, metadata: Repo) -> Result<(), DomainError> {
@@ -708,37 +747,34 @@ impl MetadataStore for DdbMetadataStore {
     }
 
     async fn list_repos(&self) -> Result<Vec<Repo>, DomainError> {
-        let resp = self
-            .client
-            .scan()
-            .table_name(&self.table)
-            .filter_expression("begins_with(PK, :prefix) AND SK = :sk".to_string())
-            .expression_attribute_values(
-                ":prefix".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S("REPO#".to_string()),
+        let items = self
+            .scan_filtered(
+                "begins_with(PK, :prefix) AND SK = :sk",
+                &[
+                    (
+                        ":prefix",
+                        aws_sdk_dynamodb::types::AttributeValue::S("REPO#".to_string()),
+                    ),
+                    (
+                        ":sk",
+                        aws_sdk_dynamodb::types::AttributeValue::S("META".to_string()),
+                    ),
+                ],
             )
-            .expression_attribute_values(
-                ":sk".to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S("META".to_string()),
-            )
-            .send()
-            .await
-            .map_err(|e| DomainError::External(format!("{e:?}")))?;
-        return Ok(resp
-            .items()
-            .iter()
-            .map(|i| {
-                serde_json::from_str::<_>(
-                    &i.get("data")
-                        .ok_or_else(|| DomainError::External("missing data".into()))
-                        .unwrap()
-                        .as_s()
-                        .map(|s| s.to_string())
-                        .unwrap(),
-                )
-                .unwrap()
-            })
-            .collect());
+            .await?;
+        let mut repos = Vec::with_capacity(items.len());
+        for item in items {
+            let data = item
+                .get("data")
+                .ok_or_else(|| DomainError::External("missing data".into()))?
+                .as_s()
+                .map_err(|e| DomainError::External(format!("{e:?}")))?;
+            repos.push(
+                serde_json::from_str::<Repo>(data)
+                    .map_err(|e| DomainError::External(format!("repo META: {e}")))?,
+            );
+        }
+        Ok(repos)
     }
 
     async fn list_stubs(&self) -> Result<Vec<StubMetadata>, DomainError> {

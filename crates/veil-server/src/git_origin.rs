@@ -936,9 +936,9 @@ mod tests {
     fn seed_tree() -> PathBuf {
         let p = unique_tmp("seed");
         fs::create_dir_all(p.join("layers")).unwrap();
-        fs::write(p.join("main.veil"), "pkg DlxBus\n").unwrap();
-        fs::write(p.join("MISSION.md"), "# Bus\n").unwrap();
-        fs::write(p.join("veil.toml"), "[package]\nname = \"dlx-bus\"\n").unwrap();
+        fs::write(p.join("main.veil"), "pkg Shop\n").unwrap();
+        fs::write(p.join("MISSION.md"), "# Shop\n").unwrap();
+        fs::write(p.join("veil.toml"), "[package]\nname = \"shop\"\n").unwrap();
         fs::write(p.join("layers/main.layer"), "layer Main\n").unwrap();
         p
     }
@@ -960,7 +960,7 @@ mod tests {
             assert!(work.join(".git").is_dir());
 
             origin.create_branch(&work, "feat-bus").unwrap();
-            fs::write(work.join("main.veil"), "pkg DlxBus\n  rec Topic\n").unwrap();
+            fs::write(work.join("main.veil"), "pkg Shop\n  rec Topic\n").unwrap();
             let c = origin
                 .commit_and_push(&work, "feat: add Topic", "feat-bus")
                 .unwrap();
@@ -1009,7 +1009,7 @@ mod tests {
             let b = unique_tmp("iso-b");
             origin.checkout(&b, "main", CheckoutMode::ResetHard).unwrap();
             let body = fs::read_to_string(b.join("main.veil")).unwrap();
-            assert!(body.contains("DlxBus"));
+            assert!(body.contains("Shop"));
             assert!(!body.contains("Dirty"));
 
             let _ = fs::remove_dir_all(&seed);

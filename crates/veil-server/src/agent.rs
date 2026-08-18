@@ -2218,7 +2218,7 @@ After every edit: veil_check. Fix any new errors/warnings you introduced on this
 Git-shaped workflow (you decide branch/commit — do not ask the operator for every step):
 session_status → multi-step? create_branch → veil_check baseline → fix one class → write → veil_check → session_commit.
 When the task is complete: create_pr (title + description with per-slice rationales) → submit_pr.
-NEVER merge_branch or merge_pr unless the operator explicitly asks to merge. Humans review via the PR Wizard.
+NEVER merge_branch or merge_pr unless the operator explicitly asks to merge. Humans review on /review.
 
 ## Issues
 1. Warning [ACS-010] @ Agent: optional field should use bang

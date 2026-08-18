@@ -27,16 +27,6 @@
   import ChangesPanel from '$lib/ide/ChangesPanel.svelte';
   import ChangeReviewPanel from '$lib/ide/ChangeReviewPanel.svelte';
   import DomainLayerExplorer from '$lib/ide/DomainLayerExplorer.svelte';
-  import PrWizard from '$lib/ide/PrWizard.svelte';
-  import {
-    prWizardOpen,
-    prWizardWidth,
-    setPrWizardWidth,
-    restorePrWizardWidth,
-    clampPrWizardWidth,
-    prWizardMaxWidth,
-    PR_WIZARD_MIN_WIDTH,
-  } from '$lib/ide/prWizard';
   import { patchIdeViewport, flushIdeViewportToFocus, setPrimaryIdePane } from '$lib/ide/ideViewport';
   import DevToolbar from '$lib/ide/DevToolbar.svelte';
   import { layoutNodes, layoutByType } from '$lib/ide/layout';
@@ -78,6 +68,7 @@
     clearChangeReview,
     viewRevision,
     agentActive,
+    applyIdeReviewFocus,
     embedShellConfig,
     isFlowComposerMode,
     flowLayerParam,
@@ -124,8 +115,12 @@
   /** When mounted from runtime shell: `/projects/{project}/ide` */
   interface Props {
     project?: string;
+    focusFile?: string;
+    focusConstruct?: string;
+    focusSession?: string;
+    focusBranch?: string;
   }
-  let { project = '' }: Props = $props();
+  let { project = '', focusFile = '', focusConstruct = '', focusSession = '', focusBranch = '' }: Props = $props();
 
   // Bind project before any derived/store reads that depend on currentProjectParam.
   $effect.pre(() => {
@@ -133,6 +128,15 @@
     setNativeProjectSlug(p || null);
   });
   onDestroy(() => setNativeProjectSlug(null));
+
+  let appliedReviewFocus = $state('');
+  $effect(() => {
+    const q = `${focusFile}::${focusConstruct}`;
+    if (q === '::' || q === appliedReviewFocus) return;
+    if (!$irGraph) return;
+    appliedReviewFocus = q;
+    void applyIdeReviewFocus({ file: focusFile, construct: focusConstruct });
+  });
 
   const nodeTypes: NodeTypes = {
     veil: VeilNode as any,
@@ -170,49 +174,6 @@
     typeof window !== 'undefined' ? loadOutlineWidth() : 320
   );
   let outlineResizing = $state(false);
-  let prWizardResizing = $state(false);
-
-  function startPrWizardResize(e: PointerEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    const handle = e.currentTarget as HTMLElement;
-    const pointerId = e.pointerId;
-    try {
-      handle.setPointerCapture(pointerId);
-    } catch {
-      /* ignore */
-    }
-    prWizardResizing = true;
-    document.body.classList.add('pr-wizard-resizing');
-    const startX = e.clientX;
-    const startW = get(prWizardWidth);
-    const cap = prWizardMaxWidth();
-    let latest = startW;
-
-    const onMove = (ev: PointerEvent) => {
-      if (ev.pointerId !== pointerId) return;
-      // Drag left → wider rail
-      latest = Math.max(PR_WIZARD_MIN_WIDTH, Math.min(cap, startW + (startX - ev.clientX)));
-      setPrWizardWidth(latest);
-    };
-    const onUp = (ev: PointerEvent) => {
-      if (ev.pointerId !== pointerId) return;
-      prWizardResizing = false;
-      document.body.classList.remove('pr-wizard-resizing');
-      try {
-        handle.releasePointerCapture(pointerId);
-      } catch {
-        /* ignore */
-      }
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-      setPrWizardWidth(latest);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
-  }
 
   function startOutlineResize(e: PointerEvent) {
     // Mirror AgentDock: pointer capture + window listeners so drag isn't lost.
@@ -597,12 +558,7 @@
   onMount(() => {
     // Apply saved theme on mount (veil tokens + Aether dark: class)
     applyTheme(theme);
-    restorePrWizardWidth();
     void refreshReview();
-    const onWinResize = () => {
-      setPrWizardWidth(clampPrWizardWidth(get(prWizardWidth)));
-    };
-    window.addEventListener('resize', onWinResize);
 
     // Parent drill / file switch → recompute canvas.
     // Skip parent=null (used only as a force-refresh sentinel before set to root).
@@ -624,12 +580,26 @@
       void computeView(graph, parent, get(paletteConfig));
     });
 
-    // Session first (sets X-Veil-Session-Id), then IR — avoids a cold full materialize on /ir
-    const stopSse = startRevisionWatch();
+    // Session first (sets X-Veil-Session-Id), then IR — avoids a cold full materialize on /ir.
+    // Do not open EventSource until we know the project exists; reconnects used to
+    // hammer hub.open for deleted slugs (Sign-off → Open IDE).
+    let stopSse = () => {};
+    let cancelled = false;
     const proj = currentProjectParam() || (project || '').trim();
     void (async () => {
-      if (proj) await ensureCodingSession(proj);
+      if (proj) {
+        await ensureCodingSession(proj, {
+          sessionId: focusSession,
+          branchName: focusBranch,
+        });
+      }
+      if (cancelled) return;
       await fetchIr();
+      if (cancelled) return;
+      if (focusFile || focusConstruct) {
+        await applyIdeReviewFocus({ file: focusFile, construct: focusConstruct });
+      }
+      if (!cancelled && !get(error)) stopSse = startRevisionWatch();
     })();
 
     // Shell AgentDock: after write_source, refresh IR so code appears live in the IDE
@@ -646,10 +616,10 @@
     window.addEventListener('message', onParentMessage);
 
     return () => {
+      cancelled = true;
       unsubParent();
       unsubRev();
       stopSse();
-      window.removeEventListener('resize', onWinResize);
       window.removeEventListener('veil:agent-refresh', onAgentRefresh);
       window.removeEventListener('message', onParentMessage);
     };
@@ -1473,7 +1443,7 @@
 >
   {#if ideReview?.needs_sign_off}
     <a class="outstanding-ide-banner" href={`/review/${encodeURIComponent(reviewSlug)}`}>
-      {ideReview.outstanding} unreviewed change{ideReview.outstanding === 1 ? '' : 's'} — sign off
+      {ideReview.outstanding} change{ideReview.outstanding === 1 ? '' : 's'} to review
     </a>
   {/if}
   {#if shell.showTopBar}
@@ -1778,15 +1748,23 @@
       </p>
     </div>
   {:else if $error}
+    {@const gone = /project not found|not in the catalog|no s3\/ddb repo|session slug mismatch/i.test($error)}
     <div class="status-overlay error">
-      <p class="error-title">⚠️ Connection Error</p>
+      <p class="error-title">{gone ? 'Project not found' : '⚠️ Connection Error'}</p>
       <p class="error-msg">{$error}</p>
-      <p class="error-hint">
-        Run: <code>make runtime-serve</code> or <code>veil serve --multi -p 3001</code>
-        + viewer <code>:5173</code>
-        (or single project: <code>make serve PROJECT=…</code>)
-      </p>
-      <button class="retry-btn" onclick={() => void fetchIr()}>Retry</button>
+      {#if gone}
+        <p class="error-hint">
+          This product is not in the catalog. It may have been deleted.
+        </p>
+        <a class="retry-btn" href="/projects">Back to projects</a>
+      {:else}
+        <p class="error-hint">
+          Run: <code>make runtime-serve</code> or <code>veil serve --multi -p 3001</code>
+          + viewer <code>:5173</code>
+          (or single project: <code>make serve PROJECT=…</code>)
+        </p>
+        <button class="retry-btn" onclick={() => void fetchIr()}>Retry</button>
+      {/if}
     </div>
   <!-- Scope panel — shows variables available at current level -->
   {:else}
@@ -2175,27 +2153,6 @@
       </div>
     </div>
   {/if}
-
-  {#if $prWizardOpen}
-    <!-- Right rail only: outline + canvas stay interactive; drag left edge to resize -->
-    <div
-      class="pr-wizard-overlay"
-      class:resizing={prWizardResizing}
-      style="width: {$prWizardWidth}px"
-    >
-      <div
-        class="pr-wizard-resize-handle"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize PR Wizard"
-        aria-valuenow={$prWizardWidth}
-        aria-valuemin={PR_WIZARD_MIN_WIDTH}
-        title="Drag to resize"
-        onpointerdown={startPrWizardResize}
-      ></div>
-      <PrWizard />
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -2209,42 +2166,6 @@
     color: inherit;
     background: color-mix(in srgb, var(--dk-amber, #f59e0b) 16%, transparent);
     border-bottom: 1px solid color-mix(in srgb, var(--dk-amber, #f59e0b) 40%, transparent);
-  }
-  .pr-wizard-overlay {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 90;
-    display: flex;
-    flex-direction: column;
-    pointer-events: auto;
-    min-width: 320px;
-    max-width: min(900px, 65vw);
-  }
-  .pr-wizard-overlay.resizing {
-    user-select: none;
-  }
-  .pr-wizard-resize-handle {
-    position: absolute;
-    left: -4px;
-    top: 0;
-    bottom: 0;
-    width: 8px;
-    cursor: col-resize;
-    z-index: 5;
-    touch-action: none;
-  }
-  .pr-wizard-resize-handle:hover,
-  .pr-wizard-overlay.resizing .pr-wizard-resize-handle {
-    background: color-mix(in srgb, var(--veil-accent, #60a5fa) 55%, transparent);
-  }
-  :global(body.pr-wizard-resizing) {
-    cursor: col-resize !important;
-    user-select: none !important;
-  }
-  :global(body.pr-wizard-resizing iframe) {
-    pointer-events: none !important;
   }
   .viewer-container {
     position: relative;

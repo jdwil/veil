@@ -37,7 +37,7 @@
 	const links = [
 		{ href: '/dashboard', label: 'Dashboard', icon: '⌂' },
 		{ href: '/projects', label: 'Projects', icon: '▣' },
-		{ href: '/review', label: 'Sign-off', icon: '✓', badge: 'review' as const },
+		{ href: '/review', label: 'Review', icon: '✓', badge: 'review' as const },
 		{ href: '/pulls', label: 'Changes', icon: '⇄', badge: 'prs' as const },
 		{ href: '/deploy', label: 'Deploy', icon: '☁' },
 		{ href: '/registry', label: 'Registry', icon: '⧉' },
@@ -100,7 +100,7 @@
 				{:else if link.badge === 'prs' && open_cr_count > 0}
 					<span class="nav-badge nav-badge--dot" aria-label="{open_cr_count} open changes"></span>
 				{:else if link.badge === 'review' && $reviewOutstandingCount > 0}
-					<span class="nav-badge nav-badge--dot" aria-label="{$reviewOutstandingCount} need sign-off"></span>
+					<span class="nav-badge nav-badge--dot" aria-label="{$reviewOutstandingCount} need review"></span>
 				{/if}
 			</a>
 		{/each}

@@ -106,7 +106,6 @@ pkg ddd v1
     desc "Entity — domain object with identity"
     cst
       has_identity id
-      deny_calls Bus
     visual
       icon "🔑"
       color "#f43f5e"
@@ -303,36 +302,9 @@ pkg ddd v1
       color "#f59e0b"
       label "Emit"
 
-  statement dispatch
-    mt Bus.dispatch
-    desc "Fire event through event bus (fire-and-forget, multiple handlers)"
-    sem event_bus_fire_and_forget
-    requires_dep Bus
-    # lowers_to omitted: Bus uses envelope routing in rust codegen (fallback).
-    visual
-      icon "📡"
-      color "#f59e0b"
-      label "Dispatch"
-
-  statement invoke
-    mt Bus.invoke
-    desc "Execute command through command bus (single handler)"
-    sem command_bus_handler
-    requires_dep Bus
-    visual
-      icon "⚙️"
-      color "#3b82f6"
-      label "Invoke"
-
-  statement request
-    mt Bus.request
-    desc "Query data from another context (inter-context communication)"
-    sem inter_context_query
-    requires_dep Bus
-    visual
-      icon "🔌"
-      color "#10b981"
-      label "Request"
+  # dispatch / invoke / request are NOT DDD. A message bus is user-land:
+  # the product defines `port …` and adapters, and may declare those verbs
+  # in a product layer (`statement dispatch` / `mt YourPort.method`).
 
   statement guard
     mt if
@@ -397,18 +369,91 @@ pkg ddd v1
     - Steps contain expressions: assignments, repo calls, `guard(condition, "message")` for
       preconditions, and `ret value` to return data.
 
+    ## A message bus is user-land (not this layer)
+    DDD does **not** inject a `Bus` and does **not** provide `dispatch` /
+    `invoke` / `request`. Those are product vocabulary.
+
+    If the product needs messaging:
+    1. Define a `port` with the contract you want (any name: `Bus`,
+       `EventTransport`, …).
+    2. Implement adapters that call stub types (`@field(sns: aws_sdk_sns.Client)`,
+       `AttributeValue.S(s)`, `Blob.new(body)`).
+    3. Inject it like any other port (`@dep bus: Bus`).
+    4. Optional: in a **product** layer, declare `statement dispatch` /
+       `mt YourPort.method` if you want keyword sugar.
+    The runtime is told how to construct that dependency via `@field` / `@env`
+    / `compose` — it does not ship a bus.
+
+    This layer *does* inject: `trait SagaStep`, `fn run_saga`, `fn unwind`,
+    `trait EntityRepo<T>`, `trait AuthService`, `struct Principal`.
+    Do not redefine those names (`shadows_layer_declare`).
+
     ## Infrastructure Group
     Contains adapter implementations:
     - `adapter PgFooRepo for FooRepo` — implements a port with concrete code.
-      Annotate with `@env(DATABASE_URL)` to declare required config.
+      Annotate with `@env(DATABASE_URL)` to declare required config
+      (`@env(VAR)` parens required; `@env VAR` is also accepted).
+      `@env(TABLE_NAME)` is `self.table_name` (full lowercased var).
+      Never write the ALL_CAPS name in a body — that is an error.
+      `DATABASE_URL` is the special case `self.pool`.
       Each `impl method(params)` contains the body (e.g., SQL via sqlx DSL).
+    - **Third-party I/O uses a `.stub` as the contract** (any crate — HTTP, SQL, AWS, …).
+      Never invent `aws_sns` / `http.post`. Those fail check and smoke.
+      1. `stub_search` / `stub_install` the crate
+      2. `use <stub-name>`
+      3. Qualify the stub type by crate and name the field after that crate —
+         `@field(sns: aws_sdk_sns.Client)`, never bare `Client` when more than
+         one stub exports it. Field names: `sns`, `sqs`, `ddb`, not generic `client`.
+      4. Call that field's methods **exactly as the stub shows**. `stub_search`
+         the method before writing the call.
+      The transpiler adds the Cargo crate and imports from the stub.
+
+    ## Stub value types (required for a compiling adapter)
+    The stub signature is the contract. `Map<Str, Str>` is **not** a stand-in
+    for SDK maps. Bare `{ k: v }` is `Map<Str, T>` of the values you wrote.
+
+    - Incremental setters take `(key, stubValue)`:
+      `self.ddb.put_item().table_name(self.table_name).item("id", AttributeValue.S(id.to_string())).send!()`
+      `self.sns.publish().topic_arn(arn).message(body).message_attributes("event", attr).send!()`
+    - Whole-map setters take `Map<Str, StubValue>`, never `Map<Str, Str>`.
+    - Construct stub enums as `Type.Variant(args)`: `AttributeValue.S(s)`.
+    - Construct builder types as `Type.builder()…build()`:
+      `attr = aws_sdk_sns.MessageAttributeValue.builder().data_type("String").string_value(s).build()`
+      Qualify when two stubs export the same name.
+    - Binary / text conversions (language, any crate):
+      `Blob.new(s)` accepts `Str` or `Bytes` (utf-8).
+      `bytes = Bytes.from_str(s)` or `s.as_bytes()`.
+      `s = blob.to_str()` / `bytes.to_str()` / `Str.from_bytes(bytes)`.
+      Port `-> Str` cannot return a Blob — decode first:
+      `ret (require result.payload).to_str()`.
+    - Opt returns from adapters:
+      `ret value` is Some. `ret null` or `ret ()` is None.
+      `if item.is_some` / `item.is_some()` is Bool.
+      Do **not** return the stub map as the domain value — construct it:
+      `map = require result.item()` then `endpoint = require map.get("endpoint").as_s()`
+      (or `map["endpoint"].as_s()`) and fill the value object. `get`/`[]` yield
+      the map value (AttributeValue); `as_s()` is the Str.
+    - `match` arms must produce one type. A fire-and-forget arm of an
+      `Opt<T>` method ends with `null` after the side-effect. Wrap a `Str`
+      in the domain value (`Token { id: s }`), do not leave a bare `Str`
+      next to a unit `send!()`.
+    - Domain ports stay domain-shaped. Convert in the adapter — do not wrap
+      an SDK in a port whose signature lies (`publish(attributes: Map<Str, Str>)`
+      then pass that map to the stub).
+    - A `-> ()` method cannot use `!` or `?`. If the call can fail, declare
+      `method!(…) -> ()` (that is Res!).
+    - `{ k: v }` passed to a `Map<Str, T>` port param is a HashMap, not JSON.
+    - Bare `match status { Healthy -> … }` is legal VEIL; the compiler
+      qualifies the variant.
+    - `@dep store: RecordStore` → `self.store.get!(name)` (or the bare
+      field name; prefer `self.`).
 
     ## Key Patterns
     - Dependencies are always injected via `@dep` — never construct adapters in handlers.
     - Repos return `Opt<T>` for single lookups, `List<T>` for collections.
     - Use `guard(expr, "msg")` for precondition checks — it short-circuits with a validation error.
     - Use `ret variable` to return query results from handlers.
-    - Cross-context communication uses `dispatch`, `invoke`, or `request` (routed via Bus).
+    - Cross-context work is a product port you inject (`@dep`), not a DDD keyword.
     - Sagas use the `saga` keyword with `step`/`compensate` blocks for distributed transactions.
     - **Bang / Opt / Res (docs/BANG_CONTRACT.md) — ACS-010 portable (default):**
       `entity = repo.find!(id)` yields `Opt<T>` (bang unwraps Res / try only).
@@ -450,15 +495,8 @@ pkg ddd v1
     ```
 
   # ─── Declared constructs (injected into every solution using this layer) ─────
-  # The Bus is a JSON message bus: cross-context payloads/results are `Json`
-  # (serde_json::Value) so orchestrators can build commands and index results
-  # without depending on another context's concrete types.
+  # No Bus. Messaging is a product port + adapters (see prompt).
   declare
-    trait Bus
-      dispatch(evt: Json) -> Res!
-      invoke(cmd: Json) -> Res!<Json>
-      request(qry: Json) -> Res!<Json>
-
     # Generic persistence port — monomorphize with type alias:
     #   type WearTestRepo = EntityRepo<WearTest>
     # Implementation lives in VEIL (e.g. adapter DynamoJsonRepo<T> for EntityRepo<T>);
@@ -491,31 +529,30 @@ pkg ddd v1
     # JSON `state`: each `action` reads prior results from it and returns the
     # updated state, so later steps see earlier results. `run_saga` threads the
     # state forward and, on the first failure, replays the completed steps'
-    # compensations in reverse. All ordinary VEIL over the Bus — the engine has
-    # no saga knowledge.
+    # compensations in reverse. Messaging is a product port, not this coordinator.
     trait SagaStep
-      action(bus: Bus, state: Json) -> Res!<Json>
-      compensate(bus: Bus, state: Json) -> Res!
+      action(state: Json) -> Res!<Json>
+      compensate(state: Json) -> Res!
 
     # Replay compensations for the first `upto` steps, most-recent first.
-    fn unwind(bus: Bus, steps: List<SagaStep>, upto: Int, state: Json) -> Res!
+    fn unwind(steps: List<SagaStep>, upto: Int, state: Json) -> Res!
       mut i = upto
       while i > 0
         i = i - 1
-        call steps.get(i).compensate(bus, state)
+        call steps.get(i).compensate(state)
       ret Ok
 
     # Run steps forward, threading state; on failure, unwind and propagate.
-    fn run_saga(bus: Bus, steps: List<SagaStep>) -> Res!
+    fn run_saga(steps: List<SagaStep>) -> Res!
       mut state = {}
       mut i = 0
       while i < steps.len()
-        match call steps.get(i).action(bus, state)
+        match call steps.get(i).action(state)
           Ok next ->
             state = next
             i = i + 1
           Err e ->
-            call unwind(bus, steps, i, state)
+            call unwind(steps, i, state)
             ret Err(e)
       ret Ok
 

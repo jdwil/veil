@@ -17,34 +17,45 @@
   let delete_name: string = $state('');
   let delete_busy: boolean = $state(false);
 
+  async function loadRepos() {
+    loading = true;
+    error = '';
+    try {
+      const r = await fetch('/api/repos', { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+      const data = await r.json();
+      repos = Array.isArray(data) ? data : data.repos || data.items || [];
+      void refreshReview();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
+    }
+  }
+
   onMount(() => {
-    void refreshReview();
+    void loadRepos();
   });
 
-   $effect(() => { // load_on_mount
-  void (async () => {
-        loading = true;
-        error = "";
-        repos = await (async () => { const __u = new URL("/api/repos", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-        void refreshReview();
-        loading = false;
-  })();
-    });
-   $effect(() => { // do_delete
-  void (async () => {
-        if (deleting_id !== "") {
-          if (delete_busy === true) {
-            error = "";
-            await (async () => { const __r = await fetch(`/api/repos/${encodeURIComponent(deleting_id)}`, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })();
-            repos = await (async () => { const __u = new URL("/api/repos", typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })();
-            deleting_id = "";
-            delete_name = "";
-            delete_busy = false;
-            delete_open = false;
-          };
-        };
-  })();
-    });
+  $effect(() => {
+    if (!delete_busy || !deleting_id) return;
+    const id = deleting_id;
+    void (async () => {
+      error = '';
+      try {
+        const r = await fetch(`/api/repos/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+        await loadRepos();
+        deleting_id = '';
+        delete_name = '';
+        delete_open = false;
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        delete_busy = false;
+      }
+    })();
+  });
 </script>
 
 <div class="projects">
@@ -134,8 +145,8 @@
       </div>
       {#if rev?.needs_sign_off}
         <div class="review-badges">
-          <StatusPill label="Needs sign-off" variant="warning" />
-          <span class="review-count">{rev.outstanding} unreviewed</span>
+          <StatusPill label="Needs review" variant="warning" />
+          <span class="review-count">{rev.outstanding} to review</span>
         </div>
       {:else if rev?.touched}
         <div class="review-badges">
@@ -155,7 +166,7 @@
       <td><span class="dk-tile__meta">{repo?.slug ? String(repo.slug) : '—'}</span></td>
       <td>
         {#if rev?.needs_sign_off}
-          <StatusPill label={`Sign-off · ${rev.outstanding}`} variant="warning" />
+          <StatusPill label={`Review · ${rev.outstanding}`} variant="warning" />
         {:else if rev?.touched}
           <StatusPill label="Touched" variant="info" />
         {:else}

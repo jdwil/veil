@@ -75,7 +75,8 @@ pub use layer::{
 pub use stub_catalog::{
     content_fingerprint, generated_stub_header, list_catalog, list_platform_stubs,
     list_project_stubs, platform_stub_dirs, project_stub_write_path, resolve_stub,
-    stub_file_stems, ResolvedStub, StubCatalogEntry, StubOrigin,
+    search_stub_catalog, stub_file_stems, ResolvedStub, StubCatalogEntry, StubOrigin,
+    StubSearchHit,
 };
 pub use platform_layers::{
     is_ghost_layer_content, is_platform_layer_name, platform_layer_dirs,

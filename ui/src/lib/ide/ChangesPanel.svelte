@@ -13,6 +13,7 @@
     checkMeta,
     codingSessionMeta,
     codingSessionRevision,
+    currentProjectParam,
     getCodingSessionId,
     ideApiBase,
     ideRequestHeaders,
@@ -20,7 +21,6 @@
     type ChangeReviewItem,
   } from '$lib/ide/store';
   import { getNodeStyle, paletteStylesVersion, type NodeKind } from '$lib/ide/types';
-  import { openPrWizard } from '$lib/ide/prWizard';
 
   interface CommitRow {
     commit_id: string;
@@ -207,16 +207,15 @@
     <p class="hint">
       Working tree · commits · review as a PR. Use the top-bar
       <strong>Commit</strong> / branch chip for checkpoints. Autosave is not a commit.
-      Agents open a PR — you walk changes in the PR Wizard.
+      Agents open a PR — you walk changes on Review.
     </p>
-    <button
-      type="button"
+    <a
       class="prw-btn"
-      title="Walk each structural change with agent rationales — approve or send feedback"
-      onclick={() => openPrWizard(null)}
+      href={`/review/${encodeURIComponent(currentProjectParam() || '')}`}
+      title="Walk each change with agent rationales — approve or request changes"
     >
-      ✦ PR Wizard
-    </button>
+      Review
+    </a>
   </div>
 
   <div class="changes-modes" role="tablist" aria-label="Change source">
@@ -379,7 +378,9 @@
   }
 
   .prw-btn {
+    display: block;
     width: 100%;
+    box-sizing: border-box;
     margin-top: 8px;
     padding: 0.45rem 0.6rem;
     border-radius: 8px;
@@ -390,6 +391,8 @@
     font-weight: 700;
     cursor: pointer;
     letter-spacing: 0.01em;
+    text-align: center;
+    text-decoration: none;
   }
   .prw-btn:hover {
     border-color: #3b82f6;

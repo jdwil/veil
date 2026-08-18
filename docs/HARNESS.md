@@ -20,7 +20,7 @@ cd /tmp/local_run && cargo run -p veil_bin
 
 `@main` packages emit `crates/veil_bin` with a local harness that:
 
-1. Constructs **`InProcessBus`** (from `veil_shared`, RT-001/004)
+1. Constructs **`InProcessBus`** only if a loaded layer declared routing statements (not DDD)
 2. Wires **memory adapters** for ports
 3. Calls a generated **application service** (not echo)
 
@@ -72,7 +72,7 @@ Verify: `cargo metadata --no-deps | jq '.packages[] | select(.name=="veil_bin")'
 ## VEIL packages for Bus / HTTP (RT-022)
 
 - `layers/harness.layer` — prompts + patterns for `@main` composition
-- `InProcessBus` generated into `veil_shared` when Bus is declared
+- `InProcessBus` generated into `veil_shared` only when a layer declares routing statements (`mt Port.method`). DDD does not declare a Bus.
 - Minimal HTTP remains app-specific (axum in app or host); no eternal bootstrap
 
 ## `provided_by: "runtime"` (RT-023)
@@ -220,7 +220,7 @@ knowledge** (no hard-coded Dynamo/S3/aws-config). Stubs may also declare:
 | `cargo_deps name=ver` | Companion crates (e.g. `aws-config=1`) |
 | `types_module types` | Model types live under `crate::types::…` |
 | `root_types Client, Config` | Types that stay at crate root |
-| `harness_field Client """…"""` | Rust expr for `@field(client: Client)` in the local harness |
+| `harness_field Client """…"""` | Rust expr for `@field(sns: aws_sdk_sns.Client)` (crate-qualify when several stubs export `Client`) |
 | `row_type_derives Path` | Multi-field domain types get these derives (e.g. `sqlx::FromRow`) |
 | `wrapper_type_derives Path` | Single-field wrappers get these derives (e.g. `sqlx::Type`) |
 | `wrapper_type_attrs inner` | Extra attrs on wrappers (e.g. `sqlx(transparent)` → `#[sqlx(transparent)]`) |

@@ -660,6 +660,135 @@ mod editable_tests {
     }
 }
 
+#[cfg(test)]
+mod rustdoc_type_tests {
+    use super::{rustdoc_module_under_crate, rustdoc_type_to_veil};
+    use serde_json::json;
+
+    #[test]
+    fn borrowed_slice_of_hashmap_is_list_map_externally_tagged() {
+        let ty = json!({
+            "borrowed_ref": {
+                "lifetime": null,
+                "is_mutable": false,
+                "type": {
+                    "slice": {
+                        "resolved_path": {
+                            "name": "HashMap",
+                            "path": "std::collections::HashMap",
+                            "args": {
+                                "angle_bracketed": {
+                                    "args": [
+                                        { "type": { "resolved_path": { "path": "alloc::string::String" } } },
+                                        { "type": { "resolved_path": { "path": "aws_sdk_dynamodb::types::AttributeValue" } } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            rustdoc_type_to_veil(&ty),
+            "List<Map<Str, AttributeValue>>"
+        );
+    }
+
+    #[test]
+    fn borrowed_slice_of_hashmap_is_list_map_internally_tagged() {
+        let ty = json!({
+            "kind": "borrowed_ref",
+            "inner": {
+                "lifetime": null,
+                "is_mutable": false,
+                "type": {
+                    "kind": "slice",
+                    "inner": {
+                        "kind": "resolved_path",
+                        "inner": {
+                            "name": "HashMap",
+                            "path": "std::collections::HashMap",
+                            "args": {
+                                "kind": "angle_bracketed",
+                                "inner": {
+                                    "args": [
+                                        {
+                                            "kind": "type",
+                                            "inner": { "kind": "resolved_path", "inner": { "path": "alloc::string::String" } }
+                                        },
+                                        {
+                                            "kind": "type",
+                                            "inner": { "kind": "resolved_path", "inner": { "path": "aws_sdk_dynamodb::types::AttributeValue" } }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            rustdoc_type_to_veil(&ty),
+            "List<Map<Str, AttributeValue>>"
+        );
+    }
+
+    #[test]
+    fn unknown_shape_is_not_silently_str() {
+        let ty = json!({ "not_a_rustdoc_type": true });
+        assert_eq!(rustdoc_type_to_veil(&ty), "Unknown");
+    }
+
+    #[test]
+    fn rustdoc_path_primitives_is_module() {
+        let paths = json!({
+            "0:1": { "path": ["aws_sdk_lambda", "primitives", "Blob"] },
+            "0:2": { "path": ["aws_sdk_lambda", "Client"] },
+            "0:3": { "path": ["aws_sdk_sns", "types", "MessageAttributeValue"] }
+        });
+        let map = paths.as_object().unwrap();
+        assert_eq!(
+            rustdoc_module_under_crate(Some(map), "0:1", "aws_sdk_lambda", "Blob")
+                .as_deref(),
+            Some("primitives")
+        );
+        assert_eq!(
+            rustdoc_module_under_crate(Some(map), "0:2", "aws_sdk_lambda", "Client"),
+            None
+        );
+        assert_eq!(
+            rustdoc_module_under_crate(Some(map), "0:3", "aws_sdk_sns", "MessageAttributeValue")
+                .as_deref(),
+            Some("types")
+        );
+    }
+
+    #[test]
+    fn impl_into_string_is_str() {
+        let ty = json!({
+            "impl_trait": [
+                {
+                    "trait_bound": {
+                        "trait": {
+                            "path": "core::convert::Into",
+                            "args": {
+                                "angle_bracketed": {
+                                    "args": [
+                                        { "type": { "resolved_path": { "path": "alloc::string::String" } } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+        assert_eq!(rustdoc_type_to_veil(&ty), "Str");
+    }
+}
+
 fn parse_solution_or_exit(source: &str, file: &std::path::Path) -> (veil_ir::Solution, LayerRegistry) {
     let tokens = veil_parser::lex(source);
     let registry = registry_for(file);
@@ -1097,6 +1226,10 @@ fn convert_rustdoc_json_to_stub(
     // Collect structs and their impl items
     let mut struct_ids: Vec<(String, String)> = Vec::new(); // (id, name)
     let mut struct_impls: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new(); // name → method signatures
+    // rustdoc `paths[id].path` → module under the crate (`primitives` for Blob).
+    let mut struct_module_paths: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let rustdoc_paths = data.get("paths").and_then(|v| v.as_object());
     let mut enum_defs: Vec<(String, Vec<String>)> = Vec::new(); // (name, variants)
     let mut trait_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut free_fns: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new(); // name → veil sig
@@ -1144,6 +1277,10 @@ fn convert_rustdoc_json_to_stub(
         // Collect public structs
         if inner.contains_key("struct") {
             struct_ids.push((id.clone(), name.to_string()));
+            if let Some(module) = rustdoc_module_under_crate(rustdoc_paths, id, &rust_crate, name)
+            {
+                struct_module_paths.insert(name.to_string(), module);
+            }
             // Get impls for this struct
             if let Some(struct_data) = inner.get("struct").and_then(|v| v.as_object()) {
                 if let Some(impls) = struct_data.get("impls").and_then(|v| v.as_array()) {
@@ -1477,8 +1614,19 @@ fn convert_rustdoc_json_to_stub(
     }
 
     // Emit structs with their methods
+    let default_types_module = if crate_name.starts_with("aws_sdk_") || crate_name.starts_with("aws-sdk-")
+    {
+        Some("types")
+    } else {
+        None
+    };
     for (_, name) in &struct_ids {
         out.push_str(&format!("\n  struct {}\n", name));
+        if let Some(mp) = struct_module_paths.get(name) {
+            if !mp.is_empty() && default_types_module != Some(mp.as_str()) {
+                out.push_str(&format!("    path {mp}\n"));
+            }
+        }
         // Typed free-fn constructor only when both free fns exist (query + query_as).
         // Avoids mapping arbitrary free fns (e.g. map) onto structs (Map).
         if let Some(base_fn) = free_fn_bases.get(name) {
@@ -1664,108 +1812,347 @@ fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
 }
 
 /// Convert a rustdoc JSON type representation to VEIL type syntax.
+///
+/// Handles both rustdoc encodings:
+/// - externally tagged: `{ "slice": T }`, `{ "borrowed_ref": { "type": T } }`
+/// - internally tagged (format 28+): `{ "kind": "slice", "inner": T }`
+///
+/// Unknown shapes are `Unknown`, never `Str` — a silent Str fallback is how
+/// `QueryOutput.items() -> &[HashMap<…>]` became `fn items() -> Str`.
 fn rustdoc_type_to_veil(ty: &serde_json::Value) -> String {
-    if let Some(obj) = ty.as_object() {
-        if let Some(path) = obj.get("resolved_path").and_then(|v| v.as_object()) {
-            let type_path = path.get("path").and_then(|v| v.as_str()).unwrap_or("Unknown");
-            // Simplify: take the last segment
-            let simple = type_path.rsplit("::").next().unwrap_or(type_path);
-            // Map common Rust types to VEIL types
-            let veil_type = match simple {
-                "String" | "str" => "Str",
-                "bool" => "Bool",
-                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize" | "isize" => "Int",
-                "f32" | "f64" => "F64",
-                "Vec" => "List",
-                "Option" => "Opt",
-                "Result" => "Res",
-                other => other,
-            };
-            // Handle generics
-            if let Some(args) = path.get("args").and_then(|v| v.as_object()) {
-                if let Some(angle) = args.get("angle_bracketed").and_then(|v| v.as_object()) {
-                    if let Some(type_args) = angle.get("args").and_then(|v| v.as_array()) {
-                        let arg_strs: Vec<String> = type_args.iter().filter_map(|a| {
-                            a.as_object()?.get("type").map(|t| rustdoc_type_to_veil(t))
-                        }).collect();
-                        if !arg_strs.is_empty() {
-                            if veil_type == "Res" {
-                                return format!("Res!<{}>", arg_strs.first().unwrap_or(&"()".to_string()));
-                            }
-                            return format!("{}<{}>", veil_type, arg_strs.join(", "));
-                        }
-                    }
-                }
+    rustdoc_type_to_veil_depth(ty, 0)
+}
+
+fn rustdoc_type_to_veil_depth(ty: &serde_json::Value, depth: u32) -> String {
+    if depth > 24 {
+        return "Unknown".into();
+    }
+    let Some(obj) = ty.as_object() else {
+        if let Some(s) = ty.as_str() {
+            return rustdoc_primitive_or_path(s).to_string();
+        }
+        return "Unknown".into();
+    };
+
+    let (kind, payload) = rustdoc_untag_type(obj);
+
+    match kind.as_deref() {
+        Some("resolved_path") => rustdoc_resolved_path(payload, depth),
+        Some("primitive") => rustdoc_primitive_payload(payload),
+        Some("generic") => payload
+            .as_str()
+            .unwrap_or("T")
+            .to_string(),
+        Some("borrowed_ref") => {
+            let inner = payload
+                .as_object()
+                .and_then(|o| o.get("type").or_else(|| o.get("type_")))
+                .unwrap_or(payload);
+            rustdoc_type_to_veil_depth(inner, depth + 1)
+        }
+        Some("raw_pointer") => {
+            let inner = payload
+                .as_object()
+                .and_then(|o| o.get("type").or_else(|| o.get("type_")))
+                .unwrap_or(payload);
+            rustdoc_type_to_veil_depth(inner, depth + 1)
+        }
+        Some("slice") => {
+            format!("List<{}>", rustdoc_type_to_veil_depth(payload, depth + 1))
+        }
+        Some("array") => {
+            let inner = payload
+                .as_object()
+                .and_then(|o| o.get("type").or_else(|| o.get("type_")))
+                .unwrap_or(payload);
+            format!("List<{}>", rustdoc_type_to_veil_depth(inner, depth + 1))
+        }
+        Some("tuple") => {
+            let parts = payload
+                .as_array()
+                .map(|xs| {
+                    xs.iter()
+                        .map(|t| rustdoc_type_to_veil_depth(t, depth + 1))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            if parts.is_empty() {
+                "()".into()
+            } else {
+                format!("({parts})")
             }
-            return veil_type.to_string();
         }
-        if let Some(prim) = obj.get("primitive").and_then(|v| v.as_str()) {
-            return match prim {
-                "bool" => "Bool".to_string(),
-                "str" => "Str".to_string(),
-                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => "Int".to_string(),
-                "f32" | "f64" => "F64".to_string(),
-                other => other.to_string(),
-            };
+        Some("qualified_path") => rustdoc_qualified_path(payload, depth),
+        Some("impl_trait") => rustdoc_impl_trait(payload, depth),
+        Some("dyn_trait") => "Unknown".into(),
+        Some("function_pointer") | Some("infer") | Some("pat") => "Unknown".into(),
+        _ => {
+            // Last-ditch: old keys that rustdoc_untag missed.
+            if let Some(path) = obj.get("resolved_path") {
+                return rustdoc_resolved_path(path, depth);
+            }
+            "Unknown".into()
         }
-        if let Some(g) = obj.get("generic").and_then(|v| v.as_str()) {
-            return g.to_string();
+    }
+}
+
+/// Split `{kind, inner}` or `{resolved_path: …}` into (kind, payload).
+fn rustdoc_untag_type(obj: &serde_json::Map<String, serde_json::Value>) -> (Option<String>, &serde_json::Value) {
+    if let Some(kind) = obj.get("kind").and_then(|k| k.as_str()) {
+        let inner = obj.get("inner").unwrap_or(&serde_json::Value::Null);
+        return (Some(kind.to_string()), inner);
+    }
+    const KEYS: &[&str] = &[
+        "resolved_path",
+        "primitive",
+        "generic",
+        "borrowed_ref",
+        "raw_pointer",
+        "slice",
+        "array",
+        "tuple",
+        "impl_trait",
+        "dyn_trait",
+        "qualified_path",
+        "function_pointer",
+        "infer",
+        "pat",
+    ];
+    for key in KEYS {
+        if let Some(v) = obj.get(*key) {
+            return (Some((*key).to_string()), v);
         }
-        if let Some(borrow) = obj.get("borrowed_ref").and_then(|v| v.as_object()) {
-            if let Some(inner) = borrow.get("type") {
-                return rustdoc_type_to_veil(inner);
+    }
+    (None, &serde_json::Value::Null)
+}
+
+/// Module under the crate for a rustdoc item (`["aws_sdk_lambda","primitives","Blob"]` → `primitives`).
+/// Crate-root types (`Client`) return None so they stay on `root_types`.
+fn rustdoc_module_under_crate(
+    paths: Option<&serde_json::Map<String, serde_json::Value>>,
+    item_id: &str,
+    rust_crate: &str,
+    type_name: &str,
+) -> Option<String> {
+    let entry = paths?.get(item_id)?;
+    let segs: Vec<&str> = entry
+        .get("path")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+    if segs.len() < 3 {
+        return None;
+    }
+    let start = if segs[0] == rust_crate
+        || segs[0] == rust_crate.replace('_', "-")
+        || segs[0].replace('-', "_") == rust_crate
+    {
+        1
+    } else {
+        0
+    };
+    let end = if segs.last().copied() == Some(type_name) {
+        segs.len() - 1
+    } else {
+        segs.len()
+    };
+    if start >= end {
+        return None;
+    }
+    Some(segs[start..end].join("::"))
+}
+
+fn rustdoc_primitive_or_path(s: &str) -> &str {
+    match s {
+        "String" | "str" => "Str",
+        "bool" => "Bool",
+        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize" | "isize" => "Int",
+        "f32" | "f64" => "F64",
+        "Vec" => "List",
+        "Option" => "Opt",
+        "Result" => "Res",
+        "HashMap" | "BTreeMap" => "Map",
+        "HashSet" | "BTreeSet" => "Set",
+        other => other,
+    }
+}
+
+fn rustdoc_primitive_payload(payload: &serde_json::Value) -> String {
+    let s = payload
+        .as_str()
+        .or_else(|| payload.get("name").and_then(|n| n.as_str()))
+        .unwrap_or("Unknown");
+    rustdoc_primitive_or_path(s).to_string()
+}
+
+fn rustdoc_resolved_path(payload: &serde_json::Value, depth: u32) -> String {
+    let path = payload
+        .as_object()
+        .and_then(|o| o.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+    let simple = path.rsplit("::").next().unwrap_or(path);
+    let veil_type = rustdoc_primitive_or_path(simple);
+
+    let arg_strs = rustdoc_generic_type_args(payload, depth);
+    if arg_strs.is_empty() {
+        return veil_type.to_string();
+    }
+    if veil_type == "Res" {
+        return format!("Res!<{}>", arg_strs.first().cloned().unwrap_or_else(|| "()".into()));
+    }
+    format!("{}<{}>", veil_type, arg_strs.join(", "))
+}
+
+fn rustdoc_generic_type_args(path_obj: &serde_json::Value, depth: u32) -> Vec<String> {
+    let args_node = path_obj
+        .as_object()
+        .and_then(|o| o.get("args"))
+        .unwrap_or(path_obj);
+
+    let angle = rustdoc_angle_bracketed(args_node);
+    let Some(type_args) = angle.and_then(|a| a.get("args")).and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    type_args
+        .iter()
+        .filter_map(|a| rustdoc_generic_arg_type(a, depth))
+        .collect()
+}
+
+fn rustdoc_angle_bracketed(args: &serde_json::Value) -> Option<&serde_json::Value> {
+    let obj = args.as_object()?;
+    if let Some(kind) = obj.get("kind").and_then(|k| k.as_str()) {
+        if kind == "angle_bracketed" {
+            return obj.get("inner");
+        }
+    }
+    obj.get("angle_bracketed")
+}
+
+fn rustdoc_generic_arg_type(arg: &serde_json::Value, depth: u32) -> Option<String> {
+    let obj = arg.as_object()?;
+    if let Some(kind) = obj.get("kind").and_then(|k| k.as_str()) {
+        if kind == "type" {
+            return obj.get("inner").map(|t| rustdoc_type_to_veil_depth(t, depth + 1));
+        }
+        return None;
+    }
+    obj.get("type")
+        .map(|t| rustdoc_type_to_veil_depth(t, depth + 1))
+}
+
+fn rustdoc_qualified_path(payload: &serde_json::Value, depth: u32) -> String {
+    let name = payload
+        .as_object()
+        .and_then(|o| o.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("Unknown");
+    let self_ty = payload
+        .as_object()
+        .and_then(|o| o.get("self_type"))
+        .map(|t| rustdoc_type_to_veil_depth(t, depth + 1));
+    match self_ty {
+        Some(s) if !s.is_empty() && s != "Unknown" => format!("{s}::{name}"),
+        _ => name.to_string(),
+    }
+}
+
+fn rustdoc_impl_trait(payload: &serde_json::Value, depth: u32) -> String {
+    let bounds = payload.as_array().or_else(|| {
+        payload
+            .as_object()
+            .and_then(|o| o.get("bounds"))
+            .and_then(|b| b.as_array())
+    });
+    let Some(bounds) = bounds else {
+        return "Unknown".into();
+    };
+    for b in bounds {
+        let tb = b
+            .as_object()
+            .and_then(|o| o.get("trait_bound"))
+            .and_then(|v| v.as_object())
+            .or_else(|| {
+                // tagged bound
+                b.as_object().and_then(|o| {
+                    if o.get("kind").and_then(|k| k.as_str()) == Some("trait_bound") {
+                        o.get("inner").and_then(|i| i.as_object())
+                    } else {
+                        None
+                    }
+                })
+            });
+        let Some(tb) = tb else { continue };
+        let trait_node = tb.get("trait").unwrap_or(&serde_json::Value::Null);
+        let path = trait_node
+            .as_object()
+            .and_then(|t| t.get("path"))
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        if path.ends_with("Future") || path == "Future" {
+            if let Some(out) = rustdoc_future_output(trait_node, depth) {
+                return format!("BoxFuture<{out}>");
+            }
+            return "BoxFuture<()>".into();
+        }
+        // `impl Into<String>` / `impl Into<AttributeValue>` — use the target type.
+        if path.ends_with("Into") || path == "Into" {
+            let args = rustdoc_generic_type_args(trait_node, depth);
+            if let Some(t) = args.first() {
+                return t.clone();
             }
         }
-        // `impl Future<Output = T>` (sync methods returning futures, e.g. reqwest send)
-        if let Some(bounds) = obj.get("impl_trait").and_then(|v| v.as_array()) {
-            for b in bounds {
-                if let Some(tb) = b
-                    .as_object()
-                    .and_then(|o| o.get("trait_bound"))
-                    .and_then(|v| v.as_object())
-                {
-                    let path = tb
-                        .get("trait")
-                        .and_then(|t| t.as_object())
-                        .and_then(|t| t.get("path"))
-                        .and_then(|p| p.as_str())
-                        .unwrap_or("");
-                    if path.ends_with("Future") || path == "Future" {
-                        // Constraints: Output = Type
-                        if let Some(constraints) = tb
-                            .get("trait")
-                            .and_then(|t| t.as_object())
-                            .and_then(|t| t.get("args"))
-                            .and_then(|a| a.as_object())
-                            .and_then(|a| a.get("angle_bracketed"))
-                            .and_then(|a| a.as_object())
-                            .and_then(|a| a.get("constraints"))
-                            .and_then(|c| c.as_array())
-                        {
-                            for c in constraints {
-                                if let Some(binding) = c
-                                    .as_object()
-                                    .and_then(|o| o.get("binding"))
-                                    .and_then(|b| b.as_object())
-                                {
-                                    if let Some(ty) = binding
-                                        .get("equality")
-                                        .and_then(|e| e.as_object())
-                                        .and_then(|e| e.get("type"))
-                                    {
-                                        let inner = rustdoc_type_to_veil(ty);
-                                        return format!("BoxFuture<{inner}>");
-                                    }
-                                }
-                            }
-                        }
-                        return "BoxFuture<()>".into();
-                    }
-                }
+        if path.ends_with("AsRef") || path == "AsRef" {
+            let args = rustdoc_generic_type_args(trait_node, depth);
+            if args.iter().any(|a| a == "Str" || a == "str") {
+                return "Str".into();
+            }
+            if let Some(t) = args.first() {
+                return t.clone();
             }
         }
     }
-    "Str".to_string() // fallback
+    "Unknown".into()
+}
+
+fn rustdoc_future_output(trait_node: &serde_json::Value, depth: u32) -> Option<String> {
+    let angle = rustdoc_angle_bracketed(
+        trait_node
+            .as_object()
+            .and_then(|t| t.get("args"))
+            .unwrap_or(trait_node),
+    )?;
+    let constraints = angle.get("constraints")?.as_array()?;
+    for c in constraints {
+        let binding = c
+            .as_object()
+            .and_then(|o| o.get("binding"))
+            .and_then(|b| b.as_object())
+            .or_else(|| {
+                c.as_object().and_then(|o| {
+                    if o.get("kind").and_then(|k| k.as_str()) == Some("binding") {
+                        o.get("inner").and_then(|i| i.as_object())
+                    } else {
+                        None
+                    }
+                })
+            })?;
+        let name = binding.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if name != "Output" && !name.is_empty() {
+            continue;
+        }
+        if let Some(ty) = binding
+            .get("equality")
+            .and_then(|e| e.as_object())
+            .and_then(|e| e.get("type"))
+            .or_else(|| binding.get("type"))
+        {
+            return Some(rustdoc_type_to_veil_depth(ty, depth + 1));
+        }
+    }
+    None
 }
 
 // ─── Agent Connect (ACP Tunnel Bridge) ──────────────────────────────────────
