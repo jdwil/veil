@@ -38,6 +38,9 @@ If a fix reintroduces “emit `true` so it typechecks,” it is a regression.
 | **SL-011** | String-pattern `match` keeps the try-unwrap, then `.as_str()` — never `.as_str()` on `Result` | rust codegen |
 | **SL-012** | `Str + Str` / `"lit" + field` → `format!("{}{}", …)`, not Rust `+` | rust codegen |
 | **SL-013** | `pkg.Type` uses stub `rust_type_path` (`types_module` / per-struct `path`). Product stubs inherit unset policy from the system stub | rust codegen + `fill_stub_gaps_from_system` |
+| **SL-014** | `Str.now_iso8601()` / `Dt.now_iso8601()` is the current UTC instant as an ISO-8601 `Str` (`Utc::now().to_rfc3339()`). Not an unstubbed external | rust codegen + typecheck |
+| **SL-015** | Bytes-view `as_ref` in a `Str` slot (`stub → Str`, Blob/Bytes return, or enclosing `Str`) decodes utf-8. Never emit raw `&[u8]` as `String`. `Option`/`Result`/`String` `.as_ref()` is unchanged | rust codegen + typecheck |
+| **SL-016** | VEIL field reads are reusable. Non-Copy `x.field` clones; do not move a field into the first call and fail the second | rust codegen |
 
 ---
 

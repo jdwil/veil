@@ -1850,6 +1850,8 @@ fn conversion_result(recv: &Ty, method: &str) -> Option<Ty> {
         "to_str" | "as_str" | "to_string" if is_bytes_ty(recv) || is_blob_ty(recv) => {
             Some(Ty::Named("Str".into()))
         }
+        // Blob.as_ref() is a bytes view in Rust; VEIL Str context decodes utf-8.
+        "as_ref" if is_blob_ty(recv) => Some(Ty::Named("Str".into())),
         _ => None,
     }
 }
@@ -2104,12 +2106,23 @@ fn infer_call(
                 return ty;
             }
         }
-        if call.target == "Bytes" || call.target == "Str" {
+        if call.target == "Bytes"
+            || call.target == "Str"
+            || call.target == "Dt"
+            || call.target == "DateTime"
+        {
             match (call.target.as_str(), method) {
                 ("Bytes", "from_str") | ("Bytes", "new") if arg_tys.len() == 1 => {
                     return Ty::Named("Bytes".into());
                 }
                 ("Str", "from_bytes") | ("Str", "from_utf8") if arg_tys.len() == 1 => {
+                    return Ty::Named("Str".into());
+                }
+                ("Str", "now_iso8601")
+                | ("Dt", "now_iso8601")
+                | ("DateTime", "now_iso8601")
+                    if arg_tys.is_empty() =>
+                {
                     return Ty::Named("Str".into());
                 }
                 _ => {}
@@ -3760,6 +3773,49 @@ stub example-sdk 1.0.0
         assert!(
             !diags.iter().any(|d| d.code == "type_mismatch"),
             "blob.to_str() must satisfy Str: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn str_now_iso8601_is_str() {
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Clock".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "stamp!".into(),
+            span: Span::new(0, 0),
+            params: Vec::new(),
+            return_type: Some(TypeExpr::Named("Str".into())),
+        });
+        let mut ad = Construct::new(
+            "adapter",
+            "Adapter",
+            Shape::Impl,
+            "SysClock".into(),
+            Span::new(0, 0),
+        );
+        ad.target = Some("Clock".into());
+        ad.impls.push(MethodImpl {
+            method_name: "stamp".into(),
+            params: Vec::new(),
+            span: Span::new(0, 0),
+            body: vec![Expr::Return(Box::new(Expr::Call(CallExpr {
+                target: "Str".into(),
+                method: "now_iso8601".into(),
+                args: Vec::new(),
+                receiver: None,
+                sugar: None,
+                span: Span::new(0, 0),
+            })))],
+        });
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(ad),
+            ]),
+            &ddd_reg_with_stub(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "Str.now_iso8601() must be Str: {diags:?}"
         );
     }
 

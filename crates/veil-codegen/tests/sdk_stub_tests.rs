@@ -1337,3 +1337,132 @@ pkg SdkApp
         "must not drop types_module:\n{out}"
     );
 }
+
+#[test]
+fn str_now_iso8601_is_rfc3339() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port Clock
+        stamp!() -> Str
+    group infrastructure
+      adapter SysClock for Clock
+        impl stamp()
+          now = Str.now_iso8601()
+          ret now
+"#;
+    let out = generate_with_stub(AV_STUB, app);
+    assert!(
+        out.contains("Utc::now().to_rfc3339()"),
+        "Str.now_iso8601 must be chrono rfc3339:\n{}",
+        out.lines()
+            .filter(|l| l.contains("now") || l.contains("iso") || l.contains("compile_error"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("unstubbed external"),
+        "must not treat Str.now_iso8601 as an external stub:\n{out}"
+    );
+}
+
+#[test]
+fn blob_as_ref_in_str_position_decodes_utf8() {
+    let stub = r#"
+stub example-sdk 1.0.0
+types_module types
+root_types Client
+
+  struct Blob
+    path primitives
+    fn new(data: Bytes) -> Self
+    fn as_ref() -> Str
+
+  struct Client
+    fn invoke() -> InvokeFluentBuilder
+
+  struct InvokeFluentBuilder
+    fn payload(input: Blob) -> Self
+    fn send() -> Res!<InvokeOutput>
+
+  struct InvokeOutput
+    fn payload() -> Opt<Blob>
+"#;
+    let app = r#"
+pkg FnApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      port Runner
+        run!(body: Str) -> Str
+    group infrastructure
+      adapter SdkRunner for Runner
+        @field(client: example_sdk.Client)
+        impl run(body)
+          result = self.client.invoke().payload(Blob.new(body)).send!()
+          response_blob = require result.payload()
+          ret response_blob.as_ref()
+"#;
+    let out = generate_with_stub(stub, app);
+    assert!(
+        out.contains("from_utf8_lossy") && out.contains(".as_ref()"),
+        "as_ref in a Str slot must decode utf-8, not return &[u8]:\n{}",
+        out.lines()
+            .filter(|l| l.contains("as_ref") || l.contains("utf8") || l.contains("response_blob"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("return Ok(response_blob.as_ref())")
+            && !out.contains("Ok(response_blob.as_ref())"),
+        "must not emit raw Blob.as_ref() as String:\n{out}"
+    );
+}
+
+#[test]
+fn field_reuse_across_two_puts_clones() {
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_sdk
+
+  ctx Store
+    group domain
+      val Route
+        message_name: Str
+        handler_name: Str
+      port Routes
+        put!(entry: Route)
+    group infrastructure
+      adapter SdkRoutes for Routes
+        @field(client: example_sdk.Client)
+        impl put(entry)
+          self.client.put_item().item("pk", AttributeValue.S(entry.message_name)).send()
+          self.client.put_item().item("pk", AttributeValue.S(entry.message_name)).item("handler", AttributeValue.S(entry.handler_name)).send()
+          ret Ok
+"#;
+    let out = generate_with_stub(MINI_SDK_STUB, app);
+    let put_fn: String = {
+        let lines: Vec<&str> = out.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains("async fn put(") && l.contains("Route"))
+            .expect("put fn");
+        lines[start..start.saturating_add(50).min(lines.len())].join("\n")
+    };
+    assert!(
+        put_fn.contains("entry.message_name.clone()")
+            && put_fn.contains("entry.handler_name.clone()"),
+        "reused struct fields must clone (VEIL values are reusable):\n{put_fn}"
+    );
+    assert!(
+        put_fn.matches("entry.message_name.clone()").count() >= 2,
+        "both put_item uses of message_name must clone:\n{put_fn}"
+    );
+}

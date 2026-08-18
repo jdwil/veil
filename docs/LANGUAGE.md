@@ -499,7 +499,8 @@ Types are written with a compact syntax. Built-in names map to Rust:
 bytes = Bytes.from_str(s)      # or s.as_bytes()
 s     = bytes.to_str()         # or Str.from_bytes(bytes)
 blob  = Blob.new(s)            # Str or Bytes (utf-8)
-s     = blob.to_str()
+s     = blob.to_str()          # or blob.as_ref() in a Str slot (utf-8)
+now   = Str.now_iso8601()      # current UTC instant as ISO-8601 text
 ```
 
 **Opt in adapters:** `ret value` is Some; `ret null` or `ret ()` is None.

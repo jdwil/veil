@@ -424,8 +424,11 @@ pkg ddd v1
       `Blob.new(s)` accepts `Str` or `Bytes` (utf-8).
       `bytes = Bytes.from_str(s)` or `s.as_bytes()`.
       `s = blob.to_str()` / `bytes.to_str()` / `Str.from_bytes(bytes)`.
+      `blob.as_ref()` in a `Str` slot is the same utf-8 decode.
       Port `-> Str` cannot return a Blob — decode first:
       `ret (require result.payload).to_str()`.
+    - Current time as text (language, not a stub): `now = Str.now_iso8601()`.
+      That is ISO-8601 UTC. `Dt.now()` is a `DateTime`, not a `Str`.
     - Opt returns from adapters:
       `ret value` is Some. `ret null` or `ret ()` is None.
       `if item.is_some` / `item.is_some()` is Bool.

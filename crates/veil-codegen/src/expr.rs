@@ -869,6 +869,111 @@ fn rust_ty_is_numeric(ty: &str) -> bool {
     )
 }
 
+fn rust_ty_is_copy(ty: &str) -> bool {
+    matches!(
+        ty.trim(),
+        "i64" | "i32" | "i16" | "i8"
+            | "u64" | "u32" | "u16" | "u8"
+            | "usize" | "isize"
+            | "f64" | "f32"
+            | "bool"
+            | "Int" | "F64" | "Bool"
+    )
+}
+
+fn rust_success_is_str(ty: &str) -> bool {
+    if is_str_like_return(ty) {
+        return true;
+    }
+    let t = ty.trim();
+    if let Some(inner) = t.strip_prefix("Result<") {
+        let success = inner
+            .rsplit_once(',')
+            .map(|(a, _)| a.trim())
+            .unwrap_or(inner);
+        return is_str_like_return(success)
+            || success == "Option<String>"
+            || success == "Option<Str>";
+    }
+    false
+}
+
+fn rust_ty_is_option_or_result(ty: &str) -> bool {
+    let t = ty.trim();
+    t.starts_with("Option<")
+        || t.starts_with("Opt<")
+        || t.starts_with("Result<")
+        || t.starts_with("Res!")
+}
+
+fn rust_ty_is_bytes_like(ty: &str) -> bool {
+    let leaf = lang_type_leaf(ty);
+    leaf == "Blob"
+        || leaf == "Bytes"
+        || ty == "Vec<u8>"
+        || ty.ends_with("::Blob")
+        || ty.contains("Blob")
+}
+
+/// VEIL values are reusable. A field read is a copy of the field, not a move.
+fn field_access_is_copy(base: &Expr, field: &str, ctx: &GenCtx) -> bool {
+    let base_ty = match base {
+        Expr::Ident(n) => ctx.local_type(n).map(|s| s.to_string()),
+        _ => infer_expr_type(base, ctx),
+    };
+    let Some(base_ty) = base_ty else {
+        return false;
+    };
+    let peeled = peel_option_rust(&base_ty).unwrap_or(base_ty.as_str());
+    let leaf = lang_type_leaf(peeled);
+    for key in [peeled, leaf] {
+        if let Some(ft) = ctx
+            .field_type(key, field)
+            .or_else(|| ctx.field_type(key, &to_snake(field)))
+        {
+            return rust_ty_is_copy(ft);
+        }
+    }
+    false
+}
+
+fn recv_rust_type(recv: &Expr, ctx: &GenCtx) -> Option<String> {
+    match recv {
+        Expr::Ident(n) => ctx.local_type(n).map(|s| s.to_string()),
+        _ => infer_expr_type(recv, ctx),
+    }
+}
+
+/// `as_ref` / bytes view used where VEIL wants `Str` → utf-8 decode.
+/// Never rewrite `Option`/`Result`/`String` `.as_ref()`.
+fn should_decode_as_ref_to_str(recv: &Expr, ctx: &GenCtx) -> bool {
+    let recv_ty = recv_rust_type(recv, ctx);
+    if let Some(ty) = recv_ty.as_deref() {
+        if rust_ty_is_option_or_result(ty) || rust_ty_is_stringish(ty) {
+            return false;
+        }
+        if should_own_str_result(ctx, Some(ty), "as_ref") || rust_ty_is_bytes_like(ty) {
+            return true;
+        }
+    }
+    if ctx
+        .expected_return_rust
+        .as_deref()
+        .is_some_and(rust_success_is_str)
+    {
+        return true;
+    }
+    ctx.method_returns.iter().any(|((ty, method), ret)| {
+        method_bare(method) == "as_ref"
+            && is_str_like_return(ret)
+            && !rust_ty_is_option_or_result(ty)
+    })
+}
+
+fn now_iso8601_rust() -> String {
+    "Utc::now().to_rfc3339()".to_string()
+}
+
 fn expr_is_stringish(expr: &Expr, rust: &str, ctx: &GenCtx) -> bool {
     match expr {
         Expr::StringLit(_) => true,
@@ -1266,7 +1371,13 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // Without type info at codegen time we emit direct field access which
             // only works for structs. May need if-let destructuring when type info
             // is available.
-            format!("{}.{}", base_str, to_snake(field))
+            // VEIL field reads are reusable (not Rust moves). Clone non-Copy fields.
+            let rust = format!("{}.{}", base_str, to_snake(field));
+            if rust.ends_with(".clone()") || field_access_is_copy(base, field, ctx) {
+                rust
+            } else {
+                format!("{rust}.clone()")
+            }
         }
         Expr::Call(call) => translate_call(call, ctx),
         Expr::BinaryOp(op) => {
@@ -2978,6 +3089,11 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!("String::from_utf8_lossy({recv_str}.as_ref()).to_string()");
             }
         }
+        // Stub/`Str` as_ref is a bytes view in Rust (`&[u8]`). Honor VEIL Str.
+        if matches!(bare_conv, "as_ref") && call.args.is_empty() && should_decode_as_ref_to_str(recv, ctx)
+        {
+            return format!("String::from_utf8_lossy({recv_str}.as_ref()).to_string()");
+        }
         if matches!(bare_conv, "as_bytes" | "to_bytes" | "into_bytes") && call.args.is_empty() {
             return format!("{recv_str}.as_ref().to_vec()");
         }
@@ -3217,7 +3333,7 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
     // they are calling methods on data, not cross-boundary invocations.
     let is_lang_target = matches!(
         call.target.as_str(),
-        "Dt" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "UUID"
+        "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "UUID"
     );
     let is_typed_local = ctx.is_local(&call.target) && ctx.local_type(&call.target).is_some();
     if ctx.envelope_routing && !is_lang_target && !is_typed_local
@@ -3243,6 +3359,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             ("Id", "new") | ("Id", "new_v4") | ("UUID", "new") | ("UUID", "new_v4") | ("Uuid", "new")
                 => Some("Uuid::new_v4()".to_string()),
             ("Dt", "now") => Some("Utc::now()".to_string()),
+            ("Str", "now_iso8601") | ("Dt", "now_iso8601") | ("DateTime", "now_iso8601")
+                => Some(now_iso8601_rust()),
             ("Json", "parse") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
                 Some(format!("serde_json::from_str::<_>(&{})?", arg))
@@ -3269,13 +3387,18 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         let lang_leaf = lang_type_leaf(&call.target);
         let is_lang_primitive = matches!(
             lang_leaf,
-            "Dt" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Process"
+            "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Process"
                 | "Blob" | "Bytes"
         );
         if is_lang_primitive || !ctx.is_struct_target(&call.target) {
             let method_key = call.method.trim_end_matches(['!', '?']);
             let translated = match (lang_leaf, method_key) {
                 ("Dt", "now") => Some("Utc::now()".to_string()),
+                ("Str", "now_iso8601") | ("Dt", "now_iso8601") | ("DateTime", "now_iso8601")
+                    if call.args.is_empty() =>
+                {
+                    Some(now_iso8601_rust())
+                }
                 ("Uuid", "new_v4") | ("Id", "new_v4") => Some("Uuid::new_v4()".to_string()),
                 ("Map", "new") => Some("HashMap::new()".to_string()),
                 ("List", "new") => Some("Vec::new()".to_string()),
@@ -3831,6 +3954,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         {
             let ty = ctx.local_type(&call.target).unwrap_or("");
             if ty != "String" {
+                return format!(
+                    "String::from_utf8_lossy({}.as_ref()).to_string()",
+                    call.target
+                );
+            }
+        }
+        if call.args.is_empty() && method_bare(&call.method) == "as_ref" {
+            let recv_ident = Expr::Ident(call.target.clone());
+            if should_decode_as_ref_to_str(&recv_ident, ctx) {
                 return format!(
                     "String::from_utf8_lossy({}.as_ref()).to_string()",
                     call.target
@@ -5236,6 +5368,16 @@ fn field_type_default_expr(rust_ty: &str, field_name: &str) -> String {
 fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
     match expr {
         Expr::Call(call) => {
+            if call.receiver.is_none() && call.args.is_empty() {
+                let leaf = lang_type_leaf(&call.target);
+                let method = method_bare(&call.method);
+                if matches!(
+                    (leaf, method),
+                    ("Str", "now_iso8601") | ("Dt", "now_iso8601") | ("DateTime", "now_iso8601")
+                ) {
+                    return Some("String".to_string());
+                }
+            }
             // Envelope routing: cross-boundary calls yield `serde_json::Value`
             // (unless the target is a direct trait dep).
             if ctx.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target) {
@@ -5383,6 +5525,31 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
         }
         Expr::StructLit(name, _) => Some(name.clone()),
         Expr::Ident(name) => ctx.local_type(name).map(|s| s.to_string()),
+        Expr::FieldAccess(base, field) => {
+            if let Expr::Ident(n) = base.as_ref() {
+                if n == "self" {
+                    if let Some(ty) = ctx
+                        .self_field_types
+                        .get(field)
+                        .or_else(|| ctx.self_field_types.get(&to_snake(field)))
+                    {
+                        return Some(ty.clone());
+                    }
+                }
+                if let Some(base_ty) = ctx.local_type(n) {
+                    let leaf = lang_type_leaf(base_ty);
+                    if let Some(ft) = ctx
+                        .field_type(base_ty, field)
+                        .or_else(|| ctx.field_type(base_ty, &to_snake(field)))
+                        .or_else(|| ctx.field_type(leaf, field))
+                        .or_else(|| ctx.field_type(leaf, &to_snake(field)))
+                    {
+                        return Some(ft.to_string());
+                    }
+                }
+            }
+            None
+        }
         Expr::IntLit(_) => Some("i64".to_string()),
         Expr::FloatLit(_) => Some("f64".to_string()),
         Expr::BoolLit(_) => Some("bool".to_string()),
@@ -5390,14 +5557,9 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
         // Layer actions (invoke, request, etc.) return serde_json::Value
         Expr::Action(_) => Some("serde_json::Value".to_string()),
         Expr::Require(inner) => infer_expr_type(inner, ctx).map(|t| {
-            if let Some(inner) = t
-                .strip_prefix("Option<")
-                .and_then(|s| s.strip_suffix('>'))
-            {
-                inner.to_string()
-            } else {
-                t
-            }
+            peel_option_rust(&t)
+                .map(|s| s.to_string())
+                .unwrap_or(t)
         }),
         _ => None,
     }
