@@ -329,6 +329,9 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         // ── Migrated: calls ──────────────────────────────────────────────
         Expr::Call(call) => lower_call(call, ctx),
 
+        // ── Migrated: closures ───────────────────────────────────────────
+        Expr::Closure { params, body } => lower_closure(params, body, ctx),
+
         // ── Everything else: fallback to old path ────────────────────────
         _ => RustExpr::Raw {
             text: expr_to_rust(expr, ctx),
@@ -711,6 +714,9 @@ fn infer_call_type(call: &veil_ir::ast::CallExpr, rendered: &str, ctx: &GenCtx) 
             }
         }
     }
+    // TRANSITION DEBT: remove when translate_call is fully migrated to structured
+    // RustExpr (currently ~1500 lines of string-based call rendering still produce
+    // Raw text with no type metadata; this heuristic fills the gap).
     // Heuristic from rendered text: async fallible calls return Result-ish
     if rendered.ends_with(".await?") || rendered.ends_with(")?") {
         // Can't determine inner type precisely — mark as a generic Result
@@ -797,6 +803,10 @@ fn is_already_owned(expr: &RustExpr) -> bool {
 
 /// Whether a raw text expression represents a call result (owned value).
 ///
+/// TRANSITION DEBT: remove when translate_call is fully migrated to structured
+/// RustExpr — at that point all calls will be MethodCall/FnCall variants and
+/// `is_already_owned` handles those structurally.
+///
 /// Heuristic: contains `(` and ends with one of:
 /// - `)` — plain function/method call
 /// - `)?` — fallible call
@@ -873,6 +883,232 @@ fn should_clone_ident_ir(name: &str, ctx: &GenCtx) -> bool {
     }
     // Unknown count → clone (safe). Count of 1 → last/only use → move.
     ctx.ident_uses.get(name).copied().unwrap_or(2) > 1
+}
+
+// ─── Closure try-suppression ─────────────────────────────────────────────────
+
+/// Structurally transform a `RustExpr` tree to suppress `?` / `map_err(...)?`
+/// inside closure bodies. Closures don't return `Result`, so the try operator
+/// is invalid — replace with `.unwrap()`.
+///
+/// Transforms:
+/// - `Try(inner)` → `MethodCall { receiver: inner, method: "unwrap", ... }`
+/// - `MapErr { inner, .. }` → `MethodCall { receiver: inner, method: "unwrap", ... }`
+/// - `MethodCall { is_fallible: true, .. }` → same with `is_fallible: false` + `.unwrap()`
+/// - `Raw { text }` → text-level fixup (fallback for unmigrated paths)
+///
+/// This is a recursive traversal — it walks the entire expression tree.
+pub fn suppress_try_in_closure(expr: RustExpr) -> RustExpr {
+    match expr {
+        // Direct ? operator → .unwrap()
+        RustExpr::Try(inner) => {
+            let inner = suppress_try_in_closure(*inner);
+            RustExpr::MethodCall {
+                receiver: Box::new(inner),
+                method: "unwrap".to_string(),
+                args: vec![],
+                ty: None,
+                is_async: false,
+                is_fallible: false,
+            }
+        }
+        // .map_err(...)? → .unwrap()  (drop the error mapping entirely)
+        RustExpr::MapErr { inner, .. } => {
+            let inner = suppress_try_in_closure(*inner);
+            RustExpr::MethodCall {
+                receiver: Box::new(inner),
+                method: "unwrap".to_string(),
+                args: vec![],
+                ty: None,
+                is_async: false,
+                is_fallible: false,
+            }
+        }
+        // Fallible method call → call .unwrap() on the result
+        RustExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ty,
+            is_async,
+            is_fallible: true,
+        } => {
+            let inner = RustExpr::MethodCall {
+                receiver: Box::new(suppress_try_in_closure(*receiver)),
+                method,
+                args: args.into_iter().map(suppress_try_in_closure).collect(),
+                ty: ty.clone(),
+                is_async,
+                is_fallible: false,
+            };
+            RustExpr::MethodCall {
+                receiver: Box::new(inner),
+                method: "unwrap".to_string(),
+                args: vec![],
+                ty,
+                is_async: false,
+                is_fallible: false,
+            }
+        }
+        // Raw text: apply string-level fixup as fallback for unmigrated paths
+        RustExpr::Raw { text, ty } => {
+            let text = fixup_closure_raw(&text);
+            RustExpr::Raw { text, ty }
+        }
+        // Recurse into compound expressions
+        RustExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ty,
+            is_async,
+            is_fallible,
+        } => RustExpr::MethodCall {
+            receiver: Box::new(suppress_try_in_closure(*receiver)),
+            method,
+            args: args.into_iter().map(suppress_try_in_closure).collect(),
+            ty,
+            is_async,
+            is_fallible,
+        },
+        RustExpr::FnCall { path, args, ty } => RustExpr::FnCall {
+            path,
+            args: args.into_iter().map(suppress_try_in_closure).collect(),
+            ty,
+        },
+        RustExpr::Clone(inner) => {
+            RustExpr::Clone(Box::new(suppress_try_in_closure(*inner)))
+        }
+        RustExpr::Borrow { inner, mutable } => RustExpr::Borrow {
+            inner: Box::new(suppress_try_in_closure(*inner)),
+            mutable,
+        },
+        RustExpr::Await(inner) => {
+            RustExpr::Await(Box::new(suppress_try_in_closure(*inner)))
+        }
+        RustExpr::Block { stmts, value } => RustExpr::Block {
+            stmts: stmts.into_iter().map(suppress_try_in_closure).collect(),
+            value: value.map(|v| Box::new(suppress_try_in_closure(*v))),
+        },
+        RustExpr::If {
+            condition,
+            then_body,
+            else_body,
+        } => RustExpr::If {
+            condition: Box::new(suppress_try_in_closure(*condition)),
+            then_body: Box::new(suppress_try_in_closure(*then_body)),
+            else_body: else_body.map(|e| Box::new(suppress_try_in_closure(*e))),
+        },
+        RustExpr::Format { template, args } => RustExpr::Format {
+            template,
+            args: args.into_iter().map(suppress_try_in_closure).collect(),
+        },
+        RustExpr::FieldAccess { base, field, ty } => RustExpr::FieldAccess {
+            base: Box::new(suppress_try_in_closure(*base)),
+            field,
+            ty,
+        },
+        RustExpr::Let {
+            name,
+            mutable,
+            ty,
+            value,
+        } => RustExpr::Let {
+            name,
+            mutable,
+            ty,
+            value: Box::new(suppress_try_in_closure(*value)),
+        },
+        RustExpr::Match { scrutinee, arms } => RustExpr::Match {
+            scrutinee: Box::new(suppress_try_in_closure(*scrutinee)),
+            arms: arms
+                .into_iter()
+                .map(|(pat, body)| (pat, suppress_try_in_closure(body)))
+                .collect(),
+        },
+        // Leaves: no recursion needed
+        RustExpr::Ident { .. }
+        | RustExpr::StringLit(_)
+        | RustExpr::IntLit(_)
+        | RustExpr::FloatLit(_)
+        | RustExpr::BoolLit(_) => expr,
+    }
+}
+
+/// String-level fixup for Raw nodes inside closures. Equivalent to the old
+/// `fixup_closure_body` + `fixup_question` lambdas in translate.rs.
+fn fixup_closure_raw(s: &str) -> String {
+    let mut s = s
+        .replace(
+            ".map_err(|e| DomainError::External(format!(\"{:?}\", e)))?",
+            ".unwrap()",
+        )
+        .replace(
+            ".map_err(|e| DomainError::External(format!(\"{e:?}\")))?",
+            ".unwrap()",
+        )
+        .replace(
+            ".map_err(|e| DomainError::External(e.to_string()))?",
+            ".unwrap()",
+        );
+    // Replace trailing `)?` with `).unwrap()`
+    while let Some(pos) = s.find(")?") {
+        let after = if pos + 2 < s.len() {
+            &s[pos + 2..pos + 3]
+        } else {
+            ""
+        };
+        if after.is_empty()
+            || after == ")"
+            || after == "."
+            || after == ","
+            || after == ";"
+            || after == " "
+        {
+            s = format!("{}).unwrap(){}", &s[..pos], &s[pos + 2..]);
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+/// Lower `Expr::Closure` to a structured `RustExpr`, applying try-suppression
+/// on body expressions so that `?` and `.map_err(...)` become `.unwrap()`.
+fn lower_closure(params: &[String], body: &[Expr], ctx: &GenCtx) -> RustExpr {
+    // Create a closure-scoped context with params as locals
+    let mut closure_ctx = ctx.clone_for_inference();
+    for param in params {
+        closure_ctx.locals.insert(param.clone());
+    }
+
+    // Lower and suppress-try each body expression
+    let body_exprs: Vec<RustExpr> = body
+        .iter()
+        .map(|e| {
+            let lowered = lower_to_rust(e, &closure_ctx);
+            suppress_try_in_closure(lowered)
+        })
+        .collect();
+
+    let p = params.join(", ");
+    if body_exprs.len() == 1 {
+        let body_str = emit(&body_exprs[0]);
+        RustExpr::Raw {
+            text: format!("|{}| {}", p, body_str),
+            ty: None,
+        }
+    } else {
+        let stmts = body_exprs
+            .iter()
+            .map(|e| format!("    {};", emit(e)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        RustExpr::Raw {
+            text: format!("|{}| {{\n{}\n}}", p, stmts),
+            ty: None,
+        }
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -1286,5 +1522,96 @@ mod tests {
         };
         let result = apply_ownership(expr, &ctx);
         assert_eq!(emit(&result), "data.clone()");
+    }
+
+    // ─── suppress_try_in_closure tests ───────────────────────────────
+
+    #[test]
+    fn suppress_try_converts_try_to_unwrap() {
+        let expr = RustExpr::Try(Box::new(RustExpr::Ident {
+            name: "result".to_string(),
+            ty: None,
+        }));
+        let result = suppress_try_in_closure(expr);
+        assert_eq!(emit(&result), "result.unwrap()");
+    }
+
+    #[test]
+    fn suppress_try_converts_map_err_to_unwrap() {
+        let expr = RustExpr::MapErr {
+            inner: Box::new(RustExpr::MethodCall {
+                receiver: Box::new(RustExpr::Ident {
+                    name: "serde_json".to_string(),
+                    ty: None,
+                }),
+                method: "from_str".to_string(),
+                args: vec![RustExpr::Ident {
+                    name: "s".to_string(),
+                    ty: None,
+                }],
+                ty: None,
+                is_async: false,
+                is_fallible: false,
+            }),
+            variant: "DomainError::External".to_string(),
+        };
+        let result = suppress_try_in_closure(expr);
+        assert_eq!(emit(&result), "serde_json.from_str(s).unwrap()");
+    }
+
+    #[test]
+    fn suppress_try_converts_fallible_method_call() {
+        let expr = RustExpr::MethodCall {
+            receiver: Box::new(RustExpr::Ident {
+                name: "repo".to_string(),
+                ty: None,
+            }),
+            method: "save".to_string(),
+            args: vec![],
+            ty: None,
+            is_async: true,
+            is_fallible: true,
+        };
+        let result = suppress_try_in_closure(expr);
+        // save().await? → save().await.unwrap()
+        assert_eq!(emit(&result), "repo.save().await.unwrap()");
+    }
+
+    #[test]
+    fn suppress_try_raw_fixup_map_err() {
+        let expr = RustExpr::Raw {
+            text: "serde_json::from_str(&s).map_err(|e| DomainError::External(format!(\"{e:?}\")))?".to_string(),
+            ty: None,
+        };
+        let result = suppress_try_in_closure(expr);
+        assert_eq!(emit(&result), "serde_json::from_str(&s).unwrap()");
+    }
+
+    #[test]
+    fn suppress_try_raw_fixup_question_mark() {
+        // `)?` pattern: parenthesized expr followed by `?`
+        let expr = RustExpr::Raw {
+            text: "serde_json::from_str(&s)?".to_string(),
+            ty: None,
+        };
+        let result = suppress_try_in_closure(expr);
+        assert_eq!(emit(&result), "serde_json::from_str(&s).unwrap()");
+    }
+
+    #[test]
+    fn suppress_try_leaves_non_fallible_unchanged() {
+        let expr = RustExpr::MethodCall {
+            receiver: Box::new(RustExpr::Ident {
+                name: "items".to_string(),
+                ty: None,
+            }),
+            method: "len".to_string(),
+            args: vec![],
+            ty: Some(RustType::Named("usize".to_string())),
+            is_async: false,
+            is_fallible: false,
+        };
+        let result = suppress_try_in_closure(expr);
+        assert_eq!(emit(&result), "items.len()");
     }
 }

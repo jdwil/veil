@@ -34,4 +34,4 @@ pub use actions::*;
 pub use patterns::*;
 pub use analysis::*;
 pub use inference::*;
-pub use rust_ir::{RustExpr, RustType, emit, lower_to_rust, apply_ownership};
+pub use rust_ir::{RustExpr, RustType, emit, lower_to_rust, apply_ownership, suppress_try_in_closure};

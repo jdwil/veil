@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use veil_ir::ast::*;
 use veil_ir::layer::Shape;
 use crate::rust::to_snake;
@@ -981,52 +980,11 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 format!("format!(\"{}\", {})", fmt, args.join(", "))
             }
         }
-        Expr::Closure { params, body } => {
-            let p = params.join(", ");
-            // Closure bodies don't return Result, so `?` operator isn't valid.
-            // Replace `?` with `.unwrap()` for fallible expressions inside closures.
-            let fixup_closure_body = |s: String| -> String {
-                s.replace(".map_err(|e| DomainError::External(format!(\"{:?}\", e)))?", ".unwrap()")
-                 .replace(".map_err(|e| DomainError::External(format!(\"{e:?}\")))?", ".unwrap()")
-                 .replace(".map_err(|e| DomainError::External(e.to_string()))?", ".unwrap()")
-            };
-            // Replace trailing `?` from serde/other fallible calls with `.unwrap()`
-            let fixup_question = |mut s: String| -> String {
-                // Pattern: `expr)?` → `expr).unwrap()`
-                while let Some(pos) = s.find(")?") {
-                    // Only replace if not inside a larger pattern (e.g. `.map_err(...)? `)
-                    let after = if pos + 2 < s.len() { &s[pos+2..pos+3] } else { "" };
-                    if after.is_empty() || after == ")" || after == "." || after == "," || after == ";" || after == " " {
-                        s = format!("{}).unwrap(){}", &s[..pos], &s[pos+2..]);
-                    } else {
-                        break;
-                    }
-                }
-                s
-            };
-            // Clone ctx and add closure params as locals so that calls on
-            // them (e.g. `item.field()`) resolve as method calls, not external-
-            // effect hooks.
-            let mut closure_ctx = ctx.clone_for_inference();
-            for param in params {
-                closure_ctx.locals.insert(param.clone());
-            }
-            if body.len() == 1 {
-                let body_str = expr_to_rust(&body[0], &closure_ctx);
-                let body_str = fixup_closure_body(body_str);
-                let body_str = fixup_question(body_str);
-                format!("|{}| {}", p, body_str)
-            } else {
-                let stmts = body.iter()
-                    .map(|e| {
-                        let s = expr_to_rust(e, &closure_ctx);
-                        let s = fixup_closure_body(s);
-                        let s = fixup_question(s);
-                        format!("    {};", s)
-                    })
-                    .collect::<Vec<_>>().join("\n");
-                format!("|{}| {{\n{}\n}}", p, stmts)
-            }
+        Expr::Closure { .. } => {
+            // Delegate to the structured IR path which applies
+            // suppress_try_in_closure for ? → .unwrap() conversion.
+            use super::rust_ir::{emit, lower_to_rust};
+            emit(&lower_to_rust(expr, ctx))
         }
         // Expanded by adapt merge before codegen — should never remain.
         Expr::Stock => {
