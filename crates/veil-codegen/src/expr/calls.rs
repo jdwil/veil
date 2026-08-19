@@ -724,7 +724,7 @@ fn arg_looks_optional(arg: &Expr, rust: &str, ctx: &GenCtx) -> bool {
         }
 }
 
-fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
+pub(super) fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
     let mut rust = if let (Some(ty), Expr::StructLit(name, fields)) = (param_ty, arg) {
         if name.is_empty() && is_hashmap_param(ty) {
             map_literal_to_hashmap(fields, ctx)

@@ -2145,6 +2145,108 @@ fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
 ///
 /// The key win: async/fallible suffixes become structural composition
 /// (`RustExpr::Await`, `RustExpr::Try`) instead of string appending.
+
+/// Lower non-routing port/trait calls to structural MethodCall nodes.
+///
+/// Handles calls of the form `PortName.method(args)` where `PortName` is a trait
+/// target that is NOT a routing trait (routing is handled by lower_call_bus_routing).
+/// These produce: `deps.<field>.method(args).await?` or `.await` depending on
+/// the method's return type.
+fn lower_call_port(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
+    use super::calls::param_types_for;
+
+    // Only handle trait-shaped targets that are NOT routing traits
+    if !ctx.is_trait_target(&call.target) {
+        return None;
+    }
+    if ctx.routing_traits.contains(&call.target) {
+        return None;
+    }
+    // Sugar calls go through bus routing
+    if call.sugar.is_some() {
+        return None;
+    }
+
+    let dep_name = ctx.deps_field_for(&call.target);
+    let method = if call.method.is_empty() { "call" } else { &call.method };
+    let method_key = method.trim_end_matches(['!', '?']);
+
+    // Determine args (using the same logic as translate_call)
+    let param_tys = param_types_for(Some(call.target.as_str()), method_key, ctx);
+    let args_str = call.args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let expected = param_tys.get(i).map(|s| s.as_str());
+            let s = super::calls::arg_to_rust(a, expected, ctx);
+            match a {
+                Expr::Ident(name) if ctx.local_type(name) == Some("serde_json::Value") => {
+                    format!("{}.clone()", name)
+                }
+                Expr::Ident(name)
+                    if ctx.local_type(name)
+                        .map(|t| t.starts_with("Option<"))
+                        .unwrap_or(false) =>
+                {
+                    let expects_opt = expected
+                        .map(|t| t.starts_with("Option<") || t.starts_with("Opt<"))
+                        .unwrap_or(false);
+                    if expects_opt {
+                        format!("{}.clone()", name)
+                    } else {
+                        format!("{}.clone().ok_or({})?", name, ctx.error_model.not_found_path())
+                    }
+                }
+                _ => s,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Determine fallibility
+    let has_bang = method.ends_with('!');
+    let ret_type = ctx.return_type_of(&call.target, method)
+        .or_else(|| {
+            ctx.dep_fields.iter()
+                .find(|(_, v)| *v == &call.target)
+                .and_then(|(trait_name, _)| ctx.return_type_of(trait_name, method))
+        });
+    let is_fallible = if has_bang {
+        true
+    } else {
+        match ret_type {
+            Some("bool") | Some("Bool") | Some("i64") | Some("f64")
+            | Some("String") | Some("()") | Some("") => false,
+            Some(t) if t.starts_with("Option<") || t.starts_with("Opt<") => false,
+            _ => true,
+        }
+    };
+
+    // Build receiver: deps.<field> or self.<field>
+    let prefix = if ctx.in_method && ctx.self_fields.contains(&dep_name) {
+        format!("self.{}", dep_name)
+    } else {
+        format!("deps.{}", dep_name)
+    };
+
+    let args_ir = if args_str.is_empty() {
+        vec![]
+    } else {
+        vec![RustExpr::Raw { text: args_str, ty: None }]
+    };
+
+    let ty = infer_call_type(call, ctx);
+
+    Some(RustExpr::MethodCall {
+        receiver: Box::new(RustExpr::Ident { name: prefix, ty: None }),
+        method: to_snake(method_key),
+        args: args_ir,
+        ty,
+        is_async: true,
+        is_fallible,
+    })
+}
+
 fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
     // Try structured bus routing first
     if let Some(expr) = lower_call_bus_routing(call, ctx) {
@@ -2153,6 +2255,11 @@ fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
 
     // Try builder chain lowering (chained receiver method calls with async/fallible terminal)
     if let Some(expr) = lower_call_builder_chain(call, ctx) {
+        return expr;
+    }
+
+    // Try structured port/trait calls (non-routing, non-sugar)
+    if let Some(expr) = lower_call_port(call, ctx) {
         return expr;
     }
 
