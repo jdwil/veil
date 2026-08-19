@@ -1446,10 +1446,14 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     // Inside a method body: resolve self fields and enum variants.
     if ctx.in_method && !ctx.locals.contains(name) {
         if let Some(rf) = resolve_self_field_name(ctx, name) {
-            if rf == "pool" {
-                return RustExpr::Raw {
-                    text: "&self.pool".to_string(),
-                    ty: None,
+            if ctx.borrow_fields.contains(rf.as_str()) {
+                return RustExpr::Borrow {
+                    inner: Box::new(RustExpr::FieldAccess {
+                        base: Box::new(RustExpr::Ident { name: "self".to_string(), ty: None }),
+                        field: rf,
+                        ty: None,
+                    }),
+                    mutable: false,
                 };
             }
             // self.field.clone() — produces a clone of the field access
@@ -1528,10 +1532,14 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     if let Expr::Ident(name) = base
         && name == "self" && ctx.in_method {
             let f = resolve_self_field_name(ctx, field).unwrap_or_else(|| to_snake(field));
-            if f == "pool" {
-                return RustExpr::Raw {
-                    text: "&self.pool".to_string(),
-                    ty: None,
+            if ctx.borrow_fields.contains(f.as_str()) {
+                return RustExpr::Borrow {
+                    inner: Box::new(RustExpr::FieldAccess {
+                        base: Box::new(RustExpr::Ident { name: "self".to_string(), ty: None }),
+                        field: f,
+                        ty: None,
+                    }),
+                    mutable: false,
                 };
             }
             if ctx.self_fields.contains(field)
