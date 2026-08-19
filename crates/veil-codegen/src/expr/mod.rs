@@ -8,7 +8,8 @@
 //!
 //! - `context` — GenCtx struct and solution-level context building
 //! - `types` — type helpers, copy/clone analysis, string/numeric predicates
-//! - `translate` — main `expr_to_rust` dispatch + format-string/ternary helpers
+//! - `translate` — `expr_to_rust` entry point (thin IR wrapper) + fstring helpers
+//! - `rust_ir` — typed IR (`RustExpr`), `lower_to_rust`, `emit`, `apply_ownership`
 //! - `calls` — method/function call translation (receiver dispatch, args, bus)
 //! - `actions` — layer statement/action translation, guard emission
 //! - `patterns` — pattern translation, block emission, indentation

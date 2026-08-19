@@ -1251,17 +1251,19 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
         };
     }
     // Edge case: inline ternary with nested f-strings from parse_fstring_parts.
-    // Not a proper ident — fall through to old path.
+    // Not a proper ident — handled directly here.
     if name.contains(" then ") && (name.contains("f\"") || name.contains("f'")) {
         return RustExpr::Raw {
-            text: expr_to_rust(expr, ctx),
+            text: super::translate::translate_inline_ternary_fstring(name),
             ty: None,
         };
     }
     // Edge case: unwrap_or rewrite from fstring parsing.
     if name.contains(".unwrap_or(\"") && name.ends_with("\")") {
+        let converted = name.replace(".unwrap_or(\"", ".unwrap_or(\"")
+            .replacen("\")", "\".to_string())", 1);
         return RustExpr::Raw {
-            text: expr_to_rust(expr, ctx),
+            text: converted,
             ty: None,
         };
     }
