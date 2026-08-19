@@ -92,9 +92,9 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
             }
             if ctx.fallible_methods.contains(method) {
                 let suffix = if should_own_str_result(ctx, Some(ty.as_str()), method) {
-                    map_err_domain_own_str()
+                    map_err_domain_own_str(&ctx.error_model)
                 } else {
-                    map_err_domain()
+                    map_err_domain(&ctx.error_model)
                 };
                 // Only apply fallible suffix if this specific type has the method as fallible.
                 // Use type_fallible_methods: (Type, method) set for precision.
@@ -169,15 +169,15 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     if ctx.fallible_methods.contains(method) && !recv_is_chain && !is_ambiguous {
         let own = should_own_str_result(ctx, recv_type_name.as_deref(), method);
         return if own {
-            map_err_domain_own_str()
+            map_err_domain_own_str(&ctx.error_model)
         } else {
-            map_err_domain()
+            map_err_domain(&ctx.error_model)
         }
         .to_string();
     }
     // Terminal builder `.build!()` is fallible (BuildError) even on chains.
     if has_bang && method == "build" {
-        return map_err_domain().to_string();
+        return map_err_domain(&ctx.error_model).to_string();
     }
     // Fallback: if the method has a bang (!) and nothing else matched,
     // treat it as an async fallible call (common for SDK methods like collect!,
@@ -755,7 +755,7 @@ pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
                 // target param expects a concrete type.
                 if param_ty.is_some_and(|t| !is_json_type_name(t) && t != "()" && !t.is_empty()) {
                     let ty = param_ty.unwrap();
-                    format!("serde_json::from_value::<{ty}>(state[\"{n}\"].clone()).map_err(|e| DomainError::External(e.to_string()))?")
+                    format!("serde_json::from_value::<{ty}>(state[\"{n}\"].clone()).map_err(|e| {}(e.to_string()))?", ctx.error_model.external_path())
                 } else {
                     format!("state[\"{n}\"].clone()")
                 }
@@ -791,7 +791,7 @@ pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
         if !is_json_type_name(ty) && ty != "()" && !ty.is_empty()
             && rust.starts_with("state[\"") && !rust.contains("from_value")
         {
-            rust = format!("serde_json::from_value::<{ty}>({rust}.clone()).map_err(|e| DomainError::External(e.to_string()))?");
+            rust = format!("serde_json::from_value::<{ty}>({rust}.clone()).map_err(|e| {}(e.to_string()))?", ctx.error_model.external_path());
         }
     }
     rust
@@ -1010,12 +1010,12 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if call.args.is_empty() && method_bare(&call.method) == "as_n" {
             return format!(
                 "{recv_str}.as_n(){}{}",
-                map_err_domain_own_str(),
-                parse_i64_suffix()
+                map_err_domain_own_str(&ctx.error_model),
+                parse_i64_suffix(&ctx.error_model)
             );
         }
         if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
-            return format!("{recv_str}{}", parse_i64_suffix());
+            return format!("{recv_str}{}", parse_i64_suffix(&ctx.error_model));
         }
         if call.args.is_empty() && method_bare(&call.method) == "parse_json" {
             return format!("serde_json::from_str::<serde_json::Value>(&{recv_str})?");
@@ -1024,7 +1024,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             let recv_ty = infer_expr_type(recv, ctx);
             if should_own_str_result(ctx, recv_ty.as_deref(), &call.method) {
                 let m = method_bare(&call.method);
-                return format!("{recv_str}.{m}(){}", map_err_domain_own_str());
+                return format!("{recv_str}.{m}(){}", map_err_domain_own_str(&ctx.error_model));
             }
         }
         // A trait method invoked on a chained receiver is async + fallible.
@@ -1750,7 +1750,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!(
                     "self.{}{}",
                     to_snake(field),
-                    parse_i64_suffix()
+                    parse_i64_suffix(&ctx.error_model)
                 );
             }
             if call.args.is_empty() && method_bare(&call.method) == "parse_json" {
@@ -1884,7 +1884,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             }
         }
         if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
-            return format!("{}{}", call.target, parse_i64_suffix());
+            return format!("{}{}", call.target, parse_i64_suffix(&ctx.error_model));
         }
         if call.args.is_empty() && method_bare(&call.method) == "parse_json" {
             return format!(
@@ -1896,8 +1896,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             return format!(
                 "{}.as_n(){}{}",
                 call.target,
-                map_err_domain_own_str(),
-                parse_i64_suffix()
+                map_err_domain_own_str(&ctx.error_model),
+                parse_i64_suffix(&ctx.error_model)
             );
         }
 
@@ -2042,7 +2042,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             let recv_ty = ctx.local_type(&call.target).map(|s| s.to_string());
             if should_own_str_result(ctx, recv_ty.as_deref(), &call.method) {
                 let m = method_bare(&call.method);
-                return format!("{}.{m}(){}", call.target, map_err_domain_own_str());
+                return format!("{}.{m}(){}", call.target, map_err_domain_own_str(&ctx.error_model));
             }
         }
         // serde_json::Value::as_str → Option<String> so assigns/unwrap are owned.
@@ -2320,12 +2320,12 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!(
                     "{}.as_n(){}{}",
                     call.target,
-                    map_err_domain_own_str(),
-                    parse_i64_suffix()
+                    map_err_domain_own_str(&ctx.error_model),
+                    parse_i64_suffix(&ctx.error_model)
                 );
             }
             if call.args.is_empty() && m_clean == "parse_int" {
-                return format!("{}{}", call.target, parse_i64_suffix());
+                return format!("{}{}", call.target, parse_i64_suffix(&ctx.error_model));
             }
             if call.args.is_empty() && m_clean == "parse_json" {
                 return format!(
@@ -2341,7 +2341,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     "{}.{}(){}",
                     call.target,
                     m_clean,
-                    map_err_domain_own_str()
+                    map_err_domain_own_str(&ctx.error_model)
                 );
             }
         }

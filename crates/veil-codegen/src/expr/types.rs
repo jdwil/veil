@@ -123,14 +123,14 @@ pub fn method_bare(method: &str) -> &str {
 
 /// SDK / stub `Res!` errors are often `&T` or types with Debug but not Display.
 /// Never use `e.to_string()` for unknown E.
-pub fn map_err_domain() -> &'static str {
-    r#".map_err(|e| DomainError::External(format!("{e:?}")))?"#
+pub fn map_err_domain(em: &super::context::ErrorModel) -> String {
+    format!(".map_err(|e| {}(format!(\"{{e:?}}\")))?", em.external_path())
 }
 
 /// `Res!<Str>` on the Rust side is usually `Result<&str, E>`. VEIL `Str` is
 /// owned `String`, so own the payload and map the error via Debug.
-pub fn map_err_domain_own_str() -> &'static str {
-    r#".map(|s| s.to_string()).map_err(|e| DomainError::External(format!("{e:?}")))?"#
+pub fn map_err_domain_own_str(em: &super::context::ErrorModel) -> String {
+    format!(".map(|s| s.to_string()).map_err(|e| {}(format!(\"{{e:?}}\")))?", em.external_path())
 }
 
 /// `.await.map_err(...)` suffix for async+fallible methods, parameterized by error model.
@@ -171,8 +171,8 @@ pub fn should_own_str_result(ctx: &GenCtx, recv_ty: Option<&str>, method: &str) 
     matches!(bare, "as_s")
 }
 
-pub fn parse_i64_suffix() -> &'static str {
-    r#".parse::<i64>().map_err(|e| DomainError::External(format!("{e:?}")))?"#
+pub fn parse_i64_suffix(em: &super::context::ErrorModel) -> String {
+    format!(".parse::<i64>().map_err(|e| {}(format!(\"{{e:?}}\")))?", em.external_path())
 }
 
 pub fn peel_option_rust(ty: &str) -> Option<&str> {
@@ -454,7 +454,7 @@ pub fn strip_try_suffix(raw: String) -> String {
                 .map(|s| s.to_string())
         })
         .or_else(|| {
-            raw.strip_suffix(map_err_domain())
+            raw.strip_suffix(".map_err(|e| DomainError::External(format!(\"{e:?}\")))?")
                 .or_else(|| raw.strip_suffix(".map_err(|e| DomainError::External(e.to_string()))?"))
                 .map(|s| s.to_string())
         })
