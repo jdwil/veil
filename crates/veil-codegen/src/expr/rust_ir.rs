@@ -534,8 +534,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             if matches!(op.op, veil_ir::ast::BinOp::Add)
                 && (r.starts_with("vec![") || l.starts_with("vec!["))
             {
-                return RustExpr::Raw {
-                    text: format!("{{ let mut __v = {l}; __v.extend({r}); __v }}"),
+                return RustExpr::Ident {
+                    name: format!("{{ let mut __v = {l}; __v.extend({r}); __v }}"),
                     ty,
                 };
             }
@@ -554,7 +554,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         })
                         .collect();
                     let holes = vec!["{}"; rendered.len()].join("");
-                    let args = rendered.iter().map(|a| RustExpr::Raw { text: a.clone(), ty: None }).collect();
+                    let args = rendered.iter().map(|a| RustExpr::Ident { name: a.clone(), ty: None }).collect();
                     return RustExpr::Format { template: holes, args };
                 } else {
                     let l = clone_if_named_value(&op.left, l);
@@ -562,8 +562,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     return RustExpr::Format {
                         template: "{}{}".to_string(),
                         args: vec![
-                            RustExpr::Raw { text: l, ty: None },
-                            RustExpr::Raw { text: r, ty: None },
+                            RustExpr::Ident { name: l, ty: None },
+                            RustExpr::Ident { name: r, ty: None },
                         ],
                     };
                 }
@@ -607,8 +607,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                             return RustExpr::MethodCall {
                                                 receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                                 method: "push".to_string(),
-                                                args: vec![RustExpr::Raw {
-                                                    text: format!("{}.clone().ok_or({})?", item, ctx.error_model.not_found_path()),
+                                                args: vec![RustExpr::Ident {
+                                                    name: format!("{}.clone().ok_or({})?", item, ctx.error_model.not_found_path()),
                                                     ty: None,
                                                 }],
                                                 ty: None,
@@ -619,7 +619,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "push".to_string(),
-                                    args: vec![RustExpr::Raw { text: item, ty: None }],
+                                    args: vec![RustExpr::Ident { name: item, ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -635,7 +635,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "push".to_string(),
-                                    args: vec![RustExpr::Raw { text: item_strs[0].clone(), ty: None }],
+                                    args: vec![RustExpr::Ident { name: item_strs[0].clone(), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -644,7 +644,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "extend".to_string(),
-                                    args: vec![RustExpr::Raw { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
+                                    args: vec![RustExpr::Ident { name: format!("vec![{}]", item_strs.join(", ")), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -668,8 +668,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 .map(to_snake)
                                 .collect::<Vec<_>>()
                                 .join(".");
-                            return RustExpr::Raw {
-                                text: format!(
+                            return RustExpr::Ident {
+                                name: format!(
                                     "{}.as_mut().ok_or({})?.{} = {}",
                                     base_name, ctx.error_model.not_found_path(), field_snake, rhs_str
                                 ),
@@ -709,7 +709,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                     return RustExpr::BinOp {
                                         left: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                         op: op.to_string(),
-                                        right: Box::new(RustExpr::Raw { text: right_str, ty: None }),
+                                        right: Box::new(RustExpr::Ident { name: right_str, ty: None }),
                                         ty: None,
                                     };
                                 }
@@ -722,7 +722,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         name: name.clone(),
                         mutable: is_mutable,
                         ty: ty_str,
-                        value: Box::new(RustExpr::Raw { text: rhs_str, ty: None }),
+                        value: Box::new(RustExpr::Ident { name: rhs_str, ty: None }),
                     };
                 }
             };
@@ -745,7 +745,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "push".to_string(),
-                                    args: vec![RustExpr::Raw { text: item_strs[0].clone(), ty: None }],
+                                    args: vec![RustExpr::Ident { name: item_strs[0].clone(), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -754,7 +754,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "extend".to_string(),
-                                    args: vec![RustExpr::Raw { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
+                                    args: vec![RustExpr::Ident { name: format!("vec![{}]", item_strs.join(", ")), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -774,7 +774,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         name: name.clone(),
                         mutable: true,
                         ty: ty_str,
-                        value: Box::new(RustExpr::Raw { text: rhs_str, ty: None }),
+                        value: Box::new(RustExpr::Ident { name: rhs_str, ty: None }),
                     };
                 }
             };
@@ -2043,7 +2043,7 @@ fn lower_call_builder_chain(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
     let args_ir = if args_str.is_empty() {
         vec![]
     } else {
-        vec![RustExpr::Raw { text: args_str, ty: None }]
+        vec![RustExpr::Ident { name: args_str, ty: None }]
     };
 
     // Build the terminal method call
@@ -2123,7 +2123,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 let args_ir = if args_str.is_empty() {
                     vec![]
                 } else {
-                    vec![RustExpr::Raw { text: args_str, ty: None }]
+                    vec![RustExpr::Ident { name: args_str, ty: None }]
                 };
                 // Intermediate chain methods have no async/fallible suffix
                 RustExpr::MethodCall {
@@ -2268,7 +2268,7 @@ fn lower_call_port(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustEx
     let args_ir = if args_str.is_empty() {
         vec![]
     } else {
-        vec![RustExpr::Raw { text: args_str, ty: None }]
+        vec![RustExpr::Ident { name: args_str, ty: None }]
     };
 
     let ty = infer_call_type(call, ctx);
