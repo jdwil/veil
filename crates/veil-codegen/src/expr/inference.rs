@@ -415,6 +415,103 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                     .unwrap_or(t)
             })
         }
+        // ─── Newly inferred expression types ─────────────────────────────
+        // BinaryOp: comparisons return bool; arithmetic preserves the operand type.
+        Expr::BinaryOp(bin) => {
+            match bin.op {
+                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                | BinOp::And | BinOp::Or => Some("bool".to_string()),
+                BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    // Arithmetic: infer from left operand, fall back to right
+                    infer_expr_type(&bin.left, ctx).or_else(|| infer_expr_type(&bin.right, ctx))
+                }
+                // Add is handled above (Vec concat, string concat)
+                _ => None,
+            }
+        }
+        // UnaryOp: Not → bool, Neg preserves the type.
+        Expr::UnaryOp(un) => {
+            match un.op {
+                UnaryOp::Not => Some("bool".to_string()),
+                UnaryOp::Neg => infer_expr_type(&un.expr, ctx),
+            }
+        }
+        // IfExpr: type is the type of the then-branch (or else-branch).
+        Expr::IfExpr(if_data) => {
+            // If there's a then body, infer from the last expression
+            if let Some(last) = if_data.then_body.last() {
+                if let Some(t) = infer_expr_type(last, ctx) {
+                    return Some(t);
+                }
+            }
+            // Try else branch
+            if let Some(else_body) = &if_data.else_body {
+                if let Some(last) = else_body.last() {
+                    return infer_expr_type(last, ctx);
+                }
+            }
+            None
+        }
+        // Match: type is the type of the first arm's body.
+        Expr::Match(_, arms) => {
+            for arm in arms {
+                if let Some(last) = arm.body.last() {
+                    if let Some(t) = infer_expr_type(last, ctx) {
+                        return Some(t);
+                    }
+                }
+            }
+            None
+        }
+        // StringInterp (f-strings): always produce String.
+        Expr::StringInterp(_) => Some("String".to_string()),
+        // Closure: we can't easily infer the full Fn type, but return the body type.
+        Expr::Closure { body, .. } => {
+            body.last().and_then(|e| infer_expr_type(e, ctx))
+        }
+        // Await: infer the inner expression type (the future resolves to it).
+        Expr::Await(inner) => infer_expr_type(inner, ctx),
+        // Try (?): peels Result/Option, returns the inner T.
+        Expr::Try(inner) => {
+            infer_expr_type(inner, ctx).map(|t| {
+                // Peel Result<T, _> → T  or Option<T> → T
+                if let Some(inner_t) = peel_option_rust(&t) {
+                    return inner_t.to_string();
+                }
+                if t.starts_with("Result<") {
+                    // Extract the success type from Result<T, E>
+                    let inner_content = &t["Result<".len()..t.len().saturating_sub(1)];
+                    // Split on first comma not inside angle brackets
+                    let mut depth = 0;
+                    for (i, ch) in inner_content.char_indices() {
+                        match ch {
+                            '<' => depth += 1,
+                            '>' => depth -= 1,
+                            ',' if depth == 0 => {
+                                return inner_content[..i].trim().to_string();
+                            }
+                            _ => {}
+                        }
+                    }
+                    return inner_content.to_string();
+                }
+                t
+            })
+        }
+        // Cast: the result type is the target type name.
+        Expr::Cast(_, target_ty) => Some(target_ty.clone()),
+        // DoBlock: type is the last expression in the block.
+        Expr::DoBlock(body) => {
+            body.last().and_then(|e| infer_expr_type(e, ctx))
+        }
+        // Tuple: we don't track tuple types in the Rust backend currently.
+        Expr::Tuple(_) => None,
+        // Loops/ForLoop/WhileLoop: they produce () or the break value (unsupported).
+        Expr::ForLoop { .. } | Expr::WhileLoop { .. } | Expr::Loop(_) => None,
+        // Control flow: no meaningful type.
+        Expr::Break | Expr::Continue | Expr::Return(_) => None,
+        // Assignments produce () in expression position.
+        Expr::Assign(..) | Expr::MutAssign(..) | Expr::LetPattern(..) => None,
         _ => None,
     }
 }
