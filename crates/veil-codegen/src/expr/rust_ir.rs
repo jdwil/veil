@@ -1999,12 +1999,12 @@ fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
 
     // Fall through to Raw wrapping translate_call for everything else
     let text = super::calls::translate_call(call, ctx);
-    let ty = infer_call_type(call, &text, ctx);
+    let ty = infer_call_type(call, ctx);
     RustExpr::Raw { text, ty }
 }
 
 /// Infer the RustType for a call expression from context.
-fn infer_call_type(call: &veil_ir::ast::CallExpr, rendered: &str, ctx: &GenCtx) -> Option<RustType> {
+fn infer_call_type(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustType> {
     // Try the method_returns map first (most precise)
     let method_key = call.method.trim_end_matches(['!', '?']);
     if !call.target.is_empty() {
@@ -2019,14 +2019,6 @@ fn infer_call_type(call: &veil_ir::ast::CallExpr, rendered: &str, ctx: &GenCtx) 
                 return Some(RustType::parse(ret));
             }
         }
-    }
-    // TRANSITION DEBT: remove when translate_call is fully migrated to structured
-    // RustExpr (currently ~1500 lines of string-based call rendering still produce
-    // Raw text with no type metadata; this heuristic fills the gap).
-    // Heuristic from rendered text: async fallible calls return Result-ish
-    if rendered.ends_with(".await?") || rendered.ends_with(")?") {
-        // Can't determine inner type precisely — mark as a generic Result
-        return Some(RustType::Named("String".to_string()));
     }
     // Struct constructors return the struct type
     if call.method.is_empty() || method_key == "new" || method_key == "default" {
