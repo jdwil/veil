@@ -16,7 +16,7 @@ use veil_ir::ast::{Expr, StringPart};
 use veil_ir::layer::Shape;
 use crate::rust::to_snake;
 use super::context::GenCtx;
-use super::translate::expr_to_rust;
+use super::translate::legacy_expr_to_rust;
 use super::inference::infer_expr_type;
 use super::types::rust_string_lit;
 use super::calls::{resolve_self_field_name, is_json_rooted_expr, is_json_type_name};
@@ -352,7 +352,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: binary and unary ops ───────────────────────────────
         Expr::BinaryOp(_) | Expr::UnaryOp(_) => RustExpr::Raw {
-            text: expr_to_rust(expr, ctx),
+            text: legacy_expr_to_rust(expr, ctx),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
         },
 
@@ -364,7 +364,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Everything else: fallback to old path ────────────────────────
         _ => RustExpr::Raw {
-            text: expr_to_rust(expr, ctx),
+            text: legacy_expr_to_rust(expr, ctx),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
         },
     }
@@ -394,14 +394,14 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     // Not a proper ident — fall through to old path.
     if name.contains(" then ") && (name.contains("f\"") || name.contains("f'")) {
         return RustExpr::Raw {
-            text: expr_to_rust(expr, ctx),
+            text: legacy_expr_to_rust(expr, ctx),
             ty: None,
         };
     }
     // Edge case: unwrap_or rewrite from fstring parsing.
     if name.contains(".unwrap_or(\"") && name.ends_with("\")") {
         return RustExpr::Raw {
-            text: expr_to_rust(expr, ctx),
+            text: legacy_expr_to_rust(expr, ctx),
             ty: None,
         };
     }
@@ -589,7 +589,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
 
     // Nested field access on a JSON value at any depth
     if is_json_rooted_expr(base, ctx) {
-        let base_str = expr_to_rust(base, ctx);
+        let base_str = legacy_expr_to_rust(base, ctx);
         return RustExpr::Raw {
             text: format!("{}[\"{}\"]", base_str, field),
             ty: Some(RustType::Json),
@@ -600,7 +600,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     if let Expr::Ident(name) = base {
         if let Some(ty) = ctx.local_type(name) {
             if ty.starts_with("Option<") {
-                let base_str = expr_to_rust(base, ctx);
+                let base_str = legacy_expr_to_rust(base, ctx);
                 let enclosing_returns_option = ctx.expected_return_rust.as_ref()
                     .map(|r| r.starts_with("Option<"))
                     .unwrap_or(false);
@@ -675,7 +675,7 @@ fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
                 // still need to evaluate them. Use expr_to_rust for now to
                 // maintain byte-identical output with the old path.
                 args.push(RustExpr::Raw {
-                    text: expr_to_rust(e, ctx),
+                    text: legacy_expr_to_rust(e, ctx),
                     ty: infer_expr_type(e, ctx).map(|s| RustType::parse(&s)),
                 });
             }
@@ -774,7 +774,7 @@ fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         _ => {
             // Fall back to the existing string-based expr rendering
             RustExpr::Raw {
-                text: expr_to_rust(expr, ctx),
+                text: legacy_expr_to_rust(expr, ctx),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1049,7 +1049,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 // Skip special methods — fall back to Raw for the whole sub-chain
                 if is_special_method(&inner_call.method) {
                     return RustExpr::Raw {
-                        text: expr_to_rust(expr, ctx),
+                        text: legacy_expr_to_rust(expr, ctx),
                         ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                     };
                 }
@@ -1082,7 +1082,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 // This is the chain root — render it as Raw since it may need
                 // target-based resolution (struct constructor, free fn, etc.)
                 RustExpr::Raw {
-                    text: expr_to_rust(expr, ctx),
+                    text: legacy_expr_to_rust(expr, ctx),
                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                 }
             }

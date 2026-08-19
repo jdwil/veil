@@ -4,11 +4,27 @@ use crate::rust::to_snake;
 use super::*;
 
 /// Translate a VEIL expression to a Rust expression string (no trailing semicolon).
+///
+/// This is the production entry point. It lowers to the typed `RustExpr` IR
+/// and then emits the final string. Unhandled expression types fall through
+/// to `legacy_expr_to_rust` inside `lower_to_rust`.
 pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
     if ctx.option_value_wrap && !expr_handles_option_wrap(expr) {
         let mut inner_ctx = ctx.clone_for_inference();
         inner_ctx.option_value_wrap = false;
         let inner = expr_to_rust(expr, &inner_ctx);
+        return wrap_as_option_value(expr, inner, ctx);
+    }
+    emit(&lower_to_rust(expr, ctx))
+}
+
+/// Legacy string-based expression translation. Called only from `lower_to_rust`
+/// as a fallback for expression types not yet natively lowered to `RustExpr`.
+pub fn legacy_expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
+    if ctx.option_value_wrap && !expr_handles_option_wrap(expr) {
+        let mut inner_ctx = ctx.clone_for_inference();
+        inner_ctx.option_value_wrap = false;
+        let inner = legacy_expr_to_rust(expr, &inner_ctx);
         return wrap_as_option_value(expr, inner, ctx);
     }
     match expr {
@@ -77,7 +93,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         Expr::FieldAccess(base, field) => {
             // `opt.is_some` (no call) is the same predicate as `opt.is_some()`.
             if field == "is_some" || field == "is_none" {
-                return format!("{}.{field}()", expr_to_rust(base, ctx));
+                return format!("{}.{field}()", legacy_expr_to_rust(base, ctx));
             }
             // A field of a state-local: index into the threaded JSON state.
             if let Expr::Ident(name) = base.as_ref() {
@@ -153,10 +169,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // Nested field access on a JSON value at any depth: result["a"]["b"]["c"]
             // When base resolves to a chain rooted in a JSON local, chain indexing.
             if is_json_rooted_expr(base, ctx) {
-                let base_str = expr_to_rust(base, ctx);
+                let base_str = legacy_expr_to_rust(base, ctx);
                 return format!("{}[\"{}\"]", base_str, field);
             }
-            let base_str = expr_to_rust(base, ctx);
+            let base_str = legacy_expr_to_rust(base, ctx);
             // Auto-unwrap Option<T> locals on field access: if a local has type
             // `Option<X>`, field access implies the value is expected to be present.
             // Emit `.clone().ok_or(DomainError::NotFound)?.field` so the Option is
@@ -211,8 +227,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::Call(call) => translate_call(call, ctx),
         Expr::BinaryOp(op) => {
-            let l = expr_to_rust(&op.left, ctx);
-            let r = expr_to_rust(&op.right, ctx);
+            let l = legacy_expr_to_rust(&op.left, ctx);
+            let r = legacy_expr_to_rust(&op.right, ctx);
             // Special case: x != None → x.is_some(), x == None → x.is_none()
             if r == "None" {
                 return match op.op {
@@ -249,7 +265,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     let rendered: Vec<String> = parts
                         .into_iter()
                         .map(|p| {
-                            let s = expr_to_rust(p, ctx);
+                            let s = legacy_expr_to_rust(p, ctx);
                             clone_if_named_value(p, s)
                         })
                         .collect();
@@ -263,13 +279,13 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             format!("{} {} {}", l, binop_to_rust(&op.op), r)
         }
         Expr::UnaryOp(op) => {
-            let inner = expr_to_rust(&op.expr, ctx);
+            let inner = legacy_expr_to_rust(&op.expr, ctx);
             format!("{}{}", unaryop_to_rust(&op.op), inner)
         }
         Expr::IfExpr(ie) => {
             let mut cond_ctx = ctx.clone_for_inference();
             cond_ctx.option_value_wrap = false;
-            let cond = expr_to_rust(&ie.condition, &cond_ctx);
+            let cond = legacy_expr_to_rust(&ie.condition, &cond_ctx);
             // Auto-coerce serde_json::Value → bool for if conditions
             let cond = if let Expr::Ident(name) = ie.condition.as_ref() {
                 if ctx.local_type(name) == Some("serde_json::Value") {
@@ -322,7 +338,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         (bin.left.as_ref(), bin.right.as_ref())
                     {
                         if left == name && items.len() == 1 {
-                            let item = expr_to_rust(&items[0], ctx);
+                            let item = legacy_expr_to_rust(&items[0], ctx);
                             // Auto-unwrap Option<T> items pushed into a list: if
                             // the item is a local with Option<T> type, unwrap it
                             // since the list expects T elements.
@@ -347,7 +363,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 let bare_m = call.method.trim_end_matches('!');
                 if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
                     if let Some(Expr::ArrayLit(items)) = call.args.first() {
-                        let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
+                        let item_strs: Vec<String> = items.iter().map(|i| legacy_expr_to_rust(i, ctx)).collect();
                         if items.len() == 1 {
                             return format!("{}.push({})", name, item_strs[0]);
                         } else {
@@ -358,7 +374,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             }
             let rhs_str = match rhs.as_ref() {
                 Expr::StringLit(s) => rust_string_lit_owned(s),
-                _ => expr_to_rust(rhs, ctx),
+                _ => legacy_expr_to_rust(rhs, ctx),
             };
             // Field assignment: `wt.name = x` stored as Assign("wt.name", …)
             // Emit path with snake_case fields; never introduce a `let` binding.
@@ -414,7 +430,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                                 _ => None,
                             };
                             if let Some(op) = op_str {
-                                let right_str = expr_to_rust(&bin.right, ctx);
+                                let right_str = legacy_expr_to_rust(&bin.right, ctx);
                                 return format!("{} {} {}", name, op, right_str);
                             }
                         }
@@ -446,7 +462,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 let bare_m = call.method.trim_end_matches('!');
                 if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
                     if let Some(Expr::ArrayLit(items)) = call.args.first() {
-                        let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
+                        let item_strs: Vec<String> = items.iter().map(|i| legacy_expr_to_rust(i, ctx)).collect();
                         if items.len() == 1 {
                             return format!("{}.push({})", name, item_strs[0]);
                         } else {
@@ -457,7 +473,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             }
             let rhs_str = match rhs.as_ref() {
                 Expr::StringLit(s) => rust_string_lit_owned(s),
-                _ => expr_to_rust(rhs, ctx),
+                _ => legacy_expr_to_rust(rhs, ctx),
             };
             // Reassignment of an already-bound local (e.g. `mut req` inside while).
             if ctx.is_local(name) {
@@ -507,7 +523,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     }
                 }
                 Expr::Call(c) if c.target == "Ok" && c.method.is_empty() => {
-                    let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+                    let a = c.args.iter().map(|e| legacy_expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
                     format!("return Ok({})", if a.is_empty() { "()".to_string() } else { a })
                 }
                 _ => {
@@ -563,13 +579,13 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             }
         }
         Expr::Await(inner) => {
-            let inner_str = expr_to_rust(inner, ctx);
+            let inner_str = legacy_expr_to_rust(inner, ctx);
             format!("{}.await", inner_str)
         }
         Expr::Break => "break".to_string(),
         Expr::Continue => "continue".to_string(),
         Expr::Index(base, idx) => {
-            let b = expr_to_rust(base, ctx);
+            let b = legacy_expr_to_rust(base, ctx);
             // HashMap / Dynamo item: `.get("key").cloned().ok_or(NotFound)?`
             // so subsequent `.as_s()` is on AttributeValue, not Option.
             match idx.as_ref() {
@@ -579,7 +595,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 Expr::IntLit(n) => list_index_get_rust(&b, &n.to_string(), base, ctx),
                 // Dynamic key (e.g. params[p.name] on serde_json::Value)
                 other => {
-                    let i = expr_to_rust(other, ctx);
+                    let i = legacy_expr_to_rust(other, ctx);
                     let base_ty = match base.as_ref() {
                         Expr::Ident(n) => ctx.local_type(n).unwrap_or(""),
                         _ => "",
@@ -612,9 +628,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 }
             }
         }
-        Expr::ArrayLit(items) => { let s = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", "); format!("vec![{}]", s) }
-        Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let e = end.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
-        Expr::Loop(body) => { let b = body.iter().map(|e| format!("    {};", expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n"); format!("loop {{\n{}\n}}", b) }
+        Expr::ArrayLit(items) => { let s = items.iter().map(|e| legacy_expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", "); format!("vec![{}]", s) }
+        Expr::Range { start, end, inclusive } => { let s = start.as_ref().map(|e| legacy_expr_to_rust(e, ctx)).unwrap_or_default(); let e = end.as_ref().map(|e| legacy_expr_to_rust(e, ctx)).unwrap_or_default(); let op = if *inclusive { "..=" } else { ".." }; format!("{}{}{}", s, op, e) }
+        Expr::Loop(body) => { let b = body.iter().map(|e| format!("    {};", legacy_expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n"); format!("loop {{\n{}\n}}", b) }
         Expr::DoBlock(body) => {
             if body.is_empty() {
                 "{}".to_string()
@@ -623,7 +639,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 let mut block_ctx = ctx.clone_for_inference();
                 let mut lines = Vec::new();
                 for (i, e) in body.iter().enumerate() {
-                    let rust = expr_to_rust(e, &block_ctx);
+                    let rust = legacy_expr_to_rust(e, &block_ctx);
                     // Track local types so subsequent lines resolve receiver types
                     if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = e {
                         if !name.contains('.') {
@@ -645,10 +661,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 format!("{{\n{}\n}}", lines.join("\n"))
             }
         }
-        Expr::Cast(expr, ty) => format!("{} as {}", expr_to_rust(expr, ctx), ty),
-        Expr::Try(expr) => format!("{}?", expr_to_rust(expr, ctx)),
+        Expr::Cast(expr, ty) => format!("{} as {}", legacy_expr_to_rust(expr, ctx), ty),
+        Expr::Try(expr) => format!("{}?", legacy_expr_to_rust(expr, ctx)),
         Expr::Require(inner) => {
-            let s = expr_to_rust(inner, ctx);
+            let s = legacy_expr_to_rust(inner, ctx);
             // ACS-010: require force-presents one Opt layer *and* one Res layer.
             // Bang already emits try (`?` / `.await?`) for Res. If the success
             // type is still Option, we must unwrap that too — do not treat a
@@ -677,21 +693,21 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 }
             }
         },
-        Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)) }
+        Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, legacy_expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, legacy_expr_to_rust(base, ctx)) }
         Expr::IfLet { pattern, expr, then_body, else_body } => {
-            let e = expr_to_rust(expr, ctx);
-            let then_str = then_body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
-            let else_str = else_body.as_ref().map(|eb| { let s = eb.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n"); format!(" else {{\n{}\n}}", s) }).unwrap_or_default();
+            let e = legacy_expr_to_rust(expr, ctx);
+            let then_str = then_body.iter().map(|e2| format!("    {};", legacy_expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
+            let else_str = else_body.as_ref().map(|eb| { let s = eb.iter().map(|e2| format!("    {};", legacy_expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n"); format!(" else {{\n{}\n}}", s) }).unwrap_or_default();
             format!("if let {} = {} {{\n{}\n}}{}", pattern, e, then_str, else_str)
         }
         Expr::WhileLet { pattern, expr, body } => {
-            let e = expr_to_rust(expr, ctx);
-            let body_str = body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
+            let e = legacy_expr_to_rust(expr, ctx);
+            let body_str = body.iter().map(|e2| format!("    {};", legacy_expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
             format!("while let {} = {} {{\n{}\n}}", pattern, e, body_str)
         }
         Expr::LetPattern(pattern, expr, ty_ann) => {
             let pat_str = pattern_to_rust(pattern);
-            let e = expr_to_rust(expr, ctx);
+            let e = legacy_expr_to_rust(expr, ctx);
             match ty_ann {
                 Some(ty) => format!("let {}: {} = {}", pat_str, crate::rust::type_to_rust(ty), e),
                 None => format!("let {} = {}", pat_str, e),
@@ -712,7 +728,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::StructLit(name, fields) => {
             let fs = fields.iter().map(|(k, v)| {
-                let v_str = expr_to_rust(v, ctx);
+                let v_str = legacy_expr_to_rust(v, ctx);
                 // Clone ident and field access values to prevent move issues.
                 // Skip copy/null/bools so we don't emit `None.clone()`.
                 let cloned = match v {
@@ -775,7 +791,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // Never Some-wrap the scrutinee — only arm values.
             let mut scrut_ctx = ctx.clone_for_inference();
             scrut_ctx.option_value_wrap = false;
-            let raw = expr_to_rust(scrutinee, &scrut_ctx);
+            let raw = legacy_expr_to_rust(scrutinee, &scrut_ctx);
             // String-literal arms match `&str`. Keep the try-unwrap so we do
             // not call `.as_str()` on a `Result`. Result/enum arms strip `?`
             // so the match can consume Ok/Err or the domain value.
@@ -846,7 +862,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     normalize_match_pattern(&arm.pattern, ctx)
                 };
                 let guard_str = match &arm.guard {
-                    Some(g) => format!(" if {}", expr_to_rust(g, &scrut_ctx)),
+                    Some(g) => format!(" if {}", legacy_expr_to_rust(g, &scrut_ctx)),
                     None => String::new(),
                 };
                 // Match arm bodies get their own local set (bindings + assigns).
@@ -876,7 +892,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             out
         }
         Expr::ForLoop { binding, index, iterable, body } => {
-            let mut iter_str = expr_to_rust(iterable, ctx);
+            let mut iter_str = legacy_expr_to_rust(iterable, ctx);
             // Iterate Vec/List fields by shared ref — no clone of the collection.
             // Do NOT prefix `&` on Calls: `result.items()` already returns `&[T]`.
             // `&result.items()` is `&&[T]` and is not IntoIterator (SL-028).
@@ -940,14 +956,14 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             format!("for {bind} in {iter_expr}{enumerate} {{\n{body_str}\n}}")
         }
         Expr::WhileLoop { condition, body } => {
-            let cond_str = expr_to_rust(condition, ctx);
+            let cond_str = legacy_expr_to_rust(condition, ctx);
             // Track locals across the loop body so `mut req = …` then `req = …`
             // reassigns (adapters / retries) instead of shadowing or free fns.
             let mut body_ctx = ctx.clone_for_inference();
             body_ctx.mut_locals.extend(analyze_mut_locals(body));
             let mut lines = Vec::new();
             for e in body {
-                let line = expr_to_rust(e, &body_ctx);
+                let line = legacy_expr_to_rust(e, &body_ctx);
                 if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
                     if !name.contains('.') {
                         body_ctx.locals.insert(name.clone());
@@ -958,7 +974,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             format!("while {} {{\n{}\n    }}", cond_str, lines.join("\n"))
         }
         Expr::Tuple(items) => {
-            let parts = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+            let parts = items.iter().map(|e| legacy_expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
             format!("({})", parts)
         }
         Expr::StringInterp(parts) => {
@@ -979,7 +995,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     }
                     StringPart::Expr(e) => {
                         fmt.push_str("{}");
-                        args.push(expr_to_rust(e, ctx));
+                        args.push(legacy_expr_to_rust(e, ctx));
                     }
                 }
             }
@@ -1146,7 +1162,7 @@ pub fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
             let vals: Vec<String> = items.iter().map(|e| to_json_arg(e, ctx)).collect();
             format!("vec![{}]", vals.join(", "))
         }
-        _ => expr_to_rust(expr, ctx),
+        _ => legacy_expr_to_rust(expr, ctx),
     }
 }
 
