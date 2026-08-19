@@ -915,13 +915,208 @@ fn lower_call_bus_routing(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option
     None
 }
 
+// ─── Builder chain lowering ──────────────────────────────────────────────────
+
+/// Methods that require custom pre-processing in translate_call and cannot be
+/// structurally lowered as simple MethodCall nodes in a builder chain.
+const SPECIAL_METHODS: &[&str] = &[
+    "get", "as_str", "as_s", "as_n", "trim", "unwrap", "unwrap_or",
+    "unwrap_or_else", "body", "limit", "parse_int", "parse_json", "first",
+];
+
+/// Check if a method (after stripping `!`/`?`) is in the special-case list.
+fn is_special_method(method: &str) -> bool {
+    let bare = method.trim_end_matches(['!', '?']);
+    SPECIAL_METHODS.contains(&bare)
+}
+
+/// Attempt to lower a receiver-based method call (builder chain) to structured
+/// `RustExpr::MethodCall` nodes.
+///
+/// Intercepts calls where:
+/// - The call has a receiver (it's `receiver.method(args)`)
+/// - The receiver is itself a Call (chained builder pattern)
+/// - The terminal method is not in the special-case list
+///
+/// Each method in the chain becomes a nested `MethodCall`. The terminal method
+/// gets its async/fallible flags from `receiver_call_suffix`. If the suffix
+/// includes a `.map_err(...)`, the result is wrapped in `RustExpr::MapErr`.
+///
+/// Returns `Some(RustExpr)` if handled, `None` to fall through.
+fn lower_call_builder_chain(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
+    use super::calls::{receiver_call_suffix, clone_args_for_typed_method, rust_method_name};
+
+    // Only handle calls with a receiver that is itself a Call (chained)
+    let recv = call.receiver.as_ref()?;
+    if !matches!(recv.as_ref(), Expr::Call(_)) {
+        return None;
+    }
+
+    // Skip special methods that need custom handling in translate_call
+    if is_special_method(&call.method) {
+        return None;
+    }
+
+    // Get the suffix to determine async/fallible for the terminal method
+    let suffix = receiver_call_suffix(recv, &call.method, ctx);
+
+    // Only intercept when the terminal method has a meaningful suffix
+    // (async, fallible, or both). Plain builder intermediates with no suffix
+    // could still be part of a chain that ends with .send() — but those are
+    // handled when the send() call is the outer Call and this intermediate
+    // is the receiver.
+    if suffix.is_empty() {
+        return None;
+    }
+
+    // Parse suffix into structural flags
+    let (is_async, is_fallible, needs_map_err, owns_str) = parse_suffix(&suffix);
+
+    // Build the receiver chain recursively
+    let receiver_ir = lower_chain_receiver(recv, ctx);
+
+    // Build args (rendered as Raw strings matching clone_args_for_typed_method)
+    let method_name = rust_method_name(&call.method);
+    let recv_lookup: Option<&str> = match recv.as_ref() {
+        Expr::Ident(name) => Some(name.as_str()),
+        Expr::FieldAccess(_, field) => Some(field.as_str()),
+        _ => None,
+    };
+    let args_str = clone_args_for_typed_method(recv_lookup, &call.method, &call.args, ctx);
+    let args_ir = if args_str.is_empty() {
+        vec![]
+    } else {
+        vec![RustExpr::Raw { text: args_str, ty: None }]
+    };
+
+    // Build the terminal method call
+    let method_call = RustExpr::MethodCall {
+        receiver: Box::new(receiver_ir),
+        method: method_name,
+        args: args_ir,
+        ty: infer_call_type_from_ctx(call, ctx),
+        is_async,
+        is_fallible: is_fallible && !needs_map_err,
+    };
+
+    // Wrap in MapErr if the suffix demands it
+    if needs_map_err {
+        let variant = if owns_str {
+            // map(|s| s.to_string()).map_err(...) — too complex for structured.
+            // Fall through to Raw for this edge case.
+            return None;
+        } else {
+            ctx.error_model.external_path()
+        };
+        return Some(RustExpr::MapErr {
+            inner: Box::new(method_call),
+            variant,
+        });
+    }
+
+    Some(method_call)
+}
+
+/// Parse a receiver_call_suffix string into (is_async, is_fallible, needs_map_err, owns_str).
+fn parse_suffix(suffix: &str) -> (bool, bool, bool, bool) {
+    if suffix.contains(".await") && suffix.contains("map_err") {
+        // .await.map_err(|e| ...)? → async, fallible via MapErr
+        (true, true, true, false)
+    } else if suffix == ".await?" {
+        (true, true, false, false)
+    } else if suffix == ".await" {
+        (true, false, false, false)
+    } else if suffix.contains("map(|s| s.to_string())") {
+        // .map(|s| s.to_string()).map_err(...)? → sync, owns string, needs special handling
+        (false, true, true, true)
+    } else if suffix.contains("map_err") {
+        // .map_err(|e| ...)? → sync fallible via MapErr
+        (false, true, true, false)
+    } else if suffix.ends_with('?') {
+        (false, true, false, false)
+    } else {
+        (false, false, false, false)
+    }
+}
+
+/// Recursively lower a chain receiver (Call → nested MethodCalls).
+/// Non-Call receivers (Ident, FieldAccess) are lowered via lower_to_rust.
+fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
+    match expr {
+        Expr::Call(inner_call) => {
+            // Check if this inner call also has a receiver (deeper chain)
+            if let Some(inner_recv) = &inner_call.receiver {
+                // Skip special methods — fall back to Raw for the whole sub-chain
+                if is_special_method(&inner_call.method) {
+                    return RustExpr::Raw {
+                        text: expr_to_rust(expr, ctx),
+                        ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                    };
+                }
+                let receiver_ir = lower_chain_receiver(inner_recv, ctx);
+                let method_name = super::calls::rust_method_name(&inner_call.method);
+                let recv_lookup: Option<&str> = match inner_recv.as_ref() {
+                    Expr::Ident(name) => Some(name.as_str()),
+                    Expr::FieldAccess(_, field) => Some(field.as_str()),
+                    _ => None,
+                };
+                let args_str = super::calls::clone_args_for_typed_method(
+                    recv_lookup, &inner_call.method, &inner_call.args, ctx,
+                );
+                let args_ir = if args_str.is_empty() {
+                    vec![]
+                } else {
+                    vec![RustExpr::Raw { text: args_str, ty: None }]
+                };
+                // Intermediate chain methods have no async/fallible suffix
+                RustExpr::MethodCall {
+                    receiver: Box::new(receiver_ir),
+                    method: method_name,
+                    args: args_ir,
+                    ty: None,
+                    is_async: false,
+                    is_fallible: false,
+                }
+            } else {
+                // Call without a receiver (e.g. `client.query()` where client is the target)
+                // This is the chain root — render it as Raw since it may need
+                // target-based resolution (struct constructor, free fn, etc.)
+                RustExpr::Raw {
+                    text: expr_to_rust(expr, ctx),
+                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                }
+            }
+        }
+        // Non-Call receivers: use lower_to_rust for idents/field access
+        _ => lower_to_rust(expr, ctx),
+    }
+}
+
+/// Infer call type from context without rendering (avoids double translate_call).
+fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustType> {
+    let method_key = call.method.trim_end_matches(['!', '?']);
+    if let Some(ret) = (!call.target.is_empty())
+        .then(|| ctx.method_returns.get(&(call.target.clone(), method_key.to_string())))
+        .flatten()
+    {
+        return Some(RustType::parse(ret));
+    }
+    if let Some(ret) = call.receiver.as_ref()
+        .and_then(|recv| infer_expr_type(recv, ctx))
+        .and_then(|recv_ty| ctx.method_returns.get(&(recv_ty, method_key.to_string())))
+    {
+        return Some(RustType::parse(ret));
+    }
+    None
+}
+
 // ─── lower_call ──────────────────────────────────────────────────────────────
 
 /// Lower `Expr::Call` to structured `RustExpr`.
 ///
 /// Strategy: handle the common patterns structurally, fall through to
 /// `RustExpr::Raw` wrapping `translate_call` for complex sub-paths that
-/// are not worth migrating now (SDK builder chains, etc.).
+/// are not worth migrating now.
 ///
 /// Migrated paths:
 /// - Bus routing (envelope/message JSON calls via routing traits)
@@ -932,6 +1127,11 @@ fn lower_call_bus_routing(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option
 fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
     // Try structured bus routing first
     if let Some(expr) = lower_call_bus_routing(call, ctx) {
+        return expr;
+    }
+
+    // Try builder chain lowering (chained receiver method calls with async/fallible terminal)
+    if let Some(expr) = lower_call_builder_chain(call, ctx) {
         return expr;
     }
 
