@@ -604,17 +604,25 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 if let Expr::Ident(item_name) = &items[0]
                                     && let Some(ty) = ctx.local_type(item_name)
                                     && is_option_type(ty) {
-                                            return RustExpr::Raw {
-                                                text: format!(
-                                                    "{}.push({}.clone().ok_or({})?)",
-                                                    name, item, ctx.error_model.not_found_path()
-                                                ),
-                                                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                            return RustExpr::MethodCall {
+                                                receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                                                method: "push".to_string(),
+                                                args: vec![RustExpr::Raw {
+                                                    text: format!("{}.clone().ok_or({})?", item, ctx.error_model.not_found_path()),
+                                                    ty: None,
+                                                }],
+                                                ty: None,
+                                                is_async: false,
+                                                is_fallible: false,
                                             };
                                         }
-                                return RustExpr::Raw {
-                                    text: format!("{}.push({})", name, item),
-                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                return RustExpr::MethodCall {
+                                    receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                                    method: "push".to_string(),
+                                    args: vec![RustExpr::Raw { text: item, ty: None }],
+                                    ty: None,
+                                    is_async: false,
+                                    is_fallible: false,
                                 };
                             }
                 // List concat sugar: `x = x.concat([items])` → `x.extend(vec![items])`
@@ -624,14 +632,22 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         && let Some(Expr::ArrayLit(items)) = call.args.first() {
                             let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
                             if items.len() == 1 {
-                                return RustExpr::Raw {
-                                    text: format!("{}.push({})", name, item_strs[0]),
-                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                return RustExpr::MethodCall {
+                                    receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                                    method: "push".to_string(),
+                                    args: vec![RustExpr::Raw { text: item_strs[0].clone(), ty: None }],
+                                    ty: None,
+                                    is_async: false,
+                                    is_fallible: false,
                                 };
                             } else {
-                                return RustExpr::Raw {
-                                    text: format!("{}.extend(vec![{}])", name, item_strs.join(", ")),
-                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                return RustExpr::MethodCall {
+                                    receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                                    method: "extend".to_string(),
+                                    args: vec![RustExpr::Raw { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
+                                    ty: None,
+                                    is_async: false,
+                                    is_fallible: false,
                                 };
                             }
                         }
@@ -690,30 +706,24 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 };
                                 if let Some(op) = op_str {
                                     let right_str = expr_to_rust(&bin.right, ctx);
-                                    return RustExpr::Raw {
-                                        text: format!("{} {} {}", name, op, right_str),
-                                        ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                    return RustExpr::BinOp {
+                                        left: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                                        op: op.to_string(),
+                                        right: Box::new(RustExpr::Raw { text: right_str, ty: None }),
+                                        ty: None,
                                     };
                                 }
                             }
                     format!("{} = {}", name, rhs_str)
                 } else {
-                    let mut_kw = if ctx.mut_locals.contains(name.as_str()) {
-                        "mut "
-                    } else {
-                        ""
+                    let is_mutable = ctx.mut_locals.contains(name.as_str());
+                    let ty_str = ty_ann.as_ref().map(|t| crate::rust::type_to_rust(t));
+                    return RustExpr::Let {
+                        name: name.clone(),
+                        mutable: is_mutable,
+                        ty: ty_str,
+                        value: Box::new(RustExpr::Raw { text: rhs_str, ty: None }),
                     };
-                    if let Some(ty) = ty_ann {
-                        format!(
-                            "let {}{}: {} = {}",
-                            mut_kw,
-                            name,
-                            crate::rust::type_to_rust(ty),
-                            rhs_str
-                        )
-                    } else {
-                        format!("let {}{} = {}", mut_kw, name, rhs_str)
-                    }
                 }
             };
             RustExpr::Raw {
@@ -732,14 +742,22 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         && let Some(Expr::ArrayLit(items)) = call.args.first() {
                             let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
                             if items.len() == 1 {
-                                return RustExpr::Raw {
-                                    text: format!("{}.push({})", name, item_strs[0]),
-                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                return RustExpr::MethodCall {
+                                    receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                                    method: "push".to_string(),
+                                    args: vec![RustExpr::Raw { text: item_strs[0].clone(), ty: None }],
+                                    ty: None,
+                                    is_async: false,
+                                    is_fallible: false,
                                 };
                             } else {
-                                return RustExpr::Raw {
-                                    text: format!("{}.extend(vec![{}])", name, item_strs.join(", ")),
-                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                return RustExpr::MethodCall {
+                                    receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                                    method: "extend".to_string(),
+                                    args: vec![RustExpr::Raw { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
+                                    ty: None,
+                                    is_async: false,
+                                    is_fallible: false,
                                 };
                             }
                         }
@@ -751,10 +769,13 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 if ctx.is_local(name) {
                     format!("{} = {}", name, rhs_str)
                 } else {
-                    match ty_ann {
-                        Some(ty) => format!("let mut {}: {} = {}", name, crate::rust::type_to_rust(ty), rhs_str),
-                        None => format!("let mut {} = {}", name, rhs_str),
-                    }
+                    let ty_str = ty_ann.as_ref().map(|t| crate::rust::type_to_rust(t));
+                    return RustExpr::Let {
+                        name: name.clone(),
+                        mutable: true,
+                        ty: ty_str,
+                        value: Box::new(RustExpr::Raw { text: rhs_str, ty: None }),
+                    };
                 }
             };
             RustExpr::Raw {
@@ -766,14 +787,12 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         // ── Migrated: let pattern ────────────────────────────────────────
         Expr::LetPattern(pattern, inner_expr, ty_ann) => {
             let pat_str = pattern_to_rust(pattern);
-            let e = expr_to_rust(inner_expr, ctx);
-            let text = match ty_ann {
-                Some(ty) => format!("let {}: {} = {}", pat_str, crate::rust::type_to_rust(ty), e),
-                None => format!("let {} = {}", pat_str, e),
-            };
-            RustExpr::Raw {
-                text,
-                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            let e = lower_to_rust(inner_expr, ctx);
+            RustExpr::Let {
+                name: pat_str,
+                mutable: false,
+                ty: ty_ann.as_ref().map(|t| crate::rust::type_to_rust(t)),
+                value: Box::new(e),
             }
         }
 
