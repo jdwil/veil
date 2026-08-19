@@ -860,7 +860,7 @@ fn expr_to_ts(expr: &Expr) -> String {
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
         Expr::BoolLit(b) => b.to_string(),
-        Expr::StructLit(name, fields) => {
+        Expr::StructLit(_name, fields) => {
             let fs: Vec<String> = fields
                 .iter()
                 .map(|(k, v)| format!("{}: {}", k, expr_to_ts(v)))

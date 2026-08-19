@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use veil_ir::ast::*;
 use veil_ir::layer::{Shape, LayerRegistry};
 use super::*;
@@ -1032,7 +1031,7 @@ pub fn gen_local_harness_main(
                 continue;
             }
             let path_params = path_param_names(&path);
-            let needs_path = !path_params.is_empty();
+            let _needs_path = !path_params.is_empty();
             let has_non_path_inputs = svc.inputs.iter().any(|i| {
                 !registry.field_is_dependency(i)
                     && !path_params.iter().any(|p| p == &to_snake(&i.name))

@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use veil_ir::ast::*;
 use veil_ir::layer::{Shape, LayerRegistry};
 use super::*;

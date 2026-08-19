@@ -1,6 +1,5 @@
-use std::collections::HashSet;
 use veil_ir::ast::*;
-use veil_ir::layer::{Shape, LayerRegistry};
+use veil_ir::layer::LayerRegistry;
 use super::*;
 
 /// RT-001/004: InProcessBus + handler registry, driven only by the routing

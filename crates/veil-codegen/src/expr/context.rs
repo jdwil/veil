@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use veil_ir::ast::*;
-use veil_ir::layer::{Shape, StmtShape, LayerRegistry};
+use veil_ir::layer::{Shape, LayerRegistry};
 
 use crate::rust::to_snake;
 
