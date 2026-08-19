@@ -755,7 +755,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 let has_enum_patterns = arms.iter().any(|a| a.pattern.contains('.') || a.pattern.contains("::"));
                 let has_wildcard = arms.iter().any(|a| a.pattern == "_" || a.pattern == "else" || a.pattern.starts_with('_'));
                 if has_enum_patterns && !has_wildcard {
-                    out.push_str("        _ => unreachable!()\n");
+                    out.push_str("        _ => compile_error!(\"non-exhaustive match — add missing arm or wildcard\")\n");
                 }
                 out.push_str("    }");
                 out
@@ -909,7 +909,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                             if returns_option {
                                 "return None".to_string()
                             } else {
-                                "return /* null */ unreachable!(\"null return on non-Option\")"
+                                // Non-Option API with null: should be a check-time diagnostic
+                                "compile_error!(\"null return on non-Option function\")"
                                     .to_string()
                             }
                         } else if returns_option && !val.starts_with("Some(") {

@@ -1246,9 +1246,10 @@ fn generated_examples_compile() {
     // Cross-context orchestrator examples: library crates compile but the
     // harness binary has known wiring gaps (InMemory adapters for orchestrator
     // ports). Check with --exclude veil_bin.
-    let lib_only_fixtures = [
-        "examples/customer_onboarding.veil",
-    ];
+    // NOTE: customer_onboarding.veil has unstubbed http.post calls — it now
+    // correctly emits compile_error!() for those (fail-closed). Re-add once
+    // an http.stub is provided.
+    let lib_only_fixtures: [&str; 0] = [];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
     for rel in &fixtures {

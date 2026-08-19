@@ -421,9 +421,9 @@ pub fn default_ok_for(ret_rust: &str) -> String {
         "i64" | "i32" | "u64" | "u32" | "usize" | "isize" => "Ok(0)".to_string(),
         "f64" | "f32" => "Ok(0.0)".to_string(),
         "bool" => "Ok(false)".to_string(),
-        // Unknown concrete type: no guaranteed constructor. `todo!()` type-checks
-        // for any return type and marks the stub honestly (panics if reached).
-        _ => "todo!(\"stub — not yet implemented\")".to_string(),
+        // Unknown concrete type: no guaranteed constructor. compile_error!()
+        // makes the generated code fail at compile-time rather than panicking.
+        _ => "compile_error!(\"unknown return type — stub needed\")".to_string(),
     }
 }
 

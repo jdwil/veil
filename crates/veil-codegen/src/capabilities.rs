@@ -213,7 +213,7 @@ pub fn check_target_capabilities(
                     Severity::Warning,
                     &u,
                     tname,
-                    "codegen may emit todo!() for empty adapter bodies",
+                    "codegen will emit compile_error!() for empty adapter bodies",
                 ));
             }
             continue;

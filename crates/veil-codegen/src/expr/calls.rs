@@ -2348,7 +2348,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Not on a stub type / construct / local. Do not invent a crate or a
         // no-op hook — the .stub is the only third-party contract.
         format!(
-            "{{ todo!(\"unstubbed external `{}.{}` — install a .stub and call its types (@field + stub methods)\"); }}",
+            "compile_error!(\"unstubbed external `{}.{}` — install a .stub and call its types (@field + stub methods)\")",
             call.target,
             m_clean
         )

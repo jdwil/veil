@@ -827,7 +827,7 @@ pub fn gen_impls(
                 } else if mimpl.body.is_empty() {
                     // Empty adapter — compile-time placeholder; CHK-006 flags debt.
                     out.push_str(&format!(
-                        "        todo!(\"empty adapter body: {}::{}\")\n",
+                        "        compile_error!(\"implement adapter method: {}::{}\")\n",
                         c.name, mimpl.method_name
                     ));
                 } else {
@@ -1229,7 +1229,7 @@ pub fn in_memory_method_body(
     if ret.contains("Result<(),") {
         return "        Ok(())\n".into();
     }
-    format!("        unimplemented!(\"in-memory {entity}.{mname}\")\n")
+    format!("        compile_error!(\"implement in-memory {entity}.{mname}\")\n")
 }
 
 /// Recursively check if an expression contains a Return (ret) at any depth
