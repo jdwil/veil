@@ -5,7 +5,10 @@ use super::*;
 /// Translate a VEIL expression to a Rust expression string (no trailing semicolon).
 ///
 /// This is the production entry point. It lowers to the typed `RustExpr` IR
-/// and then emits the final string.
+/// and then emits the final string. Ownership analysis (clone insertion) is
+/// applied selectively in value positions (call arguments, assignment RHS)
+/// rather than at this top level, because many expressions here are statements
+/// or appear in non-consuming positions (comparisons, format args).
 pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
     if ctx.option_value_wrap && !expr_handles_option_wrap(expr) {
         let mut inner_ctx = ctx.clone_for_inference();

@@ -1693,11 +1693,10 @@ fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
             }
             StringPart::Expr(e) => {
                 fmt.push_str("{}");
-                // Args in format!() are by-reference (Display trait), but we
-                // still need to evaluate them. Use expr_to_rust for now to
-                // maintain byte-identical output with the old path.
+                // Args in format!() are by-reference (Display trait) — do NOT
+                // apply ownership analysis here; cloning would be wasteful.
                 args.push(RustExpr::Raw {
-                    text: expr_to_rust(e, ctx),
+                    text: emit(&lower_to_rust(e, ctx)),
                     ty: infer_expr_type(e, ctx).map(|s| RustType::parse(&s)),
                 });
             }
@@ -2230,6 +2229,10 @@ pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
             if raw_is_call_result(text) {
                 return expr;
             }
+            // Statements don't produce values — never clone them.
+            if raw_is_statement(text) {
+                return expr;
+            }
             RustExpr::Clone(Box::new(expr))
         }
         // Literals, FnCalls, MethodCalls produce owned values — no clone needed
@@ -2259,6 +2262,16 @@ fn is_already_owned(expr: &RustExpr) -> bool {
             | RustExpr::Array { .. }
             | RustExpr::Tuple { .. }
             | RustExpr::StructLit { .. }
+            | RustExpr::BinOp { .. }
+            | RustExpr::UnaryOp { .. }
+            | RustExpr::For { .. }
+            | RustExpr::While { .. }
+            | RustExpr::Loop { .. }
+            | RustExpr::Let { .. }
+            | RustExpr::Await(_)
+            | RustExpr::Try(_)
+            | RustExpr::MapErr { .. }
+            | RustExpr::Borrow { .. }
     )
 }
 
@@ -2293,6 +2306,30 @@ fn raw_is_call_result(text: &str) -> bool {
         || t.ends_with(".await?")
         || t.ends_with(".await")
         || t.ends_with(".unwrap()")
+}
+
+/// Whether a raw text expression is a statement (doesn't produce a value).
+/// Statements must not be cloned — they're used for side effects.
+fn raw_is_statement(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with("let ")
+        || t.starts_with("for ")
+        || t.starts_with("while ")
+        || t.starts_with("loop {")
+        || t.starts_with("if ")
+        || t.starts_with("match ")
+        || t.starts_with("return ")
+        || t.starts_with("return\n")
+        || t == "break"
+        || t == "continue"
+        || t.starts_with("state[")
+        || t.starts_with("self.")
+        || t.contains(" = ")
+        || t.contains(" += ")
+        || t.contains(" -= ")
+        || t.contains(" *= ")
+        || t.ends_with('}')
+        || t.starts_with("compile_error!")
 }
 
 /// Whether the expression's type is Copy (primitives, unit enums, refs).
@@ -2331,6 +2368,17 @@ fn is_expr_copy(expr: &RustExpr, ctx: &GenCtx) -> bool {
 /// needs cloning based on usage count, ref status, and copy type.
 fn should_clone_ident_ir(name: &str, ctx: &GenCtx) -> bool {
     if super::calls::is_copy_local(name, ctx) || super::types::is_unit_enum_variant(name, ctx) {
+        return false;
+    }
+    // Qualified enum paths (e.g. "Kind::Event") are values, not borrowable names.
+    // Either they're Copy unit variants or constructors — neither needs cloning.
+    if name.contains("::") {
+        return false;
+    }
+    // Uppercase non-local ident: likely an enum variant or type constant — don't clone.
+    if !ctx.is_local(name)
+        && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+    {
         return false;
     }
     // Shared-ref loop element (`for x in &xs`) is `&T`. Owned slots need `.clone()`.
