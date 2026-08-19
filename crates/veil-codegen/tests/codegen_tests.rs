@@ -237,7 +237,7 @@ pkg jobs v1
         out
     );
     assert!(out.contains("j.run().await?"), "trait method call not async/fallible:\n{}", out);
-    assert!(out.contains("return Ok(())"), "`ret Ok` mistranslated:\n{}", out);
+    assert!(out.contains("return Ok(())") || out.contains("Ok(())\n}"), "`ret Ok` mistranslated:\n{}", out);
     assert!(!out.contains("Ok(Ok)"), "`ret Ok` double-wrapped");
 }
 
@@ -266,8 +266,8 @@ pkg mini v1
         out
     );
     // Reassignment to a `mut` var must not shadow (no second `let`).
-    assert!(out.contains("total = total + x;"), "mut reassignment shadowed:\n{}", out);
-    assert!(!out.contains("let total = total + x"), "reassignment emitted as let-shadow");
+    assert!(out.contains("total = total + x;") || out.contains("total += x;"), "mut reassignment shadowed:\n{}", out);
+    assert!(!out.contains("let total = total + x") && !out.contains("let total += x"), "reassignment emitted as let-shadow");
 }
 
 #[test]
@@ -1292,6 +1292,20 @@ fn generated_examples_compile() {
             "{} generated code fails cargo check:\n{}",
             example.display(),
             String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Run cargo clippy (deny all warnings)
+        let clippy = Command::new("cargo")
+            .args(["clippy", "--", "-D", "warnings"])
+            .current_dir(&tmp)
+            .output()
+            .expect("failed to run cargo clippy");
+
+        assert!(
+            clippy.status.success(),
+            "{} generated code fails clippy:\n{}",
+            example.display(),
+            String::from_utf8_lossy(&clippy.stderr)
         );
 
         // Cleanup

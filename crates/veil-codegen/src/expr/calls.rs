@@ -490,6 +490,9 @@ pub fn list_index_get_rust(base_rust: &str, idx_rust: &str, base: &Expr, ctx: &G
     // Integer literals are already `usize`-compatible for `get`.
     let idx = if idx_rust.chars().all(|c| c.is_ascii_digit()) {
         idx_rust.to_string()
+    } else if idx_rust.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        // Simple identifier — no parens needed for `as usize`.
+        format!("{idx_rust} as usize")
     } else {
         format!("({idx_rust}) as usize")
     };
@@ -872,7 +875,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 let idx = expr_to_rust(&call.args[0], ctx);
                 let fallback = Expr::Ident(call.target.clone());
                 let recv_expr = call.receiver.as_deref().unwrap_or(&fallback);
-                return list_index_get_rust(&base, &format!("({idx})"), recv_expr, ctx);
+                return list_index_get_rust(&base, &idx, recv_expr, ctx);
             }
         }
         if (call.method == "first" || call.method == "first!") && call.args.is_empty() {

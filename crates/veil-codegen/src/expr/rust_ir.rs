@@ -182,6 +182,23 @@ pub enum RustExpr {
         ty: Option<String>,
         value: Box<RustExpr>,
     },
+
+    /// `serde_json::json!({ "key": value, ... })` macro invocation.
+    /// Entries are key-value pairs rendered inside the json! braces.
+    /// Values that are already `RustExpr` get emitted inline (identifiers,
+    /// clones, string literals, nested json! calls, vec![...], etc.).
+    JsonMacro {
+        entries: Vec<(String, RustExpr)>,
+    },
+
+    /// `serde_json::Value::Null`
+    JsonNull,
+
+    /// `serde_json::Value::Array(vec![])`
+    JsonEmptyArray,
+
+    /// `vec![a, b, c]` (for json! array arguments)
+    VecMacro(Vec<RustExpr>),
 }
 
 // ─── emit() ──────────────────────────────────────────────────────────────────
@@ -292,6 +309,19 @@ pub fn emit(expr: &RustExpr) -> String {
                 .map(|t| format!(": {}", t))
                 .unwrap_or_default();
             format!("let {}{}{} = {}", mut_kw, name, ty_ann, emit(value))
+        }
+        RustExpr::JsonMacro { entries } => {
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("\"{}\": {}", k, emit(v)))
+                .collect();
+            format!("serde_json::json!({{ {} }})", parts.join(", "))
+        }
+        RustExpr::JsonNull => "serde_json::Value::Null".to_string(),
+        RustExpr::JsonEmptyArray => "serde_json::Value::Array(vec![])".to_string(),
+        RustExpr::VecMacro(items) => {
+            let vals: Vec<String> = items.iter().map(emit).collect();
+            format!("vec![{}]", vals.join(", "))
         }
     }
 }
@@ -673,25 +703,239 @@ fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
     }
 }
 
+// ─── Bus routing IR (structured envelope/message builders) ───────────────────
+
+/// Convert a VEIL expression to a `RustExpr` for use in JSON argument positions
+/// (inside `serde_json::json!({...})` envelopes and messages).
+///
+/// Mirrors the logic of `to_json_arg()` in translate.rs but produces structured
+/// nodes instead of formatted strings.
+fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
+    match expr {
+        Expr::Ident(name) => {
+            // VEIL null → JSON null
+            if name == "null" {
+                return RustExpr::JsonNull;
+            }
+            // Shared step-state value → state["name"].clone()
+            if ctx.state_locals.contains(name.as_str()) {
+                return RustExpr::Raw {
+                    text: format!("state[\"{}\"].clone()", name),
+                    ty: Some(RustType::Json),
+                };
+            }
+            // Struct-captured input (step impl) → self.<field>.clone()
+            if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
+                return RustExpr::Clone(Box::new(RustExpr::FieldAccess {
+                    base: Box::new(RustExpr::Ident { name: "self".to_string(), ty: None }),
+                    field: to_snake(name),
+                    ty: None,
+                }));
+            }
+            // Local variable → name.clone()
+            if ctx.is_local(name) {
+                return RustExpr::Clone(Box::new(RustExpr::Ident {
+                    name: name.clone(),
+                    ty: None,
+                }));
+            }
+            // Non-local bare ident → symbolic string (enum variant, marker)
+            RustExpr::StringLit(name.clone())
+        }
+        Expr::FieldAccess(base, field) => {
+            // Field of a state-local → state["name"]["field"].clone()
+            if let Expr::Ident(name) = base.as_ref() {
+                if ctx.state_locals.contains(name.as_str()) {
+                    return RustExpr::Raw {
+                        text: format!("state[\"{}\"][\"{}\"].clone()", name, field),
+                        ty: Some(RustType::Json),
+                    };
+                }
+                // serde_json::Value local → name["field"].clone()
+                if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
+                    return RustExpr::Raw {
+                        text: format!("{}[\"{}\"].clone()", name, field),
+                        ty: Some(RustType::Json),
+                    };
+                }
+            }
+            // Otherwise serialize base then index
+            let base_ir = to_json_arg_ir(base, ctx);
+            RustExpr::Raw {
+                text: format!("serde_json::json!({})[\"{}\"].clone()", emit(&base_ir), field),
+                ty: Some(RustType::Json),
+            }
+        }
+        Expr::ArrayLit(items) if items.is_empty() => RustExpr::JsonEmptyArray,
+        Expr::ArrayLit(items) => {
+            let vals: Vec<RustExpr> = items.iter().map(|e| to_json_arg_ir(e, ctx)).collect();
+            RustExpr::VecMacro(vals)
+        }
+        _ => {
+            // Fall back to the existing string-based expr rendering
+            RustExpr::Raw {
+                text: expr_to_rust(expr, ctx),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+    }
+}
+
+/// Build a structured `RustExpr::JsonMacro` for a named message payload
+/// (desugared `invoke MessageType { field: val, ... }`).
+///
+/// Emits: `serde_json::json!({ "type": "Name", "field1": val1, ... })`
+fn json_message_ir(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> RustExpr {
+    let mut entries: Vec<(String, RustExpr)> = Vec::with_capacity(fields.len() + 1);
+    entries.push(("type".to_string(), RustExpr::StringLit(name.to_string())));
+    for (k, v) in fields {
+        entries.push((k.clone(), to_json_arg_ir(v, ctx)));
+    }
+    RustExpr::JsonMacro { entries }
+}
+
+/// Build a structured `RustExpr::JsonMacro` for a cross-boundary JSON envelope.
+///
+/// Emits: `serde_json::json!({ "target": "T", "method": "m", "args": [...] })`
+fn json_envelope_ir(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> RustExpr {
+    let arg_vals: Vec<RustExpr> = args.iter().map(|a| to_json_arg_ir(a, ctx)).collect();
+    let entries = vec![
+        ("target".to_string(), RustExpr::StringLit(target.to_string())),
+        ("method".to_string(), RustExpr::StringLit(method.to_string())),
+        ("args".to_string(), RustExpr::VecMacro(arg_vals)),
+    ];
+    RustExpr::JsonMacro { entries }
+}
+
+/// Attempt to lower a bus routing call to structured `RustExpr`.
+///
+/// Handles three paths:
+/// 1. Routing trait calls (`ctx.routing_traits`) with json_message/envelope args
+/// 2. Typed bus decode (invoke/request with known return type → from_value)
+/// 3. Envelope routing (cross-boundary calls via `routing_ref.invoke(envelope)`)
+///
+/// Returns `Some(RustExpr)` if the call was handled, `None` to fall through.
+fn lower_call_bus_routing(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
+    use super::inference::{bus_message_name_from_args, bus_return_type_in_scope};
+
+    // ── Path 1 & 2: Trait-shaped target with routing_traits ──────────────────
+    if ctx.is_trait_target(&call.target) && ctx.routing_traits.contains(&call.target) {
+        let dep_name = ctx.deps_field_for(&call.target);
+        let method = if call.method.is_empty() { "call" } else { &call.method };
+
+        // Build the JSON payload (sugar path or direct call)
+        let payload_ir = if call.sugar.is_some() {
+            match call.args.first() {
+                Some(Expr::StructLit(name, fields)) => json_message_ir(name, fields, ctx),
+                Some(Expr::Ident(evt)) => {
+                    // Simple event identifier → json!({ "type": "EventName" })
+                    let entries = vec![
+                        ("type".to_string(), RustExpr::StringLit(evt.clone())),
+                    ];
+                    RustExpr::JsonMacro { entries }
+                }
+                _ => json_envelope_ir(&call.target, method, &call.args, ctx),
+            }
+        } else {
+            // Direct routing-trait call: these use clone_args style, not JSON envelope.
+            // This sub-path does NOT produce a JSON envelope — it passes args directly.
+            // Fall through to the old path for now; only sugar-based routing uses envelopes.
+            return None;
+        };
+
+        // Build the receiver reference
+        let rref = if ctx.routing_ref.is_empty() {
+            format!("deps.{}", dep_name)
+        } else {
+            ctx.routing_ref.clone()
+        };
+        let bare = to_snake(method);
+
+        // The base call: routing_ref.method(payload).await?
+        let base_call = RustExpr::MethodCall {
+            receiver: Box::new(RustExpr::Ident { name: rref, ty: None }),
+            method: bare.clone(),
+            args: vec![payload_ir],
+            ty: Some(RustType::Json),
+            is_async: true,
+            is_fallible: true,
+        };
+
+        // Path 2: Typed bus decode for invoke/request with known return type
+        if matches!(bare.as_str(), "invoke" | "request") {
+            let decode = bus_message_name_from_args(&call.args)
+                .and_then(|msg| ctx.bus_returns.get(&msg).map(|ret| (msg, ret.clone())));
+            if let Some((_msg, ref ret)) = decode.filter(|(_, r)| bus_return_type_in_scope(ctx, r)) {
+                // serde_json::from_value::<RetType>(call_expr).map_err(|e| Error::External(...))?
+                let from_value = RustExpr::FnCall {
+                    path: format!("serde_json::from_value::<{}>", ret),
+                    args: vec![base_call],
+                    ty: Some(RustType::parse(ret)),
+                };
+                return Some(RustExpr::MapErr {
+                    inner: Box::new(from_value),
+                    variant: ctx.error_model.external_path(),
+                });
+            }
+        }
+
+        return Some(base_call);
+    }
+
+    // ── Path 3: Envelope routing (cross-boundary calls) ──────────────────────
+    let is_lang_target = matches!(
+        call.target.as_str(),
+        "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Int" | "UUID"
+    );
+    let is_typed_local = ctx.is_local(&call.target) && ctx.local_type(&call.target).is_some();
+    if ctx.envelope_routing
+        && !is_lang_target
+        && !is_typed_local
+        && !ctx.stub_pkg_crate.contains_key(&call.target)
+        && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty())
+    {
+        let method = if call.method.is_empty() { "new" } else { &call.method };
+        let rref = if ctx.routing_ref.is_empty() {
+            "deps".to_string()
+        } else {
+            ctx.routing_ref.clone()
+        };
+        let envelope = json_envelope_ir(&call.target, method, &call.args, ctx);
+        let invoke_call = RustExpr::MethodCall {
+            receiver: Box::new(RustExpr::Ident { name: rref, ty: None }),
+            method: "invoke".to_string(),
+            args: vec![envelope],
+            ty: Some(RustType::Json),
+            is_async: true,
+            is_fallible: true,
+        };
+        return Some(invoke_call);
+    }
+
+    None
+}
+
 // ─── lower_call ──────────────────────────────────────────────────────────────
 
 /// Lower `Expr::Call` to structured `RustExpr`.
 ///
 /// Strategy: handle the common patterns structurally, fall through to
 /// `RustExpr::Raw` wrapping `translate_call` for complex sub-paths that
-/// are not worth migrating now (bus routing, SDK builder chains, etc.).
+/// are not worth migrating now (SDK builder chains, etc.).
 ///
-/// Common paths that get structural `RustExpr`:
-/// - Trait/port calls → `deps.field.method(args).await?`
-/// - Struct constructors → `Type::new(args)`
-/// - Local method calls → `target.method(args)`
+/// Migrated paths:
+/// - Bus routing (envelope/message JSON calls via routing traits)
+/// - Cross-boundary envelope routing
 ///
 /// The key win: async/fallible suffixes become structural composition
 /// (`RustExpr::Await`, `RustExpr::Try`) instead of string appending.
 fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
-    // For this session, wrap the entire translate_call output as Raw.
-    // The structural migration of call sub-paths will be done incrementally:
-    // the type annotation is the immediate win — apply_ownership can use it.
+    // Try structured bus routing first
+    if let Some(expr) = lower_call_bus_routing(call, ctx) {
+        return expr;
+    }
+
+    // Fall through to Raw wrapping translate_call for everything else
     let text = super::calls::translate_call(call, ctx);
     let ty = infer_call_type(call, &text, ctx);
     RustExpr::Raw { text, ty }
@@ -798,6 +1042,10 @@ fn is_already_owned(expr: &RustExpr) -> bool {
             | RustExpr::Block { .. }
             | RustExpr::If { .. }
             | RustExpr::Match { .. }
+            | RustExpr::JsonMacro { .. }
+            | RustExpr::JsonNull
+            | RustExpr::JsonEmptyArray
+            | RustExpr::VecMacro(_)
     )
 }
 
@@ -1031,7 +1279,18 @@ pub fn suppress_try_in_closure(expr: RustExpr) -> RustExpr {
         | RustExpr::StringLit(_)
         | RustExpr::IntLit(_)
         | RustExpr::FloatLit(_)
-        | RustExpr::BoolLit(_) => expr,
+        | RustExpr::BoolLit(_)
+        | RustExpr::JsonNull
+        | RustExpr::JsonEmptyArray => expr,
+        RustExpr::JsonMacro { entries } => RustExpr::JsonMacro {
+            entries: entries
+                .into_iter()
+                .map(|(k, v)| (k, suppress_try_in_closure(v)))
+                .collect(),
+        },
+        RustExpr::VecMacro(items) => {
+            RustExpr::VecMacro(items.into_iter().map(suppress_try_in_closure).collect())
+        }
     }
 }
 

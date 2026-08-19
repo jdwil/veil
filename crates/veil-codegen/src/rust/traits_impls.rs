@@ -174,10 +174,23 @@ futures = "0.3"
             params,
             ret,
         ));
-        for expr in &f.body {
+        for (i, expr) in f.body.iter().enumerate() {
             // stmt_to_rust tracks let-bindings so `mut x` then `x = ..` becomes
             // a declaration then a reassignment (not shadowing).
-            lib.push_str(&format!("    {}\n", stmt_to_rust(expr, &mut ctx)));
+            let mut line = stmt_to_rust(expr, &mut ctx);
+            // In tail position, strip `return ` since Rust allows expression-return.
+            // This avoids clippy::needless_return.
+            let is_last = i == f.body.len() - 1;
+            if is_last {
+                // stmt_to_rust returns "    return Ok(...);" — strip the return keyword
+                // and trailing semicolon so it becomes a tail expression.
+                if let Some(stripped) = line.strip_prefix("    return ") {
+                    let stripped = stripped.strip_suffix(';').unwrap_or(stripped);
+                    line = format!("    {}", stripped);
+                }
+            }
+            lib.push_str(&line);
+            lib.push('\n');
         }
         // Ensure a trailing Ok for () returns when the body didn't `ret`.
         let ends_in_return = matches!(f.body.last(), Some(Expr::Return(_)));

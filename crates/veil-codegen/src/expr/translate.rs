@@ -403,6 +403,23 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 format!("self.{} = {}", to_snake(name), rhs_str)
             } else if ctx.is_local(name) {
                 // Already-declared local (e.g. a `mut` var) → reassignment, no `let`.
+                // Emit compound assignment (+=, -=, *=) when RHS is `name op expr`.
+                if let Expr::BinaryOp(bin) = rhs.as_ref() {
+                    if let Expr::Ident(left) = bin.left.as_ref() {
+                        if left == name {
+                            let op_str = match bin.op {
+                                veil_ir::ast::BinOp::Add => Some("+="),
+                                veil_ir::ast::BinOp::Sub => Some("-="),
+                                veil_ir::ast::BinOp::Mul => Some("*="),
+                                _ => None,
+                            };
+                            if let Some(op) = op_str {
+                                let right_str = expr_to_rust(&bin.right, ctx);
+                                return format!("{} {} {}", name, op, right_str);
+                            }
+                        }
+                    }
+                }
                 format!("{} = {}", name, rhs_str)
             } else {
                 let mut_kw = if ctx.mut_locals.contains(name.as_str()) {
