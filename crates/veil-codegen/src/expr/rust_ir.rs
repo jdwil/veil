@@ -16,10 +16,18 @@ use veil_ir::ast::{Expr, StringPart};
 use veil_ir::layer::Shape;
 use crate::rust::to_snake;
 use super::context::GenCtx;
-use super::translate::legacy_expr_to_rust;
-use super::inference::infer_expr_type;
-use super::types::rust_string_lit;
-use super::calls::{resolve_self_field_name, is_json_rooted_expr, is_json_type_name};
+use super::translate::{expr_to_rust, to_json_arg};
+use super::inference::{infer_expr_type, binop_to_rust, unaryop_to_rust, normalize_match_pattern, element_type_of};
+use super::types::{rust_string_lit, rust_string_lit_owned, expr_is_stringish, expr_is_numeric,
+    flatten_str_add_chain, clone_if_named_value, clone_for_reuse, strip_try_suffix,
+    peel_option_rust, rust_ty_is_stringish, rust_ty_is_copy, rust_ty_is_unit_enum,
+    expr_to_rust_value, field_access_is_copy};
+use super::calls::{resolve_self_field_name, is_json_rooted_expr, is_json_type_name,
+    expr_is_json, list_index_get_rust};
+use super::patterns::{pattern_to_rust, pattern_to_rust_qualified, pattern_binding_names,
+    emit_tracked_block, emit_value_block};
+use super::actions::translate_action;
+use super::analysis::analyze_mut_locals;
 
 // ─── RustType ────────────────────────────────────────────────────────────────
 
@@ -351,10 +359,63 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         Expr::StringInterp(parts) => lower_string_interp(parts, ctx),
 
         // ── Migrated: binary and unary ops ───────────────────────────────
-        Expr::BinaryOp(_) | Expr::UnaryOp(_) => RustExpr::Raw {
-            text: legacy_expr_to_rust(expr, ctx),
-            ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
-        },
+        Expr::BinaryOp(op) => {
+            let l = expr_to_rust(&op.left, ctx);
+            let r = expr_to_rust(&op.right, ctx);
+            let text = {
+                // Special case: x != None → x.is_some(), x == None → x.is_none()
+                if r == "None" {
+                    match op.op {
+                        veil_ir::ast::BinOp::NotEq => format!("{}.is_some()", l),
+                        veil_ir::ast::BinOp::Eq => format!("{}.is_none()", l),
+                        _ => format!("{} {} {}", l, binop_to_rust(&op.op), r),
+                    }
+                } else if l == "None" {
+                    match op.op {
+                        veil_ir::ast::BinOp::NotEq => format!("{}.is_some()", r),
+                        veil_ir::ast::BinOp::Eq => format!("{}.is_none()", r),
+                        _ => format!("{} {} {}", l, binop_to_rust(&op.op), r),
+                    }
+                } else if matches!(op.op, veil_ir::ast::BinOp::Add)
+                    && (r.starts_with("vec![") || l.starts_with("vec!["))
+                {
+                    format!("{{ let mut __v = {l}; __v.extend({r}); __v }}")
+                } else if matches!(op.op, veil_ir::ast::BinOp::Add)
+                    && (expr_is_stringish(&op.left, &l, ctx) || expr_is_stringish(&op.right, &r, ctx))
+                    && !(expr_is_numeric(&op.left, ctx) && expr_is_numeric(&op.right, ctx))
+                {
+                    let parts = flatten_str_add_chain(expr);
+                    if parts.len() >= 2 {
+                        let rendered: Vec<String> = parts
+                            .into_iter()
+                            .map(|p| {
+                                let s = expr_to_rust(p, ctx);
+                                clone_if_named_value(p, s)
+                            })
+                            .collect();
+                        let holes = vec!["{}"; rendered.len()].join("");
+                        format!("format!(\"{holes}\", {})", rendered.join(", "))
+                    } else {
+                        let l = clone_if_named_value(&op.left, l);
+                        let r = clone_if_named_value(&op.right, r);
+                        format!("format!(\"{{}}{{}}\", {l}, {r})")
+                    }
+                } else {
+                    format!("{} {} {}", l, binop_to_rust(&op.op), r)
+                }
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+        Expr::UnaryOp(op) => {
+            let inner = expr_to_rust(&op.expr, ctx);
+            RustExpr::Raw {
+                text: format!("{}{}", unaryop_to_rust(&op.op), inner),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
 
         // ── Migrated: calls ──────────────────────────────────────────────
         Expr::Call(call) => lower_call(call, ctx),
@@ -362,9 +423,808 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         // ── Migrated: closures ───────────────────────────────────────────
         Expr::Closure { params, body } => lower_closure(params, body, ctx),
 
-        // ── Everything else: fallback to old path ────────────────────────
-        _ => RustExpr::Raw {
-            text: legacy_expr_to_rust(expr, ctx),
+        // ── Migrated: assign ─────────────────────────────────────────────
+        Expr::Assign(name, rhs, ty_ann) => {
+            let text = {
+                // List append sugar: `out = out + [x]` → `out.push(x)`
+                if let Expr::BinaryOp(bin) = rhs.as_ref() {
+                    if matches!(bin.op, veil_ir::ast::BinOp::Add) {
+                        if let (Expr::Ident(left), Expr::ArrayLit(items)) =
+                            (bin.left.as_ref(), bin.right.as_ref())
+                        {
+                            if left == name && items.len() == 1 {
+                                let item = expr_to_rust(&items[0], ctx);
+                                if let Expr::Ident(item_name) = &items[0] {
+                                    if let Some(ty) = ctx.local_type(item_name) {
+                                        if ty.starts_with("Option<") {
+                                            return RustExpr::Raw {
+                                                text: format!(
+                                                    "{}.push({}.clone().ok_or({})?)",
+                                                    name, item, ctx.error_model.not_found_path()
+                                                ),
+                                                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                            };
+                                        }
+                                    }
+                                }
+                                return RustExpr::Raw {
+                                    text: format!("{}.push({})", name, item),
+                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                };
+                            }
+                        }
+                    }
+                }
+                // List concat sugar: `x = x.concat([items])` → `x.extend(vec![items])`
+                if let Expr::Call(call) = rhs.as_ref() {
+                    let bare_m = call.method.trim_end_matches('!');
+                    if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
+                        if let Some(Expr::ArrayLit(items)) = call.args.first() {
+                            let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
+                            if items.len() == 1 {
+                                return RustExpr::Raw {
+                                    text: format!("{}.push({})", name, item_strs[0]),
+                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                };
+                            } else {
+                                return RustExpr::Raw {
+                                    text: format!("{}.extend(vec![{}])", name, item_strs.join(", ")),
+                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                };
+                            }
+                        }
+                    }
+                }
+                let rhs_str = match rhs.as_ref() {
+                    Expr::StringLit(s) => rust_string_lit_owned(s),
+                    _ => expr_to_rust(rhs, ctx),
+                };
+                // Field assignment: `wt.name = x`
+                if name.contains('.') {
+                    let parts: Vec<&str> = name.splitn(2, '.').collect();
+                    let base_name = parts[0];
+                    let field_path = parts[1];
+                    if let Some(ty) = ctx.local_type(base_name) {
+                        if ty.starts_with("Option<") {
+                            let field_snake = field_path
+                                .split('.')
+                                .map(|s| to_snake(s))
+                                .collect::<Vec<_>>()
+                                .join(".");
+                            return RustExpr::Raw {
+                                text: format!(
+                                    "{}.as_mut().ok_or({})?.{} = {}",
+                                    base_name, ctx.error_model.not_found_path(), field_snake, rhs_str
+                                ),
+                                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                            };
+                        }
+                    }
+                    let path = name
+                        .split('.')
+                        .enumerate()
+                        .map(|(i, seg)| {
+                            if i == 0 {
+                                seg.to_string()
+                            } else {
+                                to_snake(seg)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    format!("{} = {}", path, rhs_str)
+                } else if ctx.state_locals.contains(name.as_str()) {
+                    format!("state[\"{}\"] = serde_json::json!({})", name, rhs_str)
+                } else if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
+                    format!("self.{} = {}", to_snake(name), rhs_str)
+                } else if ctx.is_local(name) {
+                    // Already-declared local → reassignment
+                    if let Expr::BinaryOp(bin) = rhs.as_ref() {
+                        if let Expr::Ident(left) = bin.left.as_ref() {
+                            if left == name {
+                                let op_str = match bin.op {
+                                    veil_ir::ast::BinOp::Add => Some("+="),
+                                    veil_ir::ast::BinOp::Sub => Some("-="),
+                                    veil_ir::ast::BinOp::Mul => Some("*="),
+                                    _ => None,
+                                };
+                                if let Some(op) = op_str {
+                                    let right_str = expr_to_rust(&bin.right, ctx);
+                                    return RustExpr::Raw {
+                                        text: format!("{} {} {}", name, op, right_str),
+                                        ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    format!("{} = {}", name, rhs_str)
+                } else {
+                    let mut_kw = if ctx.mut_locals.contains(name.as_str()) {
+                        "mut "
+                    } else {
+                        ""
+                    };
+                    if let Some(ty) = ty_ann {
+                        format!(
+                            "let {}{}: {} = {}",
+                            mut_kw,
+                            name,
+                            crate::rust::type_to_rust(ty),
+                            rhs_str
+                        )
+                    } else {
+                        format!("let {}{} = {}", mut_kw, name, rhs_str)
+                    }
+                }
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: mut assign ─────────────────────────────────────────
+        Expr::MutAssign(name, rhs, ty_ann) => {
+            let text = {
+                // List concat sugar
+                if let Expr::Call(call) = rhs.as_ref() {
+                    let bare_m = call.method.trim_end_matches('!');
+                    if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
+                        if let Some(Expr::ArrayLit(items)) = call.args.first() {
+                            let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
+                            if items.len() == 1 {
+                                return RustExpr::Raw {
+                                    text: format!("{}.push({})", name, item_strs[0]),
+                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                };
+                            } else {
+                                return RustExpr::Raw {
+                                    text: format!("{}.extend(vec![{}])", name, item_strs.join(", ")),
+                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                };
+                            }
+                        }
+                    }
+                }
+                let rhs_str = match rhs.as_ref() {
+                    Expr::StringLit(s) => rust_string_lit_owned(s),
+                    _ => expr_to_rust(rhs, ctx),
+                };
+                if ctx.is_local(name) {
+                    format!("{} = {}", name, rhs_str)
+                } else {
+                    match ty_ann {
+                        Some(ty) => format!("let mut {}: {} = {}", name, crate::rust::type_to_rust(ty), rhs_str),
+                        None => format!("let mut {} = {}", name, rhs_str),
+                    }
+                }
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: let pattern ────────────────────────────────────────
+        Expr::LetPattern(pattern, inner_expr, ty_ann) => {
+            let pat_str = pattern_to_rust(pattern);
+            let e = expr_to_rust(inner_expr, ctx);
+            let text = match ty_ann {
+                Some(ty) => format!("let {}: {} = {}", pat_str, crate::rust::type_to_rust(ty), e),
+                None => format!("let {} = {}", pat_str, e),
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: if expression ──────────────────────────────────────
+        Expr::IfExpr(ie) => {
+            let text = {
+                let mut cond_ctx = ctx.clone_for_inference();
+                cond_ctx.option_value_wrap = false;
+                let cond = expr_to_rust(&ie.condition, &cond_ctx);
+                let cond = if let Expr::Ident(name) = ie.condition.as_ref() {
+                    if ctx.local_type(name) == Some("serde_json::Value") {
+                        format!("{}.as_bool().unwrap_or(false)", name)
+                    } else { cond }
+                } else { cond };
+                let then_is_stmt = matches!(
+                    ie.then_body.first(),
+                    Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _))
+                );
+                let else_is_stmt = ie.else_body.as_ref().is_some_and(|b| {
+                    matches!(b.first(), Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _)))
+                });
+                if ie.then_body.len() == 1
+                    && ie.else_body.as_ref().map_or(false, |b| b.len() == 1)
+                    && !then_is_stmt
+                    && !else_is_stmt
+                {
+                    let then_expr = expr_to_rust_value(&ie.then_body[0], ctx);
+                    let else_expr = expr_to_rust_value(&ie.else_body.as_ref().unwrap()[0], ctx);
+                    format!("if {} {{ {} }} else {{ {} }}", cond, then_expr, else_expr)
+                } else if ctx.option_value_wrap {
+                    let then_body = emit_value_block(&ie.then_body, ctx, "    ");
+                    if let Some(else_body) = &ie.else_body {
+                        let else_stmts = emit_value_block(else_body, ctx, "    ");
+                        format!(
+                            "if {} {{\n{}\n}} else {{\n{}\n}}",
+                            cond, then_body, else_stmts
+                        )
+                    } else {
+                        format!("if {} {{\n{}\n}} else {{\n    None\n}}", cond, then_body)
+                    }
+                } else {
+                    let then_body = emit_tracked_block(&ie.then_body, ctx, "    ");
+                    if let Some(else_body) = &ie.else_body {
+                        let else_stmts = emit_tracked_block(else_body, ctx, "    ");
+                        format!("if {} {{\n{}\n}} else {{\n{}\n}}", cond, then_body, else_stmts)
+                    } else {
+                        format!("if {} {{\n{}\n}}", cond, then_body)
+                    }
+                }
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: match ──────────────────────────────────────────────
+        Expr::Match(scrutinee, arms) => {
+            let text = {
+                let mut scrut_ctx = ctx.clone_for_inference();
+                scrut_ctx.option_value_wrap = false;
+                let raw = expr_to_rust(scrutinee, &scrut_ctx);
+                let has_string_patterns = arms.iter().any(|a| a.pattern.starts_with('"'));
+                let scrutinee_str = if has_string_patterns {
+                    raw.clone()
+                } else {
+                    strip_try_suffix(raw)
+                };
+                let scrutinee_str = if let Expr::Ident(name) = scrutinee.as_ref() {
+                    if ctx.local_type(name) == Some("serde_json::Value") {
+                        let first_pat = arms.first().map(|a| &a.pattern).cloned().unwrap_or_default();
+                        let has_enum_pat = first_pat.contains("::")
+                            || first_pat.contains('.')
+                            || first_pat.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                        if has_enum_pat && !first_pat.starts_with('"') && first_pat != "_" {
+                            let enum_type = first_pat.split(|c| c == '.' || c == ':')
+                                .next().unwrap_or(&first_pat)
+                                .split('{').next().unwrap_or(&first_pat).trim();
+                            format!("serde_json::from_value::<{}>({}.clone()).unwrap()", enum_type, name)
+                        } else {
+                            scrutinee_str
+                        }
+                    } else {
+                        scrutinee_str
+                    }
+                } else {
+                    scrutinee_str
+                };
+                let scrutinee_final = if has_string_patterns {
+                    let t = scrutinee_str.trim();
+                    if t.ends_with(".as_str()") || t.ends_with(".as_str().trim()") {
+                        scrutinee_str
+                    } else {
+                        format!("{scrutinee_str}.as_str()")
+                    }
+                } else {
+                    scrutinee_str
+                };
+                let has_enum_patterns = arms.iter().any(|a| a.pattern.contains('.') || a.pattern.contains("::"));
+                let scrutinee_is_local_ident = if let Expr::Ident(name) = scrutinee.as_ref() {
+                    ctx.is_local(name) && !has_string_patterns
+                } else {
+                    false
+                };
+                let scrutinee_final = if scrutinee_is_local_ident && has_enum_patterns {
+                    format!("{}.clone()", scrutinee_final)
+                } else {
+                    scrutinee_final
+                };
+                let mut out = format!("match {} {{\n", scrutinee_final);
+                for arm in arms {
+                    let pattern = if let Some(rich) = &arm.rich_pattern {
+                        pattern_to_rust_qualified(rich, Some(&ctx.enum_variants))
+                    } else {
+                        normalize_match_pattern(&arm.pattern, ctx)
+                    };
+                    let guard_str = match &arm.guard {
+                        Some(g) => format!(" if {}", expr_to_rust(g, &scrut_ctx)),
+                        None => String::new(),
+                    };
+                    let mut arm_ctx = ctx.clone_for_inference();
+                    for name in pattern_binding_names(&arm.pattern) {
+                        arm_ctx.locals.insert(name);
+                    }
+                    arm_ctx.mut_locals.extend(analyze_mut_locals(&arm.body));
+                    let body_str = if arm.body.len() == 1 {
+                        expr_to_rust_value(&arm.body[0], &arm_ctx)
+                    } else {
+                        format!(
+                            "{{\n{}\n    }}",
+                            emit_value_block(&arm.body, &arm_ctx, "        ")
+                        )
+                    };
+                    out.push_str(&format!("        {}{} => {},\n", pattern, guard_str, body_str));
+                }
+                let has_enum_patterns = arms.iter().any(|a| a.pattern.contains('.') || a.pattern.contains("::"));
+                let has_wildcard = arms.iter().any(|a| a.pattern == "_" || a.pattern == "else" || a.pattern.starts_with('_'));
+                if has_enum_patterns && !has_wildcard {
+                    out.push_str("        _ => unreachable!()\n");
+                }
+                out.push_str("    }");
+                out
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: for loop ───────────────────────────────────────────
+        Expr::ForLoop { binding, index, iterable, body } => {
+            let text = {
+                let mut iter_str = expr_to_rust(iterable, ctx);
+                let elem_copy = element_type_of(iterable, ctx)
+                    .as_deref()
+                    .is_some_and(|t| rust_ty_is_copy(t) || rust_ty_is_unit_enum(t, ctx));
+                let iterable_is_call = matches!(iterable.as_ref(), Expr::Call(_));
+                if !elem_copy
+                    && !iterable_is_call
+                    && !iter_str.starts_with('&')
+                    && !iter_str.ends_with(".iter()")
+                    && !iter_str.ends_with(".into_iter()")
+                {
+                    let base = iter_str
+                        .strip_suffix(".clone()")
+                        .unwrap_or(iter_str.as_str());
+                    iter_str = format!("&{base}");
+                } else if matches!(iterable.as_ref(), Expr::FieldAccess(_, _))
+                    && !iter_str.ends_with(".clone()")
+                    && !iter_str.ends_with(".iter()")
+                {
+                    iter_str = format!("{iter_str}.clone()");
+                }
+                let bind = if let Some(idx) = index {
+                    format!("({}, {})", idx, binding)
+                } else {
+                    binding.clone()
+                };
+                let mut body_ctx = ctx.clone_for_inference();
+                body_ctx.locals.insert(binding.clone());
+                if let Some(elem) = element_type_of(iterable, ctx) {
+                    body_ctx.local_types.insert(binding.clone(), elem);
+                }
+                if !elem_copy && iter_str.starts_with('&') {
+                    body_ctx.ref_elem_locals.insert(binding.clone());
+                }
+                if let Some(idx) = index {
+                    body_ctx.locals.insert(idx.clone());
+                }
+                body_ctx.mut_locals.extend(analyze_mut_locals(body));
+                let body_str = emit_tracked_block(body, &body_ctx, "    ");
+                let enumerate = if index.is_some() { ".enumerate()" } else { "" };
+                let iter_expr = if let Expr::Ident(name) = iterable.as_ref() {
+                    if ctx
+                        .local_type(name)
+                        .map(|t| t.starts_with("Option<"))
+                        .unwrap_or(false)
+                    {
+                        format!("{iter_str}.unwrap_or_default()")
+                    } else {
+                        iter_str
+                    }
+                } else {
+                    iter_str
+                };
+                format!("for {bind} in {iter_expr}{enumerate} {{\n{body_str}\n}}")
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: while loop ─────────────────────────────────────────
+        Expr::WhileLoop { condition, body } => {
+            let text = {
+                let cond_str = expr_to_rust(condition, ctx);
+                let mut body_ctx = ctx.clone_for_inference();
+                body_ctx.mut_locals.extend(analyze_mut_locals(body));
+                let mut lines = Vec::new();
+                for e in body {
+                    let line = expr_to_rust(e, &body_ctx);
+                    if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
+                        if !name.contains('.') {
+                            body_ctx.locals.insert(name.clone());
+                        }
+                    }
+                    lines.push(format!("        {};", line));
+                }
+                format!("while {} {{\n{}\n    }}", cond_str, lines.join("\n"))
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: loop ───────────────────────────────────────────────
+        Expr::Loop(body) => {
+            let b = body.iter().map(|e| format!("    {};", expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n");
+            RustExpr::Raw {
+                text: format!("loop {{\n{}\n}}", b),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: return ─────────────────────────────────────────────
+        Expr::Return(inner) => {
+            let text = match inner.as_ref() {
+                Expr::Ident(n) if n == "Ok" => "return Ok(())".to_string(),
+                Expr::Ident(n) if n == "Err" => {
+                    format!("return Err({}(\"error\".to_string()))", ctx.error_model.external_path())
+                }
+                Expr::Call(c) if c.target == "Err" && c.method.is_empty() => {
+                    let a = c.args.iter().map(|e| expr_to_rust_value(e, ctx)).collect::<Vec<_>>().join(", ");
+                    let err_type = &ctx.error_model.type_name;
+                    if a.is_empty() {
+                        format!("return Err({}(\"error\".to_string()))", ctx.error_model.validation_path())
+                    } else if a.starts_with(&format!("{err_type}::")) {
+                        format!("return Err({})", a)
+                    } else {
+                        let is_simple_ident = c.args.len() == 1 && matches!(&c.args[0], Expr::Ident(_));
+                        if is_simple_ident {
+                            format!("return Err({})", a)
+                        } else if matches!(c.args.first(), Some(Expr::StringLit(_))) {
+                            format!("return Err({}({}))", ctx.error_model.external_path(), a)
+                        } else {
+                            format!("return Err({}({}))", ctx.error_model.external_path(), a)
+                        }
+                    }
+                }
+                Expr::Call(c) if c.target == "Ok" && c.method.is_empty() => {
+                    let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+                    format!("return Ok({})", if a.is_empty() { "()".to_string() } else { a })
+                }
+                _ => {
+                    let val = expr_to_rust_value(inner, ctx);
+                    let returns_result = ctx
+                        .expected_return_rust
+                        .as_deref()
+                        .map(|t| t.starts_with("Result<"))
+                        .unwrap_or(true);
+                    let returns_option = ctx
+                        .expected_return_rust
+                        .as_deref()
+                        .map(|t| t.contains("Option<"))
+                        .unwrap_or(false);
+                    if !returns_result {
+                        if val == "None" {
+                            if returns_option {
+                                "return None".to_string()
+                            } else {
+                                "return /* null */ unreachable!(\"null return on non-Option\")"
+                                    .to_string()
+                            }
+                        } else if returns_option && !val.starts_with("Some(") {
+                            format!("return Some({})", val)
+                        } else {
+                            format!("return {}", val)
+                        }
+                    } else if val == "None" || val == "()" {
+                        if returns_option {
+                            "return Ok(None)".to_string()
+                        } else if val == "()" {
+                            "return Ok(())".to_string()
+                        } else {
+                            format!("return Err({})", ctx.error_model.not_found_path())
+                        }
+                    } else if returns_option && !val.starts_with("Some(") {
+                        if let Expr::Ident(name) = inner.as_ref() {
+                            if ctx.local_type(name).map(|t| t.starts_with("Option<")).unwrap_or(false) {
+                                return RustExpr::Raw {
+                                    text: format!("return Ok({})", val),
+                                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                                };
+                            }
+                        }
+                        format!("return Ok(Some({}))", val)
+                    } else {
+                        format!("return Ok({})", val)
+                    }
+                }
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: break / continue ───────────────────────────────────
+        Expr::Break => RustExpr::Raw {
+            text: "break".to_string(),
+            ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+        },
+        Expr::Continue => RustExpr::Raw {
+            text: "continue".to_string(),
+            ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+        },
+
+        // ── Migrated: array literal ──────────────────────────────────────
+        Expr::ArrayLit(items) => {
+            let s = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+            RustExpr::Raw {
+                text: format!("vec![{}]", s),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: tuple ──────────────────────────────────────────────
+        Expr::Tuple(items) => {
+            let parts = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+            RustExpr::Raw {
+                text: format!("({})", parts),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: await ──────────────────────────────────────────────
+        Expr::Await(inner) => {
+            let inner_str = expr_to_rust(inner, ctx);
+            RustExpr::Raw {
+                text: format!("{}.await", inner_str),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: try ────────────────────────────────────────────────
+        Expr::Try(inner) => {
+            let s = expr_to_rust(inner, ctx);
+            RustExpr::Raw {
+                text: format!("{}?", s),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: require ────────────────────────────────────────────
+        Expr::Require(inner) => {
+            let s = expr_to_rust(inner, ctx);
+            let ty = infer_expr_type(inner, ctx);
+            let text = if expr_is_json(inner, ctx)
+                || ty.as_deref().is_some_and(is_json_type_name)
+            {
+                format!(
+                    "{s}.as_str().map(|s| s.to_string()).ok_or({})?", ctx.error_model.not_found_path()
+                )
+            } else {
+                let still_option = ty.as_deref().is_some_and(|t| peel_option_rust(t).is_some());
+                if still_option {
+                    format!("{s}.ok_or({})?", ctx.error_model.not_found_path())
+                } else if s.trim_end().ends_with('?') {
+                    s
+                } else if ty.as_deref().is_some_and(|t| {
+                    rust_ty_is_stringish(t) || t == "i64" || t == "bool" || t.starts_with("Vec<")
+                }) {
+                    s
+                } else {
+                    format!("{s}.ok_or({})?", ctx.error_model.not_found_path())
+                }
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: index ──────────────────────────────────────────────
+        Expr::Index(base, idx) => {
+            let b = expr_to_rust(base, ctx);
+            let text = match idx.as_ref() {
+                Expr::StringLit(s) => format!(
+                    "{b}.get(\"{s}\").cloned().ok_or({})?", ctx.error_model.not_found_path()
+                ),
+                Expr::IntLit(n) => list_index_get_rust(&b, &n.to_string(), base, ctx),
+                other => {
+                    let i = expr_to_rust(other, ctx);
+                    let base_ty = match base.as_ref() {
+                        Expr::Ident(n) => ctx.local_type(n).unwrap_or(""),
+                        _ => "",
+                    };
+                    let idx_is_int = matches!(other, Expr::IntLit(_))
+                        || matches!(
+                            other,
+                            Expr::Ident(n) if matches!(
+                                ctx.local_type(n),
+                                Some("i64")
+                                    | Some("i32")
+                                    | Some("u64")
+                                    | Some("u32")
+                                    | Some("usize")
+                                    | Some("isize")
+                            )
+                        );
+                    if idx_is_int {
+                        list_index_get_rust(&b, &format!("({i})"), base, ctx)
+                    } else if base_ty.contains("Value") || base_ty == "Json" || base_ty.is_empty()
+                    {
+                        format!(
+                            "{b}.get({i}.as_str()).cloned().unwrap_or(serde_json::Value::Null)"
+                        )
+                    } else {
+                        format!("{b}[{i}]")
+                    }
+                }
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: action ─────────────────────────────────────────────
+        Expr::Action(a) => RustExpr::Raw {
+            text: translate_action(a, ctx),
+            ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+        },
+
+        // ── Migrated: range ──────────────────────────────────────────────
+        Expr::Range { start, end, inclusive } => {
+            let s = start.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default();
+            let e = end.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default();
+            let op = if *inclusive { "..=" } else { ".." };
+            RustExpr::Raw {
+                text: format!("{}{}{}", s, op, e),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: cast ───────────────────────────────────────────────
+        Expr::Cast(inner_expr, ty) => {
+            RustExpr::Raw {
+                text: format!("{} as {}", expr_to_rust(inner_expr, ctx), ty),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: struct literal ─────────────────────────────────────
+        Expr::StructLit(name, fields) => {
+            let text = if name.is_empty() {
+                // Anonymous record/map literal → JSON object value
+                if fields.is_empty() {
+                    "serde_json::json!({})".to_string()
+                } else {
+                    let pairs = fields.iter().map(|(k, v)| {
+                        format!("\"{}\": {}", k, to_json_arg(v, ctx))
+                    }).collect::<Vec<_>>().join(", ");
+                    format!("serde_json::json!({{ {} }})", pairs)
+                }
+            } else {
+                let fs = fields.iter().map(|(k, v)| {
+                    let v_str = expr_to_rust(v, ctx);
+                    let cloned = match v {
+                        Expr::StringLit(s) => rust_string_lit_owned(s),
+                        _ => clone_for_reuse(v, v_str.clone(), ctx),
+                    };
+                    let coerced = if let Some(field_ty) = ctx.field_type(name, k) {
+                        let val_ty = match v {
+                            Expr::Ident(n) => ctx.local_type(n).map(|s| s.to_string()),
+                            _ => infer_expr_type(v, ctx),
+                        };
+                        if val_ty.as_deref() == Some("serde_json::Value") {
+                            match field_ty {
+                                "String" => format!(
+                                    "{}.as_str().map(|s| s.to_string()).unwrap_or_default()",
+                                    cloned.trim_end_matches(".clone()")
+                                ),
+                                "bool" => format!("{}.as_bool().unwrap_or(false)", cloned.trim_end_matches(".clone()")),
+                                "i64" => format!("{}.as_i64().unwrap_or(0)", cloned.trim_end_matches(".clone()")),
+                                "f64" => format!("{}.as_f64().unwrap_or(0.0)", cloned.trim_end_matches(".clone()")),
+                                t if t.starts_with("Option<") => format!("Some({})", cloned),
+                                _ => cloned,
+                            }
+                        } else if field_ty == "serde_json::Value" || field_ty == "Option<serde_json::Value>" {
+                            if field_ty.starts_with("Option") {
+                                if cloned == "None" {
+                                    "None".to_string()
+                                } else {
+                                    format!("Some(serde_json::json!({}))", cloned)
+                                }
+                            } else {
+                                format!("serde_json::json!({})", cloned)
+                            }
+                        } else {
+                            cloned
+                        }
+                    } else {
+                        cloned
+                    };
+                    let field = to_snake(k);
+                    if coerced == field || coerced == *k {
+                        coerced
+                    } else {
+                        format!("{field}: {coerced}")
+                    }
+                }).collect::<Vec<_>>().join(", ");
+                format!("{} {{ {} }}", name, fs)
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: struct update ──────────────────────────────────────
+        Expr::StructUpdate { name, fields, base } => {
+            let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", ");
+            RustExpr::Raw {
+                text: format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: if let ─────────────────────────────────────────────
+        Expr::IfLet { pattern, expr: inner_expr, then_body, else_body } => {
+            let e = expr_to_rust(inner_expr, ctx);
+            let then_str = then_body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
+            let else_str = else_body.as_ref().map(|eb| { let s = eb.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n"); format!(" else {{\n{}\n}}", s) }).unwrap_or_default();
+            RustExpr::Raw {
+                text: format!("if let {} = {} {{\n{}\n}}{}", pattern, e, then_str, else_str),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: while let ──────────────────────────────────────────
+        Expr::WhileLet { pattern, expr: inner_expr, body } => {
+            let e = expr_to_rust(inner_expr, ctx);
+            let body_str = body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
+            RustExpr::Raw {
+                text: format!("while let {} = {} {{\n{}\n}}", pattern, e, body_str),
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: do block ───────────────────────────────────────────
+        Expr::DoBlock(body) => {
+            let text = if body.is_empty() {
+                "{}".to_string()
+            } else {
+                let mut block_ctx = ctx.clone_for_inference();
+                let mut lines = Vec::new();
+                for (i, e) in body.iter().enumerate() {
+                    let rust = expr_to_rust(e, &block_ctx);
+                    if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = e {
+                        if !name.contains('.') {
+                            block_ctx.locals.insert(name.clone());
+                            if let Some(ty) = ty_ann {
+                                block_ctx.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
+                            } else if let Some(t) = infer_expr_type(rhs, &block_ctx) {
+                                block_ctx.local_types.insert(name.clone(), t);
+                            }
+                        }
+                    }
+                    if i == body.len() - 1 {
+                        lines.push(format!("    {}", rust));
+                    } else {
+                        lines.push(format!("    {};", rust));
+                    }
+                }
+                format!("{{\n{}\n}}", lines.join("\n"))
+            };
+            RustExpr::Raw {
+                text,
+                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            }
+        }
+
+        // ── Migrated: stock ──────────────────────────────────────────────
+        Expr::Stock => RustExpr::Raw {
+            text: "/* error: stock not expanded */ ()".to_string(),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
         },
     }
@@ -394,14 +1254,14 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     // Not a proper ident — fall through to old path.
     if name.contains(" then ") && (name.contains("f\"") || name.contains("f'")) {
         return RustExpr::Raw {
-            text: legacy_expr_to_rust(expr, ctx),
+            text: expr_to_rust(expr, ctx),
             ty: None,
         };
     }
     // Edge case: unwrap_or rewrite from fstring parsing.
     if name.contains(".unwrap_or(\"") && name.ends_with("\")") {
         return RustExpr::Raw {
-            text: legacy_expr_to_rust(expr, ctx),
+            text: expr_to_rust(expr, ctx),
             ty: None,
         };
     }
@@ -589,7 +1449,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
 
     // Nested field access on a JSON value at any depth
     if is_json_rooted_expr(base, ctx) {
-        let base_str = legacy_expr_to_rust(base, ctx);
+        let base_str = expr_to_rust(base, ctx);
         return RustExpr::Raw {
             text: format!("{}[\"{}\"]", base_str, field),
             ty: Some(RustType::Json),
@@ -600,7 +1460,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     if let Expr::Ident(name) = base {
         if let Some(ty) = ctx.local_type(name) {
             if ty.starts_with("Option<") {
-                let base_str = legacy_expr_to_rust(base, ctx);
+                let base_str = expr_to_rust(base, ctx);
                 let enclosing_returns_option = ctx.expected_return_rust.as_ref()
                     .map(|r| r.starts_with("Option<"))
                     .unwrap_or(false);
@@ -640,7 +1500,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
         return fa;
     }
     // Copy types don't need clone
-    if super::types::field_access_is_copy(base, field, ctx) {
+    if field_access_is_copy(base, field, ctx) {
         return fa;
     }
     // Already-cloned base (emitted as self.field.clone() above) doesn't need double-clone
@@ -675,7 +1535,7 @@ fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
                 // still need to evaluate them. Use expr_to_rust for now to
                 // maintain byte-identical output with the old path.
                 args.push(RustExpr::Raw {
-                    text: legacy_expr_to_rust(e, ctx),
+                    text: expr_to_rust(e, ctx),
                     ty: infer_expr_type(e, ctx).map(|s| RustType::parse(&s)),
                 });
             }
@@ -774,7 +1634,7 @@ fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         _ => {
             // Fall back to the existing string-based expr rendering
             RustExpr::Raw {
-                text: legacy_expr_to_rust(expr, ctx),
+                text: expr_to_rust(expr, ctx),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1049,7 +1909,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 // Skip special methods — fall back to Raw for the whole sub-chain
                 if is_special_method(&inner_call.method) {
                     return RustExpr::Raw {
-                        text: legacy_expr_to_rust(expr, ctx),
+                        text: expr_to_rust(expr, ctx),
                         ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                     };
                 }
@@ -1082,7 +1942,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 // This is the chain root — render it as Raw since it may need
                 // target-based resolution (struct constructor, free fn, etc.)
                 RustExpr::Raw {
-                    text: legacy_expr_to_rust(expr, ctx),
+                    text: expr_to_rust(expr, ctx),
                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                 }
             }
