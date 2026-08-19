@@ -558,7 +558,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
 
     let mut out = String::new();
     out.push_str("//! Application services and flow functions.\n\n");
-    out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
+    out.push_str("#![allow(unused_imports, unused_variables)]\n\n");
     out.push_str("use crate::ports::*;\nuse crate::domain::types::*;\nuse crate::domain::messages::*;\n");
     out.push_str("use std::sync::Arc;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\n\n");
 

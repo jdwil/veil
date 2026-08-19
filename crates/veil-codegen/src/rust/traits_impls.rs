@@ -339,7 +339,7 @@ pub fn gen_impls(
 
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");
-    out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
+    out.push_str("#![allow(unused_imports, unused_variables)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n");
 
     // Stub-declared `codegen_imports` when any registered stub provides them.

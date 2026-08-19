@@ -71,7 +71,7 @@ pub fn generate_crate_tests(
 
     let mut out = String::new();
     out.push_str("//! Generated from VEIL `tests` / `it` blocks (SL-022).\n\n");
-    out.push_str("#![allow(unused_mut, unused_variables)]\n\n");
+    out.push_str("#![allow(unused_imports, unused_mut)]\n\n");
     out.push_str("use super::*;\n");
     out.push_str("use crate::application::*;\n");
     out.push_str("use crate::domain::types::*;\n");
