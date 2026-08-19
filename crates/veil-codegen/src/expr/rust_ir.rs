@@ -476,14 +476,16 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         // ── Migrated: binary and unary ops ───────────────────────────────
         Expr::BinaryOp(op) => {
             let ty = infer_expr_type(expr, ctx).map(|s| RustType::parse(&s));
-            let l = expr_to_rust(&op.left, ctx);
-            let r = expr_to_rust(&op.right, ctx);
+            let l_node = lower_to_rust(&op.left, ctx);
+            let r_node = lower_to_rust(&op.right, ctx);
+            let l = emit(&l_node);
+            let r = emit(&r_node);
             // Special case: x != None → x.is_some(), x == None → x.is_none()
             if r == "None" {
                 match op.op {
                     veil_ir::ast::BinOp::NotEq => {
                         return RustExpr::MethodCall {
-                            receiver: Box::new(RustExpr::Raw { text: l, ty: None }),
+                            receiver: Box::new(l_node),
                             method: "is_some".to_string(),
                             args: vec![],
                             ty,
@@ -493,7 +495,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     }
                     veil_ir::ast::BinOp::Eq => {
                         return RustExpr::MethodCall {
-                            receiver: Box::new(RustExpr::Raw { text: l, ty: None }),
+                            receiver: Box::new(l_node),
                             method: "is_none".to_string(),
                             args: vec![],
                             ty,
@@ -507,7 +509,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 match op.op {
                     veil_ir::ast::BinOp::NotEq => {
                         return RustExpr::MethodCall {
-                            receiver: Box::new(RustExpr::Raw { text: r, ty: None }),
+                            receiver: Box::new(r_node),
                             method: "is_some".to_string(),
                             args: vec![],
                             ty,
@@ -517,7 +519,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     }
                     veil_ir::ast::BinOp::Eq => {
                         return RustExpr::MethodCall {
-                            receiver: Box::new(RustExpr::Raw { text: r, ty: None }),
+                            receiver: Box::new(r_node),
                             method: "is_none".to_string(),
                             args: vec![],
                             ty,
@@ -568,17 +570,17 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             }
             // Simple binary op
             RustExpr::BinOp {
-                left: Box::new(RustExpr::Raw { text: l, ty: None }),
+                left: Box::new(l_node),
                 op: binop_to_rust(&op.op).to_string(),
-                right: Box::new(RustExpr::Raw { text: r, ty: None }),
+                right: Box::new(r_node),
                 ty,
             }
         }
         Expr::UnaryOp(op) => {
-            let inner = expr_to_rust(&op.expr, ctx);
+            let inner_node = lower_to_rust(&op.expr, ctx);
             RustExpr::UnaryOp {
                 op: unaryop_to_rust(&op.op).to_string(),
-                expr: Box::new(RustExpr::Raw { text: inner, ty: None }),
+                expr: Box::new(inner_node),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1011,7 +1013,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         // ── Migrated: loop ───────────────────────────────────────────────
         Expr::Loop(body) => {
             let body_exprs: Vec<RustExpr> = body.iter().map(|e| {
-                RustExpr::Raw { text: expr_to_rust(e, ctx), ty: None }
+                lower_to_rust(e, ctx)
             }).collect();
             RustExpr::Loop {
                 body: body_exprs,
@@ -1102,19 +1104,19 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         }
 
         // ── Migrated: break / continue ───────────────────────────────────
-        Expr::Break => RustExpr::Raw {
-            text: "break".to_string(),
-            ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+        Expr::Break => RustExpr::Ident {
+            name: "break".to_string(),
+            ty: Some(RustType::Unit),
         },
-        Expr::Continue => RustExpr::Raw {
-            text: "continue".to_string(),
-            ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+        Expr::Continue => RustExpr::Ident {
+            name: "continue".to_string(),
+            ty: Some(RustType::Unit),
         },
 
         // ── Migrated: array literal ──────────────────────────────────────
         Expr::ArrayLit(items) => {
             let item_exprs: Vec<RustExpr> = items.iter().map(|e| {
-                RustExpr::Raw { text: expr_to_rust(e, ctx), ty: None }
+                lower_to_rust(e, ctx)
             }).collect();
             RustExpr::Array {
                 items: item_exprs,
@@ -1125,7 +1127,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         // ── Migrated: tuple ──────────────────────────────────────────────
         Expr::Tuple(items) => {
             let item_exprs: Vec<RustExpr> = items.iter().map(|e| {
-                RustExpr::Raw { text: expr_to_rust(e, ctx), ty: None }
+                lower_to_rust(e, ctx)
             }).collect();
             RustExpr::Tuple {
                 items: item_exprs,
@@ -1135,20 +1137,12 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: await ──────────────────────────────────────────────
         Expr::Await(inner) => {
-            let inner_node = RustExpr::Raw {
-                text: expr_to_rust(inner, ctx),
-                ty: infer_expr_type(inner, ctx).map(|s| RustType::parse(&s)),
-            };
-            RustExpr::Await(Box::new(inner_node))
+            RustExpr::Await(Box::new(lower_to_rust(inner, ctx)))
         }
 
         // ── Migrated: try ────────────────────────────────────────────────
         Expr::Try(inner) => {
-            let inner_node = RustExpr::Raw {
-                text: expr_to_rust(inner, ctx),
-                ty: infer_expr_type(inner, ctx).map(|s| RustType::parse(&s)),
-            };
-            RustExpr::Try(Box::new(inner_node))
+            RustExpr::Try(Box::new(lower_to_rust(inner, ctx)))
         }
 
         // ── Migrated: require ────────────────────────────────────────────
@@ -1703,10 +1697,7 @@ fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
                 fmt.push_str("{}");
                 // Args in format!() are by-reference (Display trait) — do NOT
                 // apply ownership analysis here; cloning would be wasteful.
-                args.push(RustExpr::Raw {
-                    text: emit(&lower_to_rust(e, ctx)),
-                    ty: infer_expr_type(e, ctx).map(|s| RustType::parse(&s)),
-                });
+                args.push(lower_to_rust(e, ctx));
             }
         }
     }
