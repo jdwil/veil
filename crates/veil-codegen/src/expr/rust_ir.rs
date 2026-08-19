@@ -1536,8 +1536,13 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     // State local: index into the threaded JSON state.
     if let Expr::Ident(name) = base
         && ctx.state_locals.contains(name.as_str()) {
-            return RustExpr::Raw {
-                text: format!("state[\"{}\"][\"{}\"]", name, field),
+            return RustExpr::Index {
+                base: Box::new(RustExpr::Index {
+                    base: Box::new(RustExpr::Ident { name: "state".to_string(), ty: None }),
+                    index: Box::new(RustExpr::StringLit(name.clone())),
+                    ty: Some(RustType::Json),
+                }),
+                index: Box::new(RustExpr::StringLit(field.to_string())),
                 ty: Some(RustType::Json),
             };
         }
@@ -1627,17 +1632,19 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     // JSON local: field access on a JSON-typed local → index syntax
     if let Expr::Ident(name) = base
         && ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
-            return RustExpr::Raw {
-                text: format!("{}[\"{}\"]", name, field),
+            return RustExpr::Index {
+                base: Box::new(RustExpr::Ident { name: name.clone(), ty: Some(RustType::Json) }),
+                index: Box::new(RustExpr::StringLit(field.to_string())),
                 ty: Some(RustType::Json),
             };
         }
 
     // Nested field access on a JSON value at any depth
     if is_json_rooted_expr(base, ctx) {
-        let base_str = expr_to_rust(base, ctx);
-        return RustExpr::Raw {
-            text: format!("{}[\"{}\"]", base_str, field),
+        let base_node = lower_to_rust(base, ctx);
+        return RustExpr::Index {
+            base: Box::new(base_node),
+            index: Box::new(RustExpr::StringLit(field.to_string())),
             ty: Some(RustType::Json),
         };
     }
