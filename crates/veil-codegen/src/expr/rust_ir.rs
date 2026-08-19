@@ -765,6 +765,11 @@ pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
             if super::types::rust_already_owned(text) {
                 return expr;
             }
+            // Call results are owned — anything ending with ) or )? or .await? or .await
+            // that contains a `(` is a function/method call producing an owned value.
+            if raw_is_call_result(text) {
+                return expr;
+            }
             RustExpr::Clone(Box::new(expr))
         }
         // Literals, FnCalls, MethodCalls produce owned values — no clone needed
@@ -788,6 +793,35 @@ fn is_already_owned(expr: &RustExpr) -> bool {
             | RustExpr::If { .. }
             | RustExpr::Match { .. }
     )
+}
+
+/// Whether a raw text expression represents a call result (owned value).
+///
+/// Heuristic: contains `(` and ends with one of:
+/// - `)` — plain function/method call
+/// - `)?` — fallible call
+/// - `.await?` — async+fallible call
+/// - `.await` — async call
+/// - `.to_string()` / `.clone()` — already owned (redundant with rust_already_owned but safe)
+/// - `}` — block expression producing a value (e.g. Process.run)
+///
+/// Also catches format!(...), serde_json::from_str(...), etc.
+fn raw_is_call_result(text: &str) -> bool {
+    let t = text.trim();
+    // Block expressions `{ ... }` are owned values
+    if t.starts_with('{') && t.ends_with('}') {
+        return true;
+    }
+    // Must contain a `(` to be a call
+    if !t.contains('(') {
+        return false;
+    }
+    // Call patterns
+    t.ends_with(')')
+        || t.ends_with(")?")
+        || t.ends_with(".await?")
+        || t.ends_with(".await")
+        || t.ends_with(".unwrap()")
 }
 
 /// Whether the expression's type is Copy (primitives, unit enums, refs).
@@ -1202,5 +1236,55 @@ mod tests {
         };
         let result = lower_call(&call, &ctx);
         assert_eq!(emit(&result), "Uuid::new_v4()");
+    }
+
+    // ─── apply_ownership on call results ─────────────────────────────
+
+    #[test]
+    fn ownership_raw_call_result_no_clone() {
+        let ctx = GenCtx::new(std::collections::HashMap::new());
+        // A function call result is already owned
+        let expr = RustExpr::Raw {
+            text: "Uuid::new_v4()".to_string(),
+            ty: Some(RustType::Named("Uuid".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "Uuid::new_v4()"); // no clone
+    }
+
+    #[test]
+    fn ownership_raw_async_fallible_no_clone() {
+        let ctx = GenCtx::new(std::collections::HashMap::new());
+        // async+fallible call result is owned
+        let expr = RustExpr::Raw {
+            text: "deps.repo.save(entity).await?".to_string(),
+            ty: Some(RustType::Named("String".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "deps.repo.save(entity).await?"); // no clone
+    }
+
+    #[test]
+    fn ownership_raw_block_expr_no_clone() {
+        let ctx = GenCtx::new(std::collections::HashMap::new());
+        // Block expression is owned
+        let expr = RustExpr::Raw {
+            text: "{ let x = 1; x }".to_string(),
+            ty: Some(RustType::Named("i64".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "{ let x = 1; x }"); // no clone
+    }
+
+    #[test]
+    fn ownership_raw_bare_ident_still_clones() {
+        let ctx = make_ctx_with_uses("data", 2);
+        // A bare ident in Raw should still get cloned when multi-use
+        let expr = RustExpr::Raw {
+            text: "data".to_string(),
+            ty: Some(RustType::Named("String".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "data.clone()");
     }
 }
