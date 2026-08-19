@@ -2288,6 +2288,31 @@ pkg Inventory
 /// Phase 6: immutable constraint suppresses &mut self on methods.
 #[test]
 fn immutable_construct_uses_shared_ref() {
+    // An aggregate method that does NOT mutate state should use &self, not &mut self
+    let src = "pkg TestDomain\n  use ddd\n  ctx Core\n    agg Order\n      root\n        id: Id\n        total: Int\n        status: Str\n      fn get_total\n        ret total\n";
+    let out = generate_example(src);
+    let types = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or(&out);
+    // Read-only method should use shared ref
+    assert!(
+        types.contains("&self"),
+        "Read-only aggregate method must use &self:\n{types}"
+    );
+    // The get_total method specifically should NOT use &mut self
+    // (we can't check globally since other generated methods might use &mut self)
+    let get_total_fn = types.lines()
+        .find(|l| l.contains("get_total"))
+        .unwrap_or("");
+    assert!(
+        !get_total_fn.contains("&mut self"),
+        "Read-only method get_total must not use &mut self:\n{get_total_fn}"
+    );
+}
+
+#[test]
+fn mutable_aggregate_uses_mut_ref() {
     let src = r#"
 pkg TestDomain
   use ddd

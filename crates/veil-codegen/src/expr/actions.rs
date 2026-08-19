@@ -5,12 +5,12 @@ use super::*;
 
 /// Negate a guard condition logically to avoid clippy::nonminimal_bool
 /// and clippy::comparison_to_empty.
-fn negate_guard_condition(cond: &Expr, cond_str: &str) -> String {
+fn negate_guard_condition(cond: &Expr, cond_str: &str, ctx: &GenCtx) -> String {
     if let Expr::BinaryOp(bin) = cond {
         // `x != ""` → `x.is_empty()`, `x == ""` → `!x.is_empty()`
         let rhs_is_empty_str = matches!(bin.right.as_ref(), Expr::StringLit(s) if s.is_empty());
         if rhs_is_empty_str {
-            let left = super::expr_to_rust(&bin.left, &GenCtx::new(Default::default()));
+            let left = super::expr_to_rust(&bin.left, ctx);
             return match bin.op {
                 BinOp::NotEq => format!("{left}.is_empty()"),
                 BinOp::Eq => format!("!{left}.is_empty()"),
@@ -28,8 +28,8 @@ fn negate_guard_condition(cond: &Expr, cond_str: &str) -> String {
             _ => None,
         };
         if let Some(op) = negated_op {
-            let left = super::expr_to_rust(&bin.left, &GenCtx::new(Default::default()));
-            let right = super::expr_to_rust(&bin.right, &GenCtx::new(Default::default()));
+            let left = super::expr_to_rust(&bin.left, ctx);
+            let right = super::expr_to_rust(&bin.right, ctx);
             return format!("{left} {op} {right}");
         }
     }
@@ -277,7 +277,7 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                     };
                     // Negate the guard condition logically to produce
                     // cleaner code (avoids clippy::nonminimal_bool).
-                    let neg_cond = negate_guard_condition(cond, &cond_str);
+                    let neg_cond = negate_guard_condition(cond, &cond_str, ctx);
                     format!(
                         "if {} {{ return Err({err}); }}",
                         neg_cond

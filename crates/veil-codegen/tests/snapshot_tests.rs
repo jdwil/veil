@@ -202,54 +202,40 @@ fn sl028_list_index_no_literal_cast() {
 /// This applies to list fields and parameters (not method return values).
 #[test]
 fn sl028_for_loop_shared_ref() {
+    // SL-028: for-loops over named collections should iterate by shared reference
+    // (&items) to avoid moving the collection. Method call results (.items())
+    // are already owned and don't need the &.
     for (fixture, out) in all_fixture_outputs() {
-        let lines: Vec<&str> = out.lines().collect();
-        for line in &lines {
-            let trimmed = line.trim();
-            // Skip non-for lines and lines iterating over method results
-            if !trimmed.starts_with("for ") {
-                continue;
-            }
-            // Extract the collection being iterated
-            if let Some(in_pos) = trimmed.find(" in ") {
-                let collection = trimmed[in_pos + 4..].trim_end_matches('{').trim();
-                // Skip method calls (e.g. `result.items()`) — these already return refs
-                if collection.contains('(') || collection.contains("..") {
-                    continue;
-                }
-                // Skip if it's already a reference
-                if collection.starts_with('&') {
-                    continue;
-                }
-                // Skip single-char variables (loop counters) and range patterns
-                if collection.len() <= 1 {
-                    continue;
-                }
-                // This is iterating a named collection by value — likely wrong
-                // UNLESS it's a freshly-created local (e.g. `let items = vec![...]`)
-                // We allow iteration by value if the collection is a method return.
-                // For now, just check that list parameters/fields use &.
-                // This is heuristic — only flag obvious cases.
-            }
-        }
-        // The test above is informational; the actual hard check is that
-        // known list parameters iterate by reference:
         let app_section = out
             .split("// ===== crates/")
             .find(|s| s.contains("application"))
             .unwrap_or("");
-        // In application code, for-loops over input params should use &
         for line in app_section.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("for ")
-                && trimmed.contains(" in ")
-                && !trimmed.contains(" in &")
-                && !trimmed.contains("(")
-                && !trimmed.contains("..")
+            if !trimmed.starts_with("for ") || !trimmed.contains(" in ") {
+                continue;
+            }
+            let in_pos = trimmed.find(" in ").unwrap();
+            let collection = trimmed[in_pos + 4..].trim_end_matches(" {").trim();
+            // Skip: method calls, ranges, already-referenced, enumerate/iter calls
+            if collection.contains('(')
+                || collection.contains("..")
+                || collection.starts_with('&')
+                || collection.contains(".iter()")
+                || collection.contains(".enumerate()")
+                || collection.contains(".unwrap")
             {
-                // Check if the collection is a function parameter (not a local)
-                // This is hard to determine statically, so we skip this strict check
-                // and rely on the generated_rust_is_quality test for known fixtures.
+                continue;
+            }
+            // Named bare identifiers longer than 1 char should be referenced
+            let is_bare_ident = collection
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_');
+            if is_bare_ident && collection.len() > 1 {
+                panic!(
+                    "SL-028 violation in {}: `for ... in {}` should use `&{}` to avoid move\nLine: {}",
+                    fixture, collection, collection, trimmed
+                );
             }
         }
     }
