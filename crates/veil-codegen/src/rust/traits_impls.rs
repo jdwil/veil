@@ -201,6 +201,7 @@ pub fn gen_traits(
     crate_name: &str,
     solution: &Solution,
     registry: &LayerRegistry,
+    layer_trait_attrs: Option<&str>,
 ) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Trait definitions (async traits).\n\n");
@@ -255,9 +256,12 @@ pub fn gen_traits(
                 .collect();
             format!("\nwhere\n    {}", clauses.join(",\n    "))
         };
+        // Layer-driven trait attributes: if a layer declares emit_to "trait_attrs",
+        // use that. Otherwise use the backend default (#[async_trait]).
+        let trait_attr = layer_trait_attrs.unwrap_or("#[async_trait]");
         out.push_str(&format!(
-            "/// {}: {}\n#[async_trait]\npub trait {}{}: Send + Sync{where_bounds} {{\n",
-            t.subkind, t.name, t.name, tp
+            "/// {}: {}\n{}\npub trait {}{}: Send + Sync{where_bounds} {{\n",
+            t.subkind, t.name, trait_attr, t.name, tp
         ));
         for method in &t.methods {
             let params = method

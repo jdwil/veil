@@ -175,6 +175,27 @@ pub fn compose_main_section(output: &TemplateOutput, target: &str) -> Option<Str
     }
 }
 
+/// Compose a named section from template output. Returns the combined content
+/// from all layer contributions (sorted by priority — lower runs first), or
+/// None if no contributions exist for the section.
+///
+/// This is the primary mechanism for layers to influence code emission: a layer
+/// declares `emit_to "derives"` and the backend calls `compose_section("derives")`
+/// before falling back to its hardcoded defaults.
+pub fn compose_section(output: &TemplateOutput, section: &str) -> Option<String> {
+    let contributions = output.sections.get(section)?;
+    if contributions.is_empty() {
+        return None;
+    }
+    // Contributions are already sorted by priority in execute_templates.
+    let body: String = contributions
+        .iter()
+        .map(|c| c.content.trim().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(body)
+}
+
 /// Check if a construct matches a rule's conditions.
 fn matches_construct(construct: &Construct, rule: &CodegenRule, registry: &LayerRegistry) -> bool {
     // Check shape match — accept shape name, "*", or layer subkind.

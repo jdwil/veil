@@ -9,6 +9,7 @@ pub fn gen_types(
     crate_name: &str,
     registry: &LayerRegistry,
     solution: &Solution,
+    layer_derives: Option<&str>,
 ) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
@@ -149,7 +150,7 @@ pub fn gen_types(
         if declared.contains(&c.name) {
             continue;
         }
-        let (chunk, is_defaultable) = gen_struct(c, registry, &defaultable_structs);
+        let (chunk, is_defaultable) = gen_struct(c, registry, &defaultable_structs, layer_derives);
         out.push_str(&chunk);
         if is_defaultable {
             defaultable_structs.insert(c.name.clone());
@@ -270,6 +271,7 @@ pub fn gen_struct(
     c: &Construct,
     registry: &LayerRegistry,
     defaultable: &std::collections::HashSet<String>,
+    layer_derives: Option<&str>,
 ) -> (String, bool) {
     let mut out = String::new();
     let has_invariant = c.annotations.iter().any(|a| registry.is_invariant_annotation(&a.name));
@@ -285,11 +287,28 @@ pub fn gen_struct(
     // Stub-driven derives/attrs (row drivers, serde crates, …) — no crate names here.
     let is_single_field = fields.len() == 1;
     let (extra_derive, extra_attr) = stub_domain_type_attrs(registry, is_single_field);
+
+    // Layer-driven derives: if a layer declares emit_to "derives", use that
+    // as the derive attribute line. Otherwise use the backend default.
+    let derive_line = if let Some(layer_d) = layer_derives {
+        // Layer provides the full derive line (e.g. "#[derive(Debug, Clone)]")
+        // Append any stub-driven extra derives.
+        if extra_derive.is_empty() {
+            format!("{layer_d}{extra_attr}")
+        } else {
+            // Merge: layer_d is something like "#[derive(Debug, Clone)]"
+            // extra_derive is like ", sqlx::FromRow"
+            let merged = layer_d.trim_end_matches(")]").to_string() + &extra_derive + ")]";
+            format!("{merged}{extra_attr}")
+        }
+    } else {
+        // Backend default
+        format!("#[derive(Debug, Clone, PartialEq, Serialize, Deserialize{extra_derive})]{extra_attr}")
+    };
     out.push_str(&format!(
-        "/// {}: {}\n#[derive(Debug, Clone, PartialEq, Serialize, Deserialize{})]{}\npub struct {}{} {{\n",
+        "/// {}: {}\n{}\npub struct {}{} {{\n",
         c.subkind, c.name,
-        extra_derive,
-        extra_attr,
+        derive_line,
         c.name, generic_params_rust(&c.type_params)
     ));
     for field in &fields {

@@ -30,10 +30,11 @@ layer rust
 
     # Default struct derives — applied to all struct-shaped constructs.
     # The rust.rs backend emits the struct body; this adds derives.
+    # PartialEq + Serialize + Deserialize are essential for domain types.
     match struct
       emit_to "derives" priority 100
       emit """
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
       """
 
     # Trait-shaped constructs get async_trait

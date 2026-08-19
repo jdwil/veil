@@ -277,6 +277,8 @@ pub fn gen_module_crate(
     registry: &LayerRegistry,
     links: &[crate::links::ResolvedLink],
     harness_ir: &veil_ir::HarnessIR,
+    layer_derives: Option<&str>,
+    layer_trait_attrs: Option<&str>,
 ) -> Vec<GeneratedFile> {
     let crate_name = module_crate_name(module, solution);
     let mut files = Vec::new();
@@ -354,7 +356,7 @@ uuid.workspace = true"#);
         files.push(tests);
     }
 
-    files.push(gen_types(&contents, &crate_name, registry, solution));
+    files.push(gen_types(&contents, &crate_name, registry, solution, layer_derives));
     files.push(gen_child_types(&contents, &crate_name));
     files.push(GeneratedFile {
         path: format!("crates/{}/src/domain/mod.rs", crate_name),
@@ -363,7 +365,7 @@ uuid.workspace = true"#);
 
     // For modules that reference siblings, re-export ports from the first sibling
     // instead of generating duplicate DomainError / shared traits.
-    files.push(gen_traits(&contents, &crate_name, solution, registry));
+    files.push(gen_traits(&contents, &crate_name, solution, registry, layer_trait_attrs));
 
     // Impls targeting traits defined in this module (from anywhere in the tree),
     // or layer-provided generic ports (e.g. EntityRepo) implemented by product adapters.
