@@ -7,7 +7,7 @@
 //!
 //! ## Migration strategy
 //!
-//! `RustExpr::Raw` wraps the legacy `expr_to_rust` output for unmigrated
+//! The `Raw` variant wraps the legacy `expr_to_rust` output for unmigrated
 //! expression forms. Expressions are migrated one category at a time:
 //! literals → idents → field access → method calls → control flow.
 //! At every step, `emit()` must produce byte-identical output to the old path.
@@ -280,7 +280,7 @@ pub enum RustExpr {
 ///
 /// This MUST produce byte-identical output to the old `expr_to_rust` for
 /// every migrated expression category. Non-migrated expressions go through
-/// `RustExpr::Raw` which is already a rendered string.
+/// The `Raw` variant which is already a rendered string.
 pub fn emit(expr: &RustExpr) -> String {
     match expr {
         RustExpr::Raw { text, .. } => text.clone(),
@@ -455,7 +455,7 @@ pub fn emit(expr: &RustExpr) -> String {
 ///
 /// This is the new entry point that progressively replaces `expr_to_rust`.
 /// Currently handles: literals, idents, field access.
-/// Everything else falls through to `RustExpr::Raw` wrapping `expr_to_rust`.
+/// Everything else falls through to a `Raw` node wrapping `expr_to_rust`.
 pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
     match expr {
         // ── Migrated: literals ───────────────────────────────────────────
@@ -1405,8 +1405,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         }
 
         // ── Migrated: stock ──────────────────────────────────────────────
-        Expr::Stock => RustExpr::Raw {
-            text: "/* error: stock not expanded */ ()".to_string(),
+        Expr::Stock => RustExpr::Ident {
+            name: "/* error: stock not expanded */ ()".to_string(),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
         },
     }
@@ -1427,16 +1427,16 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     }
     // VEIL noop → Rust empty block (no-op)
     if name == "noop" {
-        return RustExpr::Raw {
-            text: "{}".to_string(),
+        return RustExpr::Ident {
+            name: "{}".to_string(),
             ty: Some(RustType::Unit),
         };
     }
     // Edge case: inline ternary with nested f-strings from parse_fstring_parts.
     // Not a proper ident — handled directly here.
     if name.contains(" then ") && (name.contains("f\"") || name.contains("f'")) {
-        return RustExpr::Raw {
-            text: super::translate::translate_inline_ternary_fstring(name),
+        return RustExpr::Ident {
+            name: super::translate::translate_inline_ternary_fstring(name),
             ty: None,
         };
     }
@@ -1444,8 +1444,8 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     if name.contains(".unwrap_or(\"") && name.ends_with("\")") {
         // Transform: x.unwrap_or("text") → x.unwrap_or("text".to_string())
         let converted = name.replacen("\")", "\".to_string())", 1);
-        return RustExpr::Raw {
-            text: converted,
+        return RustExpr::Ident {
+            name: converted,
             ty: None,
         };
     }
@@ -1816,10 +1816,15 @@ fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             }
             // Otherwise serialize base then index
             let base_ir = to_json_arg_ir(base, ctx);
-            RustExpr::Raw {
-                text: format!("serde_json::json!({})[\"{}\"].clone()", emit(&base_ir), field),
+            RustExpr::Clone(Box::new(RustExpr::Index {
+                base: Box::new(RustExpr::FnCall {
+                    path: "serde_json::json!".to_string(),
+                    args: vec![base_ir],
+                    ty: Some(RustType::Json),
+                }),
+                index: Box::new(RustExpr::StringLit(field.to_string())),
                 ty: Some(RustType::Json),
-            }
+            }))
         }
         Expr::ArrayLit(items) if items.is_empty() => RustExpr::JsonEmptyArray,
         Expr::ArrayLit(items) => {
@@ -2167,7 +2172,7 @@ fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
 /// Lower `Expr::Call` to structured `RustExpr`.
 ///
 /// Strategy: handle the common patterns structurally, fall through to
-/// `RustExpr::Raw` wrapping `translate_call` for complex sub-paths that
+/// a `Raw` node wrapping `translate_call` for complex sub-paths that
 /// are not worth migrating now.
 ///
 /// Migrated paths:
