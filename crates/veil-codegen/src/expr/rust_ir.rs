@@ -1451,8 +1451,9 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     }
     // Threaded step state: read from the shared JSON bag.
     if ctx.state_locals.contains(name) {
-        return RustExpr::Raw {
-            text: format!("state[\"{}\"]", name),
+        return RustExpr::Index {
+            base: Box::new(RustExpr::Ident { name: "state".to_string(), ty: None }),
+            index: Box::new(RustExpr::StringLit(name.to_string())),
             ty: Some(RustType::Json),
         };
     }
@@ -1729,13 +1730,14 @@ fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
                 _ => None,
             })
             .collect();
-        // Emit as Raw to produce the exact `"...".to_string()` form
-        RustExpr::Raw {
-            text: format!(
-                "\"{}\".to_string()",
-                raw.replace('\\', "\\\\").replace('"', "\\\"")
-            ),
+        // Emit as MethodCall on StringLit to produce the `"...".to_string()` form
+        RustExpr::MethodCall {
+            receiver: Box::new(RustExpr::StringLit(raw)),
+            method: "to_string".to_string(),
+            args: vec![],
             ty: Some(RustType::Named("String".to_string())),
+            is_async: false,
+            is_fallible: false,
         }
     } else {
         RustExpr::Format { template: fmt, args }
@@ -1758,10 +1760,11 @@ fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             }
             // Shared step-state value → state["name"].clone()
             if ctx.state_locals.contains(name.as_str()) {
-                return RustExpr::Raw {
-                    text: format!("state[\"{}\"].clone()", name),
+                return RustExpr::Clone(Box::new(RustExpr::Index {
+                    base: Box::new(RustExpr::Ident { name: "state".to_string(), ty: None }),
+                    index: Box::new(RustExpr::StringLit(name.clone())),
                     ty: Some(RustType::Json),
-                };
+                }));
             }
             // Struct-captured input (step impl) → self.<field>.clone()
             if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
@@ -1785,17 +1788,23 @@ fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             // Field of a state-local → state["name"]["field"].clone()
             if let Expr::Ident(name) = base.as_ref() {
                 if ctx.state_locals.contains(name.as_str()) {
-                    return RustExpr::Raw {
-                        text: format!("state[\"{}\"][\"{}\"].clone()", name, field),
+                    return RustExpr::Clone(Box::new(RustExpr::Index {
+                        base: Box::new(RustExpr::Index {
+                            base: Box::new(RustExpr::Ident { name: "state".to_string(), ty: None }),
+                            index: Box::new(RustExpr::StringLit(name.clone())),
+                            ty: Some(RustType::Json),
+                        }),
+                        index: Box::new(RustExpr::StringLit(field.clone())),
                         ty: Some(RustType::Json),
-                    };
+                    }));
                 }
                 // serde_json::Value local → name["field"].clone()
                 if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
-                    return RustExpr::Raw {
-                        text: format!("{}[\"{}\"].clone()", name, field),
+                    return RustExpr::Clone(Box::new(RustExpr::Index {
+                        base: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
+                        index: Box::new(RustExpr::StringLit(field.clone())),
                         ty: Some(RustType::Json),
-                    };
+                    }));
                 }
             }
             // Otherwise serialize base then index
@@ -1811,11 +1820,8 @@ fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             RustExpr::VecMacro(vals)
         }
         _ => {
-            // Fall back to the existing string-based expr rendering
-            RustExpr::Raw {
-                text: expr_to_rust(expr, ctx),
-                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
-            }
+            // Fall back to recursive lowering
+            lower_to_rust(expr, ctx)
         }
     }
 }
