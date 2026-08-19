@@ -19,9 +19,10 @@ use super::context::GenCtx;
 use super::translate::{expr_to_rust, to_json_arg};
 use super::inference::{infer_expr_type, binop_to_rust, unaryop_to_rust, normalize_match_pattern, element_type_of};
 use super::types::{rust_string_lit, rust_string_lit_owned, expr_is_stringish, expr_is_numeric,
-    flatten_str_add_chain, clone_if_named_value, clone_for_reuse, strip_try_suffix,
+    flatten_str_add_chain, clone_if_named_value, strip_try_suffix,
     peel_option_rust, rust_ty_is_stringish, rust_ty_is_copy, rust_ty_is_unit_enum,
-    expr_to_rust_value, field_access_is_copy};
+    expr_to_rust_value, field_access_is_copy, rust_already_owned, rust_is_copy_value,
+    should_clone_ident, is_option_type, is_result_type};
 use super::calls::{resolve_self_field_name, is_json_rooted_expr, is_json_type_name,
     expr_is_json, list_index_get_rust};
 use super::patterns::{pattern_to_rust, pattern_to_rust_qualified, pattern_binding_names,
@@ -435,7 +436,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 let item = expr_to_rust(&items[0], ctx);
                                 if let Expr::Ident(item_name) = &items[0]
                                     && let Some(ty) = ctx.local_type(item_name)
-                                        && ty.starts_with("Option<") {
+                                    && is_option_type(ty) {
                                             return RustExpr::Raw {
                                                 text: format!(
                                                     "{}.push({}.clone().ok_or({})?)",
@@ -478,7 +479,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     let base_name = parts[0];
                     let field_path = parts[1];
                     if let Some(ty) = ctx.local_type(base_name)
-                        && ty.starts_with("Option<") {
+                        && is_option_type(ty) {
                             let field_snake = field_path
                                 .split('.')
                                 .map(to_snake)
@@ -801,7 +802,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 let iter_expr = if let Expr::Ident(name) = iterable.as_ref() {
                     if ctx
                         .local_type(name)
-                        .map(|t| t.starts_with("Option<"))
+                        .map(is_option_type)
                         .unwrap_or(false)
                     {
                         format!("{iter_str}.unwrap_or_default()")
@@ -884,7 +885,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     let returns_result = ctx
                         .expected_return_rust
                         .as_deref()
-                        .map(|t| t.starts_with("Result<"))
+                        .map(is_result_type)
                         .unwrap_or(true);
                     let returns_option = ctx
                         .expected_return_rust
@@ -915,7 +916,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         }
                     } else if returns_option && !val.starts_with("Some(") {
                         if let Expr::Ident(name) = inner.as_ref()
-                            && ctx.local_type(name).map(|t| t.starts_with("Option<")).unwrap_or(false) {
+                            && ctx.local_type(name).map(is_option_type).unwrap_or(false) {
                                 return RustExpr::Raw {
                                     text: format!("return Ok({})", val),
                                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
@@ -1097,7 +1098,17 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     let v_str = expr_to_rust(v, ctx);
                     let cloned = match v {
                         Expr::StringLit(s) => rust_string_lit_owned(s),
-                        _ => clone_for_reuse(v, v_str.clone(), ctx),
+                        _ => {
+                            if rust_already_owned(&v_str) || rust_is_copy_value(v, &v_str, ctx) {
+                                v_str.clone()
+                            } else {
+                                match v {
+                                    Expr::Ident(n) if should_clone_ident(n, ctx) => format!("{v_str}.clone()"),
+                                    Expr::FieldAccess(_, _) => format!("{v_str}.clone()"),
+                                    _ => v_str.clone(),
+                                }
+                            }
+                        }
                     };
                     let coerced = if let Some(field_ty) = ctx.field_type(name, k) {
                         let val_ty = match v {
@@ -1113,11 +1124,11 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 "bool" => format!("{}.as_bool().unwrap_or(false)", cloned.trim_end_matches(".clone()")),
                                 "i64" => format!("{}.as_i64().unwrap_or(0)", cloned.trim_end_matches(".clone()")),
                                 "f64" => format!("{}.as_f64().unwrap_or(0.0)", cloned.trim_end_matches(".clone()")),
-                                t if t.starts_with("Option<") => format!("Some({})", cloned),
+                                t if is_option_type(t) => format!("Some({})", cloned),
                                 _ => cloned,
                             }
                         } else if field_ty == "serde_json::Value" || field_ty == "Option<serde_json::Value>" {
-                            if field_ty.starts_with("Option") {
+                            if is_option_type(field_ty) {
                                 if cloned == "None" {
                                     "None".to_string()
                                 } else {
@@ -1441,10 +1452,10 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     // Option auto-unwrap: local has type Option<X> → unwrap on field access
     if let Expr::Ident(name) = base
         && let Some(ty) = ctx.local_type(name)
-            && ty.starts_with("Option<") {
+            && is_option_type(ty) {
                 let base_str = expr_to_rust(base, ctx);
-                let enclosing_returns_option = ctx.expected_return_rust.as_ref()
-                    .map(|r| r.starts_with("Option<"))
+                let enclosing_returns_option = ctx.expected_return_rust.as_deref()
+                    .map(is_option_type)
                     .unwrap_or(false);
                 if enclosing_returns_option {
                     return RustExpr::Raw {
@@ -2009,7 +2020,7 @@ fn infer_call_type(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustTy
 /// Apply ownership semantics to a `RustExpr`: wrap in `Clone` when the value
 /// is non-Copy, multi-use, and not already owned.
 ///
-/// This is the IR-level equivalent of the old string-based `clone_for_reuse`.
+/// This is the IR-level replacement for the old string-based `clone_for_reuse`.
 /// It operates on structure rather than rendered text, making the decision
 /// composable with later transforms (borrow insertion, move elision, etc.).
 ///

@@ -279,23 +279,6 @@ pub fn should_clone_ident(name: &str, ctx: &GenCtx) -> bool {
     ctx.ident_uses.get(name).copied().unwrap_or(2) > 1
 }
 
-/// Clone a value that will be reused — never `.clone().clone()`, never Copy.
-pub fn clone_for_reuse(expr: &Expr, rust: String, ctx: &GenCtx) -> String {
-    if rust_already_owned(&rust) || rust_is_copy_value(expr, &rust, ctx) {
-        return rust;
-    }
-    if let Expr::Ident(n) = expr {
-        if !should_clone_ident(n, ctx) {
-            return rust;
-        }
-        return format!("{rust}.clone()");
-    }
-    if matches!(expr, Expr::FieldAccess(_, _)) {
-        return format!("{rust}.clone()");
-    }
-    rust
-}
-
 pub fn rust_success_is_str(ty: &str) -> bool {
     if is_str_like_return(ty) {
         return true;
@@ -319,6 +302,16 @@ pub fn rust_ty_is_option_or_result(ty: &str) -> bool {
         || t.starts_with("Opt<")
         || t.starts_with("Result<")
         || t.starts_with("Res!")
+}
+
+/// Whether a type string represents an Option type.
+pub fn is_option_type(ty: &str) -> bool {
+    ty.starts_with("Option<")
+}
+
+/// Whether a type string represents a Result type.
+pub fn is_result_type(ty: &str) -> bool {
+    ty.starts_with("Result<")
 }
 
 pub fn rust_ty_is_bytes_like(ty: &str) -> bool {

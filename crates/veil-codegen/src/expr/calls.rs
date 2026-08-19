@@ -280,7 +280,7 @@ pub fn rust_method_name(method: &str) -> String {
 
 /// Build a `serde_json::json!` object for a message with a `"type"` tag plus
 /// its named fields — the wire form for a JSON envelope payload.
-pub fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> String {
+fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> String {
     let mut parts = vec![format!("\"type\": \"{}\"", name)];
     for (k, v) in fields {
         parts.push(format!("\"{}\": {}", k, to_json_arg(v, ctx)));
@@ -291,7 +291,7 @@ pub fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> Stri
 /// Build a JSON envelope for a cross-boundary call routed through a routing
 /// trait: `{ "target": T, "method": m, "args": [ ... ] }`. Positional args are
 /// rendered as JSON values so the receiving side can decode them.
-pub fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> String {
+fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> String {
     let arg_vals = args.iter().map(|a| to_json_arg(a, ctx)).collect::<Vec<_>>().join(", ");
     format!(
         "serde_json::json!({{ \"target\": \"{}\", \"method\": \"{}\", \"args\": [{}] }})",
@@ -302,7 +302,7 @@ pub fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) ->
 /// Render call args, cloning value-bearing locals/state so passing them into a
 /// by-value parameter doesn't move them out of the caller. Skips the routing
 /// reference and Copy scalars (which don't move).
-pub fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
+fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
     args.iter()
         .map(|a| match a {
             Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => format!("state[\"{}\"].clone()", n),
@@ -329,7 +329,7 @@ pub fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
 
 /// Like `clone_args` but applies method-specific argument shaping (e.g. reqwest
 /// `basic_auth` takes `Option` password).
-pub fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> String {
+fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> String {
     clone_args_for_typed_method(None, method, args, ctx)
 }
 
@@ -456,7 +456,7 @@ pub fn expr_is_json(expr: &Expr, ctx: &GenCtx) -> bool {
             .is_some_and(is_json_type_name)
 }
 
-pub fn list_elem_is_cloneable(base: &Expr, ctx: &GenCtx) -> bool {
+fn list_elem_is_cloneable(base: &Expr, ctx: &GenCtx) -> bool {
     let ty = match base {
         Expr::Ident(n) => ctx.local_type(n).map(|s| s.to_string()),
         _ => infer_expr_type(base, ctx),
@@ -498,7 +498,7 @@ pub fn list_index_get_rust(base_rust: &str, idx_rust: &str, base: &Expr, ctx: &G
     }
 }
 
-pub fn list_first_rust(base_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
+fn list_first_rust(base_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
     if list_elem_is_cloneable(base, ctx) {
         format!("{base_rust}.first().cloned().ok_or({})?", ctx.error_model.not_found_path())
     } else {
@@ -508,7 +508,7 @@ pub fn list_first_rust(base_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
 
 /// Lower `local.field.nested` — struct fields stay `.field`; once a field is Json,
 /// remaining segments become `["key"]` indexes.
-pub fn lower_dotted_local_path(target: &str, ctx: &GenCtx) -> String {
+fn lower_dotted_local_path(target: &str, ctx: &GenCtx) -> String {
     let mut parts = target.split('.');
     let Some(first) = parts.next() else {
         return target.to_string();
@@ -584,17 +584,17 @@ pub fn is_ref_local(name: &str, ctx: &GenCtx) -> bool {
         || ty.contains("&[")
 }
 
-pub fn is_hashmap_param(ty: &str) -> bool {
+fn is_hashmap_param(ty: &str) -> bool {
     ty.contains("HashMap") || ty.starts_with("Map<")
 }
 
-pub fn is_option_param(ty: &str) -> bool {
+fn is_option_param(ty: &str) -> bool {
     ty.starts_with("Option<") || ty.starts_with("Opt<")
 }
 
 /// Peel `Arc<dyn Port + Send + Sync>` / `Option<Foo>` down to the type name
 /// used as a `method_params` key.
-pub fn peel_type_key(s: &str) -> String {
+fn peel_type_key(s: &str) -> String {
     let s = s.trim();
     if let Some(rest) = s.split("dyn ").nth(1) {
         return rest
@@ -694,7 +694,7 @@ pub fn param_types_for(recv: Option<&str>, method: &str, ctx: &GenCtx) -> Vec<St
     Vec::new()
 }
 
-pub fn map_literal_to_hashmap(fields: &[(String, Expr)], ctx: &GenCtx) -> String {
+fn map_literal_to_hashmap(fields: &[(String, Expr)], ctx: &GenCtx) -> String {
     if fields.is_empty() {
         return "std::collections::HashMap::new()".to_string();
     }
@@ -711,7 +711,7 @@ pub fn map_literal_to_hashmap(fields: &[(String, Expr)], ctx: &GenCtx) -> String
     )
 }
 
-pub fn arg_looks_optional(arg: &Expr, rust: &str, ctx: &GenCtx) -> bool {
+fn arg_looks_optional(arg: &Expr, rust: &str, ctx: &GenCtx) -> bool {
     rust.starts_with("Some(")
         || rust == "None"
         || rust.starts_with("None::<")
@@ -724,7 +724,7 @@ pub fn arg_looks_optional(arg: &Expr, rust: &str, ctx: &GenCtx) -> bool {
         }
 }
 
-pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
+fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
     let mut rust = if let (Some(ty), Expr::StructLit(name, fields)) = (param_ty, arg) {
         if name.is_empty() && is_hashmap_param(ty) {
             map_literal_to_hashmap(fields, ctx)
@@ -786,7 +786,7 @@ pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
 
 /// Receiver name used to look up port/stub param types.
 /// Ident and `self.field` / `deps.field` last segments all count.
-pub fn call_recv_lookup_name(call: &CallExpr) -> Option<String> {
+fn call_recv_lookup_name(call: &CallExpr) -> Option<String> {
     if !call.target.is_empty() {
         return Some(call.target.clone());
     }
@@ -798,7 +798,7 @@ pub fn call_recv_lookup_name(call: &CallExpr) -> Option<String> {
     }
 }
 
-pub fn call_args_to_rust(call: &CallExpr, ctx: &GenCtx) -> String {
+fn call_args_to_rust(call: &CallExpr, ctx: &GenCtx) -> String {
     let recv_owned = call_recv_lookup_name(call);
     let recv = recv_owned.as_deref();
     let tys = param_types_for(recv, &call.method, ctx);
@@ -1444,7 +1444,17 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         };
         // Clone args to avoid move issues (idents and field access like `repo.slug`)
         let cloned = call.args.iter()
-            .map(|a| clone_for_reuse(a, expr_to_rust(a, ctx), ctx))
+            .map(|a| {
+                let s = expr_to_rust(a, ctx);
+                if rust_already_owned(&s) || rust_is_copy_value(a, &s, ctx) {
+                    return s;
+                }
+                match a {
+                    Expr::Ident(n) if should_clone_ident(n, ctx) => format!("{s}.clone()"),
+                    Expr::FieldAccess(_, _) => format!("{s}.clone()"),
+                    _ => s,
+                }
+            })
             .collect::<Vec<_>>().join(", ");
         // `Type.default()` → `Type::default()` (requires Default impl from smart ctor).
         if method == "default" && call.args.is_empty() {
@@ -1661,7 +1671,18 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 .iter()
                 .map(|a| match a {
                     Expr::StringLit(s) => rust_string_lit_owned(s),
-                    other => clone_for_reuse(other, expr_to_rust(other, ctx), ctx),
+                    other => {
+                        let s = expr_to_rust(other, ctx);
+                        if rust_already_owned(&s) || rust_is_copy_value(other, &s, ctx) {
+                            s
+                        } else {
+                            match other {
+                                Expr::Ident(n) if should_clone_ident(n, ctx) => format!("{s}.clone()"),
+                                Expr::FieldAccess(_, _) => format!("{s}.clone()"),
+                                _ => s,
+                            }
+                        }
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
