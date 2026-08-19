@@ -9,6 +9,7 @@ pub fn gen_types(
     registry: &LayerRegistry,
     solution: &Solution,
     layer_derives: Option<&str>,
+    sibling_crates: &[String],
 ) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
@@ -121,16 +122,62 @@ pub fn gen_types(
         ));
     }
 
-    if !stubs.is_empty() {
-        out.push_str("// Stub types — replace with actual definitions\n");
-        for t in &stubs {
-            if let Some((crate_name, path)) = stub_type_path(registry, t) {
-                out.push_str(&format!("pub type {t} = {crate_name}::{path};\n"));
-            } else {
-                out.push_str(&format!("pub type {t} = String;\n"));
+    // Cross-context re-exports: if this module depends on sibling crates,
+    // re-export their types and ports so local code can use them directly.
+    if !sibling_crates.is_empty() {
+        let mut emitted_sibling: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for item in &solution.items {
+            if let TopLevelItem::Construct(c) = item {
+                if c.shape == Shape::Mod {
+                    let sib_crate = super::workspace::module_crate_name(c, solution);
+                    if sibling_crates.contains(&sib_crate) && emitted_sibling.insert(sib_crate.clone()) {
+                        out.push_str(&format!("pub use {}::domain::types::*;\n", sib_crate));
+                        out.push_str(&format!("pub use {}::ports::*;\n", sib_crate));
+                    }
+                }
             }
         }
         out.push('\n');
+    }
+
+    if !stubs.is_empty() {
+        // Filter out stubs that are satisfied by sibling crate re-exports.
+        let sibling_provided: std::collections::HashSet<String> = if !sibling_crates.is_empty() {
+            let mut set = std::collections::HashSet::new();
+            fn collect_names(c: &Construct, set: &mut std::collections::HashSet<String>) {
+                set.insert(c.name.clone());
+                for child in &c.children {
+                    collect_names(child, set);
+                }
+            }
+            for item in &solution.items {
+                if let TopLevelItem::Construct(c) = item {
+                    if c.shape == Shape::Mod {
+                        let sib_crate = super::workspace::module_crate_name(c, solution);
+                        if sibling_crates.contains(&sib_crate) {
+                            collect_names(c, &mut set);
+                        }
+                    }
+                }
+            }
+            set
+        } else {
+            std::collections::HashSet::new()
+        };
+        let remaining_stubs: Vec<&String> = stubs.iter()
+            .filter(|t| !sibling_provided.contains(*t))
+            .collect();
+        if !remaining_stubs.is_empty() {
+            out.push_str("// Stub types — replace with actual definitions\n");
+            for t in &remaining_stubs {
+                if let Some((crate_name, path)) = stub_type_path(registry, t) {
+                    out.push_str(&format!("pub type {t} = {crate_name}::{path};\n"));
+                } else {
+                    out.push_str(&format!("pub type {t} = String;\n"));
+                }
+            }
+            out.push('\n');
+        }
     }
 
     // Enums first (unit enums derive Default for fill-in). Nested VOs that are

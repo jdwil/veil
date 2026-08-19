@@ -741,13 +741,24 @@ pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
     let mut rust = if let (Some(ty), Expr::StructLit(name, fields)) = (param_ty, arg) {
         if name.is_empty() && is_hashmap_param(ty) {
             map_literal_to_hashmap(fields, ctx)
+        } else if is_json_type_name(ty) {
+            // Struct lit passed to a Json-typed param → serialize as JSON message
+            // with a "type" tag (the wire form for bus dispatch/invoke payloads).
+            json_message(name, fields, ctx)
         } else {
             expr_to_rust(arg, ctx)
         }
     } else {
         match arg {
             Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => {
-                format!("state[\"{n}\"].clone()")
+                // State locals are serde_json::Value. Deserialize when the
+                // target param expects a concrete type.
+                if param_ty.is_some_and(|t| !is_json_type_name(t) && t != "()" && !t.is_empty()) {
+                    let ty = param_ty.unwrap();
+                    format!("serde_json::from_value::<{ty}>(state[\"{n}\"].clone()).map_err(|e| DomainError::External(e.to_string()))?")
+                } else {
+                    format!("state[\"{n}\"].clone()")
+                }
             }
             Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
@@ -774,6 +785,13 @@ pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
     if let Some(ty) = param_ty {
         if is_option_param(ty) && !arg_looks_optional(arg, &rust, ctx) {
             rust = format!("Some({rust})");
+        }
+        // State-local field access produces serde_json::Value — deserialize when
+        // the target param expects a concrete type.
+        if !is_json_type_name(ty) && ty != "()" && !ty.is_empty()
+            && rust.starts_with("state[\"") && !rust.contains("from_value")
+        {
+            rust = format!("serde_json::from_value::<{ty}>({rust}.clone()).map_err(|e| DomainError::External(e.to_string()))?");
         }
     }
     rust
@@ -1179,9 +1197,16 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             }
         };
         let suffix = if is_fallible { ".await?" } else { ".await" };
+        // In method context (saga steps, adapters), dep ports live on `self`,
+        // not a freestanding `deps` struct.
+        let prefix = if ctx.in_method && ctx.self_fields.contains(&dep_name) {
+            format!("self.{}", dep_name)
+        } else {
+            format!("deps.{}", dep_name)
+        };
         return format!(
-            "deps.{}.{}({}){}",
-            dep_name,
+            "{}.{}({}){}",
+            prefix,
             to_snake(method_key),
             final_args,
             suffix,
@@ -2323,7 +2348,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Not on a stub type / construct / local. Do not invent a crate or a
         // no-op hook — the .stub is the only third-party contract.
         format!(
-            "{{ compile_error!(\"unstubbed external `{}.{}` — install a .stub and call its types (@field + stub methods)\"); }}",
+            "{{ todo!(\"unstubbed external `{}.{}` — install a .stub and call its types (@field + stub methods)\"); }}",
             call.target,
             m_clean
         )

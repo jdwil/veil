@@ -902,7 +902,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         if let Some(rt) = &runtime {
             // Runtime-delegated construct: emit the step impls + a body that
             // builds the step list and calls the coordinator.
-            emit_runtime_delegated(&mut out, name, inputs, steps, rt, deps_param, solution, &ctx);
+            emit_runtime_delegated(&mut out, name, inputs, steps, rt, deps_param, solution, registry, &ctx);
             continue;
         }
 
@@ -1006,15 +1006,33 @@ pub fn emit_runtime_delegated(
     rt: &veil_ir::layer::RuntimeBinding,
     deps_param: &str,
     solution: &Solution,
+    registry: &LayerRegistry,
     ctx: &crate::expr::GenCtx,
 ) {
     let step_trait = &rt.step_trait;
     // Capture the construct's inputs on each step struct so step bodies can use
     // them. Fields are cloned into the struct at construction.
+    // Skip @dep inputs — they're handled via dep_fields with proper Arc<dyn> wrapping.
     let input_fields: Vec<(String, String)> = inputs
         .iter()
+        .filter(|f| !registry.field_is_dependency(f))
         .map(|f| (to_snake(&f.name), type_to_rust(&f.type_expr)))
         .collect();
+
+    // Dep port fields: each step struct also captures the Arc'd port deps so
+    // step bodies can call `self.customer_repo.save(...)` etc.
+    // Skip dep fields whose name collides with an input field (e.g. `@dep bus: Bus`
+    // is already captured as an input).
+    let input_names: std::collections::HashSet<&str> = input_fields.iter().map(|(n, _)| n.as_str()).collect();
+    let mut dep_fields: Vec<(String, String)> = ctx
+        .dep_fields
+        .iter()
+        .filter(|(_, field_name)| !input_names.contains(field_name.as_str()))
+        .map(|(trait_name, field_name)| {
+            (field_name.clone(), format!("std::sync::Arc<dyn {} + Send + Sync>", trait_name))
+        })
+        .collect();
+    dep_fields.sort_by(|a, b| a.0.cmp(&b.0));
 
     // A trait method threads state iff the layer declares it returning a payload
     // (`Res!<T>` → Result<T, _>); a payload-less `Res!` method takes state
@@ -1095,15 +1113,23 @@ pub fn emit_runtime_delegated(
         for (fname, ftype) in &input_fields {
             out.push_str(&format!("    {}: {},\n", fname, ftype));
         }
+        for (fname, ftype) in &dep_fields {
+            out.push_str(&format!("    {}: {},\n", fname, ftype));
+        }
         out.push_str("}\n\n");
 
         // Step body ctx: inputs are `self.<field>`; routing trait is the injected
         // param from the step-trait signature; cross-step locals live in threaded state.
         let mut step_ctx = ctx.clone_for_inference();
+        step_ctx.locals.clear(); // Step body starts fresh — inputs are self_fields, not locals.
         step_ctx.envelope_routing = use_envelope;
         step_ctx.routing_ref = routing_param.clone();
         step_ctx.in_method = true; // input idents render as self.<field>
         for (fname, ftype) in &input_fields {
+            step_ctx.self_fields.insert(fname.clone());
+            step_ctx.local_types.insert(fname.clone(), ftype.clone());
+        }
+        for (fname, ftype) in &dep_fields {
             step_ctx.self_fields.insert(fname.clone());
             step_ctx.local_types.insert(fname.clone(), ftype.clone());
         }
@@ -1141,6 +1167,7 @@ pub fn emit_runtime_delegated(
     // The delegated function: build the step list and call the coordinator.
     let params = inputs
         .iter()
+        .filter(|f| !registry.field_is_dependency(f))
         .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
         .collect::<Vec<_>>()
         .join(", ");
@@ -1154,11 +1181,14 @@ pub fn emit_runtime_delegated(
     for (i, step) in steps.iter().enumerate() {
         if !matches!(step, FlowStep::Step(_)) { continue; }
         let type_name = format!("{}Step{}", name, i);
-        let ctor_args = input_fields
+        let mut ctor_parts: Vec<String> = input_fields
             .iter()
             .map(|(fname, _)| format!("{}: {}.clone()", fname, fname))
-            .collect::<Vec<_>>()
-            .join(", ");
+            .collect();
+        for (fname, _) in &dep_fields {
+            ctor_parts.push(format!("{}: deps.{}.clone()", fname, fname));
+        }
+        let ctor_args = ctor_parts.join(", ");
         out.push_str(&format!("        Box::new({} {{ {} }}),\n", type_name, ctor_args));
     }
     out.push_str("    ];\n");
@@ -1258,7 +1288,6 @@ pub fn emit_step_method(
 }
 
 /// Detect which sibling modules a module's flows reference (via step ctx refs).
-#[allow(dead_code)] // retained for planned cross-module import generation
 pub fn detect_sibling_refs(module: &Construct, solution: &Solution) -> Vec<String> {
     let mut needed = std::collections::HashSet::new();
     let module_names: std::collections::HashMap<String, String> = solution.items.iter()
@@ -1268,6 +1297,14 @@ pub fn detect_sibling_refs(module: &Construct, solution: &Solution) -> Vec<Strin
         }).collect();
 
     fn scan_refs(c: &Construct, module_names: &std::collections::HashMap<String, String>, needed: &mut std::collections::HashSet<String>) {
+        // Construct-level refs (e.g. `contexts Identity, Billing` on a saga)
+        for r in &c.refs {
+            for val in &r.values {
+                if let Some(crate_name) = module_names.get(val) {
+                    needed.insert(crate_name.clone());
+                }
+            }
+        }
         for step in &c.steps {
             if let FlowStep::Step(s) = step {
                 for r in &s.refs {

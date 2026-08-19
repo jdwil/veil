@@ -283,6 +283,9 @@ pub fn gen_module_crate(
     let mut files = Vec::new();
     let mut contents = flatten_module(module, registry);
 
+    // Cross-context sibling dependencies (orchestrators referencing other contexts).
+    let sibling_crates = crate::rust::application::detect_sibling_refs(module, solution);
+
     // Solution-level layer-provided traits live in the shared crate and are
     // re-exported by gen_traits — do NOT duplicate them here. A product
     // construct that reuses a declared name is emitted locally; gen_traits
@@ -311,10 +314,15 @@ thiserror.workspace = true
 serde.workspace = true
 uuid.workspace = true"#);
             // Inter-context communication goes through Bus — no sibling crate deps needed.
+            // Exception: orchestrators that directly reference sibling context types
+            // (via `contexts X, Y` or step-level `ctx X` refs) need path deps.
             cargo.push_str("\n");
             cargo.push_str("chrono.workspace = true\ntracing.workspace = true\nserde_json.workspace = true\n");
             // Shared error types + Bus trait, defined once.
             cargo.push_str("veil_shared = { path = \"../veil_shared\" }\n");
+            for sibling in &sibling_crates {
+                cargo.push_str(&format!("{} = {{ path = \"../{}\" }}\n", sibling, sibling));
+            }
             // Stub crate dependencies (active only — same policy as veil_bin / workspace)
             for stub in &registry.stubs {
                 if !stub_is_active_cargo(stub) {
@@ -355,7 +363,7 @@ uuid.workspace = true"#);
         files.push(tests);
     }
 
-    files.push(gen_types(&contents, &crate_name, registry, solution, layer_derives));
+    files.push(gen_types(&contents, &crate_name, registry, solution, layer_derives, &sibling_crates));
     files.push(gen_child_types(&contents, &crate_name));
     files.push(GeneratedFile {
         path: format!("crates/{}/src/domain/mod.rs", crate_name),

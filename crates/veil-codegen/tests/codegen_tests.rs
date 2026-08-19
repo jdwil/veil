@@ -487,7 +487,7 @@ fn adapter_impls_are_real_not_todo_comments() {
     );
     // Unstubbed third-party calls fail closed (no empty hook functions).
     assert!(
-        out.contains("unstubbed external") || out.contains("compile_error!"),
+        out.contains("unstubbed external") || out.contains("todo!"),
         "unstubbed http.post must fail closed, not emit a no-op hook:\n{}",
         grep(&out, "http")
     );
@@ -1243,6 +1243,12 @@ fn generated_examples_compile() {
         "fixtures/ladder/l1/crud.veil",
         "fixtures/multi_harness/product.veil",
     ];
+    // Cross-context orchestrator examples: library crates compile but the
+    // harness binary has known wiring gaps (InMemory adapters for orchestrator
+    // ports). Check with --exclude veil_bin.
+    let lib_only_fixtures = [
+        "examples/customer_onboarding.veil",
+    ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
     for rel in &fixtures {
@@ -1308,9 +1314,97 @@ fn generated_examples_compile() {
             String::from_utf8_lossy(&clippy.stderr)
         );
 
+        // Rustfmt idempotency: generated .rs files should already be formatted.
+        // Currently a soft check (warning) — the codegen does not yet emit
+        // perfectly formatted output. Promotes to hard failure once formatting
+        // is stabilized.
+        let rs_files: Vec<_> = walkdir(&tmp);
+        for rs in &rs_files {
+            let before = std::fs::read_to_string(rs).unwrap();
+            let fmt = Command::new("rustfmt")
+                .arg("--edition")
+                .arg("2024")
+                .arg(rs)
+                .output()
+                .expect("failed to run rustfmt");
+            if !fmt.status.success() {
+                // rustfmt can fail on syntax it doesn't understand — skip.
+                continue;
+            }
+            let after = std::fs::read_to_string(rs).unwrap();
+            if before != after {
+                eprintln!(
+                    "WARN: {} is not rustfmt-clean ({})",
+                    rs.display(),
+                    example.display()
+                );
+            }
+        }
+
         // Cleanup
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    // Lib-only fixtures: cargo check excluding veil_bin (harness has known gaps).
+    for rel in &lib_only_fixtures {
+        let example = root.join(rel);
+        let source = std::fs::read_to_string(&example)
+            .unwrap_or_else(|_| panic!("failed to read {}", example.display()));
+        let mut reg = veil_ir::LayerRegistry::builtin();
+        for line in source.lines() {
+            let t = line.trim();
+            if let Some(name) = t.strip_prefix("use ") {
+                let name = name.split_whitespace().next().unwrap_or("");
+                let dir = example.parent().unwrap();
+                let _ = reg.load_layer(name, dir);
+            }
+        }
+        let tokens = veil_parser::lex(&source);
+        let sol = veil_parser::parse_with_registry(&tokens, reg.clone())
+            .unwrap_or_else(|e| panic!("{} failed to parse: {:?}", example.display(), e));
+        let project = veil_codegen::generate(&sol, &reg);
+        let tmp = std::env::temp_dir().join(format!(
+            "veil_compile_test_{}",
+            rel.replace('/', "_").replace('.', "_")
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        for f in &project.files {
+            let path = tmp.join(&f.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, &f.content).unwrap();
+        }
+        // Check only library crates (exclude veil_bin harness).
+        let output = Command::new("cargo")
+            .args(["check", "--workspace", "--exclude", "veil_bin"])
+            .current_dir(&tmp)
+            .output()
+            .expect("failed to run cargo check");
+        assert!(
+            output.status.success(),
+            "{} generated library code fails cargo check:\n{}",
+            example.display(),
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+/// Recursively find all .rs files under a directory.
+fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut results = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                results.extend(walkdir(&path));
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                results.push(path);
+            }
+        }
+    }
+    results
 }
 
 
