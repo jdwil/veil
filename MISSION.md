@@ -419,12 +419,15 @@ The invariant **holds** for the parser, IR builder, and viewer. It does
 
 - `rust.rs` branches on `is_a("DomainService")`, `is_a("ApplicationService")`,
   `keyword == "handler"`, `keyword == "svc"` — hardcoded DDD knowledge.
-- Layer `emit_to` sections (derives, trait_attrs, fn_attrs) are **declared**
-  in layer files but **never consumed** by the backend — the backend
-  hardcodes its own derives/attrs directly.
+- Layer `emit_to` sections: **derives** and **trait_attrs** are now consumed
+  by the backend (wired through `gen_module_crate`). **fn_attrs** is declared
+  in `rust.layer` (emits "async") but not consumed because the backend
+  hardcodes `pub async fn` directly — documented, not a functional gap since
+  all fn-shaped constructs are async today.
 - Layer constraints (`immutable`, `no_identity`, `equality_by_value`) are
-  validated but **never consulted during code emission** — all constructs
-  of the same shape emit identically regardless of semantic guarantees.
+  validated but **partially consulted during code emission** — immutable
+  constructs get `&self` methods (not `&mut self`). Full constraint-driven
+  emission (e.g., suppressing Clone on immutable types) is incomplete.
 - Custom roles declared by new layers have no effect unless the backend
   hardcodes handling for that specific role string.
 
@@ -667,18 +670,28 @@ ui/                      — ProductHost SPA (projects, review/sign-off, in-shel
 
 The zero-domain-knowledge invariant **holds** for the parser, IR builder, and
 viewer. It does **not yet hold** for codegen — see "Invariant status" above.
-Example workspaces generate Rust that compiles cleanly for simple patterns.
-Complex examples (customer_onboarding, sales_crm) do NOT pass `cargo check`
-in CI and are excluded from compile tests due to known gaps in adapter and
-harness lowering.
+Example workspaces generate Rust that compiles cleanly for simple and moderate
+patterns (ladder l0/l1, multi_harness). Complex examples (customer_onboarding)
+have known unstubbed externals and correctly emit `compile_error!()` at build
+time (fail-closed).
 
-The codegen produces **correct** output for the patterns it handles — it does
-not silently miscompile. But it does not produce **idiomatic** output: brute-
-force cloning, incomplete type inference forcing defensive patterns, hardcoded
-special cases for known crate names, and string-interpolation-based emission
-that prevents structured optimization. The quality bar in "Intelligent
-Codegen" above is aspirational — current output would not pass clippy cleanly
-and contains `todo!()`/`unreachable!()` in generated code for unhandled paths.
+**Expression codegen is IR-based.** The production path is:
+`expr_to_rust → lower_to_rust (typed RustExpr IR) → emit()`. The legacy
+string-interpolation path (`legacy_expr_to_rust`) has been deleted. All ~34
+expression variants are handled natively in `lower_to_rust`. String-inspection
+heuristics for type inference have been removed.
+
+**Error model is parameterized.** All expression-level error generation uses
+`ctx.error_model` (not hardcoded `DomainError::` strings). Infrastructure
+generators (harness, type definitions) use the default model.
+
+**Generated code is fail-closed.** No `todo!()`, `unreachable!()`, or
+`unimplemented!()` in generated code. Unstubbed externals, empty adapters, and
+unknown types emit `compile_error!()` — visible at build time.
+
+**Clippy passes.** `cargo clippy -p veil-codegen --no-deps -- -D warnings`
+produces zero warnings. Generated Rust for fixture examples passes
+`cargo clippy -- -D warnings`.
 
 TypeScript generation exists; full UI/structure parity and additional backends
 are incomplete. The TypeScript backend shares no lowering infrastructure with
@@ -726,11 +739,11 @@ Implementation map (summary):
 
 ### Codegen architecture debt (resolve before multi-target)
 
-- **Expression emission is string-based** — `expr_to_rust` (285KB) builds
-  target code by interpolating sub-expressions into format strings. No
-  intermediate typed expression tree. Ownership/borrow analysis operates
-  on heuristics, not structure. Closure error-handling uses post-hoc string
-  replacement.
+- **Expression emission is IR-based** — `expr_to_rust` routes through a
+  typed `RustExpr` intermediate (`lower_to_rust → emit`). The legacy
+  1200-line string-interpolation path has been deleted. All expression types
+  produce structured IR nodes; ownership analysis operates on these nodes.
+  String-based heuristics for type inference have been removed.
 - **Per-target reimplementation** — Rust and TypeScript share zero lowering
   infrastructure. Adding a third target means writing a third standalone
   implementation of the full expression language.
@@ -740,9 +753,9 @@ Implementation map (summary):
 - **DDD special-casing in dispatch** — handler registration, deps injection,
   and routing patterns branch on hardcoded subkind/keyword strings rather
   than layer-declared policies.
-- **Incomplete type inference** — compound expressions (closures, match,
-  if-expr, binary ops, ranges, maps, tuples) return no type information,
-  forcing downstream code to clone defensively and fall back to `format!()`.
+- **calls.rs bulk** — ~2400 lines of call translation logic (receiver
+  dispatch, argument cloning, suffix application). Target for reduction to
+  <200 lines of shared helpers once structured RustExpr handles calls natively.
 
 ## Strategic Sequencing
 
