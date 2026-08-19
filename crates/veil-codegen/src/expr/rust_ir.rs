@@ -208,6 +208,70 @@ pub enum RustExpr {
 
     /// `vec![a, b, c]` (for json! array arguments)
     VecMacro(Vec<RustExpr>),
+
+    // ─── Structural nodes added during "complete-the-tree" ───────────
+
+    /// Binary operation: `left op right`
+    BinOp {
+        left: Box<RustExpr>,
+        op: String,
+        right: Box<RustExpr>,
+        ty: Option<RustType>,
+    },
+
+    /// Unary operation: `op expr`
+    UnaryOp {
+        op: String,
+        expr: Box<RustExpr>,
+        ty: Option<RustType>,
+    },
+
+    /// Array / Vec literal: `vec![items]`
+    Array {
+        items: Vec<RustExpr>,
+        ty: Option<RustType>,
+    },
+
+    /// Tuple literal: `(items)`
+    Tuple {
+        items: Vec<RustExpr>,
+        ty: Option<RustType>,
+    },
+
+    /// Index expression: `base[index]`
+    Index {
+        base: Box<RustExpr>,
+        index: Box<RustExpr>,
+        ty: Option<RustType>,
+    },
+
+    /// Struct literal: `Name { field: value, ... }`
+    StructLit {
+        name: String,
+        fields: Vec<(String, RustExpr)>,
+        ty: Option<RustType>,
+    },
+
+    /// For loop: `for binding in iterable { body }`
+    For {
+        binding: String,
+        iterable: Box<RustExpr>,
+        body: Vec<RustExpr>,
+        ty: Option<RustType>,
+    },
+
+    /// While loop: `while condition { body }`
+    While {
+        condition: Box<RustExpr>,
+        body: Vec<RustExpr>,
+        ty: Option<RustType>,
+    },
+
+    /// Infinite loop: `loop { body }`
+    Loop {
+        body: Vec<RustExpr>,
+        ty: Option<RustType>,
+    },
 }
 
 // ─── emit() ──────────────────────────────────────────────────────────────────
@@ -332,6 +396,56 @@ pub fn emit(expr: &RustExpr) -> String {
             let vals: Vec<String> = items.iter().map(emit).collect();
             format!("vec![{}]", vals.join(", "))
         }
+
+        // ─── Structural nodes (complete-the-tree) ────────────────────────
+        RustExpr::BinOp { left, op, right, .. } => {
+            format!("{} {} {}", emit(left), op, emit(right))
+        }
+        RustExpr::UnaryOp { op, expr, .. } => {
+            format!("{}{}", op, emit(expr))
+        }
+        RustExpr::Array { items, .. } => {
+            let vals: Vec<String> = items.iter().map(emit).collect();
+            format!("vec![{}]", vals.join(", "))
+        }
+        RustExpr::Tuple { items, .. } => {
+            let parts: Vec<String> = items.iter().map(emit).collect();
+            format!("({})", parts.join(", "))
+        }
+        RustExpr::Index { base, index, .. } => {
+            format!("{}[{}]", emit(base), emit(index))
+        }
+        RustExpr::StructLit { name, fields, .. } => {
+            if fields.is_empty() {
+                format!("{} {{}}", name)
+            } else {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = emit(v);
+                        if *k == val {
+                            // Field shorthand: `name` instead of `name: name`
+                            k.clone()
+                        } else {
+                            format!("{}: {}", k, val)
+                        }
+                    })
+                    .collect();
+                format!("{} {{ {} }}", name, field_strs.join(", "))
+            }
+        }
+        RustExpr::For { binding, iterable, body, .. } => {
+            let body_str = body.iter().map(|e| format!("    {};", emit(e))).collect::<Vec<_>>().join("\n");
+            format!("for {} in {} {{\n{}\n}}", binding, emit(iterable), body_str)
+        }
+        RustExpr::While { condition, body, .. } => {
+            let body_str = body.iter().map(|e| format!("        {};", emit(e))).collect::<Vec<_>>().join("\n");
+            format!("while {} {{\n{}\n    }}", emit(condition), body_str)
+        }
+        RustExpr::Loop { body, .. } => {
+            let body_str = body.iter().map(|e| format!("    {};", emit(e))).collect::<Vec<_>>().join("\n");
+            format!("loop {{\n{}\n}}", body_str)
+        }
     }
 }
 
@@ -361,59 +475,110 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: binary and unary ops ───────────────────────────────
         Expr::BinaryOp(op) => {
+            let ty = infer_expr_type(expr, ctx).map(|s| RustType::parse(&s));
             let l = expr_to_rust(&op.left, ctx);
             let r = expr_to_rust(&op.right, ctx);
-            let text = {
-                // Special case: x != None → x.is_some(), x == None → x.is_none()
-                if r == "None" {
-                    match op.op {
-                        veil_ir::ast::BinOp::NotEq => format!("{}.is_some()", l),
-                        veil_ir::ast::BinOp::Eq => format!("{}.is_none()", l),
-                        _ => format!("{} {} {}", l, binop_to_rust(&op.op), r),
+            // Special case: x != None → x.is_some(), x == None → x.is_none()
+            if r == "None" {
+                match op.op {
+                    veil_ir::ast::BinOp::NotEq => {
+                        return RustExpr::MethodCall {
+                            receiver: Box::new(RustExpr::Raw { text: l, ty: None }),
+                            method: "is_some".to_string(),
+                            args: vec![],
+                            ty,
+                            is_async: false,
+                            is_fallible: false,
+                        };
                     }
-                } else if l == "None" {
-                    match op.op {
-                        veil_ir::ast::BinOp::NotEq => format!("{}.is_some()", r),
-                        veil_ir::ast::BinOp::Eq => format!("{}.is_none()", r),
-                        _ => format!("{} {} {}", l, binop_to_rust(&op.op), r),
+                    veil_ir::ast::BinOp::Eq => {
+                        return RustExpr::MethodCall {
+                            receiver: Box::new(RustExpr::Raw { text: l, ty: None }),
+                            method: "is_none".to_string(),
+                            args: vec![],
+                            ty,
+                            is_async: false,
+                            is_fallible: false,
+                        };
                     }
-                } else if matches!(op.op, veil_ir::ast::BinOp::Add)
-                    && (r.starts_with("vec![") || l.starts_with("vec!["))
-                {
-                    format!("{{ let mut __v = {l}; __v.extend({r}); __v }}")
-                } else if matches!(op.op, veil_ir::ast::BinOp::Add)
-                    && (expr_is_stringish(&op.left, &l, ctx) || expr_is_stringish(&op.right, &r, ctx))
-                    && !(expr_is_numeric(&op.left, ctx) && expr_is_numeric(&op.right, ctx))
-                {
-                    let parts = flatten_str_add_chain(expr);
-                    if parts.len() >= 2 {
-                        let rendered: Vec<String> = parts
-                            .into_iter()
-                            .map(|p| {
-                                let s = expr_to_rust(p, ctx);
-                                clone_if_named_value(p, s)
-                            })
-                            .collect();
-                        let holes = vec!["{}"; rendered.len()].join("");
-                        format!("format!(\"{holes}\", {})", rendered.join(", "))
-                    } else {
-                        let l = clone_if_named_value(&op.left, l);
-                        let r = clone_if_named_value(&op.right, r);
-                        format!("format!(\"{{}}{{}}\", {l}, {r})")
-                    }
-                } else {
-                    format!("{} {} {}", l, binop_to_rust(&op.op), r)
+                    _ => {}
                 }
-            };
-            RustExpr::Raw {
-                text,
-                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+            } else if l == "None" {
+                match op.op {
+                    veil_ir::ast::BinOp::NotEq => {
+                        return RustExpr::MethodCall {
+                            receiver: Box::new(RustExpr::Raw { text: r, ty: None }),
+                            method: "is_some".to_string(),
+                            args: vec![],
+                            ty,
+                            is_async: false,
+                            is_fallible: false,
+                        };
+                    }
+                    veil_ir::ast::BinOp::Eq => {
+                        return RustExpr::MethodCall {
+                            receiver: Box::new(RustExpr::Raw { text: r, ty: None }),
+                            method: "is_none".to_string(),
+                            args: vec![],
+                            ty,
+                            is_async: false,
+                            is_fallible: false,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            // Vec concat: x + [items] → { let mut __v = x; __v.extend(items); __v }
+            if matches!(op.op, veil_ir::ast::BinOp::Add)
+                && (r.starts_with("vec![") || l.starts_with("vec!["))
+            {
+                return RustExpr::Raw {
+                    text: format!("{{ let mut __v = {l}; __v.extend({r}); __v }}"),
+                    ty,
+                };
+            }
+            // String concat: x + y → format!("{}{}", x, y)
+            if matches!(op.op, veil_ir::ast::BinOp::Add)
+                && (expr_is_stringish(&op.left, &l, ctx) || expr_is_stringish(&op.right, &r, ctx))
+                && !(expr_is_numeric(&op.left, ctx) && expr_is_numeric(&op.right, ctx))
+            {
+                let parts = flatten_str_add_chain(expr);
+                if parts.len() >= 2 {
+                    let rendered: Vec<String> = parts
+                        .into_iter()
+                        .map(|p| {
+                            let s = expr_to_rust(p, ctx);
+                            clone_if_named_value(p, s)
+                        })
+                        .collect();
+                    let holes = vec!["{}"; rendered.len()].join("");
+                    let args = rendered.iter().map(|a| RustExpr::Raw { text: a.clone(), ty: None }).collect();
+                    return RustExpr::Format { template: holes, args };
+                } else {
+                    let l = clone_if_named_value(&op.left, l);
+                    let r = clone_if_named_value(&op.right, r);
+                    return RustExpr::Format {
+                        template: "{}{}".to_string(),
+                        args: vec![
+                            RustExpr::Raw { text: l, ty: None },
+                            RustExpr::Raw { text: r, ty: None },
+                        ],
+                    };
+                }
+            }
+            // Simple binary op
+            RustExpr::BinOp {
+                left: Box::new(RustExpr::Raw { text: l, ty: None }),
+                op: binop_to_rust(&op.op).to_string(),
+                right: Box::new(RustExpr::Raw { text: r, ty: None }),
+                ty,
             }
         }
         Expr::UnaryOp(op) => {
             let inner = expr_to_rust(&op.expr, ctx);
-            RustExpr::Raw {
-                text: format!("{}{}", unaryop_to_rust(&op.op), inner),
+            RustExpr::UnaryOp {
+                op: unaryop_to_rust(&op.op).to_string(),
+                expr: Box::new(RustExpr::Raw { text: inner, ty: None }),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -845,9 +1010,11 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: loop ───────────────────────────────────────────────
         Expr::Loop(body) => {
-            let b = body.iter().map(|e| format!("    {};", expr_to_rust(e, ctx))).collect::<Vec<_>>().join("\n");
-            RustExpr::Raw {
-                text: format!("loop {{\n{}\n}}", b),
+            let body_exprs: Vec<RustExpr> = body.iter().map(|e| {
+                RustExpr::Raw { text: expr_to_rust(e, ctx), ty: None }
+            }).collect();
+            RustExpr::Loop {
+                body: body_exprs,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -946,38 +1113,42 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: array literal ──────────────────────────────────────
         Expr::ArrayLit(items) => {
-            let s = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
-            RustExpr::Raw {
-                text: format!("vec![{}]", s),
+            let item_exprs: Vec<RustExpr> = items.iter().map(|e| {
+                RustExpr::Raw { text: expr_to_rust(e, ctx), ty: None }
+            }).collect();
+            RustExpr::Array {
+                items: item_exprs,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
 
         // ── Migrated: tuple ──────────────────────────────────────────────
         Expr::Tuple(items) => {
-            let parts = items.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
-            RustExpr::Raw {
-                text: format!("({})", parts),
+            let item_exprs: Vec<RustExpr> = items.iter().map(|e| {
+                RustExpr::Raw { text: expr_to_rust(e, ctx), ty: None }
+            }).collect();
+            RustExpr::Tuple {
+                items: item_exprs,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
 
         // ── Migrated: await ──────────────────────────────────────────────
         Expr::Await(inner) => {
-            let inner_str = expr_to_rust(inner, ctx);
-            RustExpr::Raw {
-                text: format!("{}.await", inner_str),
-                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
-            }
+            let inner_node = RustExpr::Raw {
+                text: expr_to_rust(inner, ctx),
+                ty: infer_expr_type(inner, ctx).map(|s| RustType::parse(&s)),
+            };
+            RustExpr::Await(Box::new(inner_node))
         }
 
         // ── Migrated: try ────────────────────────────────────────────────
         Expr::Try(inner) => {
-            let s = expr_to_rust(inner, ctx);
-            RustExpr::Raw {
-                text: format!("{}?", s),
-                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
-            }
+            let inner_node = RustExpr::Raw {
+                text: expr_to_rust(inner, ctx),
+                ty: infer_expr_type(inner, ctx).map(|s| RustType::parse(&s)),
+            };
+            RustExpr::Try(Box::new(inner_node))
         }
 
         // ── Migrated: require ────────────────────────────────────────────
@@ -2085,6 +2256,9 @@ fn is_already_owned(expr: &RustExpr) -> bool {
             | RustExpr::JsonNull
             | RustExpr::JsonEmptyArray
             | RustExpr::VecMacro(_)
+            | RustExpr::Array { .. }
+            | RustExpr::Tuple { .. }
+            | RustExpr::StructLit { .. }
     )
 }
 
@@ -2328,11 +2502,53 @@ pub fn suppress_try_in_closure(expr: RustExpr) -> RustExpr {
         RustExpr::VecMacro(items) => {
             RustExpr::VecMacro(items.into_iter().map(suppress_try_in_closure).collect())
         }
+        // Structural nodes: recurse into children
+        RustExpr::BinOp { left, op, right, ty } => RustExpr::BinOp {
+            left: Box::new(suppress_try_in_closure(*left)),
+            op,
+            right: Box::new(suppress_try_in_closure(*right)),
+            ty,
+        },
+        RustExpr::UnaryOp { op, expr, ty } => RustExpr::UnaryOp {
+            op,
+            expr: Box::new(suppress_try_in_closure(*expr)),
+            ty,
+        },
+        RustExpr::Array { items, ty } => RustExpr::Array {
+            items: items.into_iter().map(suppress_try_in_closure).collect(),
+            ty,
+        },
+        RustExpr::Tuple { items, ty } => RustExpr::Tuple {
+            items: items.into_iter().map(suppress_try_in_closure).collect(),
+            ty,
+        },
+        RustExpr::Index { base, index, ty } => RustExpr::Index {
+            base: Box::new(suppress_try_in_closure(*base)),
+            index: Box::new(suppress_try_in_closure(*index)),
+            ty,
+        },
+        RustExpr::StructLit { name, fields, ty } => RustExpr::StructLit {
+            name,
+            fields: fields.into_iter().map(|(k, v)| (k, suppress_try_in_closure(v))).collect(),
+            ty,
+        },
+        RustExpr::For { binding, iterable, body, ty } => RustExpr::For {
+            binding,
+            iterable: Box::new(suppress_try_in_closure(*iterable)),
+            body: body.into_iter().map(suppress_try_in_closure).collect(),
+            ty,
+        },
+        RustExpr::While { condition, body, ty } => RustExpr::While {
+            condition: Box::new(suppress_try_in_closure(*condition)),
+            body: body.into_iter().map(suppress_try_in_closure).collect(),
+            ty,
+        },
+        RustExpr::Loop { body, ty } => RustExpr::Loop {
+            body: body.into_iter().map(suppress_try_in_closure).collect(),
+            ty,
+        },
     }
 }
-
-/// String-level fixup for Raw nodes inside closures. Equivalent to the old
-/// `fixup_closure_body` + `fixup_question` lambdas in translate.rs.
 fn fixup_closure_raw(s: &str) -> String {
     let mut s = s
         .replace(
