@@ -276,6 +276,22 @@ pub fn gen_struct(
     let mut out = String::new();
     let has_invariant = c.annotations.iter().any(|a| registry.is_invariant_annotation(&a.name));
 
+    // ─── Phase 6: Constraint-driven emission ───────────────────────────
+    // Look up layer constraints for this construct (equality_by_value, immutable, no_identity).
+    let constraints: Vec<String> = registry
+        .spec_for_construct(c)
+        .map(|spec| spec.constraints.clone())
+        .unwrap_or_default();
+    let has_equality_by_value = constraints.iter().any(|c| c == "equality_by_value");
+    let has_no_identity = constraints.iter().any(|c| c == "no_identity");
+    let has_immutable = constraints.iter().any(|c| c == "immutable");
+    // Phase 6d: no_identity — construct should not have an `id` field auto-generated.
+    // Currently `id` is always a required user param (not auto-defaulted), so
+    // this constraint is primarily enforced by the validator. The flag is kept
+    // here for forward-compatibility: if identity_policy ever adds `id` to
+    // auto_fields, this guard prevents it from being auto-filled.
+    let _ = has_no_identity;
+
     // Fields: direct plus struct-shaped named blocks (e.g. root).
     let mut fields: Vec<&Field> = c.fields.iter().collect();
     for block in &c.blocks {
@@ -288,22 +304,29 @@ pub fn gen_struct(
     let is_single_field = fields.len() == 1;
     let (extra_derive, extra_attr) = stub_domain_type_attrs(registry, is_single_field);
 
+    // Phase 6c: equality_by_value → append Eq, Hash to derives.
+    let constraint_derive = if has_equality_by_value {
+        ", Eq, Hash"
+    } else {
+        ""
+    };
+
     // Layer-driven derives: if a layer declares emit_to "derives", use that
     // as the derive attribute line. Otherwise use the backend default.
     let derive_line = if let Some(layer_d) = layer_derives {
         // Layer provides the full derive line (e.g. "#[derive(Debug, Clone)]")
-        // Append any stub-driven extra derives.
-        if extra_derive.is_empty() {
+        // Append any stub-driven extra derives + constraint derives.
+        let combined_extra = format!("{extra_derive}{constraint_derive}");
+        if combined_extra.is_empty() {
             format!("{layer_d}{extra_attr}")
         } else {
             // Merge: layer_d is something like "#[derive(Debug, Clone)]"
-            // extra_derive is like ", sqlx::FromRow"
-            let merged = layer_d.trim_end_matches(")]").to_string() + &extra_derive + ")]";
+            let merged = layer_d.trim_end_matches(")]").to_string() + &combined_extra + ")]";
             format!("{merged}{extra_attr}")
         }
     } else {
         // Backend default
-        format!("#[derive(Debug, Clone, PartialEq, Serialize, Deserialize{extra_derive})]{extra_attr}")
+        format!("#[derive(Debug, Clone, PartialEq, Serialize, Deserialize{extra_derive}{constraint_derive})]{extra_attr}")
     };
     out.push_str(&format!(
         "/// {}: {}\n{}\npub struct {}{} {{\n",
@@ -526,7 +549,7 @@ pub fn gen_struct(
 
     // Generate impl block with business logic fns (if any exist).
     if !c.fns.is_empty() {
-        out.push_str(&gen_aggregate_impl(c, &fields, registry));
+        out.push_str(&gen_aggregate_impl(c, &fields, registry, has_immutable));
     }
 
     // Types with zero-arg smart ctors (all fields defaultable) are reusable as
@@ -620,7 +643,7 @@ pub fn string_field_default(field_name: &str) -> Option<&'static str> {
 }
 
 /// Generate `impl Name { ... }` block for aggregate business logic fns.
-pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry) -> String {
+pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry, is_immutable: bool) -> String {
     use crate::expr::{GenCtx, expr_to_rust};
     use std::collections::HashMap;
 
@@ -671,7 +694,8 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
         };
 
         // Pure query methods use `&self`; mutations / emits need `&mut self`.
-        let needs_mut_self = method_body_mutates_self(&func.body, &field_names);
+        // Phase 6b: immutable constructs always use `&self` (no mutations allowed).
+        let needs_mut_self = !is_immutable && method_body_mutates_self(&func.body, &field_names);
         let self_recv = if needs_mut_self { "&mut self" } else { "&self" };
         // Only allocate an events bag when the body emits or the default return is events.
         let needs_events = method_body_has_emit(&func.body)

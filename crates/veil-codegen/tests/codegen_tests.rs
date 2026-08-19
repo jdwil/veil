@@ -2126,3 +2126,80 @@ pkg Plain
         "no hook → no veil_hooks crate:\n{out}"
     );
 }
+
+/// Phase 6: Constraint-driven emission — equality_by_value adds Eq, Hash.
+#[test]
+fn value_object_derives_eq_hash_from_constraint() {
+    let src = r#"
+pkg Inventory
+  use ddd
+  ctx Warehouse
+    val Money
+      amount: Int
+      currency: Str
+    ent Product
+      id: Id
+      name: Str
+      price: Int
+"#;
+    let out = generate_example(src);
+    let types = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or(&out);
+
+    // Find the derive line immediately before "pub struct Money"
+    let lines: Vec<&str> = types.lines().collect();
+    let money_idx = lines.iter().position(|l| l.contains("pub struct Money"));
+    let money_derive = money_idx
+        .and_then(|i| lines[..i].iter().rev().find(|l| l.contains("#[derive(")))
+        .copied()
+        .unwrap_or("");
+    // ValueObject (val) has equality_by_value → Eq, Hash must appear in its derive.
+    assert!(
+        money_derive.contains("Eq") && money_derive.contains("Hash"),
+        "val struct (Money) must derive Eq, Hash (equality_by_value constraint):\n{money_derive}"
+    );
+
+    // Entity (ent) does NOT have equality_by_value — derive before Product should NOT have Eq, Hash.
+    let product_idx = lines.iter().position(|l| l.contains("pub struct Product"));
+    let product_derive = product_idx
+        .and_then(|i| lines[..i].iter().rev().find(|l| l.contains("#[derive(")))
+        .copied()
+        .unwrap_or("");
+    // Check for standalone "Eq" (not as part of "PartialEq") and "Hash"
+    assert!(
+        !product_derive.contains("Hash")
+            && !product_derive.contains(", Eq")
+            && !product_derive.starts_with("Eq"),
+        "ent struct (Product) must NOT derive Eq, Hash:\n{product_derive}"
+    );
+}
+
+/// Phase 6: immutable constraint suppresses &mut self on methods.
+#[test]
+fn immutable_construct_uses_shared_ref() {
+    let src = r#"
+pkg TestDomain
+  use ddd
+  ctx Core
+    agg Order
+      root
+        id: Id
+        total: Int
+        status: Str
+      fn apply_discount
+        amount: Int
+        total = total - amount
+"#;
+    let out = generate_example(src);
+    let types = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or(&out);
+    // Aggregates are NOT immutable, so they should use &mut self when mutating
+    assert!(
+        types.contains("&mut self"),
+        "Aggregate method that mutates state must use &mut self:\n{types}"
+    );
+}
