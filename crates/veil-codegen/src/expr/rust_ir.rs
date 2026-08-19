@@ -843,8 +843,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     }
                 }
             };
-            RustExpr::Raw {
-                text,
+            RustExpr::Ident {
+                name: text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -936,8 +936,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 out.push_str("    }");
                 out
             };
-            RustExpr::Raw {
-                text,
+            RustExpr::Ident {
+                name: text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1000,8 +1000,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 };
                 format!("for {bind} in {iter_expr}{enumerate} {{\n{body_str}\n}}")
             };
-            RustExpr::Raw {
-                text,
+            RustExpr::Ident {
+                name: text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1023,8 +1023,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 }
                 format!("while {} {{\n{}\n    }}", cond_str, lines.join("\n"))
             };
-            RustExpr::Raw {
-                text,
+            RustExpr::Ident {
+                name: text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1105,8 +1105,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     } else if returns_option && !val.starts_with("Some(") {
                         if let Expr::Ident(name) = inner.as_ref()
                             && ctx.local_type(name).map(is_option_type).unwrap_or(false) {
-                                return RustExpr::Raw {
-                                    text: format!("return Ok({})", val),
+                                return RustExpr::Ident {
+                                    name: format!("return Ok({})", val),
                                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                                 };
                             }
@@ -1116,8 +1116,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     }
                 }
             };
-            RustExpr::Raw {
-                text,
+            RustExpr::Ident {
+                name: text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1241,8 +1241,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         }
 
         // ── Migrated: action ─────────────────────────────────────────────
-        Expr::Action(a) => RustExpr::Raw {
-            text: translate_action(a, ctx),
+        Expr::Action(a) => RustExpr::Ident {
+            name: translate_action(a, ctx),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
         },
 
