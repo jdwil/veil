@@ -316,7 +316,6 @@ pub struct TargetState {
 
 struct ManagedProcess {
     child: Child,
-    started_at: Instant,
 }
 
 /// The orchestrator state for one project.
@@ -771,11 +770,6 @@ impl DevLoop {
     }
 
     /// Run `cargo check` in the output dir to verify generated code compiles.
-    /// Returns true if check passes. Logs errors to the target's log buffer.
-    fn check_build(&mut self, output_path: &Path, target_name: &str) -> bool {
-        self.check_build_pkgs(output_path, target_name, &[])
-    }
-
     /// `cargo check` optionally limited to `-p` packages (empty = whole workspace).
     fn check_build_pkgs(
         &mut self,
@@ -948,7 +942,6 @@ impl DevLoop {
             target_name.to_string(),
             ManagedProcess {
                 child,
-                started_at: Instant::now(),
             },
         );
 

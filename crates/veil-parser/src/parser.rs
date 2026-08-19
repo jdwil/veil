@@ -469,14 +469,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn error_with_hint(&self, message: String, hint: String) -> ParseError {
-        ParseError {
-            message,
-            span: self.current().span,
-            hint: Some(hint),
-        }
-    }
-
     /// First non-trivia token not consumed by the parse (indent-dropped siblings).
     fn first_remaining_content(&self) -> Option<&Token> {
         let mut i = self.pos;

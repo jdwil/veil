@@ -853,57 +853,6 @@ fn gen_playwright_scenario(scen: &ScenarioBlock) -> String {
 
 // ─── Expression helpers ───────────────────────────────────────────────────────
 
-fn expr_to_rust(expr: &Expr) -> String {
-    match expr {
-        Expr::Ident(name) => name.clone(),
-        Expr::StringLit(s) => format!("\"{}\"", s),
-        Expr::IntLit(n) => n.to_string(),
-        Expr::FloatLit(f) => f.to_string(),
-        Expr::BoolLit(b) => b.to_string(),
-        Expr::StructLit(name, fields) => {
-            let fs: Vec<String> = fields
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, expr_to_rust(v)))
-                .collect();
-            format!("{} {{ {} }}", name, fs.join(", "))
-        }
-        Expr::Call(call) => {
-            let args: Vec<String> = call.args.iter().map(expr_to_rust).collect();
-            if call.method.is_empty() {
-                format!("{}({})", call.target, args.join(", "))
-            } else {
-                format!("{}.{}({})", call.target, call.method, args.join(", "))
-            }
-        }
-        Expr::FieldAccess(base, field) => {
-            format!("{}.{}", expr_to_rust(base), field)
-        }
-        Expr::ArrayLit(items) => {
-            let elems: Vec<String> = items.iter().map(expr_to_rust).collect();
-            format!("vec![{}]", elems.join(", "))
-        }
-        Expr::BinaryOp(op) => {
-            let op_str = match &op.op {
-                BinOp::Eq => "==",
-                BinOp::NotEq => "!=",
-                BinOp::Lt => "<",
-                BinOp::Gt => ">",
-                BinOp::LtEq => "<=",
-                BinOp::GtEq => ">=",
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Div => "/",
-                BinOp::Mod => "%",
-                BinOp::And => "&&",
-                BinOp::Or => "||",
-            };
-            format!("{} {} {}", expr_to_rust(&op.left), op_str, expr_to_rust(&op.right))
-        }
-        _ => format!("todo!(/* {:?} */)", std::mem::discriminant(expr)),
-    }
-}
-
 fn expr_to_ts(expr: &Expr) -> String {
     match expr {
         Expr::Ident(name) => name.clone(),

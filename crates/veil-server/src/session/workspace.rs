@@ -229,11 +229,6 @@ impl WorkspaceFsImpl {
         Ok(())
     }
 
-    fn rel_of(&self, abs: &Path) -> Result<String, String> {
-        abs.strip_prefix(&self.root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .map_err(|_| "not under root".into())
-    }
 }
 
 impl WorkspaceFs for WorkspaceFsImpl {

@@ -1229,7 +1229,7 @@ impl DeployExec for LocalDeployExec {
                     let main_veil =
                         veil_local_fs::LocalFs::join(root.clone(), "main.veil".to_string());
                     let mut gen_detail = "".to_string();
-                    let mut build_detail = "".to_string();
+                    let mut build_detail;
                     if !veil_local_fs::LocalFs::path_exists(root.clone()) {
                         detail = format!("project root missing {}", root);
                         status = "failed".to_string();
@@ -2067,14 +2067,13 @@ impl DeployExec for LocalDeployExec {
             };
         };
         let notes = vec!["Preview only - nothing is written until you confirm.".to_string(), "Apply is ensure/reconcile: create missing resources, refresh config/code on existing ones.".to_string(), "Removals are NOT destroyed automatically (no destroy phase). Orphans stay in AWS until cleaned manually.".to_string(), "API Gateway is never created; only routes/integrations on an existing HTTP API.".to_string(), "AddPermission source_arn must use the real 12-digit account from the Lambda ARN (never '*').".to_string()];
-        let mut summary = "".to_string();
-        if creates == 0 && updates == 0 {
-            summary = format!(
+        let mut summary = if creates == 0 && updates == 0 {
+            format!(
                 "In sync - all resources provisioned for stack '{}' in '{}'",
                 base, environment
             )
         } else {
-            summary = format!(
+            format!(
                 "Provision: {} create, {} update/refresh, {} noop, 0 destroy - stack '{}' in '{}'",
                 creates, updates, noops, base, environment
             )

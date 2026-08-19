@@ -50,7 +50,6 @@ struct AcpProcess {
     stdout: BufReader<ChildStdout>,
     next_id: AtomicU64,
     session_id: Option<String>,
-    cwd: String,
 }
 
 impl Drop for AcpProcess {
@@ -119,7 +118,6 @@ impl AcpProcess {
             stdout: BufReader::new(stdout),
             next_id: AtomicU64::new(1),
             session_id: None,
-            cwd,
         };
         proc.initialize()?;
         Ok(proc)
@@ -326,9 +324,6 @@ impl AcpProcess {
         Ok(sid)
     }
 
-    fn prompt(&mut self, text: &str, timeout: Duration) -> Result<AcpTurnResult, String> {
-        self.prompt_streaming(text, &AcpMedia::default(), timeout, None)
-    }
 
     fn prompt_streaming(
         &mut self,
