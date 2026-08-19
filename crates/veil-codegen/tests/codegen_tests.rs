@@ -2337,3 +2337,47 @@ pkg TestDomain
         "Aggregate method that mutates state must use &mut self:\n{types}"
     );
 }
+
+#[test]
+fn immutable_construct_uses_self_ref_not_mut() {
+    // An Event has the `immutable` constraint in ddd.layer.
+    // Even if the method body assigns to a local with the same name as a field,
+    // it MUST still use `&self` (not `&mut self`).
+    let src = r#"
+pkg ImmutableTest
+  use ddd
+
+  ctx Core
+    group domain
+      agg Order
+        root
+          id: Id
+          items: List<Str>
+
+        evt OrderPlaced
+          order_id: Id
+          total: Int
+
+          fn summary
+            total = total + 1
+            ret total
+"#;
+    let out = generate_example(src);
+    // Find the types module output
+    let types_section = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or(&out);
+    // The OrderPlaced event is immutable — its `summary` method must use `&self`
+    // even though the body does `total = total + 1` which looks like mutation.
+    if types_section.contains("fn summary") {
+        assert!(
+            !types_section.contains("fn summary(&mut self"),
+            "Immutable event method must NOT use &mut self:\n{types_section}"
+        );
+        assert!(
+            types_section.contains("fn summary(&self"),
+            "Immutable event method must use &self:\n{types_section}"
+        );
+    }
+}
