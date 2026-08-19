@@ -142,7 +142,10 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // backend's hardcoded defaults for derives, trait attributes, and fn modifiers.
     let layer_derives = crate::template::compose_section(&template_output, "derives");
     let layer_trait_attrs = crate::template::compose_section(&template_output, "trait_attrs");
-    let _layer_fn_attrs = crate::template::compose_section(&template_output, "fn_attrs");
+    // NOTE: fn_attrs (e.g. "async") is declared in rust.layer but not consumed here
+    // because the backend hardcodes `pub async fn` for all fn-shaped constructs.
+    // If a future layer needs different fn modifiers, consume it here and pass
+    // through gen_module_crate → application::gen_flow.
 
     let mut flow_generated = false;
     for module in &modules {
