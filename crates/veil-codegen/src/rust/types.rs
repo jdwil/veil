@@ -47,11 +47,10 @@ pub fn gen_types(
     // Enum-shaped named blocks define types too (e.g. `state CustomerStatus`).
     for c in &contents.structs {
         for block in &c.blocks {
-            if block.shape == Shape::Enum {
-                if let Some(name) = &block.name {
+            if block.shape == Shape::Enum
+                && let Some(name) = &block.name {
                     defined_types.push(name.clone());
                 }
-            }
         }
     }
 
@@ -127,15 +126,14 @@ pub fn gen_types(
     if !sibling_crates.is_empty() {
         let mut emitted_sibling: std::collections::HashSet<String> = std::collections::HashSet::new();
         for item in &solution.items {
-            if let TopLevelItem::Construct(c) = item {
-                if c.shape == Shape::Mod {
+            if let TopLevelItem::Construct(c) = item
+                && c.shape == Shape::Mod {
                     let sib_crate = super::workspace::module_crate_name(c, solution);
                     if sibling_crates.contains(&sib_crate) && emitted_sibling.insert(sib_crate.clone()) {
                         out.push_str(&format!("pub use {}::domain::types::*;\n", sib_crate));
                         out.push_str(&format!("pub use {}::ports::*;\n", sib_crate));
                     }
                 }
-            }
         }
         out.push('\n');
     }
@@ -151,14 +149,13 @@ pub fn gen_types(
                 }
             }
             for item in &solution.items {
-                if let TopLevelItem::Construct(c) = item {
-                    if c.shape == Shape::Mod {
+                if let TopLevelItem::Construct(c) = item
+                    && c.shape == Shape::Mod {
                         let sib_crate = super::workspace::module_crate_name(c, solution);
                         if sibling_crates.contains(&sib_crate) {
                             collect_names(c, &mut set);
                         }
                     }
-                }
             }
             set
         } else {
@@ -545,14 +542,13 @@ pub fn gen_struct(
                     .filter(|b| b.shape == Shape::Enum)
                     .find_map(|b| {
                         let enum_name = b.name.clone().unwrap_or_else(|| format!("{}State", c.name));
-                        if let TypeExpr::Named(n) = &f.type_expr {
-                            if &enum_name == n {
+                        if let TypeExpr::Named(n) = &f.type_expr
+                            && &enum_name == n {
                                 return b.variants.first().map(|v| format!("{}::{}", enum_name, v));
                             }
-                        }
                         None
                     })
-                    .unwrap_or_else(|| format!("Default::default()"));
+                    .unwrap_or_else(|| "Default::default()".to_string());
                 format!("{}: {}", snake, first_variant)
             } else if matches!(&f.type_expr, TypeExpr::Optional(_)) || matches!(&f.type_expr, TypeExpr::Generic(name, _) if name == "Opt" || name == "Option") {
                 // Optional fields default to None
@@ -733,7 +729,7 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
             .unwrap_or(false);
         let return_type_str = if has_explicit_return {
             func.return_type.as_ref()
-                .map(|t| type_to_rust(t))
+                .map(type_to_rust)
                 .unwrap_or_else(|| format!("Result<Vec<{}>, DomainError>", event_enum_name))
         } else {
             format!("Result<Vec<{}>, DomainError>", event_enum_name)
@@ -846,14 +842,13 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
                     // Register let-bindings *after* lowering so the first
                     // occurrence emits `let mut x = …`, and later statements
                     // treat `x` as a local (`out.insert` not `out_insert`).
-                    if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = other {
-                        if !name.contains('.') && !field_names.contains(name) {
+                    if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = other
+                        && !name.contains('.') && !field_names.contains(name) {
                             ctx.locals.insert(name.clone());
                             if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
                                 ctx.local_types.insert(name.clone(), t);
                             }
                         }
-                    }
                 }
             }
         }

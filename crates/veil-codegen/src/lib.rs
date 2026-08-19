@@ -1,3 +1,16 @@
+// Allow style lints that are pervasive in the string-template codegen style.
+// These will be cleaned up incrementally as the codebase migrates to structured IR.
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::large_enum_variant,
+    clippy::if_same_then_else,
+    clippy::should_implement_trait,
+    clippy::nonminimal_bool
+)]
+
 //! VEIL Codegen — generates code from VEIL AST.
 //!
 //! Supports multiple target languages via `CodegenTarget`.

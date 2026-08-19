@@ -506,11 +506,10 @@ fn expr_to_test_rust(
     match expr {
         Expr::Ident(name) if name == "null" || name == "None" => "None".into(),
         Expr::Ident(name) => {
-            if enums.iter().any(|e| e.variants.iter().any(|v| v == name)) {
-                if let Some(e) = enums.iter().find(|e| e.variants.iter().any(|v| v == name)) {
+            if enums.iter().any(|e| e.variants.iter().any(|v| v == name))
+                && let Some(e) = enums.iter().find(|e| e.variants.iter().any(|v| v == name)) {
                     return format!("{}::{name}", e.name);
                 }
-            }
             crate::rust::to_snake(name)
         }
         Expr::StringLit(s) => {

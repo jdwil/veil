@@ -427,16 +427,15 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         Expr::Assign(name, rhs, ty_ann) => {
             let text = {
                 // List append sugar: `out = out + [x]` → `out.push(x)`
-                if let Expr::BinaryOp(bin) = rhs.as_ref() {
-                    if matches!(bin.op, veil_ir::ast::BinOp::Add) {
-                        if let (Expr::Ident(left), Expr::ArrayLit(items)) =
+                if let Expr::BinaryOp(bin) = rhs.as_ref()
+                    && matches!(bin.op, veil_ir::ast::BinOp::Add)
+                        && let (Expr::Ident(left), Expr::ArrayLit(items)) =
                             (bin.left.as_ref(), bin.right.as_ref())
-                        {
-                            if left == name && items.len() == 1 {
+                            && left == name && items.len() == 1 {
                                 let item = expr_to_rust(&items[0], ctx);
-                                if let Expr::Ident(item_name) = &items[0] {
-                                    if let Some(ty) = ctx.local_type(item_name) {
-                                        if ty.starts_with("Option<") {
+                                if let Expr::Ident(item_name) = &items[0]
+                                    && let Some(ty) = ctx.local_type(item_name)
+                                        && ty.starts_with("Option<") {
                                             return RustExpr::Raw {
                                                 text: format!(
                                                     "{}.push({}.clone().ok_or({})?)",
@@ -445,21 +444,16 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                                             };
                                         }
-                                    }
-                                }
                                 return RustExpr::Raw {
                                     text: format!("{}.push({})", name, item),
                                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                                 };
                             }
-                        }
-                    }
-                }
                 // List concat sugar: `x = x.concat([items])` → `x.extend(vec![items])`
                 if let Expr::Call(call) = rhs.as_ref() {
                     let bare_m = call.method.trim_end_matches('!');
-                    if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
-                        if let Some(Expr::ArrayLit(items)) = call.args.first() {
+                    if bare_m == "concat" && call.target == *name && !call.args.is_empty()
+                        && let Some(Expr::ArrayLit(items)) = call.args.first() {
                             let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
                             if items.len() == 1 {
                                 return RustExpr::Raw {
@@ -473,7 +467,6 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 };
                             }
                         }
-                    }
                 }
                 let rhs_str = match rhs.as_ref() {
                     Expr::StringLit(s) => rust_string_lit_owned(s),
@@ -484,11 +477,11 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     let parts: Vec<&str> = name.splitn(2, '.').collect();
                     let base_name = parts[0];
                     let field_path = parts[1];
-                    if let Some(ty) = ctx.local_type(base_name) {
-                        if ty.starts_with("Option<") {
+                    if let Some(ty) = ctx.local_type(base_name)
+                        && ty.starts_with("Option<") {
                             let field_snake = field_path
                                 .split('.')
-                                .map(|s| to_snake(s))
+                                .map(to_snake)
                                 .collect::<Vec<_>>()
                                 .join(".");
                             return RustExpr::Raw {
@@ -499,7 +492,6 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                             };
                         }
-                    }
                     let path = name
                         .split('.')
                         .enumerate()
@@ -519,9 +511,9 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     format!("self.{} = {}", to_snake(name), rhs_str)
                 } else if ctx.is_local(name) {
                     // Already-declared local → reassignment
-                    if let Expr::BinaryOp(bin) = rhs.as_ref() {
-                        if let Expr::Ident(left) = bin.left.as_ref() {
-                            if left == name {
+                    if let Expr::BinaryOp(bin) = rhs.as_ref()
+                        && let Expr::Ident(left) = bin.left.as_ref()
+                            && left == name {
                                 let op_str = match bin.op {
                                     veil_ir::ast::BinOp::Add => Some("+="),
                                     veil_ir::ast::BinOp::Sub => Some("-="),
@@ -536,8 +528,6 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                     };
                                 }
                             }
-                        }
-                    }
                     format!("{} = {}", name, rhs_str)
                 } else {
                     let mut_kw = if ctx.mut_locals.contains(name.as_str()) {
@@ -570,8 +560,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 // List concat sugar
                 if let Expr::Call(call) = rhs.as_ref() {
                     let bare_m = call.method.trim_end_matches('!');
-                    if bare_m == "concat" && call.target == *name && !call.args.is_empty() {
-                        if let Some(Expr::ArrayLit(items)) = call.args.first() {
+                    if bare_m == "concat" && call.target == *name && !call.args.is_empty()
+                        && let Some(Expr::ArrayLit(items)) = call.args.first() {
                             let item_strs: Vec<String> = items.iter().map(|i| expr_to_rust(i, ctx)).collect();
                             if items.len() == 1 {
                                 return RustExpr::Raw {
@@ -585,7 +575,6 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 };
                             }
                         }
-                    }
                 }
                 let rhs_str = match rhs.as_ref() {
                     Expr::StringLit(s) => rust_string_lit_owned(s),
@@ -639,7 +628,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     matches!(b.first(), Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _)))
                 });
                 if ie.then_body.len() == 1
-                    && ie.else_body.as_ref().map_or(false, |b| b.len() == 1)
+                    && ie.else_body.as_ref().is_some_and(|b| b.len() == 1)
                     && !then_is_stmt
                     && !else_is_stmt
                 {
@@ -692,7 +681,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                             || first_pat.contains('.')
                             || first_pat.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
                         if has_enum_pat && !first_pat.starts_with('"') && first_pat != "_" {
-                            let enum_type = first_pat.split(|c| c == '.' || c == ':')
+                            let enum_type = first_pat.split(['.', ':'])
                                 .next().unwrap_or(&first_pat)
                                 .split('{').next().unwrap_or(&first_pat).trim();
                             format!("serde_json::from_value::<{}>({}.clone()).unwrap()", enum_type, name)
@@ -839,11 +828,10 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 let mut lines = Vec::new();
                 for e in body {
                     let line = expr_to_rust(e, &body_ctx);
-                    if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e {
-                        if !name.contains('.') {
+                    if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e
+                        && !name.contains('.') {
                             body_ctx.locals.insert(name.clone());
                         }
-                    }
                     lines.push(format!("        {};", line));
                 }
                 format!("while {} {{\n{}\n    }}", cond_str, lines.join("\n"))
@@ -881,9 +869,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         let is_simple_ident = c.args.len() == 1 && matches!(&c.args[0], Expr::Ident(_));
                         if is_simple_ident {
                             format!("return Err({})", a)
-                        } else if matches!(c.args.first(), Some(Expr::StringLit(_))) {
-                            format!("return Err({}({}))", ctx.error_model.external_path(), a)
                         } else {
+                            // String literals, format!, computed messages → External
                             format!("return Err({}({}))", ctx.error_model.external_path(), a)
                         }
                     }
@@ -927,14 +914,13 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                             format!("return Err({})", ctx.error_model.not_found_path())
                         }
                     } else if returns_option && !val.starts_with("Some(") {
-                        if let Expr::Ident(name) = inner.as_ref() {
-                            if ctx.local_type(name).map(|t| t.starts_with("Option<")).unwrap_or(false) {
+                        if let Expr::Ident(name) = inner.as_ref()
+                            && ctx.local_type(name).map(|t| t.starts_with("Option<")).unwrap_or(false) {
                                 return RustExpr::Raw {
                                     text: format!("return Ok({})", val),
                                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                                 };
                             }
-                        }
                         format!("return Ok(Some({}))", val)
                     } else {
                         format!("return Ok({})", val)
@@ -1007,11 +993,12 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 let still_option = ty.as_deref().is_some_and(|t| peel_option_rust(t).is_some());
                 if still_option {
                     format!("{s}.ok_or({})?", ctx.error_model.not_found_path())
-                } else if s.trim_end().ends_with('?') {
-                    s
-                } else if ty.as_deref().is_some_and(|t| {
-                    rust_ty_is_stringish(t) || t == "i64" || t == "bool" || t.starts_with("Vec<")
-                }) {
+                } else if s.trim_end().ends_with('?')
+                    || ty.as_deref().is_some_and(|t| {
+                        rust_ty_is_stringish(t) || t == "i64" || t == "bool" || t.starts_with("Vec<")
+                    })
+                {
+                    // Already present (trailing ?) or a known-present scalar type
                     s
                 } else {
                     format!("{s}.ok_or({})?", ctx.error_model.not_found_path())
@@ -1199,8 +1186,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 let mut lines = Vec::new();
                 for (i, e) in body.iter().enumerate() {
                     let rust = expr_to_rust(e, &block_ctx);
-                    if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = e {
-                        if !name.contains('.') {
+                    if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = e
+                        && !name.contains('.') {
                             block_ctx.locals.insert(name.clone());
                             if let Some(ty) = ty_ann {
                                 block_ctx.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
@@ -1208,7 +1195,6 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 block_ctx.local_types.insert(name.clone(), t);
                             }
                         }
-                    }
                     if i == body.len() - 1 {
                         lines.push(format!("    {}", rust));
                     } else {
@@ -1261,8 +1247,8 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     }
     // Edge case: unwrap_or rewrite from fstring parsing.
     if name.contains(".unwrap_or(\"") && name.ends_with("\")") {
-        let converted = name.replace(".unwrap_or(\"", ".unwrap_or(\"")
-            .replacen("\")", "\".to_string())", 1);
+        // Transform: x.unwrap_or("text") → x.unwrap_or("text".to_string())
+        let converted = name.replacen("\")", "\".to_string())", 1);
         return RustExpr::Raw {
             text: converted,
             ty: None,
@@ -1316,14 +1302,12 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     // Uppercase non-local: try enum variant qualification
     if !ctx.locals.contains(name)
         && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-    {
-        if let Some(enum_ty) = ctx.enum_variants.get(name) {
+        && let Some(enum_ty) = ctx.enum_variants.get(name) {
             return RustExpr::Ident {
                 name: format!("{enum_ty}::{name}"),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             };
         }
-    }
     // Plain identifier
     RustExpr::Ident {
         name: name.to_string(),
@@ -1350,18 +1334,17 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     }
 
     // State local: index into the threaded JSON state.
-    if let Expr::Ident(name) = base {
-        if ctx.state_locals.contains(name.as_str()) {
+    if let Expr::Ident(name) = base
+        && ctx.state_locals.contains(name.as_str()) {
             return RustExpr::Raw {
                 text: format!("state[\"{}\"][\"{}\"]", name, field),
                 ty: Some(RustType::Json),
             };
         }
-    }
 
     // Method body: self.field handling
-    if let Expr::Ident(name) = base {
-        if name == "self" && ctx.in_method {
+    if let Expr::Ident(name) = base
+        && name == "self" && ctx.in_method {
             let f = resolve_self_field_name(ctx, field).unwrap_or_else(|| to_snake(field));
             if f == "pool" {
                 return RustExpr::Raw {
@@ -1391,7 +1374,6 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
                 ty: None,
             };
         }
-    }
 
     // Enum variant access: EnumName.Variant → EnumName::Variant
     if let Expr::Ident(name) = base {
@@ -1411,17 +1393,16 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
         }
 
         // Stub enums: PascalCase field access means a unit variant
-        if field_is_variant {
-            if let Some((crate_name, path_type)) = ctx.stub_type_crate.get(name.as_str()) {
+        if field_is_variant
+            && let Some((crate_name, path_type)) = ctx.stub_type_crate.get(name.as_str()) {
                 return RustExpr::Ident {
                     name: format!("{}::{}::{}", crate_name, path_type, field),
                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                 };
             }
-        }
         // Lowercase variant on a stub-known type (snake_case → PascalCase)
-        if !field_is_variant {
-            if let Some((crate_name, path_type)) = ctx.stub_type_crate.get(name.as_str()) {
+        if !field_is_variant
+            && let Some((crate_name, path_type)) = ctx.stub_type_crate.get(name.as_str()) {
                 let variant: String = field
                     .split('_')
                     .map(|seg| {
@@ -1437,18 +1418,16 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                 };
             }
-        }
     }
 
     // JSON local: field access on a JSON-typed local → index syntax
-    if let Expr::Ident(name) = base {
-        if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
+    if let Expr::Ident(name) = base
+        && ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
             return RustExpr::Raw {
                 text: format!("{}[\"{}\"]", name, field),
                 ty: Some(RustType::Json),
             };
         }
-    }
 
     // Nested field access on a JSON value at any depth
     if is_json_rooted_expr(base, ctx) {
@@ -1460,9 +1439,9 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     }
 
     // Option auto-unwrap: local has type Option<X> → unwrap on field access
-    if let Expr::Ident(name) = base {
-        if let Some(ty) = ctx.local_type(name) {
-            if ty.starts_with("Option<") {
+    if let Expr::Ident(name) = base
+        && let Some(ty) = ctx.local_type(name)
+            && ty.starts_with("Option<") {
                 let base_str = expr_to_rust(base, ctx);
                 let enclosing_returns_option = ctx.expected_return_rust.as_ref()
                     .map(|r| r.starts_with("Option<"))
@@ -1483,8 +1462,6 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                 };
             }
-        }
-    }
 
     // Standard field access with copy/clone analysis
     let base_lowered = lower_to_rust(base, ctx);
@@ -2008,25 +1985,21 @@ fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
 fn infer_call_type(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustType> {
     // Try the method_returns map first (most precise)
     let method_key = call.method.trim_end_matches(['!', '?']);
-    if !call.target.is_empty() {
-        if let Some(ret) = ctx.method_returns.get(&(call.target.clone(), method_key.to_string())) {
+    if !call.target.is_empty()
+        && let Some(ret) = ctx.method_returns.get(&(call.target.clone(), method_key.to_string())) {
             return Some(RustType::parse(ret));
         }
-    }
     // Check receiver type for chained calls
-    if let Some(recv) = &call.receiver {
-        if let Some(recv_ty) = infer_expr_type(recv, ctx) {
-            if let Some(ret) = ctx.method_returns.get(&(recv_ty.clone(), method_key.to_string())) {
+    if let Some(recv) = &call.receiver
+        && let Some(recv_ty) = infer_expr_type(recv, ctx)
+            && let Some(ret) = ctx.method_returns.get(&(recv_ty.clone(), method_key.to_string())) {
                 return Some(RustType::parse(ret));
             }
-        }
-    }
     // Struct constructors return the struct type
-    if call.method.is_empty() || method_key == "new" || method_key == "default" {
-        if !call.target.is_empty() && call.target.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+    if (call.method.is_empty() || method_key == "new" || method_key == "default")
+        && !call.target.is_empty() && call.target.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
             return Some(RustType::Named(call.target.clone()));
         }
-    }
     // Fall back to general inference
     infer_expr_type(&Expr::Call(call.clone()), ctx).map(|s| RustType::parse(&s))
 }
@@ -2143,11 +2116,10 @@ fn is_expr_copy(expr: &RustExpr, ctx: &GenCtx) -> bool {
         RustExpr::IntLit(_) | RustExpr::FloatLit(_) | RustExpr::BoolLit(_) => true,
         RustExpr::Ident { name, ty } => {
             // Check type annotation first
-            if let Some(t) = ty {
-                if t.is_copy() {
+            if let Some(t) = ty
+                && t.is_copy() {
                     return true;
                 }
-            }
             // Check context: local type or unit enum variant
             if super::calls::is_copy_local(name, ctx) {
                 return true;
@@ -2158,11 +2130,10 @@ fn is_expr_copy(expr: &RustExpr, ctx: &GenCtx) -> bool {
             ty.as_ref().is_some_and(|t| t.is_copy())
         }
         RustExpr::Raw { ty, text, .. } => {
-            if let Some(t) = ty {
-                if t.is_copy() {
+            if let Some(t) = ty
+                && t.is_copy() {
                     return true;
                 }
-            }
             // Fallback: check if the raw text is a literal
             text.parse::<i64>().is_ok() || text == "true" || text == "false"
         }

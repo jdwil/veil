@@ -328,8 +328,8 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
 
     fn visit_constructs(c: &Construct, ctx: &mut GenCtx, registry: &LayerRegistry) {
         // Bus handler return types: svc/tool/handler name → Rust success type.
-        if c.shape == Shape::Fn {
-            if let Some(rt) = &c.return_type {
+        if c.shape == Shape::Fn
+            && let Some(rt) = &c.return_type {
                 let rust = crate::rust::type_to_rust(rt);
                 // Strip outer Result if present (VEIL return is the success type).
                 let inner = rust
@@ -343,12 +343,11 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     ctx.bus_returns.insert(c.name.clone(), inner);
                 }
             }
-        }
         // Record method return types for trait-shaped constructs
         if c.shape == Shape::Trait {
             for method in &c.methods {
                 let ret_type = method.return_type.as_ref()
-                    .map(|t| extract_inner_type(t))
+                    .map(extract_inner_type)
                     .unwrap_or_else(|| "()".to_string());
                 let bare_method = method.name.trim_end_matches(['!', '?']).to_string();
                 // Res! / Result, or a bang on the signature, is fallible.
@@ -759,11 +758,10 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     // `pub async fn` and calls to them need `.await?`. Product free fns are
     // emitted in the product crate (sync unless they call async helpers).
     for item in &solution.items {
-        if let TopLevelItem::Function(f) = item {
-            if f.layer_provided {
+        if let TopLevelItem::Function(f) = item
+            && f.layer_provided {
                 ctx.async_fns.insert(f.name.clone());
             }
-        }
     }
 
     // Fixpoint: types whose every field is fillable without caller input

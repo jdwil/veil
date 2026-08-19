@@ -129,8 +129,8 @@ fn migrate_module(
 fn collect_existing_endpoint_handlers(module: &Construct) -> Vec<String> {
     let mut out = Vec::new();
     fn walk(c: &Construct, out: &mut Vec<String>) {
-        if c.keyword == "endpoint" || c.subkind == "HttpEndpoint" {
-            if let Some(h) = c
+        if (c.keyword == "endpoint" || c.subkind == "HttpEndpoint")
+            && let Some(h) = c
                 .fields
                 .iter()
                 .find(|f| f.name == "handle")
@@ -141,7 +141,6 @@ fn collect_existing_endpoint_handlers(module: &Construct) -> Vec<String> {
             {
                 out.push(h);
             }
-        }
         for ch in &c.children {
             walk(ch, out);
         }
@@ -385,8 +384,8 @@ fn construct_mentions_ident(c: &Construct, ident: &str) -> bool {
 /// After the flip, leftover `@route` has no role:http_route. Migrate still
 /// reads the annotation **name** so old files rewrite to `endpoint`.
 fn leftover_or_rest_route(svc: &Construct, registry: &LayerRegistry) -> (String, String) {
-    if let Some(ann) = svc.annotations.iter().find(|a| a.name == "route") {
-        if let Some(raw) = ann.args.first() {
+    if let Some(ann) = svc.annotations.iter().find(|a| a.name == "route")
+        && let Some(raw) = ann.args.first() {
             let s = raw.trim().trim_matches('"').trim_matches('\'');
             let mut parts = s.splitn(2, char::is_whitespace);
             if let (Some(first), Some(path)) = (parts.next(), parts.next()) {
@@ -400,7 +399,6 @@ fn leftover_or_rest_route(svc: &Construct, registry: &LayerRegistry) -> (String,
                 return (m, s.to_string());
             }
         }
-    }
     rest_route_for_service(svc, registry)
 }
 

@@ -130,7 +130,7 @@ pub fn collect_effect_hooks_tracked(
                 && bare_target
                     .chars()
                     .next()
-                    .map_or(true, |c| c.is_lowercase())
+                    .is_none_or(|c| c.is_lowercase())
                 && !is_known_codegen_module(bare_target)
                 && !product_free_fns.contains(&to_snake(bare_target))
             {
@@ -331,7 +331,7 @@ pub fn expr_refs_stub_type(
     match expr {
         Expr::Call(call) => {
             let target = if call.target.contains('.') {
-                call.target.split('.').last().unwrap_or(&call.target)
+                call.target.split('.').next_back().unwrap_or(&call.target)
             } else {
                 call.target.as_str()
             };
@@ -469,8 +469,8 @@ pub fn infer_flow_return_type(
     for step in steps {
         if let FlowStep::Step(s) = step {
             for expr in &s.body {
-                if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = expr {
-                    if !name.contains('.') {
+                if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = expr
+                    && !name.contains('.') {
                         ctx.locals.insert(name.clone());
                         if envelope_routing {
                             // Envelope-routing locals are JSON message results.
@@ -479,7 +479,6 @@ pub fn infer_flow_return_type(
                             ctx.local_types.insert(name.clone(), t);
                         }
                     }
-                }
             }
         }
     }
@@ -978,7 +977,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
             // Only emit Ok(()) if no step body contains an explicit `ret`
             let has_return_in_body = steps.iter().any(|s| {
                 if let FlowStep::Step(sd) = s {
-                    sd.body.iter().any(|e| expr_contains_return(e))
+                    sd.body.iter().any(expr_contains_return)
                 } else { false }
             });
             if !has_return_in_body {
@@ -1055,14 +1054,13 @@ pub fn emit_runtime_delegated(
     if let Some(tc) = step_trait_construct {
         for m in &tc.methods {
             for p in &m.params {
-                if let TypeExpr::Named(n) = &p.type_expr {
-                    if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                if let TypeExpr::Named(n) = &p.type_expr
+                    && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                         // Candidate trait/type name — only box known traits.
                         if ctx.routing_traits.contains(n) || n == step_trait {
                             trait_names.insert(n.clone());
                         }
                     }
-                }
             }
         }
     }
@@ -1073,11 +1071,10 @@ pub fn emit_runtime_delegated(
     for step in steps {
         if let FlowStep::Step(s) = step {
             for expr in &s.body {
-                if let Expr::Assign(n, _, _) | Expr::MutAssign(n, _, _) = expr {
-                    if !n.contains('.') {
+                if let Expr::Assign(n, _, _) | Expr::MutAssign(n, _, _) = expr
+                    && !n.contains('.') {
                         state_locals.insert(n.clone());
                     }
-                }
             }
         }
     }
@@ -1089,15 +1086,14 @@ pub fn emit_runtime_delegated(
         .or_else(|| step_trait_construct.and_then(|t| t.methods.first()))
         .and_then(|m| {
             m.params.iter().find_map(|p| {
-                if let TypeExpr::Named(ty) = &p.type_expr {
-                    if ctx.routing_traits.contains(ty) {
+                if let TypeExpr::Named(ty) = &p.type_expr
+                    && ctx.routing_traits.contains(ty) {
                         return Some(to_snake(&p.name));
                     }
-                }
                 None
             })
         })
-        .or_else(|| ctx.primary_routing_trait().map(|t| to_snake(t)))
+        .or_else(|| ctx.primary_routing_trait().map(to_snake))
         .unwrap_or_default();
 
     let use_envelope = !ctx.routing_traits.is_empty();
@@ -1262,11 +1258,10 @@ pub fn emit_step_method(
         let stmt = crate::expr::stmt_to_rust(expr, &mut ctx);
         let stmt = stmt.trim_start();
         out.push_str(&format!("        {stmt}\n"));
-        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = expr {
-            if !name.contains('.') {
+        if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = expr
+            && !name.contains('.') {
                 ctx.locals.insert(name.clone());
             }
-        }
     }
     if returns_state {
         // Return the threaded state param if present; else unit Ok.

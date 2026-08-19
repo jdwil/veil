@@ -77,8 +77,8 @@ pub fn infer_return_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
         Expr::Ident(name) => ctx.local_type(name).map(|s| s.to_string()),
         Expr::FieldAccess(base, field) => {
             // Resolve the base's type, then the field's declared type.
-            if let Expr::Ident(name) = base.as_ref() {
-                if let Some(type_name) = ctx.local_type(name) {
+            if let Expr::Ident(name) = base.as_ref()
+                && let Some(type_name) = ctx.local_type(name) {
                     if type_name == "serde_json::Value" {
                         // Orchestrator: JSON index — type is Value.
                         return Some("serde_json::Value".to_string());
@@ -87,7 +87,6 @@ pub fn infer_return_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                         return Some(rust_type_for_named(ft));
                     }
                 }
-            }
             None
         }
         Expr::Call(_) => infer_expr_type(expr, ctx),
@@ -207,13 +206,12 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             }
             // Envelope routing: cross-boundary calls yield `serde_json::Value`
             // (unless the target is a direct trait dep).
-            if ctx.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target) {
-                if (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty())
+            if ctx.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target)
+                && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty())
                     && !ctx.stub_pkg_crate.contains_key(&call.target)
                 {
                     return Some("serde_json::Value".to_string());
                 }
-            }
             // If calling a trait method, return type is known.
             // Bang only unwraps Result (via `.await?`); Opt/Option is preserved.
             if ctx.is_trait_target(&call.target) {
@@ -225,15 +223,12 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                 let bare = method.trim_end_matches(['!', '?']);
                 // Typed bus: invoke/request of a known message → domain type
                 // when that type is in scope for this crate.
-                if matches!(bare, "invoke" | "request") {
-                    if let Some(msg) = bus_message_name_from_args(&call.args) {
-                        if let Some(ret) = ctx.bus_returns.get(&msg) {
-                            if bus_return_type_in_scope(ctx, ret) {
+                if matches!(bare, "invoke" | "request")
+                    && let Some(msg) = bus_message_name_from_args(&call.args)
+                        && let Some(ret) = ctx.bus_returns.get(&msg)
+                            && bus_return_type_in_scope(ctx, ret) {
                                 return Some(ret.clone());
                             }
-                        }
-                    }
-                }
                 return ctx.return_type_of(&call.target, method).map(|s| s.to_string());
             }
             // If calling a struct constructor
@@ -288,7 +283,7 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                     // Receiver is a stub package (e.g. `gix.init_bare(...)`)
                     if ctx.stub_pkg_crate.contains_key(recv_name) {
                         let method = call.method.trim_end_matches(['!', '?']);
-                        if let Some(t) = ctx.return_type_of(recv_name, &method) {
+                        if let Some(t) = ctx.return_type_of(recv_name, method) {
                             return Some(t.to_string());
                         }
                     }
@@ -360,15 +355,14 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                 return Some("serde_json::Value".to_string());
             }
             if let Expr::Ident(n) = base.as_ref() {
-                if n == "self" {
-                    if let Some(ty) = ctx
+                if n == "self"
+                    && let Some(ty) = ctx
                         .self_field_types
                         .get(field)
                         .or_else(|| ctx.self_field_types.get(&to_snake(field)))
                     {
                         return Some(ty.clone());
                     }
-                }
                 if let Some(base_ty) = ctx.local_type(n) {
                     let leaf = lang_type_leaf(base_ty);
                     if let Some(ft) = ctx
@@ -439,27 +433,24 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
         // IfExpr: type is the type of the then-branch (or else-branch).
         Expr::IfExpr(if_data) => {
             // If there's a then body, infer from the last expression
-            if let Some(last) = if_data.then_body.last() {
-                if let Some(t) = infer_expr_type(last, ctx) {
+            if let Some(last) = if_data.then_body.last()
+                && let Some(t) = infer_expr_type(last, ctx) {
                     return Some(t);
                 }
-            }
             // Try else branch
-            if let Some(else_body) = &if_data.else_body {
-                if let Some(last) = else_body.last() {
+            if let Some(else_body) = &if_data.else_body
+                && let Some(last) = else_body.last() {
                     return infer_expr_type(last, ctx);
                 }
-            }
             None
         }
         // Match: type is the type of the first arm's body.
         Expr::Match(_, arms) => {
             for arm in arms {
-                if let Some(last) = arm.body.last() {
-                    if let Some(t) = infer_expr_type(last, ctx) {
+                if let Some(last) = arm.body.last()
+                    && let Some(t) = infer_expr_type(last, ctx) {
                         return Some(t);
                     }
-                }
             }
             None
         }

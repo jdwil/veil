@@ -539,13 +539,12 @@ pub fn gen_impls(
                         .any(|m| m.body.iter().any(|e| expr_mentions_self_field(e, "client")))
                 })
                 .unwrap_or(false);
-            if body_uses_client && !has_explicit_client_field {
-                if let Some((crate_name, path)) = stub_type_path(registry, "Client") {
+            if body_uses_client && !has_explicit_client_field
+                && let Some((crate_name, path)) = stub_type_path(registry, "Client") {
                     adapter_fields
                         .entry("client".to_string())
                         .or_insert_with(|| format!("{crate_name}::{path}"));
                 }
-            }
             for (fname, fty) in &adapter_fields {
                 // Map/HashMap fields need interior mutability since trait methods
                 // take `&self` but insert/remove require mutation. Wrap in RwLock.
@@ -731,11 +730,10 @@ pub fn gen_impls(
                             ctx.self_fields.insert(arg.to_string());
                             // Last-segment alias (`TABLE_NAME` → `name`) still resolves
                             // at the use site to the full snake field.
-                            if let Some(short) = arg.to_ascii_lowercase().rsplit('_').next() {
-                                if short != primary {
+                            if let Some(short) = arg.to_ascii_lowercase().rsplit('_').next()
+                                && short != primary {
                                     ctx.self_fields.insert(short.to_string());
                                 }
-                            }
                             if arg.contains("DATABASE") {
                                 ctx.self_fields.insert("pool".to_string());
                             }
@@ -850,8 +848,8 @@ pub fn gen_impls(
                         let rust_expr = expr_to_rust(&expr, &ctx);
                         ctx.option_value_wrap = false;
                         // Track local assignments AFTER translation so first use gets 'let mut'
-                        if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = &expr {
-                            if !name.contains('.') {
+                        if let Expr::Assign(name, rhs, ty_ann) | Expr::MutAssign(name, rhs, ty_ann) = &expr
+                            && !name.contains('.') {
                                 ctx.locals.insert(name.clone());
                                 // Infer type for local variables so downstream calls
                                 // (e.g. `blob_id.detach()`) resolve the receiver type.
@@ -861,7 +859,6 @@ pub fn gen_impls(
                                     ctx.local_types.insert(name.clone(), t);
                                 }
                             }
-                        }
                         if is_last {
                             // GEN-002: lower authored adapter bodies. If the last
                             // expr already returns (`ret Ok` → `return Ok(...)`),
@@ -1033,29 +1030,22 @@ pub fn rust_entity_fields<'a>(sol: &'a Solution, entity: &str) -> Vec<&'a Field>
 pub fn infer_repo_entity(t: &Construct) -> Option<String> {
     for m in &t.methods {
         let name = m.name.trim_end_matches('!');
-        if name == "save" || name == "put" || name == "insert" {
-            if let Some(p) = m.params.first() {
-                if let TypeExpr::Named(n) = &p.type_expr {
-                    if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+        if (name == "save" || name == "put" || name == "insert")
+            && let Some(p) = m.params.first()
+                && let TypeExpr::Named(n) = &p.type_expr
+                    && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                         return Some(n.clone());
                     }
-                }
-            }
-        }
-        if let Some(TypeExpr::Optional(inner)) = &m.return_type {
-            if let TypeExpr::Named(n) = inner.as_ref() {
-                if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+        if let Some(TypeExpr::Optional(inner)) = &m.return_type
+            && let TypeExpr::Named(n) = inner.as_ref()
+                && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                     return Some(n.clone());
                 }
-            }
-        }
-        if let Some(TypeExpr::List(inner)) = &m.return_type {
-            if let TypeExpr::Named(n) = inner.as_ref() {
-                if n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+        if let Some(TypeExpr::List(inner)) = &m.return_type
+            && let TypeExpr::Named(n) = inner.as_ref()
+                && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                     return Some(n.clone());
                 }
-            }
-        }
     }
     None
 }
@@ -1153,8 +1143,8 @@ pub fn in_memory_method_body(
     ret: &str,
 ) -> String {
     let first = m.params.first().map(|p| to_snake(&p.name));
-    if matches!(mname, "save" | "put" | "insert") {
-        if let Some(arg) = first.as_deref() {
+    if matches!(mname, "save" | "put" | "insert")
+        && let Some(arg) = first.as_deref() {
             let id_field = if fields.iter().any(|f| f.name == "id") {
                 "id"
             } else {
@@ -1166,20 +1156,18 @@ pub fn in_memory_method_body(
                         Ok(())\n"
             );
         }
-    }
-    if matches!(mname, "delete" | "remove") {
-        if let Some(arg) = first.as_deref() {
+    if matches!(mname, "delete" | "remove")
+        && let Some(arg) = first.as_deref() {
             return format!(
                 "        self.rows.write().await.remove(&Self::key({arg}.clone()));\n\
                         Ok(())\n"
             );
         }
-    }
-    if matches!(mname, "find" | "get") && m.params.len() == 1 {
-        if let Some(arg) = first.as_deref() {
-            if ret.contains("Option<") {
-                if arg != "id" {
-                    if let Some(field) = filter_field_for_method(&format!("by_{arg}"), fields)
+    if matches!(mname, "find" | "get") && m.params.len() == 1
+        && let Some(arg) = first.as_deref()
+            && ret.contains("Option<") {
+                if arg != "id"
+                    && let Some(field) = filter_field_for_method(&format!("by_{arg}"), fields)
                         .or_else(|| Some(arg.to_string()))
                     {
                         let field_s = to_snake(&field);
@@ -1187,18 +1175,15 @@ pub fn in_memory_method_body(
                             "        Ok(self.rows.read().await.values().find(|e| e.{field_s} == {arg}).cloned())\n"
                         );
                     }
-                }
                 return format!(
                     "        Ok(self.rows.read().await.get(&Self::key({arg}.clone())).cloned())\n"
                 );
             }
-        }
-    }
     if matches!(mname, "list" | "list_all" | "all") && m.params.is_empty() {
         return "        Ok(self.rows.read().await.values().cloned().collect())\n".into();
     }
-    if let Some(field) = filter_field_for_method(mname, fields) {
-        if let Some(arg) = first.as_deref() {
+    if let Some(field) = filter_field_for_method(mname, fields)
+        && let Some(arg) = first.as_deref() {
             let field_s = to_snake(&field);
             let open = mname.contains("open");
             let extra = if open && fields.iter().any(|f| f.name == "returned") {
@@ -1219,7 +1204,6 @@ pub fn in_memory_method_body(
                 );
             }
         }
-    }
     if ret.contains("Option<") {
         return "        Ok(None)\n".into();
     }
@@ -1237,13 +1221,13 @@ pub fn in_memory_method_body(
 pub fn expr_contains_return(expr: &Expr) -> bool {
     match expr {
         Expr::Return(_) => true,
-        Expr::Match(_, arms) => arms.iter().any(|a| a.body.iter().any(|e| expr_contains_return(e))),
+        Expr::Match(_, arms) => arms.iter().any(|a| a.body.iter().any(expr_contains_return)),
         Expr::IfExpr(ie) => {
-            ie.then_body.iter().any(|e| expr_contains_return(e))
-                || ie.else_body.as_ref().map(|b| b.iter().any(|e| expr_contains_return(e))).unwrap_or(false)
+            ie.then_body.iter().any(expr_contains_return)
+                || ie.else_body.as_ref().map(|b| b.iter().any(expr_contains_return)).unwrap_or(false)
         }
         Expr::ForLoop { body, .. } | Expr::WhileLoop { body, .. } | Expr::Loop(body) => {
-            body.iter().any(|e| expr_contains_return(e))
+            body.iter().any(expr_contains_return)
         }
         _ => false,
     }
@@ -1355,11 +1339,10 @@ pub fn monomorphize_type(ty: &TypeExpr, adapter: &Construct, trait_: &Construct)
             // that mention T from the generic adapter (same index as target_type_args).
             if let Some(idx) = adapter.type_params.iter().position(|p| {
                 p.split(':').next().unwrap_or(p).trim() == n
-            }) {
-                if let Some(arg) = adapter.target_type_args.get(idx) {
+            })
+                && let Some(arg) = adapter.target_type_args.get(idx) {
                     return arg.clone();
                 }
-            }
             TypeExpr::Named(n.clone())
         }
         TypeExpr::Optional(i) => {

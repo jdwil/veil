@@ -182,15 +182,14 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // role:deploy_hook → veil_hooks bin (provisioner). Not zipped into Lambda.
     if let Some(hook_files) = crate::emit_hooks::emit_hooks_crate(solution, &modules, registry, &harness_ir)
     {
-        if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
-            if !ws.content.contains("crates/veil_hooks") {
+        if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml")
+            && !ws.content.contains("crates/veil_hooks") {
                 ws.content = ws.content.replacen(
                     "    \"crates/veil_shared\"",
                     "    \"crates/veil_shared\",\n    \"crates/veil_hooks\"",
                     1,
                 );
             }
-        }
         files.extend(hook_files);
     }
 
@@ -215,8 +214,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             &resolved_links,
             registry,
         ));
-        if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
-            if !ws.content.contains("crates/veil_bin") {
+        if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml")
+            && !ws.content.contains("crates/veil_bin") {
                 // Insert veil_bin after veil_shared in the members list.
                 ws.content = ws.content.replacen(
                     "    \"crates/veil_shared\"",
@@ -224,7 +223,6 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
                     1,
                 );
             }
-        }
     }
 
     // Add template-generated files
@@ -239,7 +237,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
 }
 
 /// Recursively collect all constructs of a given shape from the solution.
-pub fn collect_by_shape<'a>(solution: &'a Solution, shape: Shape) -> Vec<&'a Construct> {
+pub fn collect_by_shape(solution: &Solution, shape: Shape) -> Vec<&Construct> {
     let mut out = Vec::new();
     fn walk<'a>(c: &'a Construct, shape: Shape, out: &mut Vec<&'a Construct>) {
         if c.shape == shape {

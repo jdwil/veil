@@ -101,11 +101,10 @@ pub fn stub_type_parts<'a>(ctx: &'a GenCtx, type_name: &str) -> Option<(&'a str,
             }
         }
     }
-    if leaf != type_name {
-        if let Some((c, p)) = ctx.stub_type_crate.get(leaf) {
+    if leaf != type_name
+        && let Some((c, p)) = ctx.stub_type_crate.get(leaf) {
             return Some((c.as_str(), p.as_str()));
         }
-    }
     None
 }
 
@@ -247,11 +246,10 @@ pub fn rust_is_copy_value(expr: &Expr, rust: &str, ctx: &GenCtx) -> bool {
         Expr::IntLit(_) | Expr::FloatLit(_) | Expr::BoolLit(_) => true,
         Expr::Ident(n) => is_copy_local(n, ctx) || is_unit_enum_variant(n, ctx),
         Expr::FieldAccess(base, field) => {
-            if let Expr::Ident(ty) = base.as_ref() {
-                if ctx.unit_enums.contains(ty) {
+            if let Expr::Ident(ty) = base.as_ref()
+                && ctx.unit_enums.contains(ty) {
                     return true;
                 }
-            }
             field_access_is_copy(base, field, ctx)
         }
         _ => infer_expr_type(expr, ctx).as_deref().is_some_and(|t| {
@@ -478,14 +476,13 @@ pub fn wrap_as_option_value(expr: &Expr, rust: String, ctx: &GenCtx) -> String {
     if t.starts_with("Some(") || t.starts_with("return ") {
         return rust;
     }
-    if let Expr::Ident(n) = expr {
-        if ctx
+    if let Expr::Ident(n) = expr
+        && ctx
             .local_type(n)
             .is_some_and(|ty| ty.starts_with("Option<"))
         {
             return rust;
         }
-    }
     format!("Some({rust})")
 }
 

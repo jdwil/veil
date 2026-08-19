@@ -233,14 +233,13 @@ pub fn emit_block_lines(body: &[Expr], ctx: &GenCtx, indent: &str, last_is_value
         } else {
             expr_to_rust(e, &body_ctx)
         };
-        if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
-            if !name.contains('.') {
+        if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e
+            && !name.contains('.') {
                 body_ctx.locals.insert(name.clone());
                 if let Some(t) = infer_expr_type(rhs, &body_ctx) {
                     body_ctx.local_types.insert(name.clone(), t);
                 }
             }
-        }
         let semi = !(is_last && last_is_value) && !is_rust_block_stmt(e);
         let piece = if semi {
             format!("{};", rust.trim_end_matches(';'))

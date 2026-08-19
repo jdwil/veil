@@ -214,7 +214,7 @@ fn emit_crate_deps_wiring(
     let adapters = &flat.impls;
     let services = &flat.fns;
     let name_to_shape = crate::rust::build_name_to_shape(solution, registry);
-    let (_deps_set, dep_fields) = collect_deps_field_map(&services, registry, &name_to_shape);
+    let (_deps_set, dep_fields) = collect_deps_field_map(services, registry, &name_to_shape);
     let ctx = ir
         .contexts
         .iter()
@@ -325,8 +325,8 @@ fn emit_crate_deps_wiring(
             if field_inits.contains_key(&field_name) {
                 continue;
             }
-            if let TypeExpr::Named(tn) = &f.type_expr {
-                if let Some(impl_ad) = adapters
+            if let TypeExpr::Named(tn) = &f.type_expr
+                && let Some(impl_ad) = adapters
                     .iter()
                     .find(|a| a.target.as_deref() == Some(tn.as_str()))
                 {
@@ -336,7 +336,6 @@ fn emit_crate_deps_wiring(
                     );
                     continue;
                 }
-            }
             let env_key = f.name.to_uppercase();
             field_inits.insert(
                 field_name,

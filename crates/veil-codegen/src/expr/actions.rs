@@ -246,8 +246,8 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                     // Suppress redundant `.is_some()` guards only when we *know*
                     // the local is not Option (e.g. after explicit force-present / require).
                     // Portable bang (ACS-010) does NOT auto-ok_or on find! — Opt stays Opt.
-                    if let Expr::Call(c) = cond {
-                        if c.method == "is_some" && ctx.locals.contains(&c.target) {
+                    if let Expr::Call(c) = cond
+                        && c.method == "is_some" && ctx.locals.contains(&c.target) {
                             let var_type = ctx.local_types.get(&c.target);
                             let is_option = var_type
                                 .map(|t| t.starts_with("Option<") || t == "Option")
@@ -269,7 +269,6 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                                 c.target
                             );
                         }
-                    }
                     let err = if err_var == "NotFound" {
                         ctx.error_model.not_found_path()
                     } else {

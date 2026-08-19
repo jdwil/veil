@@ -87,9 +87,9 @@ pub fn adapter_dyn_type(solution: &Solution, ad: &Construct) -> String {
     let target = ad.target.as_deref().unwrap_or("?");
     // Match type alias `type WearTestRepo = EntityRepo<WearTest>`
     for item in &solution.items {
-        if let TopLevelItem::TypeAlias { name, target: te } = item {
-            if let TypeExpr::Generic(base, args) = te {
-                if base == target
+        if let TopLevelItem::TypeAlias { name, target: te } = item
+            && let TypeExpr::Generic(base, args) = te
+                && base == target
                     && args.len() == ad.target_type_args.len()
                     && args
                         .iter()
@@ -98,8 +98,6 @@ pub fn adapter_dyn_type(solution: &Solution, ad: &Construct) -> String {
                 {
                     return name.clone();
                 }
-            }
-        }
     }
     if !ad.target_type_args.is_empty() {
         let args: Vec<String> = ad.target_type_args.iter().map(type_to_rust).collect();
@@ -121,8 +119,8 @@ pub fn adapter_deps_field_name(
     }
     for item in &solution.items {
         if let TopLevelItem::TypeAlias { name, target: te } = item {
-            if let TypeExpr::Generic(base, args) = te {
-                if base == target
+            if let TypeExpr::Generic(base, args) = te
+                && base == target
                     && args.len() == ad.target_type_args.len()
                     && args
                         .iter()
@@ -131,12 +129,10 @@ pub fn adapter_deps_field_name(
                 {
                     return to_snake(name);
                 }
-            }
-            if let TypeExpr::Named(base) = te {
-                if base == target {
+            if let TypeExpr::Named(base) = te
+                && base == target {
                     return to_snake(name);
                 }
-            }
         }
     }
     to_snake(target)
@@ -250,18 +246,15 @@ pub fn type_to_rust_with_traits(ty: &TypeExpr, traits: &std::collections::HashSe
 /// objects aren't Clone and shouldn't be moved into a coordinator; other types
 /// use the standard rendering.
 pub fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
-    if let TypeExpr::Named(name) = ty {
-        if traits.contains(name) {
+    if let TypeExpr::Named(name) = ty
+        && traits.contains(name) {
             return format!("&(dyn {} + Send + Sync)", name);
         }
-    }
-    if let TypeExpr::List(inner) = ty {
-        if let TypeExpr::Named(name) = inner.as_ref() {
-            if traits.contains(name) {
+    if let TypeExpr::List(inner) = ty
+        && let TypeExpr::Named(name) = inner.as_ref()
+            && traits.contains(name) {
                 return format!("&[Box<dyn {} + Send + Sync>]", name);
             }
-        }
-    }
     type_to_rust_impl(ty, traits)
 }
 
@@ -269,11 +262,10 @@ pub fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<Stri
 /// trait param tracks the unboxed trait name (so `x.method()` resolves to an
 /// async trait call); other types track their Rust rendering.
 pub fn local_type_for_param(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
-    if let TypeExpr::Named(name) = ty {
-        if traits.contains(name) {
+    if let TypeExpr::Named(name) = ty
+        && traits.contains(name) {
             return name.clone();
         }
-    }
     type_to_rust_impl(ty, traits)
 }
 
@@ -317,7 +309,7 @@ pub fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<Strin
         TypeExpr::Dyn(inner) => format!("dyn {}", rec(inner)),
         TypeExpr::ImplTrait(inner) => format!("impl {}", rec(inner)),
         TypeExpr::FnPtr(params, ret) => {
-            let p = params.iter().map(|t| rec(t)).collect::<Vec<_>>().join(", ");
+            let p = params.iter().map(&rec).collect::<Vec<_>>().join(", ");
             let r = ret.as_ref().map(|t| format!(" -> {}", rec(t))).unwrap_or_default();
             format!("fn({}){}", p, r)
         }
@@ -370,15 +362,14 @@ pub fn generate_multi_package_harness(
 
     for (sol, reg) in packages {
         for item in &sol.items {
-            if let TopLevelItem::Construct(c) = item {
-                if c.shape == Shape::Mod {
+            if let TopLevelItem::Construct(c) = item
+                && c.shape == Shape::Mod {
                     let cn = module_crate_name(c, sol);
                     all_modules.push((c, Box::leak(cn.clone().into_boxed_str()), reg, sol));
                     if !all_crate_names.contains(&cn) {
                         all_crate_names.push(cn);
                     }
                 }
-            }
         }
     }
 
@@ -449,18 +440,17 @@ pub fn generate_multi_package_harness(
         let mut needed_ports: std::collections::HashSet<String> = std::collections::HashSet::new();
         for svc in services {
             for field in &svc.inputs {
-                if registry.field_is_dependency(field) {
-                    if let TypeExpr::Named(type_name) = &field.type_expr {
+                if registry.field_is_dependency(field)
+                    && let TypeExpr::Named(type_name) = &field.type_expr {
                         needed_ports.insert(type_name.clone());
                     }
-                }
             }
         }
         // Fallback: if nothing discovered, keep previous "all adapters" behavior
         let filter_ports = !needed_ports.is_empty();
         let name_to_shape_mp = build_name_to_shape(sol, registry);
         let (_deps_set_mp, dep_fields_mp) =
-            collect_deps_field_map(&services, registry, &name_to_shape_mp);
+            collect_deps_field_map(services, registry, &name_to_shape_mp);
 
         // Emit adapter instantiations (only for needed ports when known)
         for ad in adapters {
@@ -506,13 +496,12 @@ pub fn generate_multi_package_harness(
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
             });
-            if body_uses_client && !has_explicit_client {
-                if let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
+            if body_uses_client && !has_explicit_client
+                && let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
                     field_inits
                         .entry("client".to_string())
                         .or_insert_with(|| format!("{let_name}.clone()"));
                 }
-            }
             for f in &ad.fields {
                 let field_name = to_snake(&f.name);
                 if field_inits.contains_key(&field_name) {
@@ -708,7 +697,7 @@ pub fn generate_multi_package_harness(
                 registry.field_is_dependency(i)
             }) || svc.steps.iter().any(|st| {
                 if let FlowStep::Step(s) = st {
-                    s.body.iter().any(|e| expr_mentions_port_call(e))
+                    s.body.iter().any(expr_mentions_port_call)
                 } else {
                     false
                 }
@@ -868,7 +857,7 @@ pub fn veil_field_type_to_rust(veil_type: &str) -> String {
             let v = veil_field_type_to_rust(&parts[1]);
             return format!("std::collections::HashMap<{}, {}>", k, v);
         }
-        return format!("std::collections::HashMap<String, String>");
+        return "std::collections::HashMap<String, String>".to_string();
     }
     if let Some(inner) = t.strip_prefix("List<").and_then(|s| s.strip_suffix('>')) {
         let inner_rust = veil_field_type_to_rust(inner);

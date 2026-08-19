@@ -90,11 +90,10 @@ pub fn walk_ident_reads(e: &Expr, m: &mut HashMap<String, usize>) {
             }
         }
         Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
-            if name.contains('.') {
-                if let Some(base) = name.split('.').next() {
+            if name.contains('.')
+                && let Some(base) = name.split('.').next() {
                     *m.entry(base.to_string()).or_insert(0) += 1;
                 }
-            }
             walk_ident_reads(rhs, m);
         }
         Expr::Return(inner)
@@ -356,11 +355,10 @@ pub fn walk_mut_needs(expr: &Expr, needs: &mut HashSet<String>, bound: &mut Hash
             if !method.is_empty() && MUTATING_METHODS.contains(&method) {
                 if !call.target.is_empty() && !call.target.contains('.') {
                     needs.insert(call.target.clone());
-                } else if let Some(recv) = &call.receiver {
-                    if let Expr::Ident(n) = recv.as_ref() {
+                } else if let Some(recv) = &call.receiver
+                    && let Expr::Ident(n) = recv.as_ref() {
                         needs.insert(n.clone());
                     }
-                }
             }
         }
         Expr::IfExpr(ie) => {

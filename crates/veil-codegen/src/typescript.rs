@@ -13,7 +13,7 @@ thread_local! {
     /// Statement specs active during a `generate_ts` pass (for `lowers_to` templates).
     static TS_STATEMENT_SPECS: RefCell<HashMap<String, StatementSpec>> = RefCell::new(HashMap::new());
     /// Backend services emit camelCase idents; Svelte/UI keeps authored snake_case.
-    static TS_CAMEL_IDENTS: RefCell<bool> = RefCell::new(false);
+    static TS_CAMEL_IDENTS: RefCell<bool> = const { RefCell::new(false) };
 }
 
 fn ts_camel_idents() -> bool {
@@ -622,28 +622,28 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
     // ApiClient: HTTPS REST — not the Bus.
     if call.target == "ApiClient" {
         match call.method.as_str() {
-            "fetch" if args_list.len() >= 1 => {
+            "fetch" if !args_list.is_empty() => {
                 let url = &args_list[0];
                 let params = args_list.get(1).map(|s| s.as_str()).unwrap_or("{}");
                 return format!(
                     "(async () => {{ const __u = new URL({url}, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {params} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) {{ if (v != null && v !== '') __u.searchParams.set(k, String(v)); }} const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); }})()"
                 );
             }
-            "mutate" if args_list.len() >= 1 => {
+            "mutate" if !args_list.is_empty() => {
                 let url = &args_list[0];
                 let body = args_list.get(1).map(|s| s.as_str()).unwrap_or("{}");
                 return format!(
                     "(async () => {{ const __r = await fetch({url}, {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({body}) }}); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; }})()"
                 );
             }
-            "put" if args_list.len() >= 1 => {
+            "put" if !args_list.is_empty() => {
                 let url = &args_list[0];
                 let body = args_list.get(1).map(|s| s.as_str()).unwrap_or("{}");
                 return format!(
                     "(async () => {{ const __r = await fetch({url}, {{ method: 'PUT', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({body}) }}); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; }})()"
                 );
             }
-            "delete" if args_list.len() >= 1 => {
+            "delete" if !args_list.is_empty() => {
                 let url = &args_list[0];
                 return format!(
                     "(async () => {{ const __r = await fetch({url}, {{ method: 'DELETE' }}); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; }})()"
@@ -686,15 +686,13 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
         }
     }
     // navigate / goto from svelte5 layer
-    if (call.target == "navigate" || call.method == "navigate" || call.target == "goto")
+    if ((call.target == "navigate" || call.method == "navigate" || call.target == "goto")
         && !call.method.is_empty()
-        || call.target == "goto"
-    {
-        if call.method == "goto" || call.target == "goto" || call.method == "navigate" {
+        || call.target == "goto")
+        && (call.method == "goto" || call.target == "goto" || call.method == "navigate") {
             let url = args_list.first().map(|s| s.as_str()).unwrap_or("\"/\"");
             return format!("(window.location.href = {url})");
         }
-    }
     if call.target == "navigate" && call.method.is_empty() {
         let url = args_list.first().map(|s| s.as_str()).unwrap_or("\"/\"");
         return format!("(window.location.href = {url})");
@@ -1361,7 +1359,7 @@ window.addEventListener("popstate", route);
 }
 
 /// Collect constructs of a given shape from a module tree.
-fn collect_shape<'a>(module: &'a Construct, shape: Shape) -> Vec<&'a Construct> {
+fn collect_shape(module: &Construct, shape: Shape) -> Vec<&Construct> {
     let mut result = Vec::new();
     fn walk<'a>(c: &'a Construct, shape: Shape, result: &mut Vec<&'a Construct>) {
         for child in &c.children {
@@ -1542,11 +1540,10 @@ fn collect_export_names(modules: &[&Construct], solution: &Solution) -> (std::co
         }
     }
     for item in &solution.items {
-        if let TopLevelItem::Construct(c) = item {
-            if c.shape == Shape::Trait {
+        if let TopLevelItem::Construct(c) = item
+            && c.shape == Shape::Trait {
                 ifaces.insert(c.name.clone());
             }
-        }
     }
     (types, ifaces)
 }
@@ -1557,11 +1554,10 @@ fn infer_ts_handler_return(f: &Construct, type_names: &std::collections::HashSet
     for step in &f.steps {
         if let FlowStep::Step(s) = step {
             for expr in &s.body {
-                if let Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) = expr {
-                    if let Expr::StructLit(name, _) = rhs.as_ref() {
+                if let Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) = expr
+                    && let Expr::StructLit(name, _) = rhs.as_ref() {
                         last_struct = Some(name.clone());
                     }
-                }
                 if let Expr::Return(inner) = expr {
                     last_ret = Some(inner.as_ref());
                 }
@@ -1687,11 +1683,10 @@ fn is_svelte_ui_construct(c: &Construct, registry: &LayerRegistry) -> bool {
         if registry.is_a(kw, ancestor) || registry.is_a(sk, ancestor) {
             return true;
         }
-        if let Some(spec) = registry.construct_by_name(sk).or_else(|| registry.construct(kw)) {
-            if spec.name == ancestor || registry.is_a(&spec.keyword, ancestor) {
+        if let Some(spec) = registry.construct_by_name(sk).or_else(|| registry.construct(kw))
+            && (spec.name == ancestor || registry.is_a(&spec.keyword, ancestor)) {
                 return true;
             }
-        }
     }
     false
 }

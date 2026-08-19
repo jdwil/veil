@@ -77,7 +77,7 @@ pub fn translate_fstring_value(val: &str) -> String {
             if ch == '{' {
                 let mut depth = 1;
                 let mut expr_text = String::new();
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     if c == '{' {
                         depth += 1;
                     }
@@ -141,17 +141,15 @@ pub fn to_json_arg(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::FieldAccess(base, field) => {
             // A field of a state-local → index into the threaded state.
-            if let Expr::Ident(name) = base.as_ref() {
-                if ctx.state_locals.contains(name.as_str()) {
+            if let Expr::Ident(name) = base.as_ref()
+                && ctx.state_locals.contains(name.as_str()) {
                     return format!("state[\"{}\"][\"{}\"].clone()", name, field);
                 }
-            }
             // If the base is already a serde_json::Value local, index it directly.
-            if let Expr::Ident(name) = base.as_ref() {
-                if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
+            if let Expr::Ident(name) = base.as_ref()
+                && ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
                     return format!("{}[\"{}\"].clone()", name, field);
                 }
-            }
             // Otherwise serialize the base then index (works for opaque stub types;
             // Index yields Null on mismatch rather than panicking).
             format!(

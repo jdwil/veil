@@ -142,11 +142,10 @@ pub fn gen_workspace_toml(
 ) -> GeneratedFile {
     let mut members = vec!["    \"crates/veil_shared\"".to_string()];
     for item in &sol.items {
-        if let TopLevelItem::Construct(c) = item {
-            if c.shape == Shape::Mod {
+        if let TopLevelItem::Construct(c) = item
+            && c.shape == Shape::Mod {
                 members.push(format!("    \"crates/{}\"", module_crate_name(c, sol)));
             }
-        }
     }
 
     // GEN-006: deps/features from stub metadata only (no engine hardcode).
@@ -291,11 +290,10 @@ pub fn gen_module_crate(
     // construct that reuses a declared name is emitted locally; gen_traits
     // then avoids `pub use veil_shared::*` so the names do not collide.
     for item in &solution.items {
-        if let TopLevelItem::Construct(c) = item {
-            if c.shape == Shape::Trait && !c.layer_provided {
+        if let TopLevelItem::Construct(c) = item
+            && c.shape == Shape::Trait && !c.layer_provided {
                 contents.traits.push(c);
             }
-        }
     }
 
     files.push(GeneratedFile {
@@ -316,7 +314,7 @@ uuid.workspace = true"#);
             // Inter-context communication goes through Bus — no sibling crate deps needed.
             // Exception: orchestrators that directly reference sibling context types
             // (via `contexts X, Y` or step-level `ctx X` refs) need path deps.
-            cargo.push_str("\n");
+            cargo.push('\n');
             cargo.push_str("chrono.workspace = true\ntracing.workspace = true\nserde_json.workspace = true\n");
             // Shared error types + Bus trait, defined once.
             cargo.push_str("veil_shared = { path = \"../veil_shared\" }\n");
@@ -399,14 +397,13 @@ uuid.workspace = true"#);
     // Merge layer-provided traits into the trait list for signature lookup.
     let mut traits_for_impls: Vec<&Construct> = contents.traits.to_vec();
     for item in &solution.items {
-        if let TopLevelItem::Construct(c) = item {
-            if c.shape == Shape::Trait
+        if let TopLevelItem::Construct(c) = item
+            && c.shape == Shape::Trait
                 && c.layer_provided
                 && !traits_for_impls.iter().any(|t| t.name == c.name)
             {
                 traits_for_impls.push(c);
             }
-        }
     }
     files.push(gen_impls(
         &impls_for_module,
@@ -509,11 +506,10 @@ pub fn gen_manifest(
         dep_info.insert("provided_by".to_string(), json!("runtime"));
 
         // Emit @strategy annotation if present (e.g. @strategy(cognito))
-        if let Some(strategy_ann) = t.annotations.iter().find(|a| registry.is_runtime_strategy_annotation(&a.name)) {
-            if let Some(strategy_value) = strategy_ann.args.first() {
+        if let Some(strategy_ann) = t.annotations.iter().find(|a| registry.is_runtime_strategy_annotation(&a.name))
+            && let Some(strategy_value) = strategy_ann.args.first() {
                 dep_info.insert("strategy".to_string(), json!(strategy_value));
             }
-        }
 
         deps.insert(dep_name, serde_json::Value::Object(dep_info));
     }

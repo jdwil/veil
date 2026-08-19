@@ -95,7 +95,7 @@ pub fn execute_templates(
                     } else if let Some(section_name) = &rule.emit_to {
                         sections
                             .entry(section_name.clone())
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(SectionContribution {
                                 priority: rule.priority,
                                 content: output,
@@ -117,19 +117,16 @@ pub fn execute_templates(
     }
 
     for item in &solution.items {
-        match item {
-            veil_ir::ast::TopLevelItem::Construct(c) => {
-                visit_construct(
-                    c,
-                    &templates,
-                    registry,
-                    target,
-                    &mut sections,
-                    &mut files,
-                    &mut file_fragments,
-                );
-            }
-            _ => {}
+        if let veil_ir::ast::TopLevelItem::Construct(c) = item {
+            visit_construct(
+                c,
+                &templates,
+                registry,
+                target,
+                &mut sections,
+                &mut files,
+                &mut file_fragments,
+            );
         }
     }
 
@@ -823,12 +820,10 @@ fn extract_quoted_value(s: &str, prefix: &str) -> Option<String> {
     if let Some(start) = s.find(prefix) {
         let after = &s[start + prefix.len()..];
         let after = after.trim();
-        if after.starts_with('"') {
-            let inner = &after[1..];
-            if let Some(end) = inner.find('"') {
+        if let Some(inner) = after.strip_prefix('"')
+            && let Some(end) = inner.find('"') {
                 return Some(inner[..end].to_string());
             }
-        }
     }
     None
 }
@@ -844,7 +839,6 @@ fn target_extension(target: &str) -> &str {
 }
 
 /// Default `$state(...)` initializer from a VEIL type.
-
 /// Map VEIL types to TypeScript-ish names for Svelte script blocks.
 fn svelte_type_display(ty: &veil_ir::TypeExpr) -> String {
     use veil_ir::TypeExpr;

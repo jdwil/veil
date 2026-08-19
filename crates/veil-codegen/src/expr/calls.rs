@@ -197,12 +197,8 @@ pub fn peel_dyn_trait_name(ty: &str) -> Option<String> {
         rest
     } else if let Some(rest) = t.strip_prefix("std::sync::Arc<dyn ") {
         rest
-    } else if let Some(rest) = t.strip_prefix("dyn ") {
-        rest
-    } else {
-        return None;
-    };
-    let name = after_dyn.split(|c: char| c == '+' || c == '>' || c == ' ').next()?;
+    } else { t.strip_prefix("dyn ")? };
+    let name = after_dyn.split(['+', '>', ' ']).next()?;
     if !name.is_empty() {
         Some(name.to_string())
     } else {
@@ -343,8 +339,8 @@ pub fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: 
 
     // Check ref_params for this specific (type, method) combination.
     // If found, emit &arg for ref positions instead of arg.clone().
-    if let Some(type_name) = recv_type {
-        if let Some(ref_flags) = ctx.ref_params.get(&(type_name.to_string(), method.to_string())) {
+    if let Some(type_name) = recv_type
+        && let Some(ref_flags) = ctx.ref_params.get(&(type_name.to_string(), method.to_string())) {
             return args.iter().enumerate().map(|(i, a)| {
                 let is_ref = ref_flags.get(i).copied().unwrap_or(false);
                 if is_ref {
@@ -373,7 +369,6 @@ pub fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: 
                 }
             }).collect::<Vec<_>>().join(", ");
         }
-    }
     // str::starts_with / contains / ends_with / replace take Pattern / &str —
     // string lits as &str, not owned String (Pattern not implemented for String).
     if matches!(
@@ -409,11 +404,10 @@ pub fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: 
             .join(", ");
     }
     // Option<&str>.unwrap_or("") — keep bare &str, not String
-    if method == "unwrap_or" && args.len() == 1 {
-        if let Expr::StringLit(s) = &args[0] {
+    if method == "unwrap_or" && args.len() == 1
+        && let Expr::StringLit(s) = &args[0] {
             return format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
         }
-    }
     if method == "basic_auth" && args.len() >= 2 {
         let user = clone_args(&args[..1], ctx);
         let pass = expr_to_rust(&args[1], ctx);
@@ -422,15 +416,14 @@ pub fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: 
     }
     // sqlx bind: Uuid needs the `uuid` feature; bind as text to stay feature-light.
     if method == "bind" && args.len() == 1 {
-        if let Expr::Ident(n) = &args[0] {
-            if ctx.local_type(n) == Some("Uuid")
+        if let Expr::Ident(n) = &args[0]
+            && (ctx.local_type(n) == Some("Uuid")
                 || n == "id"
                 || n.ends_with("_id")
-                || n.ends_with("Id")
+                || n.ends_with("Id"))
             {
                 return format!("{n}.to_string()");
             }
-        }
         if let Expr::FieldAccess(base, field) = &args[0] {
             let f = to_snake(field);
             if f == "id" || f.ends_with("_id") {
@@ -470,11 +463,10 @@ pub fn list_elem_is_cloneable(base: &Expr, ctx: &GenCtx) -> bool {
     };
     // Check the container type first — `element_type_of` peels `Box<dyn Trait>`
     // down to `Trait`, which would look cloneable.
-    if let Some(ref t) = ty {
-        if t.contains("dyn ") {
+    if let Some(ref t) = ty
+        && t.contains("dyn ") {
             return false;
         }
-    }
     if let Some(elem) = element_type_of(base, ctx) {
         if elem.contains("dyn ") {
             return false;
@@ -530,8 +522,8 @@ pub fn lower_dotted_local_path(target: &str, ctx: &GenCtx) -> String {
             rust = format!("{rust}[\"{seg}\"]");
             continue;
         }
-        if let Some(t) = ty.as_deref() {
-            if let Some(ft) = ctx
+        if let Some(t) = ty.as_deref()
+            && let Some(ft) = ctx
                 .field_type(t, seg)
                 .or_else(|| ctx.field_type(t, &field))
             {
@@ -545,7 +537,6 @@ pub fn lower_dotted_local_path(target: &str, ctx: &GenCtx) -> String {
                 ty = Some(ft.to_string());
                 continue;
             }
-        }
         rust = format!("{rust}.{field}");
     }
     rust
@@ -560,17 +551,15 @@ pub fn is_json_rooted_expr(expr: &Expr, ctx: &GenCtx) -> bool {
             if is_json_rooted_expr(base, ctx) {
                 return true;
             }
-            if let Expr::Ident(name) = base.as_ref() {
-                if let Some(type_name) = ctx.local_type(name) {
-                    if ctx
+            if let Expr::Ident(name) = base.as_ref()
+                && let Some(type_name) = ctx.local_type(name)
+                    && ctx
                         .field_type(type_name, field)
                         .or_else(|| ctx.field_type(type_name, &to_snake(field)))
                         .is_some_and(is_json_type_name)
                     {
                         return true;
                     }
-                }
-            }
             false
         }
         _ => false,
@@ -609,7 +598,7 @@ pub fn peel_type_key(s: &str) -> String {
     let s = s.trim();
     if let Some(rest) = s.split("dyn ").nth(1) {
         return rest
-            .split(|c: char| c == '+' || c == '<' || c == '>' || c == ',')
+            .split(['+', '<', '>', ','])
             .next()
             .unwrap_or(rest)
             .trim()
@@ -685,11 +674,10 @@ pub fn param_types_for(recv: Option<&str>, method: &str, ctx: &GenCtx) -> Vec<St
     if map_hits.len() == 1 {
         return map_hits[0].clone();
     }
-    if let Some(first) = map_hits.first() {
-        if map_hits.iter().all(|h| *h == *first) {
+    if let Some(first) = map_hits.first()
+        && map_hits.iter().all(|h| *h == *first) {
             return (*first).clone();
         }
-    }
     let hits: Vec<&Vec<String>> = ctx
         .method_params
         .iter()
@@ -699,11 +687,10 @@ pub fn param_types_for(recv: Option<&str>, method: &str, ctx: &GenCtx) -> Vec<St
     if hits.len() == 1 {
         return hits[0].clone();
     }
-    if let Some(first) = hits.first() {
-        if hits.iter().all(|h| *h == *first) {
+    if let Some(first) = hits.first()
+        && hits.iter().all(|h| *h == *first) {
             return (*first).clone();
         }
-    }
     Vec::new()
 }
 
@@ -914,9 +901,9 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Auto-unwrap Option<T> locals for method calls: when the receiver is a
         // local typed as Option<T> and the method is NOT an Option method, unwrap
         // first so that domain-type methods can be called directly.
-        if let Expr::Ident(name) = recv.as_ref() {
-            if let Some(ty) = ctx.local_type(name) {
-                if ty.starts_with("Option<") {
+        if let Expr::Ident(name) = recv.as_ref()
+            && let Some(ty) = ctx.local_type(name)
+                && ty.starts_with("Option<") {
                     let bare_method = call.method.trim_end_matches(['!', '?']);
                     let option_methods = [
                         "is_some", "is_none", "unwrap", "unwrap_or", "unwrap_or_else",
@@ -938,8 +925,6 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                         }
                     }
                 }
-            }
-        }
 
         let bare_conv = call.method.trim_end_matches(['!', '?']);
         // Json / Value: as_str / as_s / to_string extract a string, never bytes.
@@ -976,11 +961,10 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     return recv_str;
                 }
                 // .get("key") already produces .ok_or_else(...)? — value is extracted
-                if inner_bare == "get" && inner_call.args.len() == 1 {
-                    if matches!(&inner_call.args[0], Expr::StringLit(_)) {
+                if inner_bare == "get" && inner_call.args.len() == 1
+                    && matches!(&inner_call.args[0], Expr::StringLit(_)) {
                         return recv_str;
                     }
-                }
             }
             // Also catch: recv_str ends with `)?` or `.unwrap()` — redundant unwrap
             let trimmed = recv_str.trim();
@@ -991,15 +975,14 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 
         // Map/HashMap .get("lit") → &str key (not String) on any receiver chain.
         // Match local-target lowering: unwrap Option for immediate .as_s() chains.
-        if call.method == "get" && call.args.len() == 1 {
-            if let Expr::StringLit(key) = &call.args[0] {
+        if call.method == "get" && call.args.len() == 1
+            && let Expr::StringLit(key) = &call.args[0] {
                 // Issue 6: never panic on missing map keys in adapter bodies.
                 return format!(
                     "{}.get(\"{}\").ok_or_else(|| {}(\"missing {}\".into()))?",
                     recv_str, key, ctx.error_model.external_path(), key
                 );
             }
-        }
         // serde_json::Value::as_str → Option<String> (owned) for assigns/unwrap.
         if call.method == "as_str" && call.args.is_empty() {
             return format!("{}.as_str().map(|s| s.to_string())", recv_str);
@@ -1035,8 +1018,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if bare_m == "trim" && call.args.is_empty() {
             return format!("{}.trim().to_string()", recv_str);
         }
-        if (bare_m == "unwrap_or" || bare_m == "unwrap_or_else") && call.args.len() == 1 {
-            if let Expr::StringLit(s) = &call.args[0] {
+        if (bare_m == "unwrap_or" || bare_m == "unwrap_or_else") && call.args.len() == 1
+            && let Expr::StringLit(s) = &call.args[0] {
                 let lit = s.replace('\\', "\\\\").replace('"', "\\\"");
                 // Option<String> (after .map(|s| s.to_string()) / .clone() / .as_str().map(...)
                 // / .and_then(|c| c.field)):
@@ -1054,17 +1037,15 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 }
                 return format!("{}.{m}(\"{lit}\"){suffix}", recv_str);
             }
-        }
         // Phase 2, Issue 3: S3 .body() takes ByteStream, not Vec<u8>.
         // Append .into() when the arg is a local typed as Vec<u8>/Bytes.
-        if bare_m == "body" && call.args.len() == 1 {
-            if let Expr::Ident(name) = &call.args[0] {
+        if bare_m == "body" && call.args.len() == 1
+            && let Expr::Ident(name) = &call.args[0] {
                 let ty = ctx.local_type(name).unwrap_or("");
                 if ty == "Vec<u8>" || ty.contains("Bytes") || ty.contains("Vec<u8>") {
                     return format!("{}.body({}.into()){}", recv_str, name, suffix);
                 }
             }
-        }
         // Phase 2, Issue 4: DDB .limit() takes i32, VEIL Int is i64.
         // Insert `as i32` cast for the argument.
         if bare_m == "limit" && call.args.len() == 1 {
@@ -1153,9 +1134,9 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             let call_expr = format!("{}.{}({}).await?", rref, bare, final_args);
             // Typed bus decode: when sugar carries a message type with a known
             // domain return, deserialize instead of leaving serde_json::Value.
-            if matches!(bare.as_str(), "invoke" | "request") {
-                if let Some(msg) = bus_message_name_from_args(&call.args) {
-                    if let Some(ret) = ctx.bus_returns.get(&msg) {
+            if matches!(bare.as_str(), "invoke" | "request")
+                && let Some(msg) = bus_message_name_from_args(&call.args)
+                    && let Some(ret) = ctx.bus_returns.get(&msg) {
                         // Only decode types this crate can name (local domain /
                         // primitives). Cross-context domain types (e.g. tools
                         // invoking storage CreateRepo → Repo) stay as Value.
@@ -1167,8 +1148,6 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                             );
                         }
                     }
-                }
-            }
             return call_expr;
         }
         // Bang on ports means fallible/async (Result), not "unwrap Opt".
@@ -1586,16 +1565,15 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             // Zero-arg smart ctors (`Default`): `T.new(a, b, c)` → positional
             // field fill + `..T::default()`. Skips a leading `id: Uuid` so
             // `Greeting.new(message)` still maps onto `message`, not `id`.
-            if ctx.defaultable_types.contains(&effective_target) && !call.args.is_empty() {
-                if let Some(fields) = ctx.struct_fields.get(&effective_target) {
+            if ctx.defaultable_types.contains(&effective_target) && !call.args.is_empty()
+                && let Some(fields) = ctx.struct_fields.get(&effective_target) {
                     let mut field_iter = fields.iter().peekable();
                     let mut parts: Vec<String> = Vec::new();
-                    if let Some((fname, fty)) = field_iter.peek() {
-                        if *fname == "id" && (*fty == "Uuid" || *fty == "uuid::Uuid") {
+                    if let Some((fname, fty)) = field_iter.peek()
+                        && *fname == "id" && (*fty == "Uuid" || *fty == "uuid::Uuid") {
                             parts.push("id: Uuid::new_v4()".to_string());
                             field_iter.next();
                         }
-                    }
                     for arg in &call.args {
                         if let Some((fname, _)) = field_iter.next() {
                             parts.push(format!(
@@ -1608,7 +1586,6 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     parts.push(format!("..{}::default()", qualified));
                     return format!("{} {{ {} }}", qualified, parts.join(", "));
                 }
-            }
 
             return format!("{}::{}({}){}", qualified, to_snake(method), final_args, suffix);
         }
@@ -1663,9 +1640,9 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             .next()
             .map(|c| c.is_uppercase())
             .unwrap_or(false);
-        if !is_pascal_ctor && !call.args.is_empty() {
-            if let Expr::Ident(first_arg) = &call.args[0] {
-                if first_arg.eq_ignore_ascii_case(&effective_target) {
+        if !is_pascal_ctor && !call.args.is_empty()
+            && let Expr::Ident(first_arg) = &call.args[0]
+                && first_arg.eq_ignore_ascii_case(&effective_target) {
                     let rest_args = call.args[1..]
                         .iter()
                         .map(|a| expr_to_rust(a, ctx))
@@ -1673,8 +1650,6 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                         .join(", ");
                     return format!("{}.{}({})", first_arg, to_snake(method), rest_args);
                 }
-            }
-        }
         // Enum variant constructor: AttributeValue.S(pk) → AttributeValue::S(pk)
         // No suffix needed — variant constructors are plain sync calls.
         // Stub enums are stored as Shape::Struct, so also check PascalCase method name
@@ -1902,14 +1877,13 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         }
 
         // HashMap/DynamoDB item .get("key") — never panic (review Issue 6).
-        if call.method == "get" && call.args.len() == 1 {
-            if let Expr::StringLit(key) = &call.args[0] {
+        if call.method == "get" && call.args.len() == 1
+            && let Expr::StringLit(key) = &call.args[0] {
                 return format!(
                     "{}.get(\"{}\").ok_or_else(|| {}(\"missing {}\".into()))?",
                     call.target, key, ctx.error_model.external_path(), key
                 );
             }
-        }
         // Option.unwrap() → ok_or; Result.unwrap() → map_err to DomainError.
         // Clone Option first so the local can be reused after is_some()/unwrap.
         if (call.method == "unwrap" || call.method == "unwrap!") && call.args.is_empty() {
@@ -2005,15 +1979,13 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     // unwrap_or with a string lit on Option<String> needs .to_string()
                     if (bare_method == "unwrap_or" || bare_method == "unwrap_or_else")
                         && call.args.len() == 1
-                    {
-                        if let Expr::StringLit(s) = &call.args[0] {
+                        && let Expr::StringLit(s) = &call.args[0] {
                             let lit = s.replace('\\', "\\\\").replace('"', "\\\"");
                             return format!(
                                 "{}.clone().{}(\"{}\".to_string()){}",
                                 call.target, method, lit, suffix
                             );
                         }
-                    }
                     return format!(
                         "{}.clone().{}({}){}",
                         call.target, method, cloned_args, suffix
@@ -2027,7 +1999,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     call.method.trim_end_matches(['!', '?']).to_string(),
                 ))
             {
-                let cloned_args = clone_args_for_typed_method(Some(&type_name), &call.method, &call.args, ctx);
+                let cloned_args = clone_args_for_typed_method(Some(type_name), &call.method, &call.args, ctx);
                 let suffix = receiver_call_suffix(
                     &Expr::Ident(call.target.clone()),
                     &call.method,
@@ -2069,20 +2041,19 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // `.as_str()`) needs a bare str. Prefer owned — callers of as_str use the
         // chained-receiver path below.
         let bare_m = call.method.trim_end_matches(['!', '?']);
-        if (bare_m == "unwrap_or" || bare_m == "unwrap_or_else") && call.args.len() == 1 {
-            if let Expr::StringLit(s) = &call.args[0] {
+        if (bare_m == "unwrap_or" || bare_m == "unwrap_or_else") && call.args.len() == 1
+            && let Expr::StringLit(s) = &call.args[0] {
                 return format!(
                     "{}.{}(\"{}\".to_string()){}",
                     call.target, method, s, suffix
                 );
             }
-        }
         // Auto-unwrap Option<T> args passed to container methods like push/insert.
         // When an Option<T> local is pushed into a Vec<T>, unwrap it first.
-        if (bare_m == "push" || bare_m == "insert" || bare_m == "extend") && !call.args.is_empty() {
-            if let Some(Expr::Ident(arg_name)) = call.args.first() {
-                if let Some(ty) = ctx.local_type(arg_name) {
-                    if ty.starts_with("Option<") {
+        if (bare_m == "push" || bare_m == "insert" || bare_m == "extend") && !call.args.is_empty()
+            && let Some(Expr::Ident(arg_name)) = call.args.first()
+                && let Some(ty) = ctx.local_type(arg_name)
+                    && ty.starts_with("Option<") {
                         let rest_args = if call.args.len() > 1 {
                             format!(", {}", clone_args_for_method(&call.method, &call.args[1..], ctx))
                         } else {
@@ -2093,9 +2064,6 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                             call.target, method, arg_name, ctx.error_model.not_found_path(), rest_args, suffix
                         );
                     }
-                }
-            }
-        }
         // Resolve target type for ref-param passing
         let target_type: Option<&str> = ctx.local_type(&call.target);
         return format!(
@@ -2237,13 +2205,12 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             };
             // from_str needs a turbofish when the enclosing method return type
             // names a concrete domain type (else inference fails with `?`).
-            if target_snake == "serde_json" && m == "from_str" {
-                if let Some(ty) = from_str_turbofish_type(ctx) {
+            if target_snake == "serde_json" && m == "from_str"
+                && let Some(ty) = from_str_turbofish_type(ctx) {
                     return format!(
                         "serde_json::from_str::<{ty}>({final_args}){suffix}"
                     );
                 }
-            }
             return format!("{}::{}({}){}", target_snake, m, final_args, suffix);
         }
         // Stub package free functions: `crypto.hmac_sha256_hex(s, m)` or
@@ -2302,14 +2269,13 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if target_is_var_like {
             // Phase 2, Issue 2: .get("key") on closure params — emit bare &str,
             // not .to_string(). Also emit .ok_or_else(...)? to unwrap the Option.
-            if m_clean == "get" && call.args.len() == 1 {
-                if let Expr::StringLit(key) = &call.args[0] {
+            if m_clean == "get" && call.args.len() == 1
+                && let Expr::StringLit(key) = &call.args[0] {
                     return format!(
                         "{}.get(\"{}\").ok_or_else(|| {}(\"missing {}\".into()))?",
                         call.target, key, ctx.error_model.external_path(), key
                     );
                 }
-            }
             // Phase 2, Issue 1: .unwrap() on closure params that are already extracted
             if (m_clean == "unwrap" || m_clean == "unwrap!") && call.args.is_empty() {
                 // In closure contexts the value is typically already unwrapped — just return target

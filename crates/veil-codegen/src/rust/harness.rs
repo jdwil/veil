@@ -26,11 +26,10 @@ pub fn expr_mentions_port_call(expr: &Expr) -> bool {
                     return true;
                 }
             }
-            if let Some(recv) = &call.receiver {
-                if expr_mentions_port_call(recv) {
+            if let Some(recv) = &call.receiver
+                && expr_mentions_port_call(recv) {
                     return true;
                 }
-            }
             call.args.iter().any(expr_mentions_port_call)
         }
         Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => expr_mentions_port_call(rhs),
@@ -70,19 +69,17 @@ pub fn expr_mentions_self_field(expr: &Expr, field_name: &str) -> bool {
             if target_matches {
                 return true;
             }
-            if let Some(recv) = &call.receiver {
-                if expr_mentions_self_field(recv, field_name) {
+            if let Some(recv) = &call.receiver
+                && expr_mentions_self_field(recv, field_name) {
                     return true;
                 }
-            }
             call.args.iter().any(|a| expr_mentions_self_field(a, field_name))
         }
         Expr::FieldAccess(base, field) => {
-            if field == field_name {
-                if let Expr::Ident(id) = base.as_ref() {
+            if field == field_name
+                && let Expr::Ident(id) = base.as_ref() {
                     return id == "self";
                 }
-            }
             expr_mentions_self_field(base, field_name)
         }
         Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => {
@@ -632,7 +629,7 @@ pub fn gen_local_harness_main(
         // input names preferred over snake(trait)).
         let name_to_shape = build_name_to_shape(sol, registry);
         let (_deps_set, dep_fields) =
-            collect_deps_field_map(&services, registry, &name_to_shape);
+            collect_deps_field_map(services, registry, &name_to_shape);
 
         // Wire only adapters named on the IR compose (authored or compat-synthesized).
         let mut wired: Vec<(String, String, &Construct)> = Vec::new(); // field, snake, ad
@@ -716,15 +713,13 @@ pub fn gen_local_harness_main(
             if body_uses_client
                 && !has_field_client
                 && !emitted_harness_lets.contains("Client")
-            {
-                if let Some((let_name, expr)) = stub_harness_field_expr(registry, "Client") {
+                && let Some((let_name, expr)) = stub_harness_field_expr(registry, "Client") {
                     out.push_str(&format!(
                         "    // stub harness_field Client\n\
                          let {let_name} = {expr};\n\n"
                     ));
                     emitted_harness_lets.insert("Client".into());
                 }
-            }
         }
 
         // Leaf adapters (stub/env fields only) before orchestrators that @dep on ports.
@@ -766,13 +761,12 @@ pub fn gen_local_harness_main(
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
             });
-            if body_uses_client && !has_explicit_client_field {
-                if let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
+            if body_uses_client && !has_explicit_client_field
+                && let Some((let_name, _)) = stub_harness_field_expr(registry, "Client") {
                     field_inits
                         .entry("client".to_string())
                         .or_insert_with(|| format!("{let_name}.clone()"));
                 }
-            }
             for f in &ad.fields {
                 let field_name = to_snake(&f.name);
                 if field_inits.contains_key(&field_name) {
@@ -880,8 +874,8 @@ pub fn gen_local_harness_main(
 
         // Bus registration: only HarnessIR-declared handlers (deps bundle
         // actually wires a routing trait). Do not dump every fn.
-        if has_bus {
-            if let Some(ctx) = ctx {
+        if has_bus
+            && let Some(ctx) = ctx {
                 for bh in &ctx.bus_handlers {
                     if let Some(svc) = services.iter().find(|s| s.name == bh.name) {
                         bus_handler_targets.push((
@@ -892,7 +886,6 @@ pub fn gen_local_harness_main(
                     }
                 }
             }
-        }
 
         // HTTP surface: only IR endpoints (authored or compat-synthesized).
         let declared_eps = ctx.map(|c| c.endpoints.as_slice()).unwrap_or(&[]);
@@ -991,9 +984,7 @@ pub fn gen_local_harness_main(
         "    println!(\"veil_bin: profile={} endpoints={n}\");\n",
         ir.profile
     ));
-    out.push_str(&format!(
-        "    println!(\"veil_bin: listening on :{{}}\", port);\n"
-    ));
+    out.push_str("    println!(\"veil_bin: listening on :{}\", port);\n");
     out.push_str("    let listener = tokio::net::TcpListener::bind(format!(\"0.0.0.0:{}\", port)).await?;\n");
     out.push_str("    axum::serve(listener, app.into_make_service()).await?;\n");
     out.push_str("    Ok(())\n}\n\n");
@@ -1054,8 +1045,7 @@ pub fn gen_local_harness_main(
                 ),
                 n => {
                     let names = path_params.join(", ");
-                    let tys = std::iter::repeat("String")
-                        .take(n)
+                    let tys = std::iter::repeat_n("String", n)
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!(
@@ -1096,7 +1086,7 @@ pub fn gen_local_harness_main(
                 || {
                     svc.steps.iter().any(|st| {
                         if let FlowStep::Step(s) = st {
-                            s.body.iter().any(|e| expr_mentions_port_call(e))
+                            s.body.iter().any(expr_mentions_port_call)
                         } else {
                             false
                         }
