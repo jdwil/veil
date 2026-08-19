@@ -566,6 +566,7 @@ pub fn gen_local_harness_main(
          //! `cargo run -p veil_bin` from the generated workspace root.\n\n",
         sol.name
     ));
+    out.push_str("#![allow(unused_imports)]\n\n");
     out.push_str("use std::sync::Arc;\n");
     out.push_str(&format!(
         "use axum::{{Router, Json, extract::State, {query_import}routing::{{{routing_imports}}}, http::{{HeaderMap, StatusCode}}, middleware::{{from_fn, Next}}, response::Response, extract::Request}};\n"
@@ -1036,7 +1037,7 @@ pub fn gen_local_harness_main(
                 !registry.field_is_dependency(i)
                     && !path_params.iter().any(|p| p == &to_snake(&i.name))
             });
-            // DELETE with extra inputs (e.g. tenant_id) uses query string —
+            // DELETE with extra inputs uses query string —
             // many clients drop DELETE bodies (review / HTTP practice).
             let needs_body =
                 method == "post" || method == "put" || method == "patch";
@@ -1072,16 +1073,6 @@ pub fn gen_local_harness_main(
             } else {
                 ""
             };
-            // Prefer X-Tenant-Id header when handler takes tenant_id (multi-tenant dual-loop).
-            let needs_tenant_header = svc.inputs.iter().any(|i| {
-                !registry.field_is_dependency(i) && to_snake(&i.name) == "tenant_id"
-            });
-            let headers_extractor = if needs_tenant_header {
-                // Named req_headers so body field `headers` does not shadow.
-                "\n    req_headers: HeaderMap,"
-            } else {
-                ""
-            };
             // Axum: body extractors (Json) must be last.
             // Only include State(deps) when the context has deps (IR).
             let name_to_shape_h = build_name_to_shape(sol, registry);
@@ -1096,7 +1087,7 @@ pub fn gen_local_harness_main(
                 format!("\n    State(deps): State<Arc<{crate_name}_Deps>>,")
             };
             out.push_str(&format!(
-                "async fn {fn_name}_handler({state_extractor}{path_extractor}{query_extractor}{headers_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
+                "async fn {fn_name}_handler({state_extractor}{path_extractor}{query_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n"
             ));
 
             // Only pass &deps when the application fn actually takes deps
@@ -1131,24 +1122,6 @@ pub fn gen_local_harness_main(
                         ));
                     }
                     // else: already String from Path extractor
-                } else if field == "tenant_id" && needs_tenant_header && rust_type == "Uuid" {
-                    // Production: tenant key / X-Tenant-Id; body only as fallback in VEIL_DEV.
-                    if needs_query {
-                        out.push_str(
-                            "    let __tenant_fb = q.get(\"tenant_id\").and_then(|s| s.parse::<Uuid>().ok());\n\
-                             \x20   let tenant_id = veil_resolve_tenant_id(&req_headers, __tenant_fb)?;\n",
-                        );
-                    } else if needs_body {
-                        out.push_str(
-                            "    let __tenant_fb = body.get(\"tenant_id\").and_then(|v| v.as_str())\
-                             .and_then(|s| s.parse::<Uuid>().ok());\n\
-                             \x20   let tenant_id = veil_resolve_tenant_id(&req_headers, __tenant_fb)?;\n",
-                        );
-                    } else {
-                        out.push_str(
-                            "    let tenant_id = veil_resolve_tenant_id(&req_headers, None)?;\n",
-                        );
-                    }
                 } else if needs_query {
                     // GET/DELETE: plain query string values (not JSON-encoded).
                     // Opt/Option fields are optional — missing → None (do not 400).
@@ -1325,17 +1298,14 @@ pub fn veil_redact_header_values(v: &mut serde_json::Value) {{
     )
 }
 
-/// API key middleware + CORS policy for dual-loop **and** production harness.
+/// API key middleware + CORS policy for generated harness.
 pub fn harness_auth_cors_helpers() -> &'static str {
     r#"
 /// Production-oriented auth:
 /// - `/health` + OPTIONS always open
 /// - `VEIL_DEV=1` → open (local dual-loop only)
-/// - else require a key: `VEIL_API_KEY` (admin) and/or `VEIL_TENANT_KEYS`
-///   (`tenant-uuid:secret,tenant-uuid2:secret2`)
+/// - else require a key: `VEIL_API_KEY`
 /// - Present key via `X-Api-Key` or `Authorization: Bearer <key>`
-/// - Tenant-scoped routes: prefer `X-Tenant-Id`; if key is a tenant key, that
-///   UUID is forced (body/query tenant_id cannot elevate to another tenant)
 async fn veil_api_key_middleware(
     headers: HeaderMap,
     request: Request,
@@ -1347,7 +1317,6 @@ async fn veil_api_key_middleware(
     let dev = std::env::var("VEIL_DEV").ok().as_deref() == Some("1");
     let require = std::env::var("VEIL_REQUIRE_AUTH").ok().as_deref() == Some("1");
     let admin_key = std::env::var("VEIL_API_KEY").ok().filter(|s| !s.is_empty());
-    let tenant_keys = veil_parse_tenant_keys();
     let presented = headers
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
@@ -1359,7 +1328,7 @@ async fn veil_api_key_middleware(
                 .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
         });
 
-    if dev && !require && admin_key.is_none() && tenant_keys.is_empty() {
+    if dev && !require && admin_key.is_none() {
         return Ok(next.run(request).await);
     }
 
@@ -1368,102 +1337,12 @@ async fn veil_api_key_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     };
 
-    let is_admin = admin_key.as_deref() == Some(presented.as_str());
-    let tenant_from_key = tenant_keys
-        .iter()
-        .find(|(_, k)| k == &presented)
-        .map(|(t, _)| t.clone());
-
-    if !is_admin && tenant_from_key.is_none() {
+    if admin_key.as_deref() != Some(presented.as_str()) {
         eprintln!("warn: unauthorized — key not recognized");
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let path = request.uri().path();
-    // Provider catalog is admin-only (tenant keys cannot mutate global catalog).
-    if path.starts_with("/api/providers") && !is_admin {
-        eprintln!("warn: forbidden — provider catalog requires VEIL_API_KEY (admin)");
-        return Err(StatusCode::FORBIDDEN);
-    }
-    // Tenant-scoped surfaces need either admin+X-Tenant-Id or a tenant key.
-    let tenant_route = path.starts_with("/api/integrations") || path.starts_with("/api/execute");
-    if tenant_route {
-        if let Some(ref t) = tenant_from_key {
-            if let Some(hdr) = headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
-                if hdr != t.as_str() {
-                    eprintln!("warn: X-Tenant-Id does not match tenant API key");
-                    return Err(StatusCode::FORBIDDEN);
-                }
-            }
-        } else if is_admin {
-            // Admin acting for a tenant must pass X-Tenant-Id (enforced in handler
-            // when not VEIL_DEV).
-        }
-    }
-
     Ok(next.run(request).await)
-}
-
-/// `VEIL_TENANT_KEYS=uuid:key,uuid2:key2` → list of (tenant_id, api_key).
-pub fn veil_parse_tenant_keys() -> Vec<(String, String)> {
-    let Ok(raw) = std::env::var("VEIL_TENANT_KEYS") else {
-        return Vec::new();
-    };
-    raw.split(',')
-        .filter_map(|pair| {
-            let pair = pair.trim();
-            let (t, k) = pair.split_once(':')?;
-            let t = t.trim();
-            let k = k.trim();
-            if t.is_empty() || k.is_empty() {
-                None
-            } else {
-                Some((t.to_string(), k.to_string()))
-            }
-        })
-        .collect()
-}
-
-/// Resolve tenant_id for handlers: tenant API key wins; else X-Tenant-Id;
-/// body/query only allowed in VEIL_DEV=1 when no tenant key.
-pub fn veil_resolve_tenant_id(
-    headers: &HeaderMap,
-    fallback: Option<Uuid>,
-) -> Result<Uuid, StatusCode> {
-    let presented = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
-        });
-    let tenant_keys = veil_parse_tenant_keys();
-    if let Some(ref key) = presented {
-        if let Some((tid, _)) = tenant_keys.iter().find(|(_, k)| k == key) {
-            return tid
-                .parse::<Uuid>()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-    if let Some(Ok(s)) = headers.get("x-tenant-id").map(|v| v.to_str()) {
-        let from_hdr = s.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
-        if let Some(fb) = fallback {
-            if fb != from_hdr {
-                eprintln!("warn: body/query tenant_id != X-Tenant-Id");
-                return Err(StatusCode::FORBIDDEN);
-            }
-        }
-        return Ok(from_hdr);
-    }
-    let dev = std::env::var("VEIL_DEV").ok().as_deref() == Some("1");
-    if dev {
-        return fallback.ok_or(StatusCode::BAD_REQUEST);
-    }
-    eprintln!("error: production requires X-Tenant-Id (or tenant API key)");
-    Err(StatusCode::BAD_REQUEST)
 }
 
 /// Restrict CORS: `CORS_ORIGINS=http://a,http://b` or localhost defaults (not *).
@@ -1535,7 +1414,7 @@ pub fn veil_domain_error_status(e: DomainError) -> StatusCode {
 }
 
 /// Whether a handler needs `Query(q)` — non-dep inputs that are not path
-/// params (GET list/filters, GET-by-id tenant_id, DELETE tenant_id).
+/// params (GET list/filters, DELETE with extra inputs).
 pub fn harness_handler_needs_query(
     svc: &Construct,
     registry: &LayerRegistry,

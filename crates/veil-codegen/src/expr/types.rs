@@ -523,7 +523,7 @@ pub fn extract_inner_type(ty: &TypeExpr) -> String {
 
 /// Get a simple type name string from a TypeExpr.
 /// Extract the inner domain struct type from a return type string.
-/// e.g., `Result<Option<Tenant>, DomainError>` → Some("Tenant")
+/// e.g., `Result<Option<Widget>, DomainError>` → Some("Widget")
 /// e.g., `Result<Vec<Cohort>, DomainError>` → Some("Cohort")
 /// Only returns Some when the extracted type is a known struct in name_to_shape
 /// AND all its fields are primitive types that a DB row can decode directly.

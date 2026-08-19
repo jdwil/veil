@@ -610,7 +610,6 @@ pub enum BindSource {
     Query,
     Header,
     Body,
-    Tenant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -881,7 +880,6 @@ fn parse_bind_source(s: &str) -> Option<BindSource> {
         "query" => Some(BindSource::Query),
         "header" => Some(BindSource::Header),
         "body" => Some(BindSource::Body),
-        "tenant" => Some(BindSource::Tenant),
         _ => None,
     }
 }

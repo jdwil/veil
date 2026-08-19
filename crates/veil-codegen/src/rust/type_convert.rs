@@ -445,7 +445,7 @@ pub fn generate_multi_package_harness(
         }
 
         // Ports actually required by application Deps (`@dep` inputs).
-        // Do not wire unused adapters (e.g. TenantRepo) into Deps — mismatch fails compile.
+        // Do not wire unused adapters into Deps — mismatch fails compile.
         let mut needed_ports: std::collections::HashSet<String> = std::collections::HashSet::new();
         for svc in services {
             for field in &svc.inputs {
@@ -672,7 +672,7 @@ pub fn generate_multi_package_harness(
             let path_param_count = path.matches('{').count();
             let needs_path_id = path_param_count > 0;
             let needs_body = method == "post" || method == "put";
-            // GET without path param → query string (List* / tenant-scoped lists)
+            // GET without path param → query string (list/filter endpoints)
             let is_list_get = method == "get" && !needs_path_id;
 
             if needs_path_id && needs_body {

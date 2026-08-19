@@ -259,11 +259,11 @@ fn check_binds(
             ));
         }
         if let Some(src) = type_ident(&bf.type_expr) {
-            if !matches!(src, "path" | "query" | "body" | "header" | "tenant") {
+            if !matches!(src, "path" | "query" | "body" | "header") {
                 diags.push(Diagnostic::error(
                     "harness_bind_unknown_input",
                     format!(
-                        "endpoint '{}' bind '{}: {src}' is not path|query|body|header|tenant",
+                        "endpoint '{}' bind '{}: {src}' is not path|query|body|header",
                         ep.name, bf.name
                     ),
                     Some(ep.name.clone()),

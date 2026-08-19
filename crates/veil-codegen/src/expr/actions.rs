@@ -3,12 +3,44 @@ use veil_ir::layer::StmtShape;
 use crate::rust::to_snake;
 use super::*;
 
+/// Negate a guard condition logically to avoid clippy::nonminimal_bool
+/// and clippy::comparison_to_empty.
+fn negate_guard_condition(cond: &Expr, cond_str: &str) -> String {
+    if let Expr::BinaryOp(bin) = cond {
+        // `x != ""` → `x.is_empty()`, `x == ""` → `!x.is_empty()`
+        let rhs_is_empty_str = matches!(bin.right.as_ref(), Expr::StringLit(s) if s.is_empty());
+        if rhs_is_empty_str {
+            let left = super::expr_to_rust(&bin.left, &GenCtx::new(Default::default()));
+            return match bin.op {
+                BinOp::NotEq => format!("{left}.is_empty()"),
+                BinOp::Eq => format!("!{left}.is_empty()"),
+                _ => format!("!({cond_str})"),
+            };
+        }
+        // Flip comparison operators for cleaner negation.
+        let negated_op = match bin.op {
+            BinOp::Eq => Some("!="),
+            BinOp::NotEq => Some("=="),
+            BinOp::Gt => Some("<="),
+            BinOp::GtEq => Some("<"),
+            BinOp::Lt => Some(">="),
+            BinOp::LtEq => Some(">"),
+            _ => None,
+        };
+        if let Some(op) = negated_op {
+            let left = super::expr_to_rust(&bin.left, &GenCtx::new(Default::default()));
+            let right = super::expr_to_rust(&bin.right, &GenCtx::new(Default::default()));
+            return format!("{left} {op} {right}");
+        }
+    }
+    format!("!({cond_str})")
+}
+
 /// Classify a `guard` failure message → DomainError variant.
 /// Real input validation stays Validation (400).
 pub fn guard_error_variant(msg: &str) -> &'static str {
     let lower = msg.to_ascii_lowercase();
     if lower.contains("not found")
-        || lower.contains("cross-tenant")
         || lower.contains("access denied")
         || lower.contains("forbidden")
         || lower.contains("unauthorized")
@@ -243,9 +275,12 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                     } else {
                         format!("{}(\"{msg_escaped}\".to_string())", ctx.error_model.validation_path())
                     };
+                    // Negate the guard condition logically to produce
+                    // cleaner code (avoids clippy::nonminimal_bool).
+                    let neg_cond = negate_guard_condition(cond, &cond_str);
                     format!(
-                        "if !({}) {{ return Err({err}); }}",
-                        cond_str
+                        "if {} {{ return Err({err}); }}",
+                        neg_cond
                     )
                 }
                 None => format!("/* guard: {} (no condition) */", msg_escaped),

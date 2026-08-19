@@ -303,8 +303,6 @@ fn infer_binds(
         }
         let src = if params.iter().any(|p| p == &inp.name) {
             "path"
-        } else if inp.name == "tenant_id" {
-            "tenant"
         } else if matches!(method.to_ascii_lowercase().as_str(), "get" | "delete" | "head")
         {
             "query"
