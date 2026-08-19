@@ -6,6 +6,7 @@ pub mod builder;
 pub mod check;
 pub mod context;
 pub mod deps;
+pub mod deploy_hooks;
 pub mod diagnostics;
 pub mod edit;
 pub mod escape;
@@ -39,8 +40,13 @@ pub use deps::{
     load_codegen_overrides, load_codegen_overrides_for, load_harness_overrides,
     load_harness_overrides_for, load_package_entry, load_product_deps, missing_package_hint,
     package_source_in_root, product_provides_use, projects_hub, resolve_dep_root,
-    resolve_dependency_roots, resolve_dependency_roots_for, CodegenToml, HarnessToml,
+    resolve_dependency_graph, resolve_dependency_roots, resolve_dependency_roots_for, CodegenToml,
+    HarnessToml,
     PackageEntry, ProductDep,
+};
+pub use deploy_hooks::{
+    collect_construct_inventory, collect_deploy_hooks, constructs_json, is_deploy_hook,
+    DeployedAnnotationDump, DeployedConstructDump, DEPLOY_HOOK_ROLE,
 };
 pub use harness::{
     compat_rest_route, has_declared_harness, is_http_verb, list_endpoints_from_ir, lower_harness,

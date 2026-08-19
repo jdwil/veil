@@ -1,0 +1,93 @@
+pkg deploy v1
+  desc "Generic pre-deploy hooks — run on the provisioner after compile, before code is published"
+  author "VEIL"
+
+  # Engine matches role:deploy_hook, never the keyword `hook` (INV-001).
+  construct DeployHook
+    kw hook
+    mt fn
+    role deploy_hook
+    desc "Runs on the provisioner after compile, before UpdateFunctionCode"
+    visual
+      icon "🪝"
+      color "#0d9488"
+      label "Deploy Hook"
+    group application
+    ann
+      # Same DI as handlers — ports are real adapters on the provisioner.
+      dep: "Injected dependency" field role:dependency
+
+  # Injected into every solution that `use`s this layer (via ddd or directly).
+  # Inventory is typed — do not parse constructs_json, and do not redefine these.
+  declare
+    struct DeployedAnnotation
+      name: Str
+      args: List<Str>
+      roles: List<Str>
+
+    struct DeployedConstruct
+      name: Str
+      keyword: Str
+      package: Str
+      annotations: List<DeployedAnnotation>
+
+    struct DeployContext
+      service_name: Str
+      environment: Str
+      resource_prefix: Str
+      stack: Json
+      units: Json
+      constructs: List<DeployedConstruct>
+
+  prompt
+    You are writing a VEIL deploy hook.
+
+    ## When it runs
+    `hook` functions run on the **provisioner** (ProductHost / CI), after
+    `veil gen` + compile, **before** Lambda/ECS code is published. They do
+    **not** run inside the new Lambda. Fail closed: a non-zero exit aborts deploy.
+
+    ## How to write one
+    ```
+    hook ConfigureX
+      input
+        context: DeployContext
+        @dep port: SomePort
+      step apply
+        for c in context.constructs
+          for a in c.annotations
+            ...
+        port.apply!(context)
+    ```
+
+    `DeployContext` is layer-declared (veil_shared). This is the inventory
+    contract — do not invent extra fields on it. `context.constructs` is
+    already typed — iterate it. Do **not** invent a reader port for `stack`.
+    Do **not** redefine DeployContext. Do **not** `use serde_json`. Leftover
+    JSON strings: `Json.parse(s)`. A product layer may say what to *do*
+    with constructs; it does not change this type. If two prompts disagree
+    about these fields, this `declare` wins.
+
+    Each annotation is `{name, args, roles}`:
+    - `name` — the annotation keyword as written on the construct
+    - `args` — its positional arguments (`require a.args[0]` owns the element)
+    - `roles` — roles the declaring layer attached
+
+    **What those fields mean is defined in the layer that declared the
+    annotation** (product `layers/*.layer` and any `use`d layer). Read that
+    file. This layer does not interpret product annotation names.
+
+    `context.stack` and `context.units` are Json. `require context.stack.key`
+    (or `.as_str()` / `.as_s!()`) extracts a Str.
+
+    ## Transitive use
+    If project A has `[dependencies] b = { project = "b" }` and B declares
+    hooks, A's deploy runs B's hook **binary** (B's target language) with A's
+    DeployContext, then A's own hooks.
+
+    ## Do not
+    - Register hooks as HTTP routes or runtime handlers
+    - Hand-write cargo tests or a second injector
+    - Put hook logic in the host (`crates/deploy`)
+    - Author `layers/deploy.layer` — the platform owns this name
+    - Invent a ConstructResolver / StackReader port instead of reading constructs / stack

@@ -181,7 +181,7 @@ pub async fn run_turn_stream<P: SourceProvider>(
                         if let Some(s) = slug {
                             created_slug = Some(s.clone());
                             prefix_notes.push(format!(
-                                "HOST already ran create_project for `{s}` (DDB+S3). UX Present will animate create form then open IDE. Do NOT re-create, curl /api/repos, or mkdir disk hub. Continue with write_source/create_file only. Product annotations (`@on`, `@command`, …) go in layers/*.layer via `ann` — not a platform gap."
+                                "HOST already ran create_project for `{s}` (DDB+S3). UX Present will animate create form then open IDE. Do NOT re-create, curl /api/repos, or mkdir disk hub. Continue with write_source/create_file only. Product annotations go in layers/*.layer via `ann` — not a platform gap."
                             ));
                         }
                         // Let the browser finish Present before ACP floods write_source

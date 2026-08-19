@@ -533,6 +533,13 @@ pub struct LayerRegistry {
     /// LLM prompt sections from layers — concatenated for RAG context.
     /// Each entry is (layer_name, prompt_text).
     pub prompts: Vec<(String, String)>,
+    /// Direct `use` edges recorded when a layer was loaded.
+    /// Agent preambles walk this graph so unused layer docs stay out of context.
+    pub layer_deps: HashMap<String, Vec<String>>,
+    /// Layers the host loaded for this package without a matching `use` line
+    /// (R21: veil.toml `[package].layer`). Teaching walks these as extra roots
+    /// so product-layer prompts match what compile already loaded.
+    pub implicit_uses: Vec<String>,
     /// Codegen templates declared by loaded layers.
     pub codegen_templates: Vec<CodegenTemplate>,
     /// Loaded third-party crate stubs.
@@ -609,6 +616,8 @@ impl Default for LayerRegistry {
             layers: Vec::new(),
             declarations: Vec::new(),
             prompts: Vec::new(),
+            layer_deps: HashMap::new(),
+            implicit_uses: Vec::new(),
             codegen_templates: Vec::new(),
             stubs: Vec::new(),
             external_resolver: None,
@@ -635,6 +644,8 @@ impl Clone for LayerRegistry {
             layers: self.layers.clone(),
             declarations: self.declarations.clone(),
             prompts: self.prompts.clone(),
+            layer_deps: self.layer_deps.clone(),
+            implicit_uses: self.implicit_uses.clone(),
             codegen_templates: self.codegen_templates.clone(),
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
@@ -717,6 +728,38 @@ impl LayerRegistry {
         reg
     }
 
+    /// Package `use` names plus [`Self::implicit_uses`], then the recorded `use` graph.
+    /// Agent preambles and vocabulary filters use this so compile and teaching agree.
+    pub fn teaching_closure<S: AsRef<str>>(
+        &self,
+        package_uses: impl IntoIterator<Item = S>,
+    ) -> HashSet<String> {
+        let mut roots: Vec<String> = package_uses
+            .into_iter()
+            .map(|s| s.as_ref().to_string())
+            .collect();
+        roots.extend(self.implicit_uses.iter().cloned());
+        self.layer_use_closure(roots)
+    }
+
+    /// Layers named in `roots` plus every layer they `use` (recorded at load).
+    pub fn layer_use_closure<S: AsRef<str>>(
+        &self,
+        roots: impl IntoIterator<Item = S>,
+    ) -> HashSet<String> {
+        let mut out = HashSet::new();
+        let mut stack: Vec<String> = roots.into_iter().map(|s| s.as_ref().to_string()).collect();
+        while let Some(name) = stack.pop() {
+            if !out.insert(name.clone()) {
+                continue;
+            }
+            if let Some(deps) = self.layer_deps.get(&name) {
+                stack.extend(deps.iter().cloned());
+            }
+        }
+        out
+    }
+
     /// Look up a construct by its source keyword.
     pub fn construct(&self, keyword: &str) -> Option<&ConstructSpec> {
         self.constructs.iter().find(|c| c.keyword == keyword)
@@ -735,6 +778,24 @@ impl LayerRegistry {
                 .iter()
                 .any(|a| a.name == name && a.roles.iter().any(|r| r == role))
         })
+    }
+
+    /// Union of policy roles declared on annotation `name` across loaded layers.
+    pub fn annotation_roles(&self, name: &str) -> Vec<String> {
+        let mut roles = Vec::new();
+        for c in &self.constructs {
+            for a in &c.annotations {
+                if a.name != name {
+                    continue;
+                }
+                for r in &a.roles {
+                    if !roles.iter().any(|x| x == r) {
+                        roles.push(r.clone());
+                    }
+                }
+            }
+        }
+        roles
     }
 
     /// True if `name` is a dependency-injection annotation (`role:dependency`).
@@ -1096,7 +1157,7 @@ impl LayerRegistry {
     /// - **Product names**: package `layers/`, product root, `[dependencies]`, optional disk-hub siblings
     pub fn load_layer(&mut self, name: &str, dir: &Path) -> Result<(), String> {
         if self.layers.iter().any(|l| l == name) {
-            return Ok(()); // already loaded
+            return Ok(()); // already loaded or claimed this walk
         }
 
         let content = self.resolve_layer_content(name, dir)?;
@@ -1110,24 +1171,26 @@ impl LayerRegistry {
             ));
         }
 
-        // First, load dependency layers (`use xxx` lines at pkg level).
+        // Claim before walking `use` so A→B→A cannot recurse. Unclaim if parse/merge
+        // fails so a later retry is not treated as a successful load.
+        self.layers.push(name.to_string());
+        let deps = collect_layer_use_names(&content);
+        self.layer_deps.insert(name.to_string(), deps.clone());
+
+        // Load dependency layers (`use xxx` at pkg level).
         // Skip silently if not found — it might be a .stub or package reference.
-        for line in content.lines() {
-            let t = line.trim();
-            if let Some(dep) = t.strip_prefix("use ") {
-                let dep = dep.split_whitespace().next().unwrap_or("").trim();
-                if !dep.is_empty() {
-                    let _ = self.load_layer(dep, dir);
-                }
-            }
+        for dep in &deps {
+            let _ = self.load_layer(dep, dir);
         }
 
-        let raw = parse_layer_file(&content, name)
-            .map_err(|e| format!("layer '{}': {}", name, e))?;
-        // Only mark loaded after successful parse — avoids ghost "ddd" with no constructs.
-        self.layers.push(name.to_string());
+        let raw = parse_layer_file(&content, name).map_err(|e| {
+            self.layers.retain(|l| l != name);
+            self.layer_deps.remove(name);
+            format!("layer '{}': {}", name, e)
+        })?;
         if let Err(e) = self.merge_and_resolve(raw) {
             self.layers.retain(|l| l != name);
+            self.layer_deps.remove(name);
             return Err(e);
         }
         // INV-002 / INV-006: same policy install as load_content (load_layer is the
@@ -1304,21 +1367,25 @@ impl LayerRegistry {
         if self.layers.iter().any(|l| l == name) {
             return Ok(());
         }
+        // Claim before walking `use` (same as load_layer).
+        self.layers.push(name.to_string());
+        let deps = collect_layer_use_names(content);
+        self.layer_deps.insert(name.to_string(), deps.clone());
         // Resolve `use` deps first (policy packs, foundations).
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        for line in content.lines() {
-            let t = line.trim();
-            if let Some(dep) = t.strip_prefix("use ") {
-                let dep = dep.split_whitespace().next().unwrap_or("").trim();
-                if !dep.is_empty() {
-                    let _ = self.load_layer(dep, &cwd);
-                }
-            }
+        for dep in &deps {
+            let _ = self.load_layer(dep, &cwd);
         }
-        self.layers.push(name.to_string());
-        let raw = parse_layer_file(content, name)
-            .map_err(|e| format!("layer '{}': {}", name, e))?;
-        self.merge_and_resolve(raw)?;
+        let raw = parse_layer_file(content, name).map_err(|e| {
+            self.layers.retain(|l| l != name);
+            self.layer_deps.remove(name);
+            format!("layer '{}': {}", name, e)
+        })?;
+        if let Err(e) = self.merge_and_resolve(raw) {
+            self.layers.retain(|l| l != name);
+            self.layer_deps.remove(name);
+            return Err(e);
+        }
         // INV-002: target layers may install constructor policy tables.
         if let Some(pol) = parse_constructor_policy(content) {
             self.constructor_policy = pol;
@@ -1440,7 +1507,17 @@ impl LayerRegistry {
                 })
                 .unwrap_or(false);
             if is_primary_veil {
-                let _ = reg.load_layer(&entry.use_name, dir);
+                let name = entry.use_name.clone();
+                if !reg.layers.iter().any(|l| l == &name) {
+                    let _ = reg.load_layer(&name, dir);
+                }
+                // Teaching must include the primary product layer even when the
+                // package omitted `use <name>` — compile already loaded it (R21).
+                if reg.layers.iter().any(|l| l == &name)
+                    && !reg.implicit_uses.iter().any(|l| l == &name)
+                {
+                    reg.implicit_uses.push(name);
+                }
             }
         }
         // Product veil.toml [codegen] / [harness] win over layer policies (INV-001).
@@ -2596,6 +2673,21 @@ pub struct RawLayer {
     pub prompt: Option<String>,
     /// Codegen template blocks declared by this layer.
     pub codegen_templates: Vec<CodegenTemplate>,
+}
+
+/// Pkg-level `use` names in a layer body (`use deploy`, `use harness`, …).
+fn collect_layer_use_names(content: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if let Some(dep) = t.strip_prefix("use ") {
+            let dep = dep.split_whitespace().next().unwrap_or("").trim();
+            if !dep.is_empty() && !deps.iter().any(|d| d == dep) {
+                deps.push(dep.to_string());
+            }
+        }
+    }
+    deps
 }
 
 /// Parse a `.layer` file (public for IDE / check; DSL-003).
@@ -4398,8 +4490,163 @@ pkg bad v1
             "ddd must pull bus_handle: {:?}",
             reg.layers
         );
+        assert!(
+            reg.layers.iter().any(|l| l == "deploy"),
+            "ddd must pull deploy: {:?}",
+            reg.layers
+        );
+        let hook = crate::ast::Construct::new(
+            "hook",
+            "DeployHook",
+            crate::layer::Shape::Fn,
+            "ConfigureX".into(),
+            crate::span::Span::new(0, 0),
+        );
+        assert!(
+            reg.construct_has_role(&hook, "deploy_hook"),
+            "hook must carry role:deploy_hook"
+        );
+        assert!(!reg.construct_has_role(&hook, "http_endpoint"));
         assert_eq!(reg.http_name_policy.list_prefix.as_deref(), Some("List"));
         assert_eq!(reg.bus_policy.strip_name_prefix.as_deref(), Some("Handle"));
+    }
+
+    /// Mutual `use` must load each layer once (no stack overflow).
+    #[test]
+    fn load_layer_cycle_loads_each_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "veil-layer-cycle-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let layers = dir.join("layers");
+        std::fs::create_dir_all(&layers).unwrap();
+        std::fs::write(
+            layers.join("cycle_a.layer"),
+            r#"
+pkg cycle_a v1
+  use cycle_b
+  construct Alpha
+    kw cycle_a_kw
+    mt struct
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            layers.join("cycle_b.layer"),
+            r#"
+pkg cycle_b v1
+  use cycle_a
+  construct Beta
+    kw cycle_b_kw
+    mt struct
+"#,
+        )
+        .unwrap();
+
+        let mut reg = LayerRegistry::builtin();
+        reg.load_layer("cycle_a", &dir)
+            .expect("cyclic use must not overflow");
+        let a_count = reg.layers.iter().filter(|l| *l == "cycle_a").count();
+        let b_count = reg.layers.iter().filter(|l| *l == "cycle_b").count();
+        assert_eq!(a_count, 1, "cycle_a loaded once: {:?}", reg.layers);
+        assert_eq!(b_count, 1, "cycle_b loaded once: {:?}", reg.layers);
+        assert!(
+            reg.constructs.iter().any(|c| c.keyword == "cycle_a_kw"),
+            "cycle_a constructs merged"
+        );
+        assert!(
+            reg.constructs.iter().any(|c| c.keyword == "cycle_b_kw"),
+            "cycle_b constructs merged"
+        );
+
+        // Second call is a no-op — still once.
+        reg.load_layer("cycle_a", &dir).unwrap();
+        assert_eq!(
+            reg.layers.iter().filter(|l| *l == "cycle_a").count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn layer_use_closure_follows_recorded_edges() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content(
+            "leaf",
+            "pkg leaf v1\n  construct Leaf\n    kw leaf_kw\n    mt struct\n",
+        )
+        .unwrap();
+        reg.load_content(
+            "root",
+            "pkg root v1\n  use leaf\n  construct Root\n    kw root_kw\n    mt struct\n",
+        )
+        .unwrap();
+        let via_root = reg.layer_use_closure(["root"]);
+        assert!(
+            via_root.contains("root") && via_root.contains("leaf"),
+            "{via_root:?}"
+        );
+        let via_leaf = reg.layer_use_closure(["leaf"]);
+        assert!(via_leaf.contains("leaf"), "{via_leaf:?}");
+        assert!(!via_leaf.contains("root"), "{via_leaf:?}");
+    }
+
+    #[test]
+    fn teaching_closure_includes_implicit_uses() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content(
+            "acme",
+            "pkg acme v1\n  construct Acme\n    kw acme_kw\n    mt struct\n",
+        )
+        .unwrap();
+        assert!(
+            !reg.teaching_closure(std::iter::empty::<&str>())
+                .contains("acme"),
+            "implicit-empty teaching must not pull an unused layer"
+        );
+        reg.implicit_uses.push("acme".into());
+        let taught = reg.teaching_closure(std::iter::empty::<&str>());
+        assert!(taught.contains("acme"), "{taught:?}");
+    }
+
+    #[test]
+    fn for_veil_file_records_primary_layer_as_implicit_use() {
+        let dir = std::env::temp_dir().join(format!(
+            "veil-implicit-use-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("layers")).unwrap();
+        std::fs::write(
+            dir.join("veil.toml"),
+            "name = \"acme\"\n[package]\nname = \"acme\"\nveil = \"main.veil\"\nlayer = \"layers/main.layer\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("layers/main.layer"),
+            "pkg acme v1\n  prompt\n    ACME_PRIMARY_MARK\n  construct AcmeThing\n    kw acme_thing\n    mt struct\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("main.veil"),
+            "pkg App\n  struct Point\n    x: Int\n",
+        )
+        .unwrap();
+        let reg = LayerRegistry::for_veil_file(&dir.join("main.veil")).expect("registry");
+        assert!(
+            reg.implicit_uses.iter().any(|l| l == "acme"),
+            "primary layer must be an implicit use: {:?}",
+            reg.implicit_uses
+        );
+        assert!(
+            reg.prompts.iter().any(|(_, t)| t.contains("ACME_PRIMARY_MARK")),
+            "primary layer prompt must load: {:?}",
+            reg.prompts
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

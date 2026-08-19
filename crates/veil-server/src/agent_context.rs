@@ -9,7 +9,9 @@
 
 use std::path::Path;
 
-use veil_ir::layer::{palette_from_registry, LayerRegistry};
+use std::collections::HashSet;
+
+use veil_ir::layer::{palette_from_registry, LayerRegistry, PaletteEntry};
 use veil_ir::{build_ir_with_registry, check_solution, build_context_pack, ContextQuery};
 
 use crate::project_layout::read_mission_for_agent;
@@ -45,15 +47,15 @@ You are the VEIL IDE built-in agent (Rig tools).
 
 ## How to edit
 - Prefer structured tools over inventing large free-form rewrites.
-- Prefer rename_construct for renames. After any edit, call veil_check. If you introduced new errors/warnings, fix them on this same turn.
+- Prefer rename_construct for renames. After any edit, call veil_check. Fix new **errors** on this same turn. Do not silence warnings on layer-injected types by redefining those types (`shadows_layer_declare`).
 - veil_check returns JSON diagnostics (`code`, `severity`, `message`, optional `span`/`hint`) — fix by span, not whole-file rewrite.
 - Prefer veil_outline over dumping generated Rust/TS.
 - Use read_source only when outline/check are insufficient.
 - **File root is `pkg` only.** Never write `sol` (removed). `pkg Shop` / `pkg app v1`.
-- **Indent the entire package body** under `pkg` by 2 spaces. Unindented `use`/`ctx` is dropped and veil_check is a false green (`pkg_body_unindented`).
-- Layer files live in `layers/*.layer` (not the project root). `agg` roots need `id`. `repo` needs `delete`. Endpoints need `bind` + a `compose` root. Missing compose wires use generated `InMemory{Repo}` for local smoke.
+- **Indent the entire package body** under `pkg` by 2 spaces. Unindented `use`/constructs are dropped and veil_check is a false green (`pkg_body_unindented`).
+- Layer files live in `layers/*.layer` (not the project root).
 - VEIL is layer-driven: in `.veil` files, only emit constructs/keywords from the loaded layers below.
-- **Product layers (not a platform gap):** to add annotations or keywords (`@on`, `@command`, `@request`, a new construct), author or extend `layers/<name>.layer` with `ann` / `construct` / `statement`, then `use` that layer. Absence from shipped `ddd.layer` is expected — that is how VEIL extends. Do **not** stop a build to wait for a platform change.
+- **Product layers (not a platform gap):** to add annotations, keywords, or constructs, author or extend `layers/<name>.layer` with `ann` / `construct` / `statement`, then `use` that layer. Absence from shipped platform layers is expected — that is how VEIL extends. Do **not** stop a build to wait for a platform change. What an annotation means is in the layer that declared it.
 - Do NOT invent keywords in `.veil` that no loaded layer declares.
 - Do NOT fix issues by switching to raw Rust/TS in .veil unless the package already uses escape hatches.
 - If you cannot fix something with available tools, say so and list exact diagnostics.
@@ -65,17 +67,21 @@ You are the VEIL IDE built-in agent (Rig tools).
 
 ## Local HTTP harness (dual-loop backend) — ACS-002 mandatory
 - Packages with declared `compose`/`endpoint` (or `@main` / `link veil_server`) get crates/veil_bin.
-- Write first-class `endpoint` (method/path/handle/bind). Do **not** put `@route` on svc/handler — that role was removed from ddd. Svelte page `@route` stays.
+- Write first-class `endpoint` (method/path/handle/bind) when the loaded layers provide that construct. Svelte page `@route` is UI, not an API route.
 - Do not invent paths — call list_routes. `veil migrate harness` rewrites leftover API `@route`. Name-derived List/Get only when `[harness] compat = "auto"`. New projects are `compat = "off"`.
-- After write_source: host runs gen + `cargo check --tests` (smoke). Failure → WRITE REJECTED + file restored. Always call veil_check after write (JSON diagnostics) even when smoke is green.
+- After write_source: host runs VEIL check first (errors reject before rustc), then gen + `cargo check --tests` (smoke). Failure → WRITE REJECTED + file restored. Always call veil_check after write (JSON diagnostics) even when smoke is green.
+- An empty session (no package bound) is not a parse error. After `open_ide` / `select_file` / `create_file`, the tool result includes that file's layer teaching. Follow it.
+- If two layer prompts disagree about a declared type's fields, the layer that `declare`d the type wins.
+- Layer-provided types with Json fields are inventory, not package escape debt. Do not invent a reader port for them.
 - **On WRITE REJECTED:** call dev_logs / smoke_status before rewriting the whole file.
 - **Closed loop after HTTP/backend edits:** smoke → list_routes (or read_generated what=routes) → dev_restart (or auto-restart) → http_request target=backend path=/health then the real route. Do not claim success without http_request.
-- Frontend: relative /api + Vite @proxy. Bus is server-side only.
-- **Bang / Opt / Res (BANG_CONTRACT, ACS-010 portable):** `wt = repo.find!(id)` → Opt<T> (bang = Res try only). Soft absence after bang is valid (.is_some/.is_none). Need T? `require repo.find!(id)` or .unwrap() (NotFound). Never assume bang forces Opt→T.
-- **Language primitives (not stubs — do not invent others):** `Str.now_iso8601()` is ISO-8601 UTC text. `Int.now_unix()` is unix seconds (`Int`) for elapsed/TTL. `s.parse_int()` is Str→Int. `x.as_s!()` is text. `x.as_n!()` is Int. `Dt.now()` is a DateTime, not a Str. There is no `Dt.parse`, `seconds_since`, or `Str.seconds_since`. If a method is not in this list and `stub_search` does not show it, do not call it.
+- Frontend: relative /api + Vite @proxy.
+- **Bang / Opt / Res (BANG_CONTRACT, ACS-010 portable):** `wt = find!(id)` → Opt<T> (bang = Res try only). Soft absence after bang is valid (.is_some/.is_none). Need T? `require find!(id)` or .unwrap() (NotFound). Never assume bang forces Opt→T.
+- **Language primitives (not stubs — do not invent others):** `Str.now_iso8601()` is ISO-8601 UTC text. `Int.now_unix()` is unix seconds (`Int`) for elapsed/TTL. `s.parse_int()` is Str→Int. `Json.parse(s)` / `s.parse_json()` is Str→Json. `Json.stringify(x)` is Json→Str. Field access on Json is `obj.key`; `v.as_str()` on Json is Opt<Str>. `x.as_s!()` is text. `x.as_n!()` is Int. `Dt.now()` is a DateTime, not a Str. There is no `Dt.parse`, `seconds_since`, or `Str.seconds_since`. Do **not** `use serde_json` / stub_gen it — `Json` is the language type. If a method is not in this list and `stub_search` does not show it, do not call it.
 - **`impl` parameter names must match the port** (`put_heartbeat!(heartbeat: …)` → `impl put_heartbeat(heartbeat)`). Generated Rust uses the port names.
 - **Bodies:** Prefer `ret expr` when you would bind once and immediately return. A first `x = e` is a bind (not `mut`) unless you later reassign `x`. Do not write `mut x =` unless you reassign.
-- **VEIL tests (SL-022):** Package scope (sibling of `ctx`) or inside `ctx`. `tests HandleX` / `it "name"` / `stub Port.method -> value` or `stub Port.method -> err "msg"` / `given` / `then result == …` / `then ok` / `then fails` (also `then err`, `then result.is_err()`). Same-line `then` is legal. Smoke is `cargo check --tests`. Do **not** hand-write cargo tests in `generated/`.
+- **VEIL tests (SL-022):** Package scope or inside a module construct. `tests Target` / `it "name"` / `stub Port.method -> value` or `stub Port.method -> err "msg"` / `given` / `then result == …` / `then ok` / `then fails` (also `then err`, `then result.is_err()`). Same-line `then` is legal. Smoke is `cargo check --tests`. Do **not** hand-write cargo tests in `generated/`.
+- **Generated target code is the transpiler's job.** The write gate is rustc-clean, not how idiomatic `generated/` looks. Do not hand-edit `generated/`. Do not rewrite VEIL to chase `.clone()` or style. Change VEIL only when veil_check / smoke reports an error. Layer `declare` signatures in this pack are the injected types — a prompt that lists different fields is stale.
 - **Git-shaped sessions (host-enforced):** Prefer **`run_coding_plan`** (`coding.fix_diagnostics` / `coding.slice` / `coding.finish_task`) or **`resolve_coding_target`** at the start of coding work. Product name is **pull request (PR)**, not ticket/CR.
   1. Resolve open unmerged PR by scope (auto / Present modal / new) — never reuse Merged PRs
   2. Multi-step? `create_branch` — do **not** thrash main
@@ -84,8 +90,7 @@ You are the VEIL IDE built-in agent (Rig tools).
   5. Same-turn: fix new diags you introduced before claiming done
   6. Task complete: `run_coding_plan` `coding.finish_task` or create_pr+submit_pr — **open PR**, do not merge
   7. **FORBIDDEN:** `merge_branch` / `merge_pr` unless operator explicitly says merge
-  Host gates: empty commit rejected; submit surfaces MUST_ACKNOWLEDGE_ERRORS; create_pr reuses active_pr_id. Palace: decision-coding-orchestrator-gates, veil-agent-git-shaped-coding.
-- **DDD vocabulary (mandatory when `use ddd` is loaded):** Use layer keywords only — `agg`/`val`/`ent`/`repo`/`port`/`handler`/`svc`/`ctx`. Do **not** remodel DDD as `struct`+`trait`+cosmetic `group Aggregates`. That leaves the outline as Structs/Traits. `enum` stays base. If using `flow`, use **block** form (fields + `-> Ret`), not paren form.
+  Host gates: empty commit rejected; submit surfaces MUST_ACKNOWLEDGE_ERRORS; create_pr reuses active_pr_id.
 
 ## Tools
 - veil_check — dual-loop diagnostics (structured JSON: code + span)
@@ -101,10 +106,9 @@ You are the VEIL IDE built-in agent (Rig tools).
 - http_request — probe 127.0.0.1:dev_port only
 - dev_restart — reload cargo run after successful smoke
 - stub_list / stub_search / stub_get / stub_gen / stub_install — external crate .stub catalog (stub = contract; never invent call names)
-- wiki_* — Mind Palace (when MIND_PALACE=1)
 
-## Platform UX (full product surface — use these, do not wiki-only workaround)
-- **create_project({name, description?})** — create a product project (same as UI /projects/new). ALWAYS use when user asks to create a project. Then: `create_branch` (feature) → write `layers/*.layer` (never project-root `*.layer`), `MISSION.md`, and indented `main.veil` — do not wiki-tour first.
+## Platform UX (full product surface)
+- **create_project({name, description?})** — create a product project (same as UI /projects/new). ALWAYS use when user asks to create a project. Then: `create_branch` (feature) → write `layers/*.layer` (never project-root `*.layer`), `MISSION.md`, and indented `main.veil`.
 - **rename_project({name, project?, new_slug?})** / **update_project** — rename display name (keep slug unless new_slug). ALWAYS use when the user asks to rename a project. NEVER curl/PATCH `/api/repos` or Bitbucket.
 - list_projects / get_project / delete_project / open_project / open_ide / navigate_to
 - list_prs / create_pr({title, description with rationales,...}) / get_pr / submit_pr / add_comment / get_pr_diff
@@ -153,16 +157,6 @@ You are the VEIL IDE built-in agent (Rig tools).
 - **@env:** `@env(TABLE_NAME)` → `self.table_name` (full lowercased var). `DATABASE_URL` → `self.pool`.
 - After infrastructure writes: `veil_check` (must be 0 errors) and `read_generated` on the adapter — you must see the crate types, not `unstubbed external` / empty hooks.
 - Stubs are versioned (`stub name 0.12.0`) with provenance (`@generated`, surface, fingerprint).
-
-## Messaging is user-land
-- DDD does **not** inject a `Bus` and does **not** provide `dispatch` / `invoke` / `request`.
-- If the product needs a bus: write a `port` (any name), implement adapters against stubs, inject with `@dep`. Tell the harness how to build it (`@field` / `@env` / `compose`).
-- Keyword sugar (`statement dispatch` / `mt YourPort.method`) belongs in a **product** layer, not ddd.
-- Layer-declared names that *are* injected (EntityRepo, AuthService, SagaStep, run_saga) must not be redefined (`shadows_layer_declare`).
-
-## Mind Palace contracts (when MIND_PALACE=1)
-- wiki_search these slugs before platform answers: veil-contract-bang-opt-res, veil-contract-git-shaped-sessions, veil-agent-git-shaped-coding, veil-contract-dual-loop-smoke, veil-contract-multi-package, veil-contract-stubs, veil-contract-routes
-- Offline copies: fixtures/palace_contracts/
 "#;
 
 const TIER0_ACP: &str = r#"# Tier 0 — host rules (VEIL IDE agent via MCP tools)
@@ -174,14 +168,14 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - Use create_file to create new packages or layers in the project.
 - Use select_file to switch between files (use list_files to see what's available).
 - Use rename_construct for renames (preferred over manual text editing).
-- After ANY edit, call veil_check to validate the result. **If you introduced new errors/warnings, fix them on this same turn** before claiming done.
+- After ANY edit, call veil_check to validate the result. **Fix new errors on this same turn** before claiming done. Do not silence warnings on layer-injected types by redefining those types (`shadows_layer_declare`).
 - Use veil_outline to understand existing structure before editing.
 - Use read_source to see the current file content when needed.
 - **File root is `pkg` only.** Never write `sol` (removed). `pkg Shop` / `pkg app v1`.
-- **Indent the entire package body** under `pkg` by 2 spaces. Unindented `use`/`ctx` is dropped and veil_check is a false green (`pkg_body_unindented`).
-- Layer files live in `layers/*.layer` (not the project root). `agg` roots need `id`. `repo` needs `delete`. Endpoints need `bind` + a `compose` root. Missing compose wires use generated `InMemory{Repo}` for local smoke.
+- **Indent the entire package body** under `pkg` by 2 spaces. Unindented `use`/constructs are dropped and veil_check is a false green (`pkg_body_unindented`).
+- Layer files live in `layers/*.layer` (not the project root).
 - VEIL is layer-driven: in `.veil` files, only emit constructs/keywords from the loaded layers below.
-- **Product layers (not a platform gap):** to add annotations or keywords (`@on`, `@command`, `@request`, a new construct), author or extend `layers/<name>.layer` with `ann` / `construct` / `statement`, then `use` that layer. Absence from shipped `ddd.layer` is expected — that is how VEIL extends. Do **not** stop a build to wait for a platform change.
+- **Product layers (not a platform gap):** to add annotations, keywords, or constructs, author or extend `layers/<name>.layer` with `ann` / `construct` / `statement`, then `use` that layer. Absence from shipped platform layers is expected — that is how VEIL extends. Do **not** stop a build to wait for a platform change. What an annotation means is in the layer that declared it.
 - Do NOT invent keywords in `.veil` that no loaded layer declares.
 - Do NOT fix issues by switching to raw Rust/TS in .veil unless the package already uses escape hatches.
 - If you cannot fix something with available tools, say so and list exact diagnostics.
@@ -192,14 +186,17 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - Do not expand MISSION into a PRD or rewrite product intent unless the user asks. Behavior stays in `.veil`.
 
 ## Local HTTP harness (dual-loop backend) — ACS-002 mandatory
-- Declared compose/endpoint (or @main / link veil_server) → veil_bin. No API `@route` on svc/handler.
-- Write `endpoint`. Never invent paths — list_routes first. Name-derived only with compat=auto.
-- After write_source: smoke gen + cargo check --tests. Fail → WRITE REJECTED + restore. Always veil_check after write.
+- Declared compose/endpoint (or @main / link veil_server) → veil_bin. Write `endpoint` when the loaded layers provide it.
+- Never invent paths — list_routes first. Name-derived only with compat=auto.
+- After write_source: host runs VEIL check first (errors reject before rustc), then smoke gen + cargo check --tests. Fail → WRITE REJECTED + restore. Always veil_check after write.
+- An empty session (no package bound) is not a parse error. After `open_ide` / `select_file` / `create_file`, the tool result includes that file's layer teaching. Follow it.
+- If two layer prompts disagree about a declared type's fields, the layer that `declare`d the type wins.
+- Layer-provided types with Json fields are inventory, not package escape debt. Do not invent a reader port for them.
 - **On WRITE REJECTED:** dev_logs / smoke_status before large rewrites.
 - **Closed loop:** smoke → list_routes → dev_restart → http_request (/health then real route). No success claim without http_request.
-- Frontend: relative /api + Vite proxy. Bus is not browser transport.
+- Frontend: relative /api + Vite proxy.
 - **Bang contract (ACS-010 portable):** find! → Opt<T> (Res try only). Soft .is_some after ! OK. Need T: require find! or .unwrap(). docs/BANG_CONTRACT.md
-- **Git sessions (agent commits; human merges):** `session_status` → multi-step? `create_branch` → veil_check baseline → one class → write → veil_check (fix new diags same turn) → `session_commit` (real git commit + push to S3 origin) → when task done **`create_pr` + `submit_pr`**. **NEVER** `merge_branch` / `merge_pr` unless the operator explicitly asks to merge. Include per-slice rationale in the PR description. Palace: decision-git-origin-s3, veil-contract-git-shaped-sessions, veil-agent-git-shaped-coding.
+- **Git sessions (agent commits; human merges):** `session_status` → multi-step? `create_branch` → veil_check baseline → one class → write → veil_check (fix new diags same turn) → `session_commit` (real git commit + push to S3 origin) → when task done **`create_pr` + `submit_pr`**. **NEVER** `merge_branch` / `merge_pr` unless the operator explicitly asks to merge. Include per-slice rationale in the PR description.
 
 ## Available MCP Tools
 - veil_check — dual-loop check pipeline (required after edits; fix regressions same turn)
@@ -217,9 +214,8 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - http_request(path, target=backend) — local 127.0.0.1:dev_port only
 - dev_restart(name?) — reload cargo run after good smoke
 - stub_list / stub_search / stub_get / stub_gen / stub_install — external crate stubs (never invent aws_sns / http.post; call stub types via @field)
-- wiki_* — Mind Palace (when MIND_PALACE=1)
 - **Platform UX (required for product ops — never say these are missing):**
-  - create_project({name}) — create product project (UI /projects/new). Do NOT only use wiki. After it returns ok, write files immediately.
+  - create_project({name}) — create product project (UI /projects/new). After it returns ok, write files immediately.
   - rename_project({name, project?}) / update_project — rename a product. NEVER PATCH /api/repos or Bitbucket.
   - list_projects / open_project / open_ide / navigate_to
   - list_prs / create_pr / get_pr / submit_pr / add_comment
@@ -232,20 +228,11 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - **VISIBLE UX:** Never curl ProductHost APIs. Only MCP tools. Host may pre-run create_project — continue with write_source, do not re-curl create.
 - **Focus:** Session focus (route/project/construct) is authoritative for "this component". `get_current_context` returns it. Tool `intent.present` drives visible UX choreography — do not re-create after Present.
 - **Review:** After a coherent unit (and after submit_pr / finish_task), `request_sign_off` **once** and **stop**. If the PR is already submitted or Approved, do not request_sign_off again unless you just pushed new commits. The human walks `/review` and presses Approve.
-- **Language primitives (not stubs — do not invent others):** `Str.now_iso8601()` ISO-8601 UTC text. `Int.now_unix()` unix seconds (`Int`) for elapsed/TTL. `s.parse_int()` Str→Int. `x.as_s!()` text. `x.as_n!()` Int. `Dt.now()` is DateTime, not Str. No `Dt.parse` / `seconds_since` / `Str.seconds_since`. If it is not in this list and `stub_search` does not show it, do not call it.
+- **Language primitives (not stubs — do not invent others):** `Str.now_iso8601()` ISO-8601 UTC text. `Int.now_unix()` unix seconds (`Int`) for elapsed/TTL. `s.parse_int()` Str→Int. `Json.parse(s)` / `s.parse_json()` Str→Json. `Json.stringify(x)` Json→Str. Json field access is `obj.key`. `v.as_str()` on Json is Opt<Str>. `require json.field` is Str — do not `.as_str()` / `.unwrap_or` after it. Do **not** `use serde_json`. `x.as_s!()` text. `x.as_n!()` Int. `Dt.now()` is DateTime, not Str. No `Dt.parse` / `seconds_since` / `Str.seconds_since`. If it is not in this list and `stub_search` does not show it, do not call it.
 - **`impl` param names match the port.** Generated Rust uses those names (`heartbeat`, not `hb`).
-- **DDD vocabulary (mandatory when `use ddd` is loaded):** Use layer keywords only — `agg`/`val`/`ent`/`repo`/`port`/`handler`/`svc`/`ctx`. Do **not** remodel DDD as `struct`+`trait`+cosmetic `group Aggregates`. `enum` stays base. If using `flow`, use **block** form (fields + `-> Ret`), not paren form.
 - **Bodies:** Prefer `ret expr` when you would bind once and immediately return. A first `x = e` is a bind (not `mut`) unless you later reassign `x`.
-- **VEIL tests (SL-022):** Package scope (sibling of `ctx`) or inside `ctx`. `tests HandleX` / `it "name"` / `stub Port.method -> value` or `stub Port.method -> err "msg"` / `given` / `then result == …` / `then ok` / `then fails` (also `then err`, `then result.is_err()`). Same-line `then` is legal. Smoke is `cargo check --tests`. Do **not** hand-write cargo tests in `generated/`.
-
-## Mind Palace (when wiki tools work)
-- wiki_search for **platform contracts** (bang, harness, git-shaped, dual-loop) when you need mechanics.
-- Do **not** start a product-build turn with a wiki tour. If the operator already specified the design: create_project (if needed) → write `.layer` / `.veil` / MISSION.md.
-- Do **not** wiki_search to decide whether a product annotation exists. Author it in the product layer.
-- Prefer durable contracts: veil-contract-bang-opt-res, veil-contract-git-shaped-sessions, veil-agent-git-shaped-coding, veil-contract-dual-loop-smoke, veil-contract-multi-package, veil-contract-stubs, veil-contract-routes (ACS-009).
-- After durable learning (patterns, decisions, SOPs), wiki_create or wiki_update.
-- Prefer progressive disclosure: summary → section → full.
-- Prefer updating existing pages over duplicates.
+- **VEIL tests (SL-022):** Package scope or inside a module construct. `tests Target` / `it "name"` / `stub Port.method -> value` or `stub Port.method -> err "msg"` / `given` / `then result == …` / `then ok` / `then fails` (also `then err`, `then result.is_err()`). Same-line `then` is legal. Smoke is `cargo check --tests`. Do **not** hand-write cargo tests in `generated/`.
+- **Generated target code is the transpiler's job.** rustc-clean is the write gate. Do not hand-edit `generated/`. Do not rewrite VEIL to chase `.clone()` or style. Layer `declare` signatures win if a prompt lists different fields.
 
 ## Stubs (external crates) — the only third-party contract
 - A `.stub` is the contract for any crate. Transpiler adds Cargo crate + imports from it. No AWS-special path.
@@ -255,10 +242,6 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - Stub values: `stub_search` first. `.item(k, AttributeValue.S(s))` / `.message_attributes(k, MessageAttributeValue.builder()…)`. Never `Map<Str, Str>` for those. `Blob.new(body)` for binary. `@env(TABLE_NAME)` → `self.table_name`.
 - Single-letter stub params (`U`, `T`, `B`) are rustdoc generics (`impl IntoUrl`), not types you construct. Pass `Str`. Do not `stub_search 'U'`.
 - After adapter writes: veil_check 0 errors; read_generated must show crate types, not `unstubbed external`.
-
-## Messaging is user-land
-- DDD does not inject a Bus. Define a product `port` + stub adapters; wire via `@dep` / `@field` / `compose`.
-- `dispatch`/`invoke`/`request` keywords belong in a product layer if you want them.
 
 ## Important
 - write_source replaces the ENTIRE file. Always include the full content.
@@ -300,6 +283,38 @@ fn assemble_preamble_inner(
         max_tokens.saturating_mul(4)
     };
 
+    if source.trim().is_empty() {
+        let note = "\
+# No package bound\n\
+There is no .veil source on this session yet. This is not a parse error.\n\
+Call `open_ide` / `select_file` / `create_file`. Those tool results include \
+the bound file's layer teaching (prompts, declared types, vocabulary).\n";
+        let text = format!("{tier0_text}\n\n{note}");
+        let used = approx_tokens(&text);
+        return AgentPreamble {
+            text,
+            tokens_used: used,
+            max_tokens,
+            truncated: false,
+            warning: None,
+            sections: vec![
+                SectionStatus {
+                    name: "tier0".into(),
+                    included: true,
+                    truncated: false,
+                    chars: tier0_text.len(),
+                },
+                SectionStatus {
+                    name: "unbound".into(),
+                    included: true,
+                    truncated: false,
+                    chars: note.len(),
+                },
+            ],
+            layers: vec![],
+        };
+    }
+
     let tokens = veil_parser::lex(source);
     let sol = match veil_parser::parse_with_registry(&tokens, registry.clone()) {
         Ok(s) => s,
@@ -322,7 +337,7 @@ fn assemble_preamble_inner(
                     truncated: false,
                     chars: tier0_text.len(),
                 }],
-                layers: registry.layers.clone(),
+                layers: vec![],
             };
         }
     };
@@ -330,6 +345,8 @@ fn assemble_preamble_inner(
     let graph = build_ir_with_registry(&sol, Some(registry));
     let pack = build_context_pack(&graph, registry, &ContextQuery::default());
     let check = check_solution(&sol, registry);
+    let used_layers =
+        registry.teaching_closure(sol.uses.iter().map(|u| u.package_name.as_str()));
 
     // ── Section bodies (priority order for truncation) ───────────────────
     let mut sections_raw: Vec<(&str, String, bool)> = Vec::new();
@@ -354,59 +371,65 @@ fn assemble_preamble_inner(
         }
     }
 
-    // Layer prompts (Tier 1 — curriculum)
+    // Layer-declared types first (source of truth). A later prompt that lists
+    // different fields is stale — these signatures win.
+    if !registry.declarations.is_empty() && !used_layers.is_empty() {
+        sections_raw.push((
+            "layer_declares",
+            format_layer_declares(registry),
+            true,
+        ));
+    }
+
+    // Annotations + roles from loaded layers (not hardcoded product names).
+    let palette = palette_from_registry(registry);
+    if let Some(anns) = format_layer_annotations(&palette, &used_layers) {
+        sections_raw.push(("layer_annotations", anns, true));
+    }
+
+    // Layer prompts (Tier 1) — only layers this package `use`s, plus their `use` graph.
     let mut lp = String::from("# Tier 1 — layer prompts (loaded for this package)\n");
+    let mut used_names: Vec<_> = used_layers.iter().cloned().collect();
+    used_names.sort();
     lp.push_str(&format!(
         "Loaded layers (order): {}\n\n",
-        if pack.layers.is_empty() {
-            "(core only)".into()
+        if used_names.is_empty() {
+            "(none — package did not `use` a layer)".into()
         } else {
-            pack.layers.join(", ")
+            used_names.join(", ")
         }
     ));
-    if pack.layer_prompts.is_empty() {
+    let active_prompts: Vec<_> = pack
+        .layer_prompts
+        .iter()
+        .filter(|(name, _)| used_layers.contains(name))
+        .collect();
+    if active_prompts.is_empty() {
         lp.push_str(
-            "(No layer `prompt` sections loaded. Rely on vocabulary + outline; \
-             prefer packages that `use` layers with prompts.)\n",
+            "(No layer `prompt` sections for this package's `use` graph. \
+             Rely on vocabulary + outline; `use` the layer that owns the vocabulary.)\n",
         );
     } else {
-        for (name, text) in &pack.layer_prompts {
+        for (name, text) in active_prompts {
             lp.push_str(&format!("## Layer prompt: {name}\n{text}\n\n"));
         }
     }
     sections_raw.push(("layer_prompts", lp, true));
 
-    // Layer-declared types (injected — do not redefine)
-    let declared_types = registry.declared_type_names();
-    if !declared_types.is_empty() {
-        let mut dec = String::from(
-            "# Tier 1 — layer-declared types (already injected — do not redefine)\n\
-             Do **not** write a product `port`/`struct`/`enum` with these names \
-             (`shadows_layer_declare`). A message bus is not in this list — \
-             define it as a product port + adapters.\n",
-        );
-        let mut names: Vec<_> = declared_types.into_iter().collect();
-        names.sort();
-        for n in names {
-            dec.push_str(&format!("- {n}\n"));
-        }
-        for fn_name in registry.declared_fn_names() {
-            dec.push_str(&format!("- fn {fn_name}\n"));
-        }
-        sections_raw.push(("layer_declares", dec, true));
-    }
-
     // Vocabulary
-    let palette = palette_from_registry(registry);
     let mut vocab = String::from("# Tier 1 — vocabulary (keywords from loaded layers)\n");
-    for e in palette.iter().take(120) {
+    let vocab_entries: Vec<_> = palette
+        .iter()
+        .filter(|e| e.layer == "core" || used_layers.contains(&e.layer))
+        .collect();
+    for e in vocab_entries.iter().take(120) {
         vocab.push_str(&format!(
             "- {} → {} ({}) shape={}\n",
             e.keyword, e.name, e.layer, e.shape
         ));
     }
-    if palette.len() > 120 {
-        vocab.push_str(&format!("… +{} more constructs\n", palette.len() - 120));
+    if vocab_entries.len() > 120 {
+        vocab.push_str(&format!("… +{} more constructs\n", vocab_entries.len() - 120));
     }
     sections_raw.push(("vocabulary", vocab, true));
 
@@ -544,12 +567,149 @@ fn assemble_preamble_inner(
         truncated: any_truncated,
         warning,
         sections: statuses,
-        layers: registry.layers.clone(),
+        layers: {
+            let mut v: Vec<_> = used_layers.into_iter().collect();
+            v.sort();
+            v
+        },
     }
 }
 
 fn approx_tokens(s: &str) -> usize {
     s.len().div_ceil(4)
+}
+
+/// Injected `declare` blocks — the type contract. Prompts that disagree are stale.
+fn format_layer_declares(registry: &LayerRegistry) -> String {
+    let mut dec = String::from(
+        "# Tier 1 — layer-declared types (injected — this is the contract)\n\
+         Do **not** write a product `port`/`struct`/`enum` with these names \
+         (`shadows_layer_declare`).\n\
+         These signatures win if a layer prompt below lists different fields.\n\n",
+    );
+    for src in &registry.declarations {
+        let t = src.trim();
+        if t.is_empty() {
+            continue;
+        }
+        dec.push_str("```\n");
+        dec.push_str(t);
+        dec.push_str("\n```\n\n");
+    }
+    dec
+}
+
+/// Annotation keywords + roles from loaded layers (INV-001: roles, never engine names).
+fn format_layer_annotations(
+    palette: &[PaletteEntry],
+    used_layers: &HashSet<String>,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    for e in palette {
+        if e.annotations.is_empty() {
+            continue;
+        }
+        if e.layer != "core" && !used_layers.contains(&e.layer) {
+            continue;
+        }
+        for a in &e.annotations {
+            let roles = if a.roles.is_empty() {
+                String::new()
+            } else {
+                format!(" — roles: {}", a.roles.join(", "))
+            };
+            let desc = if a.desc.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", a.desc)
+            };
+            lines.push(format!(
+                "- @{} on {} ({}){roles}{desc}",
+                a.name, e.name, e.layer
+            ));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    lines.sort();
+    lines.dedup();
+    let mut body = String::from(
+        "# Tier 1 — annotations from loaded layers\n\
+         Inventory walks `annotation.name`, `args`, and `roles`. Match on \
+         **roles** declared here. What an annotation means is in the layer \
+         that declared it.\n\n",
+    );
+    for line in lines {
+        body.push_str(&line);
+        body.push('\n');
+    }
+    Some(body)
+}
+
+/// Mid-turn teaching for a newly bound file (open_ide / select_file / create_file).
+///
+/// ACP sessions start from the dashboard with no package. The first prompt
+/// therefore has no layer teaching. After the project is bound, append this
+/// pack to the tool result so the agent sees the same prompts compile uses.
+pub fn assemble_bound_package_teaching(
+    source: &str,
+    registry: &LayerRegistry,
+    project_root: Option<&Path>,
+) -> String {
+    if source.trim().is_empty() {
+        return "# No package source on the active file yet.\n\
+                After write_source / select_file of a .veil package, layer teaching arrives.\n"
+            .into();
+    }
+    let pack = assemble_preamble(source, registry, project_root);
+    let mut out = String::from(
+        "# Package bound — layer teaching for the active file\n\
+         Constructs, keywords, and declared types below are in force. \
+         Do not redefine declared types. Meaning of product annotations is in \
+         the layer that declared them (read `layers/*.layer`).\n\
+         If two prompts disagree about a declared type, the declaring layer wins.\n\n",
+    );
+    if let Some(idx) = pack.text.find("# Tier 1") {
+        out.push_str(&pack.text[idx..]);
+    } else if pack.text.contains("PARSE ERROR") {
+        out.push_str(&pack.text);
+    } else if pack.text.contains("No package bound") {
+        out.push_str("# No package bound — open or select a .veil file.\n");
+    } else {
+        out.push_str("(no Tier 1 sections)\n");
+    }
+    out
+}
+
+/// VEIL errors that must reject `write_source` *before* rustc/smoke.
+/// Parse failures are handled separately. Warnings do not block.
+pub fn veil_errors_blocking_write(content: &str, registry: &LayerRegistry) -> Option<String> {
+    let tokens = veil_parser::lex(content);
+    let sol = veil_parser::parse_with_registry(&tokens, registry.clone()).ok()?;
+    let check = check_solution(&sol, registry);
+    let errors: Vec<_> = check
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+        .collect();
+    if errors.is_empty() {
+        return None;
+    }
+    let mut body = String::from(
+        "WRITE REJECTED — VEIL errors in new content (file NOT saved). \
+         Fix these before rustc/smoke:\n",
+    );
+    for d in errors.iter().take(20) {
+        body.push_str(&format!("  {}\n", veil_ir::format_diagnostic_line(d)));
+        if let Some(h) = &d.hint {
+            body.push_str(&format!("    hint: {h}\n"));
+        }
+    }
+    if errors.len() > 20 {
+        body.push_str(&format!("  … +{} more\n", errors.len() - 20));
+    }
+    Some(body)
 }
 
 fn format_truncation_warning(
@@ -618,12 +778,6 @@ mod tests {
             "pkg-only law missing from preamble"
         );
         assert!(
-            p.text.contains("Messaging is user-land")
-                || p.text.contains("does **not** inject a `Bus`")
-                || p.text.contains("does not inject a Bus"),
-            "user-land bus law missing from preamble"
-        );
-        assert!(
             p.text.contains("AttributeValue") && p.text.contains("Blob.new"),
             "stub value-type recipe missing from preamble"
         );
@@ -642,12 +796,49 @@ mod tests {
             "body/test teaching missing from preamble"
         );
         assert!(
-            TIER0_ACP.contains("agg")
-                && TIER0_ACP.contains("Prefer `ret expr`")
-                && TIER0_ACP.contains("VEIL tests (SL-022)")
-                && TIER0_ACP.contains("param names match the port"),
-            "ACP preamble missing DDD/body/test/param teaching"
+            TIER0.contains("transpiler's job") && TIER0_ACP.contains("transpiler's job"),
+            "agents must be told generated rust is not theirs to restyle"
         );
+        assert!(
+            TIER0_ACP.contains("Prefer `ret expr`")
+                && TIER0_ACP.contains("VEIL tests (SL-022)")
+                && TIER0_ACP.contains("param names match the port")
+                && TIER0_ACP.contains("require json.field"),
+            "ACP preamble missing body/test/param/json-require teaching"
+        );
+        for (label, text) in [("TIER0", TIER0), ("TIER0_ACP", TIER0_ACP)] {
+            for leak in [
+                "bus_event_listener",
+                "bus_command_handler",
+                "bus_request_handler",
+                "iaaa.UserCreated",
+                "SubscriptionManager",
+                "RoutingTable",
+                "@command",
+                "@request",
+                "`@on`",
+                "on`/`command",
+                "use ddd",
+                "ddd.layer",
+                "DDD vocabulary",
+                "Messaging is user-land",
+                "Deploy hooks",
+                "DeployContext",
+                "Mind Palace",
+                "MIND_PALACE",
+                "wiki_*",
+                "wiki_search",
+            ] {
+                assert!(
+                    !text.contains(leak),
+                    "{label} must stay layer-agnostic and palace-free ({leak})"
+                );
+            }
+            assert!(
+                text.contains("layers/*.layer"),
+                "{label} must send the agent to product layers for new vocabulary"
+            );
+        }
         assert!(p.tokens_used > 0);
         // Builtin-only package: no layer prompts is OK and not truncation
         assert!(!p.truncated || p.warning.is_some());
@@ -676,6 +867,106 @@ mod tests {
     }
 
     #[test]
+    fn empty_source_is_unbound_not_parse_error() {
+        let p = assemble_preamble("", &LayerRegistry::builtin(), None);
+        assert!(
+            !p.text.contains("PARSE ERROR"),
+            "empty session must not look like a product parse error: {}",
+            &p.text[p.text.len().saturating_sub(400)..]
+        );
+        assert!(
+            p.text.contains("No package bound"),
+            "expected unbound note: {}",
+            &p.text[p.text.len().saturating_sub(400)..]
+        );
+    }
+
+    #[test]
+    fn implicit_primary_layer_prompt_is_taught() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content(
+            "acme",
+            "pkg acme v1\n  prompt\n    ACME_PROMPT_MARK\n  construct Acme\n    kw acme_kw\n    mt struct\n",
+        )
+        .unwrap();
+        let unused = assemble_preamble("pkg T\n  struct Point\n    x: Int\n", &reg, None);
+        assert!(
+            !unused.text.contains("ACME_PROMPT_MARK"),
+            "unrelated layer must stay out: {}",
+            &unused.text[unused.text.find("Tier 1").unwrap_or(0)..]
+                .chars()
+                .take(400)
+                .collect::<String>()
+        );
+        reg.implicit_uses.push("acme".into());
+        let taught = assemble_preamble("pkg T\n  struct Point\n    x: Int\n", &reg, None);
+        assert!(
+            taught.text.contains("ACME_PROMPT_MARK"),
+            "R21 implicit use must teach the primary layer: {}",
+            &taught.text[taught.text.find("Tier 1").unwrap_or(0)..]
+                .chars()
+                .take(600)
+                .collect::<String>()
+        );
+        let bound = assemble_bound_package_teaching(
+            "pkg T\n  struct Point\n    x: Int\n",
+            &reg,
+            None,
+        );
+        assert!(
+            bound.contains("ACME_PROMPT_MARK") && bound.contains("Package bound"),
+            "mid-turn teaching must include implicit layer: {bound}"
+        );
+    }
+
+    #[test]
+    fn veil_errors_block_layer_declare_shadow() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer"))
+            .expect("deploy");
+        let src = "pkg T\n  use deploy\n  struct DeployContext\n    extra: Str\n";
+        let msg = veil_errors_blocking_write(src, &reg).expect("should reject");
+        assert!(
+            msg.contains("shadows_layer_declare") || msg.contains("already injected"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn layer_prompts_follow_package_use_graph() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content(
+            "leaf",
+            "pkg leaf v1\n  prompt\n    LEAF_PROMPT_MARK\n  construct Leaf\n    kw leaf_kw\n    mt struct\n",
+        )
+        .unwrap();
+        reg.load_content(
+            "root",
+            "pkg root v1\n  use leaf\n  prompt\n    ROOT_PROMPT_MARK\n  construct Root\n    kw root_kw\n    mt struct\n",
+        )
+        .unwrap();
+        let unused = assemble_preamble("pkg T\n  struct Point\n    x: Int\n", &reg, None);
+        assert!(
+            !unused.text.contains("LEAF_PROMPT_MARK")
+                && !unused.text.contains("ROOT_PROMPT_MARK"),
+            "unused layer prompts leaked: {}",
+            &unused.text[unused.text.find("Tier 1").unwrap_or(0)..]
+                .chars()
+                .take(400)
+                .collect::<String>()
+        );
+        let used = assemble_preamble("pkg T\n  use root\n  struct Point\n    x: Int\n", &reg, None);
+        assert!(
+            used.text.contains("ROOT_PROMPT_MARK") && used.text.contains("LEAF_PROMPT_MARK"),
+            "use graph prompts missing: {}",
+            &used.text[used.text.find("Tier 1").unwrap_or(0)..]
+                .chars()
+                .take(600)
+                .collect::<String>()
+        );
+    }
+
+    #[test]
     fn assembles_layer_declares_when_ddd_loaded() {
         let mut reg = LayerRegistry::builtin();
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
@@ -698,6 +989,57 @@ mod tests {
                 .take(400)
                 .collect::<String>()
         );
+    }
+
+    #[test]
+    fn layer_declare_signatures_and_annotation_roles_are_taught() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content(
+            "acme",
+            r#"pkg acme v1
+  prompt
+    Context has field foo_arn only. Ignore other fields.
+  construct Listener
+    kw listen
+    mt fn
+    ann
+      on: "event name" value role:event_listener
+  declare
+    struct Context
+      name: Str
+      stack: Json
+      items: List<Str>
+"#,
+        )
+        .expect("acme");
+        let p = assemble_preamble(
+            "pkg T\n  use acme\n  struct Point\n    x: Int\n",
+            &reg,
+            None,
+        );
+        let tier1 = &p.text[p.text.find("Tier 1").unwrap_or(0)..];
+        assert!(
+            tier1.contains("stack: Json") && tier1.contains("items: List<Str>"),
+            "declare signatures must be taught, not just names: {tier1}"
+        );
+        assert!(
+            tier1.contains("foo_arn"),
+            "stale prompt still present so declare-wins can be tested: {tier1}"
+        );
+        assert!(
+            tier1.contains("this is the contract") || tier1.contains("signatures win"),
+            "agent must be told declare beats a stale prompt: {tier1}"
+        );
+        assert!(
+            tier1.contains("@on") && tier1.contains("event_listener"),
+            "annotation roles from the loaded layer must be taught: {tier1}"
+        );
+        for leak in ["event_listener", "foo_arn", "stack: Json"] {
+            assert!(
+                !TIER0.contains(leak) && !TIER0_ACP.contains(leak),
+                "TIER0 must not hardcode layer vocabulary ({leak})"
+            );
+        }
     }
 
     #[test]

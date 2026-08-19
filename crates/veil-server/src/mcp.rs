@@ -722,6 +722,20 @@ async fn handle_mcp_request<P: SourceProvider>(
     }
 }
 
+/// Append the bound file's layer teaching (prompts / declared types / vocabulary).
+/// ACP sessions start unbound; this is how teaching arrives mid-turn.
+async fn with_bound_teaching<P: SourceProvider>(provider: &P, body: String) -> String {
+    let source = provider.read_source("").await.unwrap_or_default();
+    let registry = provider.registry();
+    let root = provider.project_root();
+    let teaching = crate::agent_context::assemble_bound_package_teaching(
+        &source,
+        &registry,
+        root.as_deref(),
+    );
+    format!("{body}\n\n---\n{teaching}")
+}
+
 /// Dispatch a tool call to the underlying VEIL tool implementation.
 async fn dispatch_tool<P: SourceProvider>(
     provider: &Arc<P>,
@@ -751,8 +765,9 @@ async fn dispatch_tool<P: SourceProvider>(
                         if let Ok(mut v) = serde_json::from_str::<Value>(&result) {
                             v["bound"] = json!(true);
                             v["session"] = info;
-                            return Ok(v.to_string());
+                            return Ok(with_bound_teaching(provider.as_ref(), v.to_string()).await);
                         }
+                        return Ok(with_bound_teaching(provider.as_ref(), result).await);
                     }
                     Err(e) => {
                         tracing::warn!(%slug, error = %e, "post-{tool_name} prepare_project failed");
@@ -1041,6 +1056,11 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                      in VEIL effect/fn bodies. Use VEIL expression forms only."
                 ));
             }
+            if let Some(block) =
+                crate::agent_context::veil_errors_blocking_write(content, &registry)
+            {
+                return Ok(block);
+            }
             let prev = provider.read_source("").await.ok();
             let files = provider.list_files().await;
             let active_path = files
@@ -1289,7 +1309,13 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .find(|f| f.index == idx)
                 .map(|f| f.name.clone())
                 .unwrap_or_else(|| format!("#{idx}"));
-            Ok(format!("Active file is now '{name}'. Use read_source / veil_check / write_source on it."))
+            Ok(with_bound_teaching(
+                provider.as_ref(),
+                format!(
+                    "Active file is now '{name}'. Use read_source / veil_check / write_source on it."
+                ),
+            )
+            .await)
         }
 
         "create_file" => {
@@ -1323,12 +1349,16 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             if !slug.is_empty() {
                 let _ = crate::review::record_file_created(&slug, &created.path);
             }
-            Ok(format!(
-                "Created {} ({}) at {} — now active. Use write_source to set content, then veil_check.",
-                created.name,
-                created.kind.as_str(),
-                created.path
-            ))
+            Ok(with_bound_teaching(
+                provider.as_ref(),
+                format!(
+                    "Created {} ({}) at {} — now active. Use write_source to set content, then veil_check.",
+                    created.name,
+                    created.kind.as_str(),
+                    created.path
+                ),
+            )
+            .await)
         }
 
         // ── Mind Palace wiki (MCP for ACP/Kiro) ──────────────────────────

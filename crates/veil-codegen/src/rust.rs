@@ -166,6 +166,21 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         || has_compose
         || has_declared_endpoints;
     let has_main = !emit_blocked && has_entry;
+    // role:deploy_hook → veil_hooks bin (provisioner). Not zipped into Lambda.
+    if let Some(hook_files) = crate::emit_hooks::emit_hooks_crate(solution, &modules, registry, &harness_ir)
+    {
+        if let Some(ws) = files.iter_mut().find(|f| f.path == "Cargo.toml") {
+            if !ws.content.contains("crates/veil_hooks") {
+                ws.content = ws.content.replacen(
+                    "    \"crates/veil_shared\"",
+                    "    \"crates/veil_shared\",\n    \"crates/veil_hooks\"",
+                    1,
+                );
+            }
+        }
+        files.extend(hook_files);
+    }
+
     if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| module_crate_name(m, solution)).collect();
         let main_body = if wants_product_host {
@@ -505,7 +520,7 @@ fn stub_type_path(registry: &LayerRegistry, type_name: &str) -> Option<(String, 
 /// Matches crate-qualified names (`aws_sdk_sns.Client`), unique bare names
 /// (`Client` only when a single stub exports it), and use-aliases
 /// (`use reqwest as rw` → `RwClient` matches that stub's `harness_field Client`).
-fn stub_harness_field_expr(
+pub(crate) fn stub_harness_field_expr(
     registry: &LayerRegistry,
     type_name: &str,
 ) -> Option<(String, String)> {
@@ -572,9 +587,44 @@ pub(crate) fn env_var_field_name(var: &str) -> String {
     }
 }
 
+/// Apply **every** `@env` annotation on an adapter (not just the first).
+/// Two `@env TABLE` + `@env TTL` must both become struct fields.
+pub(crate) fn apply_adapter_env_field_inits(
+    ad: &Construct,
+    registry: &LayerRegistry,
+    field_inits: &mut std::collections::BTreeMap<String, String>,
+) {
+    for env_a in ad
+        .annotations
+        .iter()
+        .filter(|a| registry.is_adapter_env_annotation(&a.name))
+    {
+        for arg in &env_a.args {
+            if arg.contains("DATABASE") {
+                field_inits.entry("pool".to_string()).or_insert_with(|| {
+                    if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
+                        expr
+                    } else {
+                        format!(
+                            "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
+                        )
+                    }
+                });
+            } else {
+                let field_name = env_var_field_name(arg);
+                field_inits.entry(field_name).or_insert_with(|| {
+                    format!(
+                        "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
+                    )
+                });
+            }
+        }
+    }
+}
+
 /// Parse every layer `declare` block into IR. Used so veil_shared always
 /// emits layer-declared types/fns even when a product construct reused a name.
-fn parse_layer_declare_items(registry: &LayerRegistry) -> Vec<TopLevelItem> {
+pub(crate) fn parse_layer_declare_items(registry: &LayerRegistry) -> Vec<TopLevelItem> {
     let mut items = Vec::new();
     for decl_source in &registry.declarations {
         let indented: String = decl_source
@@ -994,28 +1044,7 @@ fn gen_local_harness_main(
                     }
                 }
             }
-            if let Some(env_a) = ad.annotations.iter().find(|a| registry.is_adapter_env_annotation(&a.name)) {
-                for arg in &env_a.args {
-                    if arg.contains("DATABASE") {
-                        field_inits.entry("pool".to_string()).or_insert_with(|| {
-                            if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
-                                expr
-                            } else {
-                                format!(
-                                    "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
-                                )
-                            }
-                        });
-                    } else {
-                        let field_name = env_var_field_name(arg);
-                        field_inits.entry(field_name).or_insert_with(|| {
-                            format!(
-                                "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
-                            )
-                        });
-                    }
-                }
-            }
+            apply_adapter_env_field_inits(ad, registry, &mut field_inits);
             let has_explicit_client_field = field_inits.contains_key("client");
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))
@@ -1862,12 +1891,17 @@ pub(crate) fn http_routable_services<'a>(
     let with_route: Vec<&'a Construct> = services
         .iter()
         .copied()
+        .filter(|s| !veil_ir::is_deploy_hook(s, registry))
         .filter(|s| has_route_annotation(s, registry))
         .collect();
     if !with_route.is_empty() {
         with_route
     } else {
-        services.to_vec()
+        services
+            .iter()
+            .copied()
+            .filter(|s| !veil_ir::is_deploy_hook(s, registry))
+            .collect()
     }
 }
 
@@ -1992,7 +2026,7 @@ fn gen_bus_handler_registration(
 }
 
 /// Default for non-client adapter fields (`table`, `bucket`, `dir`, plain Str).
-fn harness_string_field_default(fname: &str, ftype: &str) -> String {
+pub(crate) fn harness_string_field_default(fname: &str, ftype: &str) -> String {
     let f = fname.to_ascii_lowercase();
     let ty = ftype.trim();
     let is_stringish = matches!(ty, "Str" | "String" | "str" | "")
@@ -2142,6 +2176,17 @@ fn gen_workspace_toml(
     // Emit every stub the package loaded via `use` plus cargo_deps companions
     // (e.g. aws-config for aws-sdk-dynamodb) so veil_bin workspace=true resolves.
     // Use BTreeMap keyed by crate name to prevent duplicate entries (Issue 7).
+    // Never re-emit keys already in [workspace.dependencies] (serde_json stub → "duplicate key").
+    const WORKSPACE_DEP_KEYS: &[&str] = &[
+        "tokio",
+        "async-trait",
+        "thiserror",
+        "serde",
+        "uuid",
+        "chrono",
+        "tracing",
+        "serde_json",
+    ];
     let mut dep_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for stub in &registry.stubs {
         if !stub_is_active_cargo(stub) {
@@ -2167,10 +2212,15 @@ fn gen_workspace_toml(
             )
         };
         // Direct stubs take priority over companion deps (more specific version).
-        dep_map.insert(stub.name.clone(), dep_line);
+        if !WORKSPACE_DEP_KEYS.contains(&stub.name.as_str()) {
+            dep_map.insert(stub.name.clone(), dep_line);
+        }
 
         // Companion crates declared on the stub (e.g. aws-config for dynamodb).
         for (dep_name, dep_ver) in &stub.cargo_deps {
+            if WORKSPACE_DEP_KEYS.contains(&dep_name.as_str()) {
+                continue;
+            }
             dep_map.entry(dep_name.clone())
                 .or_insert_with(|| format!("{dep_name} = \"{dep_ver}\""));
         }
@@ -2219,7 +2269,7 @@ serde_json = "1"
 /// Compute a unique crate name for a Mod-shaped construct. When multiple modules
 /// share the same snake_case name (e.g. `ctx Deploy` and `svc Deploy`), prefix
 /// with the keyword to disambiguate.
-fn module_crate_name(module: &Construct, solution: &Solution) -> String {
+pub(crate) fn module_crate_name(module: &Construct, solution: &Solution) -> String {
     let base = to_snake(&module.name);
     let collision = solution.items.iter().any(|i| {
         if let TopLevelItem::Construct(c) = i {
@@ -2592,6 +2642,7 @@ fn gen_types(
             _ => {}
         }
     }
+    let declared = layer_declared_type_names(registry);
     let undefined: Vec<String> = referenced
         .iter()
         .filter(|t| {
@@ -2604,11 +2655,37 @@ fn gen_types(
         .into_iter()
         .collect();
 
-    if !undefined.is_empty() {
+    // Layer-declared types live in veil_shared. Never alias them to String —
+    // that shadows the real struct (DeployContext became String and broke hooks).
+    let mut reexports: Vec<String> = Vec::new();
+    let mut stubs: Vec<String> = Vec::new();
+    for t in undefined {
+        if declared.contains(&t) {
+            reexports.push(t);
+        } else {
+            stubs.push(t);
+        }
+    }
+    // Product constructs that reuse a layer-declared name must not be
+    // emitted locally — rustc would see two types (SL-027). Re-export
+    // the veil_shared original instead.
+    for t in &defined_types {
+        if declared.contains(t) && !reexports.contains(t) {
+            reexports.push(t.clone());
+        }
+    }
+    reexports.sort();
+    stubs.sort();
+    if !reexports.is_empty() {
+        out.push_str(&format!(
+            "pub use veil_shared::{{{}}};\n\n",
+            reexports.join(", ")
+        ));
+    }
+
+    if !stubs.is_empty() {
         out.push_str("// Stub types — replace with actual definitions\n");
-        let mut sorted = undefined;
-        sorted.sort();
-        for t in &sorted {
+        for t in &stubs {
             if let Some((crate_name, path)) = stub_type_path(registry, t) {
                 out.push_str(&format!("pub type {t} = {crate_name}::{path};\n"));
             } else {
@@ -2625,9 +2702,15 @@ fn gen_types(
     let mut defaultable_structs: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     for e in &contents.enums {
+        if declared.contains(&e.name) {
+            continue;
+        }
         out.push_str(&gen_enum(e));
     }
     for c in &contents.structs {
+        if declared.contains(&c.name) {
+            continue;
+        }
         let (chunk, is_defaultable) = gen_struct(c, registry, &defaultable_structs);
         out.push_str(&chunk);
         if is_defaultable {
@@ -3182,6 +3265,7 @@ fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry
                 .insert(p.name.clone(), type_to_rust(&p.type_expr));
         }
         ctx.mut_locals = crate::expr::analyze_mut_locals(&func.body);
+        ctx.ident_uses = crate::expr::count_ident_uses(&func.body);
 
         let mut has_explicit_ret = false;
         for expr in &func.body {
@@ -3428,7 +3512,7 @@ fn gen_enum(c: &Construct) -> String {
         !c.variants.is_empty()
     };
     let derives = if unit_only {
-        "Debug, Clone, PartialEq, Serialize, Deserialize, Default"
+        "Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default"
     } else {
         "Debug, Clone, PartialEq, Serialize, Deserialize"
     };
@@ -3830,6 +3914,9 @@ fn collect_handler_names(
     for module in modules {
         let flat = flatten_module(module, registry);
         for f in &flat.fns {
+            if veil_ir::is_deploy_hook(f, registry) {
+                continue;
+            }
             let message = registry.bus_message_name(&f.name);
             if !names.contains(&message) {
                 names.push(message);
@@ -4032,6 +4119,7 @@ futures = "0.3"
             ctx.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names));
         }
         ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
+        ctx.ident_uses = crate::expr::count_ident_uses(&f.body);
 
         let params = f
             .params
@@ -4578,6 +4666,7 @@ fn gen_impls(
                     }
                 }
                 ctx.mut_locals = crate::expr::analyze_mut_locals(&mimpl.body);
+                ctx.ident_uses = crate::expr::count_ident_uses(&mimpl.body);
                 // @env annotation fields are available as self.field in the body.
                 ctx.in_method = true;
                 for ann in &c.annotations {
@@ -4657,6 +4746,7 @@ fn gen_impls(
                 ctx.ref_params = seeded.ref_params;
                 ctx.name_to_shape = seeded.name_to_shape;
                 ctx.enum_variants = seeded.enum_variants;
+                ctx.unit_enums = seeded.unit_enums;
                 ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
@@ -4823,6 +4913,7 @@ fn gen_impls(
                     .insert(p.name.clone(), type_to_rust(&p.type_expr));
             }
             ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
+            ctx.ident_uses = crate::expr::count_ident_uses(&f.body);
             let params = f
                 .params
                 .iter()
@@ -5147,7 +5238,7 @@ fn expr_calls_async_fn(expr: &Expr, ctx: &crate::expr::GenCtx) -> bool {
 /// Pure generic adapter template: `adapter Foo<T> for Trait<T>` (or unbound
 /// `adapter Foo<T> for Trait`). Used only as monomorphization source in VEIL;
 /// not emitted as Rust.
-fn is_pure_generic_adapter_template(c: &Construct) -> bool {
+pub(crate) fn is_pure_generic_adapter_template(c: &Construct) -> bool {
     if c.type_params.is_empty() {
         return false;
     }
@@ -5989,16 +6080,10 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
         }
     }
     // Layer `declare` traits/structs don't appear in registry.constructs —
-    // scan declaration source so name→shape still sees them.
-    for decl in &registry.declarations {
-        for line in decl.lines() {
-            let t = line.trim();
-            if let Some(name) = t.strip_prefix("trait ") {
-                let name = name.split_whitespace().next().unwrap_or("");
-                if !name.is_empty() {
-                    name_to_shape.insert(name.to_string(), Shape::Trait);
-                }
-            }
+    // parse declaration source so name→shape still sees them.
+    for item in parse_layer_declare_items(registry) {
+        if let TopLevelItem::Construct(c) = item {
+            name_to_shape.insert(c.name, c.shape);
         }
     }
 
@@ -6345,6 +6430,7 @@ fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_n
 
         // GEN-010: only `let mut` when the binding is actually mutated later.
         ctx.mut_locals = crate::expr::analyze_mut_locals_in_steps(steps);
+        ctx.ident_uses = crate::expr::count_ident_uses_in_steps(steps);
 
         for step in steps {
             match step {
@@ -6594,8 +6680,6 @@ fn emit_step_method(
     trait_names: &std::collections::HashSet<String>,
     base_ctx: &crate::expr::GenCtx,
 ) {
-    use crate::expr::expr_to_rust;
-
     let (params_str, ret_inner) = if let Some(m) = step_method {
         let params: Vec<String> = m
             .params
@@ -6635,8 +6719,11 @@ fn emit_step_method(
     ));
     let mut ctx = base_ctx.clone_for_inference();
     ctx.mut_locals = crate::expr::analyze_mut_locals(body);
+    ctx.ident_uses = crate::expr::count_ident_uses(body);
     for expr in body {
-        out.push_str(&format!("        {};\n", expr_to_rust(expr, &ctx)));
+        let stmt = crate::expr::stmt_to_rust(expr, &mut ctx);
+        let stmt = stmt.trim_start();
+        out.push_str(&format!("        {stmt}\n"));
         if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = expr {
             if !name.contains('.') {
                 ctx.locals.insert(name.clone());
@@ -6775,7 +6862,7 @@ fn generic_params_rust(params: &[String]) -> String {
 
 /// Dyn trait type for harness wiring: prefer type-alias marker (WearTestRepo)
 /// when the adapter monomorphizes EntityRepo&lt;WearTest&gt;.
-fn adapter_dyn_type(solution: &Solution, ad: &Construct) -> String {
+pub(crate) fn adapter_dyn_type(solution: &Solution, ad: &Construct) -> String {
     let target = ad.target.as_deref().unwrap_or("?");
     // Match type alias `type WearTestRepo = EntityRepo<WearTest>`
     for item in &solution.items {
@@ -6802,7 +6889,7 @@ fn adapter_dyn_type(solution: &Solution, ad: &Construct) -> String {
 
 /// Deps field name for an adapter given the shared trait→field map.
 /// Preference: map entry for target trait → type-alias snake → snake(trait).
-fn adapter_deps_field_name(
+pub(crate) fn adapter_deps_field_name(
     solution: &Solution,
     ad: &Construct,
     target: &str,
@@ -7193,28 +7280,7 @@ pub fn generate_multi_package_harness(
                     }
                 }
             }
-            if let Some(env_a) = ad.annotations.iter().find(|a| registry.is_adapter_env_annotation(&a.name)) {
-                for arg in &env_a.args {
-                    if arg.contains("DATABASE") {
-                        field_inits.entry("pool".to_string()).or_insert_with(|| {
-                            if let Some((_, expr)) = stub_harness_field_expr(registry, "Pool") {
-                                expr
-                            } else {
-                                format!(
-                                    "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
-                                )
-                            }
-                        });
-                    } else {
-                        let field_name = env_var_field_name(arg);
-                        field_inits.entry(field_name).or_insert_with(|| {
-                            format!(
-                                "std::env::var(\"{arg}\").unwrap_or_else(|_| \"default\".into())"
-                            )
-                        });
-                    }
-                }
-            }
+            apply_adapter_env_field_inits(ad, registry, &mut field_inits);
             let has_explicit_client = field_inits.contains_key("client");
             let body_uses_client = ad.impls.iter().any(|m| {
                 m.body.iter().any(|e| expr_mentions_self_field(e, "client"))

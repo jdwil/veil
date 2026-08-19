@@ -722,6 +722,46 @@ pub fn resolve_dependency_roots(project_root: &Path) -> Result<Vec<PathBuf>, Str
     Ok(roots)
 }
 
+/// Transitive product-dep graph, **dependencies first**, `project_root` last.
+/// Cycles are skipped (the already-visiting node is not re-entered).
+pub fn resolve_dependency_graph(project_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let hub = projects_hub(project_root);
+    let mut seen: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut visiting: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    walk_dep_graph(project_root, &hub, &mut seen, &mut visiting, &mut out)?;
+    Ok(out)
+}
+
+fn walk_dep_graph(
+    root: &Path,
+    hub: &Path,
+    seen: &mut std::collections::BTreeSet<PathBuf>,
+    visiting: &mut std::collections::BTreeSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if seen.contains(&canon) {
+        return Ok(());
+    }
+    if !visiting.insert(canon.clone()) {
+        return Ok(()); // cycle
+    }
+    let deps = load_product_deps(root).unwrap_or_default();
+    for dep in &deps {
+        match resolve_dep_root(root, dep, hub) {
+            Ok(child) => walk_dep_graph(&child, hub, seen, visiting, out)?,
+            Err(e) => eprintln!("veil: {e}"),
+        }
+    }
+    visiting.remove(&canon);
+    seen.insert(canon.clone());
+    if !out.iter().any(|p| p == &canon) {
+        out.push(canon);
+    }
+    Ok(())
+}
+
 /// Resolve dependency roots for any path under a product (file or dir).
 pub fn resolve_dependency_roots_for(path: &Path) -> Vec<PathBuf> {
     let Some(root) = find_project_root(path) else {
@@ -868,6 +908,61 @@ item_repo = "PgItemRepo"
             Some(Some("Handle".into()))
         );
         assert_eq!(CodegenToml::normalize_opt(&None), None);
+    }
+
+    #[test]
+    fn resolve_dependency_graph_is_deps_first() {
+        let hub = tempfile_dir();
+        let c = hub.join("c");
+        let b = hub.join("b");
+        let a = hub.join("a");
+        for p in [&c, &b, &a] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        std::fs::write(c.join("veil.toml"), "name = \"c\"\n").unwrap();
+        std::fs::write(c.join("main.veil"), "pkg c\n").unwrap();
+        std::fs::write(
+            b.join("veil.toml"),
+            "[dependencies]\nc = { path = \"../c\" }\n",
+        )
+        .unwrap();
+        std::fs::write(b.join("main.veil"), "pkg b\n").unwrap();
+        std::fs::write(
+            a.join("veil.toml"),
+            "[dependencies]\nb = { path = \"../b\" }\n",
+        )
+        .unwrap();
+        std::fs::write(a.join("main.veil"), "pkg a\n").unwrap();
+
+        let graph = resolve_dependency_graph(&a).unwrap();
+        let names: Vec<String> = graph
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(names, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn resolve_dependency_graph_ignores_cycle() {
+        let hub = tempfile_dir();
+        let a = hub.join("a");
+        let b = hub.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(
+            a.join("veil.toml"),
+            "[dependencies]\nb = { path = \"../b\" }\n",
+        )
+        .unwrap();
+        std::fs::write(a.join("main.veil"), "pkg a\n").unwrap();
+        std::fs::write(
+            b.join("veil.toml"),
+            "[dependencies]\na = { path = \"../a\" }\n",
+        )
+        .unwrap();
+        std::fs::write(b.join("main.veil"), "pkg b\n").unwrap();
+        let graph = resolve_dependency_graph(&a).unwrap();
+        assert_eq!(graph.len(), 2);
     }
 
     #[test]

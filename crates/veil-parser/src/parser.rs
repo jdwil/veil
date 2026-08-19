@@ -445,11 +445,13 @@ impl<'a> Parser<'a> {
     /// Extract the text content from a string literal token (handles both
     /// single-quoted "..." and triple-quoted """...""" forms).
     fn extract_string_content(text: &str) -> String {
-        if text.starts_with("\"\"\"") {
+        if text.starts_with("\"\"\"") && text.len() >= 6 && text.ends_with("\"\"\"") {
             let inner = &text[3..text.len() - 3];
             inner.strip_prefix('\n').unwrap_or(inner).to_string()
-        } else {
+        } else if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
             text[1..text.len() - 1].to_string()
+        } else {
+            text.to_string()
         }
     }
 

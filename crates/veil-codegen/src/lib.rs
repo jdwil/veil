@@ -7,6 +7,7 @@ pub mod expr;
 pub mod kotlin;
 pub mod links;
 pub mod migrate_harness;
+pub mod emit_hooks;
 pub mod rust;
 pub mod swift;
 pub mod template;

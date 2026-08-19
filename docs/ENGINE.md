@@ -37,7 +37,7 @@ Bang call-site semantics drifted more than once:
    `Opt` — agents invented `.unwrap()` / `.is_some()` on values that were already
    forced to `T` in some paths. Alignment of parser + typecheck + codegen fixed it.
 2. **ACS-010 flip:** typecheck/codegen moved to **portable bang** (Res only; Opt
-   stays Opt) while Tier-0, layer prompts, and palace still taught transitional
+   stays Opt) while Tier-0 and layer prompts still taught transitional
    force — agents thrashed between “never unwrap after `!`” and live
    `type_mismatch: expected T, found Opt`. Docs must flip with the engine (this rule).
 

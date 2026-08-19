@@ -575,7 +575,7 @@ impl DeployExec for LocalDeployExec {
             let mut summary = "Running".to_string();
             let mut steps_done = 0;
             let mut finished_s = "".to_string();
-            let total = 7 + unit_count;
+            let total = 8 + unit_count;
             if cursor == "load_config".to_string() {
                 detail = format!("slug={} env={}", slug, environment);
                 next_cursor = "stack_dynamodb".to_string();
@@ -1214,7 +1214,7 @@ impl DeployExec for LocalDeployExec {
             if cursor == "compile".to_string() {
                 if mock {
                     detail = "mock compile".to_string();
-                    next_cursor = "deploy_code".to_string();
+                    next_cursor = "run_hooks".to_string();
                     steps_done = steps_done + 1;
                 } else {
                     let mut hub = veil_local_fs::LocalFs::projects_dir();
@@ -1371,8 +1371,54 @@ impl DeployExec for LocalDeployExec {
                         {
                             detail = format!("compile soft-fail (infra ok): {}", detail);
                         };
-                        next_cursor = "deploy_code".to_string();
+                        next_cursor = "run_hooks".to_string();
                         steps_done = steps_done + 1;
+                    };
+                };
+            };
+            if cursor == "run_hooks".to_string() {
+                if mock {
+                    detail = "mock hooks".to_string();
+                    next_cursor = "deploy_code".to_string();
+                    steps_done = steps_done + 1;
+                } else {
+                    let hub = veil_local_fs::LocalFs::projects_dir();
+                    let root = veil_local_fs::LocalFs::join(hub.clone(), slug.clone());
+                    let stack = serde_json::json!({
+                        "service": slug.clone(),
+                        "resource_prefix": "veil",
+                        "names": {
+                            "base": job.get("stack_base").cloned().unwrap_or(serde_json::json!("")),
+                            "dynamodb": ddb_name.clone(),
+                            "sns": sns_name.clone(),
+                            "sqs": sqs_name.clone(),
+                            "lambda_api": job.get("lambda_api").cloned().unwrap_or(serde_json::json!("")),
+                            "lambda_consumer": job.get("lambda_consumer").cloned().unwrap_or(serde_json::json!("")),
+                        }
+                    });
+                    let units = serde_json::json!([
+                        { "unit": u0.clone(), "type": t0.clone(), "function_name": f0.clone() },
+                        { "unit": u1.clone(), "type": t1.clone(), "function_name": f1.clone() },
+                        { "unit": u2.clone(), "type": t2.clone(), "function_name": f2.clone() },
+                    ]);
+                    match crate::hooks::run_deploy_hooks(
+                        std::path::Path::new(&root),
+                        &environment,
+                        &stack,
+                        &units,
+                    ) {
+                        Ok(rep) => {
+                            detail = rep.detail;
+                            next_cursor = "deploy_code".to_string();
+                            steps_done = steps_done + 1;
+                        }
+                        Err(e) => {
+                            detail = format!("deploy hooks failed: {e}");
+                            status = "failed".to_string();
+                            summary = detail.clone();
+                            next_cursor = "run_hooks".to_string();
+                            finished_s = "done".to_string();
+                        }
                     };
                 };
             };
@@ -1602,6 +1648,7 @@ impl DeployExec for LocalDeployExec {
             let mut s_u1 = "pending".to_string();
             let mut s_u2 = "pending".to_string();
             let mut s_comp = "pending".to_string();
+            let mut s_hooks = "pending".to_string();
             let mut s_dep = "pending".to_string();
             let mut s_fin = "pending".to_string();
             let mut d_load = "".to_string();
@@ -1612,6 +1659,7 @@ impl DeployExec for LocalDeployExec {
             let mut d_u1 = "".to_string();
             let mut d_u2 = "".to_string();
             let mut d_comp = "".to_string();
+            let mut d_hooks = "".to_string();
             let mut d_dep = "".to_string();
             let mut d_fin = "".to_string();
             if steps_done >= 1 {
@@ -1667,6 +1715,10 @@ impl DeployExec for LocalDeployExec {
                 d_comp = detail.clone();
                 s_comp = "done".to_string();
             };
+            if cursor == "run_hooks".to_string() {
+                d_hooks = detail.clone();
+                s_hooks = "done".to_string();
+            };
             if cursor == "deploy_code".to_string() {
                 d_dep = detail.clone();
                 s_dep = "done".to_string();
@@ -1682,6 +1734,7 @@ impl DeployExec for LocalDeployExec {
                 s_u1 = "done".to_string();
                 s_u2 = "done".to_string();
                 s_comp = "done".to_string();
+                s_hooks = "done".to_string();
                 s_dep = "done".to_string();
             };
             let mut out_steps = vec![
@@ -1701,7 +1754,7 @@ impl DeployExec for LocalDeployExec {
             };
             out_steps = {
                 let mut __v = out_steps;
-                __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources".to_string(), "status": s_comp.clone(), "detail": d_comp.clone() }), serde_json::json!({ "id": "deploy_code".to_string(), "label": "Deploy binary to Lambda".to_string(), "status": s_dep.clone(), "detail": d_dep.clone() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Record provision state".to_string(), "status": s_fin.clone(), "detail": d_fin.clone() })]);
+                __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources".to_string(), "status": s_comp.clone(), "detail": d_comp.clone() }), serde_json::json!({ "id": "run_hooks".to_string(), "label": "Run deploy hooks".to_string(), "status": s_hooks.clone(), "detail": d_hooks.clone() }), serde_json::json!({ "id": "deploy_code".to_string(), "label": "Deploy binary to Lambda".to_string(), "status": s_dep.clone(), "detail": d_dep.clone() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Record provision state".to_string(), "status": s_fin.clone(), "detail": d_fin.clone() })]);
                 __v
             };
             let mut pct = 0;
@@ -1987,13 +2040,29 @@ impl DeployExec for LocalDeployExec {
             updates = updates + 1;
             steps = {
                 let mut __v = steps;
-                __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources (veil gen + cargo build --release)".to_string(), "phase": "code".to_string(), "action": "update".to_string() }), serde_json::json!({ "id": "deploy_code".to_string(), "label": "Deploy binary to Lambda (UpdateFunctionCode); ECS skipped".to_string(), "phase": "code".to_string(), "action": "update".to_string() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Record provision state in DynamoDB".to_string(), "phase": "finalize".to_string(), "action": "update".to_string() })]);
+                __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources (veil gen + cargo build --release)".to_string(), "phase": "code".to_string(), "action": "update".to_string() })]);
+                let hub = veil_local_fs::LocalFs::projects_dir();
+                let root = veil_local_fs::LocalFs::join(hub.clone(), slug.clone());
+                __v.extend(crate::hooks::plan_hook_steps(std::path::Path::new(&root)));
+                if !__v.iter().any(|s| s.get("id").and_then(|v| v.as_str()) == Some("run_hooks") || s.get("id").and_then(|v| v.as_str()).is_some_and(|id| id.starts_with("hook:"))) {
+                    __v.push(serde_json::json!({ "id": "run_hooks".to_string(), "label": "Run deploy hooks (none declared)".to_string(), "phase": "hooks".to_string(), "action": "noop".to_string() }));
+                }
+                __v.extend(vec![serde_json::json!({ "id": "deploy_code".to_string(), "label": "Deploy binary to Lambda (UpdateFunctionCode); ECS skipped".to_string(), "phase": "code".to_string(), "action": "update".to_string() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Record provision state in DynamoDB".to_string(), "phase": "finalize".to_string(), "action": "update".to_string() })]);
                 __v
             };
         } else {
             steps = {
                 let mut __v = steps;
-                __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources".to_string(), "phase": "code".to_string(), "action": "noop".to_string() }), serde_json::json!({ "id": "deploy_code".to_string(), "label": "Code unchanged - skip deploy".to_string(), "phase": "code".to_string(), "action": "noop".to_string() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Finalize".to_string(), "phase": "finalize".to_string(), "action": "noop".to_string() })]);
+                __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources".to_string(), "phase": "code".to_string(), "action": "noop".to_string() })]);
+                let hub = veil_local_fs::LocalFs::projects_dir();
+                let root = veil_local_fs::LocalFs::join(hub.clone(), slug.clone());
+                let hook_steps = crate::hooks::plan_hook_steps(std::path::Path::new(&root));
+                if hook_steps.is_empty() {
+                    __v.push(serde_json::json!({ "id": "run_hooks".to_string(), "label": "Run deploy hooks (none declared)".to_string(), "phase": "hooks".to_string(), "action": "noop".to_string() }));
+                } else {
+                    __v.extend(hook_steps);
+                }
+                __v.extend(vec![serde_json::json!({ "id": "deploy_code".to_string(), "label": "Code unchanged - skip deploy".to_string(), "phase": "code".to_string(), "action": "noop".to_string() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Finalize".to_string(), "phase": "finalize".to_string(), "action": "noop".to_string() })]);
                 __v
             };
         };
@@ -2273,7 +2342,7 @@ impl DeployExec for LocalDeployExec {
             __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources".to_string(), "status": "pending".to_string(), "detail": "".to_string() }), serde_json::json!({ "id": "deploy_code".to_string(), "label": "Deploy binary to Lambda".to_string(), "status": "pending".to_string(), "detail": "".to_string() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Record provision state".to_string(), "status": "pending".to_string(), "detail": "".to_string() })]);
             __v
         };
-        let steps_total = 7 + unit_count;
+        let steps_total = 8 + unit_count;
         let job = serde_json::json!({ "job_id": job_id.clone(), "project_slug": project_slug.clone(), "environment": environment.clone(), "repo_id": "".to_string(), "branch": "main".to_string(), "status": "pending".to_string(), "summary": "Queued".to_string(), "error": serde_json::Value::Null, "percent": 0, "steps_done": 0, "steps_total": steps_total.clone(), "started_at": now.clone(), "updated_at": now.clone(), "finished_at": "".to_string(), "cursor": "load_config".to_string(), "stack_base": base.clone(), "ddb_name": ddb_name.clone(), "sns_name": sns_name.clone(), "sqs_name": sqs_name.clone(), "lambda_api": lambda_api.clone(), "lambda_consumer": lambda_consumer.clone(), "unit_count": unit_count.clone(), "u0": u0.clone(), "t0": t0.clone(), "f0": f0.clone(), "u1": u1.clone(), "t1": t1.clone(), "f1": f1.clone(), "u2": u2.clone(), "t2": t2.clone(), "f2": f2.clone(), "steps": steps.clone() });
         veil_local_fs::LocalFs::write(path.clone(), serde_json::to_string(&job)?)
             .map_err(|e| DomainError::External(e.to_string()))?;
@@ -2407,7 +2476,7 @@ impl DeployExec for LocalDeployExec {
             __v.extend(vec![serde_json::json!({ "id": "compile".to_string(), "label": "Compile project sources".to_string(), "status": "pending".to_string(), "detail": "".to_string() }), serde_json::json!({ "id": "deploy_code".to_string(), "label": "Deploy binary to Lambda".to_string(), "status": "pending".to_string(), "detail": "".to_string() }), serde_json::json!({ "id": "finalize".to_string(), "label": "Record provision state".to_string(), "status": "pending".to_string(), "detail": "".to_string() })]);
             __v
         };
-        let steps_total = 7 + unit_count;
+        let steps_total = 8 + unit_count;
         let job = serde_json::json!({ "job_id": job_id.clone(), "project_slug": slug.clone(), "environment": environment.clone(), "repo_id": repo_id.clone(), "branch": branch.clone(), "status": "pending".to_string(), "summary": "Queued".to_string(), "error": serde_json::Value::Null, "percent": 0, "steps_done": 0, "steps_total": steps_total.clone(), "started_at": now.clone(), "updated_at": now.clone(), "finished_at": "".to_string(), "cursor": "load_config".to_string(), "stack_base": base.clone(), "ddb_name": ddb_name.clone(), "sns_name": sns_name.clone(), "sqs_name": sqs_name.clone(), "lambda_api": lambda_api.clone(), "lambda_consumer": lambda_consumer.clone(), "unit_count": unit_count.clone(), "u0": u0.clone(), "t0": t0.clone(), "f0": f0.clone(), "u1": u1.clone(), "t1": t1.clone(), "f1": f1.clone(), "u2": u2.clone(), "t2": t2.clone(), "f2": f2.clone(), "steps": steps.clone() });
         veil_local_fs::LocalFs::write(path.clone(), serde_json::to_string(&job)?)
             .map_err(|e| DomainError::External(e.to_string()))?;

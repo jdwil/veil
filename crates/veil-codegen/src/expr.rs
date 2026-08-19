@@ -114,6 +114,13 @@ pub struct GenCtx {
     pub statement_specs: HashMap<String, veil_ir::layer::StatementSpec>,
     /// Bare enum variant → enum type (`Healthy` → `DaemonStatus`).
     pub enum_variants: HashMap<String, String>,
+    /// Unit-only enums (`enum TargetVariant { Api, Consumer }`). These derive
+    /// `Copy` — never `.clone()` them.
+    pub unit_enums: HashSet<String>,
+    /// How many times each ident is read in the enclosing fn. 0/1 → move, no clone.
+    pub ident_uses: HashMap<String, usize>,
+    /// Loop bindings that are `&T` (shared-ref for). Owned slots must `.clone()`.
+    pub ref_elem_locals: HashSet<String>,
 }
 
 impl GenCtx {
@@ -151,6 +158,9 @@ impl GenCtx {
             self_field_types: HashMap::new(),
             statement_specs: HashMap::new(),
             enum_variants: HashMap::new(),
+            unit_enums: HashSet::new(),
+            ident_uses: HashMap::new(),
+            ref_elem_locals: HashSet::new(),
         }
     }
 
@@ -340,6 +350,16 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
 
         // Bare enum variants (`Healthy`) → `DaemonStatus::Healthy`.
         if c.shape == Shape::Enum {
+            let unit_only = if !c.rich_variants.is_empty() {
+                c.rich_variants
+                    .iter()
+                    .all(|v| matches!(v, EnumVariant::Unit(_)))
+            } else {
+                !c.variants.is_empty()
+            };
+            if unit_only {
+                ctx.unit_enums.insert(c.name.clone());
+            }
             for v in &c.variants {
                 register_enum_variant(ctx, v, &c.name);
             }
@@ -398,6 +418,14 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
             visit_constructs(c, &mut ctx, registry);
+        }
+    }
+
+    // Layer `declare` structs (DeployContext, …) are not solution items.
+    for item in crate::rust::parse_layer_declare_items(registry) {
+        if let TopLevelItem::Construct(c) = item {
+            ctx.name_to_shape.entry(c.name.clone()).or_insert(c.shape);
+            visit_constructs(&c, &mut ctx, registry);
         }
     }
 
@@ -889,6 +917,96 @@ fn rust_ty_is_copy(ty: &str) -> bool {
     )
 }
 
+fn rust_already_owned(s: &str) -> bool {
+    let t = s.trim();
+    t.ends_with(".clone()")
+        || t.ends_with(".to_string()")
+        || t.ends_with(".to_owned()")
+        || t.ends_with(".cloned()")
+        || t.contains(".map(|s| s.to_string())")
+}
+
+fn rust_string_lit(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn rust_string_lit_owned(s: &str) -> String {
+    format!("{}.to_string()", rust_string_lit(s))
+}
+
+/// VEIL `Str` *values* are owned `String`. Bare lits stay for `==` and
+/// match *patterns*. Use this for match/if arm values and other value positions.
+fn expr_to_rust_value(expr: &Expr, ctx: &GenCtx) -> String {
+    match expr {
+        Expr::StringLit(s) => rust_string_lit_owned(s),
+        other => expr_to_rust(other, ctx),
+    }
+}
+
+fn rust_ty_is_unit_enum(ty: &str, ctx: &GenCtx) -> bool {
+    let leaf = lang_type_leaf(ty);
+    ctx.unit_enums.contains(leaf) || ctx.unit_enums.contains(ty.trim())
+}
+
+fn rust_is_copy_value(expr: &Expr, rust: &str, ctx: &GenCtx) -> bool {
+    if rust.parse::<i64>().is_ok() || rust == "true" || rust == "false" {
+        return true;
+    }
+    match expr {
+        Expr::IntLit(_) | Expr::FloatLit(_) | Expr::BoolLit(_) => true,
+        Expr::Ident(n) => is_copy_local(n, ctx) || is_unit_enum_variant(n, ctx),
+        Expr::FieldAccess(base, field) => {
+            if let Expr::Ident(ty) = base.as_ref() {
+                if ctx.unit_enums.contains(ty) {
+                    return true;
+                }
+            }
+            field_access_is_copy(base, field, ctx)
+        }
+        _ => infer_expr_type(expr, ctx).as_deref().is_some_and(|t| {
+            rust_ty_is_copy(t) || rust_ty_is_unit_enum(t, ctx)
+        }),
+    }
+}
+
+fn is_unit_enum_variant(name: &str, ctx: &GenCtx) -> bool {
+    ctx.enum_variants
+        .get(name)
+        .is_some_and(|enum_ty| rust_ty_is_unit_enum(enum_ty, ctx))
+}
+
+fn should_clone_ident(name: &str, ctx: &GenCtx) -> bool {
+    if is_copy_local(name, ctx) || is_unit_enum_variant(name, ctx) {
+        return false;
+    }
+    // Shared-ref loop element (`for x in &xs`) is `&T`. Owned slots need `.clone()`.
+    if ctx.ref_elem_locals.contains(name) {
+        return true;
+    }
+    if is_ref_local(name, ctx) {
+        return false;
+    }
+    // Unknown count → clone (safe). Count of 1 → last/only use → move.
+    ctx.ident_uses.get(name).copied().unwrap_or(2) > 1
+}
+
+/// Clone a value that will be reused — never `.clone().clone()`, never Copy.
+fn clone_for_reuse(expr: &Expr, rust: String, ctx: &GenCtx) -> String {
+    if rust_already_owned(&rust) || rust_is_copy_value(expr, &rust, ctx) {
+        return rust;
+    }
+    if let Expr::Ident(n) = expr {
+        if !should_clone_ident(n, ctx) {
+            return rust;
+        }
+        return format!("{rust}.clone()");
+    }
+    if matches!(expr, Expr::FieldAccess(_, _)) {
+        return format!("{rust}.clone()");
+    }
+    rust
+}
+
 fn rust_success_is_str(ty: &str) -> bool {
     if is_str_like_return(ty) {
         return true;
@@ -939,7 +1057,7 @@ fn field_access_is_copy(base: &Expr, field: &str, ctx: &GenCtx) -> bool {
             .field_type(key, field)
             .or_else(|| ctx.field_type(key, &to_snake(field)))
         {
-            return rust_ty_is_copy(ft);
+            return rust_ty_is_copy(ft) || rust_ty_is_unit_enum(ft, ctx);
         }
     }
     false
@@ -1018,7 +1136,7 @@ fn flatten_str_add_chain(expr: &Expr) -> Vec<&Expr> {
 
 /// `format!("{}{}", ident, field)` must not move locals reused later.
 fn clone_if_named_value(expr: &Expr, rust: String) -> String {
-    if rust.ends_with(".clone()") || rust.starts_with('"') || rust.starts_with("format!(") {
+    if rust_already_owned(&rust) || rust.starts_with('"') || rust.starts_with("format!(") {
         return rust;
     }
     match expr {
@@ -1392,8 +1510,17 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // only works for structs. May need if-let destructuring when type info
             // is available.
             // VEIL field reads are reusable (not Rust moves). Clone non-Copy fields.
+            // Json / Value is indexed in place (`stack["k"]`) — do not clone the bag.
             let rust = format!("{}.{}", base_str, to_snake(field));
-            if rust.ends_with(".clone()") || field_access_is_copy(base, field, ctx) {
+            if rust.ends_with(".clone()")
+                || field_access_is_copy(base, field, ctx)
+                || infer_expr_type(
+                    &Expr::FieldAccess(base.clone(), field.clone()),
+                    ctx,
+                )
+                .as_deref()
+                .is_some_and(is_json_type_name)
+            {
                 rust
             } else {
                 format!("{rust}.clone()")
@@ -1480,8 +1607,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 && !then_is_stmt
                 && !else_is_stmt
             {
-                let then_expr = expr_to_rust(&ie.then_body[0], ctx);
-                let else_expr = expr_to_rust(&ie.else_body.as_ref().unwrap()[0], ctx);
+                let then_expr = expr_to_rust_value(&ie.then_body[0], ctx);
+                let else_expr = expr_to_rust_value(&ie.else_body.as_ref().unwrap()[0], ctx);
                 return format!("if {} {{ {} }} else {{ {} }}", cond, then_expr, else_expr);
             }
             if ctx.option_value_wrap {
@@ -1546,7 +1673,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     }
                 }
             }
-            let rhs_str = expr_to_rust(rhs, ctx);
+            let rhs_str = match rhs.as_ref() {
+                Expr::StringLit(s) => rust_string_lit_owned(s),
+                _ => expr_to_rust(rhs, ctx),
+            };
             // Field assignment: `wt.name = x` stored as Assign("wt.name", …)
             // Emit path with snake_case fields; never introduce a `let` binding.
             if name.contains('.') {
@@ -1625,7 +1755,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     }
                 }
             }
-            let rhs_str = expr_to_rust(rhs, ctx);
+            let rhs_str = match rhs.as_ref() {
+                Expr::StringLit(s) => rust_string_lit_owned(s),
+                _ => expr_to_rust(rhs, ctx),
+            };
             // Reassignment of an already-bound local (e.g. `mut req` inside while).
             if ctx.is_local(name) {
                 return format!("{} = {}", name, rhs_str);
@@ -1635,7 +1768,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 None => format!("let mut {} = {}", name, rhs_str),
             }
         }
-        Expr::StringLit(s) => format!("\"{}\".to_string()", s),
+        Expr::StringLit(s) => rust_string_lit(s),
         Expr::IntLit(n) => n.to_string(),
         Expr::FloatLit(f) => f.to_string(),
         Expr::BoolLit(b) => b.to_string(),
@@ -1650,7 +1783,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 // `ret Err e` parses as a call `Err(e)` or ident chain; handle a
                 // call whose target is Err.
                 Expr::Call(c) if c.target == "Err" && c.method.is_empty() => {
-                    let a = c.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ");
+                    let a = c.args.iter().map(|e| expr_to_rust_value(e, ctx)).collect::<Vec<_>>().join(", ");
                     if a.is_empty() {
                         "return Err(DomainError::Validation(\"error\".to_string()))".to_string()
                     } else if a.starts_with("DomainError::") {
@@ -1677,7 +1810,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     format!("return Ok({})", if a.is_empty() { "()".to_string() } else { a })
                 }
                 _ => {
-                    let val = expr_to_rust(inner, ctx);
+                    let val = expr_to_rust_value(inner, ctx);
                     // Check if the function returns Result<...> — if so, wrap in Ok().
                     let returns_result = ctx
                         .expected_return_rust
@@ -1742,6 +1875,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 Expr::StringLit(s) => format!(
                     "{b}.get(\"{s}\").cloned().ok_or(DomainError::NotFound)?"
                 ),
+                Expr::IntLit(n) => list_index_get_rust(&b, &n.to_string(), base, ctx),
                 // Dynamic key (e.g. params[p.name] on serde_json::Value)
                 other => {
                     let i = expr_to_rust(other, ctx);
@@ -1749,7 +1883,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         Expr::Ident(n) => ctx.local_type(n).unwrap_or(""),
                         _ => "",
                     };
-                    // Integer / usize indices → slice/vec indexing, never `.as_str()`.
+                    // Integer / usize indices → owned element, never a borrow.
                     let idx_is_int = matches!(other, Expr::IntLit(_))
                         || matches!(
                             other,
@@ -1764,7 +1898,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                             )
                         );
                     if idx_is_int {
-                        format!("{b}[({i}) as usize]")
+                        list_index_get_rust(&b, &format!("({i})"), base, ctx)
                     } else if base_ty.contains("Value") || base_ty == "Json" || base_ty.is_empty()
                     {
                         // String-keyed JSON map access.
@@ -1818,15 +1952,28 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // Bang already emits try (`?` / `.await?`) for Res. If the success
             // type is still Option, we must unwrap that too — do not treat a
             // trailing `?` as "already fully present".
-            let still_option = infer_expr_type(inner, ctx)
-                .as_deref()
-                .is_some_and(|t| peel_option_rust(t).is_some());
-            if still_option {
-                format!("{s}.ok_or(DomainError::NotFound)?")
-            } else if s.trim_end().ends_with('?') {
-                s
+            let ty = infer_expr_type(inner, ctx);
+            if expr_is_json(inner, ctx)
+                || ty.as_deref().is_some_and(is_json_type_name)
+            {
+                // `require context.stack.topic_arn` → present JSON string.
+                format!(
+                    "{s}.as_str().map(|s| s.to_string()).ok_or(DomainError::NotFound)?"
+                )
             } else {
-                format!("{s}.ok_or(DomainError::NotFound)?")
+                let still_option = ty.as_deref().is_some_and(|t| peel_option_rust(t).is_some());
+                if still_option {
+                    format!("{s}.ok_or(DomainError::NotFound)?")
+                } else if s.trim_end().ends_with('?') {
+                    s
+                } else if ty.as_deref().is_some_and(|t| {
+                    rust_ty_is_stringish(t) || t == "i64" || t == "bool" || t.starts_with("Vec<")
+                }) {
+                    // Already a present value (e.g. `a.args[0]` after cloned get).
+                    s
+                } else {
+                    format!("{s}.ok_or(DomainError::NotFound)?")
+                }
             }
         },
         Expr::StructUpdate { name, fields, base } => { let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", "); format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)) }
@@ -1868,16 +2015,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 // Clone ident and field access values to prevent move issues.
                 // Skip copy/null/bools so we don't emit `None.clone()`.
                 let cloned = match v {
-                    Expr::Ident(n)
-                        if n == "null"
-                            || n == "true"
-                            || n == "false"
-                            || is_copy_local(n, ctx) =>
-                    {
-                        v_str.clone()
-                    }
-                    Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{}.clone()", v_str),
-                    _ => v_str.clone(),
+                    Expr::StringLit(s) => rust_string_lit_owned(s),
+                    _ => clone_for_reuse(v, v_str.clone(), ctx),
                 };
                 // Type-aware coercion: when a field value is serde_json::Value
                 // but the target struct field expects a typed value, auto-convert.
@@ -1889,7 +2028,10 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     };
                     if val_ty.as_deref() == Some("serde_json::Value") {
                         match field_ty {
-                            "String" => format!("{}.as_str().unwrap_or(\"\").to_string()", cloned.trim_end_matches(".clone()")),
+                            "String" => format!(
+                                "{}.as_str().map(|s| s.to_string()).unwrap_or_default()",
+                                cloned.trim_end_matches(".clone()")
+                            ),
                             "bool" => format!("{}.as_bool().unwrap_or(false)", cloned.trim_end_matches(".clone()")),
                             "i64" => format!("{}.as_i64().unwrap_or(0)", cloned.trim_end_matches(".clone()")),
                             "f64" => format!("{}.as_f64().unwrap_or(0.0)", cloned.trim_end_matches(".clone()")),
@@ -1914,7 +2056,15 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 } else {
                     cloned
                 };
-                if k == &v_str { format!("{}: {}.clone()", k, k) } else { format!("{}: {}", to_snake(k), coerced) }
+                // Field-init shorthand when the value is already the field name
+                // (`status` not `status: status.clone()`). Never force `.clone()`
+                // here — `clone_for_reuse` already decided Copy / last-use.
+                let field = to_snake(k);
+                if coerced == field || coerced == *k {
+                    coerced
+                } else {
+                    format!("{field}: {coerced}")
+                }
             }).collect::<Vec<_>>().join(", ");
             format!("{} {{ {} }}", name, fs)
         }
@@ -2006,7 +2156,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                 }
                 arm_ctx.mut_locals.extend(analyze_mut_locals(&arm.body));
                 let body_str = if arm.body.len() == 1 {
-                    expr_to_rust(&arm.body[0], &arm_ctx)
+                    expr_to_rust_value(&arm.body[0], &arm_ctx)
                 } else {
                     format!(
                         "{{\n{}\n    }}",
@@ -2026,9 +2176,24 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
         }
         Expr::ForLoop { binding, index, iterable, body } => {
             let mut iter_str = expr_to_rust(iterable, ctx);
-            // Avoid moving struct fields reused across loops (while + second for).
-            // Skip bare idents: they are often already `&[T]` (e.g. Dynamo items()).
-            if matches!(iterable.as_ref(), Expr::FieldAccess(_, _))
+            // Iterate Vec/List fields by shared ref — no clone of the collection.
+            // Do NOT prefix `&` on Calls: `result.items()` already returns `&[T]`.
+            // `&result.items()` is `&&[T]` and is not IntoIterator (SL-028).
+            let elem_copy = element_type_of(iterable, ctx)
+                .as_deref()
+                .is_some_and(|t| rust_ty_is_copy(t) || rust_ty_is_unit_enum(t, ctx));
+            let iterable_is_call = matches!(iterable.as_ref(), Expr::Call(_));
+            if !elem_copy
+                && !iterable_is_call
+                && !iter_str.starts_with('&')
+                && !iter_str.ends_with(".iter()")
+                && !iter_str.ends_with(".into_iter()")
+            {
+                let base = iter_str
+                    .strip_suffix(".clone()")
+                    .unwrap_or(iter_str.as_str());
+                iter_str = format!("&{base}");
+            } else if matches!(iterable.as_ref(), Expr::FieldAccess(_, _))
                 && !iter_str.ends_with(".clone()")
                 && !iter_str.ends_with(".iter()")
             {
@@ -2047,26 +2212,15 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             if let Some(elem) = element_type_of(iterable, ctx) {
                 body_ctx.local_types.insert(binding.clone(), elem);
             }
+            // Shared-ref iteration: the binding is `&T`. Last-use must not move it.
+            if !elem_copy && iter_str.starts_with('&') {
+                body_ctx.ref_elem_locals.insert(binding.clone());
+            }
             if let Some(idx) = index {
                 body_ctx.locals.insert(idx.clone());
             }
             body_ctx.mut_locals.extend(analyze_mut_locals(body));
-            let mut body_lines = Vec::new();
-            for e in body {
-                let line = expr_to_rust(e, &body_ctx);
-                if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
-                    if !name.contains('.') {
-                        body_ctx.locals.insert(name.clone());
-                        // Infer and track the type so subsequent statements can use it
-                        // (e.g. for Option<T> auto-unwrap in push calls).
-                        if let Some(t) = infer_expr_type(rhs, &body_ctx) {
-                            body_ctx.local_types.insert(name.clone(), t);
-                        }
-                    }
-                }
-                body_lines.push(format!("        {};", line));
-            }
-            let body_str = body_lines.join("\n");
+            let body_str = emit_tracked_block(body, &body_ctx, "    ");
             let enumerate = if index.is_some() { ".enumerate()" } else { "" };
             // If the iterable type is Option<_>, unwrap to empty default; else as-is.
             let iter_expr = if let Expr::Ident(name) = iterable.as_ref() {
@@ -2082,7 +2236,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             } else {
                 iter_str
             };
-            format!("for {} in {}{} {{\n{}\n    }}", bind, iter_expr, enumerate, body_str)
+            format!("for {bind} in {iter_expr}{enumerate} {{\n{body_str}\n}}")
         }
         Expr::WhileLoop { condition, body } => {
             let cond_str = expr_to_rust(condition, ctx);
@@ -2654,7 +2808,9 @@ fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
             Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
             // sqlx Executor is implemented for `&Pool`, not `Pool`.
             Expr::Ident(n) if n == "pool" => "&self.pool".to_string(),
-            Expr::Ident(n) if ctx.is_local(n) => format!("{}.clone()", n),
+            Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
+                format!("{n}.clone()")
+            }
             Expr::FieldAccess(base, field)
                 if field == "pool"
                     && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
@@ -2700,9 +2856,10 @@ fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: &[Ex
                 } else {
                     // Normal clone behavior for non-ref params
                     match a {
-                        Expr::Ident(n) if ctx.is_local(n) && !is_copy_local(n, ctx) => {
-                            format!("{}.clone()", n)
+                        Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
+                            format!("{n}.clone()")
                         }
+                        Expr::StringLit(s) => rust_string_lit_owned(s),
                         _ => expr_to_rust(a, ctx),
                     }
                 }
@@ -2786,25 +2943,134 @@ fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: &[Ex
         .join(", ")
 }
 
-/// Check if an expression is rooted in a local whose type is serde_json::Value.
-/// Handles arbitrary depth of FieldAccess chains.
+fn is_json_type_name(ty: &str) -> bool {
+    let t = ty.trim();
+    t == "serde_json::Value" || t == "Json" || t.ends_with("::Value") && t.contains("serde_json")
+}
+
+fn expr_is_json(expr: &Expr, ctx: &GenCtx) -> bool {
+    is_json_rooted_expr(expr, ctx)
+        || infer_expr_type(expr, ctx)
+            .as_deref()
+            .is_some_and(is_json_type_name)
+}
+
+fn list_elem_is_cloneable(base: &Expr, ctx: &GenCtx) -> bool {
+    let ty = match base {
+        Expr::Ident(n) => ctx.local_type(n).map(|s| s.to_string()),
+        _ => infer_expr_type(base, ctx),
+    };
+    // Check the container type first — `element_type_of` peels `Box<dyn Trait>`
+    // down to `Trait`, which would look cloneable.
+    if let Some(ref t) = ty {
+        if t.contains("dyn ") {
+            return false;
+        }
+    }
+    if let Some(elem) = element_type_of(base, ctx) {
+        if elem.contains("dyn ") {
+            return false;
+        }
+        if ctx.name_to_shape.get(&elem) == Some(&Shape::Trait) {
+            return false;
+        }
+    }
+    true
+}
+
+fn list_index_get_rust(base_rust: &str, idx_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
+    // Integer literals are already `usize`-compatible for `get`.
+    let idx = if idx_rust.chars().all(|c| c.is_ascii_digit()) {
+        idx_rust.to_string()
+    } else {
+        format!("({idx_rust}) as usize")
+    };
+    let recv = base_rust
+        .strip_suffix(".clone()")
+        .unwrap_or(base_rust);
+    if list_elem_is_cloneable(base, ctx) {
+        format!("{recv}.get({idx}).cloned().ok_or(DomainError::NotFound)?")
+    } else {
+        format!("{recv}.get({idx}).ok_or(DomainError::NotFound)?")
+    }
+}
+
+fn list_first_rust(base_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
+    if list_elem_is_cloneable(base, ctx) {
+        format!("{base_rust}.first().cloned().ok_or(DomainError::NotFound)?")
+    } else {
+        format!("{base_rust}.first().ok_or(DomainError::NotFound)?")
+    }
+}
+
+/// Lower `local.field.nested` — struct fields stay `.field`; once a field is Json,
+/// remaining segments become `["key"]` indexes.
+fn lower_dotted_local_path(target: &str, ctx: &GenCtx) -> String {
+    let mut parts = target.split('.');
+    let Some(first) = parts.next() else {
+        return target.to_string();
+    };
+    let mut rust = first.to_string();
+    let mut ty = ctx.local_type(first).map(|s| s.to_string());
+    let mut json_mode = ty.as_deref().is_some_and(is_json_type_name);
+    for seg in parts {
+        let field = to_snake(seg);
+        if json_mode {
+            rust = format!("{rust}[\"{seg}\"]");
+            continue;
+        }
+        if let Some(t) = ty.as_deref() {
+            if let Some(ft) = ctx
+                .field_type(t, seg)
+                .or_else(|| ctx.field_type(t, &field))
+            {
+                if is_json_type_name(ft) {
+                    rust = format!("{rust}.{field}.clone()");
+                    json_mode = true;
+                    ty = Some(ft.to_string());
+                    continue;
+                }
+                rust = format!("{rust}.{field}.clone()");
+                ty = Some(ft.to_string());
+                continue;
+            }
+        }
+        rust = format!("{rust}.{field}");
+    }
+    rust
+}
+
+/// Check if an expression is rooted in a Json / serde_json::Value.
+/// Handles field access on typed structs whose field is Json (`context.stack.topic_arn`).
 fn is_json_rooted_expr(expr: &Expr, ctx: &GenCtx) -> bool {
     match expr {
-        Expr::Ident(name) => {
-            ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value")
+        Expr::Ident(name) => ctx.is_local(name) && ctx.local_type(name).is_some_and(is_json_type_name),
+        Expr::FieldAccess(base, field) => {
+            if is_json_rooted_expr(base, ctx) {
+                return true;
+            }
+            if let Expr::Ident(name) = base.as_ref() {
+                if let Some(type_name) = ctx.local_type(name) {
+                    if ctx
+                        .field_type(type_name, field)
+                        .or_else(|| ctx.field_type(type_name, &to_snake(field)))
+                        .is_some_and(is_json_type_name)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
         }
-        Expr::FieldAccess(base, _) => is_json_rooted_expr(base, ctx),
         _ => false,
     }
 }
 
 /// A local whose inferred type is a Copy scalar (int/bool/float) — no clone.
 fn is_copy_local(name: &str, ctx: &GenCtx) -> bool {
-    matches!(
-        ctx.local_type(name),
-        Some("i64") | Some("i32") | Some("u64") | Some("u32")
-            | Some("usize") | Some("isize") | Some("f64") | Some("f32") | Some("bool")
-    )
+    ctx.local_type(name).is_some_and(|t| {
+        rust_ty_is_copy(t) || rust_ty_is_unit_enum(t, ctx)
+    })
 }
 
 /// Locals that are already references / trait objects / slices — `.clone()` is a no-op.
@@ -2976,7 +3242,16 @@ fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
             Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
             Expr::Ident(n) if n == "pool" => "&self.pool".to_string(),
-            Expr::Ident(n) if ctx.is_local(n) => format!("{n}.clone()"),
+            Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
+                format!("{n}.clone()")
+            }
+            Expr::StringLit(s)
+                if param_ty.is_some_and(|t| {
+                    rust_ty_is_stringish(t) && !t.starts_with('&') && t != "str"
+                }) =>
+            {
+                rust_string_lit_owned(s)
+            }
             Expr::FieldAccess(base, field)
                 if field == "pool" && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
             {
@@ -3033,7 +3308,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         Some(expr_to_rust(recv, ctx))
     } else if !call.target.is_empty()
         && !ctx.is_trait_target(&call.target)
-        && (call.method == "get" || call.method == "len")
+        && (call.method == "get"
+            || call.method == "len"
+            || call.method == "first"
+            || call.method == "first!")
         && ctx.local_type(&call.target) != Some("serde_json::Value")
     {
         Some(call.target.clone())
@@ -3084,8 +3362,15 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             };
             if !is_string_arg && (arg_is_index_like || base_is_list) {
                 let idx = expr_to_rust(&call.args[0], ctx);
-                return format!("{}[({}) as usize]", base, idx);
+                let fallback = Expr::Ident(call.target.clone());
+                let recv_expr = call.receiver.as_deref().unwrap_or(&fallback);
+                return list_index_get_rust(&base, &format!("({idx})"), recv_expr, ctx);
             }
+        }
+        if (call.method == "first" || call.method == "first!") && call.args.is_empty() {
+            let fallback = Expr::Ident(call.target.clone());
+            let recv_expr = call.receiver.as_deref().unwrap_or(&fallback);
+            return list_first_rust(&base, recv_expr, ctx);
         }
         if call.method == "len" && call.args.is_empty() {
             return format!("({}.len() as i64)", base);
@@ -3128,6 +3413,13 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         }
 
         let bare_conv = call.method.trim_end_matches(['!', '?']);
+        // Json / Value: as_str / as_s / to_string extract a string, never bytes.
+        if expr_is_json(recv, ctx)
+            && call.args.is_empty()
+            && matches!(bare_conv, "as_str" | "as_s" | "to_str" | "to_string")
+        {
+            return format!("{recv_str}.as_str().map(|s| s.to_string())");
+        }
         if matches!(bare_conv, "to_str" | "as_str" | "to_string") && call.args.is_empty() {
             let recv_is_string = matches!(recv.as_ref(), Expr::Ident(n) if ctx.local_type(n) == Some("String"));
             if !recv_is_string {
@@ -3195,6 +3487,9 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         }
         if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
             return format!("{recv_str}{}", parse_i64_suffix());
+        }
+        if call.args.is_empty() && method_bare(&call.method) == "parse_json" {
+            return format!("serde_json::from_str::<serde_json::Value>(&{recv_str})?");
         }
         if call.args.is_empty() {
             let recv_ty = infer_expr_type(recv, ctx);
@@ -3420,7 +3715,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             ("Int", "now_unix") | ("Int", "now") => Some("Utc::now().timestamp()".to_string()),
             ("Json", "parse") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
-                Some(format!("serde_json::from_str::<_>(&{})?", arg))
+                Some(format!(
+                    "serde_json::from_str::<serde_json::Value>(&{})?",
+                    arg
+                ))
             }
             ("Json", "stringify") if call.args.len() == 1 => {
                 let arg = expr_to_rust(&call.args[0], ctx);
@@ -3492,7 +3790,10 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 }
                 ("Json", "parse") if call.args.len() == 1 => {
                     let arg = expr_to_rust(&call.args[0], ctx);
-                    Some(format!("serde_json::from_str(&{})?", arg))
+                    Some(format!(
+                        "serde_json::from_str::<serde_json::Value>(&{})?",
+                        arg
+                    ))
                 }
                 ("Json", "stringify") if call.args.len() == 1 => {
                     let arg = expr_to_rust(&call.args[0], ctx);
@@ -3626,13 +3927,8 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         };
         // Clone args to avoid move issues (idents and field access like `repo.slug`)
         let cloned = call.args.iter()
-            .map(|a| {
-                let s = expr_to_rust(a, ctx);
-                match a {
-                    Expr::Ident(_) | Expr::FieldAccess(_, _) => format!("{}.clone()", s),
-                    _ => s,
-                }
-            }).collect::<Vec<_>>().join(", ");
+            .map(|a| clone_for_reuse(a, expr_to_rust(a, ctx), ctx))
+            .collect::<Vec<_>>().join(", ");
         // `Type.default()` → `Type::default()` (requires Default impl from smart ctor).
         if method == "default" && call.args.is_empty() {
             return format!("{}::default()", qualified);
@@ -3846,7 +4142,16 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // which indicates a variant constructor (e.g. AttributeValue.S(pk)).
         if ctx.name_to_shape.get(effective_target.as_str()) == Some(&Shape::Enum) || is_pascal_ctor {
             let m = rust_method_name(method);
-            return format!("{}::{}({})", qualified, m, args_str);
+            let ctor_args = call
+                .args
+                .iter()
+                .map(|a| match a {
+                    Expr::StringLit(s) => rust_string_lit_owned(s),
+                    other => clone_for_reuse(other, expr_to_rust(other, ctx), ctx),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!("{}::{}({})", qualified, m, ctor_args);
         }
         // Prefer stub-qualified path (aws_sdk_s3::Client) over VEIL alias (S3Client).
         // Keep PascalCase for enum variants: AttributeValue::S(x), not ::s(x).
@@ -3862,30 +4167,26 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 
     // `local.field.method(args)` — parser keeps dotted target "initiative.id".
     // Emit `initiative.id.method(...)`, never `id::method(...)`.
+    // When a field is Json (`context.stack.topic_arn`), remaining segs are Value keys.
     if call.target.contains('.') && !call.target.starts_with("self.") {
         let first = call.target.split('.').next().unwrap_or("");
         if ctx.is_local(first) {
-            let path = call
-                .target
-                .split('.')
-                .enumerate()
-                .map(|(i, seg)| {
-                    if i == 0 {
-                        seg.to_string()
-                    } else {
-                        to_snake(seg)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(".");
+            let path = lower_dotted_local_path(&call.target, ctx);
             let method = rust_method_name(&call.method);
+            if call.args.is_empty()
+                && matches!(method_bare(&call.method), "as_str" | "as_s" | "to_str" | "to_string")
+            {
+                return format!("{path}.as_str().map(|s| s.to_string())");
+            }
+            if call.args.is_empty() && method_bare(&call.method) == "first" {
+                let recv_expr = Expr::Ident(first.to_string());
+                return list_first_rust(&path, &recv_expr, ctx);
+            }
             let suffix = receiver_call_suffix(
                 &Expr::Ident(first.to_string()),
                 &call.method,
                 ctx,
             );
-            // Clone String fields when calling to_string-like methods is unnecessary;
-            // for by-value SDK args, Uuid/DateTime Display paths use to_string().
             return format!(
                 "{}.{}({}){}",
                 path,
@@ -3911,6 +4212,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     "self.{}{}",
                     to_snake(field),
                     parse_i64_suffix()
+                );
+            }
+            if call.args.is_empty() && method_bare(&call.method) == "parse_json" {
+                return format!(
+                    "serde_json::from_str::<serde_json::Value>(&self.{})?",
+                    to_snake(field)
                 );
             }
             let method = rust_method_name(&call.method);
@@ -4039,6 +4346,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         }
         if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
             return format!("{}{}", call.target, parse_i64_suffix());
+        }
+        if call.args.is_empty() && method_bare(&call.method) == "parse_json" {
+            return format!(
+                "serde_json::from_str::<serde_json::Value>(&{})?",
+                call.target
+            );
         }
         if call.args.is_empty() && method_bare(&call.method) == "as_n" {
             return format!(
@@ -4481,6 +4794,12 @@ fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             if call.args.is_empty() && m_clean == "parse_int" {
                 return format!("{}{}", call.target, parse_i64_suffix());
             }
+            if call.args.is_empty() && m_clean == "parse_json" {
+                return format!(
+                    "serde_json::from_str::<serde_json::Value>(&{})?",
+                    call.target
+                );
+            }
             // Phase 2: as_s on closure params (DDB AttributeValue)
             if call.args.is_empty()
                 && should_own_str_result(ctx, ctx.local_type(&call.target), &call.method)
@@ -4800,7 +5119,14 @@ pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
             }
             format!("    {};", expr_to_rust(expr, ctx))
         }
-        _ => format!("    {};", expr_to_rust(expr, ctx)),
+        _ => {
+            let rust = expr_to_rust(expr, ctx);
+            if is_rust_block_stmt(expr) {
+                indent_lines(&rust, "    ")
+            } else {
+                format!("    {};", rust.trim_end_matches(';'))
+            }
+        }
     }
 }
 
@@ -4967,6 +5293,9 @@ impl GenCtx {
             self_field_types: self.self_field_types.clone(),
             statement_specs: self.statement_specs.clone(),
             enum_variants: self.enum_variants.clone(),
+            unit_enums: self.unit_enums.clone(),
+            ident_uses: self.ident_uses.clone(),
+            ref_elem_locals: self.ref_elem_locals.clone(),
         }
     }
 }
@@ -5023,7 +5352,11 @@ fn emit_block_lines(body: &[Expr], ctx: &GenCtx, indent: &str, last_is_value: bo
         if is_last && last_is_value {
             body_ctx.option_value_wrap = ctx.option_value_wrap;
         }
-        let line = expr_to_rust(e, &body_ctx);
+        let rust = if is_last && last_is_value {
+            expr_to_rust_value(e, &body_ctx)
+        } else {
+            expr_to_rust(e, &body_ctx)
+        };
         if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
             if !name.contains('.') {
                 body_ctx.locals.insert(name.clone());
@@ -5032,13 +5365,41 @@ fn emit_block_lines(body: &[Expr], ctx: &GenCtx, indent: &str, last_is_value: bo
                 }
             }
         }
-        if is_last && last_is_value {
-            lines.push(format!("{indent}{line}"));
+        let semi = !(is_last && last_is_value) && !is_rust_block_stmt(e);
+        let piece = if semi {
+            format!("{};", rust.trim_end_matches(';'))
         } else {
-            lines.push(format!("{indent}{line};"));
-        }
+            rust
+        };
+        lines.push(indent_lines(&piece, indent));
     }
     lines.join("\n")
+}
+
+fn is_rust_block_stmt(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::IfExpr(_)
+            | Expr::ForLoop { .. }
+            | Expr::WhileLoop { .. }
+            | Expr::Loop(_)
+            | Expr::Match(_, _)
+            | Expr::IfLet { .. }
+            | Expr::WhileLet { .. }
+    )
+}
+
+fn indent_lines(s: &str, indent: &str) -> String {
+    s.lines()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{indent}{l}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Names that need `let mut` on first bind: explicit `mut`, reassignment,
@@ -5050,6 +5411,257 @@ pub fn analyze_mut_locals(body: &[Expr]) -> HashSet<String> {
         walk_mut_needs(e, &mut needs, &mut bound);
     }
     needs
+}
+
+/// How many times each ident is *read* (not bound) in `body`.
+pub fn count_ident_uses(body: &[Expr]) -> HashMap<String, usize> {
+    let mut m = HashMap::new();
+    for e in body {
+        walk_ident_reads(e, &mut m);
+    }
+    m
+}
+
+pub fn count_ident_uses_in_steps(steps: &[FlowStep]) -> HashMap<String, usize> {
+    let mut m = HashMap::new();
+    for step in steps {
+        match step {
+            FlowStep::Step(s) => {
+                for e in &s.body {
+                    walk_ident_reads(e, &mut m);
+                }
+            }
+            FlowStep::Parallel(par) => {
+                for s in &par.steps {
+                    for e in &s.body {
+                        walk_ident_reads(e, &mut m);
+                    }
+                }
+            }
+            FlowStep::Match(md) => {
+                walk_ident_reads(&md.expr, &mut m);
+                for arm in &md.arms {
+                    for e in &arm.body {
+                        walk_ident_reads(e, &mut m);
+                    }
+                }
+            }
+        }
+    }
+    m
+}
+
+fn walk_ident_reads(e: &Expr, m: &mut HashMap<String, usize>) {
+    match e {
+        Expr::Ident(n) => {
+            *m.entry(n.clone()).or_insert(0) += 1;
+        }
+        Expr::FieldAccess(base, _) => walk_ident_reads(base, m),
+        Expr::Call(c) => {
+            if !c.target.is_empty()
+                && c.target
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_lowercase() || ch == '_')
+            {
+                *m.entry(c.target.clone()).or_insert(0) += 1;
+            }
+            if let Some(r) = &c.receiver {
+                walk_ident_reads(r, m);
+            }
+            for a in &c.args {
+                walk_ident_reads(a, m);
+            }
+        }
+        Expr::BinaryOp(op) => {
+            walk_ident_reads(&op.left, m);
+            walk_ident_reads(&op.right, m);
+        }
+        Expr::UnaryOp(op) => walk_ident_reads(&op.expr, m),
+        Expr::IfExpr(ie) => {
+            walk_ident_reads(&ie.condition, m);
+            for x in &ie.then_body {
+                walk_ident_reads(x, m);
+            }
+            if let Some(eb) = &ie.else_body {
+                for x in eb {
+                    walk_ident_reads(x, m);
+                }
+            }
+        }
+        Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
+            if name.contains('.') {
+                if let Some(base) = name.split('.').next() {
+                    *m.entry(base.to_string()).or_insert(0) += 1;
+                }
+            }
+            walk_ident_reads(rhs, m);
+        }
+        Expr::Return(inner)
+        | Expr::Await(inner)
+        | Expr::Try(inner)
+        | Expr::Require(inner)
+        | Expr::Cast(inner, _) => walk_ident_reads(inner, m),
+        Expr::Action(a) => {
+            for a in &a.args {
+                walk_ident_reads(a, m);
+            }
+            for (_, e) in &a.named_args {
+                walk_ident_reads(e, m);
+            }
+        }
+        Expr::StructLit(_, fields) | Expr::StructUpdate { fields, .. } => {
+            if let Expr::StructUpdate { base, .. } = e {
+                walk_ident_reads(base, m);
+            }
+            for (_, v) in fields {
+                walk_ident_reads(v, m);
+            }
+        }
+        Expr::Match(s, arms) => {
+            walk_ident_reads(s, m);
+            for arm in arms {
+                for x in &arm.body {
+                    walk_ident_reads(x, m);
+                }
+            }
+        }
+        Expr::ForLoop { iterable, body, .. } => {
+            walk_ident_reads(iterable, m);
+            bump_loop_reads(body, m);
+        }
+        Expr::WhileLoop { condition, body } => {
+            walk_ident_reads(condition, m);
+            bump_loop_reads(body, m);
+        }
+        Expr::WhileLet { expr: scrut, body, .. } => {
+            walk_ident_reads(scrut, m);
+            bump_loop_reads(body, m);
+        }
+        Expr::Loop(body) => {
+            bump_loop_reads(body, m);
+        }
+        Expr::IfLet {
+            expr: scrut,
+            then_body,
+            else_body,
+            ..
+        } => {
+            walk_ident_reads(scrut, m);
+            for x in then_body {
+                walk_ident_reads(x, m);
+            }
+            if let Some(eb) = else_body {
+                for x in eb {
+                    walk_ident_reads(x, m);
+                }
+            }
+        }
+        Expr::DoBlock(body) | Expr::Closure { body, .. } => {
+            for x in body {
+                walk_ident_reads(x, m);
+            }
+        }
+        Expr::Tuple(items) | Expr::ArrayLit(items) => {
+            for x in items {
+                walk_ident_reads(x, m);
+            }
+        }
+        Expr::Index(a, b) => {
+            walk_ident_reads(a, m);
+            walk_ident_reads(b, m);
+        }
+        Expr::LetPattern(_, rhs, _) => walk_ident_reads(rhs, m),
+        Expr::StringInterp(parts) => {
+            for p in parts {
+                if let StringPart::Expr(x) = p {
+                    walk_ident_reads(x, m);
+                }
+            }
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                walk_ident_reads(s, m);
+            }
+            if let Some(en) = end {
+                walk_ident_reads(en, m);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Reads inside a loop run many times — never treat them as last-use moves.
+/// Bindings introduced *in* the loop are per-iteration and keep their real count.
+fn bump_loop_reads(body: &[Expr], m: &mut HashMap<String, usize>) {
+    let mut inner = HashMap::new();
+    for x in body {
+        walk_ident_reads(x, &mut inner);
+    }
+    let local = bindings_introduced(body);
+    for (k, v) in inner {
+        let n = if local.contains(&k) { v } else { v.max(2) };
+        *m.entry(k).or_insert(0) += n;
+    }
+}
+
+fn bindings_introduced(body: &[Expr]) -> HashSet<String> {
+    let mut s = HashSet::new();
+    for e in body {
+        collect_bindings(e, &mut s);
+    }
+    s
+}
+
+fn collect_bindings(e: &Expr, s: &mut HashSet<String>) {
+    match e {
+        Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) => {
+            if !name.contains('.') {
+                s.insert(name.clone());
+            }
+            collect_bindings(rhs, s);
+        }
+        Expr::ForLoop { binding, index, body, iterable } => {
+            s.insert(binding.clone());
+            if let Some(i) = index {
+                s.insert(i.clone());
+            }
+            collect_bindings(iterable, s);
+            for x in body {
+                collect_bindings(x, s);
+            }
+        }
+        Expr::IfExpr(ie) => {
+            collect_bindings(&ie.condition, s);
+            for x in &ie.then_body {
+                collect_bindings(x, s);
+            }
+            if let Some(eb) = &ie.else_body {
+                for x in eb {
+                    collect_bindings(x, s);
+                }
+            }
+        }
+        Expr::Match(_, arms) => {
+            for arm in arms {
+                for x in &arm.body {
+                    collect_bindings(x, s);
+                }
+            }
+        }
+        Expr::WhileLoop { condition, body } => {
+            collect_bindings(condition, s);
+            for x in body {
+                collect_bindings(x, s);
+            }
+        }
+        Expr::Loop(body) | Expr::DoBlock(body) => {
+            for x in body {
+                collect_bindings(x, s);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Union of mut-local needs across flow steps (locals persist across steps).
@@ -5476,6 +6088,9 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             if call.args.is_empty() && method_bare(&call.method) == "parse_int" {
                 return Some("i64".to_string());
             }
+            if call.args.is_empty() && method_bare(&call.method) == "parse_json" {
+                return Some("serde_json::Value".to_string());
+            }
             if call.args.is_empty() && method_bare(&call.method) == "as_n" {
                 return Some("i64".to_string());
             }
@@ -5627,6 +6242,12 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
         Expr::StructLit(name, _) => Some(name.clone()),
         Expr::Ident(name) => ctx.local_type(name).map(|s| s.to_string()),
         Expr::FieldAccess(base, field) => {
+            if is_json_rooted_expr(
+                &Expr::FieldAccess(base.clone(), field.clone()),
+                ctx,
+            ) {
+                return Some("serde_json::Value".to_string());
+            }
             if let Expr::Ident(n) = base.as_ref() {
                 if n == "self" {
                     if let Some(ty) = ctx
@@ -5651,17 +6272,38 @@ fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             }
             None
         }
+        Expr::Index(base, idx) => {
+            if matches!(idx.as_ref(), Expr::IntLit(_)) {
+                return element_type_of(base, ctx);
+            }
+            if is_json_rooted_expr(base, ctx)
+                || infer_expr_type(base, ctx)
+                    .as_deref()
+                    .is_some_and(is_json_type_name)
+            {
+                return Some("serde_json::Value".to_string());
+            }
+            element_type_of(base, ctx)
+        }
         Expr::IntLit(_) => Some("i64".to_string()),
         Expr::FloatLit(_) => Some("f64".to_string()),
         Expr::BoolLit(_) => Some("bool".to_string()),
         Expr::StringLit(_) => Some("String".to_string()),
         // Layer actions (invoke, request, etc.) return serde_json::Value
         Expr::Action(_) => Some("serde_json::Value".to_string()),
-        Expr::Require(inner) => infer_expr_type(inner, ctx).map(|t| {
-            peel_option_rust(&t)
-                .map(|s| s.to_string())
-                .unwrap_or(t)
-        }),
+        Expr::Require(inner) => {
+            // `require json.field` lowers to String (as_str + ok_or). Inferring
+            // Value here makes later struct fields emit `string.as_str().unwrap_or`
+            // which does not compile (SL-027).
+            if expr_is_json(inner, ctx) {
+                return Some("String".to_string());
+            }
+            infer_expr_type(inner, ctx).map(|t| {
+                peel_option_rust(&t)
+                    .map(|s| s.to_string())
+                    .unwrap_or(t)
+            })
+        }
         _ => None,
     }
 }

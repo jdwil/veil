@@ -1617,3 +1617,512 @@ pkg App
         "emit_bin=never must not emit customer veil_bin"
     );
 }
+
+#[test]
+fn deploy_hook_emits_veil_hooks_and_skips_handler_names() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group application
+      hook Announce
+        input
+          context: DeployContext
+        step go
+          ret ()
+      handler HandlePing
+        input
+          n: Str
+        step echo
+          ret n
+"#;
+    let out = generate_example(src);
+    assert!(
+        out.contains("// ==== crates/veil_hooks/src/main.rs ===="),
+        "must emit veil_hooks bin:\n{out}"
+    );
+    assert!(
+        out.contains("veil_hooks: run Announce") || out.contains("announce"),
+        "must call the hook:\n{out}"
+    );
+    assert!(
+        out.contains("pub const HANDLER_NAMES"),
+        "register_handlers present"
+    );
+    // Bus strip Handle → Ping. Announce must not be registered.
+    let names_idx = out.find("pub const HANDLER_NAMES").expect("HANDLER_NAMES");
+    let names_slice = &out[names_idx..names_idx + 400];
+    assert!(
+        !names_slice.contains("Announce"),
+        "hooks must not be bus handlers:\n{names_slice}"
+    );
+    assert!(
+        names_slice.contains("Ping") || names_slice.contains("HandlePing"),
+        "real handler still registered:\n{names_slice}"
+    );
+}
+
+#[test]
+fn deploy_hook_context_is_shared_struct_not_string_alias() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group application
+      hook OnDeploy
+        input
+          context: DeployContext
+        step go
+          name = context.service_name
+          for c in context.constructs
+            n = c.name
+            for a in c.annotations
+              role0 = a.name
+          topic = context.stack.topic_arn.as_str()
+          leftover = Json.parse("{\"ok\":true}")
+          ret ()
+"#;
+    let out = generate_example(src);
+    assert!(
+        !out.contains("pub type DeployContext = String"),
+        "layer-declared DeployContext must not be stubbed as String:\n{}",
+        out.lines()
+            .filter(|l| l.contains("DeployContext"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("pub constructs:")
+            && out.contains("pub stack:")
+            && out.contains("struct DeployedAnnotation"),
+        "veil_shared DeployContext must be typed inventory:\n{}",
+        out.lines()
+            .filter(|l| {
+                l.contains("struct Deploy")
+                    || l.contains("pub service_name")
+                    || l.contains("pub constructs")
+                    || l.contains("pub stack")
+                    || l.contains("pub stack_json")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("context.service_name") && out.contains("context.constructs"),
+        "hook body must field-access the struct:\n{}",
+        out.lines()
+            .filter(|l| l.contains("context") || l.contains("on_deploy"))
+            .take(40)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("from_str::<serde_json::Value>")
+            || out.contains("serde_json::from_str::<serde_json::Value>"),
+        "Json.parse must lower to Value, not inferred _:\n{}",
+        out.lines()
+            .filter(|l| l.contains("from_str") || l.contains("Json"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        out.contains("[\"topic_arn\"]") || out.contains("stack.clone()[\"topic_arn\"]"),
+        "context.stack.topic_arn must JSON-index, not struct field:\n{}",
+        out.lines()
+            .filter(|l| l.contains("topic") || l.contains("stack"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        !out.contains("serde_json = \"1.0") || !out.contains("[workspace.dependencies]"),
+        "workspace must not duplicate serde_json key"
+    );
+}
+
+#[test]
+fn deploy_hook_deps_match_application_and_all_env_fields() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group domain
+      port Store
+        put!(name: Str)
+      port Extra
+        ping!()
+    group application
+      hook OnDeploy
+        input
+          context: DeployContext
+          @dep store: Store
+        step go
+          store.put!("x")
+    group infrastructure
+      adapter MemStore for Store
+        @env TABLE_NAME
+        @env TTL_SECONDS
+        impl put(name)
+          ret ()
+      adapter MemExtra for Extra
+        impl ping
+          ret ()
+"#;
+    let out = generate_example(src);
+    let app = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("application/mod.rs"))
+        .unwrap_or(&out);
+    let hooks = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("veil_hooks/src/main.rs"))
+        .unwrap_or(&out);
+    assert!(
+        app.contains("pub store:") && !app.contains("pub extra:"),
+        "application Deps is @dep ports only:\n{app}"
+    );
+    assert!(
+        hooks.contains("store:") && !hooks.contains("extra:"),
+        "veil_hooks Deps must match application, not every adapter:\n{hooks}"
+    );
+    assert!(
+        hooks.contains("table_name:") && hooks.contains("ttl_seconds:"),
+        "every @env on an adapter must become a field:\n{hooks}"
+    );
+}
+
+#[test]
+fn deploy_hook_json_require_and_args_index_compile() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group application
+      hook OnDeploy
+        input
+          context: DeployContext
+        step go
+          topic = require context.stack.topic_arn.as_str()
+          topic2 = require context.stack.topic_arn
+          topic3 = require context.stack.topic_arn.as_s!()
+          for c in context.constructs
+            for a in c.annotations
+              msg = require a.args[0]
+              msg2 = require a.args.first()
+              n = a.name
+          leftover = Json.parse("{\"ok\":true}")
+          ret ()
+"#;
+    let out = generate_example(src);
+    let app = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("application/mod.rs"))
+        .unwrap_or(&out);
+    assert!(
+        !app.contains(".as_s()"),
+        "Json as_s must lower to as_str, not Value::as_s:\n{app}"
+    );
+    assert!(
+        !app.contains("from_utf8_lossy"),
+        "Json as_str must not go through bytes:\n{app}"
+    );
+    assert!(
+        !app.contains("[\"topic_arn\"].ok_or")
+            && !app.contains("[\"topic_arn\"].ok_or("),
+        "require on Json field must extract string, not ok_or on Value:\n{app}"
+    );
+    assert!(
+        app.contains(".as_str().map(|s| s.to_string())"),
+        "Json string extract missing:\n{app}"
+    );
+    assert!(
+        app.contains(".get(0).cloned()")
+            || app.contains(".get(0 as usize).cloned()")
+            || app.contains(".get((0) as usize).cloned()"),
+        "a.args[0] must own the element:\n{app}"
+    );
+    assert!(
+        app.contains(".first().cloned()"),
+        "a.args.first() must own the element:\n{app}"
+    );
+    assert!(
+        !app.contains("[(0) as usize].ok_or"),
+        "must not ok_or a moved String from index:\n{app}"
+    );
+}
+
+#[test]
+fn require_json_field_assign_is_string_not_value_coercion() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group domain
+      val Route
+        message_name: Str
+        endpoint: Str
+    group application
+      hook OnDeploy
+        input
+          context: DeployContext
+        step go
+          topic = require context.stack.topic_arn
+          msg = require context.stack.event
+          entry = Route { message_name: msg, endpoint: topic }
+          ret ()
+"#;
+    let out = generate_example(src);
+    let app = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("application/mod.rs"))
+        .unwrap_or(&out);
+    assert!(
+        !app.contains(".as_str().unwrap_or("),
+        "require-on-Json assign is String; must not coerce with as_str().unwrap_or:\n{app}"
+    );
+    assert!(
+        app.contains("as_str().map(|s| s.to_string()).ok_or")
+            || app.contains("as_str().map(|s| s.to_string())"),
+        "require on Json field must extract String:\n{app}"
+    );
+}
+
+#[test]
+fn generated_rust_is_quality() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group domain
+      val Route
+        message_name: Str
+        endpoint: Str
+        kind: Kind
+      val StatusBox
+        status: Kind
+      enum Kind
+        Event
+        Command
+    group application
+      hook OnDeploy
+        input
+          context: DeployContext
+          status: Kind
+        step go
+          topic = require context.stack.topic_arn
+          wrapped = StatusBox { status }
+          for c in context.constructs
+            for a in c.annotations
+              for role in a.roles
+                if role == "bus_event_listener"
+                  msg = require a.args[0]
+                  entry = Route { message_name: msg, endpoint: topic, kind: Event }
+                  k = Event
+          ret ()
+"#;
+    let out = generate_example(src);
+    let app = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("application/mod.rs"))
+        .unwrap_or(&out);
+    assert!(
+        !app.contains(".clone().clone()"),
+        "never emit clone().clone():\n{app}"
+    );
+    assert!(
+        !app.contains("\"bus_event_listener\".to_string()"),
+        "string compare must use a bare lit:\n{app}"
+    );
+    assert!(
+        app.contains("role == \"bus_event_listener\"")
+            || app.contains("== \"bus_event_listener\""),
+        "expected `role == \"bus_event_listener\"`:\n{app}"
+    );
+    assert!(
+        !app.contains("0 as usize"),
+        "list index must not cast a literal to usize:\n{app}"
+    );
+    assert!(
+        !app.contains("Kind::Event.clone()") && !app.contains("Event.clone()"),
+        "unit enums are Copy:\n{app}"
+    );
+    let types = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or(&out);
+    assert!(
+        types.contains("Copy") && types.contains("enum Kind"),
+        "unit-only enums must derive Copy:\n{types}"
+    );
+    assert!(
+        !app.contains("msg.clone()"),
+        "single-use loop local must move:\n{app}"
+    );
+    assert!(
+        app.contains("for c in &context.constructs")
+            && app.contains("        for a in &c.annotations"),
+        "nested for must be indented:\n{app}"
+    );
+    assert!(
+        !app.contains("status: status.clone()") && app.contains("StatusBox { status }"),
+        "Copy struct shorthand must not force clone:\n{app}"
+    );
+    assert!(
+        !app.contains("Kind::Event.clone()"),
+        "unit enum variant in a struct field must not clone:\n{app}"
+    );
+}
+
+#[test]
+fn match_string_arm_is_owned_string() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group domain
+      enum Kind
+        Event
+        Command
+    group application
+      handler Label
+        input
+          kind: Kind
+        step go
+          s = match kind
+            Event -> "event"
+            Command -> "command"
+          ret s
+"#;
+    let out = generate_example(src);
+    let app = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("application/mod.rs"))
+        .unwrap_or(&out);
+    assert!(
+        app.contains("\"event\".to_string()") && app.contains("\"command\".to_string()"),
+        "match arm Str values must be owned String, not &str:\n{app}"
+    );
+    assert!(
+        !app.contains("kind.clone()") && !app.contains("Kind::Event.clone()"),
+        "Copy enum match scrutinee must not clone:\n{app}"
+    );
+}
+
+#[test]
+fn for_method_items_is_not_double_ref() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group domain
+      port Store
+        query!() -> Json
+    group application
+      handler List
+        input
+          @dep store: Store
+        step go
+          result = store.query!()
+          for item in result.items()
+            x = item
+          ret ()
+"#;
+    let out = generate_example(src);
+    let app = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("application/mod.rs"))
+        .unwrap_or(&out);
+    assert!(
+        !app.contains("&result.items()") && !app.contains("&result.clone().items()"),
+        "method that returns a slice must not be prefixed with &:\n{app}"
+    );
+    assert!(
+        app.contains("for item in result.items()")
+            || app.contains("for item in result.clone().items()"),
+        "expected `for item in result.items()`:\n{app}"
+    );
+}
+
+#[test]
+fn for_shared_ref_element_is_cloned_when_owned() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group domain
+      val Box
+        name: Str
+    group application
+      handler Take
+        input
+          names: List<Str>
+        step go
+          for n in names
+            item = Box { name: n }
+          ret ()
+"#;
+    let out = generate_example(src);
+    let app = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("application/mod.rs"))
+        .unwrap_or(&out);
+    assert!(
+        app.contains("for n in &names"),
+        "List field/param iterates by shared ref:\n{app}"
+    );
+    assert!(
+        app.contains("name: n.clone()") || app.contains("Box { n.clone() }"),
+        "shared-ref loop element used as Str must clone, not move:\n{app}"
+    );
+}
+
+#[test]
+fn product_redeclaration_of_layer_type_does_not_emit_local_struct() {
+    let src = r#"
+pkg HookDemo
+  use ddd
+  ctx App
+    group domain
+      val DeployContext
+        extra: Str
+    group application
+      hook OnDeploy
+        input
+          context: DeployContext
+        step go
+          n = context.service_name
+          ret ()
+"#;
+    let out = generate_example(src);
+    let types = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or(&out);
+    assert!(
+        !types.contains("struct DeployContext") && !types.contains("pub struct DeployContext"),
+        "must not emit a product DeployContext next to veil_shared:\n{types}"
+    );
+    assert!(
+        types.contains("pub use veil_shared::") && types.contains("DeployContext"),
+        "must re-export the layer type:\n{types}"
+    );
+}
+
+#[test]
+fn no_hooks_omits_veil_hooks_crate() {
+    let src = r#"
+pkg Plain
+  use ddd
+  ctx App
+    group application
+      handler HandlePing
+        input
+          n: Str
+        step echo
+          ret n
+"#;
+    let out = generate_example(src);
+    assert!(
+        !out.contains("crates/veil_hooks/"),
+        "no hook → no veil_hooks crate:\n{out}"
+    );
+}

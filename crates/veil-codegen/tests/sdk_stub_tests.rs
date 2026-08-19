@@ -1292,7 +1292,7 @@ pkg SdkApp
 "###;
     let out = generate_with_stub(AV_STUB, app);
     assert!(
-        out.contains("format!(\"{}{}\""),
+        out.contains("format!(\"{}{}{}{}\"") || out.contains("format!(\"{}{}\""),
         "Str + Str must lower to format!, not Rust +:\n{}",
         out.lines()
             .filter(|l| l.contains("LISTENER") || l.contains("format") || l.contains('+'))

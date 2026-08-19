@@ -37,6 +37,7 @@ pub fn is_platform_layer_name(stem: &str) -> bool {
             | "bus_handle"
             | "auth_local"
             | "designkit"
+            | "deploy"
     )
 }
 
@@ -150,6 +151,7 @@ mod tests {
     fn platform_names_include_ddd() {
         assert!(is_platform_layer_name("ddd"));
         assert!(is_platform_layer_name("di"));
+        assert!(is_platform_layer_name("deploy"));
         assert!(!is_platform_layer_name("agent-registry"));
         assert!(!is_platform_layer_name("acme-ddd"));
     }

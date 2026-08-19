@@ -468,6 +468,12 @@ pub async fn run_turn<P: SourceProvider>(
                         let files = p.list_files().await;
                         let allow = crate::safety::allowlist_from_env(&files);
                         crate::safety::check_write_allowed("", &allow, &files)?;
+                        let registry = p.registry();
+                        if let Some(block) =
+                            crate::agent_context::veil_errors_blocking_write(&src, &registry)
+                        {
+                            return Err(block);
+                        }
                         let prev = p.read_source("").await.ok();
                         let active_name = files
                             .iter()
@@ -1410,12 +1416,16 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
             }
         }
     }
-    // open_ide / open_project with a named project: "open the relay project"
-    if lower.contains("open_ide")
-        || (lower.contains("open the ") && lower.contains(" project"))
-        || lower.contains("open project")
-        || lower.contains("open_project")
-        || (lower.contains(" in the ide") && lower.contains("open"))
+    // open_ide / open_project with a named project: "open the relay project".
+    // Long task text that merely *mentions* those tools is not a nav command
+    // (substring match used to hijack whole ACP turns).
+    let nav_only = lower.len() < 200 && lower.matches('\n').count() < 2;
+    if nav_only
+        && (lower.contains("open_ide")
+            || (lower.contains("open the ") && lower.contains(" project"))
+            || lower.contains("open project")
+            || lower.contains("open_project")
+            || (lower.contains(" in the ide") && lower.contains("open")))
     {
         // Extract a simple project slug token after "project" or "the … project"
         let project = extract_project_slug_from_prompt(&lower).unwrap_or_default();
@@ -2291,6 +2301,18 @@ NEVER merge_branch or merge_pr unless the operator explicitly asks to merge. Hum
         assert_eq!(create.args["name"], "Agent Registry");
         assert_eq!(create.args["via"], "server");
         assert_eq!(slugify_project_name("Agent Registry"), "agent-registry");
+    }
+
+    #[test]
+    fn long_task_mentioning_open_ide_is_not_nav() {
+        let prompt = "Complete the pre-deploy hook.\n\
+             Follow layer teaching. After open_ide / select_file the pack is bound.\n\
+             Do not redefine declared types.";
+        assert!(
+            !is_structured_agent_command(prompt),
+            "long task that mentions open_ide must go to ACP, not host nav"
+        );
+        assert!(is_structured_agent_command("open_ide dlx-bus"));
     }
 
     #[test]

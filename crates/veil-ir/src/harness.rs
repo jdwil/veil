@@ -752,6 +752,7 @@ fn lower_context(
             .iter()
             .copied()
             .filter(|c| c.shape == Shape::Fn)
+            .filter(|c| !registry.construct_has_role(c, crate::deploy_hooks::DEPLOY_HOOK_ROLE))
             .map(|c| BusHandlerDecl {
                 name: c.name.clone(),
             })

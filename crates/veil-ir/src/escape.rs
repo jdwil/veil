@@ -301,8 +301,10 @@ fn check_construct_escape(
         }
     }
 
-    // Exported or top-level struct fields typed Json
-    if c.exported || at_boundary {
+    // Exported or top-level struct fields typed Json.
+    // Layer-provided types (declare blocks) are inventory, not package debt —
+    // Json on those fields is the contract, not something to "fix" by redefining.
+    if !c.layer_provided && (c.exported || at_boundary) {
         for f in &c.fields {
             flag_json_type(
                 &f.type_expr,
@@ -1071,6 +1073,31 @@ mod tests {
                 && d.message.contains("http")
                 && matches!(d.severity, Severity::Error)),
             "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn layer_provided_json_fields_are_not_escape_debt() {
+        let mut c = Construct::new(
+            "val",
+            "ValueObject",
+            Shape::Struct,
+            "InventoryBag".into(),
+            Span::new(0, 0),
+        );
+        c.layer_provided = true;
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "stack".into(),
+            type_expr: TypeExpr::Named("Json".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let diags = check_escape_hatches(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags.iter().any(|d| d.code == codes::JSON_BOUNDARY),
+            "layer-declared Json fields must not be package escape debt: {:?}",
             diags
         );
     }

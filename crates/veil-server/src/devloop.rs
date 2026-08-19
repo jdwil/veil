@@ -94,6 +94,44 @@ pub fn smoke_agent_write(
     dev.smoke_after_source_change(&rel)
 }
 
+/// rustc error lines plus the following `note:` / `help:` / caret context.
+pub fn rustc_error_excerpt(stderr: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut keep = false;
+    for line in stderr.lines() {
+        let t = line.trim_start();
+        if t.starts_with("error[") || t.starts_with("error:") {
+            out.push(line);
+            keep = true;
+        } else if keep
+            && (t.starts_with("-->")
+                || t.starts_with('|')
+                || t.starts_with("note:")
+                || t.starts_with("help:")
+                || t.starts_with("...")
+                || t.is_empty()
+                || line.starts_with(' ')
+                || line.starts_with('\t'))
+        {
+            out.push(line);
+        } else {
+            keep = false;
+        }
+        if out.len() >= 80 {
+            break;
+        }
+    }
+    let mut s = if out.is_empty() {
+        stderr.lines().take(40).collect::<Vec<_>>().join("\n")
+    } else {
+        out.join("\n")
+    };
+    if stderr.lines().count() > out.len().max(40) && out.len() >= 80 {
+        s.push_str("\n… (truncated)");
+    }
+    s
+}
+
 /// When false (`VEIL_AGENT_SMOKE=0` / `false` / `off`), skip cargo check + rollback.
 pub fn smoke_enabled() -> bool {
     match std::env::var("VEIL_AGENT_SMOKE") {
@@ -773,13 +811,9 @@ impl DevLoop {
                     true
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    // Extract just the error lines (not warnings) for concise display
-                    let errors: String = stderr
-                        .lines()
-                        .filter(|l| l.contains("error[") || l.contains("error:"))
-                        .take(15)
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    // Keep rustc notes/help that follow each error — "is ambiguous"
+                    // without the two type paths is why agents invent workarounds.
+                    let errors = rustc_error_excerpt(&stderr);
                     if let Some(state) = self.states.get_mut(target_name) {
                         state.status = TargetStatus::Error;
                         state.last_error = Some(format!("build check failed:\n{}", errors));
@@ -1905,6 +1939,27 @@ mod smoke_scope_tests {
             writeln!(f, "[package]\nname = \"{name}\"\nversion = \"0.1.0\"").unwrap();
         }
         out
+    }
+
+    #[test]
+    fn rustc_excerpt_keeps_notes_after_error() {
+        let stderr = "\
+warning: unused
+error: `Foo` is ambiguous
+   --> src/lib.rs:3:5
+    |
+  3 | use crate::Foo;
+    |
+note: `Foo` could refer to the name defined here
+   --> src/a.rs:1:1
+help: use `veil_shared::Foo`
+error: could not compile `bus`
+";
+        let excerpt = rustc_error_excerpt(stderr);
+        assert!(excerpt.contains("`Foo` is ambiguous"), "{excerpt}");
+        assert!(excerpt.contains("could refer to the name defined here"), "{excerpt}");
+        assert!(excerpt.contains("use `veil_shared::Foo`"), "{excerpt}");
+        assert!(!excerpt.contains("warning: unused"), "{excerpt}");
     }
 
     #[test]

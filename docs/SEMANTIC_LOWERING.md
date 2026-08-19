@@ -47,6 +47,35 @@ If a fix reintroduces “emit `true` so it typechecks,” it is a regression.
 | **SL-020** | Sibling `match` / `if` arms each get their own first-bind set. The same name bound independently in two arms is `let`, not `let mut`. A name bound *before* the fork and reassigned in an arm is still `mut` | rust codegen `analyze_mut_locals` |
 | **SL-021** | `Str + Str + …` flattens to one `format!("{}{}…", …)`, not nested `format!("{}{}", format!(…), …)` | rust codegen |
 | **SL-022** | `tests Target` / `it` / `stub Port.method` / `given` / `then` emit `crates/{crate}/src/tests.rs` that calls `application::{target}` with port test-doubles. Smoke is `cargo check --tests` | rust codegen + host smoke |
+| **SL-023** | `hook` (`role:deploy_hook`) emits `crates/veil_hooks` and is **absent** from `HANDLER_NAMES`. Host runs the bin after compile, before `deploy_code`, deps-first, fail closed. Engine dumps a **typed** `DeployContext.constructs` list; it does not interpret product annotation names | rust codegen + `crates/deploy` |
+| **SL-024** | Layer-declared types (`DeployContext`, …) re-export from `veil_shared`. Never emit `pub type Name = String` for them — that shadows the real struct | rust codegen `gen_types` |
+| **SL-025** | `Json.parse(s)` / `s.parse_json()` is Str→`serde_json::Value`. `Json.stringify(x)` is the inverse. Do not `use serde_json` as a stub | rust codegen + typecheck |
+| **SL-026** | `require json.field` extracts a Str (`as_str().map.ok_or?`). `as_s`/`as_str` on Json never go through `as_ref`/bytes. `list[i]` / `list.first()` / `list.get(i)` own the element (`.cloned()`) | rust codegen |
+| **SL-027** | Layer-provided types are not package escape debt. Product constructs must not reuse `declare` names (`shadows_layer_declare` rejects before rustc). Codegen never emits a local struct that shadows `veil_shared`. Teaching roots = package `use` + R21 implicit primary layer. Empty session ≠ parse error; scope tools append Tier-1 teaching. `require` on a Json field infers `String` so later struct fields are not coerced with `as_str().unwrap_or` on a String | check + codegen + host preamble |
+| **SL-028** | Generated Rust is idiomatic **and rustc-clean**: never `.clone().clone()`; string `==` uses a bare lit; unit-only enums derive `Copy` and are not cloned (including fields and variants); `list[i]` is `.get(0)` not `.get(0 as usize)`; Json fields are indexed in place (`stack["k"]`); last/only ident uses move; struct shorthand does not force `.clone()`; for-loops iterate Vec/List **fields** by shared ref; **do not** prefix `&` on Calls (`result.items()` already returns `&[T]`); match/if arm `Str` values are owned (`"x".to_string()`) so they typecheck as `String` | rust codegen |
+
+---
+
+## Deploy hooks (SL-023)
+
+`hook ConfigureX` (layer keyword; engine matches **`role:deploy_hook` only**) lowers to
+an application fn plus `crates/veil_hooks`. The provisioner runs that binary after
+`compile` and before `deploy_code`. Transitive `[dependencies]` run **deps first**
+with the **consumer** `DeployContext` JSON (`VEIL_DEPLOY_CONTEXT`).
+
+`DeployContext` is layer-declared: `service_name`, `environment`, `resource_prefix`,
+`stack: Json`, `units: Json`, `constructs: List<DeployedConstruct>`
+(`annotations: List<{name, args, roles}>`). Hooks iterate `context.constructs`.
+They do **not** parse a JSON string and they do **not** get `pub type DeployContext = String`.
+
+`Json.parse(s)` / `s.parse_json()` is the language primitive for leftover JSON
+strings. Do not stub-gen `serde_json`.
+
+Hooks are not bus handlers and are not uploaded as Lambda code.
+
+`veil_hooks` instantiates every adapter (nested `@dep` / `@field` still need them)
+but fills `application::Deps` with **only** the ports handlers/hooks `@dep`.
+Every `@env` on an adapter becomes a field (not just the first annotation).
 
 ---
 

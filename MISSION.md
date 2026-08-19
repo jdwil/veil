@@ -237,6 +237,91 @@ Each backend should declare a **capability matrix**. Unsupported constructs
 fail at **check time** with actionable diagnostics — never silent wrong
 codegen.
 
+## Intelligent Codegen (Non-Negotiable)
+
+VEIL is **not** a dumb token-mapping tool. It does not template-stamp VEIL
+keywords into target syntax. The codegen is the product's intellectual core —
+it must **understand** what the VEIL source means and produce target code that
+a skilled human would write for that meaning.
+
+### What "intelligent" means
+
+| Property | Dumb mapper | Intelligent lowering |
+|----------|-------------|---------------------|
+| Ownership | Clone everything | Borrow when provably safe, move on last use, clone only when necessary |
+| Error handling | Wrap all calls in `.unwrap()` or `?` | Propagate errors through the natural channel for the call context (closures → map_err, async → ?, infallible → no annotation) |
+| Type specificity | `impl Trait` / `_` everywhere | Concrete types when known, generic bounds when polymorphism is intentional |
+| Concurrency | `Arc<Mutex<_>>` on every shared field | Interior mutability only when mutation is required; shared references otherwise |
+| Idiom | Syntactically valid | Passes clippy without suppression; reads like hand-written code by a domain expert |
+| Layer semantics | Same struct emission regardless of layer | ValueObject → derives `Eq, Hash`, no `&mut self` methods; Entity → identity-bearing; Event → `Clone + Serialize`, immutable |
+| Expression composition | Render sub-expressions to strings then concatenate | Compose a typed expression tree, then emit; never patch rendered text after the fact |
+
+### The lowering pipeline (as it must work)
+
+```
+VEIL source (parse)
+     ↓
+  Typed expression IR  ←─── type inference resolves ALL expressions,
+     ↓                       not just literals/idents/calls
+  Semantic analysis    ←─── ownership, lifetime, move/borrow, mutability
+     ↓                       determined from the expression tree
+  Target lowering      ←─── layer policies consulted: constraints,
+     ↓                       lowers_to, emit_to sections, codegen blocks
+  Surface emission     ←─── final Rust/TS/Swift text produced from a
+                             structured target-specific AST, never from
+                             format!() string interpolation of sub-expressions
+```
+
+Each stage must be **complete** — no expression variant returning `None` from
+type inference, no catch-all match arm emitting `todo!()`, no heuristic that
+guesses when the type system should know.
+
+### Consequences for implementation
+
+1. **Type inference must cover all expression forms.** If the codegen cannot
+   determine the type of a closure, match, if-expression, binary operation,
+   range, map literal, or tuple — it cannot make intelligent ownership
+   decisions. Incomplete inference forces defensive cloning.
+
+2. **Ownership analysis must operate on structure, not text.** A system that
+   renders an expression to a Rust string and then does `.replace("?",
+   ".unwrap()")` is not performing intelligent lowering — it is patching text.
+   Ownership, borrowing, and error-handling decisions must be made on the
+   typed IR before any target text is emitted.
+
+3. **Layer semantics must flow to codegen.** A layer that declares
+   `immutable` on a construct but sees that constraint ignored in emission
+   is not providing intelligence — it is providing decoration. Constraints,
+   `emit_to` sections, and construct-level `lowers_to` declarations must
+   be consumed by the backend and must alter the generated output.
+
+4. **Hardcoded special cases are intelligence debt.** Every `if keyword ==
+   "handler"` in the codegen is a case where intelligence is faked by
+   recognition rather than derived from layer declarations. These must
+   migrate to layer-declared policies that the engine executes generically.
+
+5. **Adding a new target must not require reimplementing expression
+   lowering.** If `expr_to_rust` is 6000 lines and `expr_to_ts` is another
+   4000 lines sharing nothing, the system has no shared intelligence — it
+   has two separate dumb mappers. A shared semantic IR that targets
+   interpret is required for the multi-target story.
+
+### Quality bar
+
+Generated code must:
+
+- Pass `cargo clippy` (Rust) / `tsc --strict` (TypeScript) with zero
+  warnings or suppressions
+- Be formatted by the target's standard formatter (`rustfmt` / `prettier`)
+  without semantic diff — i.e., the codegen emits what the formatter would
+  produce
+- Contain no `todo!()`, `unreachable!()`, or `unimplemented!()` in any
+  reachable path unless the VEIL source explicitly marks that path as
+  unimplemented (escape hatch, visible as debt)
+- Use the target language's idiomatic patterns: Rust code reads like Rust
+  written by a Rust expert; TypeScript reads like TypeScript written by a
+  TypeScript expert — not like a transliteration from another language
+
 ## Core Architecture
 
 VEIL has three authoring layers:
@@ -326,6 +411,27 @@ This means:
 
 If someone creates `crud.layer`, `ecs.layer`, or `swiftui.layer`, the system
 works **without** engine or viewer code changes.
+
+### Invariant status (honest assessment)
+
+The invariant **holds** for the parser, IR builder, and viewer. It does
+**NOT** hold for codegen today:
+
+- `rust.rs` branches on `is_a("DomainService")`, `is_a("ApplicationService")`,
+  `keyword == "handler"`, `keyword == "svc"` — hardcoded DDD knowledge.
+- Layer `emit_to` sections (derives, trait_attrs, fn_attrs) are **declared**
+  in layer files but **never consumed** by the backend — the backend
+  hardcodes its own derives/attrs directly.
+- Layer constraints (`immutable`, `no_identity`, `equality_by_value`) are
+  validated but **never consulted during code emission** — all constructs
+  of the same shape emit identically regardless of semantic guarantees.
+- Custom roles declared by new layers have no effect unless the backend
+  hardcodes handling for that specific role string.
+
+These violations mean a new layer that introduces novel fn-shaped or
+struct-shaped constructs will NOT get intelligent codegen treatment — it
+will fall through to generic emission that ignores its declared semantics.
+Fixing this is the highest-priority codegen work.
 
 ### Invariant hygiene
 
@@ -437,6 +543,27 @@ Templates use `codegen <target>`, `match`/`where`, `emit`, `emit_to`, and
 template DSL into a third programming language. Details:
 [`docs/CODEGEN_TEMPLATES.md`](docs/CODEGEN_TEMPLATES.md).
 
+### Layer codegen gap (current state)
+
+The design above is correct. The implementation is incomplete:
+
+- **`emit_to` sections** are populated by `template.rs` but never read by
+  `rust.rs`. Layer-declared derives, attributes, and modifiers have no
+  effect on output. The backend hardcodes its own.
+- **Construct-level `lowers_to`** does not exist. Only statements can
+  declare target-specific lowering templates. Constructs cannot.
+- **Template output** goes to separate generated files, not inline
+  augmentation of the primary struct/trait/fn emission.
+- **Condition language** for template matching is limited to `has_role()`,
+  `has_annotation()`, and `subkind ==`. No constraint-based, type-based,
+  or compound conditions.
+
+Until these are wired up, **layers cannot meaningfully influence code
+generation** — they can only add vocabulary, visuals, and validation.
+The codegen remains a monolithic backend with hardcoded DDD knowledge.
+This is the primary blocker for the "any layer works without engine changes"
+promise.
+
 ### Multi-target
 
 The same VEIL program can lower to multiple backends. Today Rust is primary
@@ -489,22 +616,26 @@ Statements stack (`notify` → `dispatch` → `call`).
    requirements. Sign-off is the human half for any mutation that affects
    the system of record.
 4. **Expressiveness parity** — semantic, not keyword cloning.
-5. **Token efficiency** — terse forms are the standard; verbose forms are
+5. **Intelligent lowering, not dumb mapping** — codegen must understand
+   intent and produce code a target-language expert would write. Brute-force
+   clone, string-interpolation emission, and hardcoded special cases are
+   technical debt, not acceptable steady-state.
+6. **Token efficiency** — terse forms are the standard; verbose forms are
    compatibility only.
-6. **Terseness never outranks diagnostics** — bare-field inference and sugar
+7. **Terseness never outranks diagnostics** — bare-field inference and sugar
    must not produce silent wrongness; strict check is the agent default.
-7. **Escape hatches are debt** — visible in review/diagnostics; burn down
+8. **Escape hatches are debt** — visible in review/diagnostics; burn down
    over time.
-8. **Layers own vocabulary, visuals, prompts, and pattern codegen.**
-9. **Blessed paths ≠ core** — `ddd`/`di` are defaults for service apps, not
+9. **Layers own vocabulary, visuals, prompts, and pattern codegen.**
+10. **Blessed paths ≠ core** — `ddd`/`di` are defaults for service apps, not
    the only legal architecture.
-10. **No silent miscompile** — unsupported target features fail at check.
-11. **Agents author; the runtime makes authorship visible and reviewable.**
+11. **No silent miscompile** — unsupported target features fail at check.
+12. **Agents author; the runtime makes authorship visible and reviewable.**
     No invisible parallel mutation path. Announce intent, then act on the
     living canvas at human-parseable speed.
-12. **Outstanding changes are a product surface**, not an afterthought of
+13. **Outstanding changes are a product surface**, not an afterthought of
     `git status`. Git is history; sign-off is review state.
-13. **Leverage git; do not reinvent it.** Commits, branches, merge, log,
+14. **Leverage git; do not reinvent it.** Commits, branches, merge, log,
     and diff are git’s job. Product energy goes to visibility, multi-project
     awareness, and recorded human sign-off — not a second VCS.
 
@@ -534,11 +665,24 @@ ui/                      — ProductHost SPA (projects, review/sign-off, in-shel
 
 ## Current State
 
-The zero-domain-knowledge invariant **holds** across the pipeline in spirit
-and for layer vocabulary; watch invariant debt (engine heuristics) as the
-system grows. Example workspaces generate Rust that compiles cleanly.
-TypeScript generation and a Svelte 5 layer exist; full UI/structure parity
-and additional backends are incomplete.
+The zero-domain-knowledge invariant **holds** for the parser, IR builder, and
+viewer. It does **not yet hold** for codegen — see "Invariant status" above.
+Example workspaces generate Rust that compiles cleanly for simple patterns.
+Complex examples (customer_onboarding, sales_crm) do NOT pass `cargo check`
+in CI and are excluded from compile tests due to known gaps in adapter and
+harness lowering.
+
+The codegen produces **correct** output for the patterns it handles — it does
+not silently miscompile. But it does not produce **idiomatic** output: brute-
+force cloning, incomplete type inference forcing defensive patterns, hardcoded
+special cases for known crate names, and string-interpolation-based emission
+that prevents structured optimization. The quality bar in "Intelligent
+Codegen" above is aspirational — current output would not pass clippy cleanly
+and contains `todo!()`/`unreachable!()` in generated code for unhandled paths.
+
+TypeScript generation exists; full UI/structure parity and additional backends
+are incomplete. The TypeScript backend shares no lowering infrastructure with
+the Rust backend — each is a standalone implementation.
 
 **File types:** top-level unit is `pkg` only. Never author `sol`.
 Deployment topology is manifest + runtime, not a separate “solution” kind.
@@ -580,21 +724,51 @@ Implementation map (summary):
 - **Composability proof** — `examples/crm.layer` on `ddd.layer` and
   `examples/sales_crm.veil` generate compiling Rust with no engine changes.
 
+### Codegen architecture debt (resolve before multi-target)
+
+- **Expression emission is string-based** — `expr_to_rust` (285KB) builds
+  target code by interpolating sub-expressions into format strings. No
+  intermediate typed expression tree. Ownership/borrow analysis operates
+  on heuristics, not structure. Closure error-handling uses post-hoc string
+  replacement.
+- **Per-target reimplementation** — Rust and TypeScript share zero lowering
+  infrastructure. Adding a third target means writing a third standalone
+  implementation of the full expression language.
+- **Hardcoded module/method lists** — known crate names, async method names,
+  and error type variants are string constants in the backend. Stubs should
+  declare these; the backend should read them.
+- **DDD special-casing in dispatch** — handler registration, deps injection,
+  and routing patterns branch on hardcoded subkind/keyword strings rather
+  than layer-declared policies.
+- **Incomplete type inference** — compound expressions (closures, match,
+  if-expr, binary ops, ranges, maps, tuples) return no type information,
+  forcing downstream code to clone defensively and fall back to `format!()`.
+
 ## Strategic Sequencing
 
 Not a sprint plan — product order of operations:
 
-1. **Dual-loop excellence on the current surface** — world-class `check` +
+1. **Intelligent codegen for Rust** — the codegen must produce code that
+   passes clippy, reads idiomatically, and respects layer-declared semantics.
+   This requires: completing type inference for all expression forms,
+   replacing string-interpolation emission with structured expression
+   composition, wiring up layer `emit_to` / constraint / `lowers_to`
+   consumption, and eliminating hardcoded DDD/module-name special cases.
+   **This is the critical path.** Without it, VEIL is a dumb mapper with
+   a nice vocabulary layer.
+2. **Dual-loop excellence on the current surface** — world-class `check` +
    deterministic codegen; topology and critical-body review UX; **visible
    agency** (human-speed simulation, IDE auto-open, multi-project indicators)
    and first-class outstanding-change **sign-off**; Rust primary, TS/Svelte
    secondary with honest capabilities.
-2. **Semantic IR hardening** — effects, errors, async, ownership
-   capabilities; purge engine domain heuristics into layers.
-3. **Parity by program class** — portable application logic → services/
+3. **Semantic IR hardening** — effects, errors, async, ownership
+   capabilities; purge engine domain heuristics into layers. Extract shared
+   lowering abstractions so targets interpret a common typed IR rather than
+   each reimplementing expression translation from scratch.
+4. **Parity by program class** — portable application logic → services/
    adapters → structured UI (retire raw templates) → more backends →
    library-quality modules.
-4. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
+5. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
    surface in real trees (`examples/`, `runtime/`).
 
 ## Success Measures

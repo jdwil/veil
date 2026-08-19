@@ -1961,6 +1961,26 @@ mod tests {
     }
 
     #[test]
+    fn product_struct_shadowing_layer_declare_is_error() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer"))
+            .expect("deploy");
+        let mut val = Construct::new(
+            "val",
+            "ValueObject",
+            Shape::Struct,
+            "DeployContext".into(),
+            Span::new(0, 0),
+        );
+        val.layer_provided = false;
+        let diags = check_layer_declare_shadows(&sol(vec![TopLevelItem::Construct(val)]), &reg);
+        assert!(
+            diags.iter().any(|d| d.code == "shadows_layer_declare"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
     fn ctx_with_same_name_as_layer_declare_is_not_a_shadow() {
         let mut reg = LayerRegistry::builtin();
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))

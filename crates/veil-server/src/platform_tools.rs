@@ -2451,7 +2451,7 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
         "scaffold_error": scaffold_err,
         "session": rebound_session,
         "hint": if ok_status(status) {
-            "Project is bound. Write layers/*.layer (declare product `ann`s there), MISSION.md, and main.veil via write_source/create_file NOW. Do not wiki-search for whether @on/@command exist in ddd — author them in the product layer. Do not create_project again."
+            "Project is bound. Write layers/*.layer (declare product `ann`s there), MISSION.md, and main.veil via write_source/create_file NOW. Do not wiki-search for whether a product annotation exists in ddd — author it in the product layer. Do not create_project again."
         } else {
             "Report the error; do not invent a local disk tree."
         },

@@ -313,6 +313,7 @@ struct TypeEnv {
 fn build_type_env(sol: &Solution, registry: &LayerRegistry) -> TypeEnv {
     let mut env = TypeEnv::default();
     index_stubs(registry, &mut env);
+    index_layer_declarations(registry, &mut env);
     for item in &sol.items {
         match item {
             TopLevelItem::Construct(c) => index_construct_types(c, &mut env, registry),
@@ -685,7 +686,7 @@ pub fn check_types(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
 fn collect_bus_handler_names(sol: &Solution, registry: &LayerRegistry) -> HashSet<String> {
     let mut names = HashSet::new();
     fn visit(c: &Construct, registry: &LayerRegistry, names: &mut HashSet<String>) {
-        if c.shape == Shape::Fn {
+        if c.shape == Shape::Fn && !crate::is_deploy_hook(c, registry) {
             names.insert(registry.bus_message_name(&c.name));
             names.insert(c.name.clone());
         }
@@ -1521,10 +1522,12 @@ fn infer_expr(
         Expr::Require(e) => {
             let t = infer_expr(e, scope, env, self_type, location, diagnostics);
             // require force-presents Opt and Res (ACS-010). Already-T is left as-is.
+            // Json field/index require extracts a present Str (SL-027) — same as codegen.
             match t {
                 Ty::Opt(inner) => *inner,
                 Ty::Res(Some(inner)) => *inner,
                 Ty::Res(None) => Ty::Unit,
+                other if is_json_ty(&other) => Ty::Named("Str".into()),
                 other => other,
             }
         }
@@ -1785,6 +1788,7 @@ fn numeric_pair(a: &Ty, b: &Ty) -> bool {
 
 fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
     match base {
+        Ty::Named(n) if n == "Json" => Ty::Named("Json".into()),
         Ty::Named(n) => env
             .types
             .get(n)
@@ -1804,6 +1808,66 @@ fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
 
 fn is_str_ty(ty: &Ty) -> bool {
     matches!(ty, Ty::Named(n) if n == "Str" || n == "String")
+}
+
+fn is_json_ty(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named(n) if n == "Json")
+}
+
+/// Index layer `declare struct` fields so hook inputs like `DeployContext` typecheck.
+fn index_layer_declarations(registry: &LayerRegistry, env: &mut TypeEnv) {
+    for decl in &registry.declarations {
+        let mut current: Option<(String, TypeInfo)> = None;
+        let flush = |env: &mut TypeEnv, current: &mut Option<(String, TypeInfo)>| {
+            if let Some((name, info)) = current.take() {
+                env.types.entry(name).or_insert(info);
+            }
+        };
+        for line in decl.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            let mut started = false;
+            for prefix in ["struct ", "enum ", "trait ", "port "] {
+                if let Some(rest) = t.strip_prefix(prefix) {
+                    flush(env, &mut current);
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() {
+                        current = Some((name, TypeInfo::default()));
+                    }
+                    started = true;
+                    break;
+                }
+            }
+            if started {
+                continue;
+            }
+            if t.starts_with("fn ") {
+                flush(env, &mut current);
+                continue;
+            }
+            if let Some((_, info)) = current.as_mut() {
+                if let Some((fname, fty)) = t.split_once(':') {
+                    let fname = fname.trim();
+                    if !fname.is_empty()
+                        && fname
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        info.fields.insert(
+                            fname.to_string(),
+                            ty_from_type_expr(&crate::edit::parse_type_str(fty.trim())),
+                        );
+                    }
+                }
+            }
+        }
+        flush(env, &mut current);
+    }
 }
 
 fn is_bytes_ty(ty: &Ty) -> bool {
@@ -1828,7 +1892,7 @@ fn collection_method_ty(recv: &Ty, method: &str) -> Option<Ty> {
         Ty::List(elem) => match method {
             "get" | "at" | "index" => Some(*elem.clone()),
             "len" | "length" | "count" => Some(Ty::Named("Int".into())),
-            "is_empty" => Some(Ty::Named("Bool".into())),
+            "is_empty" | "contains" => Some(Ty::Named("Bool".into())),
             "push" | "append" | "insert" | "extend" => Some(Ty::Unit),
             _ => None,
         },
@@ -1864,6 +1928,8 @@ fn conversion_result(recv: &Ty, method: &str) -> Option<Ty> {
         // Blob.as_ref() is a bytes view in Rust; VEIL Str context decodes utf-8.
         "as_ref" if is_blob_ty(recv) => Some(Ty::Named("Str".into())),
         "parse_int" if is_str_ty(recv) => Some(Ty::Named("Int".into())),
+        "parse_json" if is_str_ty(recv) => Some(Ty::Named("Json".into())),
+        "as_str" | "as_s" if is_json_ty(recv) => Some(Ty::Opt(Box::new(Ty::Named("Str".into())))),
         "as_n" => Some(Ty::Named("Int".into())),
         _ => None,
     }
@@ -2124,6 +2190,7 @@ fn infer_call(
             || call.target == "Dt"
             || call.target == "DateTime"
             || call.target == "Int"
+            || call.target == "Json"
         {
             match (call.target.as_str(), method) {
                 ("Bytes", "from_str") | ("Bytes", "new") if arg_tys.len() == 1 => {
@@ -2141,6 +2208,12 @@ fn infer_call(
                 }
                 ("Int", "now_unix") | ("Int", "now") if arg_tys.is_empty() => {
                     return Ty::Named("Int".into());
+                }
+                ("Json", "parse") if arg_tys.len() == 1 => {
+                    return Ty::Named("Json".into());
+                }
+                ("Json", "stringify") if arg_tys.len() == 1 => {
+                    return Ty::Named("Str".into());
                 }
                 _ => {}
             }
@@ -3915,6 +3988,55 @@ stub example-http 1.0.0
         assert!(
             !diags.iter().any(|d| d.code == "type_mismatch"),
             "Str.now_iso8601() must be Str: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn deploy_context_fields_and_json_parse_typecheck() {
+        let mut r = LayerRegistry::builtin();
+        r.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        let _ = r.load_content("deploy", include_str!("../../../layers/deploy.layer"));
+        let mut hook = Construct::new(
+            "hook",
+            "DeployHook",
+            Shape::Fn,
+            "OnDeploy".into(),
+            Span::new(0, 0),
+        );
+        hook.inputs.push(Field {
+            annotations: Vec::new(),
+            name: "context".into(),
+            type_expr: TypeExpr::Named("DeployContext".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        hook.steps.push(step(vec![
+            Expr::MutAssign(
+                "name".into(),
+                Box::new(Expr::FieldAccess(
+                    Box::new(Expr::Ident("context".into())),
+                    "service_name".into(),
+                )),
+                Some(TypeExpr::Named("Str".into())),
+            ),
+            Expr::MutAssign(
+                "parsed".into(),
+                Box::new(Expr::Call(CallExpr {
+                    target: "Json".into(),
+                    method: "parse".into(),
+                    args: vec![Expr::StringLit("{}".into())],
+                    receiver: None,
+                    sugar: None,
+                    span: Span::new(0, 0),
+                })),
+                Some(TypeExpr::Named("Json".into())),
+            ),
+        ]));
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(hook)]), &r);
+        assert!(
+            !diags.iter().any(|d| d.code == "type_mismatch"),
+            "DeployContext.service_name and Json.parse must typecheck: {diags:?}"
         );
     }
 

@@ -168,7 +168,7 @@ An earlier dual-loop product policy folded Opt→NotFound into every bang call
 error model and taught agents “never `.unwrap()` / `.is_some()` after `!`.”
 
 **That law is no longer the engine default.** Typecheck and codegen use portable
-bang (SL-001). Docs, Tier-0, layer prompts, and Mind Palace must not re-teach
+bang (SL-001). Docs, Tier-0, and layer prompts must not re-teach
 transitional force.
 
 Transitional unwrap helpers may remain in tests for comparison only
