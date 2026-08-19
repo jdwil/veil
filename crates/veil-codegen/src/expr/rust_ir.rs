@@ -603,6 +603,121 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     RustExpr::Clone(Box::new(fa))
 }
 
+// ─── apply_ownership ─────────────────────────────────────────────────────────
+
+/// Apply ownership semantics to a `RustExpr`: wrap in `Clone` when the value
+/// is non-Copy, multi-use, and not already owned.
+///
+/// This is the IR-level equivalent of the old string-based `clone_for_reuse`.
+/// It operates on structure rather than rendered text, making the decision
+/// composable with later transforms (borrow insertion, move elision, etc.).
+///
+/// Call this on expressions in argument positions or assignment RHS where VEIL's
+/// "values are reusable" semantics require ownership transfer / cloning.
+pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
+    // Already owned / already a clone — no double-clone
+    if is_already_owned(&expr) {
+        return expr;
+    }
+    // Copy types don't need cloning
+    if is_expr_copy(&expr, ctx) {
+        return expr;
+    }
+    match &expr {
+        RustExpr::Ident { name, .. } => {
+            if should_clone_ident_ir(name, ctx) {
+                RustExpr::Clone(Box::new(expr))
+            } else {
+                expr
+            }
+        }
+        RustExpr::FieldAccess { .. } => {
+            // Field accesses from lower_field_access already have Clone applied
+            // where needed. But if someone calls apply_ownership on a bare
+            // FieldAccess (e.g. from a different lowering path), clone it.
+            RustExpr::Clone(Box::new(expr))
+        }
+        RustExpr::Raw { text, .. } => {
+            // Already-owned strings from the old path
+            if super::types::rust_already_owned(text) {
+                return expr;
+            }
+            RustExpr::Clone(Box::new(expr))
+        }
+        // Literals, FnCalls, MethodCalls produce owned values — no clone needed
+        _ => expr,
+    }
+}
+
+/// Whether a `RustExpr` is already an owned value (clone, literal, call result).
+fn is_already_owned(expr: &RustExpr) -> bool {
+    matches!(
+        expr,
+        RustExpr::Clone(_)
+            | RustExpr::StringLit(_)
+            | RustExpr::IntLit(_)
+            | RustExpr::FloatLit(_)
+            | RustExpr::BoolLit(_)
+            | RustExpr::FnCall { .. }
+            | RustExpr::MethodCall { .. }
+            | RustExpr::Format { .. }
+            | RustExpr::Block { .. }
+            | RustExpr::If { .. }
+            | RustExpr::Match { .. }
+    )
+}
+
+/// Whether the expression's type is Copy (primitives, unit enums, refs).
+fn is_expr_copy(expr: &RustExpr, ctx: &GenCtx) -> bool {
+    match expr {
+        RustExpr::IntLit(_) | RustExpr::FloatLit(_) | RustExpr::BoolLit(_) => true,
+        RustExpr::Ident { name, ty } => {
+            // Check type annotation first
+            if let Some(t) = ty {
+                if t.is_copy() {
+                    return true;
+                }
+            }
+            // Check context: local type or unit enum variant
+            if super::calls::is_copy_local(name, ctx) {
+                return true;
+            }
+            super::types::is_unit_enum_variant(name, ctx)
+        }
+        RustExpr::FieldAccess { ty, .. } => {
+            ty.as_ref().is_some_and(|t| t.is_copy())
+        }
+        RustExpr::Raw { ty, text, .. } => {
+            if let Some(t) = ty {
+                if t.is_copy() {
+                    return true;
+                }
+            }
+            // Fallback: check if the raw text is a literal
+            text.parse::<i64>().is_ok() || text == "true" || text == "false"
+        }
+        RustExpr::Borrow { .. } => true, // refs are Copy
+        _ => false,
+    }
+}
+
+/// IR-level equivalent of `should_clone_ident`: decides whether an ident
+/// needs cloning based on usage count, ref status, and copy type.
+fn should_clone_ident_ir(name: &str, ctx: &GenCtx) -> bool {
+    if super::calls::is_copy_local(name, ctx) || super::types::is_unit_enum_variant(name, ctx) {
+        return false;
+    }
+    // Shared-ref loop element (`for x in &xs`) is `&T`. Owned slots need `.clone()`.
+    if ctx.ref_elem_locals.contains(name) {
+        return true;
+    }
+    if super::calls::is_ref_local(name, ctx) {
+        return false;
+    }
+    // Unknown count → clone (safe). Count of 1 → last/only use → move.
+    ctx.ident_uses.get(name).copied().unwrap_or(2) > 1
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -820,5 +935,91 @@ mod tests {
         assert!(RustType::Unit.is_copy());
         assert!(!RustType::Named("String".to_string()).is_copy());
         assert!(!RustType::Named("Customer".to_string()).is_copy());
+    }
+
+    // ─── apply_ownership tests ───────────────────────────────────────
+
+    fn make_ctx_with_uses(name: &str, uses: usize) -> GenCtx {
+        use std::collections::HashMap;
+        let mut ctx = GenCtx::new(HashMap::new());
+        ctx.ident_uses.insert(name.to_string(), uses);
+        ctx
+    }
+
+    #[test]
+    fn ownership_clone_not_needed_for_literals() {
+        let ctx = GenCtx::new(std::collections::HashMap::new());
+        let expr = RustExpr::StringLit("hello".to_string());
+        let result = apply_ownership(expr.clone(), &ctx);
+        assert_eq!(emit(&result), emit(&expr)); // unchanged
+    }
+
+    #[test]
+    fn ownership_clone_not_needed_for_copy_ident() {
+        let mut ctx = make_ctx_with_uses("count", 3);
+        ctx.local_types.insert("count".to_string(), "i64".to_string());
+        let expr = RustExpr::Ident {
+            name: "count".to_string(),
+            ty: Some(RustType::Named("i64".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "count"); // no clone
+    }
+
+    #[test]
+    fn ownership_clone_multi_use_ident() {
+        let ctx = make_ctx_with_uses("name", 2);
+        let expr = RustExpr::Ident {
+            name: "name".to_string(),
+            ty: Some(RustType::Named("String".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "name.clone()");
+    }
+
+    #[test]
+    fn ownership_no_clone_single_use_ident() {
+        let ctx = make_ctx_with_uses("name", 1);
+        let expr = RustExpr::Ident {
+            name: "name".to_string(),
+            ty: Some(RustType::Named("String".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "name"); // last use, move
+    }
+
+    #[test]
+    fn ownership_no_double_clone() {
+        let ctx = make_ctx_with_uses("x", 3);
+        let expr = RustExpr::Clone(Box::new(RustExpr::Ident {
+            name: "x".to_string(),
+            ty: None,
+        }));
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "x.clone()"); // not x.clone().clone()
+    }
+
+    #[test]
+    fn ownership_ref_elem_always_clones() {
+        let mut ctx = make_ctx_with_uses("item", 1);
+        ctx.ref_elem_locals.insert("item".to_string());
+        let expr = RustExpr::Ident {
+            name: "item".to_string(),
+            ty: Some(RustType::Named("String".to_string())),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "item.clone()");
+    }
+
+    #[test]
+    fn ownership_ref_local_no_clone() {
+        let mut ctx = make_ctx_with_uses("data", 3);
+        ctx.local_types.insert("data".to_string(), "&str".to_string());
+        let expr = RustExpr::Ident {
+            name: "data".to_string(),
+            ty: Some(RustType::Ref(Box::new(RustType::Named("str".to_string())))),
+        };
+        let result = apply_ownership(expr, &ctx);
+        assert_eq!(emit(&result), "data"); // refs are copy
     }
 }
