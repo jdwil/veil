@@ -82,13 +82,11 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
             || ctx.stub_type_crate.contains_key(bare.as_str())
             || ctx.stub_type_crate.contains_key(ty.as_str())
         {
-            if method == "send"
-                || method == "send_with"
-                || ctx.async_fallible_methods.contains(method)
+            if ctx.async_fallible_methods.contains(method)
             {
-                // send!() → unwrap Result; bare send() keeps Result so .is_ok()/.is_err() work.
+                // async+fallible → unwrap Result; bare send() keeps Result so .is_ok()/.is_err() work.
                 if has_bang {
-                    return ".await.map_err(|e| DomainError::External(format!(\"{e:?}\")))?".to_string();
+                    return map_err_await_domain(&ctx.error_model);
                 } else {
                     return ".await".to_string();
                 }
@@ -131,13 +129,11 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     }
 
     // Fluent SDK send / async fallible stubs (untyped receivers).
-    if method == "send"
-        || method == "send_with"
-        || ctx.async_fallible_methods.contains(method)
+    if ctx.async_fallible_methods.contains(method)
     {
-        // send!() → unwrap; bare send() keeps Result so .is_ok()/.is_err() work.
+        // async+fallible → unwrap; bare send() keeps Result so .is_ok()/.is_err() work.
         if has_bang {
-            return ".await.map_err(|e| DomainError::External(format!(\"{e:?}\")))?".to_string();
+            return map_err_await_domain(&ctx.error_model);
         } else {
             return ".await".to_string();
         }
@@ -188,7 +184,7 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     // treat it as an async fallible call (common for SDK methods like collect!,
     // execute!, etc. on receivers whose type isn't in our stub system).
     if has_bang {
-        return ".await.map_err(|e| DomainError::External(format!(\"{e:?}\")))?".to_string();
+        return map_err_await_domain(&ctx.error_model);
     }
     String::new()
 }
@@ -319,16 +315,16 @@ pub fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
             Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
             Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
-            // sqlx Executor is implemented for `&Pool`, not `Pool`.
-            Expr::Ident(n) if n == "pool" => "&self.pool".to_string(),
+            // Stub-declared borrow fields (e.g. sqlx Executor requires &Pool).
+            Expr::Ident(n) if ctx.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
             Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
                 format!("{n}.clone()")
             }
             Expr::FieldAccess(base, field)
-                if field == "pool"
+                if ctx.borrow_fields.contains(field.as_str())
                     && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
             {
-                "&self.pool".to_string()
+                format!("&self.{field}")
             }
             _ => expr_to_rust(a, ctx),
         })
@@ -502,17 +498,17 @@ pub fn list_index_get_rust(base_rust: &str, idx_rust: &str, base: &Expr, ctx: &G
         .strip_suffix(".clone()")
         .unwrap_or(base_rust);
     if list_elem_is_cloneable(base, ctx) {
-        format!("{recv}.get({idx}).cloned().ok_or(DomainError::NotFound)?")
+        format!("{recv}.get({idx}).cloned().ok_or({})?", ctx.error_model.not_found_path())
     } else {
-        format!("{recv}.get({idx}).ok_or(DomainError::NotFound)?")
+        format!("{recv}.get({idx}).ok_or({})?", ctx.error_model.not_found_path())
     }
 }
 
 pub fn list_first_rust(base_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
     if list_elem_is_cloneable(base, ctx) {
-        format!("{base_rust}.first().cloned().ok_or(DomainError::NotFound)?")
+        format!("{base_rust}.first().cloned().ok_or({})?", ctx.error_model.not_found_path())
     } else {
-        format!("{base_rust}.first().ok_or(DomainError::NotFound)?")
+        format!("{base_rust}.first().ok_or({})?", ctx.error_model.not_found_path())
     }
 }
 
@@ -754,7 +750,7 @@ pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
             Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
             Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
-            Expr::Ident(n) if n == "pool" => "&self.pool".to_string(),
+            Expr::Ident(n) if ctx.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
             Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
                 format!("{n}.clone()")
             }
@@ -766,9 +762,9 @@ pub fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
                 rust_string_lit_owned(s)
             }
             Expr::FieldAccess(base, field)
-                if field == "pool" && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
+                if ctx.borrow_fields.contains(field.as_str()) && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
             {
-                "&self.pool".to_string()
+                format!("&self.{field}")
             }
             _ => expr_to_rust(arg, ctx),
         }
@@ -910,8 +906,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     ];
                     if !option_methods.contains(&bare_method) {
                         recv_str = format!(
-                            "{}.clone().ok_or(DomainError::NotFound)?",
-                            recv_str
+                            "{}.clone().ok_or({})?",
+                            recv_str, ctx.error_model.not_found_path()
                         );
                     } else {
                         // Consuming Option methods (and_then, map, unwrap, filter, etc.)
@@ -979,8 +975,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             if let Expr::StringLit(key) = &call.args[0] {
                 // Issue 6: never panic on missing map keys in adapter bodies.
                 return format!(
-                    "{}.get(\"{}\").ok_or_else(|| DomainError::External(\"missing {}\".into()))?",
-                    recv_str, key, key
+                    "{}.get(\"{}\").ok_or_else(|| {}(\"missing {}\".into()))?",
+                    recv_str, key, ctx.error_model.external_path(), key
                 );
             }
         }
@@ -1116,7 +1112,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                             if expects_opt {
                                 format!("{}.clone()", name)
                             } else {
-                                format!("{}.clone().ok_or(DomainError::NotFound)?", name)
+                                format!("{}.clone().ok_or({})?", name, ctx.error_model.not_found_path())
                             }
                         }
                         _ => s,
@@ -1146,7 +1142,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                         if bus_return_type_in_scope(ctx, ret) {
                             return format!(
                                 "serde_json::from_value::<{ret}>({call_expr})\
-                                 .map_err(|e| DomainError::External(e.to_string()))?"
+                                 .map_err(|e| {}(e.to_string()))?",
+                                ctx.error_model.external_path()
                             );
                         }
                     }
@@ -1329,7 +1326,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     let hard = call.method.ends_with('!');
                     if hard {
                         Some(format!(
-                            "{{ let __prog: String = ({prog}).to_string(); let __args: String = ({args}).to_string(); let __cwd: String = ({cwd}).to_string(); let __argv: Vec<&str> = __args.split_whitespace().collect(); let __out = std::process::Command::new(&__prog).args(&__argv).current_dir(&__cwd).output().map_err(|e| DomainError::External(format!(\"{{e:?}}\")))?; if !__out.status.success() {{ let __err = String::from_utf8_lossy(&__out.stderr); let __tail: String = __err.chars().rev().take(2000).collect::<String>().chars().rev().collect(); return Err(DomainError::External(format!(\"{{}} failed: {{}}\", __prog, __tail))); }} format!(\"{{}} ok\", __prog) }}"
+                            "{{ let __prog: String = ({prog}).to_string(); let __args: String = ({args}).to_string(); let __cwd: String = ({cwd}).to_string(); let __argv: Vec<&str> = __args.split_whitespace().collect(); let __out = std::process::Command::new(&__prog).args(&__argv).current_dir(&__cwd).output().map_err(|e| {ext}(format!(\"{{e:?}}\")))?; if !__out.status.success() {{ let __err = String::from_utf8_lossy(&__out.stderr); let __tail: String = __err.chars().rev().take(2000).collect::<String>().chars().rev().collect(); return Err({ext}(format!(\"{{}} failed: {{}}\", __prog, __tail))); }} format!(\"{{}} ok\", __prog) }}",
+                            ext = ctx.error_model.external_path()
                         ))
                     } else {
                         Some(format!(
@@ -1370,8 +1368,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 ("Blob", "from_file") if call.args.len() == 1 => {
                     let path_expr = expr_to_rust(&call.args[0], ctx);
                     Some(format!(
-                        "{}::new(std::fs::read(({path_expr}).as_str()).map_err(|e| DomainError::External(e.to_string()))?)",
-                        stub_ctor_path(ctx, &call.target)
+                        "{}::new(std::fs::read(({path_expr}).as_str()).map_err(|e| {}(e.to_string()))?)",
+                        stub_ctor_path(ctx, &call.target), ctx.error_model.external_path()
                     ))
                 }
                 _ => None,
@@ -1608,8 +1606,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         {
             let path_expr = expr_to_rust(&call.args[0], ctx);
             return format!(
-                "{}::new(std::fs::read({path_expr}.as_str()).map_err(|e| DomainError::External(e.to_string()))?)",
-                stub_ctor_path(ctx, "Blob")
+                "{}::new(std::fs::read({path_expr}.as_str()).map_err(|e| {}(e.to_string()))?)",
+                stub_ctor_path(ctx, "Blob"), ctx.error_model.external_path()
             );
         }
         if effective_target == "Process" && method_bare == "run" && call.args.len() == 3 {
@@ -1620,7 +1618,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             // Soft Process.run returns detail String (incl. failed:); Process.run! aborts on non-zero.
             if hard {
                 return format!(
-                    "{{ let __prog: String = ({prog}).to_string(); let __args: String = ({args}).to_string(); let __cwd: String = ({cwd}).to_string(); let __argv: Vec<&str> = __args.split_whitespace().collect(); let __out = std::process::Command::new(&__prog).args(&__argv).current_dir(&__cwd).output().map_err(|e| DomainError::External(format!(\"{{e:?}}\")))?; if !__out.status.success() {{ let __err = String::from_utf8_lossy(&__out.stderr); let __tail: String = __err.chars().rev().take(2000).collect::<String>().chars().rev().collect(); return Err(DomainError::External(format!(\"{{}} failed: {{}}\", __prog, __tail))); }} format!(\"{{}} ok: {{}}\", __prog, String::from_utf8_lossy(&__out.stdout).chars().take(500).collect::<String>()) }}"
+                    "{{ let __prog: String = ({prog}).to_string(); let __args: String = ({args}).to_string(); let __cwd: String = ({cwd}).to_string(); let __argv: Vec<&str> = __args.split_whitespace().collect(); let __out = std::process::Command::new(&__prog).args(&__argv).current_dir(&__cwd).output().map_err(|e| {ext}(format!(\"{{e:?}}\")))?; if !__out.status.success() {{ let __err = String::from_utf8_lossy(&__out.stderr); let __tail: String = __err.chars().rev().take(2000).collect::<String>().chars().rev().collect(); return Err({ext}(format!(\"{{}} failed: {{}}\", __prog, __tail))); }} format!(\"{{}} ok: {{}}\", __prog, String::from_utf8_lossy(&__out.stdout).chars().take(500).collect::<String>()) }}",
+                    ext = ctx.error_model.external_path()
                 );
             }
             return format!(
@@ -1879,8 +1878,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         if call.method == "get" && call.args.len() == 1 {
             if let Expr::StringLit(key) = &call.args[0] {
                 return format!(
-                    "{}.get(\"{}\").ok_or_else(|| DomainError::External(\"missing {}\".into()))?",
-                    call.target, key, key
+                    "{}.get(\"{}\").ok_or_else(|| {}(\"missing {}\".into()))?",
+                    call.target, key, ctx.error_model.external_path(), key
                 );
             }
         }
@@ -1890,8 +1889,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             let ty = ctx.local_type(&call.target);
             if ty.map(|t| t.starts_with("Result<")).unwrap_or(false) {
                 return format!(
-                    "{}.map_err(|e| DomainError::External(format!(\"{{e}}\")))?",
-                    call.target
+                    "{}.map_err(|e| {}(format!(\"{{e}}\")))?",
+                    call.target, ctx.error_model.external_path()
                 );
             }
             let is_option = ty
@@ -1907,8 +1906,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     return format!("{}.clone()?", call.target);
                 }
                 return format!(
-                    "{}.clone().ok_or(DomainError::NotFound)?",
-                    call.target
+                    "{}.clone().ok_or({})?",
+                    call.target, ctx.error_model.not_found_path()
                 );
             } else {
                 // Already unwrapped — just use the value
@@ -1962,8 +1961,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 if !option_methods.contains(&bare_method) {
                     let cloned_args = clone_args_for_method(&call.method, &call.args, ctx);
                     return format!(
-                        "{}.clone().ok_or(DomainError::NotFound)?.{}({})",
-                        call.target, method, cloned_args
+                        "{}.clone().ok_or({})?.{}({})",
+                        call.target, ctx.error_model.not_found_path(), method, cloned_args
                     );
                 }
                 // Consuming Option methods (and_then, map, unwrap, filter, etc.)
@@ -2063,8 +2062,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                             String::new()
                         };
                         return format!(
-                            "{}.{}({}.clone().ok_or(DomainError::NotFound)?{}){}",
-                            call.target, method, arg_name, rest_args, suffix
+                            "{}.{}({}.clone().ok_or({})?{}){}",
+                            call.target, method, arg_name, ctx.error_model.not_found_path(), rest_args, suffix
                         );
                     }
                 }
@@ -2177,26 +2176,20 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             };
             let m = rust_method_name(&call.method);
             let bare = call.method.trim_end_matches(['!', '?']);
-            let suffix = if bare == "send"
-                || bare == "send_with"
-                || ctx.async_fallible_methods.contains(bare)
+            let suffix = if ctx.async_fallible_methods.contains(bare)
             {
-                ".await.map_err(|e| DomainError::External(format!(\"{e:?}\")))?"
+                map_err_await_domain(&ctx.error_model)
             } else if ctx.fallible_methods.contains(bare) {
-                "?"
+                "?".to_string()
             } else {
-                ""
+                String::new()
             };
             return format!("{}::{}({}){}", qualified, m, args_str, suffix);
         }
         // Recognize Rust module-qualified calls: serde_json.from_str, std.fs.read, etc.
         // These are lowercase targets with no dots that map to Rust crate paths using `::`.
-        let known_modules = [
-            "serde_json", "serde", "tokio", "tracing", "uuid", "chrono",
-            "std", "aws_sdk_dynamodb", "aws_sdk_s3", "aws_config",
-        ];
         let target_snake = to_snake(&call.target);
-        if known_modules.contains(&target_snake.as_str()) {
+        if ctx.known_modules.contains(&target_snake) {
             let m = to_snake(&call.method);
             let suffix = if ctx.fallible_methods.contains(&call.method)
                 || call.method == "from_str"
@@ -2260,9 +2253,9 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let suffix = if fallible {
-                    ".map_err(|e| DomainError::External(e.to_string()))?"
+                    format!(".map_err(|e| {}(e.to_string()))?", ctx.error_model.external_path())
                 } else {
-                    ""
+                    String::new()
                 };
                 return format!("{rust_crate}::{m}({final_args}){suffix}");
             }
@@ -2285,8 +2278,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             if m_clean == "get" && call.args.len() == 1 {
                 if let Expr::StringLit(key) = &call.args[0] {
                     return format!(
-                        "{}.get(\"{}\").ok_or_else(|| DomainError::External(\"missing {}\".into()))?",
-                        call.target, key, key
+                        "{}.get(\"{}\").ok_or_else(|| {}(\"missing {}\".into()))?",
+                        call.target, key, ctx.error_model.external_path(), key
                     );
                 }
             }

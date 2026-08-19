@@ -188,10 +188,11 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                         .or_else(|| call_str.strip_suffix('?'))
                         .unwrap_or(&call_str);
                     if err_var == "NotFound" {
-                        format!("{base}.map_err(|_| DomainError::NotFound)?")
+                        format!("{base}.map_err(|_| {})?", ctx.error_model.not_found_path())
                     } else {
                         format!(
-                            "{base}.map_err(|_| DomainError::Validation(\"{msg_escaped}\".to_string()))?"
+                            "{base}.map_err(|_| {}(\"{msg_escaped}\".to_string()))?",
+                            ctx.error_model.validation_path()
                         )
                     }
                 }
@@ -199,10 +200,11 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                     let call_str = expr_to_rust(cond, ctx);
                     let base = call_str.strip_suffix('?').unwrap_or(&call_str);
                     if err_var == "NotFound" {
-                        format!("{base}.map_err(|_| DomainError::NotFound)?")
+                        format!("{base}.map_err(|_| {})?", ctx.error_model.not_found_path())
                     } else {
                         format!(
-                            "{base}.map_err(|_| DomainError::Validation(\"{msg_escaped}\".to_string()))?"
+                            "{base}.map_err(|_| {}(\"{msg_escaped}\".to_string()))?",
+                            ctx.error_model.validation_path()
                         )
                     }
                 }
@@ -226,9 +228,9 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                             }
                             // is_none → NotFound when message is resource-missing
                             let err = if err_var == "NotFound" {
-                                "DomainError::NotFound".to_string()
+                                ctx.error_model.not_found_path()
                             } else {
-                                format!("DomainError::Validation(\"{msg_escaped}\".to_string())")
+                                format!("{}(\"{msg_escaped}\".to_string())", ctx.error_model.validation_path())
                             };
                             return format!(
                                 "if {}.is_none() {{ return Err({err}); }}",
@@ -237,9 +239,9 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                         }
                     }
                     let err = if err_var == "NotFound" {
-                        "DomainError::NotFound".to_string()
+                        ctx.error_model.not_found_path()
                     } else {
-                        format!("DomainError::Validation(\"{msg_escaped}\".to_string())")
+                        format!("{}(\"{msg_escaped}\".to_string())", ctx.error_model.validation_path())
                     };
                     format!(
                         "if !({}) {{ return Err({err}); }}",

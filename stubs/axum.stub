@@ -1,4 +1,5 @@
 stub axum 0.8.9
+  async_methods send
 
   struct JsonDataError
     fn body_text() -> Str

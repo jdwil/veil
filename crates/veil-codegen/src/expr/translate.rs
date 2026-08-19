@@ -179,8 +179,9 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                             );
                         }
                         return format!(
-                            "{}.clone().ok_or(DomainError::NotFound)?.{}",
+                            "{}.clone().ok_or({})?.{}",
                             base_str,
+                            ctx.error_model.not_found_path(),
                             to_snake(field)
                         );
                     }
@@ -330,8 +331,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                                 if let Some(ty) = ctx.local_type(item_name) {
                                     if ty.starts_with("Option<") {
                                         return format!(
-                                            "{}.push({}.clone().ok_or(DomainError::NotFound)?)",
-                                            name, item
+                                            "{}.push({}.clone().ok_or({})?)",
+                                            name, item, ctx.error_model.not_found_path()
                                         );
                                     }
                                 }
@@ -377,8 +378,8 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                             .collect::<Vec<_>>()
                             .join(".");
                         return format!(
-                            "{}.as_mut().ok_or(DomainError::NotFound)?.{} = {}",
-                            base_name, field_snake, rhs_str
+                            "{}.as_mut().ok_or({})?.{} = {}",
+                            base_name, ctx.error_model.not_found_path(), field_snake, rhs_str
                         );
                     }
                 }
@@ -461,30 +462,31 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             match inner.as_ref() {
                 Expr::Ident(n) if n == "Ok" => "return Ok(())".to_string(),
                 Expr::Ident(n) if n == "Err" => {
-                    "return Err(DomainError::External(\"error\".to_string()))".to_string()
+                    format!("return Err({}(\"error\".to_string()))", ctx.error_model.external_path())
                 }
                 // `ret Err e` parses as a call `Err(e)` or ident chain; handle a
                 // call whose target is Err.
                 Expr::Call(c) if c.target == "Err" && c.method.is_empty() => {
                     let a = c.args.iter().map(|e| expr_to_rust_value(e, ctx)).collect::<Vec<_>>().join(", ");
+                    let err_type = &ctx.error_model.type_name;
                     if a.is_empty() {
-                        "return Err(DomainError::Validation(\"error\".to_string()))".to_string()
-                    } else if a.starts_with("DomainError::") {
-                        // Already a DomainError variant
+                        format!("return Err({}(\"error\".to_string()))", ctx.error_model.validation_path())
+                    } else if a.starts_with(&format!("{err_type}::")) {
+                        // Already a domain error variant
                         format!("return Err({})", a)
                     } else {
                         // Check if the argument is a simple identifier (likely a caught error variable)
                         let is_simple_ident = c.args.len() == 1 && matches!(&c.args[0], Expr::Ident(_));
                         if is_simple_ident {
-                            // Bare variable from a match arm — likely already DomainError
+                            // Bare variable from a match arm — likely already domain error
                             format!("return Err({})", a)
                         } else if matches!(c.args.first(), Some(Expr::StringLit(_))) {
                             // ret Err "msg" → External (adapter fail-closed, not validation)
-                            format!("return Err(DomainError::External({}))", a)
+                            format!("return Err({}({}))", ctx.error_model.external_path(), a)
                         } else {
                             // format! / computed messages (upstream HTTP, DB) → External → 502
                             // User-facing validation uses `guard`, not `ret Err`.
-                            format!("return Err(DomainError::External({}))", a)
+                            format!("return Err({}({}))", ctx.error_model.external_path(), a)
                         }
                     }
                 }
@@ -527,7 +529,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                         } else if val == "()" {
                             "return Ok(())".to_string()
                         } else {
-                            "return Err(DomainError::NotFound)".to_string()
+                            format!("return Err({})", ctx.error_model.not_found_path())
                         }
                     } else if returns_option && !val.starts_with("Some(") {
                         // If the value is already Option<T> (from a local typed as such),
@@ -556,7 +558,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             // so subsequent `.as_s()` is on AttributeValue, not Option.
             match idx.as_ref() {
                 Expr::StringLit(s) => format!(
-                    "{b}.get(\"{s}\").cloned().ok_or(DomainError::NotFound)?"
+                    "{b}.get(\"{s}\").cloned().ok_or({})?", ctx.error_model.not_found_path()
                 ),
                 Expr::IntLit(n) => list_index_get_rust(&b, &n.to_string(), base, ctx),
                 // Dynamic key (e.g. params[p.name] on serde_json::Value)
@@ -641,12 +643,12 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
             {
                 // `require context.stack.topic_arn` → present JSON string.
                 format!(
-                    "{s}.as_str().map(|s| s.to_string()).ok_or(DomainError::NotFound)?"
+                    "{s}.as_str().map(|s| s.to_string()).ok_or({})?", ctx.error_model.not_found_path()
                 )
             } else {
                 let still_option = ty.as_deref().is_some_and(|t| peel_option_rust(t).is_some());
                 if still_option {
-                    format!("{s}.ok_or(DomainError::NotFound)?")
+                    format!("{s}.ok_or({})?", ctx.error_model.not_found_path())
                 } else if s.trim_end().ends_with('?') {
                     s
                 } else if ty.as_deref().is_some_and(|t| {
@@ -655,7 +657,7 @@ pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
                     // Already a present value (e.g. `a.args[0]` after cloned get).
                     s
                 } else {
-                    format!("{s}.ok_or(DomainError::NotFound)?")
+                    format!("{s}.ok_or({})?", ctx.error_model.not_found_path())
                 }
             }
         },

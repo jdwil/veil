@@ -1,6 +1,7 @@
 stub sqlx 0.9.0
   # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
   cargo_features postgres
+  borrow_fields pool
   row_type_derives sqlx::FromRow
   wrapper_type_derives sqlx::Type
   wrapper_type_attrs sqlx(transparent)

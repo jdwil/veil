@@ -169,6 +169,9 @@ impl GenCtx {
             unit_enums: self.unit_enums.clone(),
             ident_uses: self.ident_uses.clone(),
             ref_elem_locals: self.ref_elem_locals.clone(),
+            known_modules: self.known_modules.clone(),
+            borrow_fields: self.borrow_fields.clone(),
+            error_model: self.error_model.clone(),
         }
     }
 }
@@ -194,7 +197,7 @@ pub fn from_str_turbofish_type(ctx: &GenCtx) -> Option<String> {
     }
     // Domain types are PascalCase; skip Value / primitives.
     if s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-        && s != "DomainError"
+        && s != ctx.error_model.type_name
         && !s.starts_with("Result")
     {
         return Some(s.to_string());

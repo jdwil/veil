@@ -133,6 +133,14 @@ pub fn map_err_domain_own_str() -> &'static str {
     r#".map(|s| s.to_string()).map_err(|e| DomainError::External(format!("{e:?}")))?"#
 }
 
+/// `.await.map_err(...)` suffix for async+fallible methods, parameterized by error model.
+pub fn map_err_await_domain(em: &super::context::ErrorModel) -> String {
+    format!(
+        ".await.map_err(|e| {}::{}(format!(\"{{e:?}}\")))?",
+        em.type_name, em.external
+    )
+}
+
 pub fn is_str_like_return(ty: &str) -> bool {
     let t = ty.trim();
     matches!(

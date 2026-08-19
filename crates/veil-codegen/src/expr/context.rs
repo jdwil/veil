@@ -13,6 +13,47 @@ use crate::rust::to_snake;
 
 use super::types::{extract_inner_type, type_name_simple, register_enum_variant, rust_field_is_defaultable};
 
+/// Error model: names for the domain error type and its variants.
+/// Populated from layer-declared error types (ddd.layer `DomainError`).
+/// Lets codegen emit `ErrorType::Variant(...)` without hardcoding names.
+#[derive(Clone)]
+pub struct ErrorModel {
+    /// The error type name (e.g. "DomainError").
+    pub type_name: String,
+    /// The "not found" variant name (e.g. "NotFound").
+    pub not_found: String,
+    /// The "validation" variant name (e.g. "Validation").
+    pub validation: String,
+    /// The "external" variant name (e.g. "External").
+    pub external: String,
+}
+
+impl Default for ErrorModel {
+    fn default() -> Self {
+        ErrorModel {
+            type_name: "DomainError".to_string(),
+            not_found: "NotFound".to_string(),
+            validation: "Validation".to_string(),
+            external: "External".to_string(),
+        }
+    }
+}
+
+impl ErrorModel {
+    /// Full path for not-found variant: `DomainError::NotFound`
+    pub fn not_found_path(&self) -> String {
+        format!("{}::{}", self.type_name, self.not_found)
+    }
+    /// Full path for validation variant: `DomainError::Validation`
+    pub fn validation_path(&self) -> String {
+        format!("{}::{}", self.type_name, self.validation)
+    }
+    /// Full path for external variant: `DomainError::External`
+    pub fn external_path(&self) -> String {
+        format!("{}::{}", self.type_name, self.external)
+    }
+}
+
 /// Code generation context — carries name resolution and type information.
 pub struct GenCtx {
     /// All constructs in the solution by name → shape.
@@ -123,6 +164,15 @@ pub struct GenCtx {
     pub ident_uses: HashMap<String, usize>,
     /// Loop bindings that are `&T` (shared-ref for). Owned slots must `.clone()`.
     pub ref_elem_locals: HashSet<String>,
+    /// Known module/crate names for qualified path resolution (e.g. `serde_json::from_str`).
+    /// Populated from loaded stub crate names + `std`. Replaces the old hardcoded array.
+    pub known_modules: HashSet<String>,
+    /// Fields that should use borrow (`&self.field`) instead of clone (`self.field.clone()`).
+    /// Populated from stub harness_field types (Pool, Arc, Client) and adapter field types.
+    pub borrow_fields: HashSet<String>,
+    /// Error model: type name and variant names for domain errors. Populated from
+    /// layer-declared error types. Replaces hardcoded `DomainError::*` strings.
+    pub error_model: ErrorModel,
 }
 
 impl GenCtx {
@@ -163,6 +213,9 @@ impl GenCtx {
             unit_enums: HashSet::new(),
             ident_uses: HashMap::new(),
             ref_elem_locals: HashSet::new(),
+            known_modules: HashSet::new(),
+            borrow_fields: HashSet::new(),
+            error_model: ErrorModel::default(),
         }
     }
 
@@ -545,7 +598,8 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     || (fallible && method.params.iter().any(|p| {
                         // Methods taking an executor param (e.g. `executor: E`) are async
                         p.0 == "executor" || p.0 == "pool"
-                    }));
+                    }))
+                    || (fallible && stub.async_methods.contains(&method.name));
                 if fallible {
                     ctx.fallible_methods.insert(method.name.clone());
                     ctx.type_fallible_methods.insert((type_name.clone(), method.name.clone()));
@@ -670,6 +724,31 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     // identify message-routing ports without hardcoding trait names.
     ctx.routing_traits = registry.routing_traits().into_iter().collect();
     ctx.routing_ref = ctx.default_routing_ref_as_dep();
+
+    // Known modules: every loaded stub crate name + `std`. Replaces hardcoded
+    // array in calls.rs — a new stub automatically becomes a known module.
+    ctx.known_modules.insert("std".to_string());
+    // Fallback: common crates used in codegen that may not have stubs loaded.
+    for name in &["serde_json", "serde", "tokio", "tracing", "uuid", "chrono"] {
+        ctx.known_modules.insert(name.to_string());
+    }
+    for stub in &registry.stubs {
+        let rust_crate = stub.name.replace('-', "_");
+        ctx.known_modules.insert(stub.name.clone());
+        ctx.known_modules.insert(rust_crate);
+        if let Some(alias) = &stub.alias {
+            ctx.known_modules.insert(alias.clone());
+        }
+    }
+
+    // Borrow fields: fields whose type should use `&self.field` instead of
+    // `self.field.clone()`. Populated from stub `borrow_fields` declarations.
+    // (e.g. sqlx declares `borrow_fields pool` because Executor requires &Pool.)
+    for stub in &registry.stubs {
+        for field in &stub.borrow_fields {
+            ctx.borrow_fields.insert(field.clone());
+        }
+    }
 
     // Layer statement specs for custom `lowers_to` template emission.
     for stmt in &registry.statements {

@@ -1150,6 +1150,33 @@ impl LayerRegistry {
         }
     }
 
+    /// True if a keyword/subkind (or its construct-chain ancestors) belongs to
+    /// the given group (e.g. "domain", "application"). Resolves transitively via
+    /// `maps_to`, so a product keyword that inherits from DomainService (group
+    /// "domain") will return true for group "domain".
+    pub fn construct_in_group(&self, keyword: &str, group: &str) -> bool {
+        let Some(mut current) = self.construct(keyword) else {
+            return false;
+        };
+        let mut visited: HashSet<&str> = HashSet::new();
+        loop {
+            if current.group.eq_ignore_ascii_case(group) {
+                return true;
+            }
+            if !visited.insert(&current.keyword) {
+                return false;
+            }
+            let next = self
+                .constructs
+                .iter()
+                .find(|c| c.keyword == current.maps_to || c.name == current.maps_to);
+            match next {
+                Some(spec) if spec.keyword != current.keyword => current = spec,
+                _ => return false,
+            }
+        }
+    }
+
     /// Load a layer file (and, recursively, layers it `use`s) into this registry.
     ///
     /// Resolution:
@@ -1972,6 +1999,16 @@ pub struct StubCrate {
     /// Called as `use_alias.fn(...)` or `crate_name.fn(...)` → `rust_crate::fn(...)`.
     #[serde(default)]
     pub free_fns: Vec<StubMethod>,
+    /// Method names that are always async on this crate's types (e.g. `send`, `send_with`).
+    /// Line form: `async_methods send, send_with`.
+    /// When a method is both fallible and in this set, it gets `.await.map_err(…)?`.
+    #[serde(default)]
+    pub async_methods: Vec<String>,
+    /// Field names that require borrow (`&self.field`) instead of clone.
+    /// Line form: `borrow_fields pool`.
+    /// Used when the type requires `&T` for trait impls (e.g. sqlx Executor for &Pool).
+    #[serde(default)]
+    pub borrow_fields: Vec<String>,
 }
 
 impl StubCrate {
@@ -2277,6 +2314,30 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
         if trimmed.starts_with("cargo_features ") {
             stub.cargo_features = trimmed
                 .strip_prefix("cargo_features ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            continue;
+        }
+
+        // async_methods send, send_with — method names that are always async on this crate's types
+        if trimmed.starts_with("async_methods ") {
+            stub.async_methods = trimmed
+                .strip_prefix("async_methods ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            continue;
+        }
+
+        // borrow_fields pool — field names that should use &self.field (not clone)
+        if trimmed.starts_with("borrow_fields ") {
+            stub.borrow_fields = trimmed
+                .strip_prefix("borrow_fields ")
                 .unwrap_or("")
                 .split(',')
                 .map(|s| s.trim().to_string())

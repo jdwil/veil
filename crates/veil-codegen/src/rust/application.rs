@@ -730,10 +730,8 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         std::collections::HashMap::new();
     for flow in flows {
         if let FlowLike::Construct(c) = flow {
-            let is_domain = registry.is_a(&c.keyword, "DomainService")
-                || registry.is_a(&c.subkind, "DomainService")
-                || c.subkind.eq_ignore_ascii_case("DomainService")
-                || c.keyword == "svc";
+            let is_domain = registry.construct_in_group(&c.keyword, "domain")
+                || registry.construct_in_group(&c.subkind, "domain");
             if is_domain {
                 let msg = registry.bus_message_name(&c.name);
                 domain_by_message.insert(msg, c);
@@ -798,10 +796,8 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         // ApplicationService with a DomainService twin → thin delegate (no 2× body).
         // Skip delegation when the handler has extra steps (e.g. authorize) that the
         // domain service doesn't — emit full body so macro-expanded auth runs.
-        let is_app = registry.is_a(keyword, "ApplicationService")
-            || registry.is_a(subkind, "ApplicationService")
-            || subkind.eq_ignore_ascii_case("ApplicationService")
-            || keyword == "handler";
+        let is_app = registry.construct_in_group(keyword, "application")
+            || registry.construct_in_group(subkind, "application");
         if is_app && runtime.is_none() {
             let msg = registry.bus_message_name(name);
             if let Some(domain_c) = domain_by_message.get(&msg) {
@@ -927,10 +923,8 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         };
 
         // Record domain return types for thin ApplicationService wrappers.
-        let is_domain_emit = registry.is_a(keyword, "DomainService")
-            || registry.is_a(subkind, "DomainService")
-            || subkind.eq_ignore_ascii_case("DomainService")
-            || keyword == "svc";
+        let is_domain_emit = registry.construct_in_group(keyword, "domain")
+            || registry.construct_in_group(subkind, "domain");
         if is_domain_emit {
             domain_ret_by_message.insert(registry.bus_message_name(name), ret_type.clone());
         }

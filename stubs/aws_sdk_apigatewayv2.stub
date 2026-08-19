@@ -1,6 +1,7 @@
 # Minimal AWS API Gateway HTTP API surface for VEIL LocalDeployExec attach.
 # Real crate: aws-sdk-apigatewayv2. Not a product facade — SDK types only.
 stub aws-sdk-apigatewayv2 1
+  async_methods send, send_with
   types_module types
   root_types Client
   cargo_deps aws-config=1.8

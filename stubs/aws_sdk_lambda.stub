@@ -1,4 +1,5 @@
 stub aws-sdk-lambda 1.131.0
+  async_methods send, send_with
   types_module types
   root_types Client
   harness_field Client """
