@@ -46,12 +46,19 @@ fn emit_bool_lit() {
 }
 
 #[test]
-fn emit_raw_passthrough() {
-    let expr = RustExpr::Statement {
-        text: "some_complex_expr.await?".to_string(),
+fn emit_method_call_await_try() {
+    let expr = RustExpr::MethodCall {
+        receiver: Box::new(RustExpr::Ident {
+            name: "some_complex_expr".to_string(),
+            ty: None,
+        }),
+        method: "run".to_string(),
+        args: vec![],
         ty: None,
+        is_async: true,
+        is_fallible: true,
     };
-    assert_eq!(emit(&expr), "some_complex_expr.await?");
+    assert_eq!(emit(&expr), "some_complex_expr.run().await?");
 }
 
 #[test]
@@ -387,47 +394,66 @@ fn lower_call_wraps_translate_call_output() {
 // ─── apply_ownership on call results ─────────────────────────────
 
 #[test]
-fn ownership_raw_call_result_no_clone() {
+fn ownership_fn_call_result_no_clone() {
     let ctx = GenCtx::new(std::collections::HashMap::new());
-    // A function call result is already owned
-    let expr = RustExpr::Statement {
-        text: "Uuid::new_v4()".to_string(),
+    let expr = RustExpr::FnCall {
+        path: "Uuid::new_v4".to_string(),
+        args: vec![],
         ty: Some(RustType::Named("Uuid".to_string())),
     };
     let result = apply_ownership(expr, &ctx);
-    assert_eq!(emit(&result), "Uuid::new_v4()"); // no clone
+    assert_eq!(emit(&result), "Uuid::new_v4()");
 }
 
 #[test]
-fn ownership_raw_async_fallible_no_clone() {
+fn ownership_async_fallible_no_clone() {
     let ctx = GenCtx::new(std::collections::HashMap::new());
-    // async+fallible call result is owned
-    let expr = RustExpr::Statement {
-        text: "deps.repo.save(entity).await?".to_string(),
+    let expr = RustExpr::MethodCall {
+        receiver: Box::new(RustExpr::FieldAccess {
+            base: Box::new(RustExpr::Ident {
+                name: "deps".to_string(),
+                ty: None,
+            }),
+            field: "repo".to_string(),
+            ty: None,
+        }),
+        method: "save".to_string(),
+        args: vec![RustExpr::Ident {
+            name: "entity".to_string(),
+            ty: None,
+        }],
         ty: Some(RustType::Named("String".to_string())),
+        is_async: true,
+        is_fallible: true,
     };
     let result = apply_ownership(expr, &ctx);
-    assert_eq!(emit(&result), "deps.repo.save(entity).await?"); // no clone
+    assert_eq!(emit(&result), "deps.repo.save(entity).await?");
 }
 
 #[test]
-fn ownership_raw_block_expr_no_clone() {
+fn ownership_block_expr_no_clone() {
     let ctx = GenCtx::new(std::collections::HashMap::new());
-    // Block expression is owned
-    let expr = RustExpr::Statement {
-        text: "{ let x = 1; x }".to_string(),
-        ty: Some(RustType::Named("i64".to_string())),
+    let expr = RustExpr::Block {
+        stmts: vec![RustExpr::Let {
+            name: "x".to_string(),
+            mutable: false,
+            ty: None,
+            value: Box::new(RustExpr::IntLit(1)),
+        }],
+        value: Some(Box::new(RustExpr::Ident {
+            name: "x".to_string(),
+            ty: Some(RustType::Named("i64".to_string())),
+        })),
     };
     let result = apply_ownership(expr, &ctx);
-    assert_eq!(emit(&result), "{ let x = 1; x }"); // no clone
+    assert_eq!(emit(&result), "{ let x = 1; x }");
 }
 
 #[test]
-fn ownership_raw_bare_ident_still_clones() {
+fn ownership_bare_ident_still_clones() {
     let ctx = make_ctx_with_uses("data", 2);
-    // A bare ident in Raw should still get cloned when multi-use
-    let expr = RustExpr::Statement {
-        text: "data".to_string(),
+    let expr = RustExpr::Ident {
+        name: "data".to_string(),
         ty: Some(RustType::Named("String".to_string())),
     };
     let result = apply_ownership(expr, &ctx);
@@ -464,6 +490,7 @@ fn suppress_try_converts_map_err_to_unwrap() {
             is_fallible: false,
         }),
         variant: "DomainError::External".to_string(),
+        style: MapErrStyle::Debug,
     };
     let result = suppress_try_in_closure(expr);
     assert_eq!(emit(&result), "serde_json.from_str(s).unwrap()");
@@ -488,22 +515,39 @@ fn suppress_try_converts_fallible_method_call() {
 }
 
 #[test]
-fn suppress_try_raw_fixup_map_err() {
-    let expr = RustExpr::Statement {
-        text: "serde_json::from_str(&s).map_err(|e| DomainError::External(format!(\"{e:?}\")))?".to_string(),
-        ty: None,
+fn suppress_try_map_err_node() {
+    let expr = RustExpr::MapErr {
+        inner: Box::new(RustExpr::FnCall {
+            path: "serde_json::from_str".to_string(),
+            args: vec![RustExpr::Borrow {
+                inner: Box::new(RustExpr::Ident {
+                    name: "s".to_string(),
+                    ty: None,
+                }),
+                mutable: false,
+            }],
+            ty: None,
+        }),
+        variant: "DomainError::External".to_string(),
+        style: MapErrStyle::Debug,
     };
     let result = suppress_try_in_closure(expr);
     assert_eq!(emit(&result), "serde_json::from_str(&s).unwrap()");
 }
 
 #[test]
-fn suppress_try_raw_fixup_question_mark() {
-    // `)?` pattern: parenthesized expr followed by `?`
-    let expr = RustExpr::Statement {
-        text: "serde_json::from_str(&s)?".to_string(),
+fn suppress_try_question_mark_node() {
+    let expr = RustExpr::Try(Box::new(RustExpr::FnCall {
+        path: "serde_json::from_str".to_string(),
+        args: vec![RustExpr::Borrow {
+            inner: Box::new(RustExpr::Ident {
+                name: "s".to_string(),
+                ty: None,
+            }),
+            mutable: false,
+        }],
         ty: None,
-    };
+    }));
     let result = suppress_try_in_closure(expr);
     assert_eq!(emit(&result), "serde_json::from_str(&s).unwrap()");
 }

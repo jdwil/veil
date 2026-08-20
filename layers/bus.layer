@@ -1,0 +1,111 @@
+layer bus
+  desc "In-process message bus — JSON envelope routing between bounded contexts"
+  author "VEIL"
+  use rust
+
+  # ─── Bus Policy ─────────────────────────────────────────────────────────────
+  # Bus policies (strip_name_prefix) are declared by companion layers
+  # like bus_handle.layer. This layer provides the core bus mechanics.
+
+  # ─── Statements ─────────────────────────────────────────────────────────────
+  # invoke / dispatch / request are the bus verbs. Each targets Bus.<method>,
+  # making "Bus" a routing trait. The engine never knows this is a bus — it sees
+  # a trait dep call lowered by the lowers_to template.
+
+  statement invoke
+    mt Bus.invoke
+    desc "Invoke a command handler through the message bus and deserialize the response"
+    sem bus_invoke_command
+    requires_dep Bus
+    lowers_to
+      rust: """
+        serde_json::from_value(
+            deps.{dep}.invoke(
+                serde_json::json!({ "type": {target}, "payload": serde_json::to_value(&{args}).unwrap() })
+            ).await?
+        )?
+      """
+      typescript: "await this.{dep}.invoke({args})"
+    visual
+      icon "📨"
+      color "#6366f1"
+      label "Invoke"
+
+  statement dispatch
+    mt Bus.dispatch
+    desc "Dispatch a fire-and-forget message through the bus"
+    sem bus_dispatch_event
+    requires_dep Bus
+    lowers_to
+      rust: """
+        deps.{dep}.dispatch(
+            serde_json::json!({ "type": {target}, "payload": serde_json::to_value(&{args}).unwrap() })
+        ).await?
+      """
+      typescript: "await this.{dep}.dispatch({args})"
+    visual
+      icon "📤"
+      color "#8b5cf6"
+      label "Dispatch"
+
+  statement request
+    mt Bus.request
+    desc "Send a request through the bus and deserialize the typed response"
+    sem bus_request_query
+    requires_dep Bus
+    lowers_to
+      rust: """
+        serde_json::from_value(
+            deps.{dep}.request(
+                serde_json::json!({ "type": {target}, "payload": serde_json::to_value(&{args}).unwrap() })
+            ).await?
+        )?
+      """
+      typescript: "await this.{dep}.request({args})"
+    visual
+      icon "📬"
+      color "#06b6d4"
+      label "Request"
+
+  # ─── Declare Block ──────────────────────────────────────────────────────────
+  # Bus trait + InProcessBus implementation. Emitted into veil_shared so all
+  # context crates can depend on a single Bus definition.
+
+  declare
+    trait Bus: Send + Sync
+      invoke(envelope: Json) -> Res!<Json>
+      dispatch(envelope: Json) -> Res!
+      request(envelope: Json) -> Res!<Json>
+
+  # ─── LLM Prompt ─────────────────────────────────────────────────────────────
+  prompt
+    You are writing VEIL code that uses a message bus for inter-context communication.
+
+    ## Overview
+    The `bus` layer provides three verbs for cross-boundary messaging:
+    - `invoke` — send a command, await a typed response
+    - `dispatch` — fire-and-forget event
+    - `request` — send a query, await a typed response
+
+    ## Usage
+    1. Declare a `port Bus` in your domain (or the layer-provided `Bus` trait is used).
+    2. Inject `@dep bus: Bus` on services that send messages.
+    3. Use statement verbs in flow steps:
+       ```
+       invoke ProcessOrder { order_id: id, amount: total }
+       dispatch OrderShipped { order_id: id }
+       result = request GetBalance { account_id: acct }
+       ```
+
+    ## How it works
+    - Each verb serializes its arguments to JSON and routes through the Bus trait
+    - InProcessBus (generated into veil_shared) provides a local implementation
+    - The handler side deserializes the JSON envelope and calls the application fn
+    - For production: implement Bus with a real transport (NATS, SQS, RabbitMQ)
+
+    ## Constraints
+    - You MUST NOT call bus verbs without a Bus dep wired
+    - You SHOULD use `invoke` for commands that return a result
+    - You SHOULD use `dispatch` for events (fire-and-forget)
+    - Handler naming follows bus_policy if a companion layer declares one
+      (e.g., bus_handle strips "Handle" prefix: HandleCreateUser → CreateUser)

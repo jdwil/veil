@@ -1,5 +1,6 @@
 ---
 source: crates/veil-codegen/tests/snapshot_tests.rs
+assertion_line: 60
 expression: out
 ---
 // ===== Cargo.toml =====
@@ -118,30 +119,6 @@ impl From<String> for DomainError {
     }
 }
 
-/// trait: HttpHost
-#[async_trait]
-pub trait HttpHost: Send + Sync {
-    async fn mount_ide(&self) -> Result<(), DomainError>;
-    async fn serve_dir(&self, path: String) -> Result<(), DomainError>;
-    async fn mount_bus(&self) -> Result<(), DomainError>;
-    async fn listen(&self, port: i64) -> Result<(), DomainError>;
-}
-
-/// trait: FileSystem
-#[async_trait]
-pub trait FileSystem: Send + Sync {
-    async fn read(&self, path: String) -> Result<String, DomainError>;
-    async fn write(&self, path: String, content: String) -> Result<(), DomainError>;
-    async fn list(&self, prefix: String) -> Result<Vec<String>, DomainError>;
-}
-
-/// trait: GitRepo
-#[async_trait]
-pub trait GitRepo: Send + Sync {
-    async fn branches(&self, repo: String) -> Result<Vec<String>, DomainError>;
-    async fn log(&self, repo: String, limit: i64) -> Result<Vec<String>, DomainError>;
-}
-
 /// trait: EntityRepo
 #[async_trait]
 pub trait EntityRepo<T>: Send + Sync
@@ -167,51 +144,28 @@ pub trait SagaStep: Send + Sync {
     async fn compensate(&self, state: serde_json::Value) -> Result<(), DomainError>;
 }
 
-/// Dev/local AuthService — allows all tokens and permissions (RT-008).
-/// Host harnesses replace this with Cognito/Auth0/etc. via `provided_by: runtime`.
-pub struct AllowAllAuth;
-
+/// trait: HttpHost
 #[async_trait]
-impl AuthService for AllowAllAuth {
-    async fn validate_token(&self, token: String) -> Result<Principal, DomainError> {
-        Ok(Principal {
-            id: if token.is_empty() { "anonymous".into() } else { token },
-            roles: vec!["local".into()],
-            claims: std::collections::HashMap::new(),
-        })
-    }
-
-    async fn check_permission(&self, _principal: Principal, _permission: String) -> Result<bool, DomainError> {
-        Ok(true)
-    }
-
-}
-/// Layer-provided struct: DeployedAnnotation
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeployedAnnotation {
-    pub name: String,
-    pub args: Vec<String>,
-    pub roles: Vec<String>,
+pub trait HttpHost: Send + Sync {
+    async fn mount_ide(&self) -> Result<(), DomainError>;
+    async fn serve_dir(&self, path: String) -> Result<(), DomainError>;
+    async fn mount_bus(&self) -> Result<(), DomainError>;
+    async fn listen(&self, port: i64) -> Result<(), DomainError>;
 }
 
-/// Layer-provided struct: DeployedConstruct
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeployedConstruct {
-    pub name: String,
-    pub keyword: String,
-    pub package: String,
-    pub annotations: Vec<DeployedAnnotation>,
+/// trait: FileSystem
+#[async_trait]
+pub trait FileSystem: Send + Sync {
+    async fn read(&self, path: String) -> Result<String, DomainError>;
+    async fn write(&self, path: String, content: String) -> Result<(), DomainError>;
+    async fn list(&self, prefix: String) -> Result<Vec<String>, DomainError>;
 }
 
-/// Layer-provided struct: DeployContext
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeployContext {
-    pub service_name: String,
-    pub environment: String,
-    pub resource_prefix: String,
-    pub stack: serde_json::Value,
-    pub units: serde_json::Value,
-    pub constructs: Vec<DeployedConstruct>,
+/// trait: GitRepo
+#[async_trait]
+pub trait GitRepo: Send + Sync {
+    async fn branches(&self, repo: String) -> Result<Vec<String>, DomainError>;
+    async fn log(&self, repo: String, limit: i64) -> Result<Vec<String>, DomainError>;
 }
 
 /// Layer-provided struct: Principal
@@ -226,9 +180,9 @@ pub struct Principal {
 pub async fn unwind(steps: &[Box<dyn SagaStep + Send + Sync>], upto: i64, state: serde_json::Value) -> Result<(), DomainError> {
     let mut i = upto;
     while i > 0 {
-            i -= 1;
-            steps.get(i as usize).ok_or(DomainError::NotFound)?.compensate(state.clone()).await?;
-        }
+        i -= 1;
+        steps.get(i as usize).ok_or(DomainError::NotFound)?.compensate(state.clone()).await?;
+    }
     Ok(())
 }
 
@@ -236,18 +190,18 @@ pub async fn unwind(steps: &[Box<dyn SagaStep + Send + Sync>], upto: i64, state:
 pub async fn run_saga(steps: &[Box<dyn SagaStep + Send + Sync>]) -> Result<(), DomainError> {
     let mut state = serde_json::json!({});
     let mut i = 0;
-    while i < (steps.len() as i64) {
-            match steps.get(i as usize).ok_or(DomainError::NotFound)?.action(state.clone()).await {
-                    Ok(next) => {
+    while i < steps.len() as i64 {
+        match steps.get(i as usize).ok_or(DomainError::NotFound)?.action(state.clone()).await {
+                Ok(next) => {
                     state = next.clone();
                     i += 1
                 },
-                    Err(e) => {
+                Err(e) => {
                     unwind(steps, i, state.clone()).await?;
                     return Err(e)
                 },
-                }
-        }
+            }
+    }
     Ok(())
 }
 
@@ -286,7 +240,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use crate::ports::{ValidationError, DomainError};
+use crate::ports::*;
 use crate::domain::messages::*;
 
 /// Aggregate: Widget
@@ -359,15 +313,15 @@ pub struct MemWidgetRepo {
 
 #[async_trait]
 impl WidgetRepo for MemWidgetRepo {
-    async fn find(&self, id: Uuid) -> Result<Option<Widget>, DomainError> {
+    async fn find(&self, id: Uuid) -> Result<Option<Widget>, __VEIL_NO_ERROR_MODEL__> {
         return Ok(None)
     }
 
-    async fn list_all(&self) -> Result<Vec<Widget>, DomainError> {
+    async fn list_all(&self) -> Result<Vec<Widget>, __VEIL_NO_ERROR_MODEL__> {
         return Ok(vec![])
     }
 
-    async fn save(&self, widget: Widget) -> Result<(), DomainError> {
+    async fn save(&self, widget: Widget) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
         return Ok(())
     }
 
@@ -424,7 +378,7 @@ pub async fn create_widget(
     // step: persist
     let w = Widget::new(Uuid::new_v4(), name);
     deps.widget_repo.save(w.clone()).await?;
-    return Ok(w.clone());
+    return Ok(w);
 
 }
 

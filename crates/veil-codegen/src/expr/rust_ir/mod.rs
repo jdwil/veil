@@ -5,12 +5,10 @@
 //! (clone insertion, `?` suppression in closures, etc.) operate on structure
 //! rather than rendered strings.
 //!
-//! ## Module structure
-//!
-//! - `lower` — `lower_to_rust()` and per-expression lowering helpers
-//! - `ownership` — `apply_ownership()`, clone/borrow helpers, try-suppression in closures
-//! - `tests` — unit tests
+//! Emission (`emit`) is the only stage that produces target text. Lowering
+//! never concatenates child source.
 
+mod build;
 mod lower;
 mod ownership;
 #[cfg(test)]
@@ -18,10 +16,9 @@ mod tests;
 
 use super::types::rust_string_lit;
 
-// Re-export public API
+pub use build::*;
 pub use lower::lower_to_rust;
 pub use ownership::{apply_ownership, suppress_try_in_closure};
-
 
 /// Simplified Rust type representation for ownership decisions.
 /// Not a full type system — just enough to decide clone vs move vs borrow.
@@ -74,7 +71,6 @@ impl RustType {
             return RustType::Option(Box::new(RustType::parse(inner)));
         }
         if let Some(inner) = strip_generic_prefix(s, "Result") {
-            // Result<T, E> — take T (first type param at depth 0)
             let inner_ty = split_type_params(inner)
                 .first()
                 .copied()
@@ -91,11 +87,8 @@ impl RustType {
     }
 }
 
-/// Strip `Name<...>` prefix, returning the content between the matching `<>`
-/// pair. Respects nested angle brackets.
 fn strip_generic_prefix<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     let rest = s.strip_prefix(name)?.strip_prefix('<')?;
-    // Find the matching closing '>' by tracking depth
     let mut depth = 1u32;
     for (i, ch) in rest.char_indices() {
         match ch {
@@ -103,20 +96,18 @@ fn strip_generic_prefix<'a>(s: &'a str, name: &str) -> Option<&'a str> {
             '>' => {
                 depth -= 1;
                 if depth == 0 {
-                    // Ensure nothing follows the closing '>'
                     if i + 1 == rest.len() {
                         return Some(&rest[..i]);
                     }
-                    return None; // trailing chars → not a match
+                    return None;
                 }
             }
             _ => {}
         }
     }
-    None // unbalanced
+    None
 }
 
-/// Split type parameters at top-level commas (depth 0), respecting nested `<>`.
 fn split_type_params(s: &str) -> Vec<&str> {
     let mut params = Vec::new();
     let mut depth = 0u32;
@@ -139,36 +130,68 @@ fn split_type_params(s: &str) -> Vec<&str> {
     params
 }
 
+// ─── CallFinish / MapErrStyle / Arm ──────────────────────────────────────────
+
+/// How a call's Result/async-ness is finished after the call node is built.
+/// Applied as IR wrappers (`Await` / `Try` / `MapErr`) — never concatenated
+/// onto rendered source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallFinish {
+    Bare,
+    Await,
+    AwaitTry,
+    Try,
+    /// `.map_err(|e| Variant(format!("{e:?}")))?`
+    MapErrDebug,
+    /// `.map(|s| s.to_string()).map_err(|e| Variant(format!("{e:?}")))?`
+    MapErrOwnStr,
+    /// `.await.map_err(|e| Variant(format!("{e:?}")))?`
+    AwaitMapErr,
+}
+
+impl CallFinish {
+    pub fn is_bare(&self) -> bool {
+        matches!(self, CallFinish::Bare)
+    }
+}
+
+/// Style of `.map_err(...)` closure.
+#[derive(Debug, Clone)]
+pub enum MapErrStyle {
+    /// `|e| Variant(format!("{e:?}"))`
+    Debug,
+    /// `|e| Variant(format!("{e}"))`
+    Display,
+    /// `|e| Variant(e.to_string())`
+    ToString,
+    /// `|_| expr`
+    Ignore(Box<RustExpr>),
+}
+
+/// One arm of a match expression. Pattern text is a token (VEIL pattern
+/// already lowered); guard and body are structured.
+#[derive(Debug, Clone)]
+pub struct Arm {
+    pub pattern: String,
+    pub guard: Option<Box<RustExpr>>,
+    pub body: Vec<RustExpr>,
+}
+
 // ─── RustExpr ────────────────────────────────────────────────────────────────
 
 /// Typed intermediate representation of a Rust expression.
-/// Carries enough information for ownership analysis and final emission
-/// without re-parsing rendered strings.
 #[derive(Debug, Clone)]
 pub enum RustExpr {
-    /// Identifier reference.
     Ident { name: String, ty: Option<RustType> },
-
-    /// String literal: `"hello"`
     StringLit(String),
-
-    /// Integer literal: `42`
     IntLit(i64),
-
-    /// Float literal: `3.14`
     FloatLit(f64),
-
-    /// Boolean literal: `true` / `false`
     BoolLit(bool),
-
-    /// Field access: `base.field`
     FieldAccess {
         base: Box<RustExpr>,
         field: String,
         ty: Option<RustType>,
     },
-
-    /// Method call: `receiver.method(args)`
     MethodCall {
         receiver: Box<RustExpr>,
         method: String,
@@ -177,153 +200,137 @@ pub enum RustExpr {
         is_async: bool,
         is_fallible: bool,
     },
-
-    /// Free function call: `path::function(args)`
     FnCall {
         path: String,
         args: Vec<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// Clone wrapper: `expr.clone()`
     Clone(Box<RustExpr>),
-
-    /// Borrow: `&expr` or `&mut expr`
     Borrow { inner: Box<RustExpr>, mutable: bool },
-
-    /// Await: `expr.await`
     Await(Box<RustExpr>),
-
-    /// Try operator: `expr?`
     Try(Box<RustExpr>),
-
-    /// `.map_err(|e| DomainError::External(format!("{e:?}")))`
-    MapErr { inner: Box<RustExpr>, variant: String },
-
-    /// `format!(...)` expression
+    MapErr {
+        inner: Box<RustExpr>,
+        variant: String,
+        style: MapErrStyle,
+    },
     Format { template: String, args: Vec<RustExpr> },
-
-    /// Block expression: `{ stmts; value }`
     Block {
         stmts: Vec<RustExpr>,
         value: Option<Box<RustExpr>>,
     },
-
-    /// If expression / if-else block
     If {
         condition: Box<RustExpr>,
         then_body: Vec<RustExpr>,
         else_body: Option<Vec<RustExpr>>,
     },
-
-    /// Match expression
     Match {
         scrutinee: Box<RustExpr>,
-        arms: Vec<(String, RustExpr)>,
+        arms: Vec<Arm>,
     },
-
-    /// Let binding: `let [mut] name [: Type] = value;`
     Let {
         name: String,
         mutable: bool,
         ty: Option<String>,
         value: Box<RustExpr>,
     },
-
-    /// `serde_json::json!({ "key": value, ... })` macro invocation.
-    /// Entries are key-value pairs rendered inside the json! braces.
-    /// Values that are already `RustExpr` get emitted inline (identifiers,
-    /// clones, string literals, nested json! calls, vec![...], etc.).
     JsonMacro {
         entries: Vec<(String, RustExpr)>,
     },
-
-    /// `serde_json::Value::Null`
+    /// `serde_json::json!(inner)` wrapping a single value.
+    JsonValue(Box<RustExpr>),
     JsonNull,
-
-    /// `serde_json::Value::Array(vec![])`
     JsonEmptyArray,
-
-    /// `vec![a, b, c]` (for json! array arguments)
     VecMacro(Vec<RustExpr>),
-
-    /// Pre-rendered Rust statement (assignment, reassignment, complex expressions
-    /// that haven't been fully decomposed into structural nodes yet).
-    /// Unlike the deleted `Raw`, this is explicitly a STATEMENT that produces
-    /// no value for ownership purposes.
-    Statement { text: String, ty: Option<RustType> },
-
-    /// Layer/action template output — pre-rendered by interpolate_action_template.
-    LayerEmit(String),
-
-    /// compile_error!("...") — intentional error marker in generated code.
+    /// Layer `lowers_to` template. Bindings are substituted at emit time.
+    LayerTemplate {
+        template: String,
+        bindings: Vec<(String, RustExpr)>,
+    },
     CompileError(String),
-
-    /// Return statement: `return expr`
     Return { value: Box<RustExpr>, wraps_ok: bool },
-
-    // ─── Structural nodes added during "complete-the-tree" ───────────
-
-    /// Binary operation: `left op right`
     BinOp {
         left: Box<RustExpr>,
         op: String,
         right: Box<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// Unary operation: `op expr`
     UnaryOp {
         op: String,
         expr: Box<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// Array / Vec literal: `vec![items]`
     Array {
         items: Vec<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// Tuple literal: `(items)`
     Tuple {
         items: Vec<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// Index expression: `base[index]`
     Index {
         base: Box<RustExpr>,
         index: Box<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// Struct literal: `Name { field: value, ... }`
     StructLit {
         name: String,
         fields: Vec<(String, RustExpr)>,
+        rest: Option<Box<RustExpr>>,
         ty: Option<RustType>,
     },
-
-    /// For loop: `for binding in iterable { body }`
     For {
         binding: String,
         iterable: Box<RustExpr>,
         body: Vec<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// While loop: `while condition { body }`
     While {
         condition: Box<RustExpr>,
         body: Vec<RustExpr>,
         ty: Option<RustType>,
     },
-
-    /// Infinite loop: `loop { body }`
     Loop {
         body: Vec<RustExpr>,
         ty: Option<RustType>,
+    },
+    Assign {
+        target: Box<RustExpr>,
+        op: String,
+        value: Box<RustExpr>,
+    },
+    Closure {
+        params: Vec<String>,
+        body: Vec<RustExpr>,
+    },
+    Cast {
+        expr: Box<RustExpr>,
+        ty: String,
+    },
+    Range {
+        start: Option<Box<RustExpr>>,
+        end: Option<Box<RustExpr>>,
+        inclusive: bool,
+    },
+    IfLet {
+        pattern: String,
+        expr: Box<RustExpr>,
+        then_body: Vec<RustExpr>,
+        else_body: Option<Vec<RustExpr>>,
+    },
+    WhileLet {
+        pattern: String,
+        expr: Box<RustExpr>,
+        body: Vec<RustExpr>,
+    },
+    Break,
+    Continue,
+    /// `/* text */`
+    Comment(String),
+    /// Comma/separator-joined items (template `{args}`, argument lists stored as nodes).
+    Join {
+        items: Vec<RustExpr>,
+        sep: String,
     },
 }
 
@@ -331,21 +338,10 @@ pub enum RustExpr {
 
 /// Render a `RustExpr` to its final Rust source string.
 ///
-/// This MUST produce byte-identical output to the old `expr_to_rust` for
-/// every migrated expression category. Pre-rendered expressions use
-/// `RustExpr::Statement` which is already a rendered string.
+/// This is the only function that produces target text from the expression
+/// tree. Lowering must not call `emit` on children and glue the results.
 pub fn emit(expr: &RustExpr) -> String {
     match expr {
-        RustExpr::Statement { text, .. } => text.clone(),
-        RustExpr::LayerEmit(s) => s.clone(),
-        RustExpr::CompileError(msg) => format!("compile_error!(\"{}\")", msg),
-        RustExpr::Return { value, wraps_ok } => {
-            if *wraps_ok {
-                format!("return Ok({})", emit(value))
-            } else {
-                format!("return {}", emit(value))
-            }
-        }
         RustExpr::Ident { name, .. } => name.clone(),
         RustExpr::StringLit(s) => rust_string_lit(s),
         RustExpr::IntLit(n) => n.to_string(),
@@ -390,13 +386,28 @@ pub fn emit(expr: &RustExpr) -> String {
         }
         RustExpr::Await(inner) => format!("{}.await", emit(inner)),
         RustExpr::Try(inner) => format!("{}?", emit(inner)),
-        RustExpr::MapErr { inner, variant } => {
-            format!(
+        RustExpr::MapErr {
+            inner,
+            variant,
+            style,
+        } => match style {
+            MapErrStyle::Debug => format!(
                 "{}.map_err(|e| {}(format!(\"{{e:?}}\")))?",
                 emit(inner),
                 variant
-            )
-        }
+            ),
+            MapErrStyle::Display => format!(
+                "{}.map_err(|e| {}(format!(\"{{e}}\")))?",
+                emit(inner),
+                variant
+            ),
+            MapErrStyle::ToString => {
+                format!("{}.map_err(|e| {}(e.to_string()))?", emit(inner), variant)
+            }
+            MapErrStyle::Ignore(err) => {
+                format!("{}.map_err(|_| {})?", emit(inner), emit(err))
+            }
+        },
         RustExpr::Format { template, args } => {
             if args.is_empty() {
                 format!("format!(\"{}\")", template)
@@ -405,20 +416,13 @@ pub fn emit(expr: &RustExpr) -> String {
                 format!("format!(\"{}\", {})", template, arg_strs.join(", "))
             }
         }
-        RustExpr::Block { stmts, value } => {
-            let mut parts: Vec<String> = stmts.iter().map(emit).collect();
-            if let Some(val) = value {
-                parts.push(emit(val));
-            }
-            format!("{{ {} }}", parts.join("; "))
-        }
+        RustExpr::Block { stmts, value } => emit_block_expr(stmts, value.as_deref()),
         RustExpr::If {
             condition,
             then_body,
             else_body,
         } => {
             let cond = emit(condition);
-            // Single-expression ternary: `if cond { expr } else { expr }`
             if then_body.len() == 1 && else_body.as_ref().is_some_and(|b| b.len() == 1) {
                 let then_str = emit(&then_body[0]);
                 let else_str = emit(&else_body.as_ref().unwrap()[0]);
@@ -426,7 +430,6 @@ pub fn emit(expr: &RustExpr) -> String {
                     return format!("if {} {{ {} }} else {{ {} }}", cond, then_str, else_str);
                 }
             }
-            // Multi-line block format
             let then_str = emit_value_block_ir(then_body, "    ");
             match else_body {
                 Some(eb) => {
@@ -438,11 +441,17 @@ pub fn emit(expr: &RustExpr) -> String {
         }
         RustExpr::Match { scrutinee, arms } => {
             let scrut = emit(scrutinee);
-            let arms_str: Vec<String> = arms
-                .iter()
-                .map(|(pat, body)| format!("    {} => {}", pat, emit(body)))
-                .collect();
-            format!("match {} {{\n{}\n}}", scrut, arms_str.join(",\n"))
+            let mut lines = Vec::new();
+            for arm in arms {
+                let guard = arm
+                    .guard
+                    .as_ref()
+                    .map(|g| format!(" if {}", emit(g)))
+                    .unwrap_or_default();
+                let body = emit_arm_body(&arm.body);
+                lines.push(format!("        {}{} => {},", arm.pattern, guard, body));
+            }
+            format!("match {} {{\n{}\n    }}", scrut, lines.join("\n"))
         }
         RustExpr::Let {
             name,
@@ -458,21 +467,49 @@ pub fn emit(expr: &RustExpr) -> String {
             format!("let {}{}{} = {}", mut_kw, name, ty_ann, emit(value))
         }
         RustExpr::JsonMacro { entries } => {
+            if entries.is_empty() {
+                return "serde_json::json!({})".to_string();
+            }
             let parts: Vec<String> = entries
                 .iter()
                 .map(|(k, v)| format!("\"{}\": {}", k, emit(v)))
                 .collect();
             format!("serde_json::json!({{ {} }})", parts.join(", "))
         }
+        RustExpr::JsonValue(inner) => format!("serde_json::json!({})", emit(inner)),
         RustExpr::JsonNull => "serde_json::Value::Null".to_string(),
         RustExpr::JsonEmptyArray => "serde_json::Value::Array(vec![])".to_string(),
         RustExpr::VecMacro(items) => {
             let vals: Vec<String> = items.iter().map(emit).collect();
             format!("vec![{}]", vals.join(", "))
         }
-
-        // ─── Structural nodes (complete-the-tree) ────────────────────────
-        RustExpr::BinOp { left, op, right, .. } => {
+        RustExpr::LayerTemplate {
+            template,
+            bindings,
+        } => {
+            let mut out = template.clone();
+            let mut pairs: Vec<(&String, &RustExpr)> =
+                bindings.iter().map(|(k, v)| (k, v)).collect();
+            pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+            for (k, v) in pairs {
+                out = out.replace(&format!("{{{k}}}"), &emit(v));
+            }
+            out
+        }
+        RustExpr::CompileError(msg) => {
+            let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("compile_error!(\"{escaped}\")")
+        }
+        RustExpr::Return { value, wraps_ok } => {
+            if *wraps_ok {
+                format!("return Ok({})", emit(value))
+            } else {
+                format!("return {}", emit(value))
+            }
+        }
+        RustExpr::BinOp {
+            left, op, right, ..
+        } => {
             format!("{} {} {}", emit(left), op, emit(right))
         }
         RustExpr::UnaryOp { op, expr, .. } => {
@@ -489,42 +526,204 @@ pub fn emit(expr: &RustExpr) -> String {
         RustExpr::Index { base, index, .. } => {
             format!("{}[{}]", emit(base), emit(index))
         }
-        RustExpr::StructLit { name, fields, .. } => {
-            if fields.is_empty() {
-                format!("{} {{}}", name)
-            } else {
-                let field_strs: Vec<String> = fields
-                    .iter()
-                    .map(|(k, v)| {
-                        let val = emit(v);
-                        if *k == val {
-                            // Field shorthand: `name` instead of `name: name`
-                            k.clone()
-                        } else {
-                            format!("{}: {}", k, val)
-                        }
-                    })
-                    .collect();
-                format!("{} {{ {} }}", name, field_strs.join(", "))
-            }
-        }
-        RustExpr::For { binding, iterable, body, .. } => {
+        RustExpr::StructLit {
+            name,
+            fields,
+            rest,
+            ..
+        } => emit_struct_lit(name, fields, rest.as_deref()),
+        RustExpr::For {
+            binding,
+            iterable,
+            body,
+            ..
+        } => {
             let body_str = emit_block(body, "    ");
             format!("for {} in {} {{\n{}\n}}", binding, emit(iterable), body_str)
         }
-        RustExpr::While { condition, body, .. } => {
-            let body_str = emit_block(body, "        ");
-            format!("while {} {{\n{}\n    }}", emit(condition), body_str)
+        RustExpr::While {
+            condition, body, ..
+        } => {
+            let body_str = emit_block(body, "    ");
+            format!("while {} {{\n{}\n}}", emit(condition), body_str)
         }
         RustExpr::Loop { body, .. } => {
             let body_str = emit_block(body, "    ");
             format!("loop {{\n{}\n}}", body_str)
         }
+        RustExpr::Assign { target, op, value } => {
+            format!("{} {} {}", emit(target), op, emit(value))
+        }
+        RustExpr::Closure { params, body } => {
+            let p = params.join(", ");
+            if body.len() == 1 && !emit(&body[0]).contains('\n') {
+                format!("|{}| {}", p, emit(&body[0]))
+            } else {
+                let inner = emit_value_block_ir(body, "    ");
+                format!("|{}| {{\n{}\n}}", p, inner)
+            }
+        }
+        RustExpr::Cast { expr, ty } => {
+            format!("{} as {}", emit_maybe_paren(expr), ty)
+        }
+        RustExpr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let op = if *inclusive { "..=" } else { ".." };
+            let s = start.as_ref().map(|e| emit(e)).unwrap_or_default();
+            let e = end.as_ref().map(|e| emit(e)).unwrap_or_default();
+            format!("{s}{op}{e}")
+        }
+        RustExpr::IfLet {
+            pattern,
+            expr,
+            then_body,
+            else_body,
+        } => {
+            let then_str = emit_block(then_body, "    ");
+            match else_body {
+                Some(eb) => {
+                    let else_str = emit_block(eb, "    ");
+                    format!(
+                        "if let {} = {} {{\n{}\n}} else {{\n{}\n}}",
+                        pattern,
+                        emit(expr),
+                        then_str,
+                        else_str
+                    )
+                }
+                None => format!(
+                    "if let {} = {} {{\n{}\n}}",
+                    pattern,
+                    emit(expr),
+                    then_str
+                ),
+            }
+        }
+        RustExpr::WhileLet {
+            pattern,
+            expr,
+            body,
+        } => {
+            let body_str = emit_block(body, "    ");
+            format!(
+                "while let {} = {} {{\n{}\n}}",
+                pattern,
+                emit(expr),
+                body_str
+            )
+        }
+        RustExpr::Break => "break".to_string(),
+        RustExpr::Continue => "continue".to_string(),
+        RustExpr::Comment(text) => {
+            let safe = text.replace("*/", "* /");
+            format!("/* {safe} */")
+        }
+        RustExpr::Join { items, sep } => items
+            .iter()
+            .map(emit)
+            .collect::<Vec<_>>()
+            .join(sep),
     }
 }
 
-/// Render a block of statements with indentation and semicolons.
-/// Used by If/Match/For/While emit to produce multi-line bodies.
+fn emit_struct_lit(
+    name: &str,
+    fields: &[(String, RustExpr)],
+    rest: Option<&RustExpr>,
+) -> String {
+    let mut field_strs: Vec<String> = fields
+        .iter()
+        .map(|(k, v)| {
+            let val = emit(v);
+            if *k == val {
+                k.clone()
+            } else {
+                format!("{}: {}", k, val)
+            }
+        })
+        .collect();
+    if let Some(r) = rest {
+        field_strs.push(format!("..{}", emit(r)));
+    }
+    if field_strs.is_empty() {
+        if name.is_empty() {
+            "serde_json::json!({})".to_string()
+        } else {
+            format!("{} {{}}", name)
+        }
+    } else if name.is_empty() {
+        format!("{{ {} }}", field_strs.join(", "))
+    } else {
+        format!("{} {{ {} }}", name, field_strs.join(", "))
+    }
+}
+
+fn emit_arm_body(body: &[RustExpr]) -> String {
+    if body.is_empty() {
+        return "()".to_string();
+    }
+    if body.len() == 1 {
+        return emit(&body[0]);
+    }
+    let inner = emit_value_block_ir(body, "            ");
+    format!("{{\n{}\n        }}", inner)
+}
+
+fn emit_maybe_paren(expr: &RustExpr) -> String {
+    match expr {
+        RustExpr::BinOp { .. } | RustExpr::Cast { .. } | RustExpr::Assign { .. } => {
+            format!("({})", emit(expr))
+        }
+        _ => emit(expr),
+    }
+}
+
+fn emit_block_expr(stmts: &[RustExpr], value: Option<&RustExpr>) -> String {
+    if stmts.is_empty() && value.is_none() {
+        return "{}".to_string();
+    }
+    let mut parts: Vec<String> = stmts.iter().map(emit).collect();
+    if let Some(val) = value {
+        parts.push(emit(val));
+    }
+    let multiline = parts.len() > 2 || parts.iter().any(|p| p.contains('\n'));
+    if multiline {
+        let n = parts.len();
+        let rendered: Vec<String> = parts
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let is_last = i + 1 == n;
+                let line = if !is_last && !p.ends_with('}') && !p.ends_with(';') {
+                    format!("{p};")
+                } else {
+                    p
+                };
+                indent_lines(&line, "    ")
+            })
+            .collect();
+        format!("{{\n{}\n}}", rendered.join("\n"))
+    } else {
+        format!("{{ {} }}", parts.join("; "))
+    }
+}
+
+fn indent_lines(s: &str, indent: &str) -> String {
+    s.lines()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{indent}{l}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn emit_block(stmts: &[RustExpr], indent: &str) -> String {
     stmts
         .iter()
@@ -535,17 +734,12 @@ fn emit_block(stmts: &[RustExpr], indent: &str) -> String {
             } else {
                 rendered
             };
-            // Indent each line of the rendered statement
-            line.lines()
-                .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", indent, l) })
-                .collect::<Vec<_>>()
-                .join("\n")
+            indent_lines(&line, indent)
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// Render a block where the last expression is a value (no trailing semicolon).
 fn emit_value_block_ir(stmts: &[RustExpr], indent: &str) -> String {
     stmts
         .iter()
@@ -558,10 +752,7 @@ fn emit_value_block_ir(stmts: &[RustExpr], indent: &str) -> String {
             } else {
                 rendered
             };
-            line.lines()
-                .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", indent, l) })
-                .collect::<Vec<_>>()
-                .join("\n")
+            indent_lines(&line, indent)
         })
         .collect::<Vec<_>>()
         .join("\n")

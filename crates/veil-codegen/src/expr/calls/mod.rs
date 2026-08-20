@@ -5,190 +5,216 @@ pub use translate::*;
 use veil_ir::layer::Shape;
 use crate::rust::to_snake;
 use super::*;
+use super::rust_ir::{
+    self, borrow_of, clone_of, field, fn_call, ident, lower_to_rust, lower_value,
+    map_err_to_string, method, ok_or_not_found, owned_str, some_of, to_string_of, CallFinish,
+    RustExpr, RustType,
+};
 
-/// Determine the call suffix for a method invoked on a chained receiver.
+/// Finish a method call from **receiver type + stub/layer metadata**.
 ///
-/// - Fluent `.send()` / `.send_with()` are async + Result → `.await?`
-/// - Stub methods marked async+fallible (BoxFuture / executor param) → `.await.map_err…?`
-/// - Other stub methods marked `Res!` are sync Result → `map_err…?`
-/// - Trait methods (trait deps) are async_trait + Result → `.await?`
+/// Never keys off a hardcoded method name (`send`, `put_item`, `build`, …).
+/// Async/fallible come from `(Type, method)` registered when the stub was
+/// loaded. VEIL `!` on the call site is the only name-independent override.
 ///
-/// **Receiver shape wins over bare method name.** The same identifier can name a
-/// *receiver's* Shape (Struct vs Trait) when known, not a global method-name scan.
-///
-/// Method names may carry VEIL bang/query suffixes (`fetch_all!`); strip before lookup.
-pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
+/// Walks Call chains so `self.client.put_item().item(…).send()` sees the
+/// builder type of `send`, not an untyped receiver.
+pub fn receiver_call_finish(recv: &Expr, method: &str, ctx: &GenCtx) -> CallFinish {
     let has_bang = method.ends_with('!');
     let method = method.trim_end_matches(['!', '?']);
+    let recv_ty = infer_receiver_type(recv, ctx);
 
-    // Resolve the static type of the receiver when we can (UFCS / local / self field).
-    // Index into List/slice of trait objects also yields a trait receiver
-    // (e.g. `steps[i].action(...)` for `List<SagaStep>`).
-    let recv_type_name: Option<String> = match recv {
-        Expr::Ident(name) => {
-            if ctx.is_struct_target(name) || ctx.is_trait_target(name) {
-                Some(name.clone())
-            } else if let Some(t) = ctx.local_type(name) {
-                Some(t.to_string())
-            } else if let Some(t) = ctx
-                .self_field_types
-                .get(name)
-                .or_else(|| ctx.self_field_types.get(&to_snake(name)))
+    if let Some(ref ty) = recv_ty {
+        let keys = type_lookup_keys(ty);
+        let is_trait = keys.iter().any(|k| ctx.name_to_shape.get(k.as_str()) == Some(&Shape::Trait));
+        let is_struct = keys.iter().any(|k| {
+            ctx.name_to_shape.get(k.as_str()) == Some(&Shape::Struct)
+                || ctx.stubs.stub_type_crate.contains_key(k.as_str())
+        });
+        let typed_async = keys.iter().any(|k| {
+            ctx.stubs
+                .type_async_fallible_methods
+                .contains(&(k.clone(), method.to_string()))
+        });
+        let typed_fall = keys.iter().any(|k| {
+            ctx.stubs
+                .type_fallible_methods
+                .contains(&(k.clone(), method.to_string()))
+        });
+
+        if is_trait {
+            return if has_bang || typed_fall {
+                CallFinish::AwaitTry
+            } else {
+                CallFinish::Await
+            };
+        }
+        if is_struct || typed_async || typed_fall {
+            if typed_async {
+                return if has_bang {
+                    CallFinish::AwaitMapErr
+                } else {
+                    CallFinish::Await
+                };
+            }
+            if typed_fall {
+                return if should_own_str_result(ctx, Some(ty.as_str()), method) {
+                    CallFinish::MapErrOwnStr
+                } else {
+                    CallFinish::MapErrDebug
+                };
+            }
+            return if has_bang {
+                CallFinish::AwaitMapErr
+            } else {
+                CallFinish::Bare
+            };
+        }
+    }
+
+    // Call-site `!` is VEIL fallible sugar, not a method-name special case.
+    if has_bang {
+        CallFinish::AwaitMapErr
+    } else {
+        CallFinish::Bare
+    }
+}
+
+/// Type names to probe in stub maps: full path, dyn peel, leaf after `::`.
+fn type_lookup_keys(ty: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let push = |keys: &mut Vec<String>, s: String| {
+        if !s.is_empty() && !keys.iter().any(|k| k == &s) {
+            keys.push(s);
+        }
+    };
+    push(&mut keys, ty.to_string());
+    if let Some(p) = peel_dyn_trait_name(ty) {
+        push(&mut keys, p);
+    }
+    if let Some(leaf) = ty.rsplit("::").next() {
+        push(&mut keys, leaf.to_string());
+    }
+    keys
+}
+
+fn field_type_of(owner: &str, field: &str, ctx: &GenCtx) -> Option<String> {
+    for key in type_lookup_keys(owner) {
+        if let Some(ft) = ctx
+            .field_type(&key, field)
+            .or_else(|| ctx.field_type(&key, &to_snake(field)))
+        {
+            return Some(ft.to_string());
+        }
+    }
+    None
+}
+
+fn dotted_recv_type(target: &str, ctx: &GenCtx) -> Option<String> {
+    let mut parts = target.split('.');
+    let first = parts.next()?;
+    let mut ty = if first == "self" {
+        let field = parts.next()?;
+        ident_recv_type(field, ctx)?
+    } else {
+        ident_recv_type(first, ctx)?
+    };
+    for seg in parts {
+        ty = field_type_of(&ty, seg, ctx)?;
+    }
+    Some(ty)
+}
+
+fn ident_recv_type(name: &str, ctx: &GenCtx) -> Option<String> {
+    if let Some(rest) = name.strip_prefix("self.") {
+        return ident_recv_type(rest, ctx);
+    }
+    if ctx.is_struct_target(name) || ctx.is_trait_target(name) {
+        return Some(name.to_string());
+    }
+    if let Some(t) = ctx.local_type(name) {
+        return Some(peel_dyn_trait_name(t).unwrap_or_else(|| t.to_string()));
+    }
+    if let Some(t) = ctx
+        .self_field_types
+        .get(name)
+        .or_else(|| ctx.self_field_types.get(&to_snake(name)))
+        .or_else(|| {
+            resolve_self_field_name(ctx, name).and_then(|rf| ctx.self_field_types.get(&rf))
+        })
+    {
+        return Some(peel_dyn_trait_name(t).unwrap_or_else(|| t.clone()));
+    }
+    if ctx.stubs.stub_type_crate.contains_key(name) {
+        return Some(name.to_string());
+    }
+    None
+}
+
+/// Infer the static type of a receiver, walking Call/FieldAccess chains.
+pub fn infer_receiver_type(recv: &Expr, ctx: &GenCtx) -> Option<String> {
+    match recv {
+        Expr::Ident(name) => ident_recv_type(name, ctx),
+        Expr::FieldAccess(base, field) => {
+            if let Expr::Ident(n) = base.as_ref()
+                && n == "self"
             {
-                Some(
-                    peel_dyn_trait_name(t)
-                        .unwrap_or_else(|| t.clone()),
-                )
-            } else if ctx.stubs.stub_type_crate.contains_key(name) {
-                Some(name.clone())
-            } else {
-                None
+                return ctx
+                    .self_field_types
+                    .get(field)
+                    .or_else(|| ctx.self_field_types.get(&to_snake(field)))
+                    .cloned()
+                    .map(|t| peel_dyn_trait_name(&t).unwrap_or(t));
             }
-        }
-        Expr::Index(base, _) => {
-            // List/slice element: peel Vec/slice and Box<dyn Trait>
-            if let Expr::Ident(name) = base.as_ref() {
-                ctx.local_type(name)
-                    .and_then(|t| extract_box_dyn_trait(t).or_else(|| extract_vec_elem(t)))
-            } else {
-                None
+            let bt = infer_receiver_type(base, ctx)?;
+            for key in type_lookup_keys(&bt) {
+                if let Some(ft) = ctx
+                    .field_type(&key, field)
+                    .or_else(|| ctx.field_type(&key, &to_snake(field)))
+                {
+                    return Some(ft.to_string());
+                }
             }
+            None
         }
-        // AST still has `.get(i)` before list-index lowering; treat as element access.
+        Expr::Index(base, _) => infer_receiver_type(base, ctx)
+            .and_then(|t| extract_box_dyn_trait(&t).or_else(|| extract_vec_elem(&t))),
         Expr::Call(inner)
             if (inner.method == "get" || inner.method == "get!") && inner.args.len() == 1 =>
         {
-            let base_name = if !inner.target.is_empty() {
-                Some(inner.target.as_str())
-            } else if let Some(r) = &inner.receiver {
-                match r.as_ref() {
-                    Expr::Ident(n) => Some(n.as_str()),
-                    _ => None,
-                }
+            let base = if !inner.target.is_empty() {
+                Some(Expr::Ident(inner.target.clone()))
+            } else {
+                inner.receiver.as_deref().cloned()
+            };
+            base.as_ref()
+                .and_then(|b| infer_receiver_type(b, ctx))
+                .and_then(|t| extract_box_dyn_trait(&t).or_else(|| extract_vec_elem(&t)))
+        }
+        Expr::Call(inner) => {
+            let recv_ty = if let Some(r) = &inner.receiver {
+                infer_receiver_type(r, ctx)
+            } else if inner.target.contains('.') {
+                dotted_recv_type(&inner.target, ctx)
+            } else if !inner.target.is_empty() {
+                ident_recv_type(&inner.target, ctx)
             } else {
                 None
             };
-            base_name.and_then(|n| {
-                ctx.local_type(n)
-                    .and_then(|t| extract_box_dyn_trait(t).or_else(|| extract_vec_elem(t)))
-            })
+            let method = inner.method.trim_end_matches(['!', '?']);
+            let ret = recv_ty.as_ref().and_then(|ty| {
+                type_lookup_keys(ty).into_iter().find_map(|k| {
+                    ctx.return_type_of(&k, method).map(|s| s.to_string())
+                })
+            });
+            match ret.as_deref() {
+                Some("Self") | Some("self") | Some("&Self") | Some("&mut Self") => recv_ty,
+                Some(t) => Some(peel_dyn_trait_name(t).unwrap_or_else(|| t.to_string())),
+                None => recv_ty,
+            }
         }
         _ => None,
-    };
-
-    // Known struct / stub type: use stub fallibility metadata only (not trait scan).
-    if let Some(ref ty) = recv_type_name {
-        // Peel Box<dyn Trait + …> / bare trait names stored in local_types
-        let bare = peel_dyn_trait_name(ty).unwrap_or_else(|| ty.clone());
-        if ctx.name_to_shape.get(bare.as_str()) == Some(&Shape::Struct)
-            || ctx.stubs.stub_type_crate.contains_key(bare.as_str())
-            || ctx.stubs.stub_type_crate.contains_key(ty.as_str())
-        {
-            if ctx.stubs.async_fallible_methods.contains(method)
-            {
-                // async+fallible → unwrap Result; bare send() keeps Result so .is_ok()/.is_err() work.
-                if has_bang {
-                    return map_err_await_domain(&ctx.error_model);
-                } else {
-                    return ".await".to_string();
-                }
-            }
-            if ctx.stubs.fallible_methods.contains(method) {
-                let suffix = if should_own_str_result(ctx, Some(ty.as_str()), method) {
-                    map_err_domain_own_str(&ctx.error_model)
-                } else {
-                    map_err_domain(&ctx.error_model)
-                };
-                // Only apply fallible suffix if this specific type has the method as fallible.
-                // Use type_fallible_methods: (Type, method) set for precision.
-                if ctx.stubs.type_fallible_methods.contains(&(bare.clone(), method.to_string())) {
-                    return suffix.to_string();
-                }
-                // If the method is ONLY fallible (not ambiguous), apply it.
-                if !ctx.stubs.non_fallible_methods.contains(method) {
-                    return suffix.to_string();
-                }
-                // Ambiguous and not confirmed fallible on this type: no suffix.
-            }
-            return String::new();
-        }
-        if ctx.name_to_shape.get(bare.as_str()) == Some(&Shape::Trait)
-            || ctx.name_to_shape.get(ty.as_str()) == Some(&Shape::Trait)
-        {
-            let fallible = has_bang
-                || ctx
-                    .stubs.type_fallible_methods
-                    .contains(&(bare.clone(), method.to_string()))
-                || ctx
-                    .stubs.type_fallible_methods
-                    .contains(&(ty.clone(), method.to_string()));
-            return if fallible {
-                ".await?".to_string()
-            } else {
-                ".await".to_string()
-            };
-        }
     }
-
-    // Fluent SDK send / async fallible stubs (untyped receivers).
-    if ctx.stubs.async_fallible_methods.contains(method)
-    {
-        // async+fallible → unwrap; bare send() keeps Result so .is_ok()/.is_err() work.
-        if has_bang {
-            return map_err_await_domain(&ctx.error_model);
-        } else {
-            return ".await".to_string();
-        }
-    }
-    // Untyped receiver: method name appears on a trait dep → async_trait.
-    // If a stub/struct also has the same method name (e.g. `delete`), do not
-    // force await — that would break reqwest Client.delete. List elements of
-    // trait objects are handled via Index + peel above (SagaStep.action).
-    let is_trait_method = ctx.types.method_returns.keys().any(|(ty, m)| {
-        m == method && ctx.name_to_shape.get(ty) == Some(&Shape::Trait)
-    });
-    let is_stub_or_struct_method = ctx.types.method_returns.keys().any(|(ty, m)| {
-        m == method
-            && (ctx.stubs.stub_type_crate.contains_key(ty)
-                || ctx.name_to_shape.get(ty) == Some(&Shape::Struct))
-    });
-    if is_trait_method && !is_stub_or_struct_method {
-        return if has_bang {
-            ".await?".to_string()
-        } else {
-            ".await".to_string()
-        };
-    }
-    // Sync Res! stub methods: map any Error into DomainError.
-    // Only apply when the receiver is NOT a chained Call — intermediate methods
-    // in builder chains (returning Self) should not get fallible suffixes even if
-    // a method of the same name is fallible on a different type (Issue 5/global
-    // name collision: e.g. gix.prefix() is Res! but S3 builder.prefix() is not).
-    // Also skip if the method is ambiguous — exists as both fallible and non-fallible
-    // across different stub types (e.g. gix Id.detach() is non-fallible but
-    // Pathspec.detach() is fallible).
-    let recv_is_chain = matches!(recv, Expr::Call(_));
-    let is_ambiguous = ctx.stubs.non_fallible_methods.contains(method);
-    if ctx.stubs.fallible_methods.contains(method) && !recv_is_chain && !is_ambiguous {
-        let own = should_own_str_result(ctx, recv_type_name.as_deref(), method);
-        return if own {
-            map_err_domain_own_str(&ctx.error_model)
-        } else {
-            map_err_domain(&ctx.error_model)
-        }
-        .to_string();
-    }
-    // Terminal builder `.build!()` is fallible (BuildError) even on chains.
-    if has_bang && method == "build" {
-        return map_err_domain(&ctx.error_model).to_string();
-    }
-    // Fallback: if the method has a bang (!) and nothing else matched,
-    // treat it as an async fallible call (common for SDK methods like collect!,
-    // execute!, etc. on receivers whose type isn't in our stub system).
-    if has_bang {
-        return map_err_await_domain(&ctx.error_model);
-    }
-    String::new()
 }
 
 /// `Box<dyn SagaStep + Send + Sync>` / `Arc<dyn SnsClient + Send + Sync>` → trait name
@@ -281,99 +307,54 @@ pub fn rust_method_name(method: &str) -> String {
     }
 }
 
-/// Build a `serde_json::json!` object for a message with a `"type"` tag plus
-/// its named fields — the wire form for a JSON envelope payload.
-pub(super) fn json_message(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> String {
-    let mut parts = vec![format!("\"type\": \"{}\"", name)];
-    for (k, v) in fields {
-        parts.push(format!("\"{}\": {}", k, to_json_arg(v, ctx)));
-    }
-    format!("serde_json::json!({{ {} }})", parts.join(", "))
-}
-
-/// Build a JSON envelope for a cross-boundary call routed through a routing
-/// trait: `{ "target": T, "method": m, "args": [ ... ] }`. Positional args are
-/// rendered as JSON values so the receiving side can decode them.
-pub(super) fn json_envelope(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> String {
-    let arg_vals = args.iter().map(|a| to_json_arg(a, ctx)).collect::<Vec<_>>().join(", ");
-    format!(
-        "serde_json::json!({{ \"target\": \"{}\", \"method\": \"{}\", \"args\": [{}] }})",
-        target, method, arg_vals
-    )
-}
-
-/// Render call args, cloning value-bearing locals/state so passing them into a
-/// by-value parameter doesn't move them out of the caller. Skips the routing
-/// reference and Copy scalars (which don't move).
-pub(super) fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
-    args.iter()
-        .map(|a| match a {
-            Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => format!("state[\"{}\"].clone()", n),
-            // The routing reference and Copy scalars are passed as-is.
-            Expr::Ident(n) if !ctx.routing.routing_ref.is_empty() && *n == ctx.routing.routing_ref => n.clone(),
-            Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
-            Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
-            // Stub-declared borrow fields (e.g. sqlx Executor requires &Pool).
-            Expr::Ident(n) if ctx.ownership.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
-            Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
-                format!("{n}.clone()")
-            }
-            Expr::FieldAccess(base, field)
-                if ctx.ownership.borrow_fields.contains(field.as_str())
-                    && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
-            {
-                format!("&self.{field}")
-            }
-            _ => expr_to_rust(a, ctx),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Like `clone_args` but applies method-specific argument shaping (e.g. reqwest
-/// `basic_auth` takes `Option` password).
-pub(super) fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> String {
-    clone_args_for_typed_method(None, method, args, ctx)
+pub fn clone_args_for_method(method: &str, args: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
+    clone_args_ir(None, method, args, ctx)
 }
 
 /// Clone/ref args for a method call, with optional receiver type for ref-param resolution.
-pub fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: &[Expr], ctx: &GenCtx) -> String {
+pub fn clone_args_ir(recv_type: Option<&str>, method: &str, args: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
     let method = method.trim_end_matches(['!', '?']);
 
-    // Check ref_params for this specific (type, method) combination.
-    // If found, emit &arg for ref positions instead of arg.clone().
     if let Some(type_name) = recv_type
-        && let Some(ref_flags) = ctx.types.ref_params.get(&(type_name.to_string(), method.to_string())) {
-            return args.iter().enumerate().map(|(i, a)| {
+        && let Some(ref_flags) = ctx
+            .types
+            .ref_params
+            .get(&(type_name.to_string(), method.to_string()))
+    {
+        return args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
                 let is_ref = ref_flags.get(i).copied().unwrap_or(false);
                 if is_ref {
-                    let s = expr_to_rust(a, ctx);
-                    if s.starts_with('&') {
-                        s
-                    } else if matches!(a, Expr::Ident(n) if ctx.is_local(n)) {
-                        // Deref to &str for String locals — avoids &String which
-                        // doesn't satisfy generic bounds like TryInto<FullName>.
-                        format!("&*{s}")
-                    } else if let Expr::StringLit(lit) = a {
-                        // ref params expecting &str: emit bare string literal
-                        format!("\"{}\"", lit.replace('\\', "\\\\").replace('"', "\\\""))
-                    } else {
-                        format!("&{s}")
+                    match a {
+                        Expr::StringLit(lit) => RustExpr::StringLit(lit.clone()),
+                        Expr::Ident(n) if ctx.is_local(n) => borrow_of(RustExpr::UnaryOp {
+                            op: "*".to_string(),
+                            expr: Box::new(ident(n.clone())),
+                            ty: None,
+                        }),
+                        other => {
+                            let node = lower_value(other, ctx);
+                            if matches!(node, RustExpr::Borrow { .. }) {
+                                node
+                            } else {
+                                borrow_of(node)
+                            }
+                        }
                     }
                 } else {
-                    // Normal clone behavior for non-ref params
                     match a {
                         Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
-                            format!("{n}.clone()")
+                            clone_of(ident(n.clone()))
                         }
-                        Expr::StringLit(s) => rust_string_lit_owned(s),
-                        _ => expr_to_rust(a, ctx),
+                        Expr::StringLit(s) => owned_str(s),
+                        _ => lower_value(a, ctx),
                     }
                 }
-            }).collect::<Vec<_>>().join(", ");
-        }
-    // str::starts_with / contains / ends_with / replace take Pattern / &str —
-    // string lits as &str, not owned String (Pattern not implemented for String).
+            })
+            .collect();
+    }
     if matches!(
         method,
         "starts_with"
@@ -388,63 +369,50 @@ pub fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: 
         return args
             .iter()
             .map(|a| match a {
-                Expr::StringLit(s) => {
-                    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-                }
-                _ => {
-                    let s = expr_to_rust(a, ctx);
-                    // Owned String locals: borrow for Pattern / &str
-                    if matches!(a, Expr::Ident(_)) {
-                        format!("&{s}")
-                    } else if s.starts_with('&') {
-                        s
+                Expr::StringLit(s) => RustExpr::StringLit(s.clone()),
+                Expr::Ident(n) => borrow_of(ident(n.clone())),
+                other => {
+                    let node = lower_value(other, ctx);
+                    if matches!(node, RustExpr::Borrow { .. }) {
+                        node
                     } else {
-                        format!("&({s})")
+                        borrow_of(node)
                     }
                 }
             })
-            .collect::<Vec<_>>()
-            .join(", ");
+            .collect();
     }
-    // Option<&str>.unwrap_or("") — keep bare &str, not String
     if method == "unwrap_or" && args.len() == 1
-        && let Expr::StringLit(s) = &args[0] {
-            return format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
-        }
-    if method == "basic_auth" && args.len() >= 2 {
-        let user = clone_args(&args[..1], ctx);
-        let pass = expr_to_rust(&args[1], ctx);
-        // reqwest: basic_auth(user, Option<password>)
-        return format!("{user}, Some({pass})");
+        && let Expr::StringLit(s) = &args[0]
+    {
+        return vec![RustExpr::StringLit(s.clone())];
     }
-    // sqlx bind: Uuid needs the `uuid` feature; bind as text to stay feature-light.
+    if method == "basic_auth" && args.len() >= 2 {
+        let mut out = clone_args_ir(recv_type, method, &args[..1], ctx);
+        out.push(some_of(lower_value(&args[1], ctx)));
+        return out;
+    }
     if method == "bind" && args.len() == 1 {
         if let Expr::Ident(n) = &args[0]
             && (ctx.local_type(n) == Some("Uuid")
                 || n == "id"
                 || n.ends_with("_id")
                 || n.ends_with("Id"))
-            {
-                return format!("{n}.to_string()");
-            }
+        {
+            return vec![to_string_of(ident(n.clone()))];
+        }
         if let Expr::FieldAccess(base, field) = &args[0] {
             let f = to_snake(field);
             if f == "id" || f.ends_with("_id") {
-                let b = expr_to_rust(base, ctx);
-                // self.x.clone().id → already cloned base
-                if b.ends_with(".clone()") {
-                    return format!("{b}.{f}.to_string()");
-                }
-                return format!("{b}.{f}.to_string()");
+                return vec![to_string_of(rust_ir::field(lower_value(base, ctx), f))];
             }
         }
     }
     let param_tys = param_types_for(recv_type, method, ctx);
     args.iter()
         .enumerate()
-        .map(|(i, a)| arg_to_rust(a, param_tys.get(i).map(|s| s.as_str()), ctx))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .map(|(i, a)| arg_to_ir(a, param_tys.get(i).map(|s| s.as_str()), ctx))
+        .collect()
 }
 
 pub fn is_json_type_name(ty: &str) -> bool {
@@ -481,68 +449,67 @@ pub(super) fn list_elem_is_cloneable(base: &Expr, ctx: &GenCtx) -> bool {
     true
 }
 
-pub fn list_index_get_rust(base_rust: &str, idx_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
-    // Integer literals are already `usize`-compatible for `get`.
-    let idx = if idx_rust.chars().all(|c| c.is_ascii_digit()) {
-        idx_rust.to_string()
-    } else if idx_rust.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        // Simple identifier — no parens needed for `as usize`.
-        format!("{idx_rust} as usize")
-    } else {
-        format!("({idx_rust}) as usize")
+pub fn list_index_get_ir(base: RustExpr, idx: RustExpr, base_expr: &Expr, ctx: &GenCtx) -> RustExpr {
+    let recv = match base {
+        RustExpr::Clone(inner) => *inner,
+        other => other,
     };
-    let recv = base_rust
-        .strip_suffix(".clone()")
-        .unwrap_or(base_rust);
-    if list_elem_is_cloneable(base, ctx) {
-        format!("{recv}.get({idx}).cloned().ok_or({})?", ctx.error_model.not_found_path())
+    let idx = match &idx {
+        RustExpr::IntLit(_) => idx,
+        _ => rust_ir::cast(idx, "usize"),
+    };
+    let got = method(recv, "get", vec![idx]);
+    if list_elem_is_cloneable(base_expr, ctx) {
+        ok_or_not_found(method(got, "cloned", vec![]), ctx)
     } else {
-        format!("{recv}.get({idx}).ok_or({})?", ctx.error_model.not_found_path())
+        ok_or_not_found(got, ctx)
     }
 }
 
-pub(super) fn list_first_rust(base_rust: &str, base: &Expr, ctx: &GenCtx) -> String {
-    if list_elem_is_cloneable(base, ctx) {
-        format!("{base_rust}.first().cloned().ok_or({})?", ctx.error_model.not_found_path())
+pub(super) fn list_first_ir(base: RustExpr, base_expr: &Expr, ctx: &GenCtx) -> RustExpr {
+    let got = method(base, "first", vec![]);
+    if list_elem_is_cloneable(base_expr, ctx) {
+        ok_or_not_found(method(got, "cloned", vec![]), ctx)
     } else {
-        format!("{base_rust}.first().ok_or({})?", ctx.error_model.not_found_path())
+        ok_or_not_found(got, ctx)
     }
 }
 
 /// Lower `local.field.nested` — struct fields stay `.field`; once a field is Json,
 /// remaining segments become `["key"]` indexes.
-pub(super) fn lower_dotted_local_path(target: &str, ctx: &GenCtx) -> String {
+pub(super) fn lower_dotted_local_path_ir(target: &str, ctx: &GenCtx) -> RustExpr {
     let mut parts = target.split('.');
     let Some(first) = parts.next() else {
-        return target.to_string();
+        return ident(target);
     };
-    let mut rust = first.to_string();
+    let mut node = ident(first);
     let mut ty = ctx.local_type(first).map(|s| s.to_string());
     let mut json_mode = ty.as_deref().is_some_and(is_json_type_name);
     for seg in parts {
-        let field = to_snake(seg);
+        let field_snake = to_snake(seg);
         if json_mode {
-            rust = format!("{rust}[\"{seg}\"]");
+            node = RustExpr::Index {
+                base: Box::new(node),
+                index: Box::new(RustExpr::StringLit(seg.to_string())),
+                ty: Some(RustType::Json),
+            };
             continue;
         }
         if let Some(t) = ty.as_deref()
             && let Some(ft) = ctx
                 .field_type(t, seg)
-                .or_else(|| ctx.field_type(t, &field))
-            {
-                if is_json_type_name(ft) {
-                    rust = format!("{rust}.{field}.clone()");
-                    json_mode = true;
-                    ty = Some(ft.to_string());
-                    continue;
-                }
-                rust = format!("{rust}.{field}.clone()");
-                ty = Some(ft.to_string());
-                continue;
+                .or_else(|| ctx.field_type(t, &field_snake))
+        {
+            node = clone_of(field(node, field_snake));
+            if is_json_type_name(ft) {
+                json_mode = true;
             }
-        rust = format!("{rust}.{field}");
+            ty = Some(ft.to_string());
+            continue;
+        }
+        node = field(node, field_snake);
     }
-    rust
+    node
 }
 
 /// Check if an expression is rooted in a Json / serde_json::Value.
@@ -697,93 +664,209 @@ pub fn param_types_for(recv: Option<&str>, method: &str, ctx: &GenCtx) -> Vec<St
     Vec::new()
 }
 
-fn map_literal_to_hashmap(fields: &[(String, Expr)], ctx: &GenCtx) -> String {
+fn map_literal_to_hashmap_ir(fields: &[(String, Expr)], ctx: &GenCtx) -> RustExpr {
     if fields.is_empty() {
-        return "std::collections::HashMap::new()".to_string();
+        return fn_call("std::collections::HashMap::new", vec![]);
     }
-    let inserts: Vec<String> = fields
-        .iter()
-        .map(|(k, v)| {
-            let val = expr_to_rust(v, ctx);
-            format!("__m.insert(\"{k}\".to_string(), {val})")
-        })
-        .collect();
-    format!(
-        "{{ let mut __m = std::collections::HashMap::new(); {}; __m }}",
-        inserts.join("; ")
-    )
+    let mut stmts: Vec<RustExpr> = vec![RustExpr::Let {
+        name: "__m".to_string(),
+        mutable: true,
+        ty: None,
+        value: Box::new(fn_call("std::collections::HashMap::new", vec![])),
+    }];
+    for (k, v) in fields {
+        stmts.push(method(
+            ident("__m"),
+            "insert",
+            vec![owned_str(k), lower_value(v, ctx)],
+        ));
+    }
+    RustExpr::Block {
+        stmts,
+        value: Some(Box::new(ident("__m"))),
+    }
 }
 
-fn arg_looks_optional(arg: &Expr, rust: &str, ctx: &GenCtx) -> bool {
-    rust.starts_with("Some(")
-        || rust == "None"
-        || rust.starts_with("None::<")
-        || match arg {
+fn arg_looks_optional_ir(arg: &Expr, node: &RustExpr, ctx: &GenCtx) -> bool {
+    match node {
+        RustExpr::FnCall { path, .. } if path == "Some" => true,
+        RustExpr::Ident { name, .. } if name == "None" || name.starts_with("None::<") => true,
+        _ => match arg {
             Expr::Ident(n) => ctx
                 .local_type(n)
                 .map(|t| t.starts_with("Option<") || t.starts_with("Opt<"))
                 .unwrap_or(false),
             _ => false,
-        }
+        },
+    }
 }
 
-pub(super) fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> String {
-    let mut rust = if let (Some(ty), Expr::StructLit(name, fields)) = (param_ty, arg) {
+fn is_state_index(node: &RustExpr) -> bool {
+    match node {
+        RustExpr::Clone(inner) | RustExpr::Borrow { inner, .. } => is_state_index(inner),
+        RustExpr::Index { base, .. } => {
+            matches!(base.as_ref(), RustExpr::Ident { name, .. } if name == "state")
+                || is_state_index(base)
+        }
+        _ => false,
+    }
+}
+
+pub fn arg_to_ir(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> RustExpr {
+    let mut node = if let (Some(ty), Expr::StructLit(name, fields)) = (param_ty, arg) {
         if name.is_empty() && is_hashmap_param(ty) {
-            map_literal_to_hashmap(fields, ctx)
+            map_literal_to_hashmap_ir(fields, ctx)
         } else if is_json_type_name(ty) {
-            // Struct lit passed to a Json-typed param → serialize as JSON message
-            // with a "type" tag (the wire form for bus dispatch/invoke payloads).
-            json_message(name, fields, ctx)
+            json_message_ir(name, fields, ctx)
         } else {
-            expr_to_rust(arg, ctx)
+            lower_value(arg, ctx)
         }
     } else {
         match arg {
             Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => {
-                // State locals are serde_json::Value. Deserialize when the
-                // target param expects a concrete type.
+                let indexed = clone_of(RustExpr::Index {
+                    base: Box::new(ident("state")),
+                    index: Box::new(RustExpr::StringLit(n.clone())),
+                    ty: Some(RustType::Json),
+                });
                 if param_ty.is_some_and(|t| !is_json_type_name(t) && t != "()" && !t.is_empty()) {
                     let ty = param_ty.unwrap();
-                    format!("serde_json::from_value::<{ty}>(state[\"{n}\"].clone()).map_err(|e| {}(e.to_string()))?", ctx.error_model.external_path())
+                    map_err_to_string(
+                        fn_call(format!("serde_json::from_value::<{ty}>"), vec![indexed]),
+                        ctx.error_model.external_path(),
+                    )
                 } else {
-                    format!("state[\"{n}\"].clone()")
+                    indexed
                 }
             }
-            Expr::Ident(n) if !ctx.routing.routing_ref.is_empty() && *n == ctx.routing.routing_ref => n.clone(),
-            Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
-            Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
-            Expr::Ident(n) if ctx.ownership.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
+            Expr::Ident(n) if is_copy_local(n, ctx) || is_ref_local(n, ctx) => ident(n.clone()),
+            Expr::Ident(n) if ctx.ownership.borrow_fields.contains(n.as_str()) => {
+                borrow_of(field(ident("self"), n.clone()))
+            }
             Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
-                format!("{n}.clone()")
+                clone_of(ident(n.clone()))
             }
             Expr::StringLit(s)
                 if param_ty.is_some_and(|t| {
                     rust_ty_is_stringish(t) && !t.starts_with('&') && t != "str"
                 }) =>
             {
-                rust_string_lit_owned(s)
+                owned_str(s)
             }
-            Expr::FieldAccess(base, field)
-                if ctx.ownership.borrow_fields.contains(field.as_str()) && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
+            Expr::FieldAccess(base, field_name)
+                if ctx.ownership.borrow_fields.contains(field_name.as_str())
+                    && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
             {
-                format!("&self.{field}")
+                borrow_of(field(ident("self"), field_name.clone()))
             }
-            _ => expr_to_rust(arg, ctx),
+            _ => lower_value(arg, ctx),
         }
     };
     if let Some(ty) = param_ty {
-        if is_option_param(ty) && !arg_looks_optional(arg, &rust, ctx) {
-            rust = format!("Some({rust})");
+        if is_option_param(ty) && !arg_looks_optional_ir(arg, &node, ctx) {
+            node = some_of(node);
         }
-        // State-local field access produces serde_json::Value — deserialize when
-        // the target param expects a concrete type.
-        if !is_json_type_name(ty) && ty != "()" && !ty.is_empty()
-            && rust.starts_with("state[\"") && !rust.contains("from_value")
+        if !is_json_type_name(ty)
+            && ty != "()"
+            && !ty.is_empty()
+            && is_state_index(&node)
+            && !matches!(&node, RustExpr::FnCall { path, .. } if path.contains("from_value"))
         {
-            rust = format!("serde_json::from_value::<{ty}>({rust}.clone()).map_err(|e| {}(e.to_string()))?", ctx.error_model.external_path());
+            node = map_err_to_string(
+                fn_call(
+                    format!("serde_json::from_value::<{ty}>"),
+                    vec![clone_of(node)],
+                ),
+                ctx.error_model.external_path(),
+            );
         }
     }
-    rust
+    node
+}
+
+pub(super) fn clone_args(args: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
+    args.iter().map(|a| arg_to_ir(a, None, ctx)).collect()
+}
+
+pub fn json_message_ir(name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> RustExpr {
+    let mut entries: Vec<(String, RustExpr)> = Vec::with_capacity(fields.len() + 1);
+    entries.push(("type".to_string(), RustExpr::StringLit(name.to_string())));
+    for (k, v) in fields {
+        entries.push((k.clone(), to_json_arg_ir(v, ctx)));
+    }
+    RustExpr::JsonMacro { entries }
+}
+
+pub fn json_envelope_ir(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> RustExpr {
+    let arg_vals: Vec<RustExpr> = args.iter().map(|a| to_json_arg_ir(a, ctx)).collect();
+    RustExpr::JsonMacro {
+        entries: vec![
+            (
+                "target".to_string(),
+                RustExpr::StringLit(target.to_string()),
+            ),
+            (
+                "method".to_string(),
+                RustExpr::StringLit(method.to_string()),
+            ),
+            ("args".to_string(), RustExpr::VecMacro(arg_vals)),
+        ],
+    }
+}
+
+pub fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
+    match expr {
+        Expr::Ident(name) => {
+            if name == "null" {
+                return RustExpr::JsonNull;
+            }
+            if ctx.state_locals.contains(name.as_str()) {
+                return clone_of(RustExpr::Index {
+                    base: Box::new(ident("state")),
+                    index: Box::new(RustExpr::StringLit(name.clone())),
+                    ty: Some(RustType::Json),
+                });
+            }
+            if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
+                return clone_of(field(ident("self"), to_snake(name)));
+            }
+            if ctx.is_local(name) {
+                return clone_of(ident(name.clone()));
+            }
+            RustExpr::StringLit(name.clone())
+        }
+        Expr::FieldAccess(base, field_name) => {
+            if let Expr::Ident(name) = base.as_ref() {
+                if ctx.state_locals.contains(name.as_str()) {
+                    return clone_of(RustExpr::Index {
+                        base: Box::new(RustExpr::Index {
+                            base: Box::new(ident("state")),
+                            index: Box::new(RustExpr::StringLit(name.clone())),
+                            ty: Some(RustType::Json),
+                        }),
+                        index: Box::new(RustExpr::StringLit(field_name.clone())),
+                        ty: Some(RustType::Json),
+                    });
+                }
+                if ctx.is_local(name) && ctx.local_type(name) == Some("serde_json::Value") {
+                    return clone_of(RustExpr::Index {
+                        base: Box::new(ident(name.clone())),
+                        index: Box::new(RustExpr::StringLit(field_name.clone())),
+                        ty: Some(RustType::Json),
+                    });
+                }
+            }
+            clone_of(RustExpr::Index {
+                base: Box::new(RustExpr::JsonValue(Box::new(to_json_arg_ir(base, ctx)))),
+                index: Box::new(RustExpr::StringLit(field_name.clone())),
+                ty: Some(RustType::Json),
+            })
+        }
+        Expr::ArrayLit(items) if items.is_empty() => RustExpr::JsonEmptyArray,
+        Expr::ArrayLit(items) => {
+            RustExpr::VecMacro(items.iter().map(|e| to_json_arg_ir(e, ctx)).collect())
+        }
+        _ => lower_to_rust(expr, ctx),
+    }
 }
 

@@ -8,12 +8,6 @@ use super::*;
 /// applies ownership analysis (clone insertion for multi-use values), and
 /// emits the final Rust source string.
 pub fn expr_to_rust(expr: &Expr, ctx: &GenCtx) -> String {
-    if ctx.option_value_wrap && !expr_handles_option_wrap(expr) {
-        let mut inner_ctx = ctx.clone_for_inference();
-        inner_ctx.option_value_wrap = false;
-        let inner = expr_to_rust(expr, &inner_ctx);
-        return wrap_as_option_value(expr, inner, ctx);
-    }
     emit(&apply_ownership(lower_to_rust(expr, ctx), ctx))
 }
 

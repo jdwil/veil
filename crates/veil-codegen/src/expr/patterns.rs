@@ -141,7 +141,6 @@ impl GenCtx {
             types: self.types.clone(),
             ownership: self.ownership.clone(),
             stubs: self.stubs.clone(),
-            routing: self.routing.clone(),
             async_fns: self.async_fns.clone(),
             state_locals: self.state_locals.clone(),
             expected_return_rust: self.expected_return_rust.clone(),
@@ -155,6 +154,7 @@ impl GenCtx {
             unit_enums: self.unit_enums.clone(),
             known_modules: self.known_modules.clone(),
             error_model: self.error_model.clone(),
+            method_lowers_to: self.method_lowers_to.clone(),
         }
     }
 }

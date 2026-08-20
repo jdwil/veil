@@ -204,14 +204,6 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             if call.args.is_empty() && method_bare(&call.method) == "as_n" {
                 return Some("i64".to_string());
             }
-            // Envelope routing: cross-boundary calls yield `serde_json::Value`
-            // (unless the target is a direct trait dep).
-            if ctx.routing.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target)
-                && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty())
-                    && !ctx.stubs.stub_pkg_crate.contains_key(&call.target)
-                {
-                    return Some("serde_json::Value".to_string());
-                }
             // If calling a trait method, return type is known.
             // Bang only unwraps Result (via `.await?`); Opt/Option is preserved.
             if ctx.is_trait_target(&call.target) {
@@ -220,15 +212,6 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                 } else {
                     &call.method
                 };
-                let bare = method.trim_end_matches(['!', '?']);
-                // Typed bus: invoke/request of a known message → domain type
-                // when that type is in scope for this crate.
-                if matches!(bare, "invoke" | "request")
-                    && let Some(msg) = bus_message_name_from_args(&call.args)
-                        && let Some(ret) = ctx.routing.bus_returns.get(&msg)
-                            && bus_return_type_in_scope(ctx, ret) {
-                                return Some(ret.clone());
-                            }
                 return ctx.return_type_of(&call.target, method).map(|s| s.to_string());
             }
             // If calling a struct constructor

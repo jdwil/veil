@@ -2,22 +2,32 @@ use veil_ir::ast::*;
 use veil_ir::layer::StmtShape;
 use crate::rust::to_snake;
 use super::*;
+use super::rust_ir::{
+    field, ident, lower_to_rust, lower_value, map_err_ignore, method, not_found_err,
+    ret_err, strip_try_ir, validation_err, RustExpr,
+};
 
 /// Negate a guard condition logically to avoid clippy::nonminimal_bool
 /// and clippy::comparison_to_empty.
-fn negate_guard_condition(cond: &Expr, cond_str: &str, ctx: &GenCtx) -> String {
+fn negate_guard_condition(cond: &Expr, ctx: &GenCtx) -> RustExpr {
     if let Expr::BinaryOp(bin) = cond {
-        // `x != ""` → `x.is_empty()`, `x == ""` → `!x.is_empty()`
         let rhs_is_empty_str = matches!(bin.right.as_ref(), Expr::StringLit(s) if s.is_empty());
         if rhs_is_empty_str {
-            let left = super::expr_to_rust(&bin.left, ctx);
+            let left = lower_to_rust(&bin.left, ctx);
             return match bin.op {
-                BinOp::NotEq => format!("{left}.is_empty()"),
-                BinOp::Eq => format!("!{left}.is_empty()"),
-                _ => format!("!({cond_str})"),
+                BinOp::NotEq => method(left, "is_empty", vec![]),
+                BinOp::Eq => RustExpr::UnaryOp {
+                    op: "!".to_string(),
+                    expr: Box::new(method(left, "is_empty", vec![])),
+                    ty: Some(super::rust_ir::RustType::Named("bool".to_string())),
+                },
+                _ => RustExpr::UnaryOp {
+                    op: "!".to_string(),
+                    expr: Box::new(lower_to_rust(cond, ctx)),
+                    ty: Some(super::rust_ir::RustType::Named("bool".to_string())),
+                },
             };
         }
-        // Flip comparison operators for cleaner negation.
         let negated_op = match bin.op {
             BinOp::Eq => Some("!="),
             BinOp::NotEq => Some("=="),
@@ -28,12 +38,19 @@ fn negate_guard_condition(cond: &Expr, cond_str: &str, ctx: &GenCtx) -> String {
             _ => None,
         };
         if let Some(op) = negated_op {
-            let left = super::expr_to_rust(&bin.left, ctx);
-            let right = super::expr_to_rust(&bin.right, ctx);
-            return format!("{left} {op} {right}");
+            return RustExpr::BinOp {
+                left: Box::new(lower_to_rust(&bin.left, ctx)),
+                op: op.to_string(),
+                right: Box::new(lower_to_rust(&bin.right, ctx)),
+                ty: Some(super::rust_ir::RustType::Named("bool".to_string())),
+            };
         }
     }
-    format!("!({cond_str})")
+    RustExpr::UnaryOp {
+        op: "!".to_string(),
+        expr: Box::new(lower_to_rust(cond, ctx)),
+        ty: Some(super::rust_ir::RustType::Named("bool".to_string())),
+    }
 }
 
 /// Classify a `guard` failure message → DomainError variant.
@@ -147,50 +164,129 @@ pub fn interpolate_action_template(
     }
 }
 
+fn interpolate_action_ir(template: &str, a: &ActionExpr, ctx: &GenCtx) -> RustExpr {
+    let mut bindings: Vec<(String, RustExpr)> = Vec::new();
+    let args_node = if !a.named_args.is_empty() {
+        RustExpr::StructLit {
+            name: a.target.clone(),
+            fields: a
+                .named_args
+                .iter()
+                .map(|(k, v)| (k.clone(), lower_value(v, ctx)))
+                .collect(),
+            rest: None,
+            ty: None,
+        }
+    } else if !a.args.is_empty() {
+        RustExpr::Join {
+            items: a.args.iter().map(|e| lower_value(e, ctx)).collect(),
+            sep: ", ".to_string(),
+        }
+    } else if !a.target.is_empty() {
+        ident(a.target.clone())
+    } else {
+        ident("")
+    };
+    bindings.push(("args".to_string(), args_node));
+    for (i, arg) in a.args.iter().enumerate() {
+        bindings.push((format!("arg{i}"), lower_value(arg, ctx)));
+    }
+    for (i, (_k, v)) in a.named_args.iter().enumerate() {
+        let idx = a.args.len() + i;
+        bindings.push((format!("arg{idx}"), lower_value(v, ctx)));
+    }
+    if let Some(spec) = ctx.statement_specs.get(&a.keyword) {
+        if let Some(dep_type) = &spec.requires_dep {
+            bindings.push(("dep".to_string(), ident(ctx.deps_field_for(dep_type))));
+        } else if let Some(port) = &spec.port_target {
+            bindings.push(("dep".to_string(), ident(ctx.deps_field_for(port))));
+        }
+    }
+    if !bindings.iter().any(|(k, _)| k == "dep") {
+        bindings.push(("dep".to_string(), ident(to_snake(&a.keyword))));
+    }
+    // {target} — the action's target name (e.g., "CustomerCreated" for dispatch CustomerCreated{...})
+    if !a.target.is_empty() {
+        bindings.push(("target".to_string(), RustExpr::StringLit(a.target.clone())));
+    }
+    bindings.push(("self".to_string(), ident("self")));
+    for (key, val) in &a.named_args {
+        bindings.push((format!("named.{key}"), lower_value(val, ctx)));
+    }
+    if template.contains("{body}") {
+        bindings.push((
+            "body".to_string(),
+            RustExpr::Join {
+                items: a.body.iter().map(|e| lower_value(e, ctx)).collect(),
+                sep: "; ".to_string(),
+            },
+        ));
+    }
+    if let Some(cond) = a.condition.as_deref() {
+        bindings.push(("condition".to_string(), lower_value(cond, ctx)));
+    }
+    if let Some(msg) = &a.message {
+        bindings.push(("message".to_string(), RustExpr::StringLit(msg.clone())));
+    }
+    let templ = RustExpr::LayerTemplate {
+        template: template.to_string(),
+        bindings,
+    };
+    if let Some(binding) = &a.result_binding {
+        RustExpr::Let {
+            name: binding.clone(),
+            mutable: false,
+            ty: None,
+            value: Box::new(templ),
+        }
+    } else {
+        templ
+    }
+}
+
 /// Translate a layer-defined Action that was NOT desugared (e.g. emit, guard).
-pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
-    // Prefer explicit per-target lowering templates from the layer.
+pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> RustExpr {
     if let Some(spec) = ctx.statement_specs.get(&a.keyword) {
         if let Some(template) = spec.lowers_to.get("rust") {
-            return interpolate_action_template(template, a, ctx, &expr_to_rust);
+            return interpolate_action_ir(template, a, ctx);
         }
-        // Port.method fallback when Action was kept (e.g. has lowers_to for other
-        // targets only) — emit a deps call mirroring the desugared path.
-        if let (Some(port), Some(method)) = (&spec.port_target, &spec.port_method) {
+        if let (Some(port), Some(meth)) = (&spec.port_target, &spec.port_method) {
             let dep = ctx.deps_field_for(port);
-            let rref = if ctx.routing.routing_traits.contains(port) {
-                if ctx.routing.routing_ref.is_empty() {
-                    format!("deps.{}", dep)
-                } else {
-                    ctx.routing.routing_ref.clone()
-                }
-            } else if ctx.in_method {
-                format!("self.{}", dep)
+            let rref = if ctx.in_method {
+                field(ident("self"), dep)
             } else {
-                format!("deps.{}", dep)
+                field(ident("deps"), dep)
             };
-            let args_str = if !a.named_args.is_empty() {
-                let fields = a
-                    .named_args
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{} {{ {} }}", a.target, fields)
+            let args = if !a.named_args.is_empty() {
+                vec![RustExpr::StructLit {
+                    name: a.target.clone(),
+                    fields: a
+                        .named_args
+                        .iter()
+                        .map(|(k, v)| (k.clone(), lower_value(v, ctx)))
+                        .collect(),
+                    rest: None,
+                    ty: None,
+                }]
             } else if !a.args.is_empty() {
-                a.args
-                    .iter()
-                    .map(|e| expr_to_rust(e, ctx))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                a.args.iter().map(|e| lower_value(e, ctx)).collect()
             } else if !a.target.is_empty() {
-                a.target.clone()
+                vec![ident(a.target.clone())]
             } else {
-                String::new()
+                vec![]
             };
-            let call = format!("{rref}.{}({args_str}).await?", to_snake(method));
+            let call = super::rust_ir::apply_finish(
+                method(rref, to_snake(meth), args),
+                super::rust_ir::CallFinish::AwaitTry,
+                &ctx.error_model,
+            );
             return if let Some(binding) = &a.result_binding {
-                format!("let {binding} = {call}")
+                RustExpr::Let {
+                    name: binding.clone(),
+                    mutable: false,
+                    ty: None,
+                    value: Box::new(call),
+                }
             } else {
                 call
             };
@@ -199,108 +295,86 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
 
     match a.shape {
         StmtShape::If => {
-            // guard: the condition must hold for the flow to continue.
             let msg = a.message.as_deref().unwrap_or("precondition failed");
-            let msg_escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
             let err_var = guard_error_variant(msg);
+            let err_node = if err_var == "NotFound" {
+                not_found_err(ctx)
+            } else {
+                validation_err(msg, ctx)
+            };
             match a.condition.as_deref() {
-                // Fallible-call guard (`guard call X.method(...)`): the call
-                // returns a Result that must be Ok — map_err with policy variant.
                 Some(cond @ Expr::Call(c))
                     if !c.method.is_empty()
                         && (ctx.name_to_shape.contains_key(&c.target)
                             || ctx.stubs.fallible_methods.contains(&c.method)
                             || c.method == "validate") =>
                 {
-                    let call_str = expr_to_rust(cond, ctx);
-                    // translate_call may already append `?`; strip it so our
-                    // map_err drives the propagation.
-                    let base = call_str
-                        .strip_suffix(".await?")
-                        .or_else(|| call_str.strip_suffix('?'))
-                        .unwrap_or(&call_str);
-                    if err_var == "NotFound" {
-                        format!("{base}.map_err(|_| {})?", ctx.error_model.not_found_path())
-                    } else {
-                        format!(
-                            "{base}.map_err(|_| {}(\"{msg_escaped}\".to_string()))?",
-                            ctx.error_model.validation_path()
-                        )
-                    }
+                    map_err_ignore(strip_try_ir(lower_to_rust(cond, ctx)), err_node)
                 }
                 Some(cond @ Expr::Await(_)) => {
-                    let call_str = expr_to_rust(cond, ctx);
-                    let base = call_str.strip_suffix('?').unwrap_or(&call_str);
-                    if err_var == "NotFound" {
-                        format!("{base}.map_err(|_| {})?", ctx.error_model.not_found_path())
-                    } else {
-                        format!(
-                            "{base}.map_err(|_| {}(\"{msg_escaped}\".to_string()))?",
-                            ctx.error_model.validation_path()
-                        )
+                    map_err_ignore(strip_try_ir(lower_to_rust(cond, ctx)), err_node)
+                }
+                Some(cond) => {
+                    if let Expr::Call(c) = cond
+                        && c.method == "is_some"
+                        && ctx.locals.contains(&c.target)
+                    {
+                        let var_type = ctx.types.local_types.get(&c.target);
+                        let is_option = var_type
+                            .map(|t| t.starts_with("Option<") || t == "Option")
+                            .unwrap_or(true);
+                        if !is_option {
+                            return RustExpr::Comment(format!(
+                                "guard {:?} — local is not Option (already forced present)",
+                                msg
+                            ));
+                        }
+                        return RustExpr::If {
+                            condition: Box::new(method(ident(c.target.clone()), "is_none", vec![])),
+                            then_body: vec![ret_err(err_node)],
+                            else_body: None,
+                        };
+                    }
+                    RustExpr::If {
+                        condition: Box::new(negate_guard_condition(cond, ctx)),
+                        then_body: vec![ret_err(err_node)],
+                        else_body: None,
                     }
                 }
-                // Boolean guard: the condition must evaluate to true.
-                Some(cond) => {
-                    let cond_str = expr_to_rust(cond, ctx);
-                    // Suppress redundant `.is_some()` guards only when we *know*
-                    // the local is not Option (e.g. after explicit force-present / require).
-                    // Portable bang (ACS-010) does NOT auto-ok_or on find! — Opt stays Opt.
-                    if let Expr::Call(c) = cond
-                        && c.method == "is_some" && ctx.locals.contains(&c.target) {
-                            let var_type = ctx.types.local_types.get(&c.target);
-                            let is_option = var_type
-                                .map(|t| t.starts_with("Option<") || t == "Option")
-                                .unwrap_or(true); // unknown → keep guard
-                            if !is_option {
-                                return format!(
-                                    "/* guard {:?} — local is not Option (already forced present) */",
-                                    msg_escaped
-                                );
-                            }
-                            // is_none → NotFound when message is resource-missing
-                            let err = if err_var == "NotFound" {
-                                ctx.error_model.not_found_path()
-                            } else {
-                                format!("{}(\"{msg_escaped}\".to_string())", ctx.error_model.validation_path())
-                            };
-                            return format!(
-                                "if {}.is_none() {{ return Err({err}); }}",
-                                c.target
-                            );
-                        }
-                    let err = if err_var == "NotFound" {
-                        ctx.error_model.not_found_path()
-                    } else {
-                        format!("{}(\"{msg_escaped}\".to_string())", ctx.error_model.validation_path())
-                    };
-                    // Negate the guard condition logically to produce
-                    // cleaner code (avoids clippy::nonminimal_bool).
-                    let neg_cond = negate_guard_condition(cond, &cond_str, ctx);
-                    format!(
-                        "if {} {{ return Err({err}); }}",
-                        neg_cond
-                    )
-                }
-                None => format!("/* guard: {} (no condition) */", msg_escaped),
+                None => RustExpr::Comment(format!("guard: {msg} (no condition)")),
             }
         }
         StmtShape::Call | StmtShape::Assign | StmtShape::Infix | StmtShape::Block => {
-            // Remaining actions (emit) — handle based on keyword-like semantics.
-            // For now, emit as a comment + placeholder.
-            let args_str = if !a.named_args.is_empty() {
-                let fields = a.named_args.iter()
-                    .map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx)))
-                    .collect::<Vec<_>>().join(", ");
-                format!("{} {{ {} }}", a.target, fields)
+            let args_node = if !a.named_args.is_empty() {
+                RustExpr::StructLit {
+                    name: a.target.clone(),
+                    fields: a
+                        .named_args
+                        .iter()
+                        .map(|(k, v)| (k.clone(), lower_value(v, ctx)))
+                        .collect(),
+                    rest: None,
+                    ty: None,
+                }
             } else if !a.args.is_empty() {
-                a.args.iter().map(|e| expr_to_rust(e, ctx)).collect::<Vec<_>>().join(", ")
+                RustExpr::Join {
+                    items: a.args.iter().map(|e| lower_value(e, ctx)).collect(),
+                    sep: ", ".to_string(),
+                }
             } else {
-                a.target.clone()
+                ident(a.target.clone())
             };
-            let core = format!("/* {} {} */", a.keyword, args_str);
+            let core = RustExpr::LayerTemplate {
+                template: format!("/* {} {{args}} */", a.keyword),
+                bindings: vec![("args".to_string(), args_node)],
+            };
             if let Some(binding) = &a.result_binding {
-                format!("let {binding} = {core}")
+                RustExpr::Let {
+                    name: binding.clone(),
+                    mutable: false,
+                    ty: None,
+                    value: Box::new(core),
+                }
             } else {
                 core
             }

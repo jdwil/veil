@@ -26,6 +26,7 @@ stub example-sdk 1.0.0
 cargo_deps helper-crate=1
 types_module types
 root_types Client
+async_methods send
 
 harness_field Client """
 {
@@ -85,9 +86,23 @@ pkg SdkApp
         out.contains("self.client.put_item()"),
         "self.client must lower to field access"
     );
+    let save_body: String = {
+        let lines: Vec<&str> = out.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains("impl ThingRepo for") || l.contains("SdkThingRepo"))
+            .and_then(|i| {
+                lines[i..].iter().position(|l| l.contains("async fn save(")).map(|j| i + j)
+            })
+            .or_else(|| {
+                lines.iter().rposition(|l| l.contains("async fn save(") && l.contains("id:"))
+            })
+            .unwrap_or(0);
+        lines[start..start.saturating_add(25).min(lines.len())].join("\n")
+    };
     assert!(
-        out.contains(".send().await") && out.contains("map_err"),
-        "send must be async+fallible"
+        save_body.contains(".send().await"),
+        "stub async_methods on this type must await the call:\n{save_body}"
     );
     assert!(
         out.contains("pub client: example_sdk::Client"),
@@ -833,6 +848,7 @@ fn blob_new_uses_stub_type_path_not_vec_u8() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
+async_methods send
 
   struct Blob
     path primitives
@@ -886,6 +902,7 @@ fn blob_to_str_and_ret_unit_as_none() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
+async_methods send
 
   struct Blob
     path primitives
@@ -956,6 +973,7 @@ fn crate_qualified_blob_new_is_type_new_not_module_fn() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
+async_methods send
 
   struct Blob
     path primitives
@@ -1008,6 +1026,7 @@ fn opt_match_last_expr_wraps_some_and_none_value() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
+async_methods send
 
   struct Client
     fn send() -> Res!
@@ -1069,6 +1088,7 @@ fn check_flags_stub_getter_returned_as_domain() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
+async_methods send
 
   struct Client
     fn get_item() -> GetItemFluentBuilder
@@ -1126,6 +1146,7 @@ const AV_STUB: &str = r#"
 stub example-sdk 1.0.0
 types_module types
 root_types Client
+async_methods send
 
   struct Client
     fn get_item() -> GetItemFluentBuilder
@@ -1376,6 +1397,7 @@ fn blob_as_ref_in_str_position_decodes_utf8() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
+async_methods send
 
   struct Blob
     path primitives
