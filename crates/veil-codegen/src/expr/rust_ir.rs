@@ -5,12 +5,12 @@
 //! (clone insertion, `?` suppression in closures, etc.) operate on structure
 //! rather than rendered strings.
 //!
-//! ## Migration strategy
+//! ## Variants
 //!
-//! `RustExpr::Raw` wraps the legacy `expr_to_rust` output for unmigrated
-//! expression forms. Expressions are migrated one category at a time:
-//! literals → idents → field access → method calls → control flow.
-//! At every step, `emit()` must produce byte-identical output to the old path.
+//! `RustExpr::Statement` wraps pre-rendered text for expression forms that
+//! are not yet fully decomposed into structural nodes. It emits identically
+//! to a raw string but signals "this is a statement / complex expression"
+//! for ownership analysis purposes.
 
 use veil_ir::ast::{Expr, StringPart};
 use veil_ir::layer::Shape;
@@ -104,10 +104,6 @@ impl RustType {
 /// without re-parsing rendered strings.
 #[derive(Debug, Clone)]
 pub enum RustExpr {
-    /// Raw pre-rendered string (escape hatch for unmigrated expressions).
-    /// Carries the inferred Rust type if known.
-    Raw { text: String, ty: Option<RustType> },
-
     /// Identifier reference.
     Ident { name: String, ty: Option<RustType> },
 
@@ -209,6 +205,21 @@ pub enum RustExpr {
     /// `vec![a, b, c]` (for json! array arguments)
     VecMacro(Vec<RustExpr>),
 
+    /// Pre-rendered Rust statement (assignment, reassignment, complex expressions
+    /// that haven't been fully decomposed into structural nodes yet).
+    /// Unlike the deleted `Raw`, this is explicitly a STATEMENT that produces
+    /// no value for ownership purposes.
+    Statement { text: String, ty: Option<RustType> },
+
+    /// Layer/action template output — pre-rendered by interpolate_action_template.
+    LayerEmit(String),
+
+    /// compile_error!("...") — intentional error marker in generated code.
+    CompileError(String),
+
+    /// Return statement: `return expr`
+    Return { value: Box<RustExpr>, wraps_ok: bool },
+
     // ─── Structural nodes added during "complete-the-tree" ───────────
 
     /// Binary operation: `left op right`
@@ -279,11 +290,20 @@ pub enum RustExpr {
 /// Render a `RustExpr` to its final Rust source string.
 ///
 /// This MUST produce byte-identical output to the old `expr_to_rust` for
-/// every migrated expression category. Non-migrated expressions go through
-/// `RustExpr::Raw` which is already a rendered string.
+/// every migrated expression category. Pre-rendered expressions use
+/// `RustExpr::Statement` which is already a rendered string.
 pub fn emit(expr: &RustExpr) -> String {
     match expr {
-        RustExpr::Raw { text, .. } => text.clone(),
+        RustExpr::Statement { text, .. } => text.clone(),
+        RustExpr::LayerEmit(s) => s.clone(),
+        RustExpr::CompileError(msg) => format!("compile_error!(\"{}\")", msg),
+        RustExpr::Return { value, wraps_ok } => {
+            if *wraps_ok {
+                format!("return Ok({})", emit(value))
+            } else {
+                format!("return {}", emit(value))
+            }
+        }
         RustExpr::Ident { name, .. } => name.clone(),
         RustExpr::StringLit(s) => rust_string_lit(s),
         RustExpr::IntLit(n) => n.to_string(),
@@ -365,10 +385,10 @@ pub fn emit(expr: &RustExpr) -> String {
                 }
             }
             // Multi-line block format
-            let then_str = emit_block(then_body, "    ");
+            let then_str = emit_value_block_ir(then_body, "    ");
             match else_body {
                 Some(eb) => {
-                    let else_str = emit_block(eb, "    ");
+                    let else_str = emit_value_block_ir(eb, "    ");
                     format!("if {} {{\n{}\n}} else {{\n{}\n}}", cond, then_str, else_str)
                 }
                 None => format!("if {} {{\n{}\n}}", cond, then_str),
@@ -466,17 +486,36 @@ pub fn emit(expr: &RustExpr) -> String {
 fn emit_block(stmts: &[RustExpr], indent: &str) -> String {
     stmts
         .iter()
-        .enumerate()
-        .map(|(i, e)| {
+        .map(|e| {
             let rendered = emit(e);
-            let is_last = i + 1 == stmts.len();
-            let needs_semi = !is_last || is_block_like(e);
-            let line = if needs_semi && !rendered.ends_with('}') && !rendered.ends_with(';') {
+            let line = if !rendered.ends_with('}') && !rendered.ends_with(';') {
                 format!("{};", rendered)
             } else {
                 rendered
             };
             // Indent each line of the rendered statement
+            line.lines()
+                .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", indent, l) })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render a block where the last expression is a value (no trailing semicolon).
+fn emit_value_block_ir(stmts: &[RustExpr], indent: &str) -> String {
+    stmts
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let rendered = emit(e);
+            let is_last = i + 1 == stmts.len();
+            let line = if !is_last && !rendered.ends_with('}') && !rendered.ends_with(';') {
+                format!("{};", rendered)
+            } else {
+                rendered
+            };
             line.lines()
                 .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", indent, l) })
                 .collect::<Vec<_>>()
@@ -504,7 +543,7 @@ fn is_block_like(expr: &RustExpr) -> bool {
 ///
 /// This is the new entry point that progressively replaces `expr_to_rust`.
 /// Currently handles: literals, idents, field access.
-/// Everything else falls through to `RustExpr::Raw` wrapping `expr_to_rust`.
+/// Everything else falls through to `RustExpr::Statement` wrapping `expr_to_rust`.
 pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
     match expr {
         // ── Migrated: literals ───────────────────────────────────────────
@@ -583,7 +622,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             if matches!(op.op, veil_ir::ast::BinOp::Add)
                 && (r.starts_with("vec![") || l.starts_with("vec!["))
             {
-                return RustExpr::Raw {
+                return RustExpr::Statement {
                     text: format!("{{ let mut __v = {l}; __v.extend({r}); __v }}"),
                     ty,
                 };
@@ -603,7 +642,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         })
                         .collect();
                     let holes = vec!["{}"; rendered.len()].join("");
-                    let args = rendered.iter().map(|a| RustExpr::Raw { text: a.clone(), ty: None }).collect();
+                    let args = rendered.iter().map(|a| RustExpr::Statement { text: a.clone(), ty: None }).collect();
                     return RustExpr::Format { template: holes, args };
                 } else {
                     let l = clone_if_named_value(&op.left, l);
@@ -611,8 +650,8 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     return RustExpr::Format {
                         template: "{}{}".to_string(),
                         args: vec![
-                            RustExpr::Raw { text: l, ty: None },
-                            RustExpr::Raw { text: r, ty: None },
+                            RustExpr::Statement { text: l, ty: None },
+                            RustExpr::Statement { text: r, ty: None },
                         ],
                     };
                 }
@@ -656,7 +695,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                             return RustExpr::MethodCall {
                                                 receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                                 method: "push".to_string(),
-                                                args: vec![RustExpr::Raw {
+                                                args: vec![RustExpr::Statement {
                                                     text: format!("{}.clone().ok_or({})?", item, ctx.error_model.not_found_path()),
                                                     ty: None,
                                                 }],
@@ -668,7 +707,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "push".to_string(),
-                                    args: vec![RustExpr::Raw { text: item, ty: None }],
+                                    args: vec![RustExpr::Statement { text: item, ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -684,7 +723,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "push".to_string(),
-                                    args: vec![RustExpr::Raw { text: item_strs[0].clone(), ty: None }],
+                                    args: vec![RustExpr::Statement { text: item_strs[0].clone(), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -693,7 +732,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "extend".to_string(),
-                                    args: vec![RustExpr::Raw { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
+                                    args: vec![RustExpr::Statement { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -717,7 +756,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 .map(to_snake)
                                 .collect::<Vec<_>>()
                                 .join(".");
-                            return RustExpr::Raw {
+                            return RustExpr::Statement {
                                 text: format!(
                                     "{}.as_mut().ok_or({})?.{} = {}",
                                     base_name, ctx.error_model.not_found_path(), field_snake, rhs_str
@@ -758,7 +797,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                     return RustExpr::BinOp {
                                         left: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                         op: op.to_string(),
-                                        right: Box::new(RustExpr::Raw { text: right_str, ty: None }),
+                                        right: Box::new(RustExpr::Statement { text: right_str, ty: None }),
                                         ty: None,
                                     };
                                 }
@@ -771,11 +810,11 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         name: name.clone(),
                         mutable: is_mutable,
                         ty: ty_str,
-                        value: Box::new(RustExpr::Raw { text: rhs_str, ty: None }),
+                        value: Box::new(RustExpr::Statement { text: rhs_str, ty: None }),
                     };
                 }
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -794,7 +833,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "push".to_string(),
-                                    args: vec![RustExpr::Raw { text: item_strs[0].clone(), ty: None }],
+                                    args: vec![RustExpr::Statement { text: item_strs[0].clone(), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -803,7 +842,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                                 return RustExpr::MethodCall {
                                     receiver: Box::new(RustExpr::Ident { name: name.clone(), ty: None }),
                                     method: "extend".to_string(),
-                                    args: vec![RustExpr::Raw { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
+                                    args: vec![RustExpr::Statement { text: format!("vec![{}]", item_strs.join(", ")), ty: None }],
                                     ty: None,
                                     is_async: false,
                                     is_fallible: false,
@@ -823,11 +862,11 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         name: name.clone(),
                         mutable: true,
                         ty: ty_str,
-                        value: Box::new(RustExpr::Raw { text: rhs_str, ty: None }),
+                        value: Box::new(RustExpr::Statement { text: rhs_str, ty: None }),
                     };
                 }
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -856,7 +895,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 } else { cond_str }
             } else { cond_str };
 
-            let condition = Box::new(RustExpr::Raw { text: cond_str, ty: Some(RustType::Named("bool".to_string())) });
+            let condition = Box::new(RustExpr::Statement { text: cond_str, ty: Some(RustType::Named("bool".to_string())) });
 
             let then_is_stmt = matches!(
                 ie.then_body.first(),
@@ -981,7 +1020,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 out.push_str("    }");
                 out
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1046,7 +1085,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             let body_nodes = lower_block_with_ctx(body, &body_ctx);
             RustExpr::For {
                 binding: bind,
-                iterable: Box::new(RustExpr::Raw { text: iterable_final, ty: None }),
+                iterable: Box::new(RustExpr::Statement { text: iterable_final, ty: None }),
                 body: body_nodes,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1059,7 +1098,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             body_ctx.mut_locals.extend(analyze_mut_locals(body));
             let body_nodes = lower_block_with_ctx(body, &body_ctx);
             RustExpr::While {
-                condition: Box::new(RustExpr::Raw { text: cond_str, ty: Some(RustType::Named("bool".to_string())) }),
+                condition: Box::new(RustExpr::Statement { text: cond_str, ty: Some(RustType::Named("bool".to_string())) }),
                 body: body_nodes,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1141,7 +1180,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     } else if returns_option && !val.starts_with("Some(") {
                         if let Expr::Ident(name) = inner.as_ref()
                             && ctx.local_type(name).map(is_option_type).unwrap_or(false) {
-                                return RustExpr::Raw {
+                                return RustExpr::Statement {
                                     text: format!("return Ok({})", val),
                                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                                 };
@@ -1152,7 +1191,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     }
                 }
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1225,7 +1264,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     format!("{s}.ok_or({})?", ctx.error_model.not_found_path())
                 }
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1270,14 +1309,14 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     }
                 }
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
 
         // ── Migrated: action ─────────────────────────────────────────────
-        Expr::Action(a) => RustExpr::Raw {
+        Expr::Action(a) => RustExpr::Statement {
             text: translate_action(a, ctx),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
         },
@@ -1287,7 +1326,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             let s = start.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default();
             let e = end.as_ref().map(|e| expr_to_rust(e, ctx)).unwrap_or_default();
             let op = if *inclusive { "..=" } else { ".." };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text: format!("{}{}{}", s, op, e),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1295,7 +1334,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: cast ───────────────────────────────────────────────
         Expr::Cast(inner_expr, ty) => {
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text: format!("{} as {}", expr_to_rust(inner_expr, ctx), ty),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1372,7 +1411,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 }).collect::<Vec<_>>().join(", ");
                 format!("{} {{ {} }}", name, fs)
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1381,7 +1420,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         // ── Migrated: struct update ──────────────────────────────────────
         Expr::StructUpdate { name, fields, base } => {
             let fs = fields.iter().map(|(k, v)| format!("{}: {}", k, expr_to_rust(v, ctx))).collect::<Vec<_>>().join(", ");
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text: format!("{} {{ {}, ..{} }}", name, fs, expr_to_rust(base, ctx)),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1392,7 +1431,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             let e = expr_to_rust(inner_expr, ctx);
             let then_str = then_body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
             let else_str = else_body.as_ref().map(|eb| { let s = eb.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n"); format!(" else {{\n{}\n}}", s) }).unwrap_or_default();
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text: format!("if let {} = {} {{\n{}\n}}{}", pattern, e, then_str, else_str),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1402,7 +1441,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         Expr::WhileLet { pattern, expr: inner_expr, body } => {
             let e = expr_to_rust(inner_expr, ctx);
             let body_str = body.iter().map(|e2| format!("    {};", expr_to_rust(e2, ctx))).collect::<Vec<_>>().join("\n");
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text: format!("while let {} = {} {{\n{}\n}}", pattern, e, body_str),
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
@@ -1434,14 +1473,14 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 }
                 format!("{{\n{}\n}}", lines.join("\n"))
             };
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
 
         // ── Migrated: stock ──────────────────────────────────────────────
-        Expr::Stock => RustExpr::Raw {
+        Expr::Stock => RustExpr::Statement {
             text: "/* error: stock not expanded */ ()".to_string(),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
         },
@@ -1543,7 +1582,7 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     }
     // VEIL noop → Rust empty block (no-op)
     if name == "noop" {
-        return RustExpr::Raw {
+        return RustExpr::Statement {
             text: "{}".to_string(),
             ty: Some(RustType::Unit),
         };
@@ -1551,7 +1590,7 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     // Edge case: inline ternary with nested f-strings from parse_fstring_parts.
     // Not a proper ident — handled directly here.
     if name.contains(" then ") && (name.contains("f\"") || name.contains("f'")) {
-        return RustExpr::Raw {
+        return RustExpr::Statement {
             text: super::translate::translate_inline_ternary_fstring(name),
             ty: None,
         };
@@ -1560,7 +1599,7 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     if name.contains(".unwrap_or(\"") && name.ends_with("\")") {
         // Transform: x.unwrap_or("text") → x.unwrap_or("text".to_string())
         let converted = name.replacen("\")", "\".to_string())", 1);
-        return RustExpr::Raw {
+        return RustExpr::Statement {
             text: converted,
             ty: None,
         };
@@ -1774,12 +1813,12 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
                     .map(is_option_type)
                     .unwrap_or(false);
                 if enclosing_returns_option {
-                    return RustExpr::Raw {
+                    return RustExpr::Statement {
                         text: format!("{}.clone()?.{}", base_str, to_snake(field)),
                         ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                     };
                 }
-                return RustExpr::Raw {
+                return RustExpr::Statement {
                     text: format!(
                         "{}.clone().ok_or({})?.{}",
                         base_str,
@@ -1932,7 +1971,7 @@ fn to_json_arg_ir(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             }
             // Otherwise serialize base then index
             let base_ir = to_json_arg_ir(base, ctx);
-            RustExpr::Raw {
+            RustExpr::Statement {
                 text: format!("serde_json::json!({})[\"{}\"].clone()", emit(&base_ir), field),
                 ty: Some(RustType::Json),
             }
@@ -2154,7 +2193,7 @@ fn lower_call_builder_chain(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
     let args_ir = if args_str.is_empty() {
         vec![]
     } else {
-        vec![RustExpr::Raw { text: args_str, ty: None }]
+        vec![RustExpr::Statement { text: args_str, ty: None }]
     };
 
     // Build the terminal method call
@@ -2216,7 +2255,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             if let Some(inner_recv) = &inner_call.receiver {
                 // Skip special methods — fall back to Raw for the whole sub-chain
                 if is_special_method(&inner_call.method) {
-                    return RustExpr::Raw {
+                    return RustExpr::Statement {
                         text: expr_to_rust(expr, ctx),
                         ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                     };
@@ -2234,7 +2273,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 let args_ir = if args_str.is_empty() {
                     vec![]
                 } else {
-                    vec![RustExpr::Raw { text: args_str, ty: None }]
+                    vec![RustExpr::Statement { text: args_str, ty: None }]
                 };
                 // Intermediate chain methods have no async/fallible suffix
                 RustExpr::MethodCall {
@@ -2249,7 +2288,7 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 // Call without a receiver (e.g. `client.query()` where client is the target)
                 // This is the chain root — render it as Raw since it may need
                 // target-based resolution (struct constructor, free fn, etc.)
-                RustExpr::Raw {
+                RustExpr::Statement {
                     text: expr_to_rust(expr, ctx),
                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
                 }
@@ -2283,7 +2322,7 @@ fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
 /// Lower `Expr::Call` to structured `RustExpr`.
 ///
 /// Strategy: handle the common patterns structurally, fall through to
-/// `RustExpr::Raw` wrapping `translate_call` for complex sub-paths that
+/// `RustExpr::Statement` wrapping `translate_call` for complex sub-paths that
 /// are not worth migrating now.
 ///
 /// Migrated paths:
@@ -2379,7 +2418,7 @@ fn lower_call_port(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustEx
     let args_ir = if args_str.is_empty() {
         vec![]
     } else {
-        vec![RustExpr::Raw { text: args_str, ty: None }]
+        vec![RustExpr::Statement { text: args_str, ty: None }]
     };
 
     let ty = infer_call_type(call, ctx);
@@ -2413,7 +2452,7 @@ fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
     // Fall through to Raw wrapping translate_call for everything else
     let text = super::calls::translate_call(call, ctx);
     let ty = infer_call_type(call, ctx);
-    RustExpr::Raw { text, ty }
+    RustExpr::Statement { text, ty }
 }
 
 /// Infer the RustType for a call expression from context.
@@ -2473,7 +2512,7 @@ pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
             // FieldAccess (e.g. from a different lowering path), clone it.
             RustExpr::Clone(Box::new(expr))
         }
-        RustExpr::Raw { text, .. } => {
+        RustExpr::Statement { text, .. } => {
             // Already-owned strings from the old path
             if super::types::rust_already_owned(text) {
                 return expr;
@@ -2526,6 +2565,9 @@ fn is_already_owned(expr: &RustExpr) -> bool {
             | RustExpr::Try(_)
             | RustExpr::MapErr { .. }
             | RustExpr::Borrow { .. }
+            | RustExpr::LayerEmit(_)
+            | RustExpr::CompileError(_)
+            | RustExpr::Return { .. }
     )
 }
 
@@ -2605,7 +2647,7 @@ fn is_expr_copy(expr: &RustExpr, ctx: &GenCtx) -> bool {
         RustExpr::FieldAccess { ty, .. } => {
             ty.as_ref().is_some_and(|t| t.is_copy())
         }
-        RustExpr::Raw { ty, text, .. } => {
+        RustExpr::Statement { ty, text, .. } => {
             if let Some(t) = ty
                 && t.is_copy() {
                     return true;
@@ -2712,9 +2754,9 @@ pub fn suppress_try_in_closure(expr: RustExpr) -> RustExpr {
             }
         }
         // Raw text: apply string-level fixup as fallback for unmigrated paths
-        RustExpr::Raw { text, ty } => {
+        RustExpr::Statement { text, ty } => {
             let text = fixup_closure_raw(&text);
-            RustExpr::Raw { text, ty }
+            RustExpr::Statement { text, ty }
         }
         // Recurse into compound expressions
         RustExpr::MethodCall {
@@ -2794,7 +2836,13 @@ pub fn suppress_try_in_closure(expr: RustExpr) -> RustExpr {
         | RustExpr::FloatLit(_)
         | RustExpr::BoolLit(_)
         | RustExpr::JsonNull
-        | RustExpr::JsonEmptyArray => expr,
+        | RustExpr::JsonEmptyArray
+        | RustExpr::LayerEmit(_)
+        | RustExpr::CompileError(_) => expr,
+        RustExpr::Return { value, wraps_ok } => RustExpr::Return {
+            value: Box::new(suppress_try_in_closure(*value)),
+            wraps_ok,
+        },
         RustExpr::JsonMacro { entries } => RustExpr::JsonMacro {
             entries: entries
                 .into_iter()
@@ -2908,7 +2956,7 @@ fn lower_closure(params: &[String], body: &[Expr], ctx: &GenCtx) -> RustExpr {
     let p = params.join(", ");
     if body_exprs.len() == 1 {
         let body_str = emit(&body_exprs[0]);
-        RustExpr::Raw {
+        RustExpr::Statement {
             text: format!("|{}| {}", p, body_str),
             ty: None,
         }
@@ -2918,7 +2966,7 @@ fn lower_closure(params: &[String], body: &[Expr], ctx: &GenCtx) -> RustExpr {
             .map(|e| format!("    {};", emit(e)))
             .collect::<Vec<_>>()
             .join("\n");
-        RustExpr::Raw {
+        RustExpr::Statement {
             text: format!("|{}| {{\n{}\n}}", p, stmts),
             ty: None,
         }
@@ -2975,7 +3023,7 @@ mod tests {
 
     #[test]
     fn emit_raw_passthrough() {
-        let expr = RustExpr::Raw {
+        let expr = RustExpr::Statement {
             text: "some_complex_expr.await?".to_string(),
             ty: None,
         };
@@ -3294,7 +3342,7 @@ mod tests {
     fn ownership_raw_call_result_no_clone() {
         let ctx = GenCtx::new(std::collections::HashMap::new());
         // A function call result is already owned
-        let expr = RustExpr::Raw {
+        let expr = RustExpr::Statement {
             text: "Uuid::new_v4()".to_string(),
             ty: Some(RustType::Named("Uuid".to_string())),
         };
@@ -3306,7 +3354,7 @@ mod tests {
     fn ownership_raw_async_fallible_no_clone() {
         let ctx = GenCtx::new(std::collections::HashMap::new());
         // async+fallible call result is owned
-        let expr = RustExpr::Raw {
+        let expr = RustExpr::Statement {
             text: "deps.repo.save(entity).await?".to_string(),
             ty: Some(RustType::Named("String".to_string())),
         };
@@ -3318,7 +3366,7 @@ mod tests {
     fn ownership_raw_block_expr_no_clone() {
         let ctx = GenCtx::new(std::collections::HashMap::new());
         // Block expression is owned
-        let expr = RustExpr::Raw {
+        let expr = RustExpr::Statement {
             text: "{ let x = 1; x }".to_string(),
             ty: Some(RustType::Named("i64".to_string())),
         };
@@ -3330,7 +3378,7 @@ mod tests {
     fn ownership_raw_bare_ident_still_clones() {
         let ctx = make_ctx_with_uses("data", 2);
         // A bare ident in Raw should still get cloned when multi-use
-        let expr = RustExpr::Raw {
+        let expr = RustExpr::Statement {
             text: "data".to_string(),
             ty: Some(RustType::Named("String".to_string())),
         };
@@ -3393,7 +3441,7 @@ mod tests {
 
     #[test]
     fn suppress_try_raw_fixup_map_err() {
-        let expr = RustExpr::Raw {
+        let expr = RustExpr::Statement {
             text: "serde_json::from_str(&s).map_err(|e| DomainError::External(format!(\"{e:?}\")))?".to_string(),
             ty: None,
         };
@@ -3404,7 +3452,7 @@ mod tests {
     #[test]
     fn suppress_try_raw_fixup_question_mark() {
         // `)?` pattern: parenthesized expr followed by `?`
-        let expr = RustExpr::Raw {
+        let expr = RustExpr::Statement {
             text: "serde_json::from_str(&s)?".to_string(),
             ty: None,
         };
