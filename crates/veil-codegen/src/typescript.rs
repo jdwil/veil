@@ -147,7 +147,7 @@ fn generic_params_ts(params: &[String]) -> String {
 }
 
 /// Field type as TS string, using explicit type or inferring from name.
-fn field_type_ts(field: &Field) -> String {
+pub fn field_type_ts(field: &Field) -> String {
     match &field.type_expr {
         TypeExpr::Named(n) if n.is_empty() => infer_field_type_ts(&field.name),
         ty => type_to_ts(ty),
@@ -785,7 +785,7 @@ fn effect_body_needs_await(body: &[Expr]) -> bool {
 
 /// Like `expr_to_ts` but awaits ApiClient / async IIFE results on assignment.
 /// Recurses into `if` / blocks so nested `membership_options = ApiClient.fetch(...)` awaits.
-fn expr_to_ts_async(expr: &Expr, indent: usize) -> String {
+pub fn expr_to_ts_async(expr: &Expr, indent: usize) -> String {
     match expr {
         // Keep `let` for mut bindings: `mut repo = ApiClient.fetch(...)`
         // must not become bare `repo = await ...` (ReferenceError).

@@ -16,7 +16,9 @@
 //! Supports multiple target languages via `CodegenTarget`.
 
 pub mod capabilities;
+pub mod css;
 pub mod expr;
+pub mod html;
 pub mod kotlin;
 pub mod links;
 pub mod migrate_harness;
@@ -37,6 +39,7 @@ pub use migrate_harness::{migrate_harness, MigrateReport};
 pub use rust::{generate, list_rest_routes_from_solution, rest_route_for_service, IrRestRoute};
 pub use template::execute_templates;
 pub use typescript::generate_ts;
+pub use ts::generate_ts_ir;
 
 use veil_ir::ast::Solution;
 use veil_ir::layer::LayerRegistry;

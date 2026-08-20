@@ -17,8 +17,10 @@
 //!                                       emit_ts(expr) → String
 //! ```
 
+pub mod components;
 pub mod emit;
 pub mod expr;
+pub mod generate;
 pub mod lower;
 pub mod transforms;
 #[cfg(test)]
@@ -27,5 +29,7 @@ mod tests;
 // Public API
 pub use emit::emit_ts;
 pub use expr::{TsBinOp, TsExpr, TsPattern, TsTemplatePart, TsType, TsUnaryOp};
+pub use generate::generate_ts_ir;
 pub use lower::{lower_to_ts, lower_block, to_camel_case, veil_type_to_ts};
 pub use transforms::{track_imports, detect_async, import_statement};
+pub use components::gen_svelte_component;
