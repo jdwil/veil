@@ -41,7 +41,7 @@ pub fn execute_templates(
 ) -> TemplateOutput {
     let mut sections: HashMap<String, Vec<SectionContribution>> = HashMap::new();
     let mut files: Vec<TemplateFile> = Vec::new();
-    let mut file_fragments: Vec<String> = Vec::new();
+    let mut inline: HashMap<String, Vec<SectionContribution>> = HashMap::new();
 
     // Collect all templates for this target
     let templates: Vec<&CodegenTemplate> = registry
@@ -76,7 +76,7 @@ pub fn execute_templates(
         target: &str,
         sections: &mut HashMap<String, Vec<SectionContribution>>,
         files: &mut Vec<TemplateFile>,
-        file_fragments: &mut Vec<String>,
+        inline: &mut HashMap<String, Vec<SectionContribution>>,
     ) {
         for template in templates {
             for rule in &template.rules {
@@ -110,13 +110,24 @@ pub fn execute_templates(
                                 ),
                             });
                     } else {
-                        file_fragments.push(output);
+                        inline
+                            .entry(construct.name.clone())
+                            .or_default()
+                            .push(SectionContribution {
+                                priority: rule.priority,
+                                content: output,
+                                source_layer: template.layer.clone(),
+                                source_rule: format!(
+                                    "match {} where {}",
+                                    rule.match_shape, rule.condition
+                                ),
+                            });
                     }
                 }
             }
         }
         for child in &construct.children {
-            visit_construct(child, templates, registry, target, sections, files, file_fragments);
+            visit_construct(child, templates, registry, target, sections, files, inline);
         }
     }
 
@@ -129,7 +140,7 @@ pub fn execute_templates(
                 target,
                 &mut sections,
                 &mut files,
-                &mut file_fragments,
+                &mut inline,
             );
         }
     }
@@ -139,15 +150,12 @@ pub fn execute_templates(
         contributions.sort_by_key(|c| c.priority);
     }
 
-    // Collect remaining fragments into a default file if any
-    if !file_fragments.is_empty() {
-        files.push(TemplateFile {
-            path: format!("{}_generated.{}", solution.name, target_extension(target)),
-            content: file_fragments.join("\n\n"),
-        });
+    // Sort inline contributions by priority
+    for contributions in inline.values_mut() {
+        contributions.sort_by_key(|c| c.priority);
     }
 
-    TemplateOutput { files, sections, inline: HashMap::new() }
+    TemplateOutput { files, sections, inline }
 }
 
 /// Compose the "main" section into a complete main function (target-specific).
@@ -205,7 +213,6 @@ pub fn compose_section(output: &TemplateOutput, section: &str) -> Option<String>
 /// contributions are ALL emitted (they represent distinct impl blocks, trait
 /// impls, etc. that layers inject after a construct's primary body).
 pub fn compose_inline(output: &TemplateOutput, construct_name: &str) -> Option<String> {
-    eprintln!("[DEBUG compose_inline] looking for '{}', inline keys: {:?}", construct_name, output.inline.keys().collect::<Vec<_>>());
     let contributions = output.inline.get(construct_name)?;
     if contributions.is_empty() {
         return None;

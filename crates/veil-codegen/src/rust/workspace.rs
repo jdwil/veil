@@ -363,7 +363,7 @@ uuid.workspace = true"#);
         files.push(tests);
     }
 
-    files.push(gen_types(&contents, &crate_name, registry, solution, layer_derives, &sibling_crates));
+    files.push(gen_types(&contents, &crate_name, registry, solution, layer_derives, &sibling_crates, template_output));
     files.push(gen_child_types(&contents, &crate_name));
     files.push(GeneratedFile {
         path: format!("crates/{}/src/domain/mod.rs", crate_name),

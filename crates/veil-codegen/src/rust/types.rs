@@ -10,6 +10,7 @@ pub fn gen_types(
     solution: &Solution,
     layer_derives: Option<&str>,
     sibling_crates: &[String],
+    template_output: &crate::template::TemplateOutput,
 ) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
@@ -197,6 +198,11 @@ pub fn gen_types(
         out.push_str(&chunk);
         if is_defaultable {
             defaultable_structs.insert(c.name.clone());
+        }
+        // Append inline template contributions for this struct (emit without emit_to/emit_file).
+        if let Some(inline) = crate::template::compose_inline(template_output, &c.name) {
+            out.push_str(&inline);
+            out.push_str("\n\n");
         }
     }
 
