@@ -26,7 +26,7 @@ use super::types::{rust_string_lit, rust_string_lit_owned, expr_is_stringish, ex
 use super::calls::{resolve_self_field_name, is_json_rooted_expr, is_json_type_name,
     expr_is_json, list_index_get_rust};
 use super::patterns::{pattern_to_rust, pattern_to_rust_qualified, pattern_binding_names,
-    emit_tracked_block, emit_value_block};
+    emit_value_block};
 use super::actions::translate_action;
 use super::analysis::analyze_mut_locals;
 
@@ -525,18 +525,6 @@ fn emit_value_block_ir(stmts: &[RustExpr], indent: &str) -> String {
         .join("\n")
 }
 
-/// Whether a RustExpr is a block-like statement that doesn't need a trailing semicolon.
-fn is_block_like(expr: &RustExpr) -> bool {
-    matches!(
-        expr,
-        RustExpr::If { .. }
-            | RustExpr::Match { .. }
-            | RustExpr::For { .. }
-            | RustExpr::While { .. }
-            | RustExpr::Loop { .. }
-    )
-}
-
 // ─── lower_to_rust (bridge) ──────────────────────────────────────────────────
 
 /// Lower a VEIL expression to the typed `RustExpr` intermediate.
@@ -805,7 +793,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     format!("{} = {}", name, rhs_str)
                 } else {
                     let is_mutable = ctx.mut_locals.contains(name.as_str());
-                    let ty_str = ty_ann.as_ref().map(|t| crate::rust::type_to_rust(t));
+                    let ty_str = ty_ann.as_ref().map(crate::rust::type_to_rust);
                     return RustExpr::Let {
                         name: name.clone(),
                         mutable: is_mutable,
@@ -857,7 +845,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 if ctx.is_local(name) {
                     format!("{} = {}", name, rhs_str)
                 } else {
-                    let ty_str = ty_ann.as_ref().map(|t| crate::rust::type_to_rust(t));
+                    let ty_str = ty_ann.as_ref().map(crate::rust::type_to_rust);
                     return RustExpr::Let {
                         name: name.clone(),
                         mutable: true,
@@ -879,7 +867,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             RustExpr::Let {
                 name: pat_str,
                 mutable: false,
-                ty: ty_ann.as_ref().map(|t| crate::rust::type_to_rust(t)),
+                ty: ty_ann.as_ref().map(crate::rust::type_to_rust),
                 value: Box::new(e),
             }
         }
@@ -2323,7 +2311,6 @@ fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
 ///
 /// The key win: async/fallible suffixes become structural composition
 /// (`RustExpr::Await`, `RustExpr::Try`) instead of string appending.
-
 /// Lower non-routing port/trait calls to structural MethodCall nodes.
 ///
 /// Handles calls of the form `PortName.method(args)` where `PortName` is a trait
