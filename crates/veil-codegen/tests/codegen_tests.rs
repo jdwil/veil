@@ -5,11 +5,34 @@
 
 use veil_ir::LayerRegistry;
 
-/// Parse an example .veil file with the ddd layer and generate the project.
+/// Parse an example .veil file with the ddd_fullstack layer stack and generate the project.
 fn generate_example(src: &str) -> String {
     let mut reg = LayerRegistry::builtin();
+    // Load the full layer stack that ddd_fullstack composes
+    reg.load_content("base", include_str!("../../../layers/base.layer"))
+        .expect("base layer should load");
+    reg.load_content("rust", include_str!("../../../layers/rust.layer"))
+        .expect("rust layer should load");
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer"))
+        .expect("tokio layer should load");
+    reg.load_content("di", include_str!("../../../layers/di.layer"))
+        .expect("di layer should load");
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer"))
+        .expect("rest_english layer should load");
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer"))
+        .expect("bus_handle layer should load");
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer"))
+        .expect("auth_local layer should load");
+    reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+        .expect("harness layer should load");
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer"))
+        .expect("deploy layer should load");
     reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd layer should load");
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer"))
+        .expect("tokio_ddd layer should load");
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer"))
+        .expect("ddd_fullstack layer should load");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
     let project = veil_codegen::generate(&sol, &reg);
@@ -112,7 +135,7 @@ fn test_action_fallback_no_template() {
     let out = generate_example(
         r#"
 sol App
-  use ddd
+  use ddd_fullstack
   ctx C
     group domain
       port Bus
@@ -608,7 +631,7 @@ fn flow_return_type_is_inferred_not_hardcoded() {
     // blanket Uuid. Build a minimal solution inline.
     let src = "\
 sol T
-  use ddd
+  use ddd_fullstack
   ctx C
     group g
       agg Order
@@ -777,7 +800,7 @@ sol TestApp
 fn register_all_handlers_module() {
     let src = r#"
 pkg BusApp
-  use ddd
+  use ddd_fullstack
   ctx Orders
     port OrderRepo
       get(id: Str) -> Str
@@ -830,7 +853,7 @@ pkg BusApp
 fn product_host_main_when_link_veil_server() {
     let src = r#"
 pkg HostApp
-  use ddd
+  use ddd_fullstack
   use di
   link veil_server
   @main
@@ -874,7 +897,7 @@ pkg HostApp
 fn emit_bin_never_still_emits_product_host() {
     let src = r#"
 pkg HostApp
-  use ddd
+  use ddd_fullstack
   use di
   link veil_server
   @main
@@ -908,7 +931,7 @@ pkg HostApp
 fn harness_honors_declared_endpoint() {
     let src = r#"
 pkg RouteApp
-  use ddd
+  use ddd_fullstack
   use di
   use harness
 
@@ -1152,7 +1175,7 @@ pkg WearUi
 fn link_external_crates_in_cargo_toml() {
     let src = r#"
 pkg HostApp
-  use ddd
+  use ddd_fullstack
   link veil_server
   link veil_local path "../../crates/veil-local" features "local"
   @main
@@ -1451,7 +1474,7 @@ fn ts_svelte_demo_generates_project() {
 fn flow_return_type_from_bang_list_call() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   use di
   ctx Store
     group domain
@@ -1513,7 +1536,7 @@ pkg App
 fn harness_skips_deps_when_no_port_deps() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   use di
   ctx Store
     group domain
@@ -1558,7 +1581,7 @@ pkg App
 fn declared_harness_emits_named_deps_and_only_declared_routes() {
     let src = r#"
 pkg Demo
-  use ddd
+  use ddd_fullstack
   use harness
   ctx Catalog
     group domain
@@ -1664,7 +1687,7 @@ pkg Demo
 fn single_emitter_compat_synthesizes_post_fallback() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   ctx Hello
     group application
       svc GreetUser
@@ -1703,7 +1726,7 @@ pkg App
 fn emit_bin_never_skips_customer_bin() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   ctx Hello
     group application
       svc GreetUser
@@ -1731,7 +1754,7 @@ pkg App
 fn deploy_hook_emits_veil_hooks_and_skips_handler_names() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       hook Announce
@@ -1775,7 +1798,7 @@ pkg HookDemo
 fn deploy_hook_context_is_shared_struct_not_string_alias() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       hook OnDeploy
@@ -1852,7 +1875,7 @@ pkg HookDemo
 fn deploy_hook_deps_match_application_and_all_env_fields() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       port Store
@@ -1903,7 +1926,7 @@ pkg HookDemo
 fn deploy_hook_json_require_and_args_index_compile() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       hook OnDeploy
@@ -1963,7 +1986,7 @@ pkg HookDemo
 fn require_json_field_assign_is_string_not_value_coercion() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val Route
@@ -1999,7 +2022,7 @@ pkg HookDemo
 fn generated_rust_is_quality() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val Route
@@ -2085,7 +2108,7 @@ pkg HookDemo
 fn match_string_arm_is_owned_string() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       enum Kind
@@ -2120,7 +2143,7 @@ pkg HookDemo
 fn for_method_items_is_not_double_ref() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       port Store
@@ -2155,7 +2178,7 @@ pkg HookDemo
 fn for_shared_ref_element_is_cloned_when_owned() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val Box
@@ -2188,7 +2211,7 @@ pkg HookDemo
 fn product_redeclaration_of_layer_type_does_not_emit_local_struct() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val DeployContext
@@ -2220,7 +2243,7 @@ pkg HookDemo
 fn no_hooks_omits_veil_hooks_crate() {
     let src = r#"
 pkg Plain
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       handler HandlePing
@@ -2241,7 +2264,7 @@ pkg Plain
 fn value_object_derives_eq_hash_from_constraint() {
     let src = r#"
 pkg Inventory
-  use ddd
+  use ddd_fullstack
   ctx Warehouse
     val Money
       amount: Int
@@ -2315,7 +2338,7 @@ fn immutable_construct_uses_shared_ref() {
 fn mutable_aggregate_uses_mut_ref() {
     let src = r#"
 pkg TestDomain
-  use ddd
+  use ddd_fullstack
   ctx Core
     agg Order
       root
@@ -2345,7 +2368,7 @@ fn immutable_construct_uses_self_ref_not_mut() {
     // it MUST still use `&self` (not `&mut self`).
     let src = r#"
 pkg ImmutableTest
-  use ddd
+  use ddd_fullstack
 
   ctx Core
     group domain

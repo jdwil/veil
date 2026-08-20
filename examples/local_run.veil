@@ -1,5 +1,5 @@
 pkg LocalRun
-  use ddd
+  use ddd_fullstack
   use di
   use harness
   use rust

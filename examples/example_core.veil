@@ -1,5 +1,5 @@
 pkg example_core
-  use ddd
+  use ddd_fullstack
   use di
   use sqlx
 

@@ -1,7 +1,7 @@
 pkg onboarding_kit v1
   author "JD"
   desc "Customer onboarding building blocks"
-  use ddd
+  use ddd_fullstack
 
   ctx Identity
     group domain

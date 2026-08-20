@@ -1,0 +1,23 @@
+layer ddd_fullstack
+  use ddd
+  use tokio_ddd
+  use harness
+  use rest_english
+  use bus_handle
+  use auth_local
+  use deploy
+
+  desc "Batteries-included DDD — domain vocabulary + async runtime + HTTP harness + REST routes + auth + deploy hooks. Use plain `ddd` for domain modeling only."
+  author "VEIL"
+
+  prompt
+    This package uses the full DDD stack:
+    - Domain modeling: aggregates, entities, value objects, ports, services, sagas
+    - Async runtime: application services are async, domain services are sync
+    - HTTP harness: axum server with REST routes, CORS, health check
+    - Bus: InProcessBus with Handle-prefix stripping
+    - Auth: AllowAllAuth for local development
+    - Deploy: pre-deploy hooks
+
+    If you only need domain vocabulary without infrastructure, use `ddd` alone
+    and compose your own infrastructure layers.
