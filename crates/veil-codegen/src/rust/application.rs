@@ -460,7 +460,7 @@ pub fn infer_flow_return_type(
     });
 
     let Some(ret) = ret else {
-        return "Result<(), DomainError>".to_string();
+        return format!("Result<(), {}>", base_ctx.error_model.type_name);
     };
 
     // Pre-scan: clone the ctx and walk step bodies recording let-binding types
@@ -485,8 +485,8 @@ pub fn infer_flow_return_type(
 
     let inner = crate::expr::infer_return_expr_type(ret, &ctx);
     match inner {
-        Some(t) if !t.is_empty() && t != "()" => format!("Result<{}, DomainError>", t),
-        _ => "Result<(), DomainError>".to_string(),
+        Some(t) if !t.is_empty() && t != "()" => format!("Result<{}, {}>", t, base_ctx.error_model.type_name),
+        _ => format!("Result<(), {}>", base_ctx.error_model.type_name),
     }
 }
 

@@ -143,8 +143,11 @@ pub struct StubContext {
     pub type_fallible_methods: HashSet<(String, String)>,
     /// Methods whose stub return type is async AND fallible (e.g. `BoxFuture<Res!<...>>`
     /// or declared with `Res!` on a struct that acts as an executor).
-    /// These get `.await.map_err(...)?` instead of just `?`.
+    /// Global name set — last-resort only; prefer `type_async_fallible_methods`.
     pub async_fallible_methods: HashSet<String>,
+    /// Per-type async+fallible methods: (TypeName, method). Stub/layer metadata,
+    /// never a hardcoded method-name list in the backend.
+    pub type_async_fallible_methods: HashSet<(String, String)>,
     /// Stub package free-fn roots: use-alias / crate name → rust crate ident.
     /// e.g. `crypto` / `relay_crypto` / `relay-crypto` → `relay_crypto`.
     pub stub_pkg_crate: HashMap<String, String>,
@@ -161,6 +164,7 @@ impl StubContext {
             non_fallible_methods: HashSet::new(),
             type_fallible_methods: HashSet::new(),
             async_fallible_methods: HashSet::new(),
+            type_async_fallible_methods: HashSet::new(),
             stub_pkg_crate: HashMap::new(),
             stub_free_fns: HashMap::new(),
         }
@@ -271,6 +275,10 @@ pub struct GenCtx {
     /// Error model: type name and variant names for domain errors. Populated from
     /// layer-declared error types. Replaces hardcoded `DomainError::*` strings.
     pub error_model: ErrorModel,
+    /// Per-target lowering templates for declared trait/struct methods.
+    /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
+    /// Consulted by `lower_builtin_call` before hardcoded fallbacks.
+    pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
 }
 
 impl GenCtx {
@@ -297,6 +305,7 @@ impl GenCtx {
             unit_enums: HashSet::new(),
             known_modules: HashSet::new(),
             error_model: ErrorModel::default(),
+            method_lowers_to: HashMap::new(),
         }
     }
 
@@ -688,6 +697,9 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 }
                 if is_async_fallible {
                     ctx.stubs.async_fallible_methods.insert(method.name.clone());
+                    ctx.stubs
+                        .type_async_fallible_methods
+                        .insert((type_name.clone(), method.name.clone()));
                 }
                 let inner = if ret.starts_with("Res!<") {
                     ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
@@ -835,6 +847,9 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
         ctx.statement_specs.insert(stmt.keyword.clone(), stmt.clone());
     }
 
+    // Layer declared method lowering templates (e.g. ApiClient.fetch → fetch(...)).
+    ctx.method_lowers_to = registry.method_lowers_to.clone();
+
     // Track layer-declared free functions as async — they generate as
     // `pub async fn` and calls to them need `.await?`. Product free fns are
     // emitted in the product crate (sync unless they call async helpers).
@@ -853,6 +868,20 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     } else {
         registry.constructor_policy.clone()
     };
+
+    // ── Error model from layer registry ─────────────────────────────────
+    if let Some(em) = &registry.error_model {
+        ctx.error_model.type_name = em.type_name.clone();
+        if let Some(v) = em.variant("not_found") {
+            ctx.error_model.not_found = v.to_string();
+        }
+        if let Some(v) = em.variant("validation") {
+            ctx.error_model.validation = v.to_string();
+        }
+        if let Some(v) = em.variant("external") {
+            ctx.error_model.external = v.to_string();
+        }
+    }
     // Unit-like enums implement Default in rust codegen; treat as defaultable.
     for (name, shape) in &ctx.name_to_shape {
         if *shape == Shape::Enum {

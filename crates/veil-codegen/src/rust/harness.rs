@@ -1183,7 +1183,14 @@ pub fn gen_local_harness_main(
     }
 
     out.push_str(&harness_json_public_helper(modules, registry));
-    out.push_str(harness_domain_error_status_helper());
+    if let Some(em) = &registry.error_model {
+        let not_found = em.variant("not_found").unwrap_or("NotFound");
+        let validation = em.variant("validation").unwrap_or("Validation");
+        let external = em.variant("external").unwrap_or("External");
+        out.push_str(&harness_domain_error_status_helper_dynamic(&em.type_name, not_found, validation, external));
+    } else {
+        out.push_str(harness_domain_error_status_helper());
+    }
     out.push_str(harness_auth_cors_helpers());
     out.push_str(harness_body_dt_helper());
     out
@@ -1401,6 +1408,30 @@ pub fn veil_domain_error_status(e: DomainError) -> StatusCode {
     }
 }
 "#
+}
+
+/// Dynamic version: generates the error→status helper using the layer-declared error model.
+pub fn harness_domain_error_status_helper_dynamic(error_type: &str, not_found: &str, validation: &str, external: &str) -> String {
+    format!(
+        r#"
+pub fn veil_domain_error_status(e: {error_type}) -> StatusCode {{
+    match &e {{
+        {error_type}::{not_found} => {{
+            eprintln!("warn: not found: {{e}}");
+            StatusCode::NOT_FOUND
+        }}
+        {error_type}::{validation}(msg) => {{
+            eprintln!("warn: validation: {{msg}}");
+            StatusCode::BAD_REQUEST
+        }}
+        {error_type}::{external}(msg) => {{
+            eprintln!("error: upstream: {{msg}}");
+            StatusCode::BAD_GATEWAY
+        }}
+    }}
+}}
+"#
+    )
 }
 
 /// Whether a handler needs `Query(q)` — non-dep inputs that are not path

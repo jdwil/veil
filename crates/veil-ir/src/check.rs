@@ -72,6 +72,7 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
     diagnostics.extend(crate::typecheck::check_types(sol, registry));
     diagnostics.extend(crate::escape::check_escape_hatches(sol, registry));
     diagnostics.extend(crate::test_lint::check_tests(sol));
+    diagnostics.extend(check_error_model(sol, registry));
 
     // Parser-emitted notes. `sol` is removed — treat as a hard error so agents
     // cannot flip-flop Sol vs Pkg. Other guidance stays non-blocking.
@@ -702,4 +703,176 @@ items: vec![TopLevelItem::Construct(root)],
             result.diagnostics
         );
     }
+
+    // ─── Error model tests (CHK-EM) ───────────────────────────────────────────
+
+    #[test]
+    fn no_error_model_with_res_emits_diagnostic() {
+        let reg = LayerRegistry::builtin();
+        let mut svc = Construct::new("trait", "Trait", Shape::Trait, "OrderRepo".into(), Span::new(0, 0));
+        svc.methods.push(crate::ast::Method {
+            name: "find".into(),
+            params: Vec::new(),
+            return_type: Some(TypeExpr::Result(Some(Box::new(TypeExpr::Named("Order".into()))))),
+            span: Span::new(0, 0),
+        });
+        let sol = sol_with(svc);
+        // Direct check of our function:
+        let em_diags = super::check_error_model(&sol, &reg);
+        assert!(
+            em_diags.iter().any(|d| d.code == "missing_error_model"),
+            "check_error_model should emit diagnostic, got: {:?}",
+            em_diags
+        );
+        // Full check pipeline should also contain it:
+        let result = check_solution(&sol, &reg);
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == "missing_error_model"),
+            "expected missing_error_model diagnostic in full pipeline: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn error_model_present_no_diagnostic() {
+        use crate::layer::ErrorModelPolicy;
+        let mut reg = LayerRegistry::builtin();
+        reg.error_model = Some(ErrorModelPolicy {
+            type_name: "AppError".into(),
+            variants: vec![
+                ("external".into(), "Upstream".into()),
+                ("not_found".into(), "Missing".into()),
+                ("validation".into(), "BadInput".into()),
+            ],
+        });
+        let mut svc = Construct::new("trait", "Trait", Shape::Trait, "OrderRepo".into(), Span::new(0, 0));
+        svc.methods.push(crate::ast::Method {
+            name: "find".into(),
+            params: Vec::new(),
+            return_type: Some(TypeExpr::Result(Some(Box::new(TypeExpr::Named("Order".into()))))),
+            span: Span::new(0, 0),
+        });
+        let result = check_solution(&sol_with(svc), &reg);
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code == "missing_error_model"),
+            "should not emit missing_error_model when error model is declared: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn no_res_usage_no_diagnostic() {
+        let reg = LayerRegistry::builtin();
+        let mut svc = Construct::new("trait", "Trait", Shape::Trait, "Notifier".into(), Span::new(0, 0));
+        svc.methods.push(crate::ast::Method {
+            name: "send".into(),
+            params: Vec::new(),
+            return_type: Some(TypeExpr::Named("String".into())),
+            span: Span::new(0, 0),
+        });
+        let result = check_solution(&sol_with(svc), &reg);
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code == "missing_error_model"),
+            "should not emit diagnostic when no Res! usage: {:?}",
+            result.diagnostics
+        );
+    }
+}
+
+/// CHK-EM: If any construct/method uses `Res!` (TypeExpr::Result) in return types,
+/// the package must have a layer that declares an `error_model`. Otherwise codegen
+/// would need to invent an error type — which violates the zero-domain-knowledge invariant.
+fn check_error_model(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> {
+    use crate::ast::{Construct, TopLevelItem, TypeExpr};
+
+    // If a layer already provides an error model, nothing to check.
+    if registry.error_model.is_some() {
+        return Vec::new();
+    }
+
+    // Scan for any usage of Res! (TypeExpr::Result) in the solution.
+    fn type_uses_result(ty: &TypeExpr) -> bool {
+        matches!(ty, TypeExpr::Result(_))
+    }
+
+    fn construct_uses_result(c: &Construct) -> Option<&str> {
+        for m in &c.methods {
+            if let Some(rt) = &m.return_type {
+                if type_uses_result(rt) {
+                    return Some(&c.name);
+                }
+            }
+        }
+        for f in &c.fns {
+            if let Some(rt) = &f.return_type {
+                if type_uses_result(rt) {
+                    return Some(&c.name);
+                }
+            }
+        }
+        for child in &c.children {
+            if let Some(name) = construct_uses_result(child) {
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    for item in &sol.items {
+        match item {
+            TopLevelItem::Construct(c) => {
+                if let Some(name) = construct_uses_result(c) {
+                    return vec![Diagnostic {
+                        severity: Severity::Error,
+                        message: format!(
+                            "no error model declared — Res! in '{}' requires a layer that provides \
+                             error_model {{ ... }}",
+                            name
+                        ),
+                        node_id: None,
+                        node_name: Some(name.to_string()),
+                        code: "missing_error_model".into(),
+                        constraint: "missing_error_model".into(),
+                        parent: None,
+                        hint: Some(
+                            "Add `use ddd` (which declares DomainError) or declare a custom \
+                             error_model in your layer."
+                                .into(),
+                        ),
+                        span_start: None,
+                        span_end: None,
+                    }];
+                }
+            }
+            TopLevelItem::Function(f) if !f.layer_provided => {
+                if let Some(rt) = &f.return_type {
+                    if type_uses_result(rt) {
+                        return vec![Diagnostic {
+                            severity: Severity::Error,
+                            message: format!(
+                                "no error model declared — Res! in function '{}' requires a layer \
+                                 that provides error_model {{ ... }}",
+                                f.name
+                            ),
+                            node_id: None,
+                            node_name: Some(f.name.clone()),
+                            code: "missing_error_model".into(),
+                            constraint: "missing_error_model".into(),
+                            parent: None,
+                            hint: Some(
+                                "Add `use ddd` (which declares DomainError) or declare a \
+                                 custom error_model in your layer."
+                                    .into(),
+                            ),
+                            span_start: None,
+                            span_end: None,
+                        }];
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Vec::new()
 }

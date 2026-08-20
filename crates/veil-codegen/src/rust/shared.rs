@@ -7,9 +7,11 @@ use super::*;
 pub fn gen_inprocess_bus_impl(
     routing_trait: &Construct,
     trait_names: &std::collections::HashSet<String>,
+    registry: &LayerRegistry,
 ) -> String {
     let trait_name = &routing_trait.name;
-    let mut out = String::from(
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("DomainError");
+    let mut out = format!(
         r#"// ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
 // Methods generated from the layer-declared routing trait surface.
 use std::collections::HashMap;
@@ -18,48 +20,48 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 
 type BusHandler = Arc<
-    dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, DomainError>>
+    dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, {err_type}>>
         + Send
         + Sync,
 >;
 
 /// In-process message bus for local multi-context runs.
 #[derive(Clone, Default)]
-pub struct InProcessBus {
+pub struct InProcessBus {{
     handlers: Arc<std::sync::Mutex<HashMap<String, BusHandler>>>,
-}
+}}
 
-impl InProcessBus {
-    pub fn new() -> Self {
-        Self {
+impl InProcessBus {{
+    pub fn new() -> Self {{
+        Self {{
             handlers: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        }
-    }
+        }}
+    }}
 
     /// Register a handler for a message type name (manifest `handlers` keys).
     pub fn register<F, Fut>(&self, name: impl Into<String>, f: F)
     where
         F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<serde_json::Value, DomainError>> + Send + 'static,
-    {
+        Fut: std::future::Future<Output = Result<serde_json::Value, {err_type}>> + Send + 'static,
+    {{
         let name = name.into();
         let handler: BusHandler = Arc::new(move |v| f(v).boxed());
         self.handlers
             .lock()
             .expect("bus lock")
             .insert(name, handler);
-    }
+    }}
 
-    fn lookup(&self, type_name: &str) -> Option<BusHandler> {
+    fn lookup(&self, type_name: &str) -> Option<BusHandler> {{
         self.handlers
             .lock()
             .expect("bus lock")
             .get(type_name)
             .cloned()
-    }
-}
+    }}
+}}
 
-"#,
+"#
     );
     out.push_str(&format!(
         "#[async_trait]\nimpl {trait_name} for InProcessBus {{\n"
@@ -117,6 +119,9 @@ impl InProcessBus {
                 )
             } else {
                 // Request/response (invoke-style)
+                let not_found_path = registry.error_model.as_ref()
+                    .and_then(|em| em.variant_path("not_found"))
+                    .unwrap_or_else(|| "DomainError::NotFound".to_string());
                 format!(
                     r#"        let type_name = {env}
             .get("type")
@@ -125,14 +130,17 @@ impl InProcessBus {
             .to_string();
         let handler = self
             .lookup(&type_name)
-            .ok_or(DomainError::NotFound)?;
+            .ok_or({not_found_path})?;
         handler({env}).await"#
                 )
             }
         } else if unit_result {
             "        Ok(())".to_string()
         } else {
-            "        Err(DomainError::External(\"no envelope param\".into()))".to_string()
+            let external_path = registry.error_model.as_ref()
+                .and_then(|em| em.variant_path("external"))
+                .unwrap_or_else(|| "DomainError::External".to_string());
+            format!("        Err({external_path}(\"no envelope param\".into()))")
         };
         out.push_str(&format!(
             "    async fn {mname}(&self{sep}{params_joined}){ret} {{\n{body}\n    }}\n\n"
@@ -147,6 +155,7 @@ pub fn gen_allow_all_auth_impl(
     auth_trait: &Construct,
     structs: &[&Construct],
     trait_names: &std::collections::HashSet<String>,
+    registry: &LayerRegistry,
 ) -> String {
     let trait_name = &auth_trait.name;
     // Prefer a layer-provided struct referenced by any method return type.
@@ -247,8 +256,12 @@ impl {trait_name} for AllowAllAuth {{
                 }
             }
             None => "        Ok(())".to_string(),
-            Some(_) => "        Err(DomainError::External(\"allow-all: unsupported return\".into()))"
-                .to_string(),
+            Some(_) => {
+                let external_path = registry.error_model.as_ref()
+                    .and_then(|em| em.variant_path("external"))
+                    .unwrap_or_else(|| "DomainError::External".to_string());
+                format!("        Err({external_path}(\"allow-all: unsupported return\".into()))")
+            }
         };
         // Prefix unused params with underscore when not referenced in body.
         let params_for_sig: String = method

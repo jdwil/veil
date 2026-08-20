@@ -15,7 +15,7 @@ pub fn gen_types(
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse std::collections::HashMap;\nuse crate::ports::{ValidationError, DomainError};\nuse crate::domain::messages::*;\n\n");
+    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse std::collections::HashMap;\nuse crate::ports::*;\nuse crate::domain::messages::*;\n\n");
 
     // Collect defined and referenced type names for stub generation.
     let mut defined_types: Vec<String> = Vec::new();
@@ -732,15 +732,16 @@ pub fn gen_struct_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistr
 
         // Explicit return type from the VEIL signature; otherwise event-collecting
         // methods default to `Result<Vec<Events>, DomainError>`.
+        let err_type_name = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("DomainError");
         let has_explicit_return = func.return_type.as_ref()
             .map(|t| !matches!(t, TypeExpr::Result(None)))
             .unwrap_or(false);
         let return_type_str = if has_explicit_return {
             func.return_type.as_ref()
-                .map(type_to_rust)
-                .unwrap_or_else(|| format!("Result<Vec<{}>, DomainError>", event_enum_name))
+                .map(|t| type_to_rust_with_error(t, err_type_name))
+                .unwrap_or_else(|| format!("Result<Vec<{}>, {}>", event_enum_name, err_type_name))
         } else {
-            format!("Result<Vec<{}>, DomainError>", event_enum_name)
+            format!("Result<Vec<{}>, {}>", event_enum_name, err_type_name)
         };
 
         // Pure query methods use `&self`; mutations / emits need `&mut self`.
@@ -766,8 +767,10 @@ pub fn gen_struct_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistr
                 // Simple invariant: field == Value → self.field == EnumName::Value
                 let cond_rust = translate_invariant_condition(cond_text, &field_names, &enum_map);
                 out.push_str(&format!(
-                    "        if !({}) {{ return Err(DomainError::Validation(\"invariant violated\".into())); }}\n",
-                    cond_rust
+                    "        if !({}) {{ return Err({}::{}(\"invariant violated\".into())); }}\n",
+                    cond_rust,
+                    err_type_name,
+                    registry.error_model.as_ref().and_then(|em| em.variant("validation")).unwrap_or("Validation"),
                 ));
             }
         }

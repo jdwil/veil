@@ -573,6 +573,8 @@ pub struct LayerRegistry {
     pub bus_policy: BusPolicy,
     /// Auth service trait name for local AllowAllAuth (RT-008). Default: none.
     pub auth_policy: AuthPolicy,
+    /// Layer-declared error model (type name + variants). None = no error model declared.
+    pub error_model: Option<ErrorModelPolicy>,
     /// Name-derived REST verb/path prefixes. Default empty = no name-derived REST.
     pub http_name_policy: HttpNamePolicy,
     /// Declared local-harness knobs (layers + `veil.toml` `[harness]`).
@@ -583,6 +585,11 @@ pub struct LayerRegistry {
     pub extra_layer_roots: Vec<std::path::PathBuf>,
     /// True when `veil.toml` `[codegen] http_*` was present (warn after flip).
     pub codegen_http_from_toml: bool,
+    /// Per-target lowering templates for declared trait/struct methods.
+    /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
+    /// Populated from `declare` blocks with `lowers_to` on methods.
+    /// Example: `("ApiClient", "fetch")` → `{ "typescript" → "..." }`.
+    pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
 }
 
 /// Layer-declared bus message naming (no hard-coded `Handle` in the engine).
@@ -599,6 +606,31 @@ pub struct BusPolicy {
 pub struct AuthPolicy {
     #[serde(default)]
     pub service_trait: Option<String>,
+}
+
+/// Layer-declared error model: type name + variant names for domain errors.
+/// Lets codegen emit `ErrorType::Variant(...)` without hardcoding names.
+/// A layer (e.g. ddd.layer) declares: `error_model DomainError { external External, not_found NotFound, validation Validation }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorModelPolicy {
+    /// The error type name (e.g. "DomainError", "AppError").
+    pub type_name: String,
+    /// Named variants: key = semantic role, value = variant name.
+    /// Standard roles: "external", "not_found", "validation".
+    /// Layers may declare additional variants.
+    pub variants: Vec<(String, String)>,
+}
+
+impl ErrorModelPolicy {
+    /// Get variant name by semantic role (e.g. "external" → "External").
+    pub fn variant(&self, role: &str) -> Option<&str> {
+        self.variants.iter().find(|(r, _)| r == role).map(|(_, v)| v.as_str())
+    }
+
+    /// Get full path for a variant role: `DomainError::External`.
+    pub fn variant_path(&self, role: &str) -> Option<String> {
+        self.variant(role).map(|v| format!("{}::{}", self.type_name, v))
+    }
 }
 
 /// Name-derived REST routes when no role:http_route annotation is present.
@@ -639,10 +671,12 @@ impl Default for LayerRegistry {
             identity_policy: IdentityPolicy::default(),
             bus_policy: BusPolicy::default(),
             auth_policy: AuthPolicy::default(),
+            error_model: None,
             http_name_policy: HttpNamePolicy::default(),
             harness_policy: crate::harness::HarnessPolicy::documented_defaults(),
             extra_layer_roots: Vec::new(),
             codegen_http_from_toml: false,
+            method_lowers_to: HashMap::new(),
         }
     }
 }
@@ -667,10 +701,12 @@ impl Clone for LayerRegistry {
             identity_policy: self.identity_policy.clone(),
             bus_policy: self.bus_policy.clone(),
             auth_policy: self.auth_policy.clone(),
+            error_model: self.error_model.clone(),
             http_name_policy: self.http_name_policy.clone(),
             harness_policy: self.harness_policy.clone(),
             extra_layer_roots: self.extra_layer_roots.clone(),
             codegen_http_from_toml: self.codegen_http_from_toml,
+            method_lowers_to: self.method_lowers_to.clone(),
         }
     }
 }
@@ -1091,6 +1127,15 @@ impl LayerRegistry {
             .map(|s| s.as_str())
     }
 
+    /// Get the lowering template for a declared type's method.
+    /// Returns `None` if no `lowers_to` was declared for this (type, method, target).
+    pub fn method_lowers_to_template(&self, type_name: &str, method: &str, target: &str) -> Option<&str> {
+        self.method_lowers_to
+            .get(&(type_name.to_string(), method.to_string()))
+            .and_then(|targets| targets.get(target))
+            .map(|s| s.as_str())
+    }
+
     /// All constructs in `sol` whose spec has `role`.
     pub fn constructs_with_role<'a>(
         &'a self,
@@ -1268,6 +1313,9 @@ impl LayerRegistry {
             if auth.service_trait.is_some() {
                 self.auth_policy = auth;
             }
+        }
+        if let Some(em) = parse_error_model(&content) {
+            self.error_model = Some(em);
         }
         if let Some(http) = parse_http_name_policy(&content) {
             self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
@@ -1820,6 +1868,11 @@ impl LayerRegistry {
         // Accumulate codegen templates.
         for tpl in raw.codegen_templates {
             self.codegen_templates.push(tpl);
+        }
+
+        // Accumulate declared method lowering templates.
+        for (key, targets) in raw.method_lowers_to {
+            self.method_lowers_to.entry(key).or_default().extend(targets);
         }
 
         // Validate presentation construct-name refs + enums (LAY-002).
@@ -2755,6 +2808,9 @@ pub struct RawLayer {
     pub prompt: Option<String>,
     /// Codegen template blocks declared by this layer.
     pub codegen_templates: Vec<CodegenTemplate>,
+    /// Per-target lowering templates for declared trait/struct methods.
+    /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
+    pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
 }
 
 /// Pkg-level `use` names in a layer body (`use deploy`, `use harness`, …).
@@ -2800,6 +2856,12 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut in_declare = false;
     let mut declare_base_indent: usize = 0;
     let mut current_decl_lines: Vec<String> = Vec::new();
+    // Declare lowers_to: track current type+method for attaching templates
+    let mut decl_current_type: String = String::new();
+    let mut decl_current_method: String = String::new();
+    let mut decl_in_lowers_to = false;
+    let mut decl_lowers_to_indent: usize = 0;
+    let mut method_lowers_to: HashMap<(String, String), HashMap<String, String>> = HashMap::new();
     let mut in_prompt = false;
     let mut prompt_base_indent: usize = 0;
     let mut prompt_lines: Vec<String> = Vec::new();
@@ -2952,8 +3014,90 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     current_decl_lines.clear();
                 }
                 in_declare = false;
+                decl_in_lowers_to = false;
                 // Fall through to normal parsing of this line
             } else {
+                // ── Intercept lowers_to blocks on declared methods ────────
+                // lowers_to keyword at method+2 indent
+                if trimmed == "lowers_to" {
+                    decl_in_lowers_to = true;
+                    decl_lowers_to_indent = indent;
+                    continue;
+                }
+                // Inside a lowers_to block: `target: "template"`
+                // Must be indented deeper than the lowers_to keyword itself,
+                // and target must be a bare word (language name like "typescript").
+                if decl_in_lowers_to {
+                    if indent > decl_lowers_to_indent {
+                        if let Some((target, rest)) = trimmed.split_once(':') {
+                            let target = target.trim();
+                            // Valid target is a bare word (no parens, no spaces)
+                            let is_valid_target = !target.is_empty()
+                                && !target.contains('(')
+                                && !target.contains(' ');
+                            if is_valid_target {
+                                let template = unquote(rest.trim());
+                                if !template.is_empty() {
+                                    let key = if decl_current_type.is_empty() {
+                                        (decl_current_method.clone(), String::new())
+                                    } else {
+                                        (decl_current_type.clone(), decl_current_method.clone())
+                                    };
+                                    if !key.0.is_empty() {
+                                        method_lowers_to
+                                            .entry(key)
+                                            .or_default()
+                                            .insert(target.to_string(), template);
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    // Indent decreased or line doesn't match → exit lowers_to
+                    decl_in_lowers_to = false;
+                }
+
+                // Track current type name (trait/struct at base indent)
+                if indent == declare_base_indent {
+                    decl_in_lowers_to = false;
+                    // Free function at base indent: `fn name(...)`
+                    if let Some(rest) = trimmed.strip_prefix("fn ") {
+                        let fn_name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !fn_name.is_empty() {
+                            decl_current_type.clear(); // free fn, no enclosing type
+                            decl_current_method = fn_name;
+                        }
+                    } else {
+                        for prefix in ["trait ", "struct ", "enum "] {
+                            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                                decl_current_type = rest
+                                    .chars()
+                                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                    .collect();
+                                decl_current_method.clear();
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Track current method name (fn or bare method at base+2 indent)
+                if indent == declare_base_indent + 2 && !decl_current_type.is_empty() {
+                    decl_in_lowers_to = false;
+                    let method_line = trimmed.strip_prefix("fn ").unwrap_or(trimmed);
+                    let method_name: String = method_line
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !method_name.is_empty() && method_line.contains('(') {
+                        decl_current_method = method_name;
+                    }
+                }
+
                 // Determine whether to flush the accumulated declaration block.
                 // A declaration is "one construct with optional leading annotations."
                 // We flush when a new top-level item begins. An annotation at base
@@ -3464,6 +3608,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         declarations,
         prompt,
         codegen_templates,
+        method_lowers_to,
     })
 }
 
@@ -4148,6 +4293,58 @@ pub fn parse_auth_policy(content: &str) -> Option<AuthPolicy> {
     }
 }
 
+/// Parse optional `error_model` block from layer content:
+/// ```text
+/// error_model DomainError
+///   external External
+///   not_found NotFound
+///   validation Validation
+/// ```
+/// The first word after `error_model` is the type name. Indented lines are
+/// `role VariantName` pairs. A layer may declare any number of variants.
+pub fn parse_error_model(content: &str) -> Option<ErrorModelPolicy> {
+    let mut in_block = false;
+    let mut type_name = String::new();
+    let mut variants: Vec<(String, String)> = Vec::new();
+    let mut found = false;
+    let mut header_indent: usize = 0;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("error_model ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                type_name = name.to_string();
+                in_block = true;
+                found = true;
+                // Track the indentation of the header line
+                header_indent = line.len() - line.trim_start().len();
+            }
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        // End of block: line at same or less indentation than header
+        let line_indent = line.len() - line.trim_start().len();
+        if line_indent <= header_indent {
+            break;
+        }
+        // Parse "role VariantName" lines
+        let parts: Vec<&str> = t.splitn(2, ' ').collect();
+        if parts.len() == 2 {
+            variants.push((parts[0].to_string(), parts[1].trim().to_string()));
+        }
+    }
+    if found {
+        Some(ErrorModelPolicy { type_name, variants })
+    } else {
+        None
+    }
+}
+
 /// Parse optional `http_name_policy` block for name-derived REST.
 pub fn parse_http_name_policy(content: &str) -> Option<HttpNamePolicy> {
     let mut in_block = false;
@@ -4376,6 +4573,59 @@ pkg wf v1
             );
         }
         assert!(reg.routing_traits().is_empty(), "DDD must not declare routing traits");
+    }
+
+    #[test]
+    fn bus_layer_provides_invoke_dispatch_request_and_routing_trait() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer"))
+            .expect("bus layer should load");
+        // Bus layer declares all three verbs.
+        for kw in ["invoke", "dispatch", "request"] {
+            let stmt = reg.statement(kw).unwrap_or_else(|| panic!("bus must declare {kw}"));
+            assert_eq!(stmt.port_target.as_deref(), Some("Bus"), "{kw} port_target");
+            assert!(!stmt.lowers_to.is_empty(), "{kw} must have lowers_to");
+            assert!(stmt.lowers_to.contains_key("rust"), "{kw} must have rust template");
+        }
+        // "Bus" becomes a routing trait via port_target.
+        let routing = reg.routing_traits();
+        assert!(routing.contains(&"Bus".to_string()), "Bus must be a routing trait");
+        // Declare block provides Bus trait.
+        assert!(
+            !reg.declarations.is_empty(),
+            "bus.layer must provide declare block"
+        );
+        let decl_joined = reg.declarations.join("\n");
+        assert!(
+            decl_joined.contains("trait Bus"),
+            "declare must contain Bus trait: {decl_joined}"
+        );
+    }
+
+    #[test]
+    fn ddd_fullstack_with_bus_has_routing_traits_and_verbs() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        reg.load_content("bus", include_str!("../../../layers/bus.layer"))
+            .expect("bus");
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer"))
+            .expect("bus_handle");
+        // After loading bus.layer, routing traits are present.
+        let routing = reg.routing_traits();
+        assert!(
+            routing.contains(&"Bus".to_string()),
+            "Bus must be routing trait when bus.layer loaded"
+        );
+        // Bus verbs available.
+        for kw in ["invoke", "dispatch", "request"] {
+            assert!(
+                reg.statement(kw).is_some(),
+                "{kw} must be available with bus.layer"
+            );
+        }
+        // bus_handle strip policy still works.
+        assert_eq!(reg.bus_message_name("HandleCreateUser"), "CreateUser");
     }
 
     #[test]
@@ -5286,5 +5536,112 @@ pkg test v1
         let spec = reg.construct("agg").expect("Aggregate spec");
         assert!(spec.required_fields.is_empty(), "block `has` should not produce required_fields");
         assert!(spec.contains.iter().any(|c| c.starts_with("root")), "root should be in contains: {:?}", spec.contains);
+    }
+
+    #[test]
+    fn declare_method_lowers_to_parses_templates() {
+        let src = r#"pkg test v1
+  declare
+    trait ApiClient
+      fetch(endpoint: Str, params: Json) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __r = await fetch({arg0}); return __r.json(); })()"
+      mutate(endpoint: Str, body: Json) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __r = await fetch({arg0}, { method: 'POST', body: JSON.stringify({arg1}) }); return __r.json(); })()"
+
+    struct LocalStorage
+      fn get_or(key: Str, default: Str) -> Str
+        lowers_to
+          typescript: "(localStorage.getItem({arg0}) ?? {arg1})"
+
+    fn goto(url: Str) -> Res!
+      lowers_to
+        typescript: "window.location.href = {arg0}"
+      ret Ok
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+
+        // Trait method: (ApiClient, fetch)
+        let tmpl = reg.method_lowers_to_template("ApiClient", "fetch", "typescript");
+        assert!(tmpl.is_some(), "ApiClient.fetch should have lowers_to template");
+        let tmpl_str = tmpl.unwrap();
+        assert!(tmpl_str.contains("await fetch({arg0})"), "template should contain fetch call, got: {}", tmpl_str);
+
+        // Trait method: (ApiClient, mutate)
+        let tmpl = reg.method_lowers_to_template("ApiClient", "mutate", "typescript");
+        assert!(tmpl.is_some(), "ApiClient.mutate should have lowers_to template");
+        assert!(tmpl.unwrap().contains("method: 'POST'"), "template should contain POST");
+
+        // Struct method: (LocalStorage, get_or)
+        let tmpl = reg.method_lowers_to_template("LocalStorage", "get_or", "typescript");
+        assert!(tmpl.is_some(), "LocalStorage.get_or should have lowers_to template");
+        assert!(tmpl.unwrap().contains("localStorage.getItem"), "template should use localStorage");
+
+        // Free function: (goto, "") — called as CallExpr { target: "goto", method: "" }
+        let tmpl = reg.method_lowers_to_template("goto", "", "typescript");
+        assert!(tmpl.is_some(), "goto should have lowers_to template, got {:?}", reg.method_lowers_to);
+        assert!(tmpl.unwrap().contains("window.location.href"), "template should use window.location");
+    }
+
+    #[test]
+    fn parse_error_model_basic() {
+        let content = r#"
+error_model DomainError
+  external External
+  not_found NotFound
+  validation Validation
+"#;
+        let em = super::parse_error_model(content).unwrap();
+        assert_eq!(em.type_name, "DomainError");
+        assert_eq!(em.variants.len(), 3);
+        assert_eq!(em.variant("external"), Some("External"));
+        assert_eq!(em.variant("not_found"), Some("NotFound"));
+        assert_eq!(em.variant("validation"), Some("Validation"));
+    }
+
+    #[test]
+    fn parse_error_model_custom() {
+        let content = r#"
+error_model AppError
+  external Upstream
+  not_found Missing
+  validation BadInput
+  timeout Timeout
+"#;
+        let em = super::parse_error_model(content).unwrap();
+        assert_eq!(em.type_name, "AppError");
+        assert_eq!(em.variants.len(), 4);
+        assert_eq!(em.variant("external"), Some("Upstream"));
+        assert_eq!(em.variant("not_found"), Some("Missing"));
+        assert_eq!(em.variant("validation"), Some("BadInput"));
+        assert_eq!(em.variant("timeout"), Some("Timeout"));
+        // Full path generation
+        assert_eq!(em.variant_path("external"), Some("AppError::Upstream".to_string()));
+    }
+
+    #[test]
+    fn parse_error_model_nested_in_layer() {
+        // Simulates ddd.layer where error_model is indented inside pkg block
+        let content = r#"pkg ddd v1
+  desc "test"
+  error_model DomainError
+    external External
+    not_found NotFound
+    validation Validation
+  construct Context
+    kw ctx
+"#;
+        let em = super::parse_error_model(content).unwrap();
+        assert_eq!(em.type_name, "DomainError");
+        assert_eq!(em.variants.len(), 3);
+        assert_eq!(em.variant("external"), Some("External"));
+    }
+
+    #[test]
+    fn parse_error_model_absent() {
+        let content = "construct Foo\n  kw foo\n";
+        assert!(super::parse_error_model(content).is_none());
     }
 }

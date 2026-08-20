@@ -19,7 +19,12 @@ pub fn to_snake(name: &str) -> String {
 }
 
 pub fn type_to_rust(ty: &TypeExpr) -> String {
-    type_to_rust_impl(ty, &std::collections::HashSet::new())
+    type_to_rust_with_error_impl(ty, &std::collections::HashSet::new(), "DomainError")
+}
+
+/// Convert a TypeExpr to Rust type string using the given error type name for Result<T, E>.
+pub fn type_to_rust_with_error(ty: &TypeExpr, error_type: &str) -> String {
+    type_to_rust_with_error_impl(ty, &std::collections::HashSet::new(), error_type)
 }
 
 /// REST body field extraction for dual-loop harness handlers.
@@ -237,7 +242,12 @@ pub fn collect_deps_field_map(
 /// becomes a boxed trait object `Box<dyn Trait + Send + Sync>`. Used when
 /// generating coordinator signatures (`List<SagaStep>` → `Vec<Box<dyn ..>>`).
 pub fn type_to_rust_with_traits(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
-    type_to_rust_impl(ty, traits)
+    type_to_rust_with_error_impl(ty, traits, "DomainError")
+}
+
+/// Like `type_to_rust_with_traits` but uses the given error type name for Result<T, E>.
+pub fn type_to_rust_with_traits_and_error(ty: &TypeExpr, traits: &std::collections::HashSet<String>, error_type: &str) -> String {
+    type_to_rust_with_error_impl(ty, traits, error_type)
 }
 
 /// Render a function parameter type. A bare trait-typed parameter is passed by
@@ -255,7 +265,7 @@ pub fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<Stri
             && traits.contains(name) {
                 return format!("&[Box<dyn {} + Send + Sync>]", name);
             }
-    type_to_rust_impl(ty, traits)
+    type_to_rust_with_error_impl(ty, traits, "DomainError")
 }
 
 /// The type name tracked for a parameter local, for method resolution. A bare
@@ -266,11 +276,16 @@ pub fn local_type_for_param(ty: &TypeExpr, traits: &std::collections::HashSet<St
         && traits.contains(name) {
             return name.clone();
         }
-    type_to_rust_impl(ty, traits)
+    type_to_rust_with_error_impl(ty, traits, "DomainError")
 }
 
+/// Legacy alias for backward compatibility.
 pub fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
-    let rec = |t: &TypeExpr| type_to_rust_impl(t, traits);
+    type_to_rust_with_error_impl(ty, traits, "DomainError")
+}
+
+pub fn type_to_rust_with_error_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>, error_type: &str) -> String {
+    let rec = |t: &TypeExpr| type_to_rust_with_error_impl(t, traits, error_type);
     match ty {
         TypeExpr::Named(name) => match name.as_str() {
             "Str" => "String".to_string(),
@@ -290,8 +305,8 @@ pub fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<Strin
             let rust_args = args.iter().map(rec).collect::<Vec<_>>().join(", ");
             format!("{}<{}>", name, rust_args)
         }
-        TypeExpr::Result(Some(inner)) => format!("Result<{}, DomainError>", rec(inner)),
-        TypeExpr::Result(None) => "Result<(), DomainError>".to_string(),
+        TypeExpr::Result(Some(inner)) => format!("Result<{}, {}>", rec(inner), error_type),
+        TypeExpr::Result(None) => format!("Result<(), {}>", error_type),
         TypeExpr::Optional(inner) => format!("Option<{}>", rec(inner)),
         TypeExpr::List(inner) => format!("Vec<{}>", rec(inner)),
         TypeExpr::Map(k, v) => format!(
@@ -797,7 +812,16 @@ pub fn generate_multi_package_harness(
         }
     }
 
-    main_rs.push_str(harness_domain_error_status_helper());
+    // Use error model from the first package (shared across workspace).
+    let first_reg = packages.first().map(|(_, r)| *r);
+    if let Some(reg) = first_reg.and_then(|r| r.error_model.as_ref()) {
+        let not_found = reg.variant("not_found").unwrap_or("NotFound");
+        let validation = reg.variant("validation").unwrap_or("Validation");
+        let external = reg.variant("external").unwrap_or("External");
+        main_rs.push_str(&harness_domain_error_status_helper_dynamic(&reg.type_name, not_found, validation, external));
+    } else {
+        main_rs.push_str(harness_domain_error_status_helper());
+    }
     main_rs.push_str(harness_body_dt_helper());
     main_rs.push_str(harness_auth_cors_helpers());
 

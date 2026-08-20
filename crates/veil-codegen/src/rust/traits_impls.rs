@@ -55,14 +55,33 @@ futures = "0.3"
     lib.push_str("pub mod register_handlers;\n");
     lib.push_str("pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};\n\n");
     lib.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
-    lib.push_str("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum DomainError {\n");
-    lib.push_str("    #[error(\"Not found\")]\n    NotFound,\n");
-    lib.push_str("    #[error(\"Validation failed: {0}\")]\n    Validation(String),\n");
-    lib.push_str("    #[error(\"External service error: {0}\")]\n    External(String),\n");
+
+    // ── Error model: generate from registry (layer-declared) ────────────
+    let (err_type, err_not_found, err_validation, err_external) = if let Some(em) = &registry.error_model {
+        let nf = em.variant("not_found").unwrap_or("NotFound").to_string();
+        let val = em.variant("validation").unwrap_or("Validation").to_string();
+        let ext = em.variant("external").unwrap_or("External").to_string();
+        (em.type_name.clone(), nf, val, ext)
+    } else {
+        ("DomainError".to_string(), "NotFound".to_string(), "Validation".to_string(), "External".to_string())
+    };
+    lib.push_str(&format!("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum {} {{\n", err_type));
+    lib.push_str(&format!("    #[error(\"Not found\")]\n    {},\n", err_not_found));
+    lib.push_str(&format!("    #[error(\"Validation failed: {{0}}\")]\n    {}(String),\n", err_validation));
+    lib.push_str(&format!("    #[error(\"External service error: {{0}}\")]\n    {}(String),\n", err_external));
+    // Emit any additional variants declared by the layer.
+    if let Some(em) = &registry.error_model {
+        for (role, variant) in &em.variants {
+            if role != "not_found" && role != "validation" && role != "external" {
+                // Additional variants get String payload by default.
+                lib.push_str(&format!("    #[error(\"{role}: {{0}}\")]\n    {variant}(String),\n"));
+            }
+        }
+    }
     lib.push_str("}\n\n");
-    lib.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for DomainError {\n    fn from(e: ValidationError) -> Self {\n        DomainError::Validation(e.0)\n    }\n}\n\n");
-    lib.push_str("impl From<serde_json::Error> for DomainError {\n    fn from(e: serde_json::Error) -> Self {\n        DomainError::External(e.to_string())\n    }\n}\n\n");
-    lib.push_str("impl From<String> for DomainError {\n    fn from(e: String) -> Self {\n        DomainError::External(e)\n    }\n}\n\n");
+    lib.push_str(&format!("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {{0}}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for {err_type} {{\n    fn from(e: ValidationError) -> Self {{\n        {err_type}::{err_validation}(e.0)\n    }}\n}}\n\n"));
+    lib.push_str(&format!("impl From<serde_json::Error> for {err_type} {{\n    fn from(e: serde_json::Error) -> Self {{\n        {err_type}::{err_external}(e.to_string())\n    }}\n}}\n\n"));
+    lib.push_str(&format!("impl From<String> for {err_type} {{\n    fn from(e: String) -> Self {{\n        {err_type}::{err_external}(e)\n    }}\n}}\n\n"));
 
     // Trait names in scope — used to box value-position references (List<Trait>).
     let trait_names: std::collections::HashSet<String> =
@@ -116,11 +135,11 @@ futures = "0.3"
 
     // RT-001 / RT-004: InProcessBus methods from the routing trait surface only.
     if let Some(rt) = routing_trait {
-        lib.push_str(&gen_inprocess_bus_impl(rt, &trait_names));
+        lib.push_str(&gen_inprocess_bus_impl(rt, &trait_names, registry));
     }
     // RT-008: AllowAllAuth methods from the configured auth trait + Principal-like struct.
     if let Some(at) = auth_trait {
-        lib.push_str(&gen_allow_all_auth_impl(at, structs, &trait_names));
+        lib.push_str(&gen_allow_all_auth_impl(at, structs, &trait_names, registry));
     }
 
     // Emit layer-provided structs (e.g. Principal) so traits can reference them.
@@ -165,8 +184,8 @@ futures = "0.3"
             .collect::<Vec<_>>()
             .join(", ");
         let ret = match &f.return_type {
-            Some(t) => type_to_rust_with_traits(t, &trait_names),
-            None => "Result<(), DomainError>".to_string(),
+            Some(t) => type_to_rust_with_traits_and_error(t, &trait_names, &err_type),
+            None => format!("Result<(), {}>", err_type),
         };
         ctx.expected_return_rust = Some(ret.clone());
         let fn_mod = layer_fn_attrs.unwrap_or("pub");
@@ -807,6 +826,7 @@ pub fn gen_impls(
                 ctx.stubs.non_fallible_methods = seeded.stubs.non_fallible_methods;
                 ctx.stubs.type_fallible_methods = seeded.stubs.type_fallible_methods;
                 ctx.stubs.async_fallible_methods = seeded.stubs.async_fallible_methods;
+                ctx.stubs.type_async_fallible_methods = seeded.stubs.type_async_fallible_methods;
                 ctx.stubs.stub_pkg_crate = seeded.stubs.stub_pkg_crate;
                 ctx.stubs.stub_free_fns = seeded.stubs.stub_free_fns;
                 ctx.async_fns = seeded.async_fns;

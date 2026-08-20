@@ -12,6 +12,12 @@ pkg ddd v1
     ref_suffix _id
     identity_field id
 
+  # Domain error model — the engine generates this enum in veil_shared::ports.
+  error_model DomainError
+    external External
+    not_found NotFound
+    validation Validation
+
   construct Context
     kw ctx
     mt mod
