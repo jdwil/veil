@@ -95,7 +95,7 @@ fn test_action_template_interpolation() {
         span: Span::default(),
     };
     let template = ctx.statement_specs["call_agent"].lowers_to["rust"].clone();
-    let out = interpolate_action_template(&template, &action, &ctx, &|e, c| {
+    let out = interpolate_action_template(&template, &action, &ctx, &|e, _c| {
         // Minimal expr lower for the test
         match e {
             Expr::StringLit(s) => format!("\"{s}\""),
@@ -1138,11 +1138,11 @@ pkg WearUi
     let project = veil_codegen::generate_ts(&sol, &reg);
     let paths: Vec<&str> = project.files.iter().map(|f| f.path.as_str()).collect();
     assert!(
-        paths.iter().any(|p| *p == "src/routes/pulls/[id]/+page.svelte"),
+        paths.contains(&"src/routes/pulls/[id]/+page.svelte"),
         "nested ui_route missing: {paths:?}"
     );
     assert!(
-        paths.iter().any(|p| *p == "src/routes/settings/+page.svelte"),
+        paths.contains(&"src/routes/settings/+page.svelte"),
         "settings ui_route missing: {paths:?}"
     );
 }
@@ -1276,7 +1276,7 @@ fn generated_examples_compile() {
         // Write to a temp directory
         let tmp = std::env::temp_dir().join(format!(
             "veil_compile_test_{}",
-            rel.replace('/', "_").replace('.', "_")
+            rel.replace(['/', '.'], "_")
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         for f in &project.files {
@@ -1366,7 +1366,7 @@ fn generated_examples_compile() {
         let project = veil_codegen::generate(&sol, &reg);
         let tmp = std::env::temp_dir().join(format!(
             "veil_compile_test_{}",
-            rel.replace('/', "_").replace('.', "_")
+            rel.replace(['/', '.'], "_")
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         for f in &project.files {

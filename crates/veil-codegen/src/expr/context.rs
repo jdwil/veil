@@ -86,6 +86,10 @@ impl TypeContext {
     }
 }
 
+impl Default for TypeContext {
+    fn default() -> Self { Self::new() }
+}
+
 /// Ownership and mutability context — tracks mutable locals, ident usage counts,
 /// ref-element bindings, and borrow-preferring fields.
 #[derive(Clone)]
@@ -112,6 +116,10 @@ impl OwnershipContext {
             borrow_fields: HashSet::new(),
         }
     }
+}
+
+impl Default for OwnershipContext {
+    fn default() -> Self { Self::new() }
 }
 
 /// Stub context — crate/type mappings, fallibility metadata, free functions.
@@ -159,6 +167,10 @@ impl StubContext {
     }
 }
 
+impl Default for StubContext {
+    fn default() -> Self { Self::new() }
+}
+
 /// Routing context — envelope routing configuration and bus return types.
 #[derive(Clone)]
 pub struct RoutingContext {
@@ -189,6 +201,10 @@ impl RoutingContext {
             bus_returns: HashMap::new(),
         }
     }
+}
+
+impl Default for RoutingContext {
+    fn default() -> Self { Self::new() }
 }
 
 // ─── GenCtx ──────────────────────────────────────────────────────────────────

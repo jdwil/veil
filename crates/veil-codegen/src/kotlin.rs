@@ -254,6 +254,21 @@ fn type_to_kotlin(ty: &TypeExpr) -> String {
     }
 }
 
+fn to_snake(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,19 +284,4 @@ mod tests {
         let e = Expr::Return(Box::new(Expr::IntLit(3)));
         assert_eq!(stmt_to_kotlin(&e), "return 3L");
     }
-}
-
-fn to_snake(s: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }

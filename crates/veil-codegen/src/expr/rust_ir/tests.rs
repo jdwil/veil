@@ -1,7 +1,7 @@
 use super::*;
 use super::lower::{lower_call, lower_string_interp};
 use super::super::context::GenCtx;
-use veil_ir::ast::{Expr, StringPart};
+use veil_ir::ast::{Expr};
 
 #[test]
 fn emit_string_lit() {
@@ -35,8 +35,8 @@ fn emit_int_lit_negative() {
 
 #[test]
 fn emit_float_lit() {
-    let expr = RustExpr::FloatLit(3.14);
-    assert_eq!(emit(&expr), "3.14");
+    let expr = RustExpr::FloatLit(3.15);
+    assert_eq!(emit(&expr), "3.15");
 }
 
 #[test]
