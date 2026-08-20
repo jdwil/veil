@@ -1,73 +1,218 @@
 stub tempfile 3.27.0
+  # @generated veil-stub-gen 1
+  # source crates.io
+  # surface full
+  # cargo_name tempfile
+  # generated_at 2026-08-20T19:52:23Z
+  # rustdoc_fingerprint cf25f07e4b2f7591
+  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
+  fn override_temp_dir(path: Path) -> Res!<()>
+    lowers_to
+      rust: "tempfile::override_temp_dir({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn spooled_tempfile(max_size: Int) -> SpooledTempFile
+    lowers_to
+      rust: "tempfile::spooled_tempfile({{max_size}})"
+  fn spooled_tempfile_in(max_size: Int, dir: P) -> SpooledTempFile
+    lowers_to
+      rust: "tempfile::spooled_tempfile_in({{max_size}}, {{dir}})"
+  fn temp_dir() -> PathBuf
+    lowers_to
+      rust: "tempfile::temp_dir({{args}})"
 
   struct NamedTempFile
+    path file
     fn new() -> Res!<NamedTempFile>
+      lowers_to
+        rust: "tempfile::NamedTempFile::new({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn new_in(dir: P) -> Res!<NamedTempFile>
+      lowers_to
+        rust: "tempfile::NamedTempFile::new_in({{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_suffix(suffix: S) -> Res!<NamedTempFile>
+      lowers_to
+        rust: "tempfile::NamedTempFile::with_suffix({{suffix}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_suffix_in(suffix: S, dir: P) -> Res!<NamedTempFile>
+      lowers_to
+        rust: "tempfile::NamedTempFile::with_suffix_in({{suffix}}, {{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_prefix(prefix: S) -> Res!<NamedTempFile>
+      lowers_to
+        rust: "tempfile::NamedTempFile::with_prefix({{prefix}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_prefix_in(prefix: S, dir: P) -> Res!<NamedTempFile>
+      lowers_to
+        rust: "tempfile::NamedTempFile::with_prefix_in({{prefix}}, {{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn path() -> Path
-    fn close() -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.path({{args}})"
+    fn close() -> Res!<()>
+      lowers_to
+        rust: "{{self}}.close({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn persist(new_path: P) -> Res!<F>
+      lowers_to
+        rust: "{{self}}.persist({{new_path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn persist_noclobber(new_path: P) -> Res!<F>
-    fn keep() -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.persist_noclobber({{new_path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn keep() -> Res!<(F, PathBuf)>
+      lowers_to
+        rust: "{{self}}.keep({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn disable_cleanup(disable_cleanup: Bool)
+      lowers_to
+        rust: "{{self}}.disable_cleanup({{disable_cleanup}})"
     fn as_file() -> F
+      lowers_to
+        rust: "{{self}}.as_file({{args}})"
     fn as_file_mut() -> F
+      lowers_to
+        rust: "{{self}}.as_file_mut({{args}})"
     fn into_file() -> F
+      lowers_to
+        rust: "{{self}}.into_file({{args}})"
     fn into_temp_path() -> TempPath
-    fn into_parts() -> Str
+      lowers_to
+        rust: "{{self}}.into_temp_path({{args}})"
+    fn into_parts() -> (F, TempPath)
+      lowers_to
+        rust: "{{self}}.into_parts({{args}})"
     fn from_parts(file: F, path: TempPath) -> Self
+      lowers_to
+        rust: "tempfile::NamedTempFile::from_parts({{file}}, {{path}})"
     fn reopen() -> Res!<File>
+      lowers_to
+        rust: "{{self}}.reopen({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct PersistError
+    path file
 
   struct SpooledTempFile
-    fn new(max_size: usize) -> SpooledTempFile
-    fn new_in(max_size: usize, dir: P) -> SpooledTempFile
+    path spooled
+    fn new(max_size: Int) -> SpooledTempFile
+      lowers_to
+        rust: "tempfile::SpooledTempFile::new({{max_size}})"
+    fn new_in(max_size: Int, dir: P) -> SpooledTempFile
+      lowers_to
+        rust: "tempfile::SpooledTempFile::new_in({{max_size}}, {{dir}})"
     fn is_rolled() -> Bool
-    fn roll() -> Res!<Str>
-    fn set_len(size: Int) -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.is_rolled({{args}})"
+    fn roll() -> Res!<()>
+      lowers_to
+        rust: "{{self}}.roll({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn set_len(size: Int) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.set_len({{size}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn into_inner() -> SpooledData
+      lowers_to
+        rust: "{{self}}.into_inner({{args}})"
     fn into_file() -> Res!<File>
+      lowers_to
+        rust: "{{self}}.into_file({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct Builder
     fn new() -> Self
+      lowers_to
+        rust: "tempfile::Builder::new({{args}})"
     fn prefix(prefix: S) -> Self
+      lowers_to
+        rust: "{{self}}.prefix({{prefix}})"
     fn suffix(suffix: S) -> Self
-    fn rand_bytes(rand: usize) -> Self
+      lowers_to
+        rust: "{{self}}.suffix({{suffix}})"
+    fn rand_bytes(rand: Int) -> Self
+      lowers_to
+        rust: "{{self}}.rand_bytes({{rand}})"
     fn append(append: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.append({{append}})"
     fn permissions(permissions: Permissions) -> Self
+      lowers_to
+        rust: "{{self}}.permissions({{permissions}})"
     fn disable_cleanup(disable_cleanup: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.disable_cleanup({{disable_cleanup}})"
     fn keep(keep: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.keep({{keep}})"
     fn tempfile() -> Res!<NamedTempFile>
+      lowers_to
+        rust: "{{self}}.tempfile({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn tempfile_in(dir: P) -> Res!<NamedTempFile>
+      lowers_to
+        rust: "{{self}}.tempfile_in({{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn tempdir() -> Res!<TempDir>
+      lowers_to
+        rust: "{{self}}.tempdir({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn tempdir_in(dir: P) -> Res!<TempDir>
+      lowers_to
+        rust: "{{self}}.tempdir_in({{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn make(f: F) -> Res!<NamedTempFile<R>>
+      lowers_to
+        rust: "{{self}}.make({{f}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn make_in(dir: P, f: F) -> Res!<NamedTempFile<R>>
+      lowers_to
+        rust: "{{self}}.make_in({{dir}}, {{f}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct TempDir
+    path dir
     fn new() -> Res!<TempDir>
+      lowers_to
+        rust: "tempfile::TempDir::new({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn new_in(dir: P) -> Res!<TempDir>
+      lowers_to
+        rust: "tempfile::TempDir::new_in({{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_prefix(prefix: S) -> Res!<TempDir>
+      lowers_to
+        rust: "tempfile::TempDir::with_prefix({{prefix}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_suffix(suffix: S) -> Res!<TempDir>
+      lowers_to
+        rust: "tempfile::TempDir::with_suffix({{suffix}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_suffix_in(suffix: S, dir: P) -> Res!<TempDir>
+      lowers_to
+        rust: "tempfile::TempDir::with_suffix_in({{suffix}}, {{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_prefix_in(prefix: S, dir: P) -> Res!<TempDir>
+      lowers_to
+        rust: "tempfile::TempDir::with_prefix_in({{prefix}}, {{dir}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn path() -> Path
+      lowers_to
+        rust: "{{self}}.path({{args}})"
     fn into_path() -> PathBuf
+      lowers_to
+        rust: "{{self}}.into_path({{args}})"
     fn keep() -> PathBuf
+      lowers_to
+        rust: "{{self}}.keep({{args}})"
     fn disable_cleanup(disable_cleanup: Bool)
-    fn close() -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.disable_cleanup({{disable_cleanup}})"
+    fn close() -> Res!<()>
+      lowers_to
+        rust: "{{self}}.close({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct TempPath
-    fn close() -> Res!<Str>
-    fn persist(new_path: P) -> Res!<Str>
-    fn persist_noclobber(new_path: P) -> Res!<Str>
+    path file
+    fn close() -> Res!<()>
+      lowers_to
+        rust: "{{self}}.close({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn persist(new_path: P) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.persist({{new_path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn persist_noclobber(new_path: P) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.persist_noclobber({{new_path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn keep() -> Res!<PathBuf>
+      lowers_to
+        rust: "{{self}}.keep({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn disable_cleanup(disable_cleanup: Bool)
-    fn from_path(path: Str) -> Self
-    fn try_from_path(path: Str) -> Res!<Self>
+      lowers_to
+        rust: "{{self}}.disable_cleanup({{disable_cleanup}})"
+    fn from_path(path: PathBuf) -> Self
+      lowers_to
+        rust: "tempfile::TempPath::from_path({{path}})"
+    fn try_from_path(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "tempfile::TempPath::try_from_path({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct PathPersistError
+    path file
+
+  enum SpooledData
+    InMemory(Cursor<List<Int>>)
+    OnDisk(File)

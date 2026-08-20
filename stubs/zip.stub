@@ -1,185 +1,675 @@
-stub zip 2.4.2
+stub zip 8.6.0
+  # @generated veil-stub-gen 1
+  # source crates.io
+  # surface full
+  # cargo_name zip
+  # generated_at 2026-08-20T19:52:38Z
+  # rustdoc_fingerprint 0c9ce9bcf761ff34
+  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
+  rust_name FileOptions FullFileOptions
+  codegen_imports zip::FullFileOptions
+  fn path_to_string(path: T) -> Res!<Box<Str>>
+    lowers_to
+      rust: "zip::path_to_string({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn read_zipfile_from_stream(reader: R) -> ZipResult<Opt<ZipFile<R>>>
+    lowers_to
+      rust: "zip::read_zipfile_from_stream({{reader}})"
+  fn read_zipfile_from_stream_with_compressed_size(reader: R, compressed_size: Int) -> ZipResult<Opt<ZipFile<R>>>
+    lowers_to
+      rust: "zip::read_zipfile_from_stream_with_compressed_size({{reader}}, {{compressed_size}})"
+  fn root_dir_common_filter(path: Path) -> Bool
+    lowers_to
+      rust: "zip::root_dir_common_filter({{path}})"
 
-  struct ExtendedTimestamp
-    fn try_from_reader(reader: R, len: Int) -> ZipResult<Self>
-    fn mod_time() -> Opt<Int>
-    fn ac_time() -> Opt<Int>
-    fn cr_time() -> Opt<Int>
-
-  struct Ntfs
-    fn try_from_reader(reader: R, len: Int) -> ZipResult<Self>
-    fn mtime() -> Int
-    fn atime() -> Int
-    fn ctime() -> Int
-
-  struct UnicodeExtraField
-    fn unwrap_valid(ascii_field: Str) -> ZipResult<Box<Str>>
-
-  struct LocalHeaderVersion
-
-  struct CentralHeaderVersion
-
-  struct Config
-
-  struct ZipStreamReader
-    fn new(reader: R) -> Self
-    fn visit(visitor: V) -> ZipResult<Str>
-    fn extract(directory: P) -> ZipResult<Str>
-
-  struct ZipFile
-    fn version_made_by() -> Str
-    fn name() -> Str
-    fn name_raw() -> Str
-    fn sanitized_name() -> PathBuf
-    fn mangled_name() -> PathBuf
-    fn enclosed_name() -> Opt<PathBuf>
-    fn comment() -> Str
-    fn compression() -> CompressionMethod
-    fn encrypted() -> Bool
-    fn compressed_size() -> Int
-    fn size() -> Int
-    fn last_modified() -> Opt<DateTime>
-    fn is_dir() -> Bool
-    fn is_symlink() -> Bool
-    fn is_file() -> Bool
-    fn unix_mode() -> Opt<Int>
-    fn crc32() -> Int
-    fn extra_data() -> Opt<Str>
-    fn data_start() -> Int
-    fn header_start() -> Int
-    fn central_header_start() -> Int
-    fn options() -> SimpleFileOptions
-    fn extra_data_fields() -> Str
-
-  struct ZipStreamFileMetadata
-    fn name() -> Str
-    fn name_raw() -> Str
-    fn mangled_name() -> PathBuf
-    fn enclosed_name() -> Opt<PathBuf>
-    fn is_dir() -> Bool
-    fn is_file() -> Bool
-    fn comment() -> Str
-    fn unix_mode() -> Opt<Int>
-
-  struct ZipArchive
-    fn decompressed_size() -> Opt<u128>
-    fn get_aes_verification_key_and_salt(file_number: usize) -> ZipResult<Opt<AesInfo>>
-    fn new(reader: R) -> ZipResult<ZipArchive<R>>
-    fn with_config(config: Config, reader: R) -> ZipResult<ZipArchive<R>>
-    fn extract(directory: P) -> ZipResult<Str>
-    fn extract_unwrapped_root_dir(directory: P, root_dir_filter: Str) -> ZipResult<Str>
-    fn len() -> usize
-    fn central_directory_start() -> Int
-    fn is_empty() -> Bool
-    fn offset() -> Int
-    fn comment() -> Str
-    fn zip64_comment() -> Opt<Str>
-    fn file_names() -> Str
-    fn by_name_decrypt(name: Str, password: Str) -> ZipResult<ZipFile>
-    fn by_name(name: Str) -> ZipResult<ZipFile>
-    fn index_for_name(name: Str) -> Opt<usize>
-    fn index_for_path(path: T) -> Opt<usize>
-    fn name_for_index(index: usize) -> Opt<Str>
-    fn by_name_seek(name: Str) -> ZipResult<ZipFileSeek<R>>
-    fn by_index_seek(index: usize) -> ZipResult<ZipFileSeek<R>>
-    fn by_index_decrypt(file_number: usize, password: Str) -> ZipResult<ZipFile>
-    fn by_index(file_number: usize) -> ZipResult<ZipFile>
-    fn by_index_raw(file_number: usize) -> ZipResult<ZipFile>
-    fn root_dir(filter: Str) -> ZipResult<Opt<PathBuf>>
-    fn into_inner() -> R
-
-  struct AesInfo
-
-  struct ZipFileSeek
+  struct StreamWriter
+    path write
+    fn new(inner: W) -> StreamWriter<W>
+      lowers_to
+        rust: "zip::StreamWriter::new({{inner}})"
+    fn get_ref() -> W
+      lowers_to
+        rust: "{{self}}.get_ref({{args}})"
+    fn get_mut() -> W
+      lowers_to
+        rust: "{{self}}.get_mut({{args}})"
+    fn into_inner() -> W
+      lowers_to
+        rust: "{{self}}.into_inner({{args}})"
 
   struct DateTime
+    path datetime
     fn default_for_write() -> Self
+      lowers_to
+        rust: "zip::DateTime::default_for_write({{args}})"
     fn from_msdos_unchecked(datepart: Int, timepart: Int) -> DateTime
+      lowers_to
+        rust: "zip::DateTime::from_msdos_unchecked({{datepart}}, {{timepart}})"
     fn try_from_msdos(datepart: Int, timepart: Int) -> Res!<DateTime>
+      lowers_to
+        rust: "zip::DateTime::try_from_msdos({{datepart}}, {{timepart}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn from_date_and_time(year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int) -> Res!<DateTime>
+      lowers_to
+        rust: "zip::DateTime::from_date_and_time({{year}}, {{month}}, {{day}}, {{hour}}, {{minute}}, {{second}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn is_valid() -> Bool
-    fn from_time(dt: OffsetDateTime) -> Res!<DateTime>
+      lowers_to
+        rust: "{{self}}.is_valid({{args}})"
     fn timepart() -> Int
+      lowers_to
+        rust: "{{self}}.timepart({{args}})"
     fn datepart() -> Int
-    fn to_time() -> Res!<OffsetDateTime>
+      lowers_to
+        rust: "{{self}}.datepart({{args}})"
     fn year() -> Int
+      lowers_to
+        rust: "{{self}}.year({{args}})"
     fn month() -> Int
+      lowers_to
+        rust: "{{self}}.month({{args}})"
     fn day() -> Int
+      lowers_to
+        rust: "{{self}}.day({{args}})"
     fn hour() -> Int
+      lowers_to
+        rust: "{{self}}.hour({{args}})"
     fn minute() -> Int
+      lowers_to
+        rust: "{{self}}.minute({{args}})"
     fn second() -> Int
+      lowers_to
+        rust: "{{self}}.second({{args}})"
 
-  struct ZipFileData
+  struct ExtendedTimestamp
+    path extra_fields::extended_timestamp
+    fn try_from_reader(reader: R, len: Int) -> ZipResult<Self>
+      lowers_to
+        rust: "zip::ExtendedTimestamp::try_from_reader({{reader}}, {{len}})"
+    fn mod_time() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.mod_time({{args}})"
+    fn ac_time() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.ac_time({{args}})"
+    fn cr_time() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.cr_time({{args}})"
 
   struct DateTimeRangeError
+    path result
 
-  struct FileOptions
-    fn compression_method(method: CompressionMethod) -> Self
-    fn compression_level(level: Opt<Int>) -> Self
-    fn last_modified_time(mod_time: DateTime) -> Self
-    fn unix_permissions(mode: Int) -> Self
-    fn large_file(large: Bool) -> Self
-    fn with_aes_encryption(mode: AesMode, password: Str) -> FileOptions<T>
-    fn with_zopfli_buffer(size: Opt<usize>) -> Self
-    fn get_compression_level() -> Opt<Int>
-    fn with_alignment(alignment: Int) -> Self
-    fn add_extra_data(header_id: Int, data: Box<Str>, central_only: Bool) -> ZipResult<Str>
-    fn clear_extra_data() -> Self
+  struct Ntfs
+    path extra_fields::ntfs
+    fn try_from_reader(reader: R, len: Int) -> ZipResult<Self>
+      lowers_to
+        rust: "zip::Ntfs::try_from_reader({{reader}}, {{len}})"
+    fn mtime() -> Int
+      lowers_to
+        rust: "{{self}}.mtime({{args}})"
+    fn atime() -> Int
+      lowers_to
+        rust: "{{self}}.atime({{args}})"
+    fn ctime() -> Int
+      lowers_to
+        rust: "{{self}}.ctime({{args}})"
+
+  struct UnicodeExtraField
+    path extra_fields::zipinfo_utf8
+    fn unwrap_valid(ascii_field: List<Int>) -> ZipResult<Box<List<Int>>>
+      lowers_to
+        rust: "{{self}}.unwrap_valid({{ascii_field}})"
+
+  struct LocalHeaderVersion
+    path extra_fields
+
+  struct CentralHeaderVersion
+    path extra_fields
+
+  struct Config
+    path read::config
+
+  struct AesInfo
+    path aes
+
+  struct ZipStreamReader
+    path read::stream
+    fn new(reader: R) -> Self
+      lowers_to
+        rust: "zip::ZipStreamReader::new({{reader}})"
+    fn visit(visitor: V) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.visit({{visitor}})"
+    fn extract(directory: P) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.extract({{directory}})"
+
+  struct ZipFile
+    path read
+    fn version_made_by() -> (Int, Int)
+      lowers_to
+        rust: "{{self}}.version_made_by({{args}})"
+    fn name() -> Str
+      lowers_to
+        rust: "{{self}}.name({{args}})"
+    fn name_raw() -> List<Int>
+      lowers_to
+        rust: "{{self}}.name_raw({{args}})"
+    fn sanitized_name() -> PathBuf
+      lowers_to
+        rust: "{{self}}.sanitized_name({{args}})"
+    fn mangled_name() -> PathBuf
+      lowers_to
+        rust: "{{self}}.mangled_name({{args}})"
+    fn enclosed_name() -> Opt<PathBuf>
+      lowers_to
+        rust: "{{self}}.enclosed_name({{args}})"
+    fn comment() -> Str
+      lowers_to
+        rust: "{{self}}.comment({{args}})"
+    fn compression() -> CompressionMethod
+      lowers_to
+        rust: "{{self}}.compression({{args}})"
+    fn encrypted() -> Bool
+      lowers_to
+        rust: "{{self}}.encrypted({{args}})"
+    fn compressed_size() -> Int
+      lowers_to
+        rust: "{{self}}.compressed_size({{args}})"
+    fn size() -> Int
+      lowers_to
+        rust: "{{self}}.size({{args}})"
+    fn last_modified() -> Opt<DateTime>
+      lowers_to
+        rust: "{{self}}.last_modified({{args}})"
+    fn is_dir() -> Bool
+      lowers_to
+        rust: "{{self}}.is_dir({{args}})"
+    fn is_symlink() -> Bool
+      lowers_to
+        rust: "{{self}}.is_symlink({{args}})"
+    fn is_file() -> Bool
+      lowers_to
+        rust: "{{self}}.is_file({{args}})"
+    fn unix_mode() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.unix_mode({{args}})"
+    fn crc32() -> Int
+      lowers_to
+        rust: "{{self}}.crc32({{args}})"
+    fn extra_data() -> Opt<List<Int>>
+      lowers_to
+        rust: "{{self}}.extra_data({{args}})"
+    fn data_start() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.data_start({{args}})"
+    fn header_start() -> Int
+      lowers_to
+        rust: "{{self}}.header_start({{args}})"
+    fn central_header_start() -> Int
+      lowers_to
+        rust: "{{self}}.central_header_start({{args}})"
+    fn options() -> SimpleFileOptions
+      lowers_to
+        rust: "{{self}}.options({{args}})"
+    fn extra_data_fields() -> Unknown
+      lowers_to
+        rust: "{{self}}.extra_data_fields({{args}})"
+
+  struct ZipStreamFileMetadata
+    path read::stream
+    fn name() -> Str
+      lowers_to
+        rust: "{{self}}.name({{args}})"
+    fn name_raw() -> List<Int>
+      lowers_to
+        rust: "{{self}}.name_raw({{args}})"
+    fn mangled_name() -> PathBuf
+      lowers_to
+        rust: "{{self}}.mangled_name({{args}})"
+    fn enclosed_name() -> Opt<PathBuf>
+      lowers_to
+        rust: "{{self}}.enclosed_name({{args}})"
+    fn is_dir() -> Bool
+      lowers_to
+        rust: "{{self}}.is_dir({{args}})"
+    fn is_file() -> Bool
+      lowers_to
+        rust: "{{self}}.is_file({{args}})"
+    fn comment() -> Str
+      lowers_to
+        rust: "{{self}}.comment({{args}})"
+    fn unix_mode() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.unix_mode({{args}})"
+
+  struct ZipArchiveMetadata
+    path read::zip_archive
+
+  struct ZipArchive
+    path read::zip_archive
+    fn decompressed_size() -> Opt<u128>
+      lowers_to
+        rust: "{{self}}.decompressed_size({{args}})"
+    fn get_aes_verification_key_and_salt(file_number: Int) -> ZipResult<Opt<AesInfo>>
+      lowers_to
+        rust: "{{self}}.get_aes_verification_key_and_salt({{file_number}})"
+    fn new(reader: R) -> ZipResult<ZipArchive<R>>
+      lowers_to
+        rust: "zip::ZipArchive::new({{reader}})"
+    fn metadata() -> Arc<ZipArchiveMetadata>
+      lowers_to
+        rust: "{{self}}.metadata({{args}})"
+    fn unsafe_new_with_metadata(reader: R, metadata: Arc<ZipArchiveMetadata>) -> Self
+      lowers_to
+        rust: "zip::ZipArchive::unsafe_new_with_metadata({{reader}}, {{metadata}})"
+    fn with_config(config: Config, reader: R) -> ZipResult<ZipArchive<R>>
+      lowers_to
+        rust: "zip::ZipArchive::with_config({{config}}, {{reader}})"
+    fn len() -> Int
+      lowers_to
+        rust: "{{self}}.len({{args}})"
+    fn central_directory_start() -> Int
+      lowers_to
+        rust: "{{self}}.central_directory_start({{args}})"
+    fn is_empty() -> Bool
+      lowers_to
+        rust: "{{self}}.is_empty({{args}})"
+    fn offset() -> Int
+      lowers_to
+        rust: "{{self}}.offset({{args}})"
+    fn comment() -> List<Int>
+      lowers_to
+        rust: "{{self}}.comment({{args}})"
+    fn zip64_comment() -> Opt<List<Int>>
+      lowers_to
+        rust: "{{self}}.zip64_comment({{args}})"
+    fn raw_zip64_extensible_data_sector() -> Opt<List<Int>>
+      lowers_to
+        rust: "{{self}}.raw_zip64_extensible_data_sector({{args}})"
+    fn file_names() -> Unknown
+      lowers_to
+        rust: "{{self}}.file_names({{args}})"
+    fn has_overlapping_files() -> ZipResult<Bool>
+      lowers_to
+        rust: "{{self}}.has_overlapping_files({{args}})"
+    fn by_name_decrypt(name: Str, password: List<Int>) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_name_decrypt({{name}}, {{password}})"
+    fn by_name(name: Str) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_name({{name}})"
+    fn index_for_name(name: Str) -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.index_for_name({{name}})"
+    fn by_path_decrypt(path: T, password: List<Int>) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_path_decrypt({{path}}, {{password}})"
+    fn by_path(path: T) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_path({{path}})"
+    fn index_for_path(path: T) -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.index_for_path({{path}})"
+    fn name_for_index(index: Int) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.name_for_index({{index}})"
+    fn by_name_seek(name: Str) -> ZipResult<ZipFileSeek<R>>
+      lowers_to
+        rust: "{{self}}.by_name_seek({{name}})"
+    fn by_index_seek(index: Int) -> ZipResult<ZipFileSeek<R>>
+      lowers_to
+        rust: "{{self}}.by_index_seek({{index}})"
+    fn by_index_decrypt(file_number: Int, password: List<Int>) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_index_decrypt({{file_number}}, {{password}})"
+    fn by_index(file_number: Int) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_index({{file_number}})"
+    fn by_index_raw(file_number: Int) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_index_raw({{file_number}})"
+    fn by_index_with_options(file_number: Int, options: ZipReadOptions) -> ZipResult<ZipFile<R>>
+      lowers_to
+        rust: "{{self}}.by_index_with_options({{file_number}}, {{options}})"
+    fn root_dir(filter: Unknown) -> ZipResult<Opt<PathBuf>>
+      lowers_to
+        rust: "{{self}}.root_dir({{filter}})"
+    fn into_inner() -> R
+      lowers_to
+        rust: "{{self}}.into_inner({{args}})"
+    fn extract(directory: P) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.extract({{directory}})"
+    fn extract_unwrapped_root_dir(directory: P, root_dir_filter: Unknown) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.extract_unwrapped_root_dir({{directory}}, {{root_dir_filter}})"
+
+  struct ZipFileSeek
+    path read
+
+  struct ZipReadOptions
+    path read
+    fn new() -> Self
+      lowers_to
+        rust: "zip::ZipReadOptions::new({{args}})"
+    fn password(password: Opt<List<Int>>) -> Self
+      lowers_to
+        rust: "{{self}}.password({{password}})"
+    fn ignore_encryption_flag(ignore: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.ignore_encryption_flag({{ignore}})"
+    fn ignore_crc32(should_ignore: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.ignore_crc32({{should_ignore}})"
+
+  struct ZipFileData
+    path types
 
   struct ZipWriter
+    path write::zip_writer
+    fn get_ref() -> Opt<W>
+      lowers_to
+        rust: "{{self}}.get_ref({{args}})"
+    fn get_mut() -> Opt<W>
+      lowers_to
+        rust: "{{self}}.get_mut({{args}})"
     fn new_append(readwriter: A) -> ZipResult<ZipWriter<A>>
+      lowers_to
+        rust: "zip::ZipWriter::new_append({{readwriter}})"
     fn new_append_with_config(config: Config, readwriter: A) -> ZipResult<ZipWriter<A>>
+      lowers_to
+        rust: "zip::ZipWriter::new_append_with_config({{config}}, {{readwriter}})"
     fn set_flush_on_finish_file(flush_on_finish_file: Bool)
-    fn deep_copy_file(src_name: Str, dest_name: Str) -> ZipResult<Str>
-    fn deep_copy_file_from_path(src_path: T, dest_path: U) -> ZipResult<Str>
+      lowers_to
+        rust: "{{self}}.set_flush_on_finish_file({{flush_on_finish_file}})"
+    fn deep_copy_file(src_name: Str, dest_name: Str) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.deep_copy_file({{src_name}}, {{dest_name}})"
+    fn deep_copy_file_from_path(src_path: T, dest_path: U) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.deep_copy_file_from_path({{src_path}}, {{dest_path}})"
     fn finish_into_readable() -> ZipResult<ZipArchive<A>>
+      lowers_to
+        rust: "{{self}}.finish_into_readable({{args}})"
     fn new(inner: W) -> ZipWriter<W>
+      lowers_to
+        rust: "zip::ZipWriter::new({{inner}})"
+    fn set_auto_large_file() -> Self
+      lowers_to
+        rust: "{{self}}.set_auto_large_file({{args}})"
     fn is_writing_file() -> Bool
-    fn set_comment(comment: S)
-    fn set_raw_comment(comment: Box<Str>)
+      lowers_to
+        rust: "{{self}}.is_writing_file({{args}})"
+    fn set_comment(comment: S) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.set_comment({{comment}})"
+    fn set_raw_comment(comment: Box<List<Int>>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.set_raw_comment({{comment}})"
     fn get_comment() -> Res!<Str>
-    fn get_raw_comment() -> Str
-    fn set_zip64_comment(comment: Opt<S>)
-    fn set_raw_zip64_comment(comment: Opt<Box<Str>>)
+      lowers_to
+        rust: "{{self}}.get_comment({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn get_raw_comment() -> List<Int>
+      lowers_to
+        rust: "{{self}}.get_raw_comment({{args}})"
+    fn set_zip64_comment(comment: Opt<S>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.set_zip64_comment({{comment}})"
+    fn set_raw_zip64_comment(comment: Opt<Box<List<Int>>>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.set_raw_zip64_comment({{comment}})"
+    fn set_raw_zip64_extensible_data_sector(extensible_data: Box<List<Int>>)
+      lowers_to
+        rust: "{{self}}.set_raw_zip64_extensible_data_sector({{extensible_data}})"
     fn get_zip64_comment() -> Opt<Res!<Str>>
-    fn get_raw_zip64_comment() -> Opt<Str>
-    fn set_file_metadata(length: Int, crc32: Int) -> ZipResult<Str>
-    fn abort_file() -> ZipResult<Str>
-    fn start_file(name: S, options: FileOptions<T>) -> ZipResult<Str>
-    fn merge_archive(source: ZipArchive<R>) -> ZipResult<Str>
-    fn start_file_from_path(path: P, options: FileOptions<E>) -> ZipResult<Str>
-    fn raw_copy_file_rename(file: ZipFile, name: S) -> ZipResult<Str>
-    fn raw_copy_file_to_path(file: ZipFile, path: P) -> ZipResult<Str>
-    fn raw_copy_file(file: ZipFile) -> ZipResult<Str>
-    fn raw_copy_file_touch(file: ZipFile, last_modified_time: DateTime, unix_mode: Opt<Int>) -> ZipResult<Str>
-    fn add_directory(name: S, options: FileOptions<T>) -> ZipResult<Str>
-    fn add_directory_from_path(path: P, options: FileOptions<T>) -> ZipResult<Str>
+      lowers_to
+        rust: "{{self}}.get_zip64_comment({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn get_raw_zip64_comment() -> Opt<List<Int>>
+      lowers_to
+        rust: "{{self}}.get_raw_zip64_comment({{args}})"
+    fn set_file_metadata(length: Int, crc32: Int) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.set_file_metadata({{length}}, {{crc32}})"
+    fn abort_file() -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.abort_file({{args}})"
+    fn start_file(name: S, options: FileOptions<T>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.start_file({{name}}, {{options}})"
+    fn merge_archive(source: ZipArchive<R>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.merge_archive({{source}})"
+    fn start_file_from_path(path: P, options: FileOptions<E>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.start_file_from_path({{path}}, {{options}})"
+    fn raw_copy_file_rename(file: ZipFile<R>, name: S) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.raw_copy_file_rename({{file}}, {{name}})"
+    fn raw_copy_file_to_path(file: ZipFile<R>, path: P) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.raw_copy_file_to_path({{file}}, {{path}})"
+    fn raw_copy_file(file: ZipFile<R>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.raw_copy_file({{file}})"
+    fn raw_copy_file_touch(file: ZipFile<R>, last_modified_time: DateTime, unix_mode: Opt<Int>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.raw_copy_file_touch({{file}}, {{last_modified_time}}, {{unix_mode}})"
+    fn add_directory(name: S, options: FileOptions<T>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.add_directory({{name}}, {{options}})"
+    fn add_directory_from_path(path: P, options: FileOptions<T>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.add_directory_from_path({{path}}, {{options}})"
     fn finish() -> ZipResult<W>
-    fn add_symlink(name: N, target: T, options: FileOptions<E>) -> ZipResult<Str>
-    fn add_symlink_from_path(path: P, target: T, options: FileOptions<E>) -> ZipResult<Str>
-    fn shallow_copy_file(src_name: Str, dest_name: Str) -> ZipResult<Str>
-    fn shallow_copy_file_from_path(src_path: T, dest_path: U) -> ZipResult<Str>
+      lowers_to
+        rust: "{{self}}.finish({{args}})"
+    fn add_symlink(name: N, target: T, options: FileOptions<E>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.add_symlink({{name}}, {{target}}, {{options}})"
+    fn add_symlink_from_path(path: P, target: T, options: FileOptions<E>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.add_symlink_from_path({{path}}, {{target}}, {{options}})"
+    fn shallow_copy_file(src_name: Str, dest_name: Str) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.shallow_copy_file({{src_name}}, {{dest_name}})"
+    fn shallow_copy_file_from_path(src_path: T, dest_path: U) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.shallow_copy_file_from_path({{src_path}}, {{dest_path}})"
+    fn new_stream(inner: W) -> ZipWriter<StreamWriter<W>>
+      lowers_to
+        rust: "zip::ZipWriter::new_stream({{inner}})"
+
+  struct FileOptions
+    path types
+    fn has_encryption() -> Bool
+      lowers_to
+        rust: "{{self}}.has_encryption({{args}})"
+    fn compression_method(method: CompressionMethod) -> Self
+      lowers_to
+        rust: "{{self}}.compression_method({{method}})"
+    fn system(system: System) -> Self
+      lowers_to
+        rust: "{{self}}.system({{system}})"
+    fn compression_level(level: Opt<Int>) -> Self
+      lowers_to
+        rust: "{{self}}.compression_level({{level}})"
+    fn last_modified_time(mod_time: DateTime) -> Self
+      lowers_to
+        rust: "{{self}}.last_modified_time({{mod_time}})"
+    fn unix_permissions(mode: Int) -> Self
+      lowers_to
+        rust: "{{self}}.unix_permissions({{mode}})"
+    fn large_file(large: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.large_file({{large}})"
+    fn with_aes_encryption_and_salt(password: List<Int>, salt: AesSalt) -> FileOptions<T>
+      lowers_to
+        rust: "{{self}}.with_aes_encryption_and_salt({{password}}, {{salt}})"
+    fn with_aes_encryption(mode: AesMode, password: Str) -> FileOptions<T>
+      lowers_to
+        rust: "{{self}}.with_aes_encryption({{mode}}, {{password}})"
+    fn with_aes_encryption_bytes(mode: AesMode, password: List<Int>) -> FileOptions<T>
+      lowers_to
+        rust: "{{self}}.with_aes_encryption_bytes({{mode}}, {{password}})"
+    fn with_zopfli_buffer(size: Opt<Int>) -> Self
+      lowers_to
+        rust: "{{self}}.with_zopfli_buffer({{size}})"
+    fn get_compression_level() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.get_compression_level({{args}})"
+    fn with_alignment(alignment: Int) -> Self
+      lowers_to
+        rust: "{{self}}.with_alignment({{alignment}})"
+    fn with_file_comment(comment: S) -> Self
+      lowers_to
+        rust: "{{self}}.with_file_comment({{comment}})"
+    fn add_extra_data(header_id: Int, data: D, central_only: Bool) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.add_extra_data({{header_id}}, {{data}}, {{central_only}})"
+    fn clear_extra_data() -> Self
+      lowers_to
+        rust: "{{self}}.clear_extra_data({{args}})"
+    fn into_full_options() -> FullFileOptions
+      lowers_to
+        rust: "{{self}}.into_full_options({{args}})"
 
   struct ExtendedFileOptions
-    fn add_extra_data(header_id: Int, data: Box<Str>, central_only: Bool) -> ZipResult<Str>
+    path write
+    fn add_extra_data(header_id: Int, data: D, central_only: Bool) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.add_extra_data({{header_id}}, {{data}}, {{central_only}})"
+
+  enum AesMode
+    Aes128
+    Aes192
+    Aes256
+
+    fn as_u8() -> Int
+      lowers_to
+        rust: "{{self}}.as_u8({{args}})"
+    fn salt_length() -> Int
+      lowers_to
+        rust: "{{self}}.salt_length({{args}})"
+    fn key_length() -> Int
+      lowers_to
+        rust: "{{self}}.key_length({{args}})"
+
+  enum AesVendorVersion
+    Ae1
+    Ae2
+
+  enum CompressionMethod
+    Stored
+    Deflated
+    Deflate64
+    Bzip2
+    Aes
+    Zstd
+    Lzma
+    Xz
+    Ppmd
+    Unsupported(Int)
+
+    fn name_from_u16(val: Int) -> Str
+      lowers_to
+        rust: "zip::CompressionMethod::name_from_u16({{val}})"
+    fn from_u16(val: Int) -> CompressionMethod
+      lowers_to
+        rust: "zip::CompressionMethod::from_u16({{val}})"
+    fn to_u16() -> Int
+      lowers_to
+        rust: "{{self}}.to_u16({{args}})"
+
+  enum ExtraField
+    Ntfs(Ntfs)
+    ExtendedTimestamp(ExtendedTimestamp)
+
+  enum ArchiveOffset
+    Detect
+    FromCentralDirectory
+    Known(Int)
+
+  enum AesSalt
+    Aes128(List<Int>)
+    Aes192(List<Int>)
+    Aes256(List<Int>)
+
+    fn try_new(mode: AesMode, salt: List<Int>) -> Res!<Self>
+      lowers_to
+        rust: "zip::AesSalt::try_new({{mode}}, {{salt}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+
+  enum ZipError
+    Io(Error)
+    InvalidArchive(Cow<Str>)
+    UnsupportedArchive(Str)
+    FileNotFound
+    InvalidPassword
+    CompressionMethodNotSupported(Int)
+
+  enum System
+    Dos
+    Amiga
+    OpenVMS
+    Unix
+    VmCms
+    AtariSt
+    Os2
+    Macintosh
+    ZSystemO
+    CPM
+    WindowsNTFS
+    MVS
+    VSE
+    AcornRisc
+    VFAT
+    AlternateMVS
+    BeOS
+    Tandem
+    Os400
+    OsDarwin
+    Unknown
+
+    fn from_version_made_by(version_made_by: Int) -> Self
+      lowers_to
+        rust: "zip::System::from_version_made_by({{version_made_by}})"
+
+  trait LittleEndianWriteExt
+    fn write_u16_le(input: Int) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.write_u16_le({{input}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn write_u32_le(input: Int) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.write_u32_le({{input}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn write_u64_le(input: Int) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.write_u64_le({{input}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn write_u128_le(input: u128) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.write_u128_le({{input}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait ZipStreamVisitor
-    fn visit_file(file: ZipFile) -> ZipResult<Str>
-    fn visit_additional_metadata(metadata: ZipStreamFileMetadata) -> ZipResult<Str>
+    fn visit_file(file: ZipFile<R>) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.visit_file({{file}})"
+    fn visit_additional_metadata(metadata: ZipStreamFileMetadata) -> ZipResult<()>
+      lowers_to
+        rust: "{{self}}.visit_additional_metadata({{metadata}})"
 
   trait LittleEndianReadExt
     fn read_u16_le() -> Res!<Int>
+      lowers_to
+        rust: "{{self}}.read_u16_le({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn read_u32_le() -> Res!<Int>
+      lowers_to
+        rust: "{{self}}.read_u32_le({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn read_u64_le() -> Res!<Int>
+      lowers_to
+        rust: "{{self}}.read_u64_le({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait HasZipMetadata
     fn get_metadata() -> ZipFileData
-
-  trait LittleEndianWriteExt
-    fn write_u16_le(input: Int) -> Res!<Str>
-    fn write_u32_le(input: Int) -> Res!<Str>
-    fn write_u64_le(input: Int) -> Res!<Str>
-    fn write_u128_le(input: u128) -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.get_metadata({{args}})"
 
   trait FileOptionsExt
-    fn with_deprecated_encryption(password: Str) -> Self
+    fn with_deprecated_encryption(password: List<Int>) -> ZipResult<Self>
+      lowers_to
+        rust: "{{self}}.with_deprecated_encryption({{password}})"
