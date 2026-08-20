@@ -382,15 +382,13 @@ pub fn now_iso8601_rust() -> String {
     "Utc::now().to_rfc3339()".to_string()
 }
 
-pub fn expr_is_stringish(expr: &Expr, rust: &str, ctx: &GenCtx) -> bool {
+pub fn expr_is_stringish(expr: &Expr, ctx: &GenCtx) -> bool {
     match expr {
-        Expr::StringLit(_) => true,
+        Expr::StringLit(_) | Expr::StringInterp(_) => true,
         Expr::Ident(n) => ctx.local_type(n).is_some_and(rust_ty_is_stringish),
         _ => infer_expr_type(expr, ctx)
             .as_deref()
-            .is_some_and(rust_ty_is_stringish)
-            || rust.contains(".to_string()")
-            || rust.trim_start().starts_with('"'),
+            .is_some_and(rust_ty_is_stringish),
     }
 }
 
@@ -430,27 +428,30 @@ pub fn clone_if_named_value(expr: &Expr, rust: String) -> String {
 /// Drop a trailing try-suffix so a `match` can consume a `Result` directly.
 /// String-pattern matches must **not** use this — they need the unwrapped value.
 pub fn strip_try_suffix(raw: String) -> String {
-    raw.strip_suffix(".await.map_err(|e| DomainError::External(format!(\"{e:?}\")))?")
-        .or_else(|| {
-            raw.strip_suffix(".await.map_err(|e| DomainError::External(format!(\"{:?}\", e)))?")
-        })
-        .map(|s| format!("{s}.await"))
-        .or_else(|| {
-            raw.strip_suffix(".await.map_err(|e| DomainError::External(e.to_string()))?")
-                .map(|s| format!("{s}.await"))
-        })
-        .or_else(|| raw.strip_suffix(".await?").map(|s| format!("{s}.await")))
-        .or_else(|| {
-            raw.strip_suffix(".map(|s| s.to_string()).map_err(|e| DomainError::External(format!(\"{e:?}\")))?")
-                .map(|s| s.to_string())
-        })
-        .or_else(|| {
-            raw.strip_suffix(".map_err(|e| DomainError::External(format!(\"{e:?}\")))?")
-                .or_else(|| raw.strip_suffix(".map_err(|e| DomainError::External(e.to_string()))?"))
-                .map(|s| s.to_string())
-        })
-        .or_else(|| raw.strip_suffix('?').map(|s| s.to_string()))
-        .unwrap_or(raw)
+    // Generic pattern: strip .await.map_err(...)? or .map_err(...)? or .await? or ?
+    // The exact error type name doesn't matter — we just need to strip the try suffix.
+    if let Some(pos) = raw.rfind(".await.map_err(") {
+        if raw.ends_with(")?") {
+            return format!("{}.await", &raw[..pos]);
+        }
+    }
+    if let Some(stripped) = raw.strip_suffix(".await?") {
+        return format!("{stripped}.await");
+    }
+    if let Some(pos) = raw.rfind(".map(|s| s.to_string()).map_err(") {
+        if raw.ends_with(")?") {
+            return raw[..pos].to_string();
+        }
+    }
+    if let Some(pos) = raw.rfind(".map_err(") {
+        if raw.ends_with(")?") {
+            return raw[..pos].to_string();
+        }
+    }
+    if let Some(stripped) = raw.strip_suffix('?') {
+        return stripped.to_string();
+    }
+    raw
 }
 
 pub fn expr_handles_option_wrap(expr: &Expr) -> bool {
@@ -521,10 +522,11 @@ pub fn extract_domain_type_from_return(
     ret: &str,
     name_to_shape: &HashMap<String, Shape>,
 ) -> Option<String> {
-    // Strip Result<..., DomainError> wrapper
+    // Strip Result<..., E> wrapper (any error type)
     let inner = ret
         .strip_prefix("Result<")
-        .and_then(|s| s.rsplit_once(", DomainError>"))
+        .and_then(|s| s.strip_suffix('>'))
+        .and_then(|s| s.rsplit_once(", "))
         .map(|(inner, _)| inner)
         .unwrap_or(ret);
     // Strip Option<...> / Vec<...>

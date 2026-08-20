@@ -19,7 +19,10 @@ pub fn to_snake(name: &str) -> String {
 }
 
 pub fn type_to_rust(ty: &TypeExpr) -> String {
-    type_to_rust_with_error_impl(ty, &std::collections::HashSet::new(), "DomainError")
+    // Used for field types, parameter types, etc. that never contain Result.
+    // If a Result somehow leaks through, the sentinel makes the generated code
+    // fail to compile with an obvious error message.
+    type_to_rust_with_error_impl(ty, &std::collections::HashSet::new(), "__VEIL_NO_ERROR_MODEL__")
 }
 
 /// Convert a TypeExpr to Rust type string using the given error type name for Result<T, E>.
@@ -241,8 +244,8 @@ pub fn collect_deps_field_map(
 /// Trait-aware type rendering: a value-position reference to a known trait
 /// becomes a boxed trait object `Box<dyn Trait + Send + Sync>`. Used when
 /// generating coordinator signatures (`List<SagaStep>` → `Vec<Box<dyn ..>>`).
-pub fn type_to_rust_with_traits(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
-    type_to_rust_with_error_impl(ty, traits, "DomainError")
+pub fn type_to_rust_with_traits(ty: &TypeExpr, traits: &std::collections::HashSet<String>, error_type: &str) -> String {
+    type_to_rust_with_error_impl(ty, traits, error_type)
 }
 
 /// Like `type_to_rust_with_traits` but uses the given error type name for Result<T, E>.
@@ -255,7 +258,7 @@ pub fn type_to_rust_with_traits_and_error(ty: &TypeExpr, traits: &std::collectio
 /// a borrowed slice (`&[Box<dyn Trait + Send + Sync>]`) since boxed trait
 /// objects aren't Clone and shouldn't be moved into a coordinator; other types
 /// use the standard rendering.
-pub fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
+pub fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<String>, error_type: &str) -> String {
     if let TypeExpr::Named(name) = ty
         && traits.contains(name) {
             return format!("&(dyn {} + Send + Sync)", name);
@@ -265,23 +268,18 @@ pub fn param_type_to_rust(ty: &TypeExpr, traits: &std::collections::HashSet<Stri
             && traits.contains(name) {
                 return format!("&[Box<dyn {} + Send + Sync>]", name);
             }
-    type_to_rust_with_error_impl(ty, traits, "DomainError")
+    type_to_rust_with_error_impl(ty, traits, error_type)
 }
 
 /// The type name tracked for a parameter local, for method resolution. A bare
 /// trait param tracks the unboxed trait name (so `x.method()` resolves to an
 /// async trait call); other types track their Rust rendering.
-pub fn local_type_for_param(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
+pub fn local_type_for_param(ty: &TypeExpr, traits: &std::collections::HashSet<String>, error_type: &str) -> String {
     if let TypeExpr::Named(name) = ty
         && traits.contains(name) {
             return name.clone();
         }
-    type_to_rust_with_error_impl(ty, traits, "DomainError")
-}
-
-/// Legacy alias for backward compatibility.
-pub fn type_to_rust_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>) -> String {
-    type_to_rust_with_error_impl(ty, traits, "DomainError")
+    type_to_rust_with_error_impl(ty, traits, error_type)
 }
 
 pub fn type_to_rust_with_error_impl(ty: &TypeExpr, traits: &std::collections::HashSet<String>, error_type: &str) -> String {
@@ -820,7 +818,9 @@ pub fn generate_multi_package_harness(
         let external = reg.variant("external").unwrap_or("External");
         main_rs.push_str(&harness_domain_error_status_helper_dynamic(&reg.type_name, not_found, validation, external));
     } else {
-        main_rs.push_str(harness_domain_error_status_helper());
+        main_rs.push_str(&harness_domain_error_status_helper_dynamic(
+            "__VEIL_NO_ERROR_MODEL__", "__NO_NOT_FOUND__", "__NO_VALIDATION__", "__NO_EXTERNAL__",
+        ));
     }
     main_rs.push_str(harness_body_dt_helper());
     main_rs.push_str(harness_auth_cors_helpers());

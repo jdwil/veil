@@ -163,7 +163,7 @@ fn is_unit_ok(inner: &str) -> bool {
 }
 
 fn gen_port_double(port: &Construct, registry: &LayerRegistry) -> String {
-    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("DomainError");
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let err_external = registry.error_model.as_ref()
         .and_then(|em| em.variant_path("external"))
         .unwrap_or_else(|| "DomainError::External".to_string());
@@ -295,7 +295,7 @@ fn gen_handler_test_case(
         let fname = method_c
             .map(|m| crate::rust::to_snake(&m.name))
             .unwrap_or_else(|| crate::rust::to_snake(&method));
-        let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("DomainError");
+        let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
         match &stub.variant {
             StubVariant::Error(msg) => {
                 body.push_str(&format!(
@@ -401,7 +401,7 @@ fn gen_handler_test_case(
             args.join(", ")
         ));
     } else {
-        let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("DomainError");
+        let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
         let err_external = registry.error_model.as_ref()
             .and_then(|em| em.variant_path("external"))
             .unwrap_or_else(|| "DomainError::External".to_string());

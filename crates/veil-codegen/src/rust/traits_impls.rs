@@ -57,13 +57,16 @@ futures = "0.3"
     lib.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
 
     // ── Error model: generate from registry (layer-declared) ────────────
+    // If no error model is declared, use sentinel values. The check pipeline
+    // blocks user projects from reaching this point, but test fixtures that
+    // exercise non-error-model features may legitimately lack one.
     let (err_type, err_not_found, err_validation, err_external) = if let Some(em) = &registry.error_model {
         let nf = em.variant("not_found").unwrap_or("NotFound").to_string();
         let val = em.variant("validation").unwrap_or("Validation").to_string();
         let ext = em.variant("external").unwrap_or("External").to_string();
         (em.type_name.clone(), nf, val, ext)
     } else {
-        ("DomainError".to_string(), "NotFound".to_string(), "Validation".to_string(), "External".to_string())
+        ("__VEIL_NO_ERROR_MODEL__".to_string(), "__NO_NOT_FOUND__".to_string(), "__NO_VALIDATION__".to_string(), "__NO_EXTERNAL__".to_string())
     };
     lib.push_str(&format!("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum {} {{\n", err_type));
     lib.push_str(&format!("    #[error(\"Not found\")]\n    {},\n", err_not_found));
@@ -120,12 +123,12 @@ futures = "0.3"
             let params = method
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names)))
+                .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names, &err_type)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let sep = if params.is_empty() { "" } else { ", " };
             let ret = match &method.return_type {
-                Some(t) => format!(" -> {}", type_to_rust_with_traits(t, &trait_names)),
+                Some(t) => format!(" -> {}", type_to_rust_with_traits(t, &trait_names, &err_type)),
                 None => String::new(),
             };
             lib.push_str(&format!("    async fn {}(&self{}{}){ret};\n", to_snake(&method.name), sep, params));
@@ -172,7 +175,7 @@ futures = "0.3"
         for p in &f.params {
             ctx.locals.insert(p.name.clone());
             // Track the trait name (unboxed) so method calls resolve to .await?.
-            ctx.types.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names));
+            ctx.types.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names, &err_type));
         }
         ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&f.body);
         ctx.ownership.ident_uses = crate::expr::count_ident_uses(&f.body);
@@ -180,7 +183,7 @@ futures = "0.3"
         let params = f
             .params
             .iter()
-            .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names)))
+            .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names, &err_type)))
             .collect::<Vec<_>>()
             .join(", ");
         let ret = match &f.return_type {
@@ -238,13 +241,14 @@ pub fn gen_traits(
     template_output: &crate::template::TemplateOutput,
 ) -> GeneratedFile {
     let mut out = String::new();
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     out.push_str("//! Trait definitions (async traits).\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
     out.push_str("use crate::domain::types::*;\n");
     // Common error types live in veil_shared. Layer-declared names are
     // re-exported unless the product defined the same name locally.
-    out.push_str("pub use veil_shared::{DomainError, ValidationError};\n");
+    out.push_str(&format!("pub use veil_shared::{{{}, ValidationError}};\n", err_type));
     let product_trait_names: std::collections::HashSet<&str> =
         contents.traits.iter().map(|t| t.name.as_str()).collect();
     let declared_types = layer_declared_type_names(registry);
@@ -309,11 +313,11 @@ pub fn gen_traits(
             let params = method
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&p.type_expr, err_type)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let ret = match &method.return_type {
-                Some(t) => format!(" -> {}", type_to_rust(t)),
+                Some(t) => format!(" -> {}", type_to_rust_with_error(t, err_type)),
                 None => String::new(),
             };
             let sep = if params.is_empty() { "" } else { ", " };
@@ -371,6 +375,11 @@ pub fn gen_impls(
     registry: &LayerRegistry,
 ) -> GeneratedFile {
     use crate::expr::{build_ctx_from_solution, expr_to_rust, GenCtx};
+
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    let err_external_path = registry.error_model.as_ref()
+        .and_then(|em| em.variant_path("external"))
+        .unwrap_or_else(|| "__VEIL_NO_ERROR_MODEL__::__NO_EXTERNAL__".to_string());
 
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");
@@ -688,29 +697,29 @@ pub fn gen_impls(
                             .iter()
                             .map(|p| {
                                 let ty = monomorphize_type(&p.type_expr, c, t);
-                                format!("{}: {}", to_snake(&p.name), type_to_rust(&ty))
+                                format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&ty, err_type))
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
                         let ret = m
                             .return_type
                             .as_ref()
-                            .map(|rt| type_to_rust(&monomorphize_type(rt, c, t)))
-                            .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                            .map(|rt| type_to_rust_with_error(&monomorphize_type(rt, c, t), err_type))
+                            .unwrap_or_else(|| format!("Result<(), {}>", err_type));
                         (params, ret)
                     }
                     (Some(m), None) => {
                         let params = m
                             .params
                             .iter()
-                            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&p.type_expr, err_type)))
                             .collect::<Vec<_>>()
                             .join(", ");
                         let ret = m
                             .return_type
                             .as_ref()
-                            .map(type_to_rust)
-                            .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                            .map(|t| type_to_rust_with_error(t, err_type))
+                            .unwrap_or_else(|| format!("Result<(), {}>", err_type));
                         (params, ret)
                     }
                     _ => {
@@ -721,7 +730,7 @@ pub fn gen_impls(
                             .map(|p| format!("{}: ()", to_snake(p)))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        (params, "Result<(), DomainError>".to_string())
+                        (params, format!("Result<(), {}>", err_type))
                     }
                 };
 
@@ -853,7 +862,7 @@ pub fn gen_impls(
                 // that is the real adapter path (GEN-002 / RT cloud).
                 if uses_stub_sdk && mimpl.body.is_empty() {
                     out.push_str(&format!(
-                        "        Err(DomainError::External(\
+                        "        Err({err_external_path}(\
                          \"cloud adapter {}::{} not configured (pure-runtime uses local ports)\"\
                          .into()))\n",
                         c.name, mimpl.method_name
@@ -907,7 +916,7 @@ pub fn gen_impls(
                                 || rust_expr.trim_start().starts_with('{');
                             if is_return || rust_expr.contains("todo!") {
                                 out.push_str(&format!("        {rust_expr}\n"));
-                            } else if ret_rust == "Result<(), DomainError>" {
+                            } else if ret_rust == format!("Result<(), {}>", err_type) {
                                 out.push_str(&format!("        {rust_expr};\n"));
                                 out.push_str("        Ok(())\n");
                             } else if ret_rust.starts_with("Result<") {
@@ -918,7 +927,7 @@ pub fn gen_impls(
                                     out.push_str(&format!("        Ok({rust_expr})\n"));
                                 } else if rust_expr.contains(".await") && !is_ctrl {
                                     out.push_str(&format!(
-                                        "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
+                                        "        Ok({rust_expr}.map_err(|e| {err_external_path}(e.to_string()))?)\n"
                                     ));
                                 } else {
                                     out.push_str(&format!("        Ok({rust_expr})\n"));
@@ -949,7 +958,7 @@ pub fn gen_impls(
                         .iter()
                         .map(|p| {
                             let ty = monomorphize_type(&p.type_expr, c, t);
-                            format!("{}: {}", to_snake(&p.name), type_to_rust(&ty))
+                            format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&ty, err_type))
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -959,8 +968,8 @@ pub fn gen_impls(
                         .map(|rt| monomorphize_type(rt, c, t));
                     let ret = ret_te
                         .as_ref()
-                        .map(type_to_rust)
-                        .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                        .map(|t| type_to_rust_with_error(t, err_type))
+                        .unwrap_or_else(|| format!("Result<(), {}>", err_type));
                     out.push_str(&format!(
                         "    async fn {}(&self{}{}) -> {} {{\n        {} // TODO: implement\n    }}\n\n",
                         to_snake(&m.name),
@@ -977,7 +986,7 @@ pub fn gen_impls(
     }
 
     // Local/dev fallback: HashMap adapters for product ports with no authored impl.
-    out.push_str(&gen_in_memory_adapters(traits, impls, solution));
+    out.push_str(&gen_in_memory_adapters(traits, impls, solution, registry));
 
     // Product free functions (non-layer) live next to adapters so they can use
     // domain types. Layer free fns stay in veil_shared.
@@ -1115,7 +1124,9 @@ pub fn gen_in_memory_adapters(
     traits: &[&Construct],
     impls: &[&Construct],
     sol: &Solution,
+    registry: &LayerRegistry,
 ) -> String {
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let mut out = String::new();
     for t in traits {
         if t.layer_provided {
@@ -1158,8 +1169,8 @@ pub fn gen_in_memory_adapters(
             let ret = m
                 .return_type
                 .as_ref()
-                .map(type_to_rust)
-                .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                .map(|t| type_to_rust_with_error(t, err_type))
+                .unwrap_or_else(|| format!("Result<(), {}>", err_type));
             let sep = if params.is_empty() { "" } else { ", " };
             let body = in_memory_method_body(&mname, m, &entity, &fields, &ret);
             out.push_str(&format!(

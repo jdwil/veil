@@ -10,7 +10,7 @@ pub fn gen_inprocess_bus_impl(
     registry: &LayerRegistry,
 ) -> String {
     let trait_name = &routing_trait.name;
-    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("DomainError");
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let mut out = format!(
         r#"// ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
 // Methods generated from the layer-declared routing trait surface.
@@ -75,14 +75,14 @@ impl InProcessBus {{
                 format!(
                     "{}: {}",
                     to_snake(&p.name),
-                    param_type_to_rust(&p.type_expr, trait_names)
+                    param_type_to_rust(&p.type_expr, trait_names, err_type)
                 )
             })
             .collect();
         let params_joined = params_sig.join(", ");
         let sep = if params_joined.is_empty() { "" } else { ", " };
         let ret = match &method.return_type {
-            Some(t) => format!(" -> {}", type_to_rust_with_traits(t, trait_names)),
+            Some(t) => format!(" -> {}", type_to_rust_with_traits(t, trait_names, err_type)),
             None => String::new(),
         };
         // First Json/Value-like param is the envelope (type field + payload).
@@ -121,7 +121,7 @@ impl InProcessBus {{
                 // Request/response (invoke-style)
                 let not_found_path = registry.error_model.as_ref()
                     .and_then(|em| em.variant_path("not_found"))
-                    .unwrap_or_else(|| "DomainError::NotFound".to_string());
+                    .unwrap_or_else(|| "__VEIL_NO_ERROR_MODEL__::__NO_NOT_FOUND__".to_string());
                 format!(
                     r#"        let type_name = {env}
             .get("type")
@@ -139,7 +139,7 @@ impl InProcessBus {{
         } else {
             let external_path = registry.error_model.as_ref()
                 .and_then(|em| em.variant_path("external"))
-                .unwrap_or_else(|| "DomainError::External".to_string());
+                .unwrap_or_else(|| "__VEIL_NO_ERROR_MODEL__::__NO_EXTERNAL__".to_string());
             format!("        Err({external_path}(\"no envelope param\".into()))")
         };
         out.push_str(&format!(
@@ -158,6 +158,7 @@ pub fn gen_allow_all_auth_impl(
     registry: &LayerRegistry,
 ) -> String {
     let trait_name = &auth_trait.name;
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     // Prefer a layer-provided struct referenced by any method return type.
     let principal = auth_trait
         .methods
@@ -193,7 +194,7 @@ impl {trait_name} for AllowAllAuth {{
     for method in &auth_trait.methods {
         let mname = to_snake(&method.name);
         let ret = match &method.return_type {
-            Some(t) => format!(" -> {}", type_to_rust_with_traits(t, trait_names)),
+            Some(t) => format!(" -> {}", type_to_rust_with_traits(t, trait_names, err_type)),
             None => String::new(),
         };
         // First Str-like param is treated as token for principal identity.
@@ -259,7 +260,7 @@ impl {trait_name} for AllowAllAuth {{
             Some(_) => {
                 let external_path = registry.error_model.as_ref()
                     .and_then(|em| em.variant_path("external"))
-                    .unwrap_or_else(|| "DomainError::External".to_string());
+                    .unwrap_or_else(|| "__VEIL_NO_ERROR_MODEL__::__NO_EXTERNAL__".to_string());
                 format!("        Err({external_path}(\"allow-all: unsupported return\".into()))")
             }
         };
@@ -269,7 +270,7 @@ impl {trait_name} for AllowAllAuth {{
             .iter()
             .map(|p| {
                 let pn = to_snake(&p.name);
-                let ty = param_type_to_rust(&p.type_expr, trait_names);
+                let ty = param_type_to_rust(&p.type_expr, trait_names, err_type);
                 let used = token_param
                     .map(|t| to_snake(&t.name) == pn)
                     .unwrap_or(false)

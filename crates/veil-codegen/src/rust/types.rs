@@ -732,7 +732,7 @@ pub fn gen_struct_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistr
 
         // Explicit return type from the VEIL signature; otherwise event-collecting
         // methods default to `Result<Vec<Events>, DomainError>`.
-        let err_type_name = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("DomainError");
+        let err_type_name = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
         let has_explicit_return = func.return_type.as_ref()
             .map(|t| !matches!(t, TypeExpr::Result(None)))
             .unwrap_or(false);

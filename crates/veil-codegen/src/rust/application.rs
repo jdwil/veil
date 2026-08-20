@@ -442,7 +442,6 @@ pub fn infer_flow_return_type(
     return_expr: Option<&Expr>,
     steps: &[FlowStep],
     base_ctx: &crate::expr::GenCtx,
-    envelope_routing: bool,
 ) -> String {
     // If there's an explicit top-level return expression, use it.
     // Otherwise, scan step bodies for `ret` (Expr::Return) statements.
@@ -472,10 +471,7 @@ pub fn infer_flow_return_type(
                 if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = expr
                     && !name.contains('.') {
                         ctx.locals.insert(name.clone());
-                        if envelope_routing {
-                            // Envelope-routing locals are JSON message results.
-                            ctx.types.local_types.insert(name.clone(), "serde_json::Value".to_string());
-                        } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
+                        if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
                             ctx.types.local_types.insert(name.clone(), t);
                         }
                     }
@@ -556,6 +552,8 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
     use crate::expr::{build_ctx_from_solution, collect_deps, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+
     let mut out = String::new();
     out.push_str("//! Application services and flow functions.\n\n");
     out.push_str("#![allow(unused_imports, unused_variables)]\n\n");
@@ -615,18 +613,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
             }
         })
     });
-    let envelope_routing = has_ctx_refs && !registry.routing_traits().is_empty();
-
-    // With envelope routing, only routing traits are direct deps — other
-    // cross-boundary calls go through the message-routing port.
     let mut effective_name_to_shape = name_to_shape.clone();
-    if envelope_routing {
-        let routing = registry.routing_traits();
-        // Remove all non-routing traits from the shape map so they don't become direct deps
-        effective_name_to_shape.retain(|name, shape| {
-            *shape != Shape::Trait || routing.contains(name)
-        });
-    }
 
     // Shared trait → Deps field map (application + harness + port-call lowering).
     let flow_constructs: Vec<&Construct> = flows
@@ -824,7 +811,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
                 let ret_type = domain_ret_by_message
                     .get(&msg)
                     .cloned()
-                    .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                    .unwrap_or_else(|| format!("Result<(), {}>", err_type));
                 let deps_arg = if has_deps { "deps, " } else { "" };
                 let rest = call_args.join(", ");
                 // fn_attrs: layer-driven (e.g. "pub async" from tokio.layer).
@@ -852,13 +839,8 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
 
         // Build context for this flow
         let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
-        ctx.routing.envelope_routing = envelope_routing;
-        if envelope_routing && ctx.routing.routing_ref.is_empty() {
-            ctx.routing.routing_ref = ctx.default_routing_ref_as_dep();
-        }
         ctx.dep_fields = dep_field_names.clone();
         ctx.local_domain_types = base_ctx.local_domain_types.clone();
-        ctx.routing.bus_returns = base_ctx.routing.bus_returns.clone();
         // Register inputs as locals, with their declared types for inference.
         // Skip dependency-role inputs — accessed via deps.x, not as locals.
         for input in inputs {
@@ -939,9 +921,9 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         };
         let ret_type = if let Some(rt) = explicit_return {
             let inner = type_to_rust(rt);
-            if inner.starts_with("Result<") { inner } else { format!("Result<{}, DomainError>", inner) }
+            if inner.starts_with("Result<") { inner } else { format!("Result<{}, {}>", inner, err_type) }
         } else {
-            infer_flow_return_type(return_expr, steps, &ctx, envelope_routing)
+            infer_flow_return_type(return_expr, steps, &ctx)
         };
 
         // Record domain return types for thin ApplicationService wrappers.
@@ -1039,6 +1021,7 @@ pub fn emit_runtime_delegated(
     ctx: &crate::expr::GenCtx,
     layer_fn_attrs: Option<&str>,
 ) {
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let step_trait = &rt.step_trait;
     // Capture the construct's inputs on each step struct so step bodies can use
     // them. Fields are cloned into the struct at construction.
@@ -1080,7 +1063,7 @@ pub fn emit_runtime_delegated(
 
     // Trait names in scope for param rendering (step trait + routing + any
     // named traits the step methods reference).
-    let mut trait_names: std::collections::HashSet<String> = ctx.routing.routing_traits.clone();
+    let mut trait_names: std::collections::HashSet<String> = registry.routing_traits().into_iter().collect();
     trait_names.insert(step_trait.clone());
     if let Some(tc) = step_trait_construct {
         for m in &tc.methods {
@@ -1088,7 +1071,7 @@ pub fn emit_runtime_delegated(
                 if let TypeExpr::Named(n) = &p.type_expr
                     && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                         // Candidate trait/type name — only box known traits.
-                        if ctx.routing.routing_traits.contains(n) || n == step_trait {
+                        if trait_names.contains(n) || n == step_trait {
                             trait_names.insert(n.clone());
                         }
                     }
@@ -1112,22 +1095,23 @@ pub fn emit_runtime_delegated(
 
     // Routing param name from the step trait's first method that names a
     // routing trait (e.g. `bus: Bus` → `"bus"`). Falls back to snake_case of
-    // the primary routing trait.
+    // the primary routing trait from loaded layers.
+    let layer_routing_traits = registry.routing_traits();
     let routing_param = lookup_method("action")
         .or_else(|| step_trait_construct.and_then(|t| t.methods.first()))
         .and_then(|m| {
             m.params.iter().find_map(|p| {
                 if let TypeExpr::Named(ty) = &p.type_expr
-                    && ctx.routing.routing_traits.contains(ty) {
+                    && layer_routing_traits.contains(&ty.to_string()) {
                         return Some(to_snake(&p.name));
                     }
                 None
             })
         })
-        .or_else(|| ctx.primary_routing_trait().map(to_snake))
+        .or_else(|| layer_routing_traits.first().map(|t| to_snake(t)))
         .unwrap_or_default();
 
-    let use_envelope = !ctx.routing.routing_traits.is_empty();
+    let use_envelope = !layer_routing_traits.is_empty();
 
     // One struct + impl per Step (skip par/match — delegated runtimes use
     // plain steps).
@@ -1149,8 +1133,6 @@ pub fn emit_runtime_delegated(
         // param from the step-trait signature; cross-step locals live in threaded state.
         let mut step_ctx = ctx.clone_for_inference();
         step_ctx.locals.clear(); // Step body starts fresh — inputs are self_fields, not locals.
-        step_ctx.routing.envelope_routing = use_envelope;
-        step_ctx.routing.routing_ref = routing_param.clone();
         step_ctx.in_method = true; // input idents render as self.<field>
         for (fname, ftype) in &input_fields {
             step_ctx.self_fields.insert(fname.clone());
@@ -1199,9 +1181,10 @@ pub fn emit_runtime_delegated(
         .collect::<Vec<_>>()
         .join(", ");
     let fn_mod = layer_fn_attrs.unwrap_or("pub");
+    let err_type = &ctx.error_model.type_name;
     let await_suffix = if fn_mod.contains("async") { ".await" } else { "" };
     out.push_str(&format!(
-        "#[tracing::instrument(skip_all)]\n{fn_mod} fn {}({}{}) -> Result<(), DomainError> {{\n",
+        "#[tracing::instrument(skip_all)]\n{fn_mod} fn {}({}{}) -> Result<(), {err_type}> {{\n",
         to_snake(name),
         deps_param,
         params,
@@ -1224,7 +1207,7 @@ pub fn emit_runtime_delegated(
     // Coordinator args follow the layer-declared fn. A routing-trait first
     // argument is only passed when a loaded layer actually declared one.
     let coord = to_snake(&rt.coordinator);
-    match ctx.primary_routing_trait() {
+    match registry.routing_traits().first() {
         Some(t) => out.push_str(&format!(
             "    {coord}(deps.{}.as_ref(), &steps){await_suffix}\n",
             to_snake(t)
@@ -1248,11 +1231,12 @@ pub fn emit_step_method(
     base_ctx: &crate::expr::GenCtx,
 ) {
     let (params_str, ret_inner) = if let Some(m) = step_method {
+        let err_type = &base_ctx.error_model.type_name;
         let params: Vec<String> = m
             .params
             .iter()
             .map(|p| {
-                let ty = param_type_to_rust(&p.type_expr, trait_names);
+                let ty = param_type_to_rust(&p.type_expr, trait_names, err_type);
                 // Threaded JSON state bags need `mut` so the body can reassign.
                 let mut_kw = if matches!(&p.type_expr, TypeExpr::Named(n) if n == "Json") {
                     "mut "
@@ -1263,9 +1247,9 @@ pub fn emit_step_method(
             })
             .collect();
         let ret = match &m.return_type {
-            Some(TypeExpr::Result(Some(inner))) => type_to_rust_with_traits(inner, trait_names),
+            Some(TypeExpr::Result(Some(inner))) => type_to_rust_with_traits(inner, trait_names, err_type),
             Some(TypeExpr::Result(None)) | None => "()".to_string(),
-            Some(other) => type_to_rust_with_traits(other, trait_names),
+            Some(other) => type_to_rust_with_traits(other, trait_names, err_type),
         };
         (params.join(", "), ret)
     } else {
@@ -1281,8 +1265,8 @@ pub fn emit_step_method(
 
     let sep = if params_str.is_empty() { "" } else { ", " };
     out.push_str(&format!(
-        "    async fn {}(&self{}{}) -> Result<{}, DomainError> {{\n",
-        method, sep, params_str, ret_inner
+        "    async fn {}(&self{}{}) -> Result<{}, {}> {{\n",
+        method, sep, params_str, ret_inner, &base_ctx.error_model.type_name
     ));
     let mut ctx = base_ctx.clone_for_inference();
     ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(body);

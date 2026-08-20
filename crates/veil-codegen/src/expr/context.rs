@@ -30,11 +30,15 @@ pub struct ErrorModel {
 
 impl Default for ErrorModel {
     fn default() -> Self {
+        // Sentinel: if this leaks into generated code, the project won't compile
+        // and the error message makes the fix obvious. The check pipeline
+        // (check_error_model) blocks compilation before codegen when no layer
+        // declares an error_model, so this should never appear in output.
         ErrorModel {
-            type_name: "DomainError".to_string(),
-            not_found: "NotFound".to_string(),
-            validation: "Validation".to_string(),
-            external: "External".to_string(),
+            type_name: "__VEIL_NO_ERROR_MODEL__".to_string(),
+            not_found: "__NO_NOT_FOUND__".to_string(),
+            validation: "__NO_VALIDATION__".to_string(),
+            external: "__NO_EXTERNAL__".to_string(),
         }
     }
 }
@@ -175,42 +179,6 @@ impl Default for StubContext {
     fn default() -> Self { Self::new() }
 }
 
-/// Routing context — envelope routing configuration and bus return types.
-#[derive(Clone)]
-pub struct RoutingContext {
-    /// Expression that names the primary routing-trait instance for envelope
-    /// routing. Derived from layer routing traits: `deps.<snake(Trait)>` in a
-    /// flow; the injected param name inside a runtime-delegated step method.
-    /// Empty when no routing traits are loaded.
-    pub routing_ref: String,
-    /// Names of traits used as message-routing ports (from layer statement
-    /// `maps_to Trait.method`). Calls to these use `routing_ref` instead of
-    /// `deps.<name>`.
-    pub routing_traits: HashSet<String>,
-    /// Whether cross-boundary calls use message-envelope routing (JSON) via
-    /// layer-declared routing traits. Opt-in when loaded layers declare statement
-    /// targets that are routing ports (INV-003).
-    pub envelope_routing: bool,
-    /// Bus message name → Rust success type for `invoke`/`request` decode
-    /// (e.g. `"Reconcile"` → `"ReconcileResult"`). Json/unit stay as Value.
-    pub bus_returns: HashMap<String, String>,
-}
-
-impl RoutingContext {
-    pub fn new() -> Self {
-        RoutingContext {
-            routing_ref: String::new(),
-            routing_traits: HashSet::new(),
-            envelope_routing: false,
-            bus_returns: HashMap::new(),
-        }
-    }
-}
-
-impl Default for RoutingContext {
-    fn default() -> Self { Self::new() }
-}
-
 // ─── GenCtx ──────────────────────────────────────────────────────────────────
 
 /// Code generation context — carries name resolution and type information.
@@ -229,8 +197,6 @@ pub struct GenCtx {
     pub ownership: OwnershipContext,
     /// Stub crate/type mappings and fallibility metadata.
     pub stubs: StubContext,
-    /// Envelope routing configuration and bus return types.
-    pub routing: RoutingContext,
     /// Names of known async free functions (layer-declared coordinators and
     /// package free fns). Calls to these need `.await?`.
     pub async_fns: HashSet<String>,
@@ -291,7 +257,6 @@ impl GenCtx {
             types: TypeContext::new(),
             ownership: OwnershipContext::new(),
             stubs: StubContext::new(),
-            routing: RoutingContext::new(),
             async_fns: HashSet::new(),
             state_locals: HashSet::new(),
             expected_return_rust: None,
@@ -319,20 +284,6 @@ impl GenCtx {
             return target.to_string();
         }
         to_snake(target)
-    }
-
-    /// Stable primary routing-trait name (sorted; HashSet order is arbitrary).
-    pub fn primary_routing_trait(&self) -> Option<&str> {
-        let mut names: Vec<&str> = self.routing.routing_traits.iter().map(|s| s.as_str()).collect();
-        names.sort_unstable();
-        names.first().copied()
-    }
-
-    /// Default routing access path: `deps.<snake(Trait)>`, or empty if none.
-    pub fn default_routing_ref_as_dep(&self) -> String {
-        self.primary_routing_trait()
-            .map(|t| format!("deps.{}", to_snake(t)))
-            .unwrap_or_default()
     }
 
     /// Is this name a known trait-shaped construct (repo/integration)?
@@ -417,22 +368,6 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     let mut ctx = GenCtx::new(name_to_shape);
 
     fn visit_constructs(c: &Construct, ctx: &mut GenCtx, registry: &LayerRegistry) {
-        // Bus handler return types: svc/tool/handler name → Rust success type.
-        if c.shape == Shape::Fn
-            && let Some(rt) = &c.return_type {
-                let rust = crate::rust::type_to_rust(rt);
-                // Strip outer Result if present (VEIL return is the success type).
-                let inner = rust
-                    .strip_prefix("Result<")
-                    .and_then(|s| s.rsplit_once(", "))
-                    .map(|(a, _)| a.trim().to_string())
-                    .unwrap_or(rust);
-                if inner != "()" && !inner.is_empty() {
-                    let msg = registry.bus_message_name(&c.name);
-                    ctx.routing.bus_returns.insert(msg, inner.clone());
-                    ctx.routing.bus_returns.insert(c.name.clone(), inner);
-                }
-            }
         // Record method return types for trait-shaped constructs
         if c.shape == Shape::Trait {
             for method in &c.methods {
@@ -811,11 +746,6 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             }
         }
     }
-
-    // Populate routing traits from the layer registry so call generation can
-    // identify message-routing traits without hardcoding trait names.
-    ctx.routing.routing_traits = registry.routing_traits().into_iter().collect();
-    ctx.routing.routing_ref = ctx.default_routing_ref_as_dep();
 
     // Known modules: every loaded stub crate name + `std`. Replaces hardcoded
     // array in calls.rs — a new stub automatically becomes a known module.

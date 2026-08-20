@@ -1511,6 +1511,9 @@ impl LayerRegistry {
                 self.auth_policy = auth;
             }
         }
+        if let Some(em) = parse_error_model(content) {
+            self.error_model = Some(em);
+        }
         if let Some(http) = parse_http_name_policy(content) {
             self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
         }
@@ -1847,8 +1850,18 @@ impl LayerRegistry {
                 })?;
             // Resolve port_target/port_method: follow transitive chain to find Port.method
             let (target, method) = resolve_port_binding(&stmt.maps_to, &existing_stmts, &snapshot_stmts);
-            stmt.port_target = target;
-            stmt.port_method = method;
+            stmt.port_target = target.clone();
+            stmt.port_method = method.clone();
+            // If statement has port_target + lowers_to, register as method_lowers_to
+            // so that `trait.method(...)` call syntax also uses the layer template.
+            if let (Some(port), Some(meth)) = (target.as_ref(), method.as_ref()) {
+                if !stmt.lowers_to.is_empty() {
+                    self.method_lowers_to
+                        .entry((port.to_string(), meth.to_string()))
+                        .or_default()
+                        .extend(stmt.lowers_to.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
             self.statements.retain(|s| s.keyword != stmt.keyword);
             self.statements.push(stmt);
         }
@@ -4599,6 +4612,19 @@ pkg wf v1
         assert!(
             decl_joined.contains("trait Bus"),
             "declare must contain Bus trait: {decl_joined}"
+        );
+        // method_lowers_to should be populated from statement port_target+lowers_to.
+        assert!(
+            reg.method_lowers_to_template("Bus", "invoke", "rust").is_some(),
+            "Bus.invoke must have rust method_lowers_to"
+        );
+        assert!(
+            reg.method_lowers_to_template("Bus", "dispatch", "rust").is_some(),
+            "Bus.dispatch must have rust method_lowers_to"
+        );
+        assert!(
+            reg.method_lowers_to_template("Bus", "request", "rust").is_some(),
+            "Bus.request must have rust method_lowers_to"
         );
     }
 

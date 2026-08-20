@@ -1189,7 +1189,10 @@ pub fn gen_local_harness_main(
         let external = em.variant("external").unwrap_or("External");
         out.push_str(&harness_domain_error_status_helper_dynamic(&em.type_name, not_found, validation, external));
     } else {
-        out.push_str(harness_domain_error_status_helper());
+        // Sentinel: check pipeline should have blocked compilation before reaching here.
+        out.push_str(&harness_domain_error_status_helper_dynamic(
+            "__VEIL_NO_ERROR_MODEL__", "__NO_NOT_FOUND__", "__NO_VALIDATION__", "__NO_EXTERNAL__",
+        ));
     }
     out.push_str(harness_auth_cors_helpers());
     out.push_str(harness_body_dt_helper());
@@ -1388,28 +1391,6 @@ pub fn veil_cors_layer() -> CorsLayer {
 "#
 }
 
-/// Map domain errors to HTTP statuses — match enum variants (never Display text).
-pub fn harness_domain_error_status_helper() -> &'static str {
-    r#"
-pub fn veil_domain_error_status(e: DomainError) -> StatusCode {
-    match &e {
-        DomainError::NotFound => {
-            eprintln!("warn: not found: {e}");
-            StatusCode::NOT_FOUND
-        }
-        DomainError::Validation(msg) => {
-            eprintln!("warn: validation: {msg}");
-            StatusCode::BAD_REQUEST
-        }
-        DomainError::External(msg) => {
-            eprintln!("error: upstream: {msg}");
-            StatusCode::BAD_GATEWAY
-        }
-    }
-}
-"#
-}
-
 /// Dynamic version: generates the error→status helper using the layer-declared error model.
 pub fn harness_domain_error_status_helper_dynamic(error_type: &str, not_found: &str, validation: &str, external: &str) -> String {
     format!(
@@ -1559,6 +1540,9 @@ pub fn gen_bus_handler_registration(
     registry: &LayerRegistry,
 ) -> String {
     let app_fn = to_snake(&svc.name);
+    let err_ext = registry.error_model.as_ref()
+        .and_then(|em| em.variant_path("external"))
+        .unwrap_or_else(|| "__VEIL_NO_ERROR_MODEL__::__NO_EXTERNAL__".to_string());
     // Only pass &deps when *this* service takes dependency-role inputs (or
     // uses trait deps in its body). Module-level Deps may exist for other svcs.
     let svc_takes_deps = module_has_deps
@@ -1624,7 +1608,7 @@ pub fn gen_bus_handler_registration(
             call_parts.push(format!(
                 "serde_json::from_value(cmd.get(\"{field}\").cloned()\
                  .unwrap_or(serde_json::Value::Null))\
-                 .map_err(|e| DomainError::External(e.to_string()))?"
+                 .map_err(|e| {err_ext}(e.to_string()))?"
             ));
         }
     }
@@ -1633,7 +1617,7 @@ pub fn gen_bus_handler_registration(
     out.push_str(&format!(
         "                let __result = {crate_name}_app::{app_fn}({call_args}).await?;\n\
          \x20               Ok(serde_json::to_value(__result)\
-         .map_err(|e| DomainError::External(e.to_string()))?)\n\
+         .map_err(|e| {err_ext}(e.to_string()))?)\n\
          \x20           }}\n\
          \x20       }});\n\
          \x20   }}\n"
