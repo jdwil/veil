@@ -1054,23 +1054,13 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: while loop ─────────────────────────────────────────
         Expr::WhileLoop { condition, body } => {
-            let text = {
-                let cond_str = expr_to_rust(condition, ctx);
-                let mut body_ctx = ctx.clone_for_inference();
-                body_ctx.mut_locals.extend(analyze_mut_locals(body));
-                let mut lines = Vec::new();
-                for e in body {
-                    let line = expr_to_rust(e, &body_ctx);
-                    if let Expr::Assign(name, _, _) | Expr::MutAssign(name, _, _) = e
-                        && !name.contains('.') {
-                            body_ctx.locals.insert(name.clone());
-                        }
-                    lines.push(format!("        {};", line));
-                }
-                format!("while {} {{\n{}\n    }}", cond_str, lines.join("\n"))
-            };
-            RustExpr::Raw {
-                text,
+            let cond_str = expr_to_rust(condition, ctx);
+            let mut body_ctx = ctx.clone_for_inference();
+            body_ctx.mut_locals.extend(analyze_mut_locals(body));
+            let body_nodes = lower_block_with_ctx(body, &body_ctx);
+            RustExpr::While {
+                condition: Box::new(RustExpr::Raw { text: cond_str, ty: Some(RustType::Named("bool".to_string())) }),
+                body: body_nodes,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
