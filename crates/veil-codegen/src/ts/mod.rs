@@ -20,6 +20,7 @@
 pub mod emit;
 pub mod expr;
 pub mod lower;
+pub mod transforms;
 #[cfg(test)]
 mod tests;
 
@@ -27,3 +28,4 @@ mod tests;
 pub use emit::emit_ts;
 pub use expr::{TsBinOp, TsExpr, TsPattern, TsTemplatePart, TsType, TsUnaryOp};
 pub use lower::{lower_to_ts, lower_block, to_camel_case, veil_type_to_ts};
+pub use transforms::{track_imports, detect_async, import_statement};
