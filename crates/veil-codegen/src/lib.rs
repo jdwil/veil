@@ -38,7 +38,6 @@ pub use capabilities::{
 pub use migrate_harness::{migrate_harness, MigrateReport};
 pub use rust::{generate, list_rest_routes_from_solution, rest_route_for_service, IrRestRoute};
 pub use template::execute_templates;
-pub use typescript::generate_ts;
 pub use ts::generate_ts_ir;
 
 use veil_ir::ast::Solution;
@@ -87,7 +86,7 @@ pub fn generate_for_target(
                 .collect()
         }
         CodegenTarget::TypeScript => {
-            let project = typescript::generate_ts(solution, registry);
+            let project = ts::generate::generate_ts_ir(solution, registry);
             project.files.into_iter()
                 .map(|f| GeneratedFile { path: f.path, content: f.content })
                 .collect()
@@ -123,7 +122,11 @@ pub fn generate_for_target_with_packages(
                 .collect()
         }
         CodegenTarget::TypeScript => {
-            let project = typescript::generate_ts_with_packages(solution, registry, used_packages);
+            let mut project = ts::generate::generate_ts_ir(solution, registry);
+            // Generate typed API clients for any used packages with expose blocks
+            for (pkg_name, expose) in used_packages {
+                project.files.extend(typescript::generate_api_client(pkg_name, expose));
+            }
             project.files.into_iter()
                 .map(|f| GeneratedFile { path: f.path, content: f.content })
                 .collect()
