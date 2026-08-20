@@ -738,6 +738,16 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
     }
 
     for flow in flows {
+        // ─── Construct lowers_to: template takes full control ──────────────
+        if let FlowLike::Construct(c) = flow {
+            if let Some(template) = registry.construct_lowers_to(c, "rust") {
+                let rendered = crate::rust::interpolate_construct_template(template, c, registry);
+                out.push_str(&rendered);
+                out.push_str("\n\n");
+                continue;
+            }
+        }
+
         let (name, subkind, annotations, inputs, steps, keyword) = match flow {
             FlowLike::Flow(f) => (
                 &f.name,

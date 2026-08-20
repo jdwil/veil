@@ -256,6 +256,14 @@ pub fn gen_traits(
     }
 
     for t in &contents.traits {
+        // ─── Construct lowers_to: template takes full control ──────────────
+        if let Some(template) = registry.construct_lowers_to(t, "rust") {
+            let rendered = crate::rust::interpolate_construct_template(template, t, registry);
+            out.push_str(&rendered);
+            out.push_str("\n\n");
+            continue;
+        }
+
         let tp = generic_params_rust(&t.type_params);
         // Generic ports get Send+Sync on type params used as entity payloads.
         let where_bounds = if t.type_params.is_empty() {

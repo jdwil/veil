@@ -323,6 +323,15 @@ pub fn gen_struct(
     layer_derives: Option<&str>,
 ) -> (String, bool) {
     let mut out = String::new();
+
+    // ─── Construct lowers_to: template takes full control ──────────────
+    if let Some(template) = registry.construct_lowers_to(c, "rust") {
+        let rendered = interpolate_construct_template(template, c, registry);
+        out.push_str(&rendered);
+        out.push_str("\n\n");
+        return (out, false);
+    }
+
     let has_invariant = c.annotations.iter().any(|a| registry.is_invariant_annotation(&a.name));
 
     // ─── Phase 6: Constraint-driven emission ───────────────────────────
