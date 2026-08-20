@@ -179,10 +179,23 @@ pkg svelte5 v1
     mt call
     desc "Client-side navigation (goto)"
     sem client_navigation
+    lowers_to
+      typescript: "window.location.href = {arg0}"
     visual
       icon "🧭"
       color "#ff6b35"
       label "Navigate"
+
+  statement goto
+    mt call
+    desc "Client-side navigation (goto alias)"
+    sem client_navigation
+    lowers_to
+      typescript: "window.location.href = {arg0}"
+    visual
+      icon "🧭"
+      color "#ff6b35"
+      label "Goto"
 
   statement invalidate
     mt call
@@ -209,15 +222,29 @@ pkg svelte5 v1
     # Codegen lowers these to browser `fetch` in the TypeScript target.
     trait ApiClient
       fetch(endpoint: Str, params: Json) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __u = new URL({arg0}, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {arg1} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })()"
       mutate(endpoint: Str, body: Json) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __r = await fetch({arg0}, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({arg1}) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
       put(endpoint: Str, body: Json) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __r = await fetch({arg0}, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({arg1}) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
       delete(endpoint: Str) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __r = await fetch({arg0}, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
 
     # Browser localStorage — lowered to localStorage.* in TS
     struct LocalStorage
       fn get_or(key: Str, default: Str) -> Str
+        lowers_to
+          typescript: "(localStorage.getItem({arg0}) ?? {arg1})"
       fn get_opt(key: Str) -> Opt<Str>
+        lowers_to
+          typescript: "localStorage.getItem({arg0})"
       fn set(key: Str, value: Str)
+        lowers_to
+          typescript: "localStorage.setItem({arg0}, {arg1})"
 
     # Form handling (Json payload until generics in declare are typecheck-clean)
     struct FormState
@@ -228,8 +255,24 @@ pkg svelte5 v1
 
     # Navigation — lowered to window.location / kit goto
     fn goto(url: Str) -> Res!
+      lowers_to
+        typescript: "window.location.href = {arg0}"
       navigate(url)
       ret Ok
+
+    fn navigate(url: Str) -> Res!
+      lowers_to
+        typescript: "window.location.href = {arg0}"
+      ret Ok
+
+    # Environment — browser uses localStorage (no process.env in SPA)
+    struct Env
+      fn get_or(key: Str, default: Str) -> Str
+        lowers_to
+          typescript: "(localStorage.getItem({arg0}) ?? {arg1})"
+      fn get_opt(key: Str) -> Opt<Str>
+        lowers_to
+          typescript: "(localStorage.getItem({arg0}) ?? null)"
 
     # Browser path helpers (codegen → window.location)
     fn location_pathname() -> Str

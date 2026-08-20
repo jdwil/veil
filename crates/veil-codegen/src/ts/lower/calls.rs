@@ -263,9 +263,34 @@ fn lower_target_method(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) 
 
 /// Try to translate a call as a known language builtin.
 /// Returns `None` if this isn't a recognized builtin.
+///
+/// Resolution order:
+/// 1. Layer-declared method templates (`method_lowers_to` from declare blocks)
+/// 2. Language primitives (Id, Json, Dt, Int, Map, List)
 fn lower_builtin_call(call: &CallExpr, ctx: &GenCtx) -> Option<TsExpr> {
     let method = call.method.trim_end_matches(['!', '?']);
 
+    // ── 1. Layer-declared method templates ───────────────────────────────
+    if let Some(template) = ctx.method_lowers_to
+        .get(&(call.target.clone(), method.to_string()))
+        .and_then(|targets| targets.get("typescript"))
+    {
+        let rendered = interpolate_call_template(template, call, ctx);
+        return Some(TsExpr::Raw(rendered));
+    }
+
+    // Also check for free-function calls (target used as fn name, empty method)
+    if method.is_empty() && !call.target.is_empty() {
+        if let Some(template) = ctx.method_lowers_to
+            .get(&(call.target.clone(), String::new()))
+            .and_then(|targets| targets.get("typescript"))
+        {
+            let rendered = interpolate_call_template(template, call, ctx);
+            return Some(TsExpr::Raw(rendered));
+        }
+    }
+
+    // ── 2. Language primitives ───────────────────────────────────────────
     match (call.target.as_str(), method) {
         ("Id", "new") | ("Id", "new_v4") | ("UUID", "new") | ("UUID", "new_v4")
         | ("Uuid", "new") | ("Uuid", "new_v4") => {
@@ -351,39 +376,29 @@ fn lower_builtin_call(call: &CallExpr, ctx: &GenCtx) -> Option<TsExpr> {
             Some(TsExpr::ArrayLit { items: vec![], ty: None })
         }
 
-        ("Env", "get_or") if call.args.len() == 2 => {
-            let key = lower_to_ts(&call.args[0], ctx);
-            let default = lower_to_ts(&call.args[1], ctx);
-            Some(TsExpr::NullishCoalesce {
-                left: Box::new(TsExpr::Index {
-                    base: Box::new(TsExpr::FieldAccess {
-                        base: Box::new(TsExpr::Ident { name: "process".to_string(), ty: None }),
-                        field: "env".to_string(),
-                        ty: None,
-                    }),
-                    index: Box::new(key),
-                }),
-                right: Box::new(default),
-            })
-        }
-
-        ("Env", "get_opt") if call.args.len() == 1 => {
-            let key = lower_to_ts(&call.args[0], ctx);
-            Some(TsExpr::NullishCoalesce {
-                left: Box::new(TsExpr::Index {
-                    base: Box::new(TsExpr::FieldAccess {
-                        base: Box::new(TsExpr::Ident { name: "process".to_string(), ty: None }),
-                        field: "env".to_string(),
-                        ty: None,
-                    }),
-                    index: Box::new(key),
-                }),
-                right: Box::new(TsExpr::NullLit),
-            })
-        }
-
         _ => None,
     }
+}
+
+/// Interpolate a layer template for a Call expression.
+/// Variables: `{arg0}`, `{arg1}`, ..., `{args}` (all args comma-separated).
+fn interpolate_call_template(template: &str, call: &CallExpr, ctx: &GenCtx) -> String {
+    let mut result = template.to_string();
+
+    // {arg0}, {arg1}, ...
+    for (i, arg) in call.args.iter().enumerate() {
+        let lowered = crate::ts::emit::emit_ts(&lower_to_ts(arg, ctx));
+        result = result.replace(&format!("{{arg{i}}}"), &lowered);
+    }
+
+    // {args} — all args comma-separated
+    let all_args: String = call.args.iter()
+        .map(|a| crate::ts::emit::emit_ts(&lower_to_ts(a, ctx)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    result = result.replace("{args}", &all_args);
+
+    result
 }
 
 // ─── Actions ────────────────────────────────────────────────────────────────
