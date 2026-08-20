@@ -60,8 +60,8 @@ impl RustType {
         }
     }
 
-    /// Parse a simple type string into a RustType. Best-effort — complex
-    /// generics fall back to Named.
+    /// Parse a simple type string into a RustType. Handles nested generics
+    /// via angle-bracket-depth tracking.
     pub fn parse(s: &str) -> RustType {
         let s = s.trim();
         if s == "()" {
@@ -70,15 +70,18 @@ impl RustType {
         if s == "serde_json::Value" || s == "Value" {
             return RustType::Json;
         }
-        if let Some(inner) = s.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
+        if let Some(inner) = strip_generic_prefix(s, "Option") {
             return RustType::Option(Box::new(RustType::parse(inner)));
         }
-        if let Some(inner) = s.strip_prefix("Result<").and_then(|r| r.strip_suffix('>')) {
-            // Result<T, E> — take T (first type param)
-            let inner_ty = inner.split(',').next().unwrap_or(inner).trim();
+        if let Some(inner) = strip_generic_prefix(s, "Result") {
+            // Result<T, E> — take T (first type param at depth 0)
+            let inner_ty = split_type_params(inner)
+                .first()
+                .copied()
+                .unwrap_or(inner);
             return RustType::Result(Box::new(RustType::parse(inner_ty)));
         }
-        if let Some(inner) = s.strip_prefix("Vec<").and_then(|r| r.strip_suffix('>')) {
+        if let Some(inner) = strip_generic_prefix(s, "Vec") {
             return RustType::Vec(Box::new(RustType::parse(inner)));
         }
         if let Some(inner) = s.strip_prefix('&') {
@@ -86,6 +89,54 @@ impl RustType {
         }
         RustType::Named(s.to_string())
     }
+}
+
+/// Strip `Name<...>` prefix, returning the content between the matching `<>`
+/// pair. Respects nested angle brackets.
+fn strip_generic_prefix<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+    let rest = s.strip_prefix(name)?.strip_prefix('<')?;
+    // Find the matching closing '>' by tracking depth
+    let mut depth = 1u32;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    // Ensure nothing follows the closing '>'
+                    if i + 1 == rest.len() {
+                        return Some(&rest[..i]);
+                    }
+                    return None; // trailing chars → not a match
+                }
+            }
+            _ => {}
+        }
+    }
+    None // unbalanced
+}
+
+/// Split type parameters at top-level commas (depth 0), respecting nested `<>`.
+fn split_type_params(s: &str) -> Vec<&str> {
+    let mut params = Vec::new();
+    let mut depth = 0u32;
+    let mut start = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                params.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        params.push(last);
+    }
+    params
 }
 
 // ─── RustExpr ────────────────────────────────────────────────────────────────

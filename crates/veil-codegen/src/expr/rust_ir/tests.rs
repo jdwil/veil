@@ -208,6 +208,30 @@ fn rust_type_from_str_vec() {
 }
 
 #[test]
+fn rust_type_parse_nested_generics() {
+    // Option<Vec<String>> — nested generic
+    assert_eq!(
+        RustType::parse("Option<Vec<String>>"),
+        RustType::Option(Box::new(RustType::Vec(Box::new(RustType::Named("String".to_string())))))
+    );
+    // Result<HashMap<String, Vec<Customer>>, Error> — comma inside nested generics
+    assert_eq!(
+        RustType::parse("Result<HashMap<String, Vec<Customer>>, Error>"),
+        RustType::Result(Box::new(RustType::Named("HashMap<String, Vec<Customer>>".to_string())))
+    );
+    // Vec<Option<String>> — nested
+    assert_eq!(
+        RustType::parse("Vec<Option<String>>"),
+        RustType::Vec(Box::new(RustType::Option(Box::new(RustType::Named("String".to_string())))))
+    );
+    // HashMap<String, Vec<Customer>> — falls through to Named (not Option/Result/Vec)
+    assert_eq!(
+        RustType::parse("HashMap<String, Vec<Customer>>"),
+        RustType::Named("HashMap<String, Vec<Customer>>".to_string())
+    );
+}
+
+#[test]
 fn rust_type_is_copy() {
     assert!(RustType::Named("i64".to_string()).is_copy());
     assert!(RustType::Named("bool".to_string()).is_copy());
