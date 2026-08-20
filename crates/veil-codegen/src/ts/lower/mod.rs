@@ -4,9 +4,9 @@
 //! Unhandled expressions fall back to `TsExpr::Raw(expr_to_ts(...))` wrapping
 //! the existing string-based codegen path during migration.
 
-use veil_ir::ast::{BinOp, Expr, IfExprData, MatchArm, Pattern, StringPart, TypeExpr, UnaryOp};
+use veil_ir::ast::{BinOp, Expr, Field, IfExprData, MatchArm, Pattern, StringPart, TypeExpr, UnaryOp};
 use crate::expr::GenCtx;
-use crate::typescript::expr_to_ts;
+use crate::ts::legacy::expr_to_ts;
 use super::expr::{TsBinOp, TsExpr, TsPattern, TsTemplatePart, TsType, TsUnaryOp};
 
 // ─── Public Entry Point ──────────────────────────────────────────────────────
@@ -587,6 +587,99 @@ fn veil_type_str_to_ts(type_str: &str) -> TsType {
 
 mod calls;
 use calls::{lower_call, lower_action};
+
+// ─── String-based type mapping (legacy, used by api_client and legacy expr) ──
+
+/// Convert a VEIL type expression to its TypeScript string equivalent.
+pub fn type_to_ts(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named(name) => match name.as_str() {
+            "Str" => "string".to_string(),
+            "Int" | "F64" => "number".to_string(),
+            "Bool" => "boolean".to_string(),
+            "Bytes" => "Uint8Array".to_string(),
+            "UUID" | "Id" => "string".to_string(),
+            "DateTime" | "Dt" => "Date".to_string(),
+            "Json" => "Record<string, unknown>".to_string(),
+            other => other.to_string(),
+        },
+        TypeExpr::Generic(name, args) => {
+            let ts_args = args.iter().map(type_to_ts).collect::<Vec<_>>().join(", ");
+            format!("{}<{}>", name, ts_args)
+        }
+        TypeExpr::Result(Some(inner)) => format!("Promise<{}>", type_to_ts(inner)),
+        TypeExpr::Result(None) => "Promise<void>".to_string(),
+        TypeExpr::Optional(inner) => format!("{} | null", type_to_ts(inner)),
+        TypeExpr::List(inner) => format!("{}[]", type_to_ts(inner)),
+        TypeExpr::Map(k, v) => format!("Map<{}, {}>", type_to_ts(k), type_to_ts(v)),
+        TypeExpr::Set(inner) => format!("Set<{}>", type_to_ts(inner)),
+        TypeExpr::Tuple(items) => {
+            let parts = items.iter().map(type_to_ts).collect::<Vec<_>>().join(", ");
+            format!("[{}]", parts)
+        }
+        TypeExpr::Array(inner, size) => format!("[{}]", (0..*size).map(|_| type_to_ts(inner)).collect::<Vec<_>>().join(", ")),
+        TypeExpr::Ref(inner, _) => type_to_ts(inner),
+        TypeExpr::Dyn(inner) => type_to_ts(inner),
+        TypeExpr::ImplTrait(inner) => type_to_ts(inner),
+        TypeExpr::FnPtr(params, ret) => {
+            let p = params.iter().enumerate()
+                .map(|(i, t)| format!("arg{}: {}", i, type_to_ts(t)))
+                .collect::<Vec<_>>().join(", ");
+            let r = ret.as_ref().map(|t| type_to_ts(t)).unwrap_or_else(|| "void".to_string());
+            format!("({}) => {}", p, r)
+        }
+        TypeExpr::LitStr(_) => "string".to_string(),
+    }
+}
+
+/// Infer a TypeScript type for shorthand (untyped) fields by naming convention.
+pub fn infer_field_type_ts(name: &str) -> String {
+    if name == "id" || name.ends_with("_id") {
+        return "string".to_string();
+    }
+    if name.ends_with("_at") || name == "created" || name == "updated"
+        || name == "deleted" || name == "expires" || name == "timestamp" {
+        return "Date".to_string();
+    }
+    if name.starts_with("is_") || name.starts_with("has_") || name.starts_with("can_")
+        || name == "active" || name == "enabled" || name == "verified" || name == "deleted" {
+        return "boolean".to_string();
+    }
+    if name == "count" || name == "total" || name == "amount" || name == "quantity"
+        || name == "score" || name == "age" || name == "size" || name == "length"
+        || name == "port" || name == "retries" {
+        return "number".to_string();
+    }
+    "string".to_string()
+}
+
+/// Field type as TS string, using explicit type or inferring from name.
+pub fn field_type_ts(field: &Field) -> String {
+    match &field.type_expr {
+        TypeExpr::Named(n) if n.is_empty() => infer_field_type_ts(&field.name),
+        ty => type_to_ts(ty),
+    }
+}
+
+/// Convert a name to camelCase (for variables/functions).
+/// This is the legacy version matching the original `typescript.rs` behavior.
+pub fn to_camel(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for (i, c) in s.chars().enumerate() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(c.to_uppercase().next().unwrap_or(c));
+            capitalize_next = false;
+        } else if i == 0 {
+            result.push(c.to_lowercase().next().unwrap_or(c));
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
 
 // ─── camelCase Helper ────────────────────────────────────────────────────────
 

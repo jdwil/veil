@@ -1,7 +1,6 @@
-//! New TypeScript project generation pipeline using TsExpr IR.
+//! TypeScript project generation pipeline using TsExpr IR.
 //!
-//! Replaces `typescript.rs`'s `generate_ts` with a pipeline that routes
-//! function bodies through `lower_to_ts → transforms → emit_ts`.
+//! Routes function bodies through `lower_to_ts → transforms → emit_ts`.
 //!
 //! ## Pipeline
 //!
@@ -14,22 +13,19 @@
 //!       services.ts  — functions lowered through TsExpr IR
 //!   → index.ts, package.json, tsconfig.json
 //!   → import tracking on each file
+//!   → layer-driven construct files via `lowers_to` templates
 //! ```
-//!
-//! During transition (Sessions 5-10), this coexists with `typescript.rs`.
-//! Call `generate_ts_ir` for the new pipeline.
 
 use veil_ir::ast::*;
 use veil_ir::layer::{LayerRegistry, Shape};
 
 use crate::expr::{build_ctx_from_solution, GenCtx};
 use crate::rust::build_name_to_shape;
-use crate::typescript::{type_to_ts, TsFile, TsProject};
 
+use super::api_client::{TsFile, TsProject};
 use super::emit::emit_ts;
-use super::lower::to_camel_case;
+use super::lower::{to_camel_case, type_to_ts, infer_field_type_ts};
 use super::transforms::detect_async;
-use super::components::{gen_svelte_component_at, gen_svelte_store_at, sveltekit_output_path};
 
 // ─── Public Entry Point ──────────────────────────────────────────────────────
 
@@ -81,8 +77,9 @@ pub fn generate_ts_ir(solution: &Solution, registry: &LayerRegistry) -> TsProjec
         });
     }
 
-    // Svelte UI constructs — route through gen_svelte_component with SvelteKit paths
-    files.extend(gen_svelte_ui_files(&modules, solution, registry));
+    // Layer-driven construct files: if a construct has a `lowers_to { typescript: "..." }`
+    // template in the layer, interpolate it and emit the file.
+    files.extend(gen_construct_files(&modules, solution, registry));
 
     TsProject { files }
 }
@@ -489,34 +486,30 @@ fn gen_tsconfig_ir() -> TsFile {
     }
 }
 
-// ─── Svelte UI Generation ────────────────────────────────────────────────────
+// ─── Layer-Driven Construct File Generation ──────────────────────────────────
 
-/// Detect Svelte UI constructs (Page, Layout, Component, Store) and generate
-/// `.svelte` / `.svelte.ts` files via the structured IR pipeline.
+/// For each construct in the solution tree, check if the layer provides a
+/// `lowers_to { typescript: "..." }` template. If so, interpolate the template
+/// with the construct's data and emit a file.
 ///
-/// SvelteKit path conventions:
-/// - Page → `src/routes/{route}/+page.svelte`
-/// - Layout → `src/routes/{route}/+layout.svelte`
-/// - Component → `src/lib/components/{Name}.svelte`
-/// - Store → `src/lib/stores/{name}.svelte.ts`
-fn gen_svelte_ui_files(
+/// This is framework-agnostic: any layer can provide templates for any construct.
+fn gen_construct_files(
     modules: &[&Construct],
     solution: &Solution,
     registry: &LayerRegistry,
 ) -> Vec<TsFile> {
     let mut files = Vec::new();
-    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Walk module trees for UI constructs
+    // Walk module trees for constructs with lowers_to templates
     for module in modules {
-        collect_svelte_files(module, registry, &mut files, &mut seen_paths);
+        collect_construct_files(module, registry, &mut files);
     }
 
     // Also check top-level constructs (not nested in modules)
     for item in &solution.items {
         if let TopLevelItem::Construct(c) = item {
             if c.shape != Shape::Mod {
-                collect_svelte_files(c, registry, &mut files, &mut seen_paths);
+                collect_construct_files(c, registry, &mut files);
             }
         }
     }
@@ -524,65 +517,227 @@ fn gen_svelte_ui_files(
     files
 }
 
-/// Recursively walk construct tree, generating Svelte files for UI constructs.
-fn collect_svelte_files(
+/// Recursively walk construct tree, generating files for constructs that have
+/// layer-provided `lowers_to` templates.
+fn collect_construct_files(
     c: &Construct,
     registry: &LayerRegistry,
     files: &mut Vec<TsFile>,
-    seen: &mut std::collections::HashSet<String>,
 ) {
-    if is_svelte_ui_construct_ir(c, registry) {
-        let path = sveltekit_output_path(c, registry);
-
-        // Don't emit if the template engine already produced this file
-        // (layer templates take priority over structural generation).
-        if !seen.contains(&path) {
-            seen.insert(path.clone());
-
-            let svelte_file = if c.subkind.eq_ignore_ascii_case("store") {
-                gen_svelte_store_at(c, registry, &path)
-            } else {
-                gen_svelte_component_at(c, registry, &path)
-            };
-
-            files.push(TsFile {
-                path: svelte_file.path,
-                content: svelte_file.content,
-            });
-        }
+    // Check if this construct's layer spec has a `lowers_to { typescript: "..." }` template
+    if let Some(template) = registry.construct_lowers_to(c, "typescript") {
+        let content = interpolate_construct_template(template, c);
+        let path = construct_output_path(c, registry);
+        files.push(TsFile { path, content });
     }
 
-    // Recurse into children and groups
+    // Recurse into children
     for child in &c.children {
-        collect_svelte_files(child, registry, files, seen);
+        collect_construct_files(child, registry, files);
     }
 }
 
-/// True if this construct is a Svelte UI emit target per layer identity.
-/// Checks subkind and keyword against known UI construct types.
-fn is_svelte_ui_construct_ir(c: &Construct, registry: &LayerRegistry) -> bool {
-    if c.shape != Shape::Struct {
-        return false;
-    }
-    let kw = c.keyword.as_str();
-    let sk = c.subkind.as_str();
+/// Interpolate a construct template with construct data.
+///
+/// Supported placeholders:
+/// - `{{name}}` → construct name
+/// - `{{script}}` → content of the `script` raw block
+/// - `{{template}}` → content of the `template` raw block
+/// - `{{style}}` → content of the `style` raw block
+/// - `{{for field in props}}...{{end}}` → iterate props fields
+/// - `{{for field in state}}...{{end}}` → iterate state fields
+/// - `{{#if style}}...{{/if}}` → conditional on style existence
+/// - `{{field.name}}`, `{{field.type}}`, `{{field.default}}` — inside for loops
+fn interpolate_construct_template(template: &str, c: &Construct) -> String {
+    let mut result = template.to_string();
 
-    // Direct subkind match (case-insensitive)
-    let ui_kinds = ["Component", "Page", "Layout", "Store"];
-    for kind in &ui_kinds {
-        if sk.eq_ignore_ascii_case(kind) || kw.eq_ignore_ascii_case(kind) {
-            return true;
+    // Simple replacements
+    result = result.replace("{{name}}", &c.name);
+
+    // Raw blocks
+    let script_content = c.raw_blocks.iter()
+        .find(|(k, _)| k == "script")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let template_content = c.raw_blocks.iter()
+        .find(|(k, _)| k == "template")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let style_content = c.raw_blocks.iter()
+        .find(|(k, _)| k == "style")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+
+    result = result.replace("{{script}}", script_content);
+    result = result.replace("{{template}}", template_content);
+    result = result.replace("{{style}}", style_content);
+
+    // Conditional blocks: {{#if style}}...{{/if}}
+    result = process_conditionals(&result, "style", !style_content.is_empty());
+    result = process_conditionals(&result, "script", !script_content.is_empty());
+    result = process_conditionals(&result, "template", !template_content.is_empty());
+
+    // For loops: {{for field in props}}...{{end}}
+    result = process_for_loop(&result, "props", &collect_block_fields(c, "props"));
+    result = process_for_loop(&result, "state", &collect_block_fields(c, "state"));
+
+    result
+}
+
+/// Process `{{#if name}}...{{/if}}` conditionals.
+fn process_conditionals(input: &str, name: &str, condition: bool) -> String {
+    let open_tag = format!("{{{{#if {}}}}}", name);
+    let close_tag = format!("{{{{/if}}}}");
+
+    let mut result = input.to_string();
+    while let Some(start) = result.find(&open_tag) {
+        let after_open = start + open_tag.len();
+        if let Some(end_offset) = result[after_open..].find(&close_tag) {
+            let end = after_open + end_offset;
+            let inner = &result[after_open..end].to_string();
+            let replacement = if condition { inner.clone() } else { String::new() };
+            result = format!("{}{}{}", &result[..start], replacement, &result[end + close_tag.len()..]);
+        } else {
+            break;
         }
     }
+    result
+}
 
-    // Layer ancestry via is_a
-    for ancestor in ["Component", "Page", "Layout"] {
-        if registry.is_a(kw, ancestor) || registry.is_a(sk, ancestor) {
-            return true;
+/// Process `{{for field in block_name}}...{{end}}` loops.
+fn process_for_loop(input: &str, block_name: &str, fields: &[(String, String, String)]) -> String {
+    let open_tag = format!("{{{{for field in {}}}}}", block_name);
+    let close_tag = "{{end}}";
+
+    let mut result = input.to_string();
+    while let Some(start) = result.find(&open_tag) {
+        let after_open = start + open_tag.len();
+        if let Some(end_offset) = result[after_open..].find(close_tag) {
+            let end = after_open + end_offset;
+            let body_template = result[after_open..end].to_string();
+
+            let mut expanded = String::new();
+            for (name, ty, default) in fields {
+                let mut line = body_template.clone();
+                line = line.replace("{{field.name}}", name);
+                line = line.replace("{{field.type}}", ty);
+                line = line.replace("{{field.default}}", default);
+                expanded.push_str(&line);
+            }
+
+            result = format!("{}{}{}", &result[..start], expanded, &result[end + close_tag.len()..]);
+        } else {
+            break;
         }
     }
+    result
+}
 
-    false
+/// Collect fields from a named block as (name, type_string, default_string) tuples.
+fn collect_block_fields(c: &Construct, block_keyword: &str) -> Vec<(String, String, String)> {
+    c.blocks.iter()
+        .filter(|b| b.keyword == block_keyword)
+        .flat_map(|b| b.fields.iter())
+        .map(|f| {
+            let ty = match &f.type_expr {
+                TypeExpr::Named(n) if n.is_empty() => infer_field_type_ts(&f.name),
+                ty => type_to_ts(ty),
+            };
+            let default = f.default_expr.as_ref()
+                .map(|e| crate::ts::legacy::expr_to_ts(e, 0))
+                .unwrap_or_default();
+            (f.name.clone(), ty, default)
+        })
+        .collect()
+}
+
+/// Determine output path for a construct based on layer metadata.
+///
+/// First checks if the layer's ConstructSpec provides an `output_path` key in
+/// `lowers_to`, which can contain `{{name}}` and `{{route}}` placeholders.
+/// Falls back to a generic pattern based on construct subkind/keyword.
+fn construct_output_path(c: &Construct, registry: &LayerRegistry) -> String {
+    // Check for layer-provided output path template
+    if let Some(path_template) = registry.construct_lowers_to(c, "output_path") {
+        let route = extract_route_segment(c, registry);
+        let name_snake = to_snake_from_name(&c.name);
+        return path_template
+            .replace("{{name}}", &c.name)
+            .replace("{{name_snake}}", &name_snake)
+            .replace("{{route}}", &route);
+    }
+
+    // Generic fallback — derive from construct keyword
+    let sk = c.subkind.to_lowercase();
+    let kw = c.keyword.to_lowercase();
+    let route = extract_route_segment(c, registry);
+
+    match (sk.as_str(), kw.as_str()) {
+        ("page", _) | (_, "page") => {
+            if route.is_empty() || route == "/" {
+                format!("src/routes/+page.{}", construct_file_extension(c, registry))
+            } else {
+                format!("src/routes/{}/+page.{}", route, construct_file_extension(c, registry))
+            }
+        }
+        ("layout", _) | (_, "layout") => {
+            if route.is_empty() {
+                format!("src/routes/+layout.{}", construct_file_extension(c, registry))
+            } else {
+                format!("src/routes/{}/+layout.{}", route, construct_file_extension(c, registry))
+            }
+        }
+        ("store", _) | (_, "store") => {
+            let name = to_snake_from_name(&c.name);
+            format!("src/lib/stores/{}.ts", name)
+        }
+        _ => {
+            // Generic component
+            format!("src/lib/components/{}.ts", c.name)
+        }
+    }
+}
+
+/// Extract route segment from annotations or derive from name.
+fn extract_route_segment(c: &Construct, registry: &LayerRegistry) -> String {
+    c.annotations.iter()
+        .find(|a| a.name == "route" || registry.annotation_has_role(&a.name, "ui_route"))
+        .and_then(|a| a.args.first())
+        .map(|s| s.trim_matches('"').trim_matches('/').to_string())
+        .unwrap_or_else(|| to_kebab_from_name(&c.name))
+}
+
+/// Determine file extension from layer or fall back to generic "ts".
+fn construct_file_extension(_c: &Construct, _registry: &LayerRegistry) -> &'static str {
+    // The layer's lowers_to output_path should be the canonical source.
+    // When no output_path is provided, use a generic extension.
+    "ts"
+}
+
+/// Convert a PascalCase name to a kebab-case route segment.
+fn to_kebab_from_name(name: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            result.push('/');
+            result.push(c.to_lowercase().next().unwrap());
+        } else {
+            result.push(c.to_lowercase().next().unwrap());
+        }
+    }
+    result
+}
+
+/// Convert a PascalCase name to snake_case.
+fn to_snake_from_name(name: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            result.push('_');
+        }
+        result.push(c.to_lowercase().next().unwrap());
+    }
+    result
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -660,21 +815,6 @@ fn field_type_ts(field: &Field) -> String {
     match &field.type_expr {
         TypeExpr::Named(n) if n.is_empty() => infer_field_type_ts(&field.name),
         ty => type_to_ts(ty),
-    }
-}
-
-/// Infer a TypeScript type from field name conventions.
-fn infer_field_type_ts(name: &str) -> String {
-    if name.starts_with("is_") || name.starts_with("has_") {
-        "boolean".to_string()
-    } else if name.ends_with("_at") || name.ends_with("_date") {
-        "Date".to_string()
-    } else if name == "id" || name.ends_with("_id") {
-        "string".to_string()
-    } else if name.ends_with("_count") || name == "count" || name == "amount" || name == "total" {
-        "number".to_string()
-    } else {
-        "string".to_string()
     }
 }
 

@@ -28,7 +28,6 @@ pub mod swift;
 pub mod template;
 pub mod testing;
 pub mod ts;
-pub mod typescript;
 
 pub use links::{cargo_dep_line, resolve_link, resolve_links, ResolvedLink};
 
@@ -125,7 +124,7 @@ pub fn generate_for_target_with_packages(
             let mut project = ts::generate::generate_ts_ir(solution, registry);
             // Generate typed API clients for any used packages with expose blocks
             for (pkg_name, expose) in used_packages {
-                project.files.extend(typescript::generate_api_client(pkg_name, expose));
+                project.files.extend(ts::api_client::generate_api_client(pkg_name, expose));
             }
             project.files.into_iter()
                 .map(|f| GeneratedFile { path: f.path, content: f.content })

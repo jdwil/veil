@@ -41,7 +41,7 @@ pub enum Feature {
     ImplBlocks,
     /// Fn-shaped service/flow with no step body (TS emits empty TODO)
     EmptyServiceBody,
-    /// Component/page with empty `template` raw block (Svelte placeholder)
+    /// Component/page with empty `template` raw block (UI placeholder)
     EmptyUiTemplate,
     /// Adapter/impl method with empty body (Rust may emit `todo!`)
     EmptyAdapterBody,
@@ -140,7 +140,7 @@ fn supported_features(target: CodegenTarget) -> HashSet<Feature> {
             TryOperator, // mapped awkwardly
             AwaitExpr,
             MatchExpr,
-            RawBlocks, // Svelte templates
+            RawBlocks, // UI templates
             FnBodyLowering,
             // EmptyServiceBody NOT supported
             // EmptyUiTemplate NOT supported as complete

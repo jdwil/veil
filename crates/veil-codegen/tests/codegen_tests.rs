@@ -734,7 +734,7 @@ fn ts_generates_project_scaffolding() {
 
 #[test]
 fn ts_type_mapping_covers_all_primitives() {
-    use veil_codegen::typescript::type_to_ts;
+    use veil_codegen::ts::lower::type_to_ts;
     use veil_ir::ast::TypeExpr;
 
     assert_eq!(type_to_ts(&TypeExpr::Named("Str".into())), "string");

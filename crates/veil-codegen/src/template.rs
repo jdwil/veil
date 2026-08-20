@@ -305,7 +305,7 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
     output = output.replace("{{subkind}}", &construct.subkind);
     output = output.replace("{{keyword}}", &construct.keyword);
 
-    // {{route}} — role:ui_route (svelte page/layout) or leftover role:http_route
+    // {{route}} — role:ui_route (page/layout) or leftover role:http_route
     let route_val = construct_route_url(construct, registry);
     output = output.replace("{{route}}", &route_val);
 
@@ -329,22 +329,23 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
         output = format!("{}{}{}", &output[..start], block_content, &output[end..]);
     }
 
-    // {{props_decl}} — Svelte $props() script from props block
+    // {{props_decl}} — reactive props declaration from props block (pattern from layer reactivity_policy)
     if output.contains("{{props_decl}}") {
         let props_block = construct.blocks.iter().find(|b| b.keyword == "props");
+        let props_call = &registry.reactivity_policy.props_call;
         let props_script = if let Some(props) = props_block {
             let mut s = String::new();
             s.push_str("  interface Props {\n");
             for field in &props.fields {
-                let ty = svelte_type_display(&field.type_expr);
+                let ty = ts_type_display(&field.type_expr);
                 s.push_str(&format!("    {}: {};\n", field.name, ty));
             }
             s.push_str("  }\n");
             let names: Vec<&str> = props.fields.iter().map(|f| f.name.as_str()).collect();
             if !names.is_empty() {
-                s.push_str(&format!("  let {{ {} }}: Props = $props();\n", names.join(", ")));
+                s.push_str(&format!("  let {{ {} }}: Props = {};\n", names.join(", "), props_call));
             } else {
-                s.push_str("  let {}: Props = $props();\n");
+                s.push_str(&format!("  let {{}}: Props = {};\n", props_call));
             }
             s
         } else {
@@ -353,19 +354,19 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
         output = output.replace("{{props_decl}}", &props_script);
     }
 
-    // {{state_decl}} — Svelte 5 $state() fields from state block
+    // {{state_decl}} — reactive state fields from state block (pattern from layer reactivity_policy)
     if output.contains("{{state_decl}}") {
         let state_block = construct.blocks.iter().find(|b| b.keyword == "state");
+        let state_line_pattern = &registry.reactivity_policy.state_line;
         let state_script = if let Some(state) = state_block {
             let mut s = String::new();
             for field in &state.fields {
-                let default = svelte_state_default(&field.type_expr);
-                s.push_str(&format!(
-                    "  let {}: {} = $state({});\n",
-                    field.name,
-                    svelte_type_display(&field.type_expr),
-                    default
-                ));
+                let default = ts_default_value(&field.type_expr);
+                let line = state_line_pattern
+                    .replace("{name}", &field.name)
+                    .replace("{type}", &ts_type_display(&field.type_expr))
+                    .replace("{default}", &default);
+                s.push_str(&format!("  {}\n", line));
             }
             s
         } else {
@@ -386,16 +387,16 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
                 match target {
                     "typescript" => {
                         let params = f.params.iter()
-                            .map(|p| format!("{}: {}", p.name, svelte_type_display(&p.type_expr)))
+                            .map(|p| format!("{}: {}", p.name, ts_type_display(&p.type_expr)))
                             .collect::<Vec<_>>().join(", ");
                         let is_async = f.return_type.as_ref()
                             .map(|t| matches!(t, veil_ir::TypeExpr::Result(_)))
                             .unwrap_or(false);
                         let ret_type = match &f.return_type {
                             Some(veil_ir::TypeExpr::Result(Some(inner))) =>
-                                format!(": Promise<{}>", svelte_type_display(inner)),
+                                format!(": Promise<{}>", ts_type_display(inner)),
                             Some(veil_ir::TypeExpr::Result(None)) => ": Promise<void>".into(),
-                            Some(ty) => format!(": {}", svelte_type_display(ty)),
+                            Some(ty) => format!(": {}", ts_type_display(ty)),
                             None => String::new(),
                         };
                         let async_kw = if is_async { "async " } else { "" };
@@ -503,7 +504,11 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
         }
         let import_stmts = imports
             .iter()
-            .map(|name| format!("  import {name} from '$lib/components/{name}.svelte';"))
+            .map(|name| {
+                // Import pattern: layer can override via {{import_pattern}} in template.
+                // Default: framework-agnostic relative import.
+                format!("  import {name} from './{name}';")
+            })
             .collect::<Vec<_>>()
             .join("\n");
         output = output.replace("{{imports}}", &import_stmts);
@@ -577,7 +582,7 @@ fn construct_route_url(construct: &Construct, registry: &LayerRegistry) -> Strin
         .unwrap_or_else(|| format!("/{}", construct.name.to_lowercase()))
 }
 
-/// File-path segment for sveltekit `src/routes/{{route}}/+page.svelte`.
+/// File-path segment for framework route paths (e.g. `src/routes/{{route}}/+page`).
 /// `/` → ``, `/pulls/[id]` → `pulls/[id]`.
 fn route_file_segment(route: &str) -> String {
     route.trim().trim_matches('/').to_string()
@@ -870,9 +875,9 @@ fn target_extension(target: &str) -> &str {
     }
 }
 
-/// Default `$state(...)` initializer from a VEIL type.
-/// Map VEIL types to TypeScript-ish names for Svelte script blocks.
-fn svelte_type_display(ty: &veil_ir::TypeExpr) -> String {
+/// Default state initializer from a VEIL type.
+/// Map VEIL types to TypeScript-ish names for reactive state declarations.
+fn ts_type_display(ty: &veil_ir::TypeExpr) -> String {
     use veil_ir::TypeExpr;
     match ty {
         TypeExpr::Named(n) => match n.as_str() {
@@ -884,14 +889,14 @@ fn svelte_type_display(ty: &veil_ir::TypeExpr) -> String {
             "Dt" | "DateTime" => "string".into(),
             other => other.to_string(),
         },
-        TypeExpr::List(inner) => format!("{}[]", svelte_type_display(inner)),
-        TypeExpr::Optional(inner) => format!("{} | null", svelte_type_display(inner)),
-        TypeExpr::Map(_, v) => format!("Record<string, {}>", svelte_type_display(v)),
+        TypeExpr::List(inner) => format!("{}[]", ts_type_display(inner)),
+        TypeExpr::Optional(inner) => format!("{} | null", ts_type_display(inner)),
+        TypeExpr::Map(_, v) => format!("Record<string, {}>", ts_type_display(v)),
         _ => "any".into(),
     }
 }
 
-fn svelte_state_default(ty: &veil_ir::TypeExpr) -> String {
+fn ts_default_value(ty: &veil_ir::TypeExpr) -> String {
     use veil_ir::TypeExpr;
     match ty {
         TypeExpr::Named(n) => match n.as_str() {

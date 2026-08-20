@@ -1,7 +1,11 @@
-//! TypeScript code generation from VEIL AST.
+//! Legacy string-based TypeScript expression codegen.
 //!
-//! Fully shape-driven, parallel to `rust.rs`: constructs are generated
-//! according to their core shape. No domain-specific knowledge.
+//! Contains `expr_to_ts` and `expr_to_ts_async` plus all internal helpers
+//! (action translation, pattern rendering, operator mapping).
+//!
+//! These are the old string-template functions from the original `typescript.rs`.
+//! The new IR pipeline (`lower_to_ts → emit_ts`) is in `lower/` and `emit.rs`;
+//! these remain for the `Raw(...)` escape hatch during migration.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -9,118 +13,17 @@ use std::collections::HashMap;
 use veil_ir::ast::*;
 use veil_ir::layer::StatementSpec;
 
+use super::lower::{to_camel, type_to_ts};
+
 thread_local! {
     /// Statement specs active during a `generate_ts` pass (for `lowers_to` templates).
-    static TS_STATEMENT_SPECS: RefCell<HashMap<String, StatementSpec>> = RefCell::new(HashMap::new());
-    /// Backend services emit camelCase idents; Svelte/UI keeps authored snake_case.
-    static TS_CAMEL_IDENTS: RefCell<bool> = const { RefCell::new(false) };
+    pub(crate) static TS_STATEMENT_SPECS: RefCell<HashMap<String, StatementSpec>> = RefCell::new(HashMap::new());
+    /// Backend services emit camelCase idents; UI keeps authored snake_case.
+    pub(crate) static TS_CAMEL_IDENTS: RefCell<bool> = const { RefCell::new(false) };
 }
 
-fn ts_camel_idents() -> bool {
+pub(crate) fn ts_camel_idents() -> bool {
     TS_CAMEL_IDENTS.with(|c| *c.borrow())
-}
-
-/// Generated TypeScript project output.
-pub struct TsProject {
-    pub files: Vec<TsFile>,
-}
-
-pub struct TsFile {
-    pub path: String,
-    pub content: String,
-}
-
-// ─── Type Mapping ────────────────────────────────────────────────────────────
-
-/// Convert a VEIL type expression to its TypeScript equivalent.
-pub fn type_to_ts(ty: &TypeExpr) -> String {
-    match ty {
-        TypeExpr::Named(name) => match name.as_str() {
-            "Str" => "string".to_string(),
-            "Int" | "F64" => "number".to_string(),
-            "Bool" => "boolean".to_string(),
-            "Bytes" => "Uint8Array".to_string(),
-            "UUID" | "Id" => "string".to_string(),
-            "DateTime" | "Dt" => "Date".to_string(),
-            "Json" => "Record<string, unknown>".to_string(),
-            other => other.to_string(),
-        },
-        TypeExpr::Generic(name, args) => {
-            let ts_args = args.iter().map(type_to_ts).collect::<Vec<_>>().join(", ");
-            format!("{}<{}>", name, ts_args)
-        }
-        TypeExpr::Result(Some(inner)) => format!("Promise<{}>", type_to_ts(inner)),
-        TypeExpr::Result(None) => "Promise<void>".to_string(),
-        TypeExpr::Optional(inner) => format!("{} | null", type_to_ts(inner)),
-        TypeExpr::List(inner) => format!("{}[]", type_to_ts(inner)),
-        TypeExpr::Map(k, v) => format!("Map<{}, {}>", type_to_ts(k), type_to_ts(v)),
-        TypeExpr::Set(inner) => format!("Set<{}>", type_to_ts(inner)),
-        TypeExpr::Tuple(items) => {
-            let parts = items.iter().map(type_to_ts).collect::<Vec<_>>().join(", ");
-            format!("[{}]", parts)
-        }
-        TypeExpr::Array(inner, size) => format!("[{}]", (0..*size).map(|_| type_to_ts(inner)).collect::<Vec<_>>().join(", ")),
-        TypeExpr::Ref(inner, _) => type_to_ts(inner), // no refs in TS
-        TypeExpr::Dyn(inner) => type_to_ts(inner),    // just the interface
-        TypeExpr::ImplTrait(inner) => type_to_ts(inner),
-        TypeExpr::FnPtr(params, ret) => {
-            let p = params.iter().enumerate()
-                .map(|(i, t)| format!("arg{}: {}", i, type_to_ts(t)))
-                .collect::<Vec<_>>().join(", ");
-            let r = ret.as_ref().map(|t| type_to_ts(t)).unwrap_or_else(|| "void".to_string());
-            format!("({}) => {}", p, r)
-        }
-        TypeExpr::LitStr(_) => "string".to_string(),
-    }
-}
-
-/// Infer a TypeScript type for shorthand (untyped) fields by naming convention.
-pub fn infer_field_type_ts(name: &str) -> String {
-    if name == "id" || name.ends_with("_id") {
-        return "string".to_string();
-    }
-    if name.ends_with("_at") || name == "created" || name == "updated"
-        || name == "deleted" || name == "expires" || name == "timestamp" {
-        return "Date".to_string();
-    }
-    if name.starts_with("is_") || name.starts_with("has_") || name.starts_with("can_")
-        || name == "active" || name == "enabled" || name == "verified" || name == "deleted" {
-        return "boolean".to_string();
-    }
-    if name == "count" || name == "total" || name == "amount" || name == "quantity"
-        || name == "score" || name == "age" || name == "size" || name == "length"
-        || name == "port" || name == "retries" {
-        return "number".to_string();
-    }
-    "string".to_string()
-}
-
-/// Convert a name to camelCase (for variables/functions).
-pub fn to_camel(s: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = false;
-    for (i, c) in s.chars().enumerate() {
-        if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_uppercase().next().unwrap_or(c));
-            capitalize_next = false;
-        } else if i == 0 {
-            result.push(c.to_lowercase().next().unwrap_or(c));
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
-/// Format generic type parameters for TypeScript: `<T, U>` or empty string.
-/// Field type as TS string, using explicit type or inferring from name.
-pub fn field_type_ts(field: &Field) -> String {
-    match &field.type_expr {
-        TypeExpr::Named(n) if n.is_empty() => infer_field_type_ts(&field.name),
-        ty => type_to_ts(ty),
-    }
 }
 
 // ─── Expression Translation ──────────────────────────────────────────────────
@@ -283,8 +186,6 @@ fn translate_action_ts_default(a: &ActionExpr, indent: usize) -> String {
 pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
     let pad = "  ".repeat(indent);
     match expr {
-        // Keep VEIL idents as authored (snake_case matches state + templates + JSON APIs)
-        // unless a backend-services pass requested camelCase.
         Expr::Ident(name) if name == "null" || name == "None" => "null".to_string(),
         Expr::Ident(name) if name == "Ok" => "undefined /* Ok */".to_string(),
         Expr::Ident(name) => {
@@ -329,7 +230,6 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
 
         Expr::Assign(name, value, ty_ann) => {
             let rhs = expr_to_ts(value, indent);
-            // Field write: `loan.returned = true` — not a new binding.
             if name.contains('.') {
                 let path = name
                     .split('.')
@@ -369,7 +269,6 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
         }
 
         Expr::Try(inner) => {
-            // expr? → await expr (errors throw in TS)
             format!("await {}", expr_to_ts(inner, indent))
         }
         Expr::Require(inner) => {
@@ -426,7 +325,6 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
         }
 
         Expr::DoBlock(body) => {
-            // Lower to IIFE: (() => { stmts; return last; })()
             if body.is_empty() {
                 "(() => {})()".to_string()
             } else {
@@ -508,7 +406,6 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
         }
 
         Expr::Range { start, end, inclusive: _ } => {
-            // No native range in TS — emit a comment placeholder
             let s = start.as_ref().map(|e| expr_to_ts(e, indent)).unwrap_or_else(|| "0".to_string());
             let e = end.as_ref().map(|e| expr_to_ts(e, indent)).unwrap_or_else(|| "Infinity".to_string());
             format!("/* range */[{}, {}]", s, e)
@@ -541,7 +438,6 @@ pub fn expr_to_ts(expr: &Expr, indent: usize) -> String {
                 None => format!("const {} = {}", pat_str, val),
             }
         }
-        // Expanded by adapt merge before codegen — should never remain.
         Expr::Stock => "/* error: stock not expanded */ undefined".to_string(),
     }
 }
@@ -571,12 +467,10 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
     }
 
     if call.target.is_empty() && !call.method.is_empty() {
-        // bare method
         return format!("{}({})", to_camel(&call.method), args);
     }
 
     if call.method.is_empty() {
-        // bare function call: target(args)
         match call.target.as_str() {
             "now" => return "new Date()".to_string(),
             "goto" | "navigate" => {
@@ -587,8 +481,7 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
         }
     }
 
-    // ── Browser / Svelte layer builtins (declared on svelte5, lowered here) ──
-    // ApiClient: HTTPS REST — not the Bus.
+    // ApiClient: HTTPS REST
     if call.target == "ApiClient" {
         match call.method.as_str() {
             "fetch" if !args_list.is_empty() => {
@@ -621,7 +514,7 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
             _ => {}
         }
     }
-    // LocalStorage helpers (layer-declared free fns or type methods)
+    // LocalStorage helpers
     if call.target == "LocalStorage" || call.target == "local_storage" {
         match call.method.as_str() {
             "get" | "get_opt" if args_list.len() == 1 => {
@@ -645,7 +538,6 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
     if call.target == "Env" {
         match call.method.as_str() {
             "get_or" if args_list.len() == 2 => {
-                // Browser: prefer localStorage then default (no process.env in SPA)
                 return format!(
                     "(localStorage.getItem({}) ?? {})",
                     args_list[0], args_list[1]
@@ -654,7 +546,7 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
             _ => {}
         }
     }
-    // navigate / goto from svelte5 layer
+    // navigate / goto
     if ((call.target == "navigate" || call.method == "navigate" || call.target == "goto")
         && !call.method.is_empty()
         || call.target == "goto")
@@ -678,7 +570,7 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
         return format!("if (!({cond})) throw new Error({msg})");
     }
 
-    // new() → constructor. Id/UUID are opaque strings in TS.
+    // new() → constructor
     if bare_method == "new" {
         if matches!(call.target.as_str(), "Id" | "UUID" | "Uuid") {
             return "crypto.randomUUID()".to_string();
@@ -693,7 +585,6 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
         return format!("({} != null)", target);
     }
 
-    // Port / repo methods are async; bang is ACS-010 (not a TS identifier).
     let awaited = call.method.ends_with('!');
     let call_s = if method.is_empty() {
         format!("{}({})", target, args)
@@ -708,7 +599,7 @@ fn translate_call_ts(call: &CallExpr, indent: usize) -> String {
 }
 
 /// Translate a block of statements.
-fn body_to_ts(exprs: &[Expr], indent: usize) -> String {
+pub fn body_to_ts(exprs: &[Expr], indent: usize) -> String {
     let pad = "  ".repeat(indent);
     exprs.iter()
         .map(|e| {
@@ -720,11 +611,8 @@ fn body_to_ts(exprs: &[Expr], indent: usize) -> String {
 }
 
 /// Like `expr_to_ts` but awaits ApiClient / async IIFE results on assignment.
-/// Recurses into `if` / blocks so nested `membership_options = ApiClient.fetch(...)` awaits.
 pub fn expr_to_ts_async(expr: &Expr, indent: usize) -> String {
     match expr {
-        // Keep `let` for mut bindings: `mut repo = ApiClient.fetch(...)`
-        // must not become bare `repo = await ...` (ReferenceError).
         Expr::MutAssign(name, rhs, ty_ann) => {
             let r = expr_to_ts(rhs, indent);
             let rhs_str = if r.contains("await fetch") || r.contains("(async () =>") {
@@ -778,7 +666,7 @@ fn pattern_to_ts(pat: &Pattern) -> String {
         Pattern::Ident(s) => to_camel(s),
         Pattern::Tuple(parts) => {
             let inner = parts.iter().map(pattern_to_ts).collect::<Vec<_>>().join(", ");
-            format!("[{}]", inner)  // TS uses array destructuring for tuples
+            format!("[{}]", inner)
         }
         Pattern::Struct(_, fields, has_rest) => {
             let mut fs: Vec<String> = fields.iter().map(|(k, v)| {
@@ -791,7 +679,6 @@ fn pattern_to_ts(pat: &Pattern) -> String {
             format!("{{ {} }}", fs.join(", "))
         }
         Pattern::Variant(name, args) => {
-            // TS doesn't have native variant destructuring — emit as comment + binding
             if args.is_empty() { format!("/* {} */", name) }
             else {
                 let inner = args.iter().map(pattern_to_ts).collect::<Vec<_>>().join(", ");
@@ -828,173 +715,4 @@ fn unaryop_to_ts(op: &UnaryOp) -> &'static str {
         UnaryOp::Not => "!",
         UnaryOp::Neg => "-",
     }
-}
-
-// ─── Project Scaffolding (used by API client generation) ─────────────────────
-
-fn gen_package_json(sol_name: &str) -> TsFile {
-    let content = format!(
-        r#"{{
-  "name": "{}",
-  "version": "0.1.0",
-  "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {{
-    "build": "tsc",
-    "dev": "tsc --watch"
-  }},
-  "devDependencies": {{
-    "typescript": "^5.4.0"
-  }}
-}}
-"#,
-        sol_name
-    );
-    TsFile { path: "package.json".to_string(), content }
-}
-
-fn gen_tsconfig() -> TsFile {
-    let content = r#"{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true
-  },
-  "include": ["src"]
-}
-"#.to_string();
-    TsFile { path: "tsconfig.json".to_string(), content }
-}
-
-// ─── API Client Generation (from expose blocks) ──────────────────────────────
-
-/// Generate a typed API client module from an expose block.
-/// Produces typed interfaces for inputs/outputs and async functions that
-/// call the API with correct types.
-pub fn generate_api_client(pkg_name: &str, expose: &ExposeBlock) -> Vec<TsFile> {
-    let mut files = Vec::new();
-    let module_name = to_camel(pkg_name);
-
-    let mut client = String::new();
-    client.push_str("// Generated API client — typed bindings for the backend expose contract\n");
-    client.push_str("// Do not edit — regenerated from the backend .veil package\n\n");
-
-    // Generate input/output interfaces for each node
-    for node in &expose.nodes {
-        if !node.inputs.is_empty() {
-            client.push_str(&format!("export interface {}Input {{\n", node.name));
-            for field in &node.inputs {
-                client.push_str(&format!("  {}: {};\n", to_camel(&field.name), type_to_ts(&field.type_expr)));
-            }
-            client.push_str("}\n\n");
-        }
-
-        if !node.outputs.is_empty() {
-            client.push_str(&format!("export interface {}Output {{\n", node.name));
-            for field in &node.outputs {
-                client.push_str(&format!("  {}: {};\n", to_camel(&field.name), type_to_ts(&field.type_expr)));
-            }
-            client.push_str("}\n\n");
-        }
-    }
-
-    // Generate the client class with typed methods
-    client.push_str(&format!("export class {}Client {{\n", module_name));
-    client.push_str("  private baseUrl: string;\n");
-    client.push_str("  private headers: Record<string, string>;\n\n");
-    client.push_str("  constructor(baseUrl: string, headers: Record<string, string> = {}) {\n");
-    client.push_str("    this.baseUrl = baseUrl;\n");
-    client.push_str("    this.headers = { 'Content-Type': 'application/json', ...headers };\n");
-    client.push_str("  }\n\n");
-
-    for node in &expose.nodes {
-        let fn_name = to_camel(&node.name);
-        let has_input = !node.inputs.is_empty();
-        let has_output = !node.outputs.is_empty();
-
-        let input_param = if has_input {
-            format!("input: {}Input", node.name)
-        } else {
-            String::new()
-        };
-        let return_type = if has_output {
-            format!("Promise<{}Output>", node.name)
-        } else {
-            "Promise<void>".to_string()
-        };
-
-        // Add description as JSDoc if available
-        if let Some(desc) = &node.description {
-            client.push_str(&format!("  /** {} */\n", desc));
-        }
-
-        client.push_str(&format!("  async {}({}): {} {{\n", fn_name, input_param, return_type));
-
-        // Generate the endpoint path from the node name (kebab-case)
-        let endpoint = node.name.chars().enumerate().map(|(i, c)| {
-            if c.is_uppercase() && i > 0 { format!("-{}", c.to_lowercase()) }
-            else { c.to_lowercase().to_string() }
-        }).collect::<String>();
-
-        if has_input {
-            client.push_str(&format!(
-                "    const res = await fetch(`${{this.baseUrl}}/{}`, {{\n      method: 'POST',\n      headers: this.headers,\n      body: JSON.stringify(input),\n    }});\n",
-                endpoint
-            ));
-        } else {
-            client.push_str(&format!(
-                "    const res = await fetch(`${{this.baseUrl}}/{}`, {{\n      headers: this.headers,\n    }});\n",
-                endpoint
-            ));
-        }
-
-        client.push_str("    if (!res.ok) throw new Error(`API error: ${res.status}`);\n");
-        if has_output {
-            client.push_str("    return res.json();\n");
-        }
-        client.push_str("  }\n\n");
-    }
-
-    client.push_str("}\n");
-
-    files.push(TsFile {
-        path: format!("src/api/{}.ts", to_camel(pkg_name)),
-        content: client,
-    });
-
-    files
-}
-
-/// Generate a typed API client from a Package's expose block.
-/// Called when `veil gen package.veil -t ts` targets a pkg file.
-pub fn generate_api_client_from_package(pkg: &Package) -> TsProject {
-    let mut files = Vec::new();
-
-    if let Some(expose) = &pkg.expose {
-        files.extend(generate_api_client(&pkg.name, expose));
-    }
-
-    // Also generate shared types (DTOs from the expose block are in items)
-    // Export the package as a typed module
-    let mut index = String::from("// API client for ");
-    index.push_str(&pkg.name);
-    index.push_str(" — generated by VEIL\n\n");
-    if pkg.expose.is_some() {
-        index.push_str(&format!("export * from './api/{}';\n", to_camel(&pkg.name)));
-    }
-    files.push(TsFile { path: "src/index.ts".to_string(), content: index });
-
-    files.push(gen_package_json(&to_camel(&pkg.name)));
-    files.push(gen_tsconfig());
-
-    TsProject { files }
 }

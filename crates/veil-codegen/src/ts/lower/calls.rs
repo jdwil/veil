@@ -5,7 +5,7 @@
 use veil_ir::ast::{ActionExpr, CallExpr, Expr};
 use veil_ir::layer::StmtShape;
 use crate::expr::GenCtx;
-use crate::typescript::expr_to_ts;
+use crate::ts::legacy::expr_to_ts;
 use super::super::expr::{TsBinOp, TsExpr, TsType};
 use super::{lower_to_ts, to_camel_case};
 
@@ -28,10 +28,6 @@ pub(super) fn lower_call(call: &CallExpr, ctx: &GenCtx) -> TsExpr {
 
     // ── 2. Trait dependency (port) calls ─────────────────────────────────
     if ctx.is_trait_target(&call.target) {
-        // Routing traits go through bus invoke (section 4)
-        if ctx.routing.routing_traits.contains(&call.target) {
-            return lower_routing_call(call, ctx);
-        }
         return lower_trait_dep_call(call, ctx);
     }
 
@@ -384,6 +380,10 @@ fn lower_builtin_call(call: &CallExpr, ctx: &GenCtx) -> Option<TsExpr> {
 /// Variables: `{arg0}`, `{arg1}`, ..., `{args}` (all args comma-separated).
 fn interpolate_call_template(template: &str, call: &CallExpr, ctx: &GenCtx) -> String {
     let mut result = template.to_string();
+
+    // {dep} — the deps field name for the call target
+    let dep_name = ctx.deps_field_for(&call.target);
+    result = result.replace("{dep}", &dep_name);
 
     // {arg0}, {arg1}, ...
     for (i, arg) in call.args.iter().enumerate() {

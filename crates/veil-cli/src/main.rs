@@ -2877,7 +2877,7 @@ fn main() {
                             } else if sol.expose.is_some() {
                                 // API client from pre-merge package expose when no constructs
                                 let project =
-                                    veil_codegen::typescript::generate_api_client_from_package(&pkg);
+                                    veil_codegen::ts::api_client::generate_api_client_from_package(&pkg);
                                 project
                                     .files
                                     .into_iter()
