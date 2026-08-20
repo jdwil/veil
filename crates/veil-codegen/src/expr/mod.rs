@@ -1,7 +1,7 @@
 //! Expression translator — converts VEIL AST Expr to Rust source code.
 //!
 //! Fully shape-driven: the translator uses `GenCtx.name_to_shape` to decide
-//! how to emit a Call (port call → deps.x.method().await?, struct call →
+//! how to emit a Call (trait dep call → deps.x.method().await?, struct call →
 //! Type::new(args), local → target.method(args)).
 //!
 //! ## Module structure
